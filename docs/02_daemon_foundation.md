@@ -120,8 +120,22 @@ For a deployment that needs to outlive its last login, configure the user
 manager's lifetime according to host policy. On hosts that allow lingering,
 `loginctl enable-linger` keeps the manager running after logout. Check
 `loginctl show-user "$(id -u)" -p Linger -p Sessions` when qualifying the host.
-Use a test account with its own sessions and verify the daemon PID and an
-advancing child counter after the final login closes and before reattaching.
+
+For A21, use a disposable systemd host with OpenSSH configured to register
+sessions through PAM and `pam_systemd`. Set up the unit, Corvid, Python 3, and the
+terminfo entry for a dedicated `operator` account and enable lingering for that
+account with operator authorization. Configure a separate `observer` account
+with noninteractive sudo and pin the host key for both SSH aliases. Run from the
+repository root on the client machine.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/last_login.py ssh_config operator observer
+```
+
+The observer checks that each disconnect closes the only SSH login and that the
+user manager remains lingering. It compares the daemon epoch, daemon and child
+process incarnations, and PTY device while the child counter advances. The next
+attach must show the same child and retained screen.
 
 ## Verification
 
@@ -148,6 +162,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
 | Backpressure | A client that withholds a frame acknowledgement loses its lease after five seconds. A child writing 32 KiB bursts continues and control ping stays responsive. Reattach begins with a full frame. |
 | SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |
+| Last login (A21) | Debian 13 in a disposable QEMU guest ran the shipped user unit with systemd 257.13 and OpenSSH 10.0p2 using PAM. The fixture passed after clean detach and forced SSH loss with `KillUserProcesses=yes`, `UserStopDelaySec=0`, and lingering enabled for the Corvid account. |
 
 The current renderer shows one pane at a time with the qualified VT engine's
 screen comparison. Each live PTY has a separate worker. The runtime allows up
@@ -158,5 +173,5 @@ It sends one frame at a time and waits for the TTY write acknowledgement.
 The PTY worker drains up to 128 KiB per tick and continues parsing without a writer.
 The SSH fixture uses temporary keys, a pinned host key, a loopback-only SSH
 listener, and a transient user unit. It ran with other user sessions active and
-lingering disabled. Verification of the last logind-managed login remains a
-deployment gate on a dedicated account.
+lingering disabled. Use the last-login fixture to qualify the logout policy on
+the intended deployment host.
