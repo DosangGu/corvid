@@ -48,6 +48,8 @@ message Envelope {
     IssuePairingCode issue_pairing_code = 44;
     PairingCode pairing_code = 45;
     RedrawView redraw_view = 46;
+    MoveTab move_tab = 47;
+    TabMoved tab_moved = 48;
     AcknowledgeAttention acknowledge_attention = 50;
     AttentionAcknowledged attention_acknowledged = 51;
     FocusApplied focus_applied = 52;
@@ -842,6 +844,17 @@ message ClaimWorkspaceWriter {
 message WriterClaimed {
   string workspace_id = 1;
   uint64 generation = 2;
+}
+
+message MoveTab {
+  optional uint64 expected_view_revision = 1;
+  string tab_id = 2;
+  string destination_workspace_id = 3;
+}
+
+message TabMoved {
+  ViewSelection location = 1;
+  uint64 commit_sequence = 2;
 }
 
 message FrameApplied {

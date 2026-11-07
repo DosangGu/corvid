@@ -9,11 +9,12 @@ use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, Attach, Attached, Envelope, LaunchCommand, Pong, RenderHeader, RouteToken,
-    TerminalExited, ViewChanged, Viewport as WireViewport, WriterClaimed,
+    AgentProvider, Attach, Attached, Envelope, LaunchCommand, MoveTab, Pong, RenderHeader,
+    RouteToken, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport, WriterClaimed,
 };
 use corvid_protocol::{
-    COMMAND_TIMEOUT, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame, Session,
+    CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY,
+    PeerRole, ProtocolFault, RenderFrame, Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -37,6 +38,8 @@ const CAPABILITIES: &[&str] = &[
     "paste.v1",
     "tabs.v1",
     "select_view.v1",
+    CLAIM_WORKSPACE_CAPABILITY,
+    MOVE_TAB_CAPABILITY,
     PAIR_CAPABILITY,
     "agent_launch.v1",
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
@@ -193,6 +196,10 @@ impl TuiConnection<'_> {
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
             }
+            Body::MoveTab(command) => match self.move_tab(command) {
+                Ok(moved) => self.send(request.request_id, Body::TabMoved(moved)).await?,
+                Err(fault) => self.fault(request.request_id, fault).await?,
+            },
             body => {
                 let action = command(client, body).unwrap_or_else(Action::Rejected);
                 self.active
@@ -202,6 +209,16 @@ impl TuiConnection<'_> {
             }
         }
         Ok(false)
+    }
+
+    fn move_tab(&self, command: &MoveTab) -> Result<TabMoved, ProtocolFault> {
+        require_view(
+            command.expected_view_revision,
+            self.active.route.view_revision,
+        )?;
+        let tab = parse_id(&command.tab_id)?;
+        let workspace = parse_id(&command.destination_workspace_id)?;
+        self.workspaces.move_tab(&self.active, tab, workspace)
     }
 
     async fn event(&mut self, event: Event) -> Result<bool> {
@@ -360,17 +377,22 @@ fn exact_destination(
     view: &corvid_protocol::wire::SelectView,
     revision: u64,
 ) -> Result<Destination, ProtocolFault> {
-    if view.expected_view_revision != Some(revision) {
-        return Err(ProtocolFault::new(
-            "StaleRoute",
-            "view revision has changed",
-        ));
-    }
+    require_view(view.expected_view_revision, revision)?;
     Ok(Destination::Exact(Location {
         workspace: parse_id(&view.workspace_id)?,
         tab: parse_id(&view.tab_id)?,
         pane: parse_id(&view.pane_id)?,
     }))
+}
+
+fn require_view(expected: Option<u64>, current: u64) -> Result<(), ProtocolFault> {
+    if expected != Some(current) {
+        return Err(ProtocolFault::new(
+            "StaleRoute",
+            "view revision has changed",
+        ));
+    }
+    Ok(())
 }
 
 fn parse_id(id: &str) -> Result<Uuid, ProtocolFault> {

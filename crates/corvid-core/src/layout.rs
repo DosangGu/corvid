@@ -183,6 +183,38 @@ impl Layout {
         Ok(location)
     }
 
+    pub fn move_pane_tab(
+        &mut self,
+        source: Location,
+        destination: Uuid,
+    ) -> Result<Location, InvalidLayout> {
+        let from = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == source.workspace && workspace.tabs.len() > 1)
+            .ok_or(InvalidLayout)?;
+        let to = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == destination && workspace.id != source.workspace)
+            .ok_or(InvalidLayout)?;
+        let index = self.workspaces[from]
+            .tabs
+            .iter()
+            .position(|tab| {
+                tab.id == source.tab
+                    && matches!(tab.root, Node::Pane { id, .. } if id == source.pane)
+            })
+            .ok_or(InvalidLayout)?;
+
+        let tab = self.workspaces[from].tabs.remove(index);
+        self.workspaces[to].tabs.push(tab);
+        Ok(Location {
+            workspace: destination,
+            ..source
+        })
+    }
+
     fn make_tab(&self, label: String) -> Result<(Tab, Uuid), InvalidLayout> {
         validate_label(&label)?;
         let tabs = self.workspaces.iter().flat_map(|workspace| &workspace.tabs);

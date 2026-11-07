@@ -9,10 +9,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use uuid::Uuid;
 
 use super::controllers::{Sender, no_client};
-use super::{
-    Active, Registry, Reply, ReservedSwitch, Workspaces, busy, open_pane, target_gone,
-    writer_required,
-};
+use super::{Active, Registry, Reply, ReservedSwitch, Workspaces, open_pane, target_gone};
 use crate::projection::selection;
 
 pub(super) struct FocusTarget {
@@ -268,22 +265,16 @@ impl Registry {
         {
             return Err(target_gone());
         }
-        let claim = self
-            .claims
-            .get(&location.workspace)
-            .ok_or_else(writer_required)?;
-        if claim.client != target.client {
-            return Err(busy());
-        }
+        let lease = self.require_writer(target.client, location.workspace)?;
         debug_assert_eq!(client.view.as_ref().unwrap().route.client_id, target.client);
         Ok(FocusDestination {
             location,
             terminal,
-            lease: claim.generation,
+            lease,
         })
     }
 
-    fn require_route(&self, route: InputRoute) -> Reply<()> {
+    pub(super) fn require_route(&self, route: InputRoute) -> Reply<()> {
         if self
             .clients
             .get(&route.client_id)

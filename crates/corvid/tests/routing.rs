@@ -16,9 +16,10 @@ use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
     ClaimWorkspaceWriter, CompanionConnection, EntityKind, Envelope, FocusAgentRequest,
-    FocusApplied, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode,
-    LaunchCommand, ListClients, PasteBegin, PasteChunk, PasteEnd, Ping, PresentationSlots,
-    ResizeViewport, RouteToken, SelectView, SnapshotWatch, ViewSelection, Viewport,
+    FocusApplied, FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk,
+    IssuePairingCode, LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin, PasteChunk,
+    PasteEnd, Ping, PresentationSlots, PresentedSlotToken, ResizeViewport, RouteToken, SelectView,
+    SnapshotWatch, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     Frame, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
@@ -113,6 +114,16 @@ impl Tui {
             pane_id: selection.pane_id.clone(),
         }))
         .await;
+    }
+
+    async fn move_tab(&mut self, tab: &str, destination: &str, output: &mut Vec<u8>) -> Body {
+        self.send(Body::MoveTab(MoveTab {
+            expected_view_revision: Some(self.route.view_revision),
+            tab_id: tab.to_owned(),
+            destination_workspace_id: destination.to_owned(),
+        }))
+        .await;
+        self.next_body(output).await
     }
 
     async fn input(&mut self, route: RouteToken, sequence: u64, bytes: &[u8]) {
@@ -342,30 +353,8 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert!(one_process.start_ticks > 0);
         assert!(one_process.foreground_group.is_some());
 
-        let state = temporary.path().join("companion");
-        let socket = temporary.path().join("presentation");
-        initialize(
-            &state,
-            Uuid::parse_str(&first.session.host_id).unwrap(),
-            HostEndpoint::Local {
-                runtime_dir: runtime.clone(),
-            },
-            2,
-        )
-        .unwrap();
-        let _companion = command(&runtime)
-            .args(["companion", "run", "--state-dir"])
-            .arg(state)
-            .arg("--socket-dir")
-            .arg(&socket)
-            .spawn()
-            .unwrap();
-        let mut companion = loop {
-            if let Ok(companion) = PresentationClient::connect(&socket).await {
-                break companion;
-            }
-            sleep(Duration::from_millis(20)).await;
-        };
+        let (_companion, mut companion) =
+            start_companion(&runtime, temporary.path(), &first.session.host_id, 2).await;
         let placements = presented(&mut companion, |view| {
             view.connection == CompanionConnection::Ready as i32
         })
@@ -526,6 +515,38 @@ exec /bin/sleep 30
     })
     .await
     .unwrap();
+}
+
+async fn start_companion(
+    runtime: &Path,
+    directory: &Path,
+    host_id: &str,
+    slots: u32,
+) -> (tokio::process::Child, PresentationClient) {
+    let state = directory.join("companion");
+    let socket = directory.join("presentation");
+    initialize(
+        &state,
+        Uuid::parse_str(host_id).unwrap(),
+        HostEndpoint::Local {
+            runtime_dir: runtime.to_owned(),
+        },
+        slots,
+    )
+    .unwrap();
+    let process = command(runtime)
+        .args(["companion", "run", "--state-dir"])
+        .arg(state)
+        .arg("--socket-dir")
+        .arg(&socket)
+        .spawn()
+        .unwrap();
+    loop {
+        if let Ok(companion) = PresentationClient::connect(&socket).await {
+            return (process, companion);
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
 }
 
 async fn presented(
@@ -717,6 +738,10 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         let revision = binding.binding_revision;
         let wrong_owner = focus(&runtime, &scope, "busy-c", client, revision, &c).await.unwrap_err();
         assert_eq!(wrong_owner.code, "WorkspaceBusy");
+        let source_tab = &a.location.as_ref().unwrap().tab_id;
+        let destination = &c.location.as_ref().unwrap().workspace_id;
+        let refused = main.move_tab(source_tab, destination, &mut output).await;
+        assert!(matches!(refused, Body::Error(fault) if fault.code == "WorkspaceBusy"));
 
         let original = main.route.clone();
         let paste_id = Uuid::new_v4().to_string();
@@ -775,13 +800,135 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         }
         let unclaimed = focus(&runtime, &scope, "unclaimed-c", client, revision, &c).await.unwrap_err();
         assert_eq!(unclaimed.code, "WriterRequired");
+        let refused = main.move_tab(source_tab, destination, &mut output).await;
+        assert!(matches!(refused, Body::Error(fault) if fault.code == "WriterRequired"));
         main.send(Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
-            workspace_id: c.location.as_ref().unwrap().workspace_id.clone(),
+            workspace_id: destination.clone(),
         })).await;
         assert!(matches!(main.next_body(&mut output).await, Body::WriterClaimed(_)));
+
+        verify_tab_move(&runtime, temporary.path(), &mut main, &a, destination).await;
         focus(&runtime, &scope, "preclaimed-c", client, revision, &c).await.unwrap();
         main.moved(&mut output, c.location.as_ref().unwrap()).await;
     }).await.unwrap();
+}
+
+async fn verify_tab_move(
+    runtime: &Path,
+    directory: &Path,
+    client: &mut Tui,
+    agent: &AgentInfo,
+    destination: &str,
+) {
+    let (_companion, mut companion) =
+        start_companion(runtime, directory, &client.session.host_id, 3).await;
+    presented(&mut companion, |view| {
+        view.connection == CompanionConnection::Ready as i32
+    })
+    .await;
+    let code = issue_pairing(client).await;
+    let registered = companion
+        .request(Body::PairTerminal(PairTerminal {
+            code: code.to_string(),
+            wezterm: None,
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(registered, Body::ClientBindingRegistered(_)));
+    let before = presented(&mut companion, |view| {
+        !view.bindings.is_empty()
+            && view.slots.iter().any(|slot| {
+                slot.run
+                    .as_ref()
+                    .and_then(|run| run.key.as_ref())
+                    .is_some_and(|key| key.agent_run_id == agent.agent_run_id)
+            })
+    })
+    .await;
+    let slot = before
+        .slots
+        .iter()
+        .find(|slot| {
+            slot.run
+                .as_ref()
+                .and_then(|run| run.key.as_ref())
+                .is_some_and(|key| key.agent_run_id == agent.agent_run_id)
+        })
+        .unwrap();
+    let captured = FocusSlot {
+        control_generation: before.control_generation.unwrap(),
+        slot: Some(PresentedSlotToken {
+            slot_id: slot.slot_id,
+            revision: Some(slot.revision),
+            run: slot.run.as_ref().unwrap().key.clone(),
+        }),
+        binding: Some(before.bindings[0].clone()),
+    };
+
+    let mut output = Vec::new();
+    let visible = client.selection.tab_id.clone();
+    let refused = client.move_tab(&visible, destination, &mut output).await;
+    assert!(matches!(refused, Body::Error(fault) if fault.code == "InputBusy"));
+
+    let mut watch = corvid_client::watch_snapshot(runtime).await.unwrap();
+    let old = agent.location.as_ref().unwrap();
+    let expected = ViewSelection {
+        workspace_id: destination.to_owned(),
+        ..old.clone()
+    };
+    let Body::TabMoved(moved) = client.move_tab(&old.tab_id, destination, &mut output).await else {
+        panic!("missing tab relocation");
+    };
+    assert_eq!(moved.location.as_ref(), Some(&expected));
+    while watch.state().snapshot().sequence() < moved.commit_sequence {
+        watch.next_change().await.unwrap();
+    }
+    assert_moved_entities(&watch, agent, &expected, &client.route);
+
+    let after = presented(&mut companion, |view| {
+        view.remote_sequence
+            .is_some_and(|seq| seq >= moved.commit_sequence)
+    })
+    .await;
+    assert!(after.slots.contains(slot));
+    let Body::SlotFocused(focused) = companion.request(Body::FocusSlot(captured)).await.unwrap()
+    else {
+        panic!("missing focus reply");
+    };
+    let focused = focused.remote.unwrap();
+    assert_eq!(focused.agent_run_id, agent.agent_run_id);
+    assert_eq!(focused.terminal_id, agent.terminal_id);
+    assert_eq!(focused.selection.as_ref(), Some(&expected));
+    client.moved(&mut output, &expected).await;
+    wait_for_text(client, &mut output, "A=fresh").await;
+}
+
+fn assert_moved_entities(
+    watch: &corvid_client::SnapshotWatch,
+    original: &AgentInfo,
+    location: &ViewSelection,
+    unchanged: &RouteToken,
+) {
+    let snapshot = watch.state().snapshot();
+    assert_eq!(
+        snapshot
+            .entities()
+            .filter(|entry| matches!(entry.body, Some(EntityBody::Terminal(_))))
+            .count(),
+        3
+    );
+    assert!(snapshot.entities().any(|entry| matches!(&entry.body,
+        Some(EntityBody::Terminal(terminal)) if terminal.terminal_id == original.terminal_id
+            && terminal.location.as_ref() == Some(location))));
+    assert!(snapshot.entities().any(|entry| matches!(&entry.body,
+        Some(EntityBody::Agent(agent)) if agent.summary.as_ref().is_some_and(|agent| {
+            agent.agent_run_id == original.agent_run_id && agent.terminal_id == original.terminal_id
+                && agent.location.as_ref() == Some(location) && agent.process_identity == original.process_identity
+        }))));
+    assert!(snapshot.entities().any(|entry| matches!(&entry.body,
+        Some(EntityBody::Client(client)) if client.client_id == unchanged.client_id
+            && client.terminal_id.as_ref() == Some(&unchanged.terminal_id)
+            && client.view_revision == Some(unchanged.view_revision))));
 }
 
 #[tokio::test]

@@ -12,13 +12,13 @@ use corvid_protocol::controller::{PAIR_CAPABILITY, PAIRING_SECONDS};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand,
-    PairingCode, PasteBegin, PasteChunk, PasteEnd, RedrawView, ResizeViewport, RouteToken,
-    ViewChanged, Viewport as WireViewport,
+    AgentProvider, Attach, AttachRole, ClaimWorkspaceWriter, Detach, Envelope, FrameApplied,
+    InputChunk, LaunchCommand, MoveTab, PairingCode, PasteBegin, PasteChunk, PasteEnd, RedrawView,
+    ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
 };
 use corvid_protocol::{
-    COMMAND_TIMEOUT, Frame, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
-    Session, decode_envelope,
+    CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, Frame, FrameReader, FrameWriter,
+    MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RenderFrame, Session, decode_envelope,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::signal::unix::{SignalKind, signal};
@@ -42,9 +42,12 @@ pub struct AttachOptions {
     pub tab: Option<String>,
     pub new_workspace: Option<String>,
     pub new_tab: Option<String>,
+    pub claim_workspaces: Vec<Uuid>,
+    /// The tab ID and its destination workspace ID.
+    pub move_tab: Option<(Uuid, Uuid)>,
 }
 
-pub async fn attach(runtime: &Path, options: AttachOptions) -> Result<u32> {
+pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
     let mut required = vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()];
@@ -53,6 +56,14 @@ pub async fn attach(runtime: &Path, options: AttachOptions) -> Result<u32> {
     }
     if options.agent == Some(AgentProvider::Codex) {
         required.push(corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY.into());
+    }
+    let claims = std::mem::take(&mut options.claim_workspaces);
+    let move_tab = options.move_tab;
+    if !claims.is_empty() {
+        required.push(CLAIM_WORKSPACE_CAPABILITY.into());
+    }
+    if move_tab.is_some() {
+        required.push(MOVE_TAB_CAPABILITY.into());
     }
     let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
     let escape_delay = options.escape_delay;
@@ -69,7 +80,10 @@ pub async fn attach(runtime: &Path, options: AttachOptions) -> Result<u32> {
     timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
     let mut client = Interactive::new(connection, viewport, route, escape_delay);
     tokio::select! {
-        result = client.run(&tty) => result,
+        result = async {
+            client.configure_layout(&tty, claims, move_tab).await?;
+            client.run(&tty).await
+        } => result,
         // A signal can interrupt a partially written frame. Drop the stream so
         // the daemon fences the route on EOF.
         _ = terminate.recv() => Ok(0),
@@ -234,6 +248,80 @@ impl Interactive {
         }
     }
 
+    async fn configure_layout(
+        &mut self,
+        tty: &Tty,
+        claims: Vec<Uuid>,
+        move_tab: Option<(Uuid, Uuid)>,
+    ) -> Result<()> {
+        for workspace in claims {
+            let workspace_id = workspace.to_string();
+            let request = Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
+                workspace_id: workspace_id.clone(),
+            });
+            let reply = self.layout_request(tty, request).await?;
+            ensure!(
+                matches!(reply, Body::WriterClaimed(claim) if claim.workspace_id == workspace_id && claim.generation > 0),
+                "unexpected workspace claim reply"
+            );
+        }
+
+        if let Some((tab, destination)) = move_tab {
+            let tab_id = tab.to_string();
+            let destination_workspace_id = destination.to_string();
+            let request = Body::MoveTab(MoveTab {
+                expected_view_revision: Some(self.route.view_revision),
+                tab_id: tab_id.clone(),
+                destination_workspace_id: destination_workspace_id.clone(),
+            });
+            let reply = self.layout_request(tty, request).await?;
+            let Body::TabMoved(moved) = reply else {
+                bail!("unexpected tab move reply");
+            };
+            ensure!(
+                moved.commit_sequence > 0
+                    && moved.location.is_some_and(|location| {
+                        location.workspace_id == destination_workspace_id
+                            && location.tab_id == tab_id
+                    }),
+                "tab move reply has an unexpected location"
+            );
+        }
+        Ok(())
+    }
+
+    async fn layout_request(&mut self, tty: &Tty, request: Body) -> Result<Body> {
+        let request_id = self.send(request).await?;
+        timeout(COMMAND_TIMEOUT, async {
+            loop {
+                let frame = self
+                    .incoming
+                    .frames
+                    .recv()
+                    .await
+                    .context("daemon closed during layout setup")??;
+                match frame {
+                    Frame::Render(render) => self.render(tty, render).await?,
+                    Frame::Structured(payload) => {
+                        let envelope = self.scoped_envelope(&payload)?;
+                        if envelope.request_id.as_deref() == Some(&request_id) {
+                            return match envelope.body.context("missing layout response")? {
+                                Body::Error(error) => Err(ProtocolFault::from_wire(&error).into()),
+                                body => Ok(body),
+                            };
+                        }
+                        ensure!(
+                            self.event(tty, envelope).await?.is_none(),
+                            "terminal closed during layout setup"
+                        );
+                    }
+                }
+            }
+        })
+        .await
+        .context("layout request timed out")?
+    }
+
     async fn run(&mut self, tty: &Tty) -> Result<u32> {
         let mut buffer = [0; INPUT_CHUNK];
         let mut resize_tick = interval(Duration::from_millis(50));
@@ -279,53 +367,59 @@ impl Interactive {
         match frame {
             Frame::Render(render) => self.render(tty, render).await?,
             Frame::Structured(payload) => {
-                let envelope = decode_envelope(&payload)?;
-                self.session.validate_scope(&envelope)?;
-                match envelope.body {
-                    Some(Body::ViewChanged(view)) => {
-                        let paste_discarded = view.paste_discarded || self.keys.capturing_paste();
-                        self.view_changed(tty, view)?;
-                        if self.pairing.is_some() {
-                            self.paint_pairing(tty).await?;
-                        }
-                        if paste_discarded {
-                            timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
-                        }
-                    }
-                    Some(Body::PairingCode(code)) => self.show_pairing(tty, code).await?,
-                    Some(Body::TerminalExited(exited)) => {
-                        ensure!(
-                            exited.terminal_id == self.route.terminal_id,
-                            "unexpected terminal exit"
-                        );
-                        return Ok(Some(exited.exit_code));
-                    }
-                    Some(Body::Error(error)) if error.code == "InputBusy" => {
-                        if self.pending_resize.as_ref().is_some_and(|resize| {
-                            envelope.request_id.as_deref() == Some(resize.request_id.as_str())
-                        }) {
-                            self.pending_resize = None;
-                        } else {
-                            timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
-                        }
-                    }
-                    Some(Body::Error(error))
-                        if matches!(
-                            error.code.as_str(),
-                            "StaleRoute"
-                                | "WorkspaceBusy"
-                                | "WriterRequired"
-                                | "TargetGone"
-                                | "NoTerminal"
-                        ) =>
-                    {
-                        timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
-                    }
-                    Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error).into()),
-                    Some(Body::Detach(_)) => return Ok(Some(0)),
-                    _ => bail!("unsupported daemon event"),
+                let envelope = self.scoped_envelope(&payload)?;
+                return self.event(tty, envelope).await;
+            }
+        }
+        Ok(None)
+    }
+
+    fn scoped_envelope(&self, payload: &[u8]) -> Result<Envelope> {
+        let envelope = decode_envelope(payload)?;
+        self.session.validate_scope(&envelope)?;
+        Ok(envelope)
+    }
+
+    async fn event(&mut self, tty: &Tty, envelope: Envelope) -> Result<Option<u32>> {
+        match envelope.body {
+            Some(Body::ViewChanged(view)) => {
+                let paste_discarded = view.paste_discarded || self.keys.capturing_paste();
+                self.view_changed(tty, view)?;
+                if self.pairing.is_some() {
+                    self.paint_pairing(tty).await?;
+                }
+                if paste_discarded {
+                    timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
                 }
             }
+            Some(Body::PairingCode(code)) => self.show_pairing(tty, code).await?,
+            Some(Body::TerminalExited(exited)) => {
+                ensure!(
+                    exited.terminal_id == self.route.terminal_id,
+                    "unexpected terminal exit"
+                );
+                return Ok(Some(exited.exit_code));
+            }
+            Some(Body::Error(error)) if error.code == "InputBusy" => {
+                if self.pending_resize.as_ref().is_some_and(|resize| {
+                    envelope.request_id.as_deref() == Some(resize.request_id.as_str())
+                }) {
+                    self.pending_resize = None;
+                } else {
+                    timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
+                }
+            }
+            Some(Body::Error(error))
+                if matches!(
+                    error.code.as_str(),
+                    "StaleRoute" | "WorkspaceBusy" | "WriterRequired" | "TargetGone" | "NoTerminal"
+                ) =>
+            {
+                timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
+            }
+            Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error).into()),
+            Some(Body::Detach(_)) => return Ok(Some(0)),
+            _ => bail!("unsupported daemon event"),
         }
         Ok(None)
     }

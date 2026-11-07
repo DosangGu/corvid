@@ -165,6 +165,7 @@ impl Session {
                 | Body::ResizeViewport(_)
                 | Body::SelectView(_)
                 | Body::ClaimWorkspaceWriter(_)
+                | Body::MoveTab(_)
                 | Body::IssuePairingCode(_)
                 | Body::RedrawView(_)
                 | Body::FrameApplied(_)

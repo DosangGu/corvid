@@ -28,6 +28,19 @@ Ctrl-] then t starts a new shell tab. Ctrl-] then n or p visits the next or
 previous live tab in the workspace. Each workspace has one writer, and other
 workspaces continue independently.
 
+To move a hidden live single-pane tab, attach to a different tab in its
+workspace and explicitly claim the destination for that TUI.
+
+```sh
+corvid attach --workspace "$SOURCE" --tab "$VISIBLE_TAB" \
+  --claim-workspace "$DESTINATION" --move-tab "$HIDDEN_TAB" \
+  --to-workspace "$DESTINATION"
+```
+
+The move retains the pane, terminal, and run IDs and keeps the visible tab
+selected. It publishes the layout and new location together. A companion slot
+that already points to the run can focus it in the claimed workspace.
+
 Run `corvid attach --agent claude -- [CLI arguments]` to start the Claude Code
 executable from the daemon's PATH in a dedicated PTY. The arguments after `--`
 go directly to the provider. `corvid control agents` lists the resulting run and
@@ -158,6 +171,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Writer and redraw | A competing attach at a different size is refused and leaves the child size unchanged. A successful resize resets the render generation. The detached child progresses, then the next TUI shows its retained screen and PID. |
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |
 | Workspaces and tabs | Two writers operate concurrently in different workspaces. Switching targets the exact existing pane and preserves the other writer. An occupied destination rejects the switch. An unowned destination requires an explicit writer claim. Old view tokens fail at the PTY boundary. |
+| Moving a live tab (A2, A8) | The real TUI moves a hidden tab into a claimed workspace and reattaches to the same child PID. The wire test rejects occupied or unclaimed destinations and the visible tab. An active watch applies the new layout, terminal location, and agent location together. A companion capture made before the move focuses the same run and redraws its retained screen. |
 | Managed agent process | Two isolated CLI fixtures launched in the same directory have distinct run IDs, terminal IDs, and Linux process incarnations. A verified exit changes only that run. A subsequent launch in the same pane gets new run and terminal IDs. Claude Code 2.1.318 printed its version and exited successfully through the managed launch path. |
 | Silent process changes (A27) | A managed shell fixture changes its foreground group without terminal output, then replaces its executable under the same PID. Focus rejects the old run even before the periodic sample, and the next sample retires that run while its PTY stays live. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |

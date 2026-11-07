@@ -13,7 +13,8 @@ use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentList, ClientList, ClientState, TerminalState, Viewport as WireViewport, WriterLeaseState,
+    AgentList, ClientList, ClientState, TabMoved, TerminalState, Viewport as WireViewport,
+    WriterLeaseState,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::{mpsc, watch};
@@ -323,6 +324,53 @@ impl Workspaces {
         Ok(generation)
     }
 
+    pub(crate) fn move_tab(
+        &self,
+        active: &Active,
+        tab: Uuid,
+        destination: Uuid,
+    ) -> Reply<TabMoved> {
+        let mut registry = self.lock_registry();
+        registry.require_publication()?;
+        registry.require_route(active.route)?;
+
+        let source_workspace = active.location.workspace;
+        let client = active.route.client_id;
+        registry.require_writer(client, source_workspace)?;
+        registry.require_writer(client, destination)?;
+
+        let mut layout = Arc::clone(&self.layouts.borrow());
+        let source = layout
+            .locate(Some(source_workspace), Some(tab))
+            .ok_or_else(target_gone)?;
+        let terminal = registry.movable_terminal(source)?;
+        let location = Arc::make_mut(&mut layout)
+            .move_pane_tab(source, destination)
+            .map_err(|_| {
+                ProtocolFault::new(
+                    "InvalidLayout",
+                    "move requires a single-pane tab and a different workspace",
+                )
+            })?;
+
+        registry
+            .slots
+            .get_mut(&location.pane)
+            .expect("validated terminal slot")
+            .workspace = destination;
+        registry.terminals.insert(terminal, location);
+        registry.agents.relocate_terminal(terminal, location);
+        registry.publish(vec![
+            projection::layout(&layout),
+            terminal_projection(terminal, location),
+        ]);
+        self.layouts.send_replace(layout);
+        Ok(TabMoved {
+            location: Some(projection::selection(location)),
+            commit_sequence: registry.publication.sequence()?,
+        })
+    }
+
     pub(crate) fn resize_hidden(&self, active: &Active) {
         let mut registry = self.lock_registry();
         registry.resize_hidden(
@@ -379,14 +427,7 @@ impl Workspaces {
         if location == old.location {
             return Ok(None);
         }
-        let claim = registry
-            .claims
-            .get(&location.workspace)
-            .ok_or_else(writer_required)?;
-        if claim.client != old.route.client_id {
-            return Err(busy());
-        }
-        let lease_generation = claim.generation;
+        let lease_generation = registry.require_writer(old.route.client_id, location.workspace)?;
         let reserved = self.reserve_view(&mut registry, old, location, lease_generation, launch)?;
         if reserved.spec.launch.is_some() {
             registry.publish(vec![projection::layout(&layout)]);
@@ -494,14 +535,7 @@ impl Registry {
 
     pub(crate) fn terminal_started(&mut self, id: Uuid, location: Location) {
         self.terminals.insert(id, location);
-        let state = TerminalState {
-            terminal_id: id.to_string(),
-            location: Some(projection::selection(location)),
-        };
-        self.publish(vec![(
-            Group::Terminal(id),
-            vec![projection::entry(EntityBody::Terminal(state))],
-        )]);
+        self.publish(vec![terminal_projection(id, location)]);
     }
 
     pub(crate) fn terminal_closed(&mut self, id: Uuid, association: Option<Uuid>) {
@@ -626,10 +660,46 @@ impl Registry {
         Ok(())
     }
 
+    fn require_writer(&self, client: Uuid, workspace: Uuid) -> Reply<u64> {
+        let claim = self.claims.get(&workspace).ok_or_else(writer_required)?;
+        if claim.client != client {
+            return Err(busy());
+        }
+        Ok(claim.generation)
+    }
+
+    fn movable_terminal(&self, location: Location) -> Reply<Uuid> {
+        let slot = self.slots.get(&location.pane).ok_or_else(target_gone)?;
+        if slot.reserved || slot.terminal.has_view() {
+            return Err(ProtocolFault::new(
+                "InputBusy",
+                "select another tab before moving this terminal",
+            ));
+        }
+        if !slot.terminal.has_live_terminal() {
+            return Err(target_gone());
+        }
+        self.terminals
+            .iter()
+            .find_map(|(id, current)| (*current == location).then_some(*id))
+            .ok_or_else(target_gone)
+    }
+
     fn next_generation(&mut self) -> Reply<u64> {
         self.generation = self.generation.checked_add(1).ok_or_else(limit)?;
         Ok(self.generation)
     }
+}
+
+fn terminal_projection(id: Uuid, location: Location) -> Projection {
+    let state = TerminalState {
+        terminal_id: id.to_string(),
+        location: Some(projection::selection(location)),
+    };
+    (
+        Group::Terminal(id),
+        vec![projection::entry(EntityBody::Terminal(state))],
+    )
 }
 
 async fn open_pane(

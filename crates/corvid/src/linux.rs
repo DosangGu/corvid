@@ -49,6 +49,20 @@ pub(super) enum Command {
         /// Create a tab with this label and open a terminal.
         #[arg(long)]
         new_tab: Option<String>,
+        /// Explicitly claim an additional unowned workspace for this TUI.
+        #[arg(long, value_name = "WORKSPACE_ID")]
+        claim_workspace: Vec<Uuid>,
+        /// Move a hidden live tab from the attached workspace.
+        #[arg(
+            long,
+            value_name = "TAB_ID",
+            requires_all = ["to_workspace", "claim_workspace"],
+            conflicts_with_all = ["new", "agent", "new_workspace", "new_tab", "argv"]
+        )]
+        move_tab: Option<Uuid>,
+        /// Destination for --move-tab. Claim it with --claim-workspace.
+        #[arg(long, value_name = "WORKSPACE_ID", requires = "move_tab")]
+        to_workspace: Option<Uuid>,
         /// Start the shell in the last recorded directory if it still exists.
         #[arg(long, requires = "new")]
         restore_cwd: bool,
@@ -191,6 +205,9 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             tab,
             new_workspace,
             new_tab,
+            claim_workspace,
+            move_tab,
+            to_workspace,
         } => {
             let launch = (new
                 || agent.is_some()
@@ -210,6 +227,8 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 tab,
                 new_workspace,
                 new_tab,
+                claim_workspaces: claim_workspace,
+                move_tab: move_tab.zip(to_workspace),
             };
             corvid_client::attach(&runtime, options).await
         }

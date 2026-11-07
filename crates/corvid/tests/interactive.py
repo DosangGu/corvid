@@ -242,6 +242,48 @@ def verify_tabs(command, directory):
         second.send(b"\x1dd")
         second.wait(0)
 
+    verify_tab_move(command, directory, first_pid, second_pid)
+
+
+def verify_tab_move(command, directory, moved_pid, visible_pid):
+    attach = [*command, "attach"]
+    marker = rb"PID=(\d+) TICK=\d+ SIZE=100x30"
+    start = [
+        *attach, "--new-workspace", "Destination", "--", sys.executable,
+        __file__, "--child", directory / "destination-tab",
+    ]
+    with OuterTerminal(start) as destination:
+        destination.expect(rb"PID=\d+ TICK=\d+ SIZE=80x24")
+        destination.send(b"\x1dd")
+        destination.wait(0)
+
+    def inventory():
+        return subprocess.check_output([*command, "control", "workspaces"], text=True, timeout=3)
+
+    layout = inventory()
+    source_id = re.search(r"^workspace ([\da-f-]+) Main$", layout, re.M)[1]
+    destination_id = re.search(r"^workspace ([\da-f-]+) Destination$", layout, re.M)[1]
+    moved_tab = re.search(r"^  tab ([\da-f-]+) Shell$", layout, re.M)[1]
+    visible_tab = re.search(r"^  tab ([\da-f-]+) Second$", layout, re.M)[1]
+    move = [
+        *attach, "--workspace", source_id, "--tab", visible_tab,
+        "--claim-workspace", destination_id, "--move-tab", moved_tab, "--to-workspace", destination_id,
+    ]
+    with OuterTerminal(move, cols=100, rows=30) as visible:
+        assert visible.expect(marker)[1] == visible_pid
+        deadline = time.monotonic() + 5
+        while f"  tab {moved_tab} Shell" not in inventory().split(" Destination\n", 1)[1]:
+            assert time.monotonic() < deadline, "tab did not move to the destination"
+            time.sleep(0.02)
+        visible.send(b"\x1dd")
+        visible.wait(0)
+
+    with OuterTerminal([*attach, "--workspace", destination_id, "--tab", moved_tab],
+                       cols=100, rows=30) as moved:
+        assert moved.expect(marker)[1] == moved_pid
+        moved.send(b"\x1dd")
+        moved.wait(0)
+
 
 def run(binary):
     root = Path(__file__).resolve().parents[3]
@@ -262,7 +304,7 @@ def run(binary):
             verify_tabs(command, directory)
         finally:
             stop(daemon)
-    print("Live TTYs verified writer fencing, redraw, paste modes, fragmented keys, detach, and tab switching.")
+    print("Live TTYs verified writer fencing, redraw, paste modes, fragmented keys, detach, and tab moves.")
 
 
 if __name__ == "__main__":

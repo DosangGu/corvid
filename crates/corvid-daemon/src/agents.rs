@@ -175,6 +175,15 @@ impl Agents {
         AgentList { agents }
     }
 
+    pub(crate) fn relocate_terminal(&mut self, terminal: Uuid, location: Location) {
+        for record in self.runs.values_mut() {
+            if record.run.identity.terminal_id == terminal {
+                record.location = location;
+                self.dirty.insert(record.run.identity.id);
+            }
+        }
+    }
+
     pub(crate) fn tick(&mut self) {
         let monotonic = monotonic_ms();
         let wall = unix_ms();
