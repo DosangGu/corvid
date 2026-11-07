@@ -41,8 +41,15 @@ struct Launch {
     producer: Option<HookProducer>,
     sessions: BTreeSet<String>,
     context_deliveries: VecDeque<Uuid>,
+    resume: Option<PendingResume>,
+    resume_turns: BTreeSet<String>,
     gap: bool,
     ambiguous: bool,
+}
+
+struct PendingResume {
+    turn: String,
+    deadline_ms: u64,
 }
 
 pub(crate) enum HookBinding {
@@ -99,6 +106,8 @@ impl Agents {
                 producer: None,
                 sessions: BTreeSet::new(),
                 context_deliveries: VecDeque::new(),
+                resume: None,
+                resume_turns: BTreeSet::new(),
                 gap: false,
                 ambiguous: false,
             },
@@ -157,10 +166,12 @@ impl Agents {
     pub(crate) fn tick(&mut self) {
         let monotonic = monotonic_ms();
         let wall = unix_ms();
-        for launch in self.launches.values() {
-            if let Some(record) = self.runs.get_mut(&launch.current)
-                && record.run.tick(monotonic, wall)
-            {
+        for launch in self.launches.values_mut() {
+            let Some(record) = self.runs.get_mut(&launch.current) else {
+                continue;
+            };
+            let expired = launch.expire_resume(record, monotonic);
+            if record.run.tick(monotonic, wall) || expired {
                 self.dirty.insert(launch.current);
             }
         }

@@ -190,11 +190,12 @@ class FixtureTerminal:
         return [json.loads(line) for line in contents[:end + 1].splitlines()]
 
     def event(self, **match):
-        self.wait(
-            lambda: any(all(event.get(key) == value for key, value in match.items())
-                        for event in self.events()),
-            ", ".join(match.values()),
-        )
+        def matching():
+            return next((event for event in self.events()
+                         if all(event.get(key) == value for key, value in match.items())), None)
+
+        self.wait(matching, ", ".join(match.values()))
+        return matching()
 
 
 def exercise(terminal, scenario, managed):
@@ -214,8 +215,10 @@ def exercise(terminal, scenario, managed):
         terminal.send(b"\r")
     terminal.expect(trust)
     terminal.send(b"y\r")
-    terminal.event(hook_event_name="SessionStart", source="startup")
+    start = terminal.event(hook_event_name="SessionStart", source="startup")
+    session = start["session_id"]
     initial = managed.expect(terminal, collection="Healthy", process="Running") if managed else None
+    current = initial
     terminal.send(b"Corvid hook schema fixture\r")
     terminal.expect(b"Enter to submit or Escape to cancel:")
     if managed:
@@ -233,21 +236,43 @@ def exercise(terminal, scenario, managed):
         resolved = managed.expect(terminal, run=initial["run"], pending="0", resolved="1", response="true")
         assert resolved["process"] == "Running"
         assert resolved["unverified"] == "1"
-    if scenario == "clear":
-        terminal.send(b"/clear\r")
-        terminal.event(hook_event_name="SessionStart", source="clear")
+    if scenario == "resume":
+        terminal.deadline = time.monotonic() + 20
+        terminal.send(b"/compact\r")
+        terminal.event(hook_event_name="SessionStart", source="compact", session_id=session)
         if managed:
-            ended = managed.expect(terminal, run=initial["run"], end="ContextReplaced")
-            assert ended["process"] == "Running"
-            replacement = managed.expect(terminal, collection="Healthy", process="Running", end="Unspecified")
-            assert replacement["terminal"] == initial["terminal"]
-            assert replacement["run"] != initial["run"]
-            assert replacement["resolved"] == replacement["pending"] == replacement["unverified"] == "0"
-            managed.verify_reassigned_slot(initial["run"], replacement["run"])
+            compacted, = managed.agents()
+            assert compacted["run"] == initial["run"] and compacted["terminal"] == initial["terminal"]
+            assert compacted["collection"] == "Healthy" and compacted["resolved"] == "1"
+    if scenario in {"clear", "resume"}:
+        terminal.send(b"/clear\r")
+        cleared = terminal.event(hook_event_name="SessionStart", source="clear")
+        if managed:
+            current = managed.expect_replacement(
+                terminal, current, collection="Healthy", session=cleared["session_id"],
+            )
+    if scenario == "resume":
+        terminal.send(b"Corvid second fixture conversation\r")
+        terminal.event(hook_event_name="Stop", session_id=cleared["session_id"])
+        terminal.send(f"/resume {session}\r".encode())
+        terminal.event(hook_event_name="SessionStart", source="resume", session_id=session)
+        if managed:
+            current = managed.expect_replacement(
+                terminal, current, collection="GapDetected", session=session,
+            )
+            history = managed.agents()
+            assert len(history) == 3 and current["run"] != initial["run"]
+            old = next(run for run in history if run["run"] == initial["run"])
+            assert old["resolved"] == "1" and old["end"] == "ContextReplaced"
+            slot, binding = managed.focus_capture
+            result = managed.companion.run(
+                "focus-slot", "--slot", slot["capture"], "--binding", binding["capture"],
+            )
+            assert "terminal_id=" + current["terminal"] in result.stdout
     terminal.send(b"/exit\r")
     assert terminal.process.wait(timeout=5) == 0, "fixture Claude exit failed"
     if managed:
-        managed.expect(terminal, terminal=initial["terminal"], process="Exited")
+        managed.expect(terminal, run=current["run"], process="Exited")
     return terminal.events()
 
 
@@ -341,6 +366,16 @@ class CorvidFixture:
         self.focus_capture = (slot, binding)
         tty.expect(prompt)
 
+    def expect_replacement(self, terminal, previous, **expected):
+        self.expect(terminal, run=previous["run"], end="ContextReplaced", process="Running")
+        current = self.expect(terminal, end="Unspecified", process="Running", **expected)
+        assert current["terminal"] == previous["terminal"] and current["pid"] == previous["pid"]
+        assert current["run"] != previous["run"]
+        for field in ("resolved", "pending", "unverified", "cancelled"):
+            assert current[field] == "0"
+        self.verify_reassigned_slot(previous["run"], current["run"])
+        return current
+
     def verify_reassigned_slot(self, previous, replacement):
         slot, binding = self.focus_capture
 
@@ -356,6 +391,7 @@ class CorvidFixture:
             "focus-slot", "--slot", slot["capture"], "--binding", binding["capture"], check=False,
         )
         assert stale.returncode != 0 and "StaleBinding" in stale.stderr
+        self.focus_capture = (current, binding)
 
     def acknowledge_question(self, question):
         view, slot = self.presented_question(question)
@@ -491,19 +527,30 @@ def verify(events, scenario):
     assert "tool_use_id" not in permission
     assert events[-1]["hook_event_name"] == "SessionEnd"
     assert events[-1]["reason"] == "prompt_input_exit"
-    if scenario == "clear":
+    if scenario in {"clear", "resume"}:
         ended = next(event for event in events if event.get("reason") == "clear")
         started = next(event for event in events if event.get("source") == "clear")
         assert ended["hook_event_name"] == "SessionEnd" and ended["session_id"] == session
         assert started["hook_event_name"] == "SessionStart" and started["session_id"] != session
-        assert events[-1]["session_id"] == started["session_id"]
+        if scenario == "resume":
+            compact = next(event for event in events if event.get("source") == "compact")
+            switching = next(event for event in events if event.get("reason") == "resume")
+            resumed = next(event for event in events if event.get("source") == "resume")
+            assert compact["session_id"] == resumed["session_id"] == session
+            assert switching["session_id"] == started["session_id"]
+            assert switching["prompt_id"] == resumed["prompt_id"]
+            boundaries = [events.index(event) for event in (compact, started, switching, resumed)]
+            assert boundaries == sorted(boundaries)
+            assert events[-1]["session_id"] == session
+        else:
+            assert events[-1]["session_id"] == started["session_id"]
     else:
         assert events[-1]["session_id"] == session
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("answer", "clear"), default="answer")
+    parser.add_argument("--scenario", choices=("answer", "clear", "resume"), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=("missing-helper", "missing-collector"))
     args = parser.parse_args()

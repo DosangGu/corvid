@@ -16,6 +16,7 @@ through the PTY and exits through the normal command prompt.
 | `PermissionRequest` | The same question also emits this event with the session, prompt, and tool name. The tool-use ID is absent. Require separate correlation evidence before resolving a permission observation. |
 | `Stop` | The response retains the prompt ID after the tool result. Other hooks can continue the turn, so this boundary provides response evidence. |
 | `SessionEnd` and `SessionStart` | `/clear` ends the old session with `reason=clear` and starts a distinct session with `source=clear`. The CLI stays in the same PTY. `/exit` later ends the new context with `reason=prompt_input_exit`. |
+| `/compact` and `/resume` | Manual compaction emits `SessionStart` with `source=compact` and the same session ID. Switching back to a previous conversation emits `SessionEnd` with `reason=resume` for the outgoing session, followed by `SessionStart` with `source=resume` for the target. Both sides report the same prompt ID. |
 
 Use the [Claude hook reference](https://code.claude.com/docs/en/hooks) for the
 documented payloads and the [Messages streaming reference](https://platform.claude.com/docs/en/build-with-claude/streaming)
@@ -26,6 +27,7 @@ for the fixture server's response format.
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario answer
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario clear
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario resume
 ```
 
 The [fixtures](../crates/corvid/tests/fixtures/claude/2.1.318/) keep allowlisted
@@ -44,12 +46,19 @@ The current adapter records submitted prompts with inferred confidence and
 `Stop` as response evidence. It correlates question start and result by session,
 prompt, and tool IDs. Permission observations without a tool ID remain unverified.
 A confirmed `/clear` boundary gets a fresh run under the same terminal. An observed
-reuse of the same session ID creates a fresh run with uncertain coverage.
+manual compaction retains the run and its request records. During an in-process
+resume, Corvid fences focus on the outgoing run and matches the start to the end
+by prompt ID within five seconds. A matching pair creates a new run in the same
+terminal with an empty request history. If the launch has seen that session ID
+before, the new run is navigable and its activity remains uncertain. Later hooks
+lack a context generation, so Corvid quarantines their activity and request
+updates for the reused session.
 
 ```sh
 cargo build --locked
 export PYTHONDONTWRITEBYTECODE=1
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario clear
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario resume
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
 ```
@@ -64,9 +73,13 @@ outside the qualified CLI used the test launch scope and left the pending count
 unchanged. Claude completed the fixture question and response with either the
 observer executable or the collector socket absent. The helper also passed
 isolated checks for malformed JSON, oversized input, and an open stalled pipe.
+The A26 fixture compacted its first conversation, cleared to a second one, then
+resumed the first by its exact session ID. The Claude PID and Corvid terminal
+stayed the same across both context switches. The original resolved question
+remained in history, and the resumed run accepted focus through a fresh slot.
 
 Qualification remains for question cancellation, plan approval, child records,
-compaction, resume, and collector saturation. Delivery failures that occur before
+and collector saturation. Delivery failures that occur before
 the daemon receives a frame can leave coverage unchanged.
 
 ## Codex CLI 0.167.0 on Linux

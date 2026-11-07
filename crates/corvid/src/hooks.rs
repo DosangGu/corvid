@@ -146,10 +146,11 @@ impl ClaudeInput {
             "PostToolUse" if question => HookEvent::QuestionResult,
             "PermissionRequest" => HookEvent::PermissionRequested,
             "Stop" => HookEvent::ResponseObserved,
-            "SessionEnd" if matches!(self.reason.as_deref(), Some("clear" | "resume")) => {
-                HookEvent::ContextReplaced
-            }
-            "SessionEnd" => HookEvent::ContextEnded,
+            "SessionEnd" => match self.reason.as_deref() {
+                Some("clear") => HookEvent::ContextReplaced,
+                Some("resume") => HookEvent::ResumeContextEnded,
+                _ => HookEvent::ContextEnded,
+            },
             _ => return None,
         };
         let tool_id = if matches!(kind, HookEvent::QuestionStarted | HookEvent::QuestionResult) {

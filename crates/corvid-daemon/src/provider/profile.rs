@@ -6,7 +6,9 @@ use corvid_protocol::wire::{
 
 const CLAUDE_EVENTS: &[HookEvent] = &[
     HookEvent::Startup,
+    HookEvent::Resume,
     HookEvent::Clear,
+    HookEvent::Compact,
     HookEvent::PromptSubmitted,
     HookEvent::QuestionStarted,
     HookEvent::QuestionResult,
@@ -14,6 +16,7 @@ const CLAUDE_EVENTS: &[HookEvent] = &[
     HookEvent::ResponseObserved,
     HookEvent::ContextEnded,
     HookEvent::ContextReplaced,
+    HookEvent::ResumeContextEnded,
 ];
 
 const CODEX_EVENTS: &[HookEvent] = &[
@@ -108,9 +111,10 @@ fn qualification(provider: Provider, kind: Kind) -> (Level, &'static str) {
             Level::Partial,
             "question answers correlate, while permission outcomes remain unverified",
         ),
-        (Provider::Claude, Kind::ContextReplacement) => {
-            (Level::Partial, "clear qualifies a distinct context")
-        }
+        (Provider::Claude, Kind::ContextReplacement) => (
+            Level::Partial,
+            "clear and correlated resume replace the run; reused session activity is ambiguous",
+        ),
         (Provider::Codex, Kind::ExplicitQuestion) => (
             Level::Partial,
             "request_user_input can be invoked without displaying a dialog",

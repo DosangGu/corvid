@@ -7,11 +7,12 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use uuid::Uuid;
 
-use super::{Agents, Launch, ManagedRun, evidence};
+use super::{Agents, Launch, ManagedRun, PendingResume, evidence, monotonic_ms};
 use crate::process::{HookProducer, ProcessImage};
 use crate::provider::qualified_version;
 
 const MAX_CONTEXTS_PER_LAUNCH: usize = 256;
+const RESUME_WINDOW_MS: u64 = 5_000;
 
 pub(crate) struct Hook {
     pub(crate) association: Uuid,
@@ -182,7 +183,8 @@ fn supported_event(provider: Provider, event: HookEvent) -> bool {
         | HookEvent::Clear
         | HookEvent::Compact
         | HookEvent::ContextEnded
-        | HookEvent::ContextReplaced => provider == Provider::Claude,
+        | HookEvent::ContextReplaced
+        | HookEvent::ResumeContextEnded => provider == Provider::Claude,
         HookEvent::ToolStarted | HookEvent::ToolFinished | HookEvent::TurnInterrupted => {
             provider == Provider::Codex
         }
@@ -254,7 +256,11 @@ impl Agents {
             }
             return Ok(());
         }
-        if launch.ambiguous {
+        if hook.event == HookEvent::ResumeContextEnded {
+            launch.stage_resume(current, hook.turn);
+            return Ok(());
+        }
+        if launch.ambiguous || launch.resume.is_some() {
             return Ok(());
         }
         if let Some((kind, confidence)) = hook.observation() {
@@ -271,6 +277,63 @@ impl Agents {
 }
 
 impl Launch {
+    fn stage_resume(&mut self, current: &mut ManagedRun, turn: Option<String>) {
+        if turn
+            .as_ref()
+            .is_some_and(|turn| self.resume_turns.contains(turn))
+        {
+            return;
+        }
+        current.terminal_available = false;
+        let Some(turn) = turn else {
+            self.abandon_resume(current, "resume context end lacks a prompt ID");
+            return;
+        };
+        if self.resume_turns.len() == MAX_CONTEXTS_PER_LAUNCH {
+            self.abandon_resume(current, "resume transition history is full");
+            return;
+        }
+        self.resume_turns.insert(turn.clone());
+        self.resume = Some(PendingResume {
+            turn,
+            deadline_ms: monotonic_ms().saturating_add(RESUME_WINDOW_MS),
+        });
+    }
+
+    pub(super) fn expire_resume(&mut self, current: &mut ManagedRun, now: u64) -> bool {
+        if self
+            .resume
+            .as_ref()
+            .is_some_and(|pending| now >= pending.deadline_ms)
+        {
+            self.abandon_resume(current, "resume context end had no matching start");
+            return true;
+        }
+        false
+    }
+
+    fn confirm_resume(&mut self, current: &mut ManagedRun, turn: Option<&str>) -> bool {
+        self.expire_resume(current, monotonic_ms());
+        if self
+            .resume
+            .as_ref()
+            .is_some_and(|pending| Some(pending.turn.as_str()) == turn)
+        {
+            return true;
+        }
+        if turn.is_none_or(|turn| !self.resume_turns.contains(turn)) {
+            self.abandon_resume(current, "resume context start had no matching end");
+        }
+        false
+    }
+
+    fn abandon_resume(&mut self, current: &mut ManagedRun, reason: &str) {
+        self.resume = None;
+        self.ambiguous = true;
+        current.terminal_available = false;
+        self.record_gap(current, reason);
+    }
+
     fn start_context(
         &mut self,
         current: &mut ManagedRun,
@@ -285,32 +348,41 @@ impl Launch {
             self.context_deliveries.pop_front();
         }
 
-        let existing = current.run.identity.provider_session.as_deref();
-        let reused = existing == Some(session);
-        let replacement = matches!(hook.event, HookEvent::Clear | HookEvent::Resume);
-        if reused && (!replacement || self.ambiguous) {
-            return None;
-        }
-        if !reused && self.sessions.contains(session) {
-            return None;
-        }
-        if hook.event == HookEvent::Compact
-            || (existing.is_some() && hook.event == HookEvent::Startup)
-        {
-            if hook.provider == Provider::Codex && existing.is_some() {
-                self.ambiguous = true;
-                current.terminal_available = false;
+        let has_context = current.run.identity.provider_session.is_some();
+        let reused = self.sessions.contains(session);
+        match hook.event {
+            HookEvent::Compact => {
+                if !reused {
+                    self.record_gap(current, "compaction has no matching context");
+                }
+                return None;
             }
-            self.record_gap(current, "context boundary could not be established");
-            return None;
+            HookEvent::Startup if has_context => {
+                if !reused {
+                    if hook.provider == Provider::Codex {
+                        self.ambiguous = true;
+                        current.terminal_available = false;
+                    }
+                    self.record_gap(current, "context boundary could not be established");
+                }
+                return None;
+            }
+            HookEvent::Clear if reused => return None,
+            HookEvent::Resume if has_context => {
+                if !self.confirm_resume(current, hook.turn.as_deref()) {
+                    return None;
+                }
+            }
+            _ => {}
         }
-        if self.sessions.len() == MAX_CONTEXTS_PER_LAUNCH {
+        self.resume = None;
+        if !reused && self.sessions.len() == MAX_CONTEXTS_PER_LAUNCH {
             self.record_gap(current, "context identity history is full");
             return None;
         }
         self.sessions.insert(session.to_owned());
         self.ambiguous = reused;
-        if existing.is_none() {
+        if !has_context {
             self.establish_context(current, hook.delivery, session);
             return None;
         }
@@ -451,6 +523,12 @@ mod tests {
             self.submit(hook).unwrap();
         }
 
+        fn resume_boundary(&mut self, session: &str, event: HookEvent, turn: &str) {
+            let mut hook = self.hook(session, event);
+            hook.turn = Some(turn.to_owned());
+            self.submit(hook).unwrap();
+        }
+
         fn submit(&mut self, hook: Hook) -> Result<(), ProtocolFault> {
             let producer = HookProducer {
                 pid: self.owner.incarnation.pid,
@@ -463,6 +541,81 @@ mod tests {
         fn current(&self) -> &ManagedRun {
             &self.agents.runs[&self.agents.launches[&self.association].current]
         }
+    }
+
+    #[test]
+    fn compaction_preserves_requests_and_a_matched_resume_creates_a_fresh_run() {
+        let mut fixture = Fixture::new(Provider::Claude);
+        fixture.apply("first", HookEvent::Startup);
+        fixture.apply("first", HookEvent::QuestionStarted);
+        let first = fixture.current().run.identity.id;
+        let terminal = fixture.current().run.identity.terminal_id;
+        let request = *fixture.current().run.requests.keys().next().unwrap();
+
+        fixture.apply("first", HookEvent::Compact);
+        assert_eq!(fixture.current().run.identity.id, first);
+        assert_eq!(fixture.current().run.collection.value, Collection::Healthy);
+        assert_eq!(
+            fixture.current().run.requests[&request].state.value,
+            RequestStatus::Pending
+        );
+
+        fixture.apply("second", HookEvent::Clear);
+        let second = fixture.current().run.identity.id;
+        fixture.resume_boundary("second", HookEvent::ResumeContextEnded, "switch");
+        assert!(fixture.agents.focus_terminal(second).is_none());
+        fixture.resume_boundary("first", HookEvent::Resume, "switch");
+        let resumed = fixture.current().run.identity.id;
+
+        // The provider can reuse session IDs and deliveries need not retain their RPC IDs.
+        fixture.resume_boundary("second", HookEvent::ResumeContextEnded, "switch");
+        fixture.resume_boundary("first", HookEvent::Resume, "switch");
+        fixture.apply("first", HookEvent::QuestionResult);
+        fixture.apply("first", HookEvent::QuestionStarted);
+        assert_ne!(resumed, first);
+        assert_ne!(resumed, second);
+        assert_eq!(fixture.current().run.identity.id, resumed);
+        assert_eq!(fixture.current().run.identity.terminal_id, terminal);
+        assert_eq!(
+            fixture.current().run.collection.value,
+            Collection::GapDetected
+        );
+        assert!(fixture.current().run.requests.is_empty());
+        assert!(fixture.agents.focus_terminal(resumed).is_some());
+        assert_eq!(
+            fixture.agents.runs[&first].run.requests[&request]
+                .state
+                .value,
+            RequestStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn an_unmatched_or_expired_resume_cannot_retarget_the_run() {
+        let mut fixture = Fixture::new(Provider::Claude);
+        fixture.apply("first", HookEvent::Startup);
+        let run = fixture.current().run.identity.id;
+        fixture.resume_boundary("first", HookEvent::ResumeContextEnded, "expired");
+        fixture
+            .agents
+            .launches
+            .get_mut(&fixture.association)
+            .unwrap()
+            .resume
+            .as_mut()
+            .unwrap()
+            .deadline_ms = 0;
+        fixture.agents.tick();
+        fixture.resume_boundary("old", HookEvent::Resume, "expired");
+        fixture.resume_boundary("old", HookEvent::Resume, "different");
+        fixture.apply("first", HookEvent::QuestionStarted);
+        assert_eq!(fixture.current().run.identity.id, run);
+        assert_eq!(
+            fixture.current().run.collection.value,
+            Collection::GapDetected
+        );
+        assert!(fixture.current().run.requests.is_empty());
+        assert!(fixture.agents.focus_terminal(run).is_none());
     }
 
     #[test]
