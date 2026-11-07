@@ -18,7 +18,7 @@ use vt100::Screen;
 
 use crate::agents::ManagedLaunch;
 use crate::collector::HookEnvironment;
-use crate::process::{self, Executable, Probe, ProbeBudget};
+use crate::process::{self, Executable, Probe, ProbeBudget, ProbeResult, ProcessImage};
 use crate::provider::QualifiedProvider;
 use crate::workspaces::Registry;
 
@@ -665,7 +665,7 @@ impl Worker {
         {
             let _ = terminal.resize(viewport);
         }
-        let state = match terminal.advance(&self.scope.probes) {
+        let state = match terminal.advance() {
             Ok(state) => state,
             Err(_) => {
                 self.fail(terminal_fault(), true);
@@ -822,7 +822,7 @@ impl Running {
 
         let mut pty = TerminalPty::spawn(command, viewport)?;
         let managed = reservation
-            .map(|launch| ManagedProcess::started(launch, &mut pty, scope.boot_id, id, executable));
+            .map(|launch| ManagedProcess::started(launch, &mut pty, scope, id, executable));
         if managed.is_none()
             && let Some(registry) = scope.registry.upgrade()
         {
@@ -849,50 +849,46 @@ impl Running {
         Ok(())
     }
 
-    fn advance(&mut self, budget: &ProbeBudget) -> Result<ReadState> {
+    fn advance(&mut self) -> Result<ReadState> {
         if self.exit.is_some() {
             return Ok(ReadState::Eof);
         }
-        let state = self.read_output()?;
+        let (state, output) = self.read_output()?;
         if !matches!(state, ReadState::BudgetUsed)
             && let Some(status) = self.pty.try_wait()?
         {
-            if let Some(managed) = &self.managed {
+            if let Some(managed) = &mut self.managed {
+                managed.probe = None;
                 managed
                     .launch
                     .observe(exited(&status), None, Source::ChildExit);
             }
             self.exit = Some(status);
-        } else if let Some(managed) = &mut self.managed
-            && let Some((liveness, identity)) = managed
-                .probe
-                .as_mut()
-                .and_then(|probe| probe.sample(budget))
-        {
-            managed
-                .launch
-                .observe(liveness, identity, Source::ProcessProbe);
+        } else if let Some(managed) = &mut self.managed {
+            managed.sample(output);
         }
         Ok(state)
     }
 
-    fn read_output(&mut self) -> Result<ReadState> {
+    fn read_output(&mut self) -> Result<(ReadState, bool)> {
         let mut bytes = [0; 8192];
+        let mut output = false;
         for _ in 0..16 {
             match self.pty.read(&mut bytes) {
-                Ok(0) => return Ok(ReadState::Eof),
+                Ok(0) => return Ok((ReadState::Eof, output)),
                 Ok(count) => {
                     self.input.reply(self.screen.process(&bytes[..count])?)?;
                     self.dirty = true;
+                    output = true;
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    return Ok(ReadState::Drained);
+                    return Ok((ReadState::Drained, output));
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.into()),
             }
         }
-        Ok(ReadState::BudgetUsed)
+        Ok((ReadState::BudgetUsed, output))
     }
 }
 
@@ -925,7 +921,7 @@ impl ManagedProcess {
     fn started(
         launch: ManagedLaunch,
         pty: &mut TerminalPty,
-        boot: Option<Uuid>,
+        scope: &LaunchScope,
         terminal: Uuid,
         executable: Option<Executable>,
     ) -> Self {
@@ -936,12 +932,34 @@ impl ManagedProcess {
         };
         let process = pty
             .pid()
-            .zip(boot)
+            .zip(scope.boot_id)
             .filter(|_| !matches!(liveness, ProcessLiveness::Exited { .. }));
         let identity = process.and_then(|(pid, boot)| process::incarnation(pid, boot));
-        let probe = process.map(|(pid, boot)| Probe::new(pid, boot, terminal, identity));
-        launch.started(liveness, source, identity, executable);
+        let owner = identity.and_then(|incarnation| ProcessImage::capture(incarnation, executable));
+        let expected = executable.or(owner.map(|owner| owner.executable));
+        let probe = process.map(|(pid, boot)| {
+            Probe::new(
+                Arc::clone(&scope.probes),
+                pid,
+                boot,
+                terminal,
+                identity,
+                expected,
+            )
+        });
+        launch.started(liveness, source, identity, owner);
         Self { launch, probe }
+    }
+
+    fn sample(&mut self, output: bool) {
+        match self.probe.as_mut().and_then(|probe| probe.sample(output)) {
+            Some(ProbeResult::Status(liveness, identity)) => {
+                self.launch
+                    .observe(liveness, identity, Source::ProcessProbe);
+            }
+            Some(ProbeResult::ImageChanged(identity)) => self.launch.image_changed(identity),
+            None => {}
+        }
     }
 }
 

@@ -1,29 +1,50 @@
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::{ProcessLiveness, Provider};
 use corvid_protocol::collector::CODEX_VERSION;
+use nix::fcntl::{AtFlags, OFlag, openat};
+use nix::sys::stat::{Mode, SFlag, fstatat};
 use nix::unistd::geteuid;
 use uuid::Uuid;
 
 const PROBE_SPACING: Duration = Duration::from_millis(50);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+const OUTPUT_DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
-pub(crate) struct ProbeBudget(Mutex<Option<Instant>>);
+pub(crate) struct ProbeBudget(Mutex<ProbeSchedule>);
+
+#[derive(Default)]
+struct ProbeSchedule {
+    next: Option<Instant>,
+    waiting: VecDeque<Uuid>,
+}
 
 impl ProbeBudget {
-    fn acquire(&self, now: Instant) -> bool {
-        let mut next = self.0.lock().expect("probe budget lock poisoned");
-        if next.is_some_and(|deadline| now < deadline) {
+    fn acquire(&self, terminal: Uuid, now: Instant) -> bool {
+        let mut schedule = self.0.lock().expect("probe budget lock poisoned");
+        if !schedule.waiting.contains(&terminal) {
+            schedule.waiting.push_back(terminal);
+        }
+        if schedule.waiting.front() != Some(&terminal)
+            || schedule.next.is_some_and(|deadline| now < deadline)
+        {
             return false;
         }
-        *next = Some(now + PROBE_SPACING);
+        schedule.waiting.pop_front();
+        schedule.next = Some(now + PROBE_SPACING);
         true
+    }
+
+    fn cancel(&self, terminal: Uuid) {
+        let mut schedule = self.0.lock().expect("probe budget lock poisoned");
+        schedule.waiting.retain(|waiting| *waiting != terminal);
     }
 }
 
@@ -59,7 +80,7 @@ impl Executable {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HookOwner {
+pub(crate) struct ProcessImage {
     pub(crate) incarnation: Incarnation,
     pub(crate) executable: Executable,
 }
@@ -71,18 +92,41 @@ pub(crate) struct HookProducer {
     pub(crate) executable: Executable,
 }
 
-impl HookOwner {
+impl ProcessImage {
+    pub(crate) fn capture(incarnation: Incarnation, expected: Option<Executable>) -> Option<Self> {
+        let process = ProcessDirectory::open(incarnation.pid)?;
+        let stat = process.stat()?;
+        if stat.exited || stat.start_ticks != incarnation.start_ticks {
+            return None;
+        }
+        let executable = process.executable()?;
+        if expected.is_some_and(|expected| expected != executable) {
+            return None;
+        }
+        Some(Self {
+            incarnation,
+            executable,
+        })
+    }
+
+    pub(crate) fn is_current(self) -> bool {
+        self.current_stat().is_some()
+    }
+
+    fn current_stat(self) -> Option<Stat> {
+        let process = ProcessDirectory::open(self.incarnation.pid)?;
+        let stat = process.stat()?;
+        (!stat.exited
+            && stat.start_ticks == self.incarnation.start_ticks
+            && process.executable() == Some(self.executable))
+        .then_some(stat)
+    }
+
     /// Scope an observer to the managed launcher or its qualified local broker.
     /// Tool descendants may inherit the launch association without owning it.
     pub(crate) fn verify_peer(self, peer: u32, provider: Provider) -> Option<HookProducer> {
         let pid = self.incarnation.pid;
-        let launcher = read_stat(pid)?;
-        if launcher.exited
-            || launcher.start_ticks != self.incarnation.start_ticks
-            || Executable::read(Path::new(&format!("/proc/{pid}/exe"))) != Some(self.executable)
-        {
-            return None;
-        }
+        let launcher = self.current_stat()?;
         let observer = read_stat(peer)?;
         if observer.exited {
             return None;
@@ -193,65 +237,131 @@ pub(crate) fn boot_id() -> Option<Uuid> {
 }
 
 pub(crate) struct Probe {
+    budget: Arc<ProbeBudget>,
+    terminal: Uuid,
     pid: u32,
     boot_id: Uuid,
     next: Instant,
+    output_after: Instant,
     identity: Option<Incarnation>,
+    executable: Option<Executable>,
+}
+
+pub(crate) enum ProbeResult {
+    Status(ProcessLiveness, Option<Incarnation>),
+    ImageChanged(Incarnation),
 }
 
 impl Probe {
     pub(crate) fn new(
+        budget: Arc<ProbeBudget>,
         pid: u32,
         boot_id: Uuid,
-        terminal_id: Uuid,
+        terminal: Uuid,
         identity: Option<Incarnation>,
+        executable: Option<Executable>,
     ) -> Self {
-        let stagger = Duration::from_millis((terminal_id.as_u128() % 2_000) as u64);
+        let stagger = Duration::from_millis((terminal.as_u128() % 2_000) as u64);
+        let now = Instant::now();
         Self {
+            budget,
+            terminal,
             pid,
             boot_id,
-            next: Instant::now() + stagger,
+            next: now + stagger,
+            output_after: now + OUTPUT_DEBOUNCE,
             identity,
+            executable,
         }
     }
 
-    pub(crate) fn sample(
-        &mut self,
-        budget: &ProbeBudget,
-    ) -> Option<(ProcessLiveness, Option<Incarnation>)> {
+    pub(crate) fn sample(&mut self, output: bool) -> Option<ProbeResult> {
         let now = Instant::now();
-        if now < self.next || !budget.acquire(now) {
+        if output && now >= self.output_after {
+            self.next = self.next.min(now);
+        }
+        if now < self.next || !self.budget.acquire(self.terminal, now) {
             return None;
         }
         self.next = now + SAMPLE_INTERVAL;
+        self.output_after = now + OUTPUT_DEBOUNCE;
+        Some(self.read())
+    }
 
-        let Some(stat) = read_stat(self.pid) else {
-            return Some((ProcessLiveness::Unknown, None));
+    fn read(&mut self) -> ProbeResult {
+        let unknown = ProbeResult::Status(ProcessLiveness::Unknown, None);
+        let Some(process) = ProcessDirectory::open(self.pid) else {
+            return unknown;
+        };
+        let Some(stat) = process.stat() else {
+            return unknown;
         };
         if self
             .identity
             .is_some_and(|identity| identity.start_ticks != stat.start_ticks)
         {
-            return Some((ProcessLiveness::Unknown, None));
+            return unknown;
         }
         let identity = stat.incarnation(self.pid, self.boot_id);
         self.identity = Some(identity);
-        let liveness = if stat.exited {
-            ProcessLiveness::Exited { code: None }
-        } else {
-            ProcessLiveness::Running
-        };
-        Some((liveness, Some(identity)))
+        if stat.exited {
+            return ProbeResult::Status(ProcessLiveness::Exited { code: None }, Some(identity));
+        }
+        if let Some(expected) = self.executable {
+            let Some(executable) = process.executable() else {
+                return unknown;
+            };
+            if executable != expected {
+                self.executable = None;
+                return ProbeResult::ImageChanged(identity);
+            }
+        }
+        ProbeResult::Status(ProcessLiveness::Running, Some(identity))
+    }
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        self.budget.cancel(self.terminal);
+    }
+}
+
+struct ProcessDirectory {
+    pid: u32,
+    directory: File,
+}
+
+impl ProcessDirectory {
+    fn open(pid: u32) -> Option<Self> {
+        Some(Self {
+            pid,
+            directory: File::open(format!("/proc/{pid}")).ok()?,
+        })
+    }
+
+    fn stat(&self) -> Option<Stat> {
+        let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC;
+        let fd = openat(&self.directory, "stat", flags, Mode::empty()).ok()?;
+        parse_stat_file(File::from(fd), self.pid)
+    }
+
+    fn executable(&self) -> Option<Executable> {
+        // Read both entries through one directory so PID reuse cannot mix samples.
+        let stat = fstatat(&self.directory, "exe", AtFlags::empty()).ok()?;
+        (SFlag::from_bits_truncate(stat.st_mode) == SFlag::S_IFREG).then_some(Executable {
+            device: stat.st_dev,
+            inode: stat.st_ino,
+        })
     }
 }
 
 fn read_stat(pid: u32) -> Option<Stat> {
+    parse_stat_file(File::open(format!("/proc/{pid}/stat")).ok()?, pid)
+}
+
+fn parse_stat_file(file: File, pid: u32) -> Option<Stat> {
     let mut bytes = Vec::with_capacity(512);
-    File::open(format!("/proc/{pid}/stat"))
-        .ok()?
-        .take(4097)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(4097).read_to_end(&mut bytes).ok()?;
     if bytes.len() > 4096 {
         return None;
     }
@@ -292,6 +402,26 @@ fn parse_stat(bytes: &[u8], pid: u32) -> Option<Stat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waiting_probes_cannot_be_overtaken_and_cancelled_probes_release_the_queue() {
+        let budget = ProbeBudget::default();
+        let noisy = Uuid::new_v4();
+        let silent = Uuid::new_v4();
+        let stopped = Uuid::new_v4();
+        let start = Instant::now();
+        assert!(budget.acquire(noisy, start));
+        assert!(!budget.acquire(stopped, start));
+        assert!(!budget.acquire(silent, start));
+        assert!(!budget.acquire(noisy, start));
+
+        budget.cancel(stopped);
+        let next = start + PROBE_SPACING;
+        assert!(!budget.acquire(noisy, next));
+        assert!(budget.acquire(silent, next));
+        assert!(!budget.acquire(noisy, next));
+        assert!(budget.acquire(noisy, next + PROBE_SPACING));
+    }
 
     #[test]
     fn parses_foreground_group_and_start_time_after_arbitrary_command_bytes() {

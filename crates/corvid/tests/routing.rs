@@ -14,7 +14,7 @@ use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentBadge, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
+    AgentBadge, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
     ClaimWorkspaceWriter, CompanionConnection, EntityKind, Envelope, FocusAgentRequest,
     FocusApplied, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode,
     LaunchCommand, ListClients, PasteBegin, PasteChunk, PasteEnd, Ping, PresentationSlots,
@@ -406,6 +406,123 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert!(changed.slots[0].revision > placements.slots[0].revision);
         assert_eq!(changed.slots[1], placements.slots[1]);
         assert_eq!(changed.recent_ended[0].agent_run_id, one.agent_run_id);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn silent_foreground_and_exec_changes_cannot_retarget_a_managed_run() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let fixture = temporary.path().join("claude");
+    std::fs::write(
+        &fixture,
+        r#"#!/bin/bash
+[ "$1" = --version ] && exit 1
+/bin/stty -echo
+set -m
+printf 'PROBE-READY\n'
+IFS= read -r
+/bin/cat >/dev/null
+IFS= read -r
+exec /bin/sleep 30
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut daemon_command = command(&runtime);
+    daemon_command.env("PATH", temporary.path());
+    let _daemon = start_daemon(daemon_command, &runtime, &temporary.path().join("state")).await;
+
+    timeout(WAIT, async {
+        let mut tui = Tui::attach_command(
+            &runtime,
+            Some(LaunchCommand {
+                agent_provider: Some(AgentProvider::Claude as i32),
+                ..Default::default()
+            }),
+        )
+        .await;
+        wait_for_text(&mut tui, &mut Vec::new(), "PROBE-READY").await;
+        let terminal = tui.route.terminal_id.clone();
+        let run = wait_for_agent(&runtime, &terminal, |agent| {
+            agent.process_identity.as_ref().is_some_and(|identity| {
+                identity.foreground_group == i32::try_from(identity.pid).ok()
+            })
+        })
+        .await;
+        let shell = run.process_identity.as_ref().unwrap();
+        let scope = controller_scope(&tui, "process-probe");
+        let client = Uuid::parse_str(&tui.route.client_id).unwrap();
+        let code = issue_pairing(&mut tui).await;
+        let reply = controller(
+            &runtime,
+            &scope,
+            "bind-probe".into(),
+            ControllerRequest::Register { code },
+        )
+        .await
+        .unwrap();
+        let Body::ClientBindingRegistered(binding) = reply else {
+            panic!("missing binding");
+        };
+        let revision = binding.binding_revision;
+        focus(&runtime, &scope, "before-exec", client, revision, &run)
+            .await
+            .unwrap();
+
+        tui.input(tui.route.clone(), 1, b"\n").await;
+        let job = wait_for_agent(&runtime, &terminal, |agent| {
+            agent.process_identity.as_ref().is_some_and(|identity| {
+                identity.foreground_group.is_some()
+                    && identity.foreground_group != shell.foreground_group
+            })
+        })
+        .await;
+        let job_group = job.process_identity.unwrap().foreground_group.unwrap();
+        let job_image = std::fs::read_link(format!("/proc/{job_group}/exe")).unwrap();
+        assert!(job_image.ends_with("cat"));
+        assert_eq!(job.agent_run_id, run.agent_run_id);
+        assert_eq!(job.badge, AgentBadge::Unknown as i32);
+
+        tui.input(tui.route.clone(), 2, b"\x04").await;
+        wait_for_agent(&runtime, &terminal, |agent| {
+            agent.process_identity.as_ref() == Some(shell)
+        })
+        .await;
+        tui.input(tui.route.clone(), 3, b"\n").await;
+        let proc_image = format!("/proc/{}/exe", shell.pid);
+        while !std::fs::read_link(&proc_image).is_ok_and(|image| image.ends_with("sleep")) {
+            sleep(Duration::from_millis(5)).await;
+        }
+        let cached = corvid_client::agents(&runtime).await.unwrap();
+        assert!(
+            cached.agents.iter().any(|agent| {
+                agent.agent_run_id == run.agent_run_id && agent.terminal_available
+            })
+        );
+        let gone = focus(&runtime, &scope, "after-exec", client, revision, &run)
+            .await
+            .unwrap_err();
+        assert_eq!(gone.code, "TargetGone");
+
+        let ended = wait_for_agent(&runtime, &terminal, |agent| {
+            agent.end_reason == AgentEndReason::ContextReplaced as i32
+        })
+        .await;
+        assert_eq!(ended.agent_run_id, run.agent_run_id);
+        assert_eq!(ended.process_identity.as_ref(), Some(shell));
+        assert_eq!(ended.process, AgentProcessState::Running as i32);
+        assert!(!ended.terminal_available);
+        assert!(
+            corvid_client::clients(&runtime)
+                .await
+                .unwrap()
+                .clients
+                .iter()
+                .any(|view| view.terminal_id.as_deref() == Some(terminal.as_str()))
+        );
     })
     .await
     .unwrap();

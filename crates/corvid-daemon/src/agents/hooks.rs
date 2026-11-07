@@ -8,7 +8,7 @@ use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use uuid::Uuid;
 
 use super::{Agents, Launch, ManagedRun, evidence};
-use crate::process::{HookOwner, HookProducer};
+use crate::process::{HookProducer, ProcessImage};
 use crate::provider::qualified_version;
 
 const MAX_CONTEXTS_PER_LAUNCH: usize = 256;
@@ -194,7 +194,7 @@ impl Agents {
     pub(crate) fn apply_hook(
         &mut self,
         hook: Hook,
-        owner: HookOwner,
+        owner: ProcessImage,
         producer: HookProducer,
     ) -> Result<(), ProtocolFault> {
         let unauthorized = || ProtocolFault::new("Unauthorized", "hook owner is unavailable");
@@ -202,7 +202,7 @@ impl Agents {
             .launches
             .get_mut(&hook.association)
             .ok_or_else(unauthorized)?;
-        if launch.owner != Some(owner) {
+        if !launch.qualified || launch.owner != Some(owner) {
             return Err(unauthorized());
         }
         let current_id = launch.current;
@@ -395,7 +395,7 @@ mod tests {
     struct Fixture {
         agents: Agents,
         association: Uuid,
-        owner: HookOwner,
+        owner: ProcessImage,
     }
 
     impl Fixture {
@@ -407,7 +407,7 @@ mod tests {
                 pane: Uuid::new_v4(),
             };
             let association = agents.reserve(location, Uuid::new_v4(), provider, true);
-            let owner = HookOwner {
+            let owner = ProcessImage {
                 incarnation: Incarnation {
                     boot_id: Uuid::new_v4(),
                     pid: 1,

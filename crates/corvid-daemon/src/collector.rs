@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::agents::{Hook, HookBinding};
 use crate::control::handshake;
 use crate::identity::Identity;
-use crate::process::HookOwner;
+use crate::process::ProcessImage;
 use crate::workspaces::Workspaces;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_millis(75);
@@ -96,7 +96,7 @@ async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), Pro
     workspaces.apply_hook(hook, owner, producer)
 }
 
-async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<HookOwner> {
+async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<ProcessImage> {
     loop {
         match workspaces.hook_binding(association) {
             HookBinding::Owned(owner) => return Some(owner),

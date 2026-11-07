@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::agents::{Agents, Hook, HookBinding};
 use crate::collector::HookEnvironment;
-use crate::process::{self, HookOwner, HookProducer, ProbeBudget};
+use crate::process::{self, HookProducer, ProbeBudget, ProcessImage};
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
 use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, TerminalHandle};
@@ -181,7 +181,7 @@ impl Workspaces {
     pub(crate) fn apply_hook(
         &self,
         hook: Hook,
-        owner: HookOwner,
+        owner: ProcessImage,
         producer: HookProducer,
     ) -> Reply<()> {
         let mut registry = self.lock_registry();

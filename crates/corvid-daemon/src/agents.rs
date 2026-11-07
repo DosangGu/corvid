@@ -16,7 +16,7 @@ use corvid_protocol::wire::{
 };
 use uuid::Uuid;
 
-use crate::process::{Executable, HookOwner, HookProducer, Incarnation};
+use crate::process::{HookProducer, Incarnation, ProcessImage};
 use crate::projection;
 use crate::provider::qualified_version;
 use crate::publication::{Group, Projection};
@@ -37,7 +37,7 @@ pub(crate) struct Agents {
 struct Launch {
     current: Uuid,
     qualified: bool,
-    owner: Option<HookOwner>,
+    owner: Option<ProcessImage>,
     producer: Option<HookProducer>,
     sessions: BTreeSet<String>,
     context_deliveries: VecDeque<Uuid>,
@@ -47,7 +47,7 @@ struct Launch {
 
 pub(crate) enum HookBinding {
     Starting,
-    Owned(HookOwner),
+    Owned(ProcessImage),
     Unavailable,
 }
 
@@ -174,24 +174,27 @@ impl Agents {
         record.run.attention.get(&attention)?.acknowledged_unix_ms
     }
 
-    pub(crate) fn focus_terminal(&self, run: Uuid) -> Option<Uuid> {
+    pub(crate) fn focus_terminal(&self, run: Uuid) -> Option<(Uuid, ProcessImage)> {
         let record = self.runs.get(&run)?;
         let identity = &record.run.identity;
         let launch = self.launches.get(&identity.launch_association)?;
+        let owner = launch.owner?;
         (launch.current == run
             && identity.parent_run_id.is_none()
             && record.published
             && record.terminal_available
             && !matches!(record.run.lifecycle.value, Lifecycle::Ended(_))
-            && !matches!(record.run.process.value, ProcessLiveness::Exited { .. }))
-        .then_some(identity.terminal_id)
+            && record.run.process.value == ProcessLiveness::Running)
+            .then_some((identity.terminal_id, owner))
     }
 
     pub(crate) fn binding(&self, association: Uuid) -> HookBinding {
         let Some(launch) = self.launches.get(&association) else {
             return HookBinding::Unavailable;
         };
-        if let Some(owner) = launch.owner {
+        if launch.qualified
+            && let Some(owner) = launch.owner
+        {
             return HookBinding::Owned(owner);
         }
         if launch.qualified
@@ -249,7 +252,7 @@ impl ManagedRun {
             exit_code,
             badge: badge as i32,
             pending_requests,
-            terminal_available: self.terminal_available,
+            terminal_available: self.terminal_available && process == AgentProcessState::Running,
             provider_session_id: run.identity.provider_session.clone(),
             collection: collection as i32,
             unverified_requests: self.request_count(RequestStatus::Unverified),
@@ -387,24 +390,19 @@ impl ManagedLaunch {
         liveness: ProcessLiveness,
         source: Source,
         incarnation: Option<Incarnation>,
-        executable: Option<Executable>,
+        owner: Option<ProcessImage>,
     ) {
         self.with_registry(|registry| {
             let agents = &mut registry.agents;
             let Some(launch) = agents.launches.get_mut(&self.association) else {
                 return;
             };
-            launch.owner = incarnation
-                .zip(executable)
-                .map(|(incarnation, executable)| HookOwner {
-                    incarnation,
-                    executable,
-                });
+            launch.owner = owner;
             let Some(record) = agents.runs.get_mut(&launch.current) else {
                 return;
             };
             record.observe_process(liveness, incarnation, source);
-            if launch.owner.is_none() {
+            if !launch.qualified || launch.owner.is_none() {
                 let health = if launch.qualified {
                     Collection::Degraded
                 } else {
@@ -424,11 +422,39 @@ impl ManagedLaunch {
                 );
             }
             record.published = true;
-            record.terminal_available = true;
+            record.terminal_available = launch.owner.is_some();
             agents.dirty.insert(launch.current);
             let terminal = record.run.identity.terminal_id;
             let location = record.location;
             registry.terminal_started(terminal, location);
+        });
+    }
+
+    pub(crate) fn image_changed(&self, identity: Incarnation) {
+        self.with_registry(|registry| {
+            let agents = &mut registry.agents;
+            let Some(launch) = agents.launches.get_mut(&self.association) else {
+                return;
+            };
+            launch.owner = None;
+            let Some(current) = agents.runs.get_mut(&launch.current) else {
+                return;
+            };
+            current.terminal_available = false;
+            current.observe_process(
+                ProcessLiveness::Running,
+                Some(identity),
+                Source::ProcessProbe,
+            );
+            let mut observed = evidence(Source::ProcessProbe, Confidence::Confirmed);
+            observed.uncertainty = Some("managed process changed its executable image".to_owned());
+            current.apply(
+                Uuid::new_v4(),
+                ObservationKind::ContextEnded(EndReason::ContextReplaced),
+                observed,
+            );
+            agents.dirty.insert(launch.current);
+            registry.publish(Vec::new());
         });
     }
 

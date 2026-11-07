@@ -159,6 +159,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |
 | Workspaces and tabs | Two writers operate concurrently in different workspaces. Switching targets the exact existing pane and preserves the other writer. An occupied destination rejects the switch. An unowned destination requires an explicit writer claim. Old view tokens fail at the PTY boundary. |
 | Managed agent process | Two isolated CLI fixtures launched in the same directory have distinct run IDs, terminal IDs, and Linux process incarnations. A verified exit changes only that run. A subsequent launch in the same pane gets new run and terminal IDs. Claude Code 2.1.318 printed its version and exited successfully through the managed launch path. |
+| Silent process changes (A27) | A managed shell fixture changes its foreground group without terminal output, then replaces its executable under the same PID. Focus rejects the old run even before the periodic sample, and the next sample retires that run while its PTY stays live. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
 | Backpressure | A client that withholds a frame acknowledgement loses its lease after five seconds. A child writing 32 KiB bursts continues and control ping stays responsive. Reattach begins with a full frame. |
 | SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |
@@ -171,6 +172,16 @@ to 32 workers and 8 attached TUI connections. Production history is limited to
 under the aggregate screen budget.
 It sends one frame at a time and waits for the TTY write acknowledgement.
 The PTY worker drains up to 128 KiB per tick and continues parsing without a writer.
+For managed PTYs, foreground and executable checks run on a staggered two-second
+timer. PTY output can bring a check forward after a 500 ms debounce. Due checks
+wait in arrival order, at least 50 ms apart host-wide. At the 32-PTY limit, allow
+about four seconds for a silent change when worker ticks run on schedule, plus
+host scheduling delays. The checks use `/proc` start times and executable device
+and inode numbers. Foreground changes provide process evidence only. An exec of
+the same executable file can leave this evidence unchanged. Focus also checks
+the live process before applying a selection.
+[Linux `/proc` reference](https://docs.kernel.org/filesystems/proc.html#process-specific-subdirectories)
+
 The SSH fixture uses temporary keys, a pinned host key, a loopback-only SSH
 listener, and a transient user unit. It ran with other user sessions active and
 lingering disabled. Use the last-login fixture to qualify the logout policy on

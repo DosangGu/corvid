@@ -253,10 +253,13 @@ impl Registry {
         self.controllers
             .verify(target.client, &target.controller, target.revision)?;
 
-        let terminal = self
+        let (terminal, owner) = self
             .agents
             .focus_terminal(target.run)
             .ok_or_else(target_gone)?;
+        if !owner.is_current() {
+            return Err(target_gone());
+        }
         let location = *self.terminals.get(&terminal).ok_or_else(target_gone)?;
         if !self
             .slots
@@ -322,6 +325,7 @@ mod tests {
     use crate::agents::ManagedLaunch;
     use crate::collector::HookEnvironment;
     use crate::identity::Identity;
+    use crate::process::{self, ProcessImage};
     use crate::terminal::{Action, Event, Launch};
     use crate::workspaces::{AttachTarget, ControllerCommand};
 
@@ -381,7 +385,14 @@ mod tests {
             false,
         )
         .unwrap();
-        managed.started(ProcessLiveness::Running, Source::ProcessProbe, None, None);
+        let incarnation = process::incarnation(std::process::id(), process::boot_id().unwrap());
+        let owner = incarnation.and_then(|incarnation| ProcessImage::capture(incarnation, None));
+        managed.started(
+            ProcessLiveness::Running,
+            Source::ProcessProbe,
+            incarnation,
+            owner,
+        );
         let run = Uuid::parse_str(&workspaces.agents().agents[0].agent_run_id).unwrap();
         workspaces.release(target.route.client_id);
         drop(target);
