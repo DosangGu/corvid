@@ -1,0 +1,16 @@
+[Unit]
+Description=Corvid terminal and coding-agent daemon
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/corvid daemon
+RuntimeDirectory=corvid
+RuntimeDirectoryMode=0700
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=10s
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=default.target

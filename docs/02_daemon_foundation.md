@@ -43,11 +43,33 @@ schemas require a compatible binary. The status command reports the recovery sou
 The next terminal is created by an explicit launch. Use `attach --new --restore-cwd`
 to choose the recorded directory when it still exists.
 
+## Run Under systemd
+
+The [user unit](../deploy/systemd/corvid.service) starts Corvid under the user's
+service manager and provisions the private socket directory. Install the binary,
+terminal profile, and unit on the execution host.
+
+```sh
+cargo install --locked --path crates/corvid --root "$HOME/.local"
+tic -x -o "$HOME/.terminfo" spikes/terminal/corvid.terminfo
+install -Dm644 deploy/systemd/corvid.service "$HOME/.config/systemd/user/corvid.service"
+systemctl --user daemon-reload
+systemctl --user enable --now corvid.service
+```
+
+For a deployment that needs to outlive its last login, configure the user
+manager's lifetime according to host policy. On hosts that allow lingering,
+`loginctl enable-linger` keeps the manager running after logout. Check
+`loginctl show-user "$(id -u)" -p Linger -p Sessions` when qualifying the host.
+Use a test account with its own sessions and verify the daemon PID and an
+advancing child counter after the final login closes and before reattaching.
+
 ## Verification
 
 ```sh
 cargo test --locked --workspace
 python3 crates/corvid/tests/interactive.py target/debug/corvid
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/ssh_lifecycle.py target/debug/corvid
 ```
 
 The tests use real Linux Unix sockets and PTYs. The interactive driver uses an
@@ -61,9 +83,12 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
 | Backpressure | A client that withholds a frame acknowledgement loses its lease after five seconds. A child writing 32 KiB bursts continues and control ping stays responsive. Reattach begins with a full frame. |
+| SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |
 
 The single-pane renderer uses the qualified VT engine's screen comparison.
 It sends one frame at a time and waits for the TTY write acknowledgement.
 The PTY worker drains up to 128 KiB per tick and continues parsing without a writer.
-This fixture covers local detach and reconnect. The deployment gate includes
-working SSH loss and last logout under a configured service.
+The SSH fixture uses temporary keys, a pinned host key, a loopback-only SSH
+listener, and a transient user unit. It ran with other user sessions active and
+lingering disabled. Verification of the last logind-managed login remains a
+deployment gate on a dedicated account.
