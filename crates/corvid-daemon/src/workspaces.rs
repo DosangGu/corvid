@@ -2,19 +2,22 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
+use corvid_protocol::wire::AgentList;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::terminal::{AttachSpec, Event, Launch, TabCommand, TerminalHandle};
+use crate::agents::Agents;
+use crate::process::{self, ProbeBudget};
+use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, TerminalHandle};
 
 const MAX_PTY_WORKERS: usize = 32;
 const EVENT_CAPACITY: usize = 4;
@@ -50,13 +53,23 @@ pub(crate) struct Switched {
     pub(crate) paste_discarded: bool,
 }
 
+struct ReservedSwitch {
+    location: Location,
+    terminal: TerminalHandle,
+    spec: AttachSpec,
+    events: mpsc::Receiver<Event>,
+}
+
 pub(crate) struct Workspaces {
-    registry: Mutex<Registry>,
+    registry: Arc<Mutex<Registry>>,
     layouts: watch::Sender<Arc<Layout>>,
+    boot_id: Option<Uuid>,
+    probes: Arc<ProbeBudget>,
 }
 
 #[derive(Default)]
-struct Registry {
+pub(crate) struct Registry {
+    pub(crate) agents: Agents,
     generation: u64,
     claims: HashMap<Uuid, Claim>,
     slots: HashMap<Uuid, Slot>,
@@ -79,22 +92,32 @@ struct Slot {
 impl Workspaces {
     pub(crate) fn new(layouts: watch::Sender<Arc<Layout>>) -> Self {
         Self {
-            registry: Mutex::new(Registry::default()),
+            registry: Arc::new(Mutex::new(Registry::default())),
             layouts,
+            boot_id: process::boot_id(),
+            probes: Arc::new(ProbeBudget::default()),
         }
     }
 
-    pub(crate) async fn any_live(&self) -> bool {
+    fn lock_registry(&self) -> MutexGuard<'_, Registry> {
         self.registry
             .lock()
-            .await
+            .expect("workspace registry lock poisoned")
+    }
+
+    pub(crate) fn agents(&self) -> AgentList {
+        self.lock_registry().agents.inventory()
+    }
+
+    pub(crate) fn any_live(&self) -> bool {
+        self.lock_registry()
             .slots
             .values()
             .any(|slot| slot.terminal.has_live_terminal())
     }
 
     pub(crate) async fn attach(&self, client: Uuid, mut target: AttachTarget) -> Reply<Active> {
-        let (location, generation, terminal) = self.reserve(client, &mut target).await?;
+        let (location, generation, terminal) = self.reserve(client, &mut target)?;
         let cwd = target.launch.as_ref().and_then(|launch| launch.cwd.clone());
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
@@ -110,7 +133,7 @@ impl Workspaces {
         };
         let opened = open_pane(terminal, location, spec, receiver).await;
 
-        let mut registry = self.registry.lock().await;
+        let mut registry = self.lock_registry();
         if let Some(slot) = registry.slots.get_mut(&location.pane) {
             slot.reserved = false;
         }
@@ -129,19 +152,19 @@ impl Workspaces {
         }
     }
 
-    async fn reserve(
+    fn reserve(
         &self,
         client: Uuid,
         target: &mut AttachTarget,
     ) -> Reply<(Location, u64, TerminalHandle)> {
-        let mut registry = self.registry.lock().await;
+        let mut registry = self.lock_registry();
         registry.sweep();
         let mut layout = Arc::clone(&self.layouts.borrow());
         let location = resolve(&registry, &mut layout, target)?;
         registry.check_available(location.workspace)?;
         prepare_cwd(&layout, location, target.launch.as_mut())?;
         let generation = registry.next_generation()?;
-        let terminal = registry.reserve_slot(location, target.launch.is_some())?;
+        let terminal = self.reserve_slot(&mut registry, location, target.launch.is_some())?;
         if target.new_workspace.is_some() || target.new_tab.is_some() {
             self.layouts.send_replace(layout);
         }
@@ -169,21 +192,14 @@ impl Workspaces {
         }
     }
 
-    pub(crate) async fn release(&self, client: Uuid) {
-        self.registry
-            .lock()
-            .await
+    pub(crate) fn release(&self, client: Uuid) {
+        self.lock_registry()
             .claims
             .retain(|_, claim| claim.client != client);
     }
 
-    pub(crate) async fn claim(
-        &self,
-        client: Uuid,
-        workspace: Uuid,
-        viewport: Viewport,
-    ) -> Reply<u64> {
-        let mut registry = self.registry.lock().await;
+    pub(crate) fn claim(&self, client: Uuid, workspace: Uuid, viewport: Viewport) -> Reply<u64> {
+        let mut registry = self.lock_registry();
         if self
             .layouts
             .borrow()
@@ -207,8 +223,8 @@ impl Workspaces {
         Ok(generation)
     }
 
-    pub(crate) async fn resize_hidden(&self, active: &Active) {
-        self.registry.lock().await.resize_hidden(
+    pub(crate) fn resize_hidden(&self, active: &Active) {
+        self.lock_registry().resize_hidden(
             active.route.client_id,
             active.viewport,
             Some(active.location.pane),
@@ -220,14 +236,18 @@ impl Workspaces {
         old: &Active,
         destination: Destination,
     ) -> Reply<Option<Switched>> {
-        let Some((location, terminal, spec, events)) =
-            self.reserve_switch(old, destination).await?
+        let Some(ReservedSwitch {
+            location,
+            terminal,
+            spec,
+            events,
+        }) = self.reserve_switch(old, destination)?
         else {
             return Ok(None);
         };
         let cwd = spec.launch.as_ref().and_then(|launch| launch.cwd.clone());
         let result = transition(old, terminal, location, spec, events).await;
-        let mut registry = self.registry.lock().await;
+        let mut registry = self.lock_registry();
         if let Some(slot) = registry.slots.get_mut(&location.pane) {
             slot.reserved = false;
         }
@@ -239,12 +259,12 @@ impl Workspaces {
         result.map(Some)
     }
 
-    async fn reserve_switch(
+    fn reserve_switch(
         &self,
         old: &Active,
         destination: Destination,
-    ) -> Reply<Option<(Location, TerminalHandle, AttachSpec, mpsc::Receiver<Event>)>> {
-        let mut registry = self.registry.lock().await;
+    ) -> Reply<Option<ReservedSwitch>> {
+        let mut registry = self.lock_registry();
         registry.sweep();
         let mut layout = Arc::clone(&self.layouts.borrow());
         let Some((location, launch)) = resolve_switch(&registry, &mut layout, old, destination)?
@@ -263,7 +283,7 @@ impl Workspaces {
         }
         let lease_generation = claim.generation;
         let revision = old.route.view_revision.checked_add(1).ok_or_else(limit)?;
-        let terminal = registry.reserve_slot(location, launch.is_some())?;
+        let terminal = self.reserve_slot(&mut registry, location, launch.is_some())?;
         if launch.is_some() {
             self.layouts.send_replace(layout);
         }
@@ -279,14 +299,22 @@ impl Workspaces {
             launch,
             events,
         };
-        Ok(Some((location, terminal, spec, receiver)))
+        Ok(Some(ReservedSwitch {
+            location,
+            terminal,
+            spec,
+            events: receiver,
+        }))
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
-        let mut registry = self.registry.lock().await;
-        let slots = std::mem::take(&mut registry.slots);
-        let mut workers = std::mem::take(&mut registry.retired);
-        drop(registry);
+        let (slots, mut workers) = {
+            let mut registry = self.lock_registry();
+            (
+                std::mem::take(&mut registry.slots),
+                std::mem::take(&mut registry.retired),
+            )
+        };
         for slot in slots.into_values() {
             workers.push(slot.task);
         }
@@ -294,6 +322,47 @@ impl Workspaces {
             worker.await?;
         }
         Ok(())
+    }
+
+    fn reserve_slot(
+        &self,
+        registry: &mut Registry,
+        location: Location,
+        launch: bool,
+    ) -> Reply<TerminalHandle> {
+        if let Some(slot) = registry.slots.get_mut(&location.pane) {
+            if slot.reserved {
+                return Err(busy());
+            }
+            slot.reserved = true;
+            return Ok(slot.terminal.clone());
+        }
+        if !launch {
+            return Err(ProtocolFault::new(
+                "NoTerminal",
+                "use corvid attach --new to start a terminal",
+            ));
+        }
+        if registry.slots.len() + registry.retired.len() >= MAX_PTY_WORKERS {
+            return Err(limit());
+        }
+        let scope = LaunchScope {
+            location,
+            registry: Arc::downgrade(&self.registry),
+            boot_id: self.boot_id,
+            probes: Arc::clone(&self.probes),
+        };
+        let (terminal, task) = TerminalHandle::start(scope);
+        registry.slots.insert(
+            location.pane,
+            Slot {
+                workspace: location.workspace,
+                terminal: terminal.clone(),
+                task,
+                reserved: true,
+            },
+        );
+        Ok(terminal)
     }
 }
 
@@ -339,36 +408,6 @@ impl Registry {
     fn next_generation(&mut self) -> Reply<u64> {
         self.generation = self.generation.checked_add(1).ok_or_else(limit)?;
         Ok(self.generation)
-    }
-
-    fn reserve_slot(&mut self, location: Location, launch: bool) -> Reply<TerminalHandle> {
-        if let Some(slot) = self.slots.get_mut(&location.pane) {
-            if slot.reserved {
-                return Err(busy());
-            }
-            slot.reserved = true;
-            return Ok(slot.terminal.clone());
-        }
-        if !launch {
-            return Err(ProtocolFault::new(
-                "NoTerminal",
-                "use corvid attach --new to start a terminal",
-            ));
-        }
-        if self.slots.len() + self.retired.len() >= MAX_PTY_WORKERS {
-            return Err(limit());
-        }
-        let (terminal, task) = TerminalHandle::start();
-        self.slots.insert(
-            location.pane,
-            Slot {
-                workspace: location.workspace,
-                terminal: terminal.clone(),
-                task,
-                reserved: true,
-            },
-        );
-        Ok(terminal)
     }
 }
 
@@ -435,6 +474,7 @@ fn resolve_switch(
             let mut launch = Launch {
                 argv: Vec::new(),
                 cwd: None,
+                provider: None,
             };
             prepare_cwd(layout, old.location, Some(&mut launch))?;
             let location = Arc::make_mut(layout)

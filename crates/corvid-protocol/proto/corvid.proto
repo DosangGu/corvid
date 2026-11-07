@@ -22,6 +22,8 @@ message Envelope {
     ConnectionStatus connection_status = 17;
     ListWorkspaces list_workspaces = 18;
     WorkspaceList workspace_list = 19;
+    ListAgents list_agents = 21;
+    AgentList agent_list = 22;
     Attach attach = 30;
     Attached attached = 31;
     InputChunk input_chunk = 32;
@@ -113,6 +115,58 @@ message TabInfo {
   repeated string pane_ids = 3;
 }
 
+message ListAgents {}
+
+message AgentList {
+  repeated AgentInfo agents = 1;
+}
+
+enum AgentProvider {
+  AGENT_PROVIDER_UNSPECIFIED = 0;
+  AGENT_PROVIDER_CLAUDE = 1;
+  AGENT_PROVIDER_CODEX = 2;
+}
+
+enum AgentProcessState {
+  AGENT_PROCESS_STATE_UNSPECIFIED = 0;
+  AGENT_PROCESS_STATE_RUNNING = 1;
+  AGENT_PROCESS_STATE_EXITED = 2;
+  AGENT_PROCESS_STATE_UNKNOWN = 3;
+}
+
+enum AgentBadge {
+  AGENT_BADGE_UNSPECIFIED = 0;
+  AGENT_BADGE_UNKNOWN = 1;
+  AGENT_BADGE_ENDED = 2;
+  AGENT_BADGE_NEEDS_INPUT = 3;
+  AGENT_BADGE_WORKING = 4;
+  AGENT_BADGE_READY = 5;
+  AGENT_BADGE_RESPONSE_OBSERVED = 6;
+  AGENT_BADGE_INTERRUPTED = 7;
+  AGENT_BADGE_ERROR = 8;
+}
+
+message ProcessIdentity {
+  uint32 pid = 1;
+  string boot_id = 2;
+  uint64 start_ticks = 3;
+  optional int32 foreground_group = 4;
+}
+
+message AgentInfo {
+  string agent_run_id = 1;
+  string terminal_id = 2;
+  ViewSelection location = 3;
+  AgentProvider provider = 4;
+  AgentProcessState process = 5;
+  ProcessIdentity process_identity = 6;
+  uint64 process_observed_unix_ms = 7;
+  optional uint32 exit_code = 8;
+  AgentBadge badge = 9;
+  uint32 pending_requests = 10;
+  bool terminal_available = 11;
+}
+
 enum AttachRole {
   ATTACH_ROLE_UNSPECIFIED = 0;
   ATTACH_ROLE_WRITER = 1;
@@ -138,6 +192,7 @@ message Attach {
 message LaunchCommand {
   repeated bytes argv = 1;
   optional bytes cwd = 2;
+  optional AgentProvider agent_provider = 3;
 }
 
 message ViewSelection {

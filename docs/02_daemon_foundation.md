@@ -28,6 +28,17 @@ Ctrl-] then t starts a new shell tab. Ctrl-] then n or p visits the next or
 previous live tab in the workspace. Each workspace has one writer, and other
 workspaces continue independently.
 
+Run `corvid attach --agent claude -- [CLI arguments]` to start the Claude Code
+executable from the daemon's PATH in a dedicated PTY. The arguments after `--`
+go directly to the provider. `corvid control agents` lists the resulting run and
+terminal IDs with their observed process state. The Protobuf inventory includes
+the exact pane location, boot ID, PID, Linux start ticks, and foreground group
+when available. Corvid keeps the latest 64 retired runs in memory within the
+current daemon epoch. Process probing is staggered at roughly two seconds per
+managed terminal and limited to 20 procfs samples per second across the daemon.
+The retained child handle supplies exit evidence, including the normal exit code.
+Provider context, activity, and input requests require separate hook evidence.
+
 The TUI recognizes split legacy VT keys, UTF-8, and bracketed paste. The
 `--escape-delay-ms` option defaults to 100 ms. Network delays above this setting
 can split an Alt key into literal Esc and a subsequent key. The daemon receives
@@ -90,6 +101,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Writer and redraw | A competing attach at a different size is refused and leaves the child size unchanged. A successful resize resets the render generation. The detached child progresses, then the next TUI shows its retained screen and PID. |
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |
 | Workspaces and tabs | Two writers operate concurrently in different workspaces. Switching targets the exact existing pane and preserves the other writer. An occupied destination rejects the switch. An unowned destination requires an explicit writer claim. Old view tokens fail at the PTY boundary. |
+| Managed agent process | Two isolated CLI fixtures launched in the same directory have distinct run IDs, terminal IDs, and Linux process incarnations. A verified exit changes only that run. A subsequent launch in the same pane gets new run and terminal IDs. Claude Code 2.1.318 printed its version and exited successfully through the managed launch path. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
 | Backpressure | A client that withholds a frame acknowledgement loses its lease after five seconds. A child writing 32 KiB bursts continues and control ping stays responsive. Reattach begins with a full frame. |
 | SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |

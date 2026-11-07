@@ -120,7 +120,10 @@ impl Session {
             (_, Body::Ping(_))
             | (
                 PeerRole::Control,
-                Body::GetHost(_) | Body::GetConnectionStatus(_) | Body::ListWorkspaces(_),
+                Body::GetHost(_)
+                | Body::GetConnectionStatus(_)
+                | Body::ListWorkspaces(_)
+                | Body::ListAgents(_),
             ) => Ok(body),
             (PeerRole::Tui, Body::Attach(attach)) => {
                 match AttachRole::try_from(attach.requested_role) {

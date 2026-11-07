@@ -19,7 +19,13 @@ use crate::metadata::{MetadataView, Recovery, SaveState};
 use crate::workspaces::Workspaces;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const CAPABILITIES: &[&str] = &["host.v1", "ping.v1", "connection_status.v1", "list.v1"];
+const CAPABILITIES: &[&str] = &[
+    "host.v1",
+    "ping.v1",
+    "connection_status.v1",
+    "list.v1",
+    "list_agents.v1",
+];
 
 pub(crate) async fn serve(
     stream: UnixStream,
@@ -44,9 +50,10 @@ pub(crate) async fn serve(
                 server_epoch: identity.epoch.clone(),
             }),
             Ok(Body::GetConnectionStatus(_)) => {
-                Body::ConnectionStatus(status(metadata, workspaces.any_live().await))
+                Body::ConnectionStatus(status(metadata, workspaces.any_live()))
             }
             Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(inventory(metadata)),
+            Ok(Body::ListAgents(_)) => Body::AgentList(workspaces.agents()),
             Ok(_) => Body::Error(
                 ProtocolFault::new("UnsupportedCapability", "unavailable control method")
                     .into_wire(),

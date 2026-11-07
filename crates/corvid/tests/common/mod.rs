@@ -15,7 +15,11 @@ pub fn command(runtime: &Path) -> Command {
 }
 
 pub async fn daemon(runtime: &Path, state: &Path) -> Child {
-    let mut daemon = command(runtime)
+    start_daemon(command(runtime), runtime, state).await
+}
+
+pub async fn start_daemon(mut command: Command, runtime: &Path, state: &Path) -> Child {
+    let mut daemon = command
         .arg("daemon")
         .arg("--state-dir")
         .arg(state)

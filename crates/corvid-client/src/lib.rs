@@ -6,5 +6,5 @@ mod relay;
 mod tty;
 
 pub use attach::{AttachOptions, attach};
-pub use control::{host, ping, status, workspaces};
+pub use control::{agents, host, ping, status, workspaces};
 pub use relay::relay;

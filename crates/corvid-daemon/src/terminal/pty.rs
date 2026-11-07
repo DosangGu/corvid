@@ -51,6 +51,18 @@ impl TerminalPty {
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
     }
+
+    pub(crate) fn pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
+    pub(crate) fn stop(&mut self) -> Option<ExitStatus> {
+        if let Some(status) = self.child.try_wait().ok()? {
+            return Some(status);
+        }
+        self.child.kill().ok()?;
+        self.child.wait().ok()
+    }
 }
 
 impl AsFd for TerminalPty {
@@ -81,8 +93,6 @@ impl Write for TerminalPty {
 
 impl Drop for TerminalPty {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) && self.child.kill().is_ok() {
-            let _ = self.child.wait();
-        }
+        self.stop();
     }
 }

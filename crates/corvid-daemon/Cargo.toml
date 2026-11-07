@@ -15,7 +15,7 @@ portable-pty.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 uuid.workspace = true
 vt100.workspace = true
 

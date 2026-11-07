@@ -1,6 +1,8 @@
+mod agents;
 mod control;
 mod identity;
 mod metadata;
+mod process;
 pub mod terminal;
 mod tui;
 mod workspaces;

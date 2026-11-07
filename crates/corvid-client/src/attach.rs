@@ -10,8 +10,8 @@ use corvid_core::Viewport;
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk,
-    PasteEnd, ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
+    AgentProvider, Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand, PasteBegin,
+    PasteChunk, PasteEnd, ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, Frame, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
@@ -32,6 +32,7 @@ const INPUT_CHUNK: usize = 8192;
 
 pub struct AttachOptions {
     pub launch: Option<Vec<OsString>>,
+    pub agent: Option<AgentProvider>,
     pub escape_delay: Duration,
     pub restore_cwd: bool,
     pub workspace: Option<String>,
@@ -43,12 +44,11 @@ pub struct AttachOptions {
 pub async fn attach(runtime: &Path, options: AttachOptions) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
-    let connection = Connection::establish(
-        stream,
-        PeerRole::Tui,
-        vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()],
-    )
-    .await?;
+    let mut required = vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()];
+    if options.agent.is_some() {
+        required.push("agent_launch.v1".into());
+    }
+    let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
     let escape_delay = options.escape_delay;
     let (connection, route) = timeout(
         COMMAND_TIMEOUT,
@@ -82,6 +82,7 @@ async fn request_attach(
         .map(|argv| -> Result<LaunchCommand> {
             Ok(LaunchCommand {
                 argv: argv.into_iter().map(OsString::into_encoded_bytes).collect(),
+                agent_provider: options.agent.map(|provider| provider as i32),
                 cwd: if options.restore_cwd {
                     None
                 } else {

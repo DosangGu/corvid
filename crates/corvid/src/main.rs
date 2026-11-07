@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
-use corvid_protocol::wire::{LayoutRecovery, PersistenceState};
+use corvid_protocol::wire::{
+    AgentBadge, AgentProcessState, AgentProvider, LayoutRecovery, PersistenceState,
+};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -33,6 +35,9 @@ enum Command {
         /// Start a new terminal with the user's shell.
         #[arg(long)]
         new: bool,
+        /// Start the named provider; arguments after -- go to its CLI.
+        #[arg(long, value_enum)]
+        agent: Option<ManagedAgent>,
         /// Attach to a workspace by ID.
         #[arg(long, conflicts_with = "new_workspace")]
         workspace: Option<String>,
@@ -70,6 +75,12 @@ enum ControlRequest {
     Ping,
     Status,
     Workspaces,
+    Agents,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ManagedAgent {
+    Claude,
 }
 
 fn main() -> ExitCode {
@@ -113,6 +124,7 @@ async fn run(options: Options) -> Result<u32> {
         }
         Command::Attach {
             new,
+            agent,
             restore_cwd,
             escape_delay_ms,
             argv,
@@ -121,10 +133,17 @@ async fn run(options: Options) -> Result<u32> {
             new_workspace,
             new_tab,
         } => {
-            let launch = (new || !argv.is_empty() || new_workspace.is_some() || new_tab.is_some())
-                .then_some(argv);
+            let launch = (new
+                || agent.is_some()
+                || !argv.is_empty()
+                || new_workspace.is_some()
+                || new_tab.is_some())
+            .then_some(argv);
             let options = corvid_client::AttachOptions {
                 launch,
+                agent: agent.map(|agent| match agent {
+                    ManagedAgent::Claude => AgentProvider::Claude,
+                }),
                 restore_cwd,
                 escape_delay: Duration::from_millis(escape_delay_ms),
                 workspace,
@@ -179,6 +198,22 @@ async fn run(options: Options) -> Result<u32> {
                             println!("    pane {pane}");
                         }
                     }
+                }
+                Ok(0)
+            }
+            ControlRequest::Agents => {
+                let list = corvid_client::agents(&runtime).await?;
+                for agent in list.agents {
+                    println!(
+                        "{} terminal={} provider={:?} process={:?} badge={:?}",
+                        agent.agent_run_id,
+                        agent.terminal_id,
+                        AgentProvider::try_from(agent.provider)
+                            .unwrap_or(AgentProvider::Unspecified),
+                        AgentProcessState::try_from(agent.process)
+                            .unwrap_or(AgentProcessState::Unspecified),
+                        AgentBadge::try_from(agent.badge).unwrap_or(AgentBadge::Unspecified),
+                    );
                 }
                 Ok(0)
             }

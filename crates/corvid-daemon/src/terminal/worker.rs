@@ -2,10 +2,12 @@ use std::ffi::OsString;
 use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use corvid_core::agent::{ProcessLiveness, Provider, Source};
+use corvid_core::layout::Location;
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
@@ -13,6 +15,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
+
+use crate::agents::ManagedLaunch;
+use crate::process::{Probe, ProbeBudget};
+use crate::workspaces::Registry;
 
 use super::input::{InputQueue, Kind, WriteFailure};
 use super::paste::Paste;
@@ -30,6 +36,14 @@ type Reply<T> = Result<T, ProtocolFault>;
 pub(crate) struct Launch {
     pub(crate) argv: Vec<OsString>,
     pub(crate) cwd: Option<PathBuf>,
+    pub(crate) provider: Option<Provider>,
+}
+
+pub(crate) struct LaunchScope {
+    pub(crate) location: Location,
+    pub(crate) registry: Weak<Mutex<Registry>>,
+    pub(crate) boot_id: Option<Uuid>,
+    pub(crate) probes: Arc<ProbeBudget>,
 }
 
 pub(crate) struct AttachSpec {
@@ -137,12 +151,13 @@ pub(crate) struct TerminalHandle {
 }
 
 impl TerminalHandle {
-    pub(crate) fn start() -> (Self, JoinHandle<()>) {
+    pub(crate) fn start(scope: LaunchScope) -> (Self, JoinHandle<()>) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let live = Arc::new(AtomicBool::new(false));
         let viewing = Arc::new(AtomicBool::new(false));
         let hidden_viewport = Arc::new(Mutex::new(None));
         let mut worker = Worker {
+            scope,
             terminal: None,
             lease: None,
             live: Arc::clone(&live),
@@ -238,6 +253,7 @@ async fn timeout_reply<T>(reply: oneshot::Receiver<Reply<T>>) -> Reply<T> {
 }
 
 struct Worker {
+    scope: LaunchScope,
     terminal: Option<Running>,
     lease: Option<Lease>,
     live: Arc<AtomicBool>,
@@ -331,12 +347,14 @@ impl Worker {
                 ));
             }
             (None, Some(launch)) => {
-                self.terminal = Some(Running::spawn(launch, spec.viewport).map_err(|_| {
-                    ProtocolFault::new(
-                        "TerminalStartFailed",
-                        "unable to start the requested terminal",
-                    )
-                })?);
+                self.terminal = Some(Running::spawn(launch, spec.viewport, &self.scope).map_err(
+                    |_| {
+                        ProtocolFault::new(
+                            "TerminalStartFailed",
+                            "unable to start the requested terminal",
+                        )
+                    },
+                )?);
                 self.live.store(true, Ordering::Release);
             }
             (None, None) => {
@@ -539,7 +557,7 @@ impl Worker {
         {
             let _ = terminal.resize(viewport);
         }
-        let state = match terminal.advance() {
+        let state = match terminal.advance(&self.scope.probes) {
             Ok(state) => state,
             Err(_) => {
                 self.fail(terminal_fault(), true);
@@ -654,6 +672,12 @@ struct Running {
     input: InputQueue,
     dirty: bool,
     exit: Option<ExitStatus>,
+    managed: Option<ManagedProcess>,
+}
+
+struct ManagedProcess {
+    launch: ManagedLaunch,
+    probe: Option<Probe>,
 }
 
 enum ReadState {
@@ -663,27 +687,23 @@ enum ReadState {
 }
 
 impl Running {
-    fn spawn(launch: Launch, viewport: Viewport) -> Result<Self> {
-        let mut argv = launch.argv.into_iter();
-        let mut command = if let Some(program) = argv.next() {
-            let mut command = CommandBuilder::new(program);
-            command.args(argv);
-            command
-        } else {
-            CommandBuilder::new_default_prog()
-        };
-        if let Some(cwd) = launch.cwd {
-            command.cwd(cwd);
-        }
-        command.env("TERM", "corvid");
-        command.env("COLORTERM", "truecolor");
+    fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
+        let id = Uuid::new_v4();
+        let reservation = launch
+            .provider
+            .map(|provider| ManagedLaunch::reserve(&scope.registry, scope.location, id, provider))
+            .transpose()?;
+        let mut pty = TerminalPty::spawn(launch.into_command(), viewport)?;
+        let managed =
+            reservation.map(|launch| ManagedProcess::started(launch, &mut pty, scope.boot_id, id));
         Ok(Self {
-            id: Uuid::new_v4(),
-            pty: TerminalPty::spawn(command, viewport)?,
+            id,
+            pty,
             screen: TerminalScreen::with_scrollback(viewport, LIVE_SCROLLBACK_ROWS),
             input: InputQueue::default(),
             dirty: true,
             exit: None,
+            managed,
         })
     }
 
@@ -693,7 +713,7 @@ impl Running {
         Ok(())
     }
 
-    fn advance(&mut self) -> Result<ReadState> {
+    fn advance(&mut self, budget: &ProbeBudget) -> Result<ReadState> {
         if self.exit.is_some() {
             return Ok(ReadState::Eof);
         }
@@ -701,7 +721,21 @@ impl Running {
         if !matches!(state, ReadState::BudgetUsed)
             && let Some(status) = self.pty.try_wait()?
         {
+            if let Some(managed) = &self.managed {
+                managed
+                    .launch
+                    .observe(exited(&status), None, Source::ChildExit);
+            }
             self.exit = Some(status);
+        } else if let Some(managed) = &mut self.managed
+            && let Some((liveness, identity)) = managed
+                .probe
+                .as_mut()
+                .and_then(|probe| probe.sample(budget))
+        {
+            managed
+                .launch
+                .observe(liveness, identity, Source::ProcessProbe);
         }
         Ok(state)
     }
@@ -723,6 +757,75 @@ impl Running {
             }
         }
         Ok(ReadState::BudgetUsed)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if self.exit.is_none()
+            && let Some(managed) = &self.managed
+        {
+            let status = self.pty.stop();
+            let (liveness, source) = match status.as_ref() {
+                Some(status) => (exited(status), Source::ChildExit),
+                None => (ProcessLiveness::Unknown, Source::ProcessProbe),
+            };
+            managed.launch.observe(liveness, None, source);
+        }
+    }
+}
+
+impl ManagedProcess {
+    fn started(
+        launch: ManagedLaunch,
+        pty: &mut TerminalPty,
+        boot: Option<Uuid>,
+        terminal: Uuid,
+    ) -> Self {
+        let (liveness, source) = match pty.try_wait() {
+            Ok(None) => (ProcessLiveness::Running, Source::ProcessProbe),
+            Ok(Some(status)) => (exited(&status), Source::ChildExit),
+            Err(_) => (ProcessLiveness::Unknown, Source::ProcessProbe),
+        };
+        let probe = if matches!(liveness, ProcessLiveness::Exited { .. }) {
+            None
+        } else {
+            pty.pid()
+                .zip(boot)
+                .map(|(pid, boot)| Probe::new(pid, boot, terminal))
+        };
+        launch.started(liveness, source);
+        Self { launch, probe }
+    }
+}
+
+impl Launch {
+    fn into_command(self) -> CommandBuilder {
+        let mut argv = self.argv.into_iter();
+        let program = match self.provider {
+            Some(Provider::Claude) => Some(OsString::from("claude")),
+            Some(Provider::Codex) => Some(OsString::from("codex")),
+            None => argv.next(),
+        };
+        let mut command = if let Some(program) = program {
+            let mut command = CommandBuilder::new(program);
+            command.args(argv);
+            command
+        } else {
+            CommandBuilder::new_default_prog()
+        };
+        if let Some(cwd) = self.cwd {
+            command.cwd(cwd);
+        }
+        command.env("TERM", "corvid");
+        command.env("COLORTERM", "truecolor");
+        command
+    }
+}
+
+fn exited(status: &ExitStatus) -> ProcessLiveness {
+    ProcessLiveness::Exited {
+        code: status.signal().is_none().then(|| status.exit_code()),
     }
 }
 

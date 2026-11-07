@@ -3,12 +3,13 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use corvid_core::agent::Provider;
 use corvid_core::layout::Location;
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, Attached, Envelope, LaunchCommand, Pong, RenderHeader, RouteToken, TerminalExited,
-    ViewChanged, ViewSelection, Viewport as WireViewport, WriterClaimed,
+    AgentProvider, Attach, Attached, Envelope, LaunchCommand, Pong, RenderHeader, RouteToken,
+    TerminalExited, ViewChanged, ViewSelection, Viewport as WireViewport, WriterClaimed,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, FrameError, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
@@ -33,6 +34,7 @@ const CAPABILITIES: &[&str] = &[
     "paste.v1",
     "tabs.v1",
     "select_view.v1",
+    "agent_launch.v1",
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
 
@@ -84,7 +86,7 @@ pub(crate) async fn serve(
         workspaces,
     )
     .await;
-    workspaces.release(client).await;
+    workspaces.release(client);
     result
 }
 
@@ -194,11 +196,9 @@ impl TuiConnection<'_> {
             Body::ClaimWorkspaceWriter(claim) => {
                 let workspace = parse_id(&claim.workspace_id);
                 let result = match workspace {
-                    Ok(workspace) => {
-                        self.workspaces
-                            .claim(client, workspace, self.active.viewport)
-                            .await
-                    }
+                    Ok(workspace) => self
+                        .workspaces
+                        .claim(client, workspace, self.active.viewport),
                     Err(fault) => Err(fault),
                 };
                 match result {
@@ -229,7 +229,7 @@ impl TuiConnection<'_> {
             Event::ViewChanged { route, viewport } => {
                 self.active.route = route;
                 self.active.viewport = viewport;
-                self.workspaces.resize_hidden(&self.active).await;
+                self.workspaces.resize_hidden(&self.active);
                 self.view_changed(None, false).await?;
             }
             Event::Exited {
@@ -465,10 +465,15 @@ fn viewport(value: Option<&WireViewport>) -> Result<Viewport, ProtocolFault> {
 }
 
 fn launch(command: &LaunchCommand) -> Result<Launch, ProtocolFault> {
+    let provider = match command.agent_provider.map(AgentProvider::try_from) {
+        None => None,
+        Some(Ok(AgentProvider::Claude)) => Some(Provider::Claude),
+        _ => return Err(invalid("unsupported managed agent provider")),
+    };
     let total: usize = command.argv.iter().map(Vec::len).sum();
     if command.argv.len() > 128
         || total > 64 * 1024
-        || command.argv.first().is_some_and(Vec::is_empty)
+        || (provider.is_none() && command.argv.first().is_some_and(Vec::is_empty))
         || command.argv.iter().any(|arg| arg.contains(&0))
     {
         return Err(invalid("invalid launch arguments"));
@@ -494,6 +499,7 @@ fn launch(command: &LaunchCommand) -> Result<Launch, ProtocolFault> {
             .map(OsString::from_vec)
             .collect(),
         cwd,
+        provider,
     })
 }
 

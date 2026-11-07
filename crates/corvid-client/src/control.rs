@@ -4,7 +4,8 @@ use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    ConnectionStatus, GetConnectionStatus, GetHost, HostInfo, ListWorkspaces, Ping, WorkspaceList,
+    AgentList, ConnectionStatus, GetConnectionStatus, GetHost, HostInfo, ListAgents,
+    ListWorkspaces, Ping, WorkspaceList,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
 use tokio::time::timeout;
@@ -43,6 +44,13 @@ pub async fn workspaces(runtime: &Path) -> Result<WorkspaceList> {
     match request(runtime, Body::ListWorkspaces(ListWorkspaces {}), "list.v1").await? {
         Body::WorkspaceList(workspaces) => Ok(workspaces),
         _ => bail!("unexpected response to ListWorkspaces"),
+    }
+}
+
+pub async fn agents(runtime: &Path) -> Result<AgentList> {
+    match request(runtime, Body::ListAgents(ListAgents {}), "list_agents.v1").await? {
+        Body::AgentList(agents) => Ok(agents),
+        _ => bail!("unexpected response to ListAgents"),
     }
 }
 

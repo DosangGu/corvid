@@ -2,14 +2,16 @@
 
 mod common;
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, ClaimWorkspaceWriter, FrameApplied, InputChunk, LaunchCommand, PasteBegin,
-    PasteChunk, PasteEnd, ResizeViewport, RouteToken, SelectView, ViewSelection, Viewport,
+    AgentBadge, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
+    ClaimWorkspaceWriter, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk,
+    PasteEnd, ResizeViewport, RouteToken, SelectView, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     Frame, FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result,
@@ -18,7 +20,7 @@ use corvid_protocol::{
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{sleep, timeout};
 
-use common::{WAIT, command, daemon};
+use common::{WAIT, command, daemon, start_daemon};
 
 struct Tui {
     reader: FrameReader<OwnedReadHalf>,
@@ -30,7 +32,10 @@ struct Tui {
 
 impl Tui {
     async fn attach(runtime: &Path, argv: Option<Vec<Vec<u8>>>) -> Self {
-        let launch = argv.map(|argv| LaunchCommand { argv, cwd: None });
+        let launch = argv.map(|argv| LaunchCommand {
+            argv,
+            ..Default::default()
+        });
         Self::attach_command(runtime, launch).await
     }
 
@@ -172,6 +177,7 @@ async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
         let command = LaunchCommand {
             argv: shell("printf 'OLD-TERMINAL\\n'; sleep 20"),
             cwd: Some(workdir.as_os_str().as_encoded_bytes().to_vec()),
+            ..Default::default()
         };
         let mut tui = Tui::attach_command(&runtime, Some(command)).await;
         let mut output = Vec::new();
@@ -268,7 +274,113 @@ fn echo_fixture(label: &str) -> LaunchCommand {
         "stty -echo; printf '%s-READY\\n' \"$1\"; while IFS= read -r line; do printf '%s=%s\\n' \"$1\" \"$line\"; done",
     );
     argv.extend([b"echo-fixture".to_vec(), label.as_bytes().to_vec()]);
-    LaunchCommand { argv, cwd: None }
+    LaunchCommand {
+        argv,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let fixture = temporary.path().join("claude");
+    std::fs::write(
+        &fixture,
+        "#!/bin/sh\nprintf '%s-READY\\n' \"$1\"\nIFS= read -r code\nexit \"$code\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut command = command(&runtime);
+    command.env("PATH", temporary.path());
+    let _daemon = start_daemon(command, &runtime, &temporary.path().join("state")).await;
+    let launch = |name: &str| LaunchCommand {
+        argv: vec![name.as_bytes().to_vec()],
+        cwd: Some(temporary.path().as_os_str().as_encoded_bytes().to_vec()),
+        agent_provider: Some(AgentProvider::Claude as i32),
+    };
+
+    timeout(WAIT, async {
+        let mut first = Tui::attach_command(&runtime, Some(launch("ONE"))).await;
+        let mut other = Tui::attach_target(
+            &runtime,
+            Attach {
+                create_workspace: Some("Another".into()),
+                launch: Some(launch("TWO")),
+                ..Default::default()
+            },
+        )
+        .await;
+        let (mut first_output, mut other_output) = (Vec::new(), Vec::new());
+        wait_for_text(&mut first, &mut first_output, "ONE-READY").await;
+        wait_for_text(&mut other, &mut other_output, "TWO-READY").await;
+        let one = wait_for_agent(&runtime, &first.route.terminal_id, |agent| {
+            agent.process_identity.is_some()
+        })
+        .await;
+        let two = wait_for_agent(&runtime, &other.route.terminal_id, |agent| {
+            agent.process_identity.is_some()
+        })
+        .await;
+        assert_ne!(one.agent_run_id, two.agent_run_id);
+        assert_eq!(one.location.as_ref(), Some(&first.selection));
+        assert_eq!(two.location.as_ref(), Some(&other.selection));
+        assert_eq!(one.process, AgentProcessState::Running as i32);
+        assert_eq!(one.badge, AgentBadge::Unknown as i32);
+        let one_process = one.process_identity.unwrap();
+        let two_process = two.process_identity.unwrap();
+        assert_ne!(one_process.pid, two_process.pid);
+        assert_eq!(one_process.boot_id, two_process.boot_id);
+        assert!(one_process.start_ticks > 0);
+        assert!(one_process.foreground_group.is_some());
+
+        first.input(first.route.clone(), 1, b"7\n").await;
+        assert!(matches!(
+            first.next_body(&mut first_output).await,
+            Body::TerminalExited(_)
+        ));
+        let exited = wait_for_agent(&runtime, &one.terminal_id, |agent| {
+            !agent.terminal_available
+        })
+        .await;
+        assert_eq!(exited.agent_run_id, one.agent_run_id);
+        assert_eq!(exited.exit_code, Some(7));
+        assert_eq!(exited.badge, AgentBadge::Ended as i32);
+        assert!(first.reader.next_frame().await.unwrap().is_none());
+        drop(first);
+
+        let replacement = Tui::attach_command(&runtime, Some(launch("NEW"))).await;
+        let fresh = wait_for_agent(&runtime, &replacement.route.terminal_id, |agent| {
+            agent.terminal_available
+        })
+        .await;
+        assert_eq!(fresh.location, exited.location);
+        assert_ne!(fresh.agent_run_id, exited.agent_run_id);
+        assert_ne!(fresh.terminal_id, exited.terminal_id);
+        let unchanged = wait_for_agent(&runtime, &two.terminal_id, |_| true).await;
+        assert_eq!(unchanged.agent_run_id, two.agent_run_id);
+        assert_eq!(unchanged.process, AgentProcessState::Running as i32);
+    })
+    .await
+    .unwrap();
+}
+
+async fn wait_for_agent(
+    runtime: &Path,
+    terminal: &str,
+    condition: impl Fn(&AgentInfo) -> bool,
+) -> AgentInfo {
+    loop {
+        let agents = corvid_client::agents(runtime).await.unwrap();
+        if let Some(agent) = agents
+            .agents
+            .into_iter()
+            .find(|agent| agent.terminal_id == terminal && condition(agent))
+        {
+            return agent;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
 }
 
 #[tokio::test]
