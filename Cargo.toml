@@ -5,6 +5,7 @@ members = [
     "crates/corvid-companion",
     "crates/corvid-core",
     "crates/corvid-daemon",
+    "crates/corvid-desktop",
     "crates/corvid-protocol",
     "spikes/terminal",
 ]

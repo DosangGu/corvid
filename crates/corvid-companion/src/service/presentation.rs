@@ -6,9 +6,7 @@ use corvid_protocol::wire::{
 
 use super::{Outcome, Service};
 use crate::remote::invalid;
-use crate::{MAX_SLOTS, Recovery, RunKey};
-
-const PAGE_SIZE: usize = 32;
+use crate::{MAX_SLOTS, PRESENTATION_PAGE_SIZE, Recovery, RunKey};
 
 impl Service {
     pub(super) fn presentation(&self, query: GetPresentationSlots) -> Outcome {
@@ -16,7 +14,8 @@ impl Service {
         if !(1..=MAX_SLOTS).contains(&count) {
             return Err(invalid());
         }
-        let offset = (query.overflow_page as usize).saturating_mul(PAGE_SIZE);
+        let page_size = PRESENTATION_PAGE_SIZE as usize;
+        let offset = (query.overflow_page as usize).saturating_mul(page_size);
         let layout = self.store.layout();
         let slots = layout
             .slots()
@@ -66,16 +65,16 @@ impl Service {
             overflow: layout
                 .overflow()
                 .skip(offset)
-                .take(PAGE_SIZE)
+                .take(page_size)
                 .map(|run| self.display_run(run))
                 .collect(),
             overflow_count: layout.overflow().count() as u32,
             bindings,
-            recent_ended: layout.ended().take(PAGE_SIZE).map(Into::into).collect(),
+            recent_ended: layout.ended().take(page_size).map(Into::into).collect(),
             suppressed: layout
                 .suppressed()
                 .skip(offset)
-                .take(PAGE_SIZE)
+                .take(page_size)
                 .map(Into::into)
                 .collect(),
             suppressed_count: layout.suppressed().count() as u32,

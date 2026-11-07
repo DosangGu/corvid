@@ -53,6 +53,29 @@ other than `main`. Separate companion instances also need separate state
 directories. Both ends check the pipe owner and DACL before exchanging
 frames. [Named pipe access controls](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
 
+## Desktop Slot Board
+
+Build the separate native desktop binary with `cargo build --locked -p corvid-desktop`.
+Start the configured companion, pair the intended TUI, and run `corvid-desktop`
+from the build output. The desktop accepts the same `--socket-dir` on Linux or
+`--pipe-instance` on Windows as the companion. The board uses eframe 0.33.3 with
+the Glow renderer and connects directly to the private Protobuf endpoint.
+[eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
+
+Choose a paired terminal in **Target terminal**, then click **Focus** on the
+intended slot. The result bar reports remote selection and local activation.
+**Acknowledge alert** marks that alert seen. Answer questions and grant
+permissions in the terminal. Slot cards support pin and remove. Use **Overflow**
+to page through unassigned or removed runs, re-add a removed run, or choose an
+overflow run and place it into an empty slot. **Recent ended** shows recent run
+IDs released from the layout.
+
+On disconnection the board keeps the last snapshot visible and disables its
+actions. Reconnection loads a fresh snapshot and requires an explicit terminal
+choice. A gesture uses the slot and terminal revisions that were visible when
+it began. A stale action is rejected and can be retried as a new click after
+reviewing the refreshed board.
+
 ## Pair and Focus
 
 In the intended attached TUI, press Ctrl-] then r. Run `corvid companion pair`
@@ -139,6 +162,16 @@ question focus and acknowledgment, and rejection of a stale click after
 `/clear`. The OpenSSH 10.6p1 loopback fixture kills the companion's SSH process
 and verifies full resync under the same daemon epoch while the separate TUI
 and its PTY remain active. These checks ran on Linux.
+
+Linux desktop verification used Xvfb 21.1.25 with a synthetic Protobuf companion.
+The GUI retained the captured run and revisions above 2^53 across a slot
+replacement during a mouse press. A fresh click used the replacement's
+revision. Dropping the IPC connection during a press produced no replay
+after reconnect. A desktop pin also persisted through the real Linux companion.
+`cargo test --locked -p corvid-desktop` checks capture, connection fencing,
+and input-frame behavior without a display. The Windows desktop binary
+cross-linked for `x86_64-pc-windows-gnu`. Wine 11.21 ran its four tests and
+rendered the offline window.
 
 The CLI and companion tests cross-link for `x86_64-pc-windows-gnu` with
 Rust 1.93. Wine 11.21 ran CLI help, private pipe I/O, and rejection of default

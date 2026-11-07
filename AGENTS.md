@@ -2,10 +2,11 @@
 
 ## Project Structure & Module Organization
 
-Corvid is a Rust TUI coding-agent multiplexer. Read `docs/00_project_design.md`
+Corvid is a Rust coding-agent multiplexer. Read `docs/00_project_design.md`
 before architectural changes. The workspace has `crates/corvid/` for the CLI,
 `corvid-daemon` for PTYs and daemon services, `corvid-client` for IPC and TTY,
-`corvid-core` for domain types, `corvid-companion` for local controller state,
+`corvid-core` for domain types, `corvid-companion` for controller state,
+`corvid-desktop` for the native slot board,
 `corvid-protocol` for Protobuf and Unix transport, and `spikes/terminal/` for terminal
 qualification.
 
@@ -46,7 +47,7 @@ runtime compatibility.
 
 ## Commit & Pull Request Guidelines
 
-History uses `docs:` subjects. Use concise, imperative subjects and appropriate prefixes
+History uses `docs:`. Use concise, imperative subjects and appropriate prefixes
 such as `feat:` or `fix:` for implementation. Keep commits focused. PRs should explain
 the problem, resulting behavior, validation, and limitations. Link relevant issues and
 acceptance IDs; include screenshots for visible UI changes.

@@ -27,6 +27,7 @@ use crate::platform::{PipeListener, open_pipe};
 use crate::service::{Call, Service};
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
+pub const PRESENTATION_PAGE_SIZE: u32 = 32;
 #[cfg(windows)]
 pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
 const CAPABILITIES: &[&str] = &[

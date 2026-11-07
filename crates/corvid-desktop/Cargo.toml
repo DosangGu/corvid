@@ -1,0 +1,21 @@
+[package]
+name = "corvid-desktop"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+corvid-companion.workspace = true
+corvid-protocol.workspace = true
+eframe = { version = "=0.33.3", default-features = false, features = [
+    "accesskit", "default_fonts", "glow", "wayland", "x11",
+] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+uuid.workspace = true
+
+[lints]
+workspace = true
