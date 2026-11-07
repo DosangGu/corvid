@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::agents::{Agents, Hook, HookBinding};
 use crate::collector::HookEnvironment;
-use crate::process::{self, HookOwner, ProbeBudget};
+use crate::process::{self, HookOwner, HookProducer, ProbeBudget};
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
 use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, TerminalHandle};
@@ -178,9 +178,14 @@ impl Workspaces {
         self.lock_registry().agents.binding(association)
     }
 
-    pub(crate) fn apply_hook(&self, hook: Hook, owner: HookOwner) -> Reply<()> {
+    pub(crate) fn apply_hook(
+        &self,
+        hook: Hook,
+        owner: HookOwner,
+        producer: HookProducer,
+    ) -> Reply<()> {
         let mut registry = self.lock_registry();
-        registry.agents.apply_hook(hook, owner)?;
+        registry.agents.apply_hook(hook, owner, producer)?;
         registry.publish(Vec::new());
         Ok(())
     }

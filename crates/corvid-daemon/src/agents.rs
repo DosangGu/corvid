@@ -10,15 +10,15 @@ use corvid_core::agent::{
     ObservationKind, ProcessLiveness, Provider, RequestStatus, RunIdentity, Source,
 };
 use corvid_core::layout::Location;
-use corvid_protocol::collector::CLAUDE_VERSION;
 use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentList, AgentProcessState,
     AgentProvider, ProcessIdentity,
 };
 use uuid::Uuid;
 
-use crate::process::{Executable, HookOwner, Incarnation};
+use crate::process::{Executable, HookOwner, HookProducer, Incarnation};
 use crate::projection;
+use crate::provider::qualified_version;
 use crate::publication::{Group, Projection};
 use crate::workspaces::Registry;
 
@@ -38,6 +38,7 @@ struct Launch {
     current: Uuid,
     qualified: bool,
     owner: Option<HookOwner>,
+    producer: Option<HookProducer>,
     sessions: BTreeSet<String>,
     context_deliveries: VecDeque<Uuid>,
     gap: bool,
@@ -84,7 +85,7 @@ impl Agents {
                 run: AgentRun::new(identity, evidence(Source::Launch, Confidence::Unknown)),
                 location,
                 process: None,
-                qualified_version: qualified.then_some(CLAUDE_VERSION),
+                qualified_version: qualified.then(|| qualified_version(provider)),
                 published: false,
                 terminal_available: false,
             },
@@ -95,6 +96,7 @@ impl Agents {
                 current: id,
                 qualified,
                 owner: None,
+                producer: None,
                 sessions: BTreeSet::new(),
                 context_deliveries: VecDeque::new(),
                 gap: false,
@@ -258,6 +260,11 @@ impl ManagedRun {
                 .map(|response| response.evidence.observed_unix_ms),
             end_reason: end_reason as i32,
             qualified_provider_version: self.qualified_version.map(str::to_owned),
+            cancelled_requests: self.request_count(RequestStatus::Cancelled),
+            adapter: Some(crate::provider::adapter(
+                run.identity.provider,
+                self.qualified_version.is_some(),
+            )),
         }
     }
 

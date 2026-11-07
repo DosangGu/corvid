@@ -221,43 +221,51 @@ async fn relay_reports_unavailable_without_creating_runtime_directory() {
 }
 
 #[tokio::test]
-async fn observe_exits_silently_with_missing_daemon_and_bad_or_stalled_input() {
+async fn observers_exit_neutrally_with_missing_daemon_and_bad_or_stalled_input() {
     let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let runtime = temporary.path().join("missing");
     let valid = br#"{"hook_event_name":"SessionStart","source":"startup","session_id":"session"}"#;
     let oversized = vec![b'x'; 65 * 1024];
-    for (input, close_stdin) in [
-        (valid.as_slice(), true),
-        (b"{".as_slice(), true),
-        (oversized.as_slice(), true),
-        (b"{".as_slice(), false),
+    for (args, expected) in [
+        (&["observe", "--provider", "claude"][..], b"".as_slice()),
+        (
+            &["observe", "--provider", "codex", "--neutral-json"][..],
+            b"{}\n".as_slice(),
+        ),
     ] {
-        let mut child = command(&runtime)
-            .args(["observe", "--provider", "claude"])
-            .env(HOST_ID, Uuid::new_v4().to_string())
-            .env(SERVER_EPOCH, Uuid::new_v4().to_string())
-            .env(LAUNCH_ASSOCIATION, Uuid::new_v4().to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut stdin = child.stdin.take().unwrap();
-        let write = timeout(Duration::from_millis(250), stdin.write_all(input))
-            .await
-            .unwrap();
-        // The helper can close an oversized pipe as soon as it reaches the bound.
-        if input.len() < 64 * 1024 {
-            write.unwrap();
+        for (input, close_stdin) in [
+            (valid.as_slice(), true),
+            (b"{".as_slice(), true),
+            (oversized.as_slice(), true),
+            (b"{".as_slice(), false),
+        ] {
+            let mut child = command(&runtime)
+                .args(args)
+                .env(HOST_ID, Uuid::new_v4().to_string())
+                .env(SERVER_EPOCH, Uuid::new_v4().to_string())
+                .env(LAUNCH_ASSOCIATION, Uuid::new_v4().to_string())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            let write = timeout(Duration::from_millis(250), stdin.write_all(input))
+                .await
+                .unwrap();
+            // An oversized pipe can close as soon as the helper reaches its bound.
+            if input.len() < 64 * 1024 {
+                write.unwrap();
+            }
+            let _held_open = (!close_stdin).then_some(stdin);
+            let output = timeout(Duration::from_millis(250), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, expected);
+            assert!(output.stderr.is_empty());
+            assert!(!runtime.exists());
         }
-        let _held_open = (!close_stdin).then_some(stdin);
-        let output = timeout(Duration::from_millis(250), child.wait_with_output())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
-        assert!(!runtime.exists());
     }
 }

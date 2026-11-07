@@ -17,7 +17,7 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
-    AttentionReason, InputRequestKind, LayoutRecovery, PersistenceState,
+    AttentionReason, InputRequestKind, LayoutRecovery, PersistenceState, ProviderExecutionMode,
 };
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
@@ -105,6 +105,9 @@ enum Command {
     Observe {
         #[arg(long, value_enum)]
         provider: HookProvider,
+        /// Emit a fixed empty object for Codex hooks that expect JSON.
+        #[arg(long, hide = true)]
+        neutral_json: bool,
     },
 }
 
@@ -124,6 +127,7 @@ enum ControlRequest {
 #[derive(Clone, Copy, ValueEnum)]
 enum ManagedAgent {
     Claude,
+    Codex,
 }
 
 #[derive(Subcommand)]
@@ -157,8 +161,11 @@ fn main() -> ExitCode {
     let started = Instant::now();
     let options = Options::parse();
     let result = match options.command {
-        Command::Observe { provider } => {
-            hooks::observe(provider, options.runtime_dir, started);
+        Command::Observe {
+            provider,
+            neutral_json,
+        } => {
+            hooks::observe(provider, neutral_json, options.runtime_dir, started);
             Ok(0)
         }
         Command::Hooks { provider } => hooks::settings(provider).map(|settings| {
@@ -232,6 +239,7 @@ async fn run(options: Options) -> Result<u32> {
                 launch,
                 agent: agent.map(|agent| match agent {
                     ManagedAgent::Claude => AgentProvider::Claude,
+                    ManagedAgent::Codex => AgentProvider::Codex,
                 }),
                 restore_cwd,
                 escape_delay: Duration::from_millis(escape_delay_ms),
@@ -495,12 +503,13 @@ fn print_agent(agent: AgentInfo) {
         AgentCollection::try_from(agent.collection).unwrap_or(AgentCollection::Unspecified);
     let end = AgentEndReason::try_from(agent.end_reason).unwrap_or(AgentEndReason::Unspecified);
     print!(
-        "{} terminal={} provider={provider:?} process={process:?} badge={badge:?} collection={collection:?} end={end:?} pending={} unverified={} resolved={} response={}",
+        "{} terminal={} provider={provider:?} process={process:?} badge={badge:?} collection={collection:?} end={end:?} pending={} unverified={} resolved={} cancelled={} response={}",
         agent.agent_run_id,
         agent.terminal_id,
         agent.pending_requests,
         agent.unverified_requests,
         agent.resolved_requests,
+        agent.cancelled_requests,
         agent.response_observed_unix_ms.is_some(),
     );
     if let Some(process) = agent.process_identity {
@@ -511,6 +520,14 @@ fn print_agent(agent: AgentInfo) {
     }
     if let Some(version) = agent.qualified_provider_version {
         print!(" version={version}");
+    }
+    if let Some(adapter) = agent.adapter {
+        let mode = ProviderExecutionMode::try_from(adapter.mode)
+            .unwrap_or(ProviderExecutionMode::Unspecified);
+        print!(
+            " adapter={mode:?} adapter_schema={}",
+            adapter.schema_revision
+        );
     }
     println!();
 }

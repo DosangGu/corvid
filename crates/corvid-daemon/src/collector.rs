@@ -87,11 +87,13 @@ async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), Pro
     let owner = find_owner(workspaces, hook.association)
         .await
         .ok_or_else(unauthorized)?;
-    let verified = tokio::task::spawn_blocking(move || owner.owns_peer(pid)).await;
-    if !verified.unwrap_or(false) {
-        return Err(unauthorized());
-    }
-    workspaces.apply_hook(hook, owner)
+    let provider = hook.provider;
+    let producer = tokio::task::spawn_blocking(move || owner.verify_peer(pid, provider))
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(unauthorized)?;
+    workspaces.apply_hook(hook, owner, producer)
 }
 
 async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<HookOwner> {

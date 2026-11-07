@@ -1,5 +1,7 @@
+mod codex;
+
 use std::env;
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -22,10 +24,19 @@ const TOTAL_TIMEOUT: Duration = Duration::from_millis(100);
 #[derive(Clone, Copy, ValueEnum)]
 pub(crate) enum HookProvider {
     Claude,
+    Codex,
 }
 
-pub(crate) fn observe(provider: HookProvider, runtime: Option<PathBuf>, started: Instant) {
+pub(crate) fn observe(
+    provider: HookProvider,
+    neutral_json: bool,
+    runtime: Option<PathBuf>,
+    started: Instant,
+) {
     let _ = observe_inner(provider, runtime, started);
+    if matches!(provider, HookProvider::Codex) && neutral_json {
+        let _ = writeln!(io::stdout().lock(), "{{}}");
+    }
 }
 
 fn observe_inner(provider: HookProvider, runtime: Option<PathBuf>, started: Instant) -> Result<()> {
@@ -41,6 +52,7 @@ fn observe_inner(provider: HookProvider, runtime: Option<PathBuf>, started: Inst
     let input = read_hook(started + SOURCE_TIMEOUT).ok();
     let fields = match provider {
         HookProvider::Claude => claude_fields(input.as_deref()),
+        HookProvider::Codex => codex::fields(input.as_deref()),
     };
     let Some(mut fields) = fields else {
         return Ok(());
@@ -105,13 +117,17 @@ struct ClaudeInput {
 fn claude_fields(input: Option<&[u8]>) -> Option<CollectHook> {
     let parsed = input.and_then(|input| serde_json::from_slice::<ClaudeInput>(input).ok());
     let Some(fields) = parsed else {
-        return Some(CollectHook {
-            provider: AgentProvider::Claude as i32,
-            event: HookEvent::DeliveryGap as i32,
-            ..Default::default()
-        });
+        return Some(delivery_gap(AgentProvider::Claude));
     };
     fields.into_observation()
+}
+
+fn delivery_gap(provider: AgentProvider) -> CollectHook {
+    CollectHook {
+        provider: provider as i32,
+        event: HookEvent::DeliveryGap as i32,
+        ..Default::default()
+    }
 }
 
 impl ClaudeInput {
@@ -200,5 +216,6 @@ pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
             }
             Ok(json!({ "hooks": hooks }))
         }
+        HookProvider::Codex => Ok(codex::settings(executable)),
     }
 }

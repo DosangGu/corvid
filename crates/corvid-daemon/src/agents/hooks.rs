@@ -1,20 +1,22 @@
 use corvid_core::agent::{
     AgentRun, Collection, Confidence, EndReason, Evidence, Lifecycle, ObservationKind,
-    ProcessLiveness, RequestKey, RequestKind, Resolution, Response, ResponseOutcome, Source,
+    ProcessLiveness, Provider, RequestKey, RequestKind, Resolution, Response, ResponseOutcome,
+    Source, WorkKey,
 };
 use corvid_protocol::ProtocolFault;
-use corvid_protocol::collector::CLAUDE_VERSION;
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use uuid::Uuid;
 
 use super::{Agents, Launch, ManagedRun, evidence};
-use crate::process::HookOwner;
+use crate::process::{HookOwner, HookProducer};
+use crate::provider::qualified_version;
 
 const MAX_CONTEXTS_PER_LAUNCH: usize = 256;
 
 pub(crate) struct Hook {
     pub(crate) association: Uuid,
     delivery: Uuid,
+    pub(crate) provider: Provider,
     event: HookEvent,
     session: Option<String>,
     turn: Option<String>,
@@ -32,9 +34,13 @@ impl Hook {
         let association = parse_uuid(&request.launch_association).ok_or_else(invalid)?;
         let delivery = request_id.and_then(parse_uuid).ok_or_else(invalid)?;
         let event = HookEvent::try_from(request.event).map_err(|_| invalid())?;
+        let provider = match AgentProvider::try_from(request.provider) {
+            Ok(AgentProvider::Claude) => Provider::Claude,
+            Ok(AgentProvider::Codex) => Provider::Codex,
+            _ => return Err(invalid()),
+        };
         let session_expected = event != HookEvent::DeliveryGap;
-        if event == HookEvent::Unspecified
-            || request.provider != AgentProvider::Claude as i32
+        if !supported_event(provider, event)
             || session_expected != request.session_id.is_some()
             || ![
                 &request.session_id,
@@ -47,9 +53,25 @@ impl Hook {
         {
             return Err(invalid());
         }
+        if provider == Provider::Codex {
+            let turn_expected = !matches!(event, HookEvent::Startup | HookEvent::DeliveryGap);
+            let tool_expected = matches!(
+                event,
+                HookEvent::ToolStarted
+                    | HookEvent::ToolFinished
+                    | HookEvent::QuestionStarted
+                    | HookEvent::QuestionResult
+            );
+            if turn_expected != request.turn_id.is_some()
+                || tool_expected != request.tool_id.is_some()
+            {
+                return Err(invalid());
+            }
+        }
         Ok(Self {
             association,
             delivery,
+            provider,
             event,
             session: request.session_id.clone(),
             turn: request.turn_id.clone(),
@@ -65,6 +87,37 @@ impl Hook {
         })
     }
 
+    fn work_key(&self) -> Option<WorkKey> {
+        Some(WorkKey {
+            turn: Some(self.turn.clone()?),
+            item: self.tool.clone()?,
+        })
+    }
+
+    fn evidence(&self, confidence: Confidence) -> Evidence {
+        let mut evidence = hook_evidence(self.provider, confidence);
+        if confidence == Confidence::Inferred {
+            evidence.uncertainty = Some(
+                match self.event {
+                    HookEvent::ToolStarted => "other hooks can prevent the tool from running",
+                    HookEvent::QuestionStarted => {
+                        "tool invocation can precede or skip the question dialog"
+                    }
+                    _ => "other hooks can block a submitted prompt",
+                }
+                .to_owned(),
+            );
+        }
+        if self.provider == Provider::Codex
+            && self.event == HookEvent::ResponseObserved
+            && let Some(turn) = &self.turn
+        {
+            let id = format!("first-stop/{turn}");
+            evidence.provider_event_id = valid_id(&id).then_some(id);
+        }
+        evidence
+    }
+
     fn observation(&self) -> Option<(ObservationKind, Confidence)> {
         let mut confidence = Confidence::Confirmed;
         let kind = match self.event {
@@ -72,10 +125,15 @@ impl Hook {
                 confidence = Confidence::Inferred;
                 ObservationKind::TurnStarted(self.turn.clone()?)
             }
-            HookEvent::QuestionStarted => ObservationKind::InputRequested {
-                key: self.request_key(),
-                kind: RequestKind::Question,
-            },
+            HookEvent::QuestionStarted => {
+                if self.provider == Provider::Codex {
+                    confidence = Confidence::Inferred;
+                }
+                ObservationKind::InputRequested {
+                    key: self.request_key(),
+                    kind: RequestKind::Question,
+                }
+            }
             HookEvent::QuestionResult => ObservationKind::InputResolved {
                 key: self.request_key()?,
                 resolution: Resolution::Resolved,
@@ -83,6 +141,18 @@ impl Hook {
             HookEvent::PermissionRequested => ObservationKind::InputRequested {
                 key: None,
                 kind: RequestKind::Permission,
+            },
+            HookEvent::ToolStarted => {
+                confidence = Confidence::Inferred;
+                ObservationKind::WorkStarted(self.work_key()?)
+            }
+            HookEvent::ToolFinished => ObservationKind::WorkFinished(self.work_key()?),
+            HookEvent::TurnInterrupted => ObservationKind::Response {
+                response: Response {
+                    turn: Some(self.turn.clone()?),
+                    outcome: ResponseOutcome::Interrupted,
+                },
+                final_boundary: true,
             },
             HookEvent::ResponseObserved => ObservationKind::Response {
                 response: Response {
@@ -99,8 +169,34 @@ impl Hook {
     }
 }
 
+fn supported_event(provider: Provider, event: HookEvent) -> bool {
+    match event {
+        HookEvent::Startup
+        | HookEvent::PromptSubmitted
+        | HookEvent::QuestionStarted
+        | HookEvent::QuestionResult
+        | HookEvent::PermissionRequested
+        | HookEvent::ResponseObserved
+        | HookEvent::DeliveryGap => true,
+        HookEvent::Resume
+        | HookEvent::Clear
+        | HookEvent::Compact
+        | HookEvent::ContextEnded
+        | HookEvent::ContextReplaced => provider == Provider::Claude,
+        HookEvent::ToolStarted | HookEvent::ToolFinished | HookEvent::TurnInterrupted => {
+            provider == Provider::Codex
+        }
+        HookEvent::Unspecified => false,
+    }
+}
+
 impl Agents {
-    pub(crate) fn apply_hook(&mut self, hook: Hook, owner: HookOwner) -> Result<(), ProtocolFault> {
+    pub(crate) fn apply_hook(
+        &mut self,
+        hook: Hook,
+        owner: HookOwner,
+        producer: HookProducer,
+    ) -> Result<(), ProtocolFault> {
         let unauthorized = || ProtocolFault::new("Unauthorized", "hook owner is unavailable");
         let launch = self
             .launches
@@ -111,12 +207,22 @@ impl Agents {
         }
         let current_id = launch.current;
         let current = self.runs.get_mut(&current_id).ok_or_else(unauthorized)?;
+        if current.run.identity.provider != hook.provider {
+            return Err(unauthorized());
+        }
         if matches!(current.run.process.value, ProcessLiveness::Exited { .. })
             || hook.actor.is_some()
         {
             return Ok(());
         }
         self.dirty.insert(current_id);
+        if launch.producer.is_some_and(|previous| previous != producer) {
+            launch.ambiguous = true;
+            current.terminal_available = false;
+            launch.record_gap(current, "managed hook producer changed incarnation");
+            return Ok(());
+        }
+        launch.producer = Some(producer);
         let Some(session) = hook.session.as_deref() else {
             launch.record_gap(current, "hook input was malformed or exceeded its deadline");
             return Ok(());
@@ -135,6 +241,12 @@ impl Agents {
         }
         if current.run.identity.provider_session.as_deref() != Some(session) {
             if !launch.sessions.contains(session) {
+                if hook.provider == Provider::Codex
+                    && current.run.identity.provider_session.is_some()
+                {
+                    launch.ambiguous = true;
+                    current.terminal_available = false;
+                }
                 launch.record_gap(
                     current,
                     "event arrived before its context could be associated",
@@ -146,7 +258,8 @@ impl Agents {
             return Ok(());
         }
         if let Some((kind, confidence)) = hook.observation() {
-            current.apply(hook.delivery, kind, hook_evidence(confidence));
+            let evidence = hook.evidence(confidence);
+            current.apply(hook.delivery, kind, evidence);
         } else if matches!(
             hook.event,
             HookEvent::PromptSubmitted | HookEvent::QuestionResult
@@ -184,6 +297,10 @@ impl Launch {
         if hook.event == HookEvent::Compact
             || (existing.is_some() && hook.event == HookEvent::Startup)
         {
+            if hook.provider == Provider::Codex && existing.is_some() {
+                self.ambiguous = true;
+                current.terminal_available = false;
+            }
             self.record_gap(current, "context boundary could not be established");
             return None;
         }
@@ -202,12 +319,15 @@ impl Launch {
             current.apply(
                 hook.delivery,
                 ObservationKind::ContextEnded(EndReason::ContextReplaced),
-                hook_evidence(Confidence::Confirmed),
+                hook_evidence(hook.provider, Confidence::Confirmed),
             );
         }
         let mut identity = current.run.identity.clone();
         identity.id = Uuid::new_v4();
-        let mut run = AgentRun::new(identity, hook_evidence(Confidence::Confirmed));
+        let mut run = AgentRun::new(
+            identity,
+            hook_evidence(hook.provider, Confidence::Confirmed),
+        );
         run.process = current.run.process.clone();
         let mut next = ManagedRun {
             run,
@@ -223,7 +343,7 @@ impl Launch {
 
     fn establish_context(&self, record: &mut ManagedRun, delivery: Uuid, session: &str) {
         record.run.identity.provider_session = Some(session.to_owned());
-        let evidence = hook_evidence(Confidence::Confirmed);
+        let evidence = hook_evidence(record.run.identity.provider, Confidence::Confirmed);
         record.apply(delivery, ObservationKind::ContextObserved, evidence.clone());
         if self.ambiguous {
             mark_gap(record, "session ID reused across a context boundary");
@@ -254,12 +374,9 @@ fn mark_gap(record: &mut ManagedRun, reason: &str) {
     );
 }
 
-fn hook_evidence(confidence: Confidence) -> Evidence {
+fn hook_evidence(provider: Provider, confidence: Confidence) -> Evidence {
     let mut evidence = evidence(Source::ProviderHook, confidence);
-    evidence.source_version = CLAUDE_VERSION.to_owned();
-    if confidence == Confidence::Inferred {
-        evidence.uncertainty = Some("other hooks can block a submitted prompt".to_owned());
-    }
+    evidence.source_version = qualified_version(provider).to_owned();
     evidence
 }
 
@@ -269,7 +386,7 @@ fn valid_id(id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use corvid_core::agent::{Provider, RequestStatus};
+    use corvid_core::agent::RequestStatus;
     use corvid_core::layout::Location;
 
     use super::*;
@@ -282,14 +399,14 @@ mod tests {
     }
 
     impl Fixture {
-        fn new() -> Self {
+        fn new(provider: Provider) -> Self {
             let mut agents = Agents::default();
             let location = Location {
                 workspace: Uuid::new_v4(),
                 tab: Uuid::new_v4(),
                 pane: Uuid::new_v4(),
             };
-            let association = agents.reserve(location, Uuid::new_v4(), Provider::Claude, true);
+            let association = agents.reserve(location, Uuid::new_v4(), provider, true);
             let owner = HookOwner {
                 incarnation: Incarnation {
                     boot_id: Uuid::new_v4(),
@@ -320,6 +437,7 @@ mod tests {
             Hook {
                 association: self.association,
                 delivery: Uuid::new_v4(),
+                provider: self.current().run.identity.provider,
                 event,
                 session: Some(session.to_owned()),
                 turn: Some("turn".to_owned()),
@@ -330,7 +448,16 @@ mod tests {
 
         fn apply(&mut self, session: &str, event: HookEvent) {
             let hook = self.hook(session, event);
-            self.agents.apply_hook(hook, self.owner).unwrap();
+            self.submit(hook).unwrap();
+        }
+
+        fn submit(&mut self, hook: Hook) -> Result<(), ProtocolFault> {
+            let producer = HookProducer {
+                pid: self.owner.incarnation.pid,
+                start_ticks: self.owner.incarnation.start_ticks,
+                executable: self.owner.executable,
+            };
+            self.agents.apply_hook(hook, self.owner, producer)
         }
 
         fn current(&self) -> &ManagedRun {
@@ -340,7 +467,7 @@ mod tests {
 
     #[test]
     fn delayed_hooks_and_child_events_cannot_mutate_the_replacement_run() {
-        let mut fixture = Fixture::new();
+        let mut fixture = Fixture::new(Provider::Claude);
         fixture.apply("old", HookEvent::Startup);
         fixture.apply("old", HookEvent::QuestionStarted);
         let original = fixture.current().run.identity.id;
@@ -349,15 +476,15 @@ mod tests {
         let clear = fixture.hook("new", HookEvent::Clear);
         let mut repeated = fixture.hook("new", HookEvent::Clear);
         repeated.delivery = clear.delivery;
-        fixture.agents.apply_hook(clear, fixture.owner).unwrap();
+        fixture.submit(clear).unwrap();
         let new_run = fixture.current().run.identity.id;
-        fixture.agents.apply_hook(repeated, fixture.owner).unwrap();
+        fixture.submit(repeated).unwrap();
 
         fixture.apply("old", HookEvent::QuestionResult);
         fixture.apply("old", HookEvent::ContextReplaced);
         let mut child = fixture.hook("new", HookEvent::QuestionStarted);
         child.actor = Some("child".to_owned());
-        fixture.agents.apply_hook(child, fixture.owner).unwrap();
+        fixture.submit(child).unwrap();
 
         assert_ne!(original, new_run);
         let previous = &fixture.agents.runs[&original];
@@ -377,5 +504,30 @@ mod tests {
         assert_eq!(replacement.run.process.value, ProcessLiveness::Running);
         assert_eq!(replacement.run.collection.value, Collection::Healthy);
         assert!(replacement.run.requests.is_empty());
+    }
+
+    #[test]
+    fn codex_keeps_distinct_provider_ownership_and_quarantines_ambiguous_startup() {
+        let mut fixture = Fixture::new(Provider::Codex);
+        fixture.apply("original", HookEvent::Startup);
+        let run = fixture.current().run.identity.id;
+        let mut foreign = fixture.hook("original", HookEvent::QuestionStarted);
+        foreign.provider = Provider::Claude;
+        assert_eq!(fixture.submit(foreign).unwrap_err().code, "Unauthorized");
+        assert!(fixture.current().run.requests.is_empty());
+        assert!(fixture.agents.focus_terminal(run).is_some());
+
+        fixture.apply("other", HookEvent::Startup);
+        fixture.apply("original", HookEvent::QuestionStarted);
+        let current = fixture.current();
+        assert_eq!(current.run.identity.id, run);
+        assert_eq!(
+            current.run.identity.provider_session.as_deref(),
+            Some("original")
+        );
+        assert_eq!(current.run.collection.value, Collection::GapDetected);
+        assert_eq!(current.run.process.value, ProcessLiveness::Running);
+        assert!(current.run.requests.is_empty());
+        assert!(fixture.agents.focus_terminal(run).is_none());
     }
 }

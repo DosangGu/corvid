@@ -617,6 +617,58 @@ message AgentInfo {
   optional uint64 response_observed_unix_ms = 16;
   AgentEndReason end_reason = 17;
   optional string qualified_provider_version = 18;
+  uint32 cancelled_requests = 19;
+  ProviderAdapter adapter = 20;
+}
+
+message ProviderAdapter {
+  ProviderExecutionMode mode = 1;
+  uint32 schema_revision = 2;
+  repeated HookEvent qualified_events = 3;
+  repeated ProviderCorrelation correlation = 4;
+  repeated ProviderCapability capabilities = 5;
+}
+
+enum ProviderExecutionMode {
+  PROVIDER_EXECUTION_MODE_UNSPECIFIED = 0;
+  PROVIDER_EXECUTION_MODE_INTERACTIVE_CLI = 1;
+  PROVIDER_EXECUTION_MODE_PROCESS_ONLY = 2;
+  PROVIDER_EXECUTION_MODE_NOTIFY_ONLY = 3;
+}
+
+enum ProviderCorrelation {
+  PROVIDER_CORRELATION_UNSPECIFIED = 0;
+  PROVIDER_CORRELATION_PROCESS_INCARNATION = 1;
+  PROVIDER_CORRELATION_DIRECT_CHILD = 2;
+  PROVIDER_CORRELATION_SESSION = 3;
+  PROVIDER_CORRELATION_TURN = 4;
+  PROVIDER_CORRELATION_TOOL = 5;
+  PROVIDER_CORRELATION_MANAGED_CODEX_BROKER = 6;
+}
+
+message ProviderCapability {
+  ProviderCapabilityKind kind = 1;
+  ProviderQualification qualification = 2;
+  string reason = 3;
+}
+
+enum ProviderCapabilityKind {
+  PROVIDER_CAPABILITY_KIND_UNSPECIFIED = 0;
+  PROVIDER_CAPABILITY_KIND_TURN_START = 1;
+  PROVIDER_CAPABILITY_KIND_RESPONSE_BOUNDARY = 2;
+  PROVIDER_CAPABILITY_KIND_EXPLICIT_QUESTION = 3;
+  PROVIDER_CAPABILITY_KIND_PERMISSION_REQUEST = 4;
+  PROVIDER_CAPABILITY_KIND_REQUEST_RESOLUTION = 5;
+  PROVIDER_CAPABILITY_KIND_SUBAGENT_IDENTITY = 6;
+  PROVIDER_CAPABILITY_KIND_REVALIDATE_CURRENT_STATE = 7;
+  PROVIDER_CAPABILITY_KIND_CONTEXT_REPLACEMENT = 8;
+}
+
+enum ProviderQualification {
+  PROVIDER_QUALIFICATION_UNSPECIFIED = 0;
+  PROVIDER_QUALIFICATION_EXACT = 1;
+  PROVIDER_QUALIFICATION_PARTIAL = 2;
+  PROVIDER_QUALIFICATION_UNAVAILABLE = 3;
 }
 
 enum AgentCollection {
@@ -649,6 +701,9 @@ enum HookEvent {
   HOOK_EVENT_CONTEXT_ENDED = 10;
   HOOK_EVENT_CONTEXT_REPLACED = 11;
   HOOK_EVENT_DELIVERY_GAP = 12;
+  HOOK_EVENT_TOOL_STARTED = 13;
+  HOOK_EVENT_TOOL_FINISHED = 14;
+  HOOK_EVENT_TURN_INTERRUPTED = 15;
 }
 
 message CollectHook {

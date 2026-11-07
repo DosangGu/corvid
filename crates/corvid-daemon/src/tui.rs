@@ -39,6 +39,7 @@ const CAPABILITIES: &[&str] = &[
     "select_view.v1",
     PAIR_CAPABILITY,
     "agent_launch.v1",
+    corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
 
@@ -500,6 +501,7 @@ fn launch(command: &LaunchCommand) -> Result<Launch, ProtocolFault> {
     let provider = match command.agent_provider.map(AgentProvider::try_from) {
         None => None,
         Some(Ok(AgentProvider::Claude)) => Some(Provider::Claude),
+        Some(Ok(AgentProvider::Codex)) => Some(Provider::Codex),
         _ => return Err(invalid("unsupported managed agent provider")),
     };
     let total: usize = command.argv.iter().map(Vec::len).sum();

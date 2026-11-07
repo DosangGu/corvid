@@ -68,3 +68,69 @@ isolated checks for malformed JSON, oversized input, and an open stalled pipe.
 Qualification remains for question cancellation, plan approval, child records,
 compaction, resume, and collector saturation. Delivery failures that occur before
 the daemon receives a frame can leave coverage unchanged.
+
+## Codex CLI 0.167.0 on Linux
+
+Recorded on Linux 7.2.14 with the standalone x86_64 musl release. The interactive
+CLI ran in a real PTY with a temporary home, a synthetic loopback Responses
+provider, and the CLI's interactive hook trust screen. The test used tmux 3.8 to
+inspect the outer terminal. Corvid does not need tmux to run the adapter.
+
+| Event | Observed fields and Corvid behavior |
+|---|---|
+| `SessionStart` | Initial `source=startup` identifies a session. `/new` also emits `startup` for a distinct session. Corvid quarantines that boundary and disables focus for the old run until the operator starts a newly qualified managed context. |
+| `UserPromptSubmit` | Session and turn IDs are present. Submission is tentative because other hooks can still block it. |
+| Bash `PreToolUse` / `PostToolUse` | An approved synthetic command carries the same session, turn, and tool-use IDs. Corvid tracks and closes that exact tool scope. |
+| Bash `PermissionRequest` | Reports the turn with no tool-use ID. The real approval dialog remains visible. The separate permission observation stays Unverified after the command runs. |
+| `request_user_input` | Plan mode displays the question and emits a matching `PostToolUse` after the user answers. Default mode can emit `PreToolUse` without a dialog. Corvid records a typed Unverified question and resolves it only on the matching result. |
+| `Interrupt` | Canceling a Plan question reports its exact turn. Corvid cancels that turn's correlated open scopes and rejects late attempts to reopen them. Other runs and uncorrelated permission observations retain their state. |
+| `Stop` | Reports a turn and `stop_hook_active`. Corvid records the first response boundary for a turn. The hook emits a fixed empty JSON object and does not request continuation. |
+| `notify` | A root completion can match the hook session and turn. The same executable also delivers completions with other thread IDs that have no matching lifecycle hook in this fixture. Corvid does not use `notify` to establish an interactive run's identity. |
+
+The official references describe the [Codex Hook contract](https://learn.chatgpt.com/docs/hooks)
+and [notification payload](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications).
+`SessionEnd` was not observed during the fixture's normal exit. Corvid uses OS
+exit evidence. Resume, compaction, plan approval, and child event ownership
+remain outside this release qualification.
+
+### Install the observer
+
+Run `corvid hooks codex` on the execution host. Merge the generated groups into
+the corresponding arrays in `~/.codex/hooks.json`. Review the exact generated
+commands in the CLI and trust them through the normal prompt or `/hooks`.
+
+```sh
+corvid attach --agent codex -- --disable daemon_auto_start
+corvid control agents
+```
+
+The explicit `daemon_auto_start` override was tested with two independent local
+interactive processes sharing a working directory and profile. The default
+launch also works when its managed internal app server is a direct child with
+the qualified package path and local daemon arguments. The observer inherits
+the host, epoch, and launch scope. Corvid verifies the launcher and pins the
+producer's PID, start time, and executable identity. A shared Codex daemon
+outside that launch's verified process chain cannot contribute observations.
+An unqualified release reports process-only coverage.
+
+### Reproduce
+
+```sh
+cargo build --locked
+export PYTHONDONTWRITEBYTECODE=1
+python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid
+python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --parallel
+for fault in missing-helper missing-collector timeout collector-saturated; do
+  python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --fault "$fault"
+done
+```
+
+The [allowlisted traces](../crates/corvid/tests/fixtures/codex/0.167.0/) use
+fixture identifiers. The parallel test held two questions with the same tool
+ID in separate same-directory runs. The companion synchronized both, focused
+the exact registered TUI, and acknowledged its alert while the dialog stayed
+visible. Answering that question left the second request open until it was
+interrupted. The failure tests exercised a real approval and completed its
+response despite the missing or timed-out observer, missing socket, and 32
+occupied collector connections. The standalone helper tests cover malformed,
+oversized, and stalled input with neutral output.

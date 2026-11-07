@@ -51,6 +51,9 @@ pub async fn attach(runtime: &Path, options: AttachOptions) -> Result<u32> {
     if options.agent.is_some() {
         required.push("agent_launch.v1".into());
     }
+    if options.agent == Some(AgentProvider::Codex) {
+        required.push(corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY.into());
+    }
     let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
     let escape_delay = options.escape_delay;
     let (connection, route) = timeout(

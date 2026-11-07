@@ -2,11 +2,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::PeerRole;
 use corvid_protocol::collector::CAPABILITY;
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::CollectHook;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::{PeerRole, ProtocolFault};
 use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
 
@@ -60,9 +60,12 @@ async fn send_hook(
         .context("collector closed")?;
     session.validate_scope(&reply)?;
     ensure!(
-        reply.request_id == request.request_id
-            && matches!(reply.body, Some(Body::HookCollected(_))),
-        "collector rejected observation"
+        reply.request_id == request.request_id,
+        "collector response ID mismatch"
     );
-    Ok(())
+    match reply.body {
+        Some(Body::HookCollected(_)) => Ok(()),
+        Some(Body::Error(fault)) => Err(ProtocolFault::from_wire(&fault).into()),
+        _ => anyhow::bail!("unexpected collector response"),
+    }
 }

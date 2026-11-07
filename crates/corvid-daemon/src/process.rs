@@ -1,11 +1,13 @@
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use corvid_core::agent::ProcessLiveness;
+use corvid_core::agent::{ProcessLiveness, Provider};
+use corvid_protocol::collector::CODEX_VERSION;
+use nix::unistd::geteuid;
 use uuid::Uuid;
 
 const PROBE_SPACING: Duration = Duration::from_millis(50);
@@ -62,23 +64,111 @@ pub(crate) struct HookOwner {
     pub(crate) executable: Executable,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HookProducer {
+    pub(crate) pid: u32,
+    pub(crate) start_ticks: u64,
+    pub(crate) executable: Executable,
+}
+
 impl HookOwner {
-    /// Exec-form hooks are direct children. Descendants can inherit launch data
-    /// through tool shells, including hooks from a nested provider invocation.
-    pub(crate) fn owns_peer(self, peer: u32) -> bool {
+    /// Scope an observer to the managed launcher or its qualified local broker.
+    /// Tool descendants may inherit the launch association without owning it.
+    pub(crate) fn verify_peer(self, peer: u32, provider: Provider) -> Option<HookProducer> {
         let pid = self.incarnation.pid;
-        let Some(peer) = read_stat(peer) else {
-            return false;
-        };
-        let Some(parent) = read_stat(pid) else {
-            return false;
-        };
-        peer.parent_pid == pid
-            && !peer.exited
-            && !parent.exited
-            && parent.start_ticks == self.incarnation.start_ticks
-            && Executable::read(Path::new(&format!("/proc/{pid}/exe"))) == Some(self.executable)
+        let launcher = read_stat(pid)?;
+        if launcher.exited
+            || launcher.start_ticks != self.incarnation.start_ticks
+            || Executable::read(Path::new(&format!("/proc/{pid}/exe"))) != Some(self.executable)
+        {
+            return None;
+        }
+        let observer = read_stat(peer)?;
+        if observer.exited {
+            return None;
+        }
+        if observer.parent_pid == pid {
+            return Some(HookProducer {
+                pid,
+                start_ticks: launcher.start_ticks,
+                executable: self.executable,
+            });
+        }
+        if provider != Provider::Codex {
+            return None;
+        }
+        codex_broker(observer.parent_pid, pid)
     }
+}
+
+fn codex_broker(pid: u32, launcher: u32) -> Option<HookProducer> {
+    let stat = read_stat(pid)?;
+    if stat.exited || stat.parent_pid != launcher {
+        return None;
+    }
+    let directory = PathBuf::from(format!("/proc/{pid}"));
+    let image = directory.join("exe");
+    let installed = fs::read_link(&image).ok()?;
+    let release = format!(
+        "packages/app-server-daemon/releases/{CODEX_VERSION}-x86_64-unknown-linux-musl/bin/codex"
+    );
+    if !installed.ends_with(release) {
+        return None;
+    }
+    let metadata = image.metadata().ok()?;
+    if metadata.uid() != geteuid().as_raw() || !metadata.is_file() || metadata.mode() & 0o022 != 0 {
+        return None;
+    }
+    let mut args = Vec::new();
+    File::open(directory.join("cmdline"))
+        .ok()?
+        .take(4097)
+        .read_to_end(&mut args)
+        .ok()?;
+    if args.len() > 4096 || !codex_broker_args(&args) {
+        return None;
+    }
+    let executable = Executable {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    let after = read_stat(pid)?;
+    if after.exited
+        || after.start_ticks != stat.start_ticks
+        || after.parent_pid != launcher
+        || Executable::read(&image) != Some(executable)
+    {
+        return None;
+    }
+    Some(HookProducer {
+        pid,
+        start_ticks: stat.start_ticks,
+        executable,
+    })
+}
+
+fn codex_broker_args(args: &[u8]) -> bool {
+    let mut argv = args
+        .strip_suffix(b"\0")
+        .unwrap_or(args)
+        .split(|byte| *byte == 0);
+    if argv.next().is_none_or(|program| program.is_empty()) {
+        return false;
+    }
+    let rest: Vec<_> = argv.collect();
+    rest == [
+        b"app-server".as_slice(),
+        b"--listen",
+        b"unix://",
+        b"--analytics-default-enabled",
+        b"--managed-daemon",
+    ] || rest
+        == [
+            b"app-server".as_slice(),
+            b"--listen",
+            b"unix://",
+            b"--managed-daemon",
+        ]
 }
 
 pub(crate) fn incarnation(pid: u32, boot_id: Uuid) -> Option<Incarnation> {

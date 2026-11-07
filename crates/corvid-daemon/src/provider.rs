@@ -1,3 +1,5 @@
+mod profile;
+
 use std::env;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
@@ -7,10 +9,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::Provider;
-use corvid_protocol::collector::CLAUDE_VERSION;
+use corvid_protocol::collector::{CLAUDE_VERSION, CODEX_VERSION};
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
 
 use crate::process::Executable;
+
+pub(crate) use profile::adapter;
 
 const VERSION_TIMEOUT: Duration = Duration::from_millis(350);
 
@@ -21,20 +25,24 @@ pub(crate) struct QualifiedProvider {
 
 impl QualifiedProvider {
     pub(crate) fn detect(provider: Provider) -> Option<Self> {
-        if provider != Provider::Claude {
-            return None;
-        }
-        let path = find_on_path("claude")?;
+        let (program, expected) = match provider {
+            Provider::Claude => ("claude", format!("{CLAUDE_VERSION} (Claude Code)")),
+            Provider::Codex => ("codex", format!("codex-cli {CODEX_VERSION}")),
+        };
+        let path = find_on_path(program)?;
         let executable = Executable::read(&path)?;
         let version = version_output(&path)?;
-        let (number, label) = version.trim().split_once(' ')?;
-        if number != CLAUDE_VERSION
-            || label != "(Claude Code)"
-            || Executable::read(&path) != Some(executable)
-        {
+        if version.trim() != expected || Executable::read(&path) != Some(executable) {
             return None;
         }
         Some(Self { path, executable })
+    }
+}
+
+pub(crate) fn qualified_version(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => CLAUDE_VERSION,
+        Provider::Codex => CODEX_VERSION,
     }
 }
 

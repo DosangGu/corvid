@@ -1,0 +1,14 @@
+{"hook_event_name":"SessionStart","session_id":"id-1","source":"startup","permission_mode":"default","parent":"codex"}
+{"hook_event_name":"UserPromptSubmit","session_id":"id-1","turn_id":"id-2","permission_mode":"default","parent":"codex"}
+{"hook_event_name":"PreToolUse","session_id":"id-1","turn_id":"id-2","tool_name":"request_user_input","tool_use_id":"call_answer","permission_mode":"default","parent":"codex"}
+{"type":"agent-turn-complete","thread-id":"id-3","turn-id":"id-4","parent":"codex"}
+{"hook_event_name":"SessionStart","session_id":"id-5","source":"startup","permission_mode":"default","parent":"codex"}
+{"hook_event_name":"UserPromptSubmit","session_id":"id-5","turn_id":"id-6","permission_mode":"default","parent":"codex"}
+{"hook_event_name":"PreToolUse","session_id":"id-5","turn_id":"id-6","tool_name":"request_user_input","tool_use_id":"call_answer","permission_mode":"default","parent":"codex"}
+{"type":"agent-turn-complete","thread-id":"id-7","turn-id":"id-8","parent":"codex"}
+{"hook_event_name":"PostToolUse","session_id":"id-1","turn_id":"id-2","tool_name":"request_user_input","tool_use_id":"call_answer","permission_mode":"default","parent":"codex"}
+{"hook_event_name":"Stop","session_id":"id-1","turn_id":"id-2","permission_mode":"default","stop_hook_active":false,"parent":"codex"}
+{"type":"agent-turn-complete","thread-id":"id-1","turn-id":"id-2","parent":"codex"}
+{"hook_event_name":"Interrupt","session_id":"id-5","turn_id":"id-6","permission_mode":"default","parent":"codex"}
+{"hook_event_name":"SessionEnd","session_id":"id-1","parent":"codex"}
+{"hook_event_name":"SessionEnd","session_id":"id-5","parent":"codex"}

@@ -169,6 +169,26 @@ fn agent_state(entries: &Entries, agent: &AgentState) -> Result<()> {
                 .is_none_or(valid_display),
         "invalid provider identity",
     )?;
+    if let Some(adapter) = &summary.adapter {
+        require(
+            adapter.mode > 0
+                && adapter.schema_revision > 0
+                && adapter.qualified_events.len() <= 32
+                && adapter.correlation.len() <= 16
+                && adapter.capabilities.len() <= 32
+                && adapter
+                    .qualified_events
+                    .iter()
+                    .chain(&adapter.correlation)
+                    .all(|value| *value > 0)
+                && adapter.capabilities.iter().all(|capability| {
+                    capability.kind > 0
+                        && capability.qualification > 0
+                        && valid_display(&capability.reason)
+                }),
+            "invalid provider adapter capabilities",
+        )?;
+    }
     if let Some(identity) = &summary.process_identity {
         require(
             identity.pid > 0
