@@ -1,5 +1,5 @@
 use std::fs::{self, File, Metadata, Permissions};
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -10,6 +10,7 @@ use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg, OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
 use nix::unistd::geteuid;
+use tempfile::NamedTempFile;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
@@ -78,6 +79,66 @@ impl RuntimeDir {
 
     pub fn lock_storage(&self) -> Result<Flock<File>> {
         self.lock_file("state.lock")
+    }
+
+    pub fn read_private_file(&self, name: &str, max_bytes: u64) -> Result<Option<Vec<u8>>> {
+        let _ = self.private_file_path(name)?;
+        let fd = match openat(
+            &self.directory,
+            name,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(error) => return Err(error).with_context(|| format!("opening {name}")),
+        };
+        let file = File::from(fd);
+        let metadata = file.metadata()?;
+        self.check_private_file(name, &metadata)?;
+        ensure!(metadata.len() <= max_bytes, "{name} exceeds its size limit");
+        let mut bytes = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= max_bytes,
+            "{name} exceeds its size limit"
+        );
+        Ok(Some(bytes))
+    }
+
+    pub fn replace_private_file(&self, name: &str, bytes: &[u8]) -> Result<()> {
+        let destination = self.private_file_path(name)?;
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) => self.check_private_file(name, &metadata)?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("examining {name}")),
+        }
+        let mut temporary = NamedTempFile::new_in(&self.path)?;
+        temporary.write_all(bytes)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(destination)
+            .with_context(|| format!("publishing {name}"))?;
+        self.directory.sync_all()?;
+        Ok(())
+    }
+
+    fn private_file_path(&self, name: &str) -> Result<PathBuf> {
+        let path = Path::new(name);
+        ensure!(
+            path.file_name() == Some(name.as_ref()),
+            "invalid private file name"
+        );
+        Ok(self.path.join(path))
+    }
+
+    fn check_private_file(&self, name: &str, metadata: &Metadata) -> Result<()> {
+        ensure!(
+            metadata.is_file() && metadata.uid() == self.uid && metadata.mode() & 0o777 == 0o600,
+            "{name} must be a private regular file owned by this UID"
+        );
+        Ok(())
     }
 
     fn lock_file(&self, name: &str) -> Result<Flock<File>> {

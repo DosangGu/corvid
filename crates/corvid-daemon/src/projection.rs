@@ -144,6 +144,7 @@ fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
         None => AgentResponse::Unspecified,
     };
     AgentState {
+        created_sequence: None,
         summary: Some(summary),
         lifecycle: lifecycle as i32,
         activity: activity as i32,

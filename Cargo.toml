@@ -2,6 +2,7 @@
 members = [
     "crates/corvid",
     "crates/corvid-client",
+    "crates/corvid-companion",
     "crates/corvid-core",
     "crates/corvid-daemon",
     "crates/corvid-protocol",
@@ -20,6 +21,7 @@ publish = false
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 corvid-client = { path = "crates/corvid-client" }
+corvid-companion = { path = "crates/corvid-companion" }
 corvid-core = { path = "crates/corvid-core" }
 corvid-daemon = { path = "crates/corvid-daemon" }
 corvid-protocol = { path = "crates/corvid-protocol" }

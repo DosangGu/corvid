@@ -1,0 +1,22 @@
+[package]
+name = "corvid-companion"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+corvid-client.workspace = true
+corvid-protocol.workspace = true
+nix = { workspace = true, features = ["fs"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

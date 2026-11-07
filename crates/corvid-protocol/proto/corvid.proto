@@ -330,6 +330,7 @@ message AgentState {
   uint32 active_work_items = 10;
   AgentResponse response = 11;
   optional string parent_run_id = 12;
+  optional uint64 created_sequence = 13;
 }
 
 enum AgentLifecycle {

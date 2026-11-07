@@ -192,6 +192,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "corvid-companion"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "corvid-client",
+ "corvid-protocol",
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "corvid-core"
 version = "0.1.0"
 dependencies = [

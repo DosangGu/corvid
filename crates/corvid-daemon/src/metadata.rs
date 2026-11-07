@@ -1,19 +1,12 @@
-use std::fs::{self, File};
-use std::io::{ErrorKind, Read, Write};
-use std::os::fd::AsFd;
-use std::os::unix::fs::MetadataExt;
+use std::fs::File;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use corvid_core::layout::Layout;
 use corvid_protocol::unix::RuntimeDir;
-use nix::errno::Errno;
-use nix::fcntl::{Flock, OFlag, openat};
-use nix::sys::stat::Mode;
-use nix::unistd::geteuid;
+use nix::fcntl::Flock;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -162,8 +155,9 @@ impl Store {
                 Candidate::Valid(_, current) if current == self.last_good => {}
                 _ => bail!("layout file changed outside the daemon; restart to reload it"),
             }
-            replace(&self.directory, BACKUP, &self.last_good)?;
-            replace(&self.directory, STATE, &bytes)?;
+            self.directory
+                .replace_private_file(BACKUP, &self.last_good)?;
+            self.directory.replace_private_file(STATE, &bytes)?;
             self.last_good = bytes;
         }
         Ok(())
@@ -185,18 +179,18 @@ fn load(directory: &RuntimeDir) -> Result<(Layout, Vec<u8>, Recovery)> {
 
     let backup = read(directory, BACKUP)?;
     if let Some(bytes) = &damaged {
-        replace(directory, QUARANTINE, bytes)?;
+        directory.replace_private_file(QUARANTINE, bytes)?;
         eprintln!("corvid daemon: damaged layout retained in {QUARANTINE}");
     }
     if let Candidate::Valid(layout, bytes) = backup {
-        replace(directory, STATE, &bytes)?;
+        directory.replace_private_file(STATE, &bytes)?;
         eprintln!("corvid daemon: restored layout from {BACKUP}");
         return Ok((layout, bytes, Recovery::Backup));
     }
 
     let layout = Layout::empty_terminal();
     let bytes = encode(&layout)?;
-    replace(directory, STATE, &bytes)?;
+    directory.replace_private_file(STATE, &bytes)?;
     let recovery = if damaged.is_some() || matches!(backup, Candidate::Damaged(_)) {
         eprintln!("corvid daemon: using a fresh empty layout");
         Recovery::Fresh
@@ -207,34 +201,9 @@ fn load(directory: &RuntimeDir) -> Result<(Layout, Vec<u8>, Recovery)> {
 }
 
 fn read(directory: &RuntimeDir, name: &str) -> Result<Candidate> {
-    let fd = match openat(
-        directory,
-        name,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    ) {
-        Ok(fd) => fd,
-        Err(Errno::ENOENT) => return Ok(Candidate::Missing),
-        Err(error) => return Err(error).with_context(|| format!("opening {name}")),
+    let Some(bytes) = directory.read_private_file(name, MAX_BYTES)? else {
+        return Ok(Candidate::Missing);
     };
-    let file = File::from(fd);
-    let metadata = file.metadata()?;
-    ensure!(
-        metadata.is_file()
-            && metadata.uid() == geteuid().as_raw()
-            && metadata.mode() & 0o777 == 0o600,
-        "{name} must be a private regular file owned by this UID"
-    );
-    ensure!(
-        metadata.len() <= MAX_BYTES,
-        "{name} exceeds the layout size limit and needs repair"
-    );
-    let mut bytes = Vec::new();
-    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() as u64 <= MAX_BYTES,
-        "{name} exceeds the layout size limit and needs repair"
-    );
     let Ok(version) = serde_json::from_slice::<Version>(&bytes) else {
         return Ok(Candidate::Damaged(bytes));
     };
@@ -264,26 +233,4 @@ fn encode(layout: &Layout) -> Result<Vec<u8>> {
         "layout exceeds the size limit"
     );
     Ok(bytes)
-}
-
-fn replace(directory: &RuntimeDir, name: &str, bytes: &[u8]) -> Result<()> {
-    let destination = directory.path().join(name);
-    match fs::symlink_metadata(&destination) {
-        Ok(metadata) => ensure!(
-            metadata.is_file()
-                && metadata.uid() == geteuid().as_raw()
-                && metadata.mode() & 0o777 == 0o600,
-            "{name} must be a private regular file owned by this UID"
-        ),
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error).with_context(|| format!("examining {name}")),
-    }
-    let mut temporary = NamedTempFile::new_in(directory.path())?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(destination)
-        .with_context(|| format!("publishing {name}"))?;
-    File::from(directory.as_fd().try_clone_to_owned()?).sync_all()?;
-    Ok(())
 }

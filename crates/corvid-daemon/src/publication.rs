@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use corvid_protocol::snapshot::EntityKey;
+use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{SnapshotDelta, SnapshotEntity};
 use corvid_protocol::{CONTROL_LIMIT, ProtocolFault};
 use prost::Message;
@@ -123,9 +124,19 @@ impl Publication {
     fn replace(&mut self, (group, entities): Projection, changes: &mut Changes) {
         let mut previous = self.groups.remove(&group).unwrap_or_default();
         let mut next = BTreeMap::new();
-        for entity in entities {
+        for mut entity in entities {
             let key = EntityKey::from_entity(&entity).expect("published entity must have a key");
-            let entry = match previous.remove(&key) {
+            let old = previous.remove(&key);
+            if let Some(Body::Agent(agent)) = &mut entity.body {
+                agent.created_sequence = old
+                    .as_deref()
+                    .and_then(|entity| match &entity.body {
+                        Some(Body::Agent(agent)) => agent.created_sequence,
+                        _ => None,
+                    })
+                    .or_else(|| self.sequence.checked_add(1));
+            }
+            let entry = match old {
                 Some(old) if *old == entity => old,
                 _ => {
                     let entity = Arc::new(entity);
@@ -273,8 +284,7 @@ pub(crate) fn resync() -> ProtocolFault {
 
 #[cfg(test)]
 mod tests {
-    use corvid_protocol::wire::WorkspaceState;
-    use corvid_protocol::wire::snapshot_entity::Body;
+    use corvid_protocol::wire::{AgentInfo, AgentState, WorkspaceState};
 
     use super::*;
 
@@ -302,6 +312,42 @@ mod tests {
         assert_eq!(delta.sequence, 1);
         assert_eq!(delta.body().upsert, layout("after".to_owned()).1);
         assert_eq!(state.sequence().unwrap(), 1);
+    }
+
+    #[test]
+    fn agent_creation_sequence_survives_later_publications() {
+        let mut state = Publication::seed(layout("before".to_owned()));
+        let run = Uuid::new_v4();
+        let agent = |active_turns| {
+            (
+                Group::Agent(run),
+                vec![SnapshotEntity {
+                    body: Some(Body::Agent(Box::new(AgentState {
+                        summary: Some(AgentInfo {
+                            agent_run_id: run.to_string(),
+                            ..Default::default()
+                        }),
+                        active_turns,
+                        ..Default::default()
+                    }))),
+                }],
+            )
+        };
+        state.commit(vec![layout("after".to_owned())]);
+        state.commit(vec![agent(0)]);
+        state.commit(vec![agent(1)]);
+        state.commit(vec![agent(1)]);
+
+        let capture = state.capture(false).unwrap();
+        assert_eq!(capture.sequence, 3);
+        let created = capture
+            .entities
+            .iter()
+            .find_map(|entity| match &entity.body {
+                Some(Body::Agent(agent)) => agent.created_sequence,
+                _ => None,
+            });
+        assert_eq!(created, Some(2));
     }
 
     #[tokio::test]
