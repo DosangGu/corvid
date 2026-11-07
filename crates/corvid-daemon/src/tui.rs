@@ -3,6 +3,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use corvid_core::layout::Location;
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
@@ -23,7 +24,6 @@ use crate::identity::Identity;
 use crate::terminal::{Action, AttachSpec, Event, Launch, TerminalHandle};
 
 const CAPABILITIES: &[&str] = &["attach.v1", "render.v1", "ping.v1", "paste.v1"];
-const WORKSPACE: &str = "main";
 const MAX_INPUT_CHUNK: usize = 8192;
 const EVENTS_CAPACITY: usize = 4;
 
@@ -31,6 +31,7 @@ pub(crate) async fn serve(
     stream: UnixStream,
     identity: &Identity,
     terminal: TerminalHandle,
+    location: Location,
 ) -> Result<()> {
     let Some((session, mut reader, mut writer)) = timeout(
         COMMAND_TIMEOUT,
@@ -46,7 +47,7 @@ pub(crate) async fn serve(
     let client = Uuid::new_v4();
     let (events, receiver) = mpsc::channel(EVENTS_CAPACITY);
     let attach = match session.validate_request(&request) {
-        Ok(Body::Attach(attach)) => attach_spec(client, attach, events),
+        Ok(Body::Attach(attach)) => attach_spec(client, attach, events, location),
         Ok(_) => Err(invalid("expected Attach request")),
         Err(error) => Err(error),
     };
@@ -72,8 +73,8 @@ pub(crate) async fn serve(
         client_id: client.to_string(),
         connection_generation: route.connection_generation,
         route_token: Some(wire_route(route)),
-        writer_leases: vec![WORKSPACE.to_owned()],
-        selection: Some(selection()),
+        writer_leases: vec![location.workspace.to_string()],
+        selection: Some(selection(location)),
     };
     send(
         &session,
@@ -84,7 +85,7 @@ pub(crate) async fn serve(
     .await?;
     let result = tokio::select! {
         result = read_commands(&session, &terminal, client, &mut reader) => result,
-        result = write_events(&session, &mut writer, receiver) => result,
+        result = write_events(&session, &mut writer, receiver, location) => result,
     };
     terminal.disconnect(client);
     result
@@ -169,6 +170,7 @@ async fn write_events(
     session: &Session,
     writer: &mut FrameWriter<OwnedWriteHalf>,
     mut events: mpsc::Receiver<Event>,
+    location: Location,
 ) -> Result<()> {
     while let Some(event) = events.recv().await {
         match event {
@@ -192,7 +194,7 @@ async fn write_events(
             Event::ViewChanged(route) => {
                 let view = ViewChanged {
                     view_revision: route.view_revision,
-                    selection: Some(selection()),
+                    selection: Some(selection(location)),
                     route_token: Some(wire_route(route)),
                 };
                 send(session, writer, None, Body::ViewChanged(view)).await?;
@@ -245,11 +247,12 @@ fn attach_spec(
     client: Uuid,
     attach: &Attach,
     events: mpsc::Sender<Event>,
+    location: Location,
 ) -> Result<AttachSpec, ProtocolFault> {
     if attach
         .workspace_id
         .as_deref()
-        .is_some_and(|workspace| workspace != WORKSPACE)
+        .is_some_and(|workspace| Uuid::parse_str(workspace) != Ok(location.workspace))
     {
         return Err(ProtocolFault::new("TargetGone", "workspace does not exist"));
     }
@@ -336,11 +339,11 @@ fn parse_route(route: &RouteToken) -> Result<InputRoute, ProtocolFault> {
     })
 }
 
-fn selection() -> ViewSelection {
+fn selection(location: Location) -> ViewSelection {
     ViewSelection {
-        workspace_id: WORKSPACE.to_owned(),
-        tab_id: "shell".to_owned(),
-        pane_id: "pane".to_owned(),
+        workspace_id: location.workspace.to_string(),
+        tab_id: location.tab.to_string(),
+        pane_id: location.pane.to_string(),
     }
 }
 

@@ -1,7 +1,8 @@
 # Linux Daemon Foundation
 
 The daemon owns the PTY and the screen. The attach process owns the outer TTY.
-The control socket supports `GetHost` and `Ping` independently of the attached TUI.
+The control socket supports host identity, health, workspace inventory, and ping
+independently of the attached TUI.
 
 ## Run Locally
 
@@ -27,9 +28,20 @@ captures paste and the daemon adds delimiters when the child enables that mode.
 An accepted write holds the input barrier until it finishes or stalls.
 
 Run `target/debug/corvid control host` to read the stable HostId and current
-ServerEpoch. The binary stdio relay runs as `corvid control --stdio` over a
+ServerEpoch. Run `corvid control workspaces` for workspace, tab, and pane IDs and
+`corvid control status` for live terminal and save status. The binary stdio relay
+runs as `corvid control --stdio` over a
 non-PTY connection. Give the runtime directory a trusted absolute path through
 `XDG_RUNTIME_DIR`, `CORVID_RUNTIME_DIR`, or `--runtime-dir`.
+
+The daemon saves layout IDs and the last observed launch directory in `state.json`.
+It publishes changes to a separate writer and debounces disk writes by one second.
+The state directory lock allows one writer. A successful save retains the preceding
+valid state in `state.json.bak`. Startup preserves bounded corrupt primary bytes in
+`state.json.corrupt`, then loads a valid backup or opens an empty layout. Newer
+schemas require a compatible binary. The status command reports the recovery source.
+The next terminal is created by an explicit launch. Use `attach --new --restore-cwd`
+to choose the recorded directory when it still exists.
 
 ## Verification
 
@@ -44,6 +56,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Area | Evidence |
 |---|---|
 | Identity and control | Restart changes the epoch and preserves the host ID. Concurrent startup fails. Corrupt identity bytes are preserved. A real CLI subprocess relays framed control messages over pipes. |
+| Layout recovery | After killing a daemon that owns a live PTY, a new daemon restores the workspace, tab, and pane IDs with an empty terminal slot. An explicit launch uses the saved directory and gets a new TerminalId. Corrupt state recovers from backup or a fresh layout, and a newer schema remains intact. |
 | Writer and redraw | A competing attach at a different size is refused and leaves the child size unchanged. A successful resize resets the render generation. The detached child progresses, then the next TUI shows its retained screen and PID. |
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |

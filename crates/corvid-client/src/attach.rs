@@ -34,6 +34,7 @@ pub async fn attach(
     runtime: &Path,
     launch: Option<Vec<OsString>>,
     escape_delay: Duration,
+    restore_cwd: bool,
 ) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
@@ -45,7 +46,7 @@ pub async fn attach(
     .await?;
     let (connection, route) = timeout(
         COMMAND_TIMEOUT,
-        request_attach(connection, viewport, launch),
+        request_attach(connection, viewport, launch, restore_cwd),
     )
     .await??;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -69,12 +70,17 @@ async fn request_attach(
     mut connection: Connection,
     viewport: Viewport,
     launch: Option<Vec<OsString>>,
+    restore_cwd: bool,
 ) -> Result<(Connection, RouteToken)> {
     let launch = launch
         .map(|argv| -> Result<LaunchCommand> {
             Ok(LaunchCommand {
                 argv: argv.into_iter().map(OsString::into_encoded_bytes).collect(),
-                cwd: Some(std::env::current_dir()?.as_os_str().as_bytes().to_vec()),
+                cwd: if restore_cwd {
+                    None
+                } else {
+                    Some(std::env::current_dir()?.as_os_str().as_bytes().to_vec())
+                },
             })
         })
         .transpose()?;

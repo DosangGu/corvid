@@ -29,6 +29,11 @@ struct Tui {
 
 impl Tui {
     async fn attach(runtime: &Path, argv: Option<Vec<Vec<u8>>>) -> Self {
+        let launch = argv.map(|argv| LaunchCommand { argv, cwd: None });
+        Self::attach_command(runtime, launch).await
+    }
+
+    async fn attach_command(runtime: &Path, launch: Option<LaunchCommand>) -> Self {
         let directory = RuntimeDir::open(runtime).unwrap();
         let (read, write) = directory
             .connect(SocketRole::Client)
@@ -50,7 +55,7 @@ impl Tui {
             viewport: Some(Viewport { cols: 80, rows: 24 }),
             terminal_capabilities: vec!["legacy_vt.v1".into()],
             requested_role: AttachRole::Writer as i32,
-            launch: argv.map(|argv| LaunchCommand { argv, cwd: None }),
+            launch,
         };
         writer
             .envelope(&session.envelope(Some("attach".into()), Body::Attach(attach)))
@@ -90,6 +95,118 @@ impl Tui {
             Frame::Structured(payload) => decode_envelope(&payload).unwrap().body,
         }
     }
+}
+
+async fn control(runtime: &Path, request: &str) -> String {
+    let result = command(runtime)
+        .args(["control", request])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    String::from_utf8(result.stdout).unwrap()
+}
+
+#[tokio::test]
+async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let workdir = temporary.path().join("recorded-directory");
+    std::fs::create_dir(&workdir).unwrap();
+    let mut first = daemon(&runtime, &state).await;
+    timeout(WAIT, async {
+        let before = control(&runtime, "workspaces").await;
+        let command = LaunchCommand {
+            argv: shell("printf 'OLD-TERMINAL\\n'; sleep 20"),
+            cwd: Some(workdir.as_os_str().as_encoded_bytes().to_vec()),
+        };
+        let mut tui = Tui::attach_command(&runtime, Some(command)).await;
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "OLD-TERMINAL").await;
+        loop {
+            let status = control(&runtime, "status").await;
+            assert!(status.contains("terminal_live=true"));
+            if status.contains("persistence=saved") {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        let stored = std::fs::read_to_string(state.join("state.json")).unwrap();
+        assert!(!stored.contains("OLD-TERMINAL"));
+        assert!(!stored.contains(&tui.route.terminal_id));
+        assert!(state.join("state.json.bak").is_file());
+        first.kill().await.unwrap();
+
+        let _second = daemon(&runtime, &state).await;
+        assert_eq!(before, control(&runtime, "workspaces").await);
+        assert!(
+            control(&runtime, "status")
+                .await
+                .contains("terminal_live=false")
+        );
+        let argv = shell("printf 'RESTORED=%s\\n' \"$(basename \"$PWD\")\"; sleep 3");
+        let mut reopened = Tui::attach(&runtime, Some(argv)).await;
+        assert_ne!(reopened.route.terminal_id, tui.route.terminal_id);
+        let mut output = Vec::new();
+        wait_for_text(&mut reopened, &mut output, "RESTORED=recorded-directory").await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn layout_recovery_preserves_evidence_and_future_schema() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let primary = state.join("state.json");
+    let backup = state.join("state.json.bak");
+    let mut first = daemon(&runtime, &state).await;
+    let original = control(&runtime, "workspaces").await;
+    first.kill().await.unwrap();
+    std::fs::copy(&primary, &backup).unwrap();
+    std::fs::write(&primary, b"{damaged").unwrap();
+
+    let mut recovered = daemon(&runtime, &state).await;
+    assert_eq!(control(&runtime, "workspaces").await, original);
+    assert!(
+        control(&runtime, "status")
+            .await
+            .contains("layout_recovery=backup")
+    );
+    assert_eq!(
+        std::fs::read(state.join("state.json.corrupt")).unwrap(),
+        b"{damaged"
+    );
+    recovered.kill().await.unwrap();
+
+    std::fs::write(&primary, b"{bad").unwrap();
+    std::fs::write(&backup, b"{bad-backup").unwrap();
+    let mut fresh = daemon(&runtime, &state).await;
+    assert_ne!(control(&runtime, "workspaces").await, original);
+    assert_eq!(
+        control(&runtime, "status").await,
+        "terminal_live=false\npersistence=saved\nlayout_recovery=fresh\n"
+    );
+    fresh.kill().await.unwrap();
+
+    let newer = br#"{"schema_version":99,"layout":{"future":true}}"#;
+    std::fs::write(&primary, newer).unwrap();
+    let refused = command(&runtime)
+        .arg("daemon")
+        .arg("--state-dir")
+        .arg(&state)
+        .output()
+        .await
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("unsupported layout schema 99"));
+    assert_eq!(std::fs::read(&primary).unwrap(), newer);
 }
 
 fn shell(script: &str) -> Vec<Vec<u8>> {

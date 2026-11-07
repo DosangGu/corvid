@@ -70,9 +70,20 @@ impl RuntimeDir {
     }
 
     pub fn lock_instance(&self) -> Result<Instance<'_>> {
+        Ok(Instance {
+            runtime: self,
+            _lock: self.lock_file("daemon.lock")?,
+        })
+    }
+
+    pub fn lock_storage(&self) -> Result<Flock<File>> {
+        self.lock_file("state.lock")
+    }
+
+    fn lock_file(&self, name: &str) -> Result<Flock<File>> {
         let fd = openat(
             &self.directory,
-            "daemon.lock",
+            name,
             OFlag::O_RDWR
                 | OFlag::O_CREAT
                 | OFlag::O_NOFOLLOW
@@ -80,7 +91,7 @@ impl RuntimeDir {
                 | OFlag::O_NONBLOCK,
             Mode::from_bits_truncate(0o600),
         )
-        .context("opening daemon instance lock")?;
+        .context("opening Corvid lock")?;
         let file = File::from(fd);
         let metadata = file.metadata()?;
         ensure!(
@@ -88,16 +99,12 @@ impl RuntimeDir {
                 && metadata.uid() == self.uid
                 && metadata.mode() & 0o777 == 0o600
                 && metadata.nlink() == 1,
-            "unsafe daemon instance lock"
+            "unsafe Corvid lock"
         );
 
-        let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock)
+        Flock::lock(file, FlockArg::LockExclusiveNonblock)
             .map_err(|(_, error)| error)
-            .context("acquiring daemon instance lock")?;
-        Ok(Instance {
-            runtime: self,
-            _lock: lock,
-        })
+            .with_context(|| format!("acquiring {name}"))
     }
 
     pub async fn connect(&self, role: SocketRole) -> Result<UnixStream> {

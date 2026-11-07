@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{GetHost, HostInfo, Ping};
+use corvid_protocol::wire::{
+    ConnectionStatus, GetConnectionStatus, GetHost, HostInfo, ListWorkspaces, Ping, WorkspaceList,
+};
 use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -21,6 +23,26 @@ pub async fn ping(runtime: &Path) -> Result<()> {
     match request(runtime, Body::Ping(Ping {}), "ping.v1").await? {
         Body::Pong(_) => Ok(()),
         _ => bail!("unexpected response to Ping"),
+    }
+}
+
+pub async fn status(runtime: &Path) -> Result<ConnectionStatus> {
+    match request(
+        runtime,
+        Body::GetConnectionStatus(GetConnectionStatus {}),
+        "connection_status.v1",
+    )
+    .await?
+    {
+        Body::ConnectionStatus(status) => Ok(status),
+        _ => bail!("unexpected response to GetConnectionStatus"),
+    }
+}
+
+pub async fn workspaces(runtime: &Path) -> Result<WorkspaceList> {
+    match request(runtime, Body::ListWorkspaces(ListWorkspaces {}), "list.v1").await? {
+        Body::WorkspaceList(workspaces) => Ok(workspaces),
+        _ => bail!("unexpected response to ListWorkspaces"),
     }
 }
 

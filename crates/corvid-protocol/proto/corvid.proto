@@ -18,6 +18,10 @@ message Envelope {
     Pong pong = 13;
     GetHost get_host = 14;
     HostInfo host_info = 15;
+    GetConnectionStatus get_connection_status = 16;
+    ConnectionStatus connection_status = 17;
+    ListWorkspaces list_workspaces = 18;
+    WorkspaceList workspace_list = 19;
     Attach attach = 30;
     Attached attached = 31;
     InputChunk input_chunk = 32;
@@ -64,6 +68,46 @@ message GetHost {}
 message HostInfo {
   string host_id = 1;
   string server_epoch = 2;
+}
+
+message GetConnectionStatus {}
+
+enum PersistenceState {
+  PERSISTENCE_STATE_UNSPECIFIED = 0;
+  PERSISTENCE_STATE_SAVED = 1;
+  PERSISTENCE_STATE_PENDING = 2;
+  PERSISTENCE_STATE_FAILED = 3;
+}
+
+enum LayoutRecovery {
+  LAYOUT_RECOVERY_UNSPECIFIED = 0;
+  LAYOUT_RECOVERY_NORMAL = 1;
+  LAYOUT_RECOVERY_BACKUP = 2;
+  LAYOUT_RECOVERY_FRESH = 3;
+}
+
+message ConnectionStatus {
+  bool terminal_live = 1;
+  PersistenceState persistence = 2;
+  LayoutRecovery layout_recovery = 3;
+}
+
+message ListWorkspaces {}
+
+message WorkspaceList {
+  repeated WorkspaceInfo workspaces = 1;
+}
+
+message WorkspaceInfo {
+  string workspace_id = 1;
+  string label = 2;
+  repeated TabInfo tabs = 3;
+}
+
+message TabInfo {
+  string tab_id = 1;
+  string label = 2;
+  repeated string pane_ids = 3;
 }
 
 enum AttachRole {

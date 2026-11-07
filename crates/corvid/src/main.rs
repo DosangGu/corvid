@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
+use corvid_protocol::wire::{LayoutRecovery, PersistenceState};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -32,6 +33,9 @@ enum Command {
         /// Start a new terminal with the user's shell.
         #[arg(long)]
         new: bool,
+        /// Start the shell in the last recorded directory if it still exists.
+        #[arg(long, requires = "new")]
+        restore_cwd: bool,
         /// Milliseconds to wait for a fragmented escape sequence.
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=2000))]
         escape_delay_ms: u64,
@@ -52,6 +56,8 @@ enum Command {
 enum ControlRequest {
     Host,
     Ping,
+    Status,
+    Workspaces,
 }
 
 fn main() -> ExitCode {
@@ -95,11 +101,18 @@ async fn run(options: Options) -> Result<u32> {
         }
         Command::Attach {
             new,
+            restore_cwd,
             escape_delay_ms,
             argv,
         } => {
             let launch = (new || !argv.is_empty()).then_some(argv);
-            corvid_client::attach(&runtime, launch, Duration::from_millis(escape_delay_ms)).await
+            corvid_client::attach(
+                &runtime,
+                launch,
+                Duration::from_millis(escape_delay_ms),
+                restore_cwd,
+            )
+            .await
         }
         Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
         Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {
@@ -114,6 +127,39 @@ async fn run(options: Options) -> Result<u32> {
             ControlRequest::Ping => {
                 corvid_client::ping(&runtime).await?;
                 println!("pong");
+                Ok(0)
+            }
+            ControlRequest::Status => {
+                let status = corvid_client::status(&runtime).await?;
+                let persistence = match PersistenceState::try_from(status.persistence) {
+                    Ok(PersistenceState::Saved) => "saved",
+                    Ok(PersistenceState::Pending) => "pending",
+                    Ok(PersistenceState::Failed) => "failed",
+                    _ => bail!("unknown persistence status"),
+                };
+                let recovery = match LayoutRecovery::try_from(status.layout_recovery) {
+                    Ok(LayoutRecovery::Normal) => "normal",
+                    Ok(LayoutRecovery::Backup) => "backup",
+                    Ok(LayoutRecovery::Fresh) => "fresh",
+                    _ => bail!("unknown layout recovery state"),
+                };
+                println!(
+                    "terminal_live={}\npersistence={persistence}\nlayout_recovery={recovery}",
+                    status.terminal_live
+                );
+                Ok(0)
+            }
+            ControlRequest::Workspaces => {
+                let list = corvid_client::workspaces(&runtime).await?;
+                for workspace in list.workspaces {
+                    println!("workspace {} {}", workspace.workspace_id, workspace.label);
+                    for tab in workspace.tabs {
+                        println!("  tab {} {}", tab.tab_id, tab.label);
+                        for pane in tab.pane_ids {
+                            println!("    pane {pane}");
+                        }
+                    }
+                }
                 Ok(0)
             }
         },

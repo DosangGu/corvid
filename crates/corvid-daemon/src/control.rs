@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{Envelope, HostInfo, Pong};
+use corvid_protocol::wire::{
+    ConnectionStatus, Envelope, HostInfo, LayoutRecovery, PersistenceState, Pong, TabInfo,
+    WorkspaceInfo, WorkspaceList,
+};
 use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole,
     ProtocolFault, Session, accept_hello,
@@ -12,11 +15,18 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::timeout;
 
 use crate::identity::Identity;
+use crate::metadata::{MetadataView, Recovery, SaveState};
+use crate::terminal::TerminalHandle;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const CAPABILITIES: &[&str] = &["host.v1", "ping.v1"];
+const CAPABILITIES: &[&str] = &["host.v1", "ping.v1", "connection_status.v1", "list.v1"];
 
-pub(crate) async fn serve(stream: UnixStream, identity: &Identity) -> Result<()> {
+pub(crate) async fn serve(
+    stream: UnixStream,
+    identity: &Identity,
+    metadata: &MetadataView,
+    terminal: &TerminalHandle,
+) -> Result<()> {
     let Some((session, mut reader, mut writer)) = timeout(
         COMMAND_TIMEOUT,
         handshake(stream, identity, PeerRole::Control, CAPABILITIES),
@@ -33,6 +43,8 @@ pub(crate) async fn serve(stream: UnixStream, identity: &Identity) -> Result<()>
                 host_id: identity.host_id.clone(),
                 server_epoch: identity.epoch.clone(),
             }),
+            Ok(Body::GetConnectionStatus(_)) => Body::ConnectionStatus(status(metadata, terminal)),
+            Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(workspaces(metadata)),
             Ok(_) => Body::Error(
                 ProtocolFault::new("UnsupportedCapability", "unavailable control method")
                     .into_wire(),
@@ -43,6 +55,50 @@ pub(crate) async fn serve(stream: UnixStream, identity: &Identity) -> Result<()>
         timeout(COMMAND_TIMEOUT, writer.envelope(&reply)).await??;
     }
     Ok(())
+}
+
+fn status(metadata: &MetadataView, terminal: &TerminalHandle) -> ConnectionStatus {
+    let persistence = match metadata.save_state() {
+        SaveState::Saved => PersistenceState::Saved,
+        SaveState::Pending => PersistenceState::Pending,
+        SaveState::Failed => PersistenceState::Failed,
+    };
+    let recovery = match metadata.recovery {
+        Recovery::Normal => LayoutRecovery::Normal,
+        Recovery::Backup => LayoutRecovery::Backup,
+        Recovery::Fresh => LayoutRecovery::Fresh,
+    };
+    ConnectionStatus {
+        terminal_live: terminal.has_live_terminal(),
+        persistence: persistence as i32,
+        layout_recovery: recovery as i32,
+    }
+}
+
+fn workspaces(metadata: &MetadataView) -> WorkspaceList {
+    let layout = metadata.layout();
+    let workspaces = layout
+        .workspaces
+        .iter()
+        .map(|workspace| WorkspaceInfo {
+            workspace_id: workspace.id.to_string(),
+            label: workspace.label.clone(),
+            tabs: workspace
+                .tabs
+                .iter()
+                .map(|tab| {
+                    let mut pane_ids = Vec::new();
+                    tab.root.pane_ids(&mut pane_ids);
+                    TabInfo {
+                        tab_id: tab.id.to_string(),
+                        label: tab.label.clone(),
+                        pane_ids,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    WorkspaceList { workspaces }
 }
 
 type Connection = (

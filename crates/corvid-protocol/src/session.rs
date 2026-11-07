@@ -117,7 +117,11 @@ impl Session {
 
         let body = known_body(request)?;
         match (self.role, body) {
-            (_, Body::Ping(_)) | (PeerRole::Control, Body::GetHost(_)) => Ok(body),
+            (_, Body::Ping(_))
+            | (
+                PeerRole::Control,
+                Body::GetHost(_) | Body::GetConnectionStatus(_) | Body::ListWorkspaces(_),
+            ) => Ok(body),
             (PeerRole::Tui, Body::Attach(attach)) => {
                 match AttachRole::try_from(attach.requested_role) {
                     Ok(AttachRole::Writer) => Ok(body),

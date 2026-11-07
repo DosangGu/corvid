@@ -3,6 +3,8 @@ use std::num::NonZeroU16;
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod layout;
+
 pub const KEY_LEADER: u8 = 0x1d;
 pub const PASTE_START: &[u8; 6] = b"\x1b[200~";
 pub const PASTE_END: &[u8; 6] = b"\x1b[201~";

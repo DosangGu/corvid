@@ -1,13 +1,17 @@
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read};
+use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
@@ -104,13 +108,30 @@ enum Command {
 #[derive(Clone)]
 pub(crate) struct TerminalHandle {
     commands: mpsc::Sender<Command>,
+    live: Arc<AtomicBool>,
 }
 
 impl TerminalHandle {
-    pub(crate) fn start() -> (Self, JoinHandle<()>) {
+    pub(crate) fn start(
+        layouts: watch::Sender<Arc<Layout>>,
+        location: Location,
+    ) -> (Self, JoinHandle<()>) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
-        let worker = tokio::task::spawn_blocking(|| Worker::default().run(receiver));
-        (Self { commands }, worker)
+        let live = Arc::new(AtomicBool::new(false));
+        let mut worker = Worker {
+            terminal: None,
+            lease: None,
+            generation: 0,
+            layouts,
+            location,
+            live: Arc::clone(&live),
+        };
+        let worker = tokio::task::spawn_blocking(move || worker.run(receiver));
+        (Self { commands, live }, worker)
+    }
+
+    pub(crate) fn has_live_terminal(&self) -> bool {
+        self.live.load(Ordering::Acquire)
     }
 
     pub(crate) async fn attach(&self, spec: AttachSpec) -> Reply<InputRoute> {
@@ -150,11 +171,13 @@ fn overloaded() -> ProtocolFault {
     ProtocolFault::new("LimitExceeded", "terminal command queue is unavailable")
 }
 
-#[derive(Default)]
 struct Worker {
     terminal: Option<Running>,
     lease: Option<Lease>,
     generation: u64,
+    layouts: watch::Sender<Arc<Layout>>,
+    location: Location,
+    live: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -234,12 +257,8 @@ impl Worker {
                 ));
             }
             (None, Some(launch)) => {
-                self.terminal = Some(Running::spawn(launch, spec.viewport).map_err(|_| {
-                    ProtocolFault::new(
-                        "TerminalStartFailed",
-                        "unable to start the requested terminal",
-                    )
-                })?);
+                self.terminal = Some(self.start_terminal(launch, spec.viewport)?);
+                self.live.store(true, Ordering::Release);
             }
             (None, None) => {
                 return Err(ProtocolFault::new(
@@ -260,6 +279,50 @@ impl Worker {
         self.lease = Some(Lease::new(route, spec.events));
         self.generation = generation;
         Ok(route)
+    }
+
+    fn start_terminal(&self, mut launch: Launch, viewport: Viewport) -> Reply<Running> {
+        let mut layout = Arc::clone(&self.layouts.borrow());
+        if launch.cwd.is_none() {
+            launch.cwd = layout
+                .last_cwd(self.location)
+                .map(|cwd| PathBuf::from(OsString::from_vec(cwd.path.clone())))
+                .filter(|path| path.is_dir());
+        }
+        let record = if let Some(path) = &launch.cwd {
+            if !path.is_dir() {
+                return Err(ProtocolFault::new(
+                    "InvalidMessage",
+                    "launch directory does not exist",
+                ));
+            }
+            let time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let cwd = CwdObservation {
+                path: path.as_os_str().as_encoded_bytes().to_vec(),
+                observed_unix_ms: u64::try_from(time.as_millis()).unwrap_or(u64::MAX),
+                source: CwdSource::LaunchDirectory,
+            };
+            Arc::make_mut(&mut layout)
+                .record_cwd(self.location, cwd)
+                .map_err(|_| {
+                    ProtocolFault::new("InvalidMessage", "invalid layout working directory")
+                })?;
+            true
+        } else {
+            false
+        };
+        let terminal = Running::spawn(launch, viewport).map_err(|_| {
+            ProtocolFault::new(
+                "TerminalStartFailed",
+                "unable to start the requested terminal",
+            )
+        })?;
+        if record {
+            self.layouts.send_replace(layout);
+        }
+        Ok(terminal)
     }
 
     fn apply(&mut self, client: Uuid, request_id: Option<String>, action: Action) -> Reply<()> {
@@ -385,6 +448,9 @@ impl Worker {
                 return;
             }
         };
+        if terminal.exit.is_some() {
+            self.live.store(false, Ordering::Release);
+        }
         if terminal.exit.is_some()
             && let Some(failure) = terminal.input.interrupted_paste()
         {
@@ -439,6 +505,7 @@ impl Worker {
         self.revoke();
         if terminal_failed {
             self.terminal = None;
+            self.live.store(false, Ordering::Release);
         }
     }
 
