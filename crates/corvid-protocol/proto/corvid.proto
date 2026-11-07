@@ -24,6 +24,8 @@ message Envelope {
     WorkspaceList workspace_list = 19;
     ListAgents list_agents = 21;
     AgentList agent_list = 22;
+    ListClients list_clients = 23;
+    ClientList client_list = 24;
     Attach attach = 30;
     Attached attached = 31;
     InputChunk input_chunk = 32;
@@ -40,6 +42,13 @@ message Envelope {
     WriterClaimed writer_claimed = 43;
     CollectHook collect_hook = 60;
     HookCollected hook_collected = 61;
+    GetSnapshot get_snapshot = 70;
+    SnapshotWatch snapshot_watch = 71;
+    SnapshotBegin snapshot_begin = 72;
+    SnapshotChunk snapshot_chunk = 73;
+    SnapshotEnd snapshot_end = 74;
+    SnapshotDelta snapshot_delta = 75;
+    WatchReady watch_ready = 76;
     RpcError error = 90;
   }
 }
@@ -121,6 +130,217 @@ message ListAgents {}
 
 message AgentList {
   repeated AgentInfo agents = 1;
+}
+
+message ListClients {}
+
+message ClientList {
+  repeated ClientState clients = 1;
+}
+
+message ClientState {
+  string client_id = 1;
+  uint64 connection_generation = 2;
+  optional string terminal_id = 3;
+  ViewSelection selection = 4;
+  optional uint64 view_revision = 5;
+  Viewport viewport = 6;
+  repeated WriterLeaseState writer_leases = 7;
+}
+
+message WriterLeaseState {
+  string workspace_id = 1;
+  uint64 generation = 2;
+}
+
+message GetSnapshot {}
+message SnapshotWatch {}
+
+// Snapshot frames carry the base revision in Envelope.sequence.
+message SnapshotBegin {
+  uint32 chunks = 1;
+  repeated string capabilities = 2;
+}
+
+message SnapshotChunk {
+  uint32 index = 1;
+  repeated SnapshotEntity entities = 2;
+}
+
+message SnapshotEnd {}
+message WatchReady {}
+
+message SnapshotDelta {
+  repeated SnapshotEntity upsert = 1;
+  repeated EntityRef remove = 2;
+}
+
+enum EntityKind {
+  ENTITY_KIND_UNSPECIFIED = 0;
+  ENTITY_KIND_WORKSPACE = 1;
+  ENTITY_KIND_TERMINAL = 2;
+  ENTITY_KIND_CLIENT = 3;
+  ENTITY_KIND_AGENT = 4;
+  ENTITY_KIND_REQUEST = 5;
+  ENTITY_KIND_ATTENTION = 6;
+}
+
+message EntityRef {
+  EntityKind kind = 1;
+  string id = 2;
+  // Request and attention entries are scoped to their agent run.
+  optional string agent_run_id = 3;
+}
+
+message SnapshotEntity {
+  oneof body {
+    WorkspaceState workspace = 1;
+    TerminalState terminal = 2;
+    ClientState client = 3;
+    AgentState agent = 4;
+    RequestState request = 5;
+    AttentionState attention = 6;
+  }
+}
+
+message WorkspaceState {
+  string workspace_id = 1;
+  string label = 2;
+  repeated TabState tabs = 3;
+}
+
+message TabState {
+  string tab_id = 1;
+  string label = 2;
+  // Preorder tree rooted at index zero. Split children refer to this array.
+  repeated LayoutNodeState nodes = 3;
+}
+
+message LayoutNodeState {
+  oneof body {
+    string pane_id = 1;
+    SplitState split = 2;
+  }
+}
+
+message SplitState {
+  SplitAxis axis = 1;
+  repeated uint32 children = 2;
+}
+
+enum SplitAxis {
+  SPLIT_AXIS_UNSPECIFIED = 0;
+  SPLIT_AXIS_HORIZONTAL = 1;
+  SPLIT_AXIS_VERTICAL = 2;
+}
+
+message TerminalState {
+  string terminal_id = 1;
+  ViewSelection location = 2;
+}
+
+message AgentState {
+  AgentInfo summary = 1;
+  AgentLifecycle lifecycle = 2;
+  AgentActivity activity = 3;
+  EvidenceState lifecycle_evidence = 4;
+  EvidenceState process_evidence = 5;
+  EvidenceState activity_evidence = 6;
+  EvidenceState collection_evidence = 7;
+  EvidenceState response_evidence = 8;
+  uint32 active_turns = 9;
+  uint32 active_work_items = 10;
+  AgentResponse response = 11;
+  optional string parent_run_id = 12;
+}
+
+enum AgentLifecycle {
+  AGENT_LIFECYCLE_UNSPECIFIED = 0;
+  AGENT_LIFECYCLE_UNKNOWN = 1;
+  AGENT_LIFECYCLE_LIVE = 2;
+  AGENT_LIFECYCLE_ENDED = 3;
+}
+
+enum AgentActivity {
+  AGENT_ACTIVITY_UNSPECIFIED = 0;
+  AGENT_ACTIVITY_UNKNOWN = 1;
+  AGENT_ACTIVITY_WORKING = 2;
+  AGENT_ACTIVITY_AWAITING_PROMPT = 3;
+  AGENT_ACTIVITY_INTERRUPTED = 4;
+  AGENT_ACTIVITY_ERROR = 5;
+}
+
+enum AgentResponse {
+  AGENT_RESPONSE_UNSPECIFIED = 0;
+  AGENT_RESPONSE_OBSERVED = 1;
+  AGENT_RESPONSE_INTERRUPTED = 2;
+  AGENT_RESPONSE_FAILED = 3;
+}
+
+message EvidenceState {
+  EvidenceSource source = 1;
+  string source_version = 2;
+  uint64 observed_unix_ms = 3;
+  optional uint64 provider_unix_ms = 4;
+  EvidenceConfidence confidence = 5;
+  optional string uncertainty = 6;
+  uint64 coverage_generation = 7;
+}
+
+enum EvidenceSource {
+  EVIDENCE_SOURCE_UNSPECIFIED = 0;
+  EVIDENCE_SOURCE_LAUNCH = 1;
+  EVIDENCE_SOURCE_PROVIDER_HOOK = 2;
+  EVIDENCE_SOURCE_PROVIDER_NOTIFY = 3;
+  EVIDENCE_SOURCE_PROCESS_PROBE = 4;
+  EVIDENCE_SOURCE_CHILD_EXIT = 5;
+  EVIDENCE_SOURCE_COLLECTOR = 6;
+}
+
+enum EvidenceConfidence {
+  EVIDENCE_CONFIDENCE_UNSPECIFIED = 0;
+  EVIDENCE_CONFIDENCE_CONFIRMED = 1;
+  EVIDENCE_CONFIDENCE_INFERRED = 2;
+  EVIDENCE_CONFIDENCE_UNKNOWN = 3;
+}
+
+message RequestState {
+  string agent_run_id = 1;
+  string request_id = 2;
+  InputRequestKind kind = 3;
+  InputRequestStatus status = 4;
+  EvidenceState evidence = 5;
+}
+
+enum InputRequestKind {
+  INPUT_REQUEST_KIND_UNSPECIFIED = 0;
+  INPUT_REQUEST_KIND_QUESTION = 1;
+  INPUT_REQUEST_KIND_PLAN_APPROVAL = 2;
+  INPUT_REQUEST_KIND_PERMISSION = 3;
+}
+
+enum InputRequestStatus {
+  INPUT_REQUEST_STATUS_UNSPECIFIED = 0;
+  INPUT_REQUEST_STATUS_PENDING = 1;
+  INPUT_REQUEST_STATUS_RESOLVED = 2;
+  INPUT_REQUEST_STATUS_CANCELLED = 3;
+  INPUT_REQUEST_STATUS_UNVERIFIED = 4;
+}
+
+message AttentionState {
+  string agent_run_id = 1;
+  string attention_id = 2;
+  AttentionReason reason = 3;
+  uint64 created_unix_ms = 4;
+  optional uint64 acknowledged_unix_ms = 5;
+  optional string request_id = 6;
+}
+
+enum AttentionReason {
+  ATTENTION_REASON_UNSPECIFIED = 0;
+  ATTENTION_REASON_INPUT = 1;
+  ATTENTION_REASON_RESPONSE = 2;
+  ATTENTION_REASON_FAILURE = 3;
 }
 
 enum AgentProvider {

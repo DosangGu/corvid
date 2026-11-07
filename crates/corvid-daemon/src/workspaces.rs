@@ -8,7 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
-use corvid_protocol::wire::AgentList;
+use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
+use corvid_protocol::wire::{
+    AgentList, ClientList, ClientState, TerminalState, Viewport as WireViewport, WriterLeaseState,
+};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -18,6 +21,8 @@ use uuid::Uuid;
 use crate::agents::{Agents, Hook, HookBinding};
 use crate::collector::HookEnvironment;
 use crate::process::{self, HookOwner, ProbeBudget};
+use crate::projection;
+use crate::publication::{Capture, Group, Projection, Publication};
 use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, TerminalHandle};
 
 const MAX_PTY_WORKERS: usize = 32;
@@ -72,10 +77,24 @@ pub(crate) struct Workspaces {
 #[derive(Default)]
 pub(crate) struct Registry {
     pub(crate) agents: Agents,
+    publication: Publication,
+    terminals: HashMap<Uuid, Location>,
+    clients: HashMap<Uuid, Client>,
     generation: u64,
     claims: HashMap<Uuid, Claim>,
     slots: HashMap<Uuid, Slot>,
     retired: Vec<JoinHandle<()>>,
+}
+
+struct Client {
+    generation: u64,
+    view: Option<ClientView>,
+}
+
+struct ClientView {
+    route: InputRoute,
+    location: Location,
+    viewport: Viewport,
 }
 
 #[derive(Clone, Copy)]
@@ -96,8 +115,12 @@ impl Workspaces {
         layouts: watch::Sender<Arc<Layout>>,
         hook_environment: Arc<HookEnvironment>,
     ) -> Self {
+        let publication = Publication::seed(projection::layout(&layouts.borrow()));
         Self {
-            registry: Arc::new(Mutex::new(Registry::default())),
+            registry: Arc::new(Mutex::new(Registry {
+                publication,
+                ..Registry::default()
+            })),
             layouts,
             boot_id: process::boot_id(),
             probes: Arc::new(ProbeBudget::default()),
@@ -115,8 +138,29 @@ impl Workspaces {
         self.lock_registry().agents.inventory()
     }
 
+    pub(crate) fn clients(&self) -> ClientList {
+        let registry = self.lock_registry();
+        let mut clients: Vec<_> = registry
+            .clients
+            .keys()
+            .filter_map(|id| registry.client_state(*id))
+            .collect();
+        clients.sort_by(|first, second| first.client_id.cmp(&second.client_id));
+        ClientList { clients }
+    }
+
+    pub(crate) fn snapshot(&self, watch: bool) -> Reply<Capture> {
+        self.lock_registry().publication.capture(watch)
+    }
+
+    pub(crate) fn public_sequence(&self) -> Reply<u64> {
+        self.lock_registry().publication.sequence()
+    }
+
     pub(crate) fn tick_agents(&self) {
-        self.lock_registry().agents.tick();
+        let mut registry = self.lock_registry();
+        registry.agents.tick();
+        registry.publish(Vec::new());
     }
 
     pub(crate) fn hook_binding(&self, association: Uuid) -> HookBinding {
@@ -124,7 +168,10 @@ impl Workspaces {
     }
 
     pub(crate) fn apply_hook(&self, hook: Hook, owner: HookOwner) -> Reply<()> {
-        self.lock_registry().agents.apply_hook(hook, owner)
+        let mut registry = self.lock_registry();
+        registry.agents.apply_hook(hook, owner)?;
+        registry.publish(Vec::new());
+        Ok(())
     }
 
     pub(crate) fn any_live(&self) -> bool {
@@ -161,6 +208,7 @@ impl Workspaces {
                     self.record_cwd(location, &cwd);
                 }
                 registry.resize_hidden(client, active.viewport, Some(active.location.pane));
+                registry.record_view(&active);
                 Ok(active)
             }
             Err(fault) => {
@@ -184,6 +232,7 @@ impl Workspaces {
         let generation = registry.next_generation()?;
         let terminal = self.reserve_slot(&mut registry, location, target.launch.is_some())?;
         if target.new_workspace.is_some() || target.new_tab.is_some() {
+            registry.publish(vec![projection::layout(&layout)]);
             self.layouts.send_replace(layout);
         }
         registry
@@ -211,9 +260,10 @@ impl Workspaces {
     }
 
     pub(crate) fn release(&self, client: Uuid) {
-        self.lock_registry()
-            .claims
-            .retain(|_, claim| claim.client != client);
+        let mut registry = self.lock_registry();
+        registry.claims.retain(|_, claim| claim.client != client);
+        registry.clients.remove(&client);
+        registry.publish(vec![(Group::Client(client), Vec::new())]);
     }
 
     pub(crate) fn claim(&self, client: Uuid, workspace: Uuid, viewport: Viewport) -> Reply<u64> {
@@ -238,15 +288,18 @@ impl Workspaces {
             .claims
             .insert(workspace, Claim { client, generation });
         registry.resize_hidden(client, viewport, None);
+        registry.publish_client(client);
         Ok(generation)
     }
 
     pub(crate) fn resize_hidden(&self, active: &Active) {
-        self.lock_registry().resize_hidden(
+        let mut registry = self.lock_registry();
+        registry.resize_hidden(
             active.route.client_id,
             active.viewport,
             Some(active.location.pane),
         );
+        registry.record_view(active);
     }
 
     pub(crate) async fn switch(
@@ -273,6 +326,9 @@ impl Workspaces {
             && let Some(cwd) = cwd
         {
             self.record_cwd(location, &cwd);
+        }
+        if let Ok(switched) = &result {
+            registry.record_view(&switched.active);
         }
         result.map(Some)
     }
@@ -303,6 +359,7 @@ impl Workspaces {
         let revision = old.route.view_revision.checked_add(1).ok_or_else(limit)?;
         let terminal = self.reserve_slot(&mut registry, location, launch.is_some())?;
         if launch.is_some() {
+            registry.publish(vec![projection::layout(&layout)]);
             self.layouts.send_replace(layout);
         }
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
@@ -386,6 +443,108 @@ impl Workspaces {
 }
 
 impl Registry {
+    pub(crate) fn publish(&mut self, mut projections: Vec<Projection>) {
+        projections.extend(self.agents.take_projections());
+        self.publication.commit(projections);
+    }
+
+    pub(crate) fn terminal_started(&mut self, id: Uuid, location: Location) {
+        self.terminals.insert(id, location);
+        let state = TerminalState {
+            terminal_id: id.to_string(),
+            location: Some(projection::selection(location)),
+        };
+        self.publish(vec![(
+            Group::Terminal(id),
+            vec![projection::entry(EntityBody::Terminal(state))],
+        )]);
+    }
+
+    pub(crate) fn terminal_closed(&mut self, id: Uuid, association: Option<Uuid>) {
+        if let Some(association) = association {
+            self.agents.retire_launch(association);
+        }
+        self.terminals.remove(&id);
+        let mut projections = vec![(Group::Terminal(id), Vec::new())];
+        let mut cleared = Vec::new();
+        for (client_id, client) in &mut self.clients {
+            if client
+                .view
+                .as_ref()
+                .is_some_and(|view| view.route.terminal_id == id)
+            {
+                client.view = None;
+                cleared.push(*client_id);
+            }
+        }
+        projections.extend(
+            cleared
+                .into_iter()
+                .map(|client| self.client_projection(client)),
+        );
+        self.publish(projections);
+    }
+
+    fn record_view(&mut self, active: &Active) {
+        let route = active.route;
+        let view = self
+            .terminals
+            .contains_key(&route.terminal_id)
+            .then_some(ClientView {
+                route,
+                location: active.location,
+                viewport: active.viewport,
+            });
+        self.clients.insert(
+            route.client_id,
+            Client {
+                generation: route.connection_generation,
+                view,
+            },
+        );
+        self.publish_client(route.client_id);
+    }
+
+    fn publish_client(&mut self, client: Uuid) {
+        self.publish(vec![self.client_projection(client)]);
+    }
+
+    fn client_projection(&self, client: Uuid) -> Projection {
+        let entries = self
+            .client_state(client)
+            .map(|state| projection::entry(EntityBody::Client(state)))
+            .into_iter()
+            .collect();
+        (Group::Client(client), entries)
+    }
+
+    fn client_state(&self, id: Uuid) -> Option<ClientState> {
+        let client = self.clients.get(&id)?;
+        let view = client.view.as_ref();
+        let mut writer_leases: Vec<_> = self
+            .claims
+            .iter()
+            .filter(|(_, claim)| claim.client == id)
+            .map(|(workspace, claim)| WriterLeaseState {
+                workspace_id: workspace.to_string(),
+                generation: claim.generation,
+            })
+            .collect();
+        writer_leases.sort_by(|first, second| first.workspace_id.cmp(&second.workspace_id));
+        Some(ClientState {
+            client_id: id.to_string(),
+            connection_generation: client.generation,
+            terminal_id: view.map(|view| view.route.terminal_id.to_string()),
+            selection: view.map(|view| projection::selection(view.location)),
+            view_revision: view.map(|view| view.route.view_revision),
+            viewport: view.map(|view| WireViewport {
+                cols: u32::from(view.viewport.cols.get()),
+                rows: u32::from(view.viewport.rows.get()),
+            }),
+            writer_leases,
+        })
+    }
+
     fn resize_hidden(&self, client: Uuid, viewport: Viewport, visible: Option<Uuid>) {
         for (pane, slot) in &self.slots {
             if Some(*pane) != visible

@@ -1,6 +1,7 @@
 mod frame;
 mod preflight;
 mod session;
+pub mod snapshot;
 
 #[cfg(target_os = "linux")]
 pub mod unix;

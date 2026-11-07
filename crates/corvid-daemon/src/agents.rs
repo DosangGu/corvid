@@ -13,11 +13,13 @@ use corvid_core::layout::Location;
 use corvid_protocol::collector::CLAUDE_VERSION;
 use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentList, AgentProcessState,
-    AgentProvider, ProcessIdentity, ViewSelection,
+    AgentProvider, ProcessIdentity,
 };
 use uuid::Uuid;
 
 use crate::process::{Executable, HookOwner, Incarnation};
+use crate::projection;
+use crate::publication::{Group, Projection};
 use crate::workspaces::Registry;
 
 pub(crate) use hooks::Hook;
@@ -29,6 +31,7 @@ pub(crate) struct Agents {
     runs: BTreeMap<Uuid, ManagedRun>,
     retired: VecDeque<Uuid>,
     launches: BTreeMap<Uuid, Launch>,
+    dirty: BTreeSet<Uuid>,
 }
 
 struct Launch {
@@ -110,12 +113,33 @@ impl Agents {
             return;
         }
         record.terminal_available = false;
+        self.dirty.insert(id);
         self.retired.push_back(id);
         if self.retired.len() > RETAINED_RUNS
             && let Some(oldest) = self.retired.pop_front()
         {
             self.runs.remove(&oldest);
+            self.dirty.insert(oldest);
         }
+    }
+
+    pub(crate) fn retire_launch(&mut self, association: Uuid) {
+        if let Some(launch) = self.launches.remove(&association) {
+            self.retire(launch.current);
+        }
+    }
+
+    pub(crate) fn take_projections(&mut self) -> impl Iterator<Item = Projection> + '_ {
+        std::mem::take(&mut self.dirty).into_iter().map(|id| {
+            let entries = self
+                .runs
+                .get(&id)
+                .filter(|record| record.published)
+                .map_or_else(Vec::new, |record| {
+                    projection::agent(&record.run, record.info())
+                });
+            (Group::Agent(id), entries)
+        })
     }
 
     pub(crate) fn inventory(&self) -> AgentList {
@@ -132,8 +156,10 @@ impl Agents {
         let monotonic = monotonic_ms();
         let wall = unix_ms();
         for launch in self.launches.values() {
-            if let Some(record) = self.runs.get_mut(&launch.current) {
-                record.run.tick(monotonic, wall);
+            if let Some(record) = self.runs.get_mut(&launch.current)
+                && record.run.tick(monotonic, wall)
+            {
+                self.dirty.insert(launch.current);
             }
         }
     }
@@ -187,11 +213,7 @@ impl ManagedRun {
         AgentInfo {
             agent_run_id: run.identity.id.to_string(),
             terminal_id: run.identity.terminal_id.to_string(),
-            location: Some(ViewSelection {
-                workspace_id: self.location.workspace.to_string(),
-                tab_id: self.location.tab.to_string(),
-                pane_id: self.location.pane.to_string(),
-            }),
+            location: Some(projection::selection(self.location)),
             provider: provider as i32,
             process: process as i32,
             process_identity: self.process.map(|identity| ProcessIdentity {
@@ -231,7 +253,8 @@ impl ManagedRun {
         liveness: ProcessLiveness,
         identity: Option<Incarnation>,
         source: Source,
-    ) {
+    ) -> bool {
+        let previous = self.process;
         if let Some(identity) = identity {
             self.process = Some(identity);
         }
@@ -245,21 +268,22 @@ impl ManagedRun {
         } else {
             Confidence::Confirmed
         };
-        self.apply(
+        let changed = self.apply(
             Uuid::new_v4(),
             ObservationKind::Process(liveness),
             evidence(source, confidence),
         );
+        changed || previous != self.process
     }
 
-    fn apply(&mut self, delivery_id: Uuid, kind: ObservationKind, evidence: Evidence) {
+    fn apply(&mut self, delivery_id: Uuid, kind: ObservationKind, evidence: Evidence) -> bool {
         let observation = Observation {
             run_id: self.run.identity.id,
             delivery_id,
             evidence,
             kind,
         };
-        self.run.apply(observation, monotonic_ms());
+        self.run.apply(observation, monotonic_ms())
     }
 }
 
@@ -337,7 +361,8 @@ impl ManagedLaunch {
         incarnation: Option<Incarnation>,
         executable: Option<Executable>,
     ) {
-        self.with_agents(|agents| {
+        self.with_registry(|registry| {
+            let agents = &mut registry.agents;
             let Some(launch) = agents.launches.get_mut(&self.association) else {
                 return;
             };
@@ -372,6 +397,10 @@ impl ManagedLaunch {
             }
             record.published = true;
             record.terminal_available = true;
+            agents.dirty.insert(launch.current);
+            let terminal = record.run.identity.terminal_id;
+            let location = record.location;
+            registry.terminal_started(terminal, location);
         });
     }
 
@@ -381,35 +410,33 @@ impl ManagedLaunch {
         identity: Option<Incarnation>,
         source: Source,
     ) {
-        self.with_agents(|agents| {
+        self.with_registry(|registry| {
+            let agents = &mut registry.agents;
             for record in agents
                 .runs
                 .values_mut()
                 .filter(|record| record.run.identity.launch_association == self.association)
             {
-                record.observe_process(liveness, identity, source);
+                if record.observe_process(liveness, identity, source) {
+                    agents.dirty.insert(record.run.identity.id);
+                }
             }
+            registry.publish(Vec::new());
         });
     }
 
-    fn with_agents(&self, apply: impl FnOnce(&mut Agents)) {
+    fn with_registry(&self, apply: impl FnOnce(&mut Registry)) {
         if let Some(registry) = self.registry.upgrade() {
-            apply(
-                &mut registry
-                    .lock()
-                    .expect("workspace registry lock poisoned")
-                    .agents,
-            );
+            apply(&mut registry.lock().expect("workspace registry lock poisoned"));
         }
     }
 }
 
 impl Drop for ManagedLaunch {
     fn drop(&mut self) {
-        self.with_agents(|agents| {
-            if let Some(launch) = agents.launches.remove(&self.association) {
-                agents.retire(launch.current);
-            }
+        self.with_registry(|registry| {
+            registry.agents.retire_launch(self.association);
+            registry.publish(Vec::new());
         });
     }
 }

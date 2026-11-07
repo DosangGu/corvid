@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut config = prost_build::Config::new();
+    config.boxed(format!(".{PACKAGE}.SnapshotEntity.body.agent"));
     config.protoc_executable(protoc);
     let descriptors = config.load_fds(&[PROTO], &["proto"])?;
     let preflight = preflight_tables(&descriptors)?;

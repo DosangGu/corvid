@@ -116,6 +116,7 @@ impl Agents {
         {
             return Ok(());
         }
+        self.dirty.insert(current_id);
         let Some(session) = hook.session.as_deref() else {
             launch.record_gap(current, "hook input was malformed or exceeded its deadline");
             return Ok(());
@@ -126,6 +127,7 @@ impl Agents {
         ) {
             if let Some(next) = launch.start_context(current, &hook, session) {
                 launch.current = next.run.identity.id;
+                self.dirty.insert(launch.current);
                 self.runs.insert(launch.current, next);
                 self.retire(current_id);
             }

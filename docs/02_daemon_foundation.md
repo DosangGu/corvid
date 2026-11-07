@@ -104,6 +104,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Area | Evidence |
 |---|---|
 | Identity and control | Restart changes the epoch and preserves the host ID. Concurrent startup fails. Corrupt identity bytes are preserved. A real CLI subprocess relays framed control messages over pipes. |
+| Snapshot and watch | A watch established before attach receives the workspace, terminal, and client at contiguous revisions. Detach removes the client while a one-shot snapshot still shows the terminal. Deterministic tests cover mutation after capture, sequence exhaustion, and resync on a slow subscriber's byte limit. |
 | Layout recovery | After killing a daemon that owns a live PTY, a new daemon restores the workspace, tab, and pane IDs with an empty terminal slot. An explicit launch uses the saved directory and gets a new TerminalId. Corrupt state recovers from backup or a fresh layout, and a newer schema remains intact. |
 | Writer and redraw | A competing attach at a different size is refused and leaves the child size unchanged. A successful resize resets the render generation. The detached child progresses, then the next TUI shows its retained screen and PID. |
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |

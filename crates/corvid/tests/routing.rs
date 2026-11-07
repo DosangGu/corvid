@@ -6,12 +6,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
+use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
-    ClaimWorkspaceWriter, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk,
-    PasteEnd, ResizeViewport, RouteToken, SelectView, ViewSelection, Viewport,
+    ClaimWorkspaceWriter, EntityKind, Envelope, FrameApplied, GetSnapshot, InputChunk,
+    LaunchCommand, ListClients, PasteBegin, PasteChunk, PasteEnd, ResizeViewport, RouteToken,
+    SelectView, SnapshotWatch, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     Frame, FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result,
@@ -381,6 +384,192 @@ async fn wait_for_agent(
         }
         sleep(Duration::from_millis(25)).await;
     }
+}
+
+struct ControlWire {
+    reader: FrameReader<OwnedReadHalf>,
+    writer: FrameWriter<OwnedWriteHalf>,
+    session: Session,
+}
+
+impl ControlWire {
+    async fn connect(runtime: &Path, capability: &str) -> Self {
+        let directory = RuntimeDir::open(runtime).unwrap();
+        let (read, write) = directory
+            .connect(SocketRole::Control)
+            .await
+            .unwrap()
+            .into_split();
+        let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly)
+            .await
+            .unwrap();
+        let mut reader = FrameReader::start(read, FrameRole::StructuredOnly)
+            .await
+            .unwrap();
+        let greeting = hello(
+            "hello".into(),
+            Some("test".into()),
+            vec![capability.to_owned()],
+        );
+        writer.envelope(&greeting).await.unwrap();
+        let reply = reader.next_envelope().await.unwrap().unwrap();
+        let session = check_hello_result(&greeting, &reply, PeerRole::Control).unwrap();
+        Self {
+            reader,
+            writer,
+            session,
+        }
+    }
+
+    async fn request(&mut self, id: &str, body: Body) {
+        let request = self.session.envelope(Some(id.to_owned()), body);
+        self.writer.envelope(&request).await.unwrap();
+    }
+
+    async fn next(&mut self) -> Envelope {
+        let reply = self.reader.next_envelope().await.unwrap().unwrap();
+        self.session.validate_scope(&reply).unwrap();
+        reply
+    }
+}
+
+#[tokio::test]
+async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let mut watch = ControlWire::connect(&runtime, WATCH_CAPABILITY).await;
+        watch
+            .request("watch", Body::SnapshotWatch(SnapshotWatch {}))
+            .await;
+        let begin = watch.next().await;
+        assert!(matches!(begin.body, Some(Body::SnapshotBegin(_))));
+        assert_eq!(begin.request_id.as_deref(), Some("watch"));
+        assert_eq!(begin.sequence, Some(0));
+
+        let tui = Tui::attach_target(
+            &runtime,
+            Attach {
+                create_workspace: Some("Watched".to_owned()),
+                launch: Some(echo_fixture("WATCH")),
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut sequence = 0;
+        let mut ready = false;
+        let mut workspace = false;
+        let mut terminal = false;
+        let mut client = false;
+        while !(ready && workspace && terminal && client) {
+            let frame = watch.next().await;
+            assert_eq!(frame.subscription_id, begin.subscription_id);
+            match frame.body.unwrap() {
+                Body::SnapshotChunk(chunk) => {
+                    assert_eq!(frame.sequence, Some(0));
+                    assert_eq!(frame.request_id.as_deref(), Some("watch"));
+                    assert!(
+                        chunk
+                            .entities
+                            .iter()
+                            .all(|entity| matches!(entity.body, Some(EntityBody::Workspace(_))))
+                    );
+                }
+                Body::SnapshotEnd(_) => assert_eq!(frame.sequence, Some(0)),
+                Body::WatchReady(_) => {
+                    assert_eq!(frame.sequence, Some(sequence));
+                    assert!(frame.request_id.is_none());
+                    ready = true;
+                }
+                Body::SnapshotDelta(delta) => {
+                    sequence += 1;
+                    assert_eq!(frame.sequence, Some(sequence));
+                    assert!(frame.request_id.is_none());
+                    for entity in delta.upsert {
+                        match entity.body.unwrap() {
+                            EntityBody::Workspace(state)
+                                if state.workspace_id == tui.selection.workspace_id =>
+                            {
+                                workspace = true;
+                            }
+                            EntityBody::Terminal(state) => {
+                                assert!(workspace);
+                                assert_eq!(state.terminal_id, tui.route.terminal_id);
+                                assert_eq!(state.location.as_ref(), Some(&tui.selection));
+                                terminal = true;
+                            }
+                            EntityBody::Client(state) => {
+                                assert!(terminal);
+                                assert_eq!(state.client_id, tui.route.client_id);
+                                assert_eq!(state.selection.as_ref(), Some(&tui.selection));
+                                assert_eq!(
+                                    state.writer_leases[0].generation,
+                                    tui.route.writer_lease_generation
+                                );
+                                client = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                other => panic!("unexpected snapshot event: {other:?}"),
+            }
+        }
+
+        watch
+            .request("clients", Body::ListClients(ListClients {}))
+            .await;
+        let reply = watch.next().await;
+        let Some(Body::ClientList(list)) = reply.body else {
+            panic!("missing client list")
+        };
+        assert_eq!(reply.request_id.as_deref(), Some("clients"));
+        assert_eq!(list.clients[0].client_id, tui.route.client_id);
+        let client_id = tui.route.client_id.clone();
+        let terminal_id = tui.route.terminal_id.clone();
+        drop(tui);
+        let detached = watch.next().await;
+        let Some(Body::SnapshotDelta(delta)) = detached.body else {
+            panic!("missing detach delta")
+        };
+        assert_eq!(detached.sequence, Some(sequence + 1));
+        assert_eq!(delta.remove.len(), 1);
+        assert_eq!(delta.remove[0].kind, EntityKind::Client as i32);
+        assert_eq!(delta.remove[0].id, client_id);
+
+        let mut one_shot = ControlWire::connect(&runtime, SNAPSHOT_CAPABILITY).await;
+        one_shot
+            .request("snapshot", Body::GetSnapshot(GetSnapshot {}))
+            .await;
+        let start = one_shot.next().await;
+        let Some(Body::SnapshotBegin(base)) = start.body else {
+            panic!("missing snapshot begin")
+        };
+        assert_eq!(start.sequence, detached.sequence);
+        assert!(start.subscription_id.is_none());
+        let mut terminal_still_live = false;
+        for index in 0..base.chunks {
+            let reply = one_shot.next().await;
+            let Some(Body::SnapshotChunk(chunk)) = reply.body else {
+                panic!("missing snapshot chunk")
+            };
+            assert_eq!(chunk.index, index);
+            for entity in chunk.entities {
+                assert!(!matches!(entity.body, Some(EntityBody::Client(_))));
+                if let Some(EntityBody::Terminal(terminal)) = entity.body {
+                    terminal_still_live |= terminal.terminal_id == terminal_id;
+                }
+            }
+        }
+        assert!(terminal_still_live);
+        assert!(matches!(
+            one_shot.next().await.body,
+            Some(Body::SnapshotEnd(_))
+        ));
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

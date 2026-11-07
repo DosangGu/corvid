@@ -9,21 +9,20 @@ use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentProvider, Attach, Attached, Envelope, LaunchCommand, Pong, RenderHeader, RouteToken,
-    TerminalExited, ViewChanged, ViewSelection, Viewport as WireViewport, WriterClaimed,
+    TerminalExited, ViewChanged, Viewport as WireViewport, WriterClaimed,
 };
 use corvid_protocol::{
-    COMMAND_TIMEOUT, FrameError, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
-    Session,
+    COMMAND_TIMEOUT, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame, Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::control::handshake;
 use crate::identity::Identity;
+use crate::incoming::Incoming;
+use crate::projection::selection;
 use crate::terminal::{Action, Event, Launch, Render};
 use crate::workspaces::{Active, AttachTarget, Destination, Workspaces};
 
@@ -117,40 +116,6 @@ async fn serve_active(
     .await
 }
 
-struct Requests {
-    incoming: mpsc::Receiver<Result<Envelope, FrameError>>,
-    task: JoinHandle<()>,
-}
-
-impl Requests {
-    fn start(mut reader: FrameReader<OwnedReadHalf>) -> Self {
-        let (sender, incoming) = mpsc::channel(4);
-        let task = tokio::spawn(async move {
-            loop {
-                match reader.next_envelope().await {
-                    Ok(Some(request)) => {
-                        if sender.send(Ok(request)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Ok(None) => return,
-                    Err(error) => {
-                        let _ = sender.send(Err(error)).await;
-                        return;
-                    }
-                }
-            }
-        });
-        Self { incoming, task }
-    }
-}
-
-impl Drop for Requests {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
 struct TuiConnection<'a> {
     session: Session,
     writer: FrameWriter<OwnedWriteHalf>,
@@ -160,10 +125,10 @@ struct TuiConnection<'a> {
 
 impl TuiConnection<'_> {
     async fn run(mut self, reader: FrameReader<OwnedReadHalf>) -> Result<()> {
-        let mut requests = Requests::start(reader);
+        let mut incoming = Incoming::start(reader);
         loop {
             tokio::select! {
-                request = requests.incoming.recv() => {
+                request = incoming.requests.recv() => {
                     let Some(request) = request else { return Ok(()) };
                     if self.request(request?).await? { return Ok(()) }
                 }
@@ -523,14 +488,6 @@ fn parse_route(route: &RouteToken) -> Result<InputRoute, ProtocolFault> {
         view_revision: route.view_revision,
         writer_lease_generation: route.writer_lease_generation,
     })
-}
-
-fn selection(location: Location) -> ViewSelection {
-    ViewSelection {
-        workspace_id: location.workspace.to_string(),
-        tab_id: location.tab.to_string(),
-        pane_id: location.pane.to_string(),
-    }
 }
 
 fn invalid(message: &str) -> ProtocolFault {

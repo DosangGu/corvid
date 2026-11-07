@@ -21,7 +21,7 @@ pub enum PeerRole {
     Collector,
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("{code}: {message}")]
 pub struct ProtocolFault {
     pub code: String,
@@ -125,7 +125,10 @@ impl Session {
                 Body::GetHost(_)
                 | Body::GetConnectionStatus(_)
                 | Body::ListWorkspaces(_)
-                | Body::ListAgents(_),
+                | Body::ListAgents(_)
+                | Body::ListClients(_)
+                | Body::GetSnapshot(_)
+                | Body::SnapshotWatch(_),
             ) => Ok(body),
             (PeerRole::Tui, Body::Attach(attach)) => {
                 match AttachRole::try_from(attach.requested_role) {

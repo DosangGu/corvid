@@ -670,6 +670,7 @@ impl Worker {
 
 struct Running {
     id: Uuid,
+    registry: Weak<Mutex<Registry>>,
     pty: TerminalPty,
     screen: TerminalScreen,
     input: InputQueue,
@@ -716,8 +717,17 @@ impl Running {
         let mut pty = TerminalPty::spawn(command, viewport)?;
         let managed = reservation
             .map(|launch| ManagedProcess::started(launch, &mut pty, scope.boot_id, id, executable));
+        if managed.is_none()
+            && let Some(registry) = scope.registry.upgrade()
+        {
+            registry
+                .lock()
+                .expect("workspace registry lock poisoned")
+                .terminal_started(id, scope.location);
+        }
         Ok(Self {
             id,
+            registry: scope.registry.clone(),
             pty,
             screen: TerminalScreen::with_scrollback(viewport, LIVE_SCROLLBACK_ROWS),
             input: InputQueue::default(),
@@ -791,6 +801,16 @@ impl Drop for Running {
                 None => (ProcessLiveness::Unknown, Source::ProcessProbe),
             };
             managed.launch.observe(liveness, None, source);
+        }
+        if let Some(registry) = self.registry.upgrade() {
+            let association = self
+                .managed
+                .as_ref()
+                .map(|managed| managed.launch.association);
+            registry
+                .lock()
+                .expect("workspace registry lock poisoned")
+                .terminal_closed(self.id, association);
         }
     }
 }

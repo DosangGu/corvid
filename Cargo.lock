@@ -209,6 +209,7 @@ dependencies = [
  "corvid-protocol",
  "nix 0.31.3",
  "portable-pty",
+ "prost",
  "serde",
  "serde_json",
  "tempfile",

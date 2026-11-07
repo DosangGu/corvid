@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     ConnectionStatus, Envelope, HostInfo, LayoutRecovery, PersistenceState, Pong, TabInfo,
@@ -12,10 +13,12 @@ use corvid_protocol::{
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep_until, timeout};
 
 use crate::identity::Identity;
+use crate::incoming::Incoming;
 use crate::metadata::{MetadataView, Recovery, SaveState};
+use crate::snapshot::{self, LiveWatch};
 use crate::workspaces::Workspaces;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -25,6 +28,9 @@ const CAPABILITIES: &[&str] = &[
     "connection_status.v1",
     "list.v1",
     "list_agents.v1",
+    "list_clients.v1",
+    SNAPSHOT_CAPABILITY,
+    WATCH_CAPABILITY,
 ];
 
 pub(crate) async fn serve(
@@ -33,7 +39,7 @@ pub(crate) async fn serve(
     metadata: &MetadataView,
     workspaces: &Workspaces,
 ) -> Result<()> {
-    let Some((session, mut reader, mut writer)) = timeout(
+    let Some((session, reader, writer)) = timeout(
         COMMAND_TIMEOUT,
         handshake(stream, identity, PeerRole::Control, CAPABILITIES),
     )
@@ -42,28 +48,124 @@ pub(crate) async fn serve(
         return Ok(());
     };
 
-    while let Some(request) = timeout(IDLE_TIMEOUT, reader.next_envelope()).await?? {
-        let body = match session.validate_request(&request) {
+    Control {
+        session,
+        writer,
+        metadata,
+        workspaces,
+    }
+    .run(reader)
+    .await
+}
+
+struct Control<'a> {
+    session: Session,
+    writer: FrameWriter<OwnedWriteHalf>,
+    metadata: &'a MetadataView,
+    workspaces: &'a Workspaces,
+}
+
+impl Control<'_> {
+    async fn run(mut self, mut reader: FrameReader<OwnedReadHalf>) -> Result<()> {
+        while let Some(request) = timeout(IDLE_TIMEOUT, reader.next_envelope()).await?? {
+            let watch = match self.session.validate_request(&request) {
+                Ok(Body::GetSnapshot(_)) => false,
+                Ok(Body::SnapshotWatch(_)) => true,
+                _ => {
+                    self.respond(request).await?;
+                    continue;
+                }
+            };
+            match self.workspaces.snapshot(watch) {
+                Ok(capture) => {
+                    let live = snapshot::transfer(
+                        capture,
+                        request.request_id,
+                        &self.session,
+                        &mut self.writer,
+                        self.workspaces,
+                    )
+                    .await?;
+                    if let Some(live) = live {
+                        return self.watch(reader, live).await;
+                    }
+                }
+                Err(fault) => {
+                    self.reply(request.request_id, Body::Error(fault.into_wire()))
+                        .await?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn respond(&mut self, request: Envelope) -> Result<bool> {
+        let validated = self.session.validate_request(&request);
+        let valid = validated.is_ok();
+        let body = match validated {
             Ok(Body::Ping(_)) => Body::Pong(Pong {}),
             Ok(Body::GetHost(_)) => Body::HostInfo(HostInfo {
-                host_id: identity.host_id.clone(),
-                server_epoch: identity.epoch.clone(),
+                host_id: self.session.host_id.clone(),
+                server_epoch: self.session.server_epoch.clone(),
             }),
             Ok(Body::GetConnectionStatus(_)) => {
-                Body::ConnectionStatus(status(metadata, workspaces.any_live()))
+                Body::ConnectionStatus(status(self.metadata, self.workspaces.any_live()))
             }
-            Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(inventory(metadata)),
-            Ok(Body::ListAgents(_)) => Body::AgentList(workspaces.agents()),
+            Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(inventory(self.metadata)),
+            Ok(Body::ListAgents(_)) => Body::AgentList(self.workspaces.agents()),
+            Ok(Body::ListClients(_)) => Body::ClientList(self.workspaces.clients()),
             Ok(_) => Body::Error(
                 ProtocolFault::new("UnsupportedCapability", "unavailable control method")
                     .into_wire(),
             ),
             Err(error) => Body::Error(error.into_wire()),
         };
-        let reply = session.envelope(request.request_id, body);
-        timeout(COMMAND_TIMEOUT, writer.envelope(&reply)).await??;
+        self.reply(request.request_id, body).await?;
+        Ok(valid)
     }
-    Ok(())
+
+    async fn reply(&mut self, request_id: Option<String>, body: Body) -> Result<()> {
+        let reply = self.session.envelope(request_id, body);
+        timeout(COMMAND_TIMEOUT, self.writer.envelope(&reply)).await??;
+        Ok(())
+    }
+
+    async fn watch(
+        mut self,
+        reader: FrameReader<OwnedReadHalf>,
+        mut live: LiveWatch,
+    ) -> Result<()> {
+        let mut incoming = Incoming::start(reader);
+        let mut idle = Instant::now() + IDLE_TIMEOUT;
+        loop {
+            tokio::select! {
+                _ = sleep_until(idle) => return Ok(()),
+                request = incoming.requests.recv() => {
+                    let Some(request) = request else { return Ok(()) };
+                    if self.respond(request?).await? {
+                        idle = Instant::now() + IDLE_TIMEOUT;
+                    }
+                }
+                delta = live.watch.next() => {
+                    let result = match delta {
+                        Ok(delta) => snapshot::send_delta(
+                            &self.session, &mut self.writer, &live.watch, &mut live.sequence, &delta,
+                        ).await,
+                        Err(fault) => Err(fault.into()),
+                    };
+                    if let Err(error) = result {
+                        if let Some(fault) = error.downcast_ref::<ProtocolFault>() {
+                            let frame = snapshot::event(
+                                &self.session, &live.watch.id, None, Body::Error(fault.clone().into_wire()),
+                            );
+                            timeout(COMMAND_TIMEOUT, self.writer.envelope(&frame)).await??;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn status(metadata: &MetadataView, terminal_live: bool) -> ConnectionStatus {
