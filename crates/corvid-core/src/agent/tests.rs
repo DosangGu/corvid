@@ -193,6 +193,7 @@ fn delayed_old_stop_preserves_current_work_and_unrelated_questions() {
     let question = fixture.request("a-current", "question");
     assert!(fixture.response(Some("z-old"), ResponseOutcome::Failed, true));
     assert_eq!(fixture.run.activity.value, Activity::Working);
+    assert!(fixture.run.recent_response.is_none());
     assert_eq!(fixture.run.badge(), Badge::NeedsInput(1));
     assert_eq!(fixture.request_state(question), RequestStatus::Pending);
     assert_eq!(
@@ -202,6 +203,35 @@ fn delayed_old_stop_preserves_current_work_and_unrelated_questions() {
     assert!(!fixture.turn("z-old"));
     assert!(!fixture.response(Some("z-old"), ResponseOutcome::Failed, true));
     assert_eq!(fixture.run.attention.len(), 2);
+}
+
+#[test]
+fn interrupt_cancels_only_correlated_scopes_and_fences_delayed_input_observations() {
+    let mut fixture = Fixture::new();
+    let mut submission =
+        fixture.observation(ObservationKind::TurnStarted("interrupted".to_owned()));
+    submission.evidence.confidence = Confidence::Inferred;
+    assert!(fixture.run.apply(submission, fixture.now));
+    let cancelled = fixture.request("interrupted", "own-question");
+    let kept = fixture.request("other", "another-question");
+    let work = WorkKey {
+        turn: Some("interrupted".to_owned()),
+        item: "tool".to_owned(),
+    };
+    assert!(fixture.push(ObservationKind::WorkStarted(work.clone())));
+
+    assert!(fixture.response(Some("interrupted"), ResponseOutcome::Interrupted, true));
+    assert_eq!(fixture.run.activity.value, Activity::Interrupted);
+    assert_eq!(fixture.request_state(cancelled), RequestStatus::Cancelled);
+    assert_eq!(fixture.request_state(kept), RequestStatus::Pending);
+    assert!(fixture.run.work.is_empty());
+    assert!(!fixture.push(ObservationKind::WorkStarted(work)));
+    assert!(!fixture.push(ObservationKind::InputRequested {
+        key: Some(request_key("interrupted", "late-question")),
+        kind: RequestKind::Question,
+    }));
+    assert!(!fixture.resolve("interrupted", "own-question"));
+    assert_eq!(fixture.request_state(cancelled), RequestStatus::Cancelled);
 }
 
 #[test]

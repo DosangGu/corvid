@@ -26,6 +26,7 @@ pub(super) struct Correlation {
     provider_events: Recent<(Source, String)>,
     tentative_turns: Recent<String>,
     completed_turns: Recent<String>,
+    interrupted_turns: Recent<String>,
     completed_work: Recent<WorkKey>,
     finished_requests: Recent<RequestKey>,
     orphan_results: BTreeMap<RequestKey, OrphanResult>,
@@ -182,7 +183,10 @@ impl AgentRun {
     }
 
     fn start_work(&mut self, key: WorkKey, evidence: &Evidence) -> bool {
-        if self.correlation.completed_work.contains(&key) || self.work.contains_key(&key) {
+        if self.was_interrupted(&key.turn)
+            || self.correlation.completed_work.contains(&key)
+            || self.work.contains_key(&key)
+        {
             return false;
         }
         if self.work.len() == MAX_SCOPES {
@@ -237,7 +241,9 @@ impl AgentRun {
         evidence: &Evidence,
     ) -> bool {
         if let Some(key) = &key
-            && (self.correlation.finished_requests.contains(key) || self.request_id(key).is_some())
+            && (self.was_interrupted(&key.turn)
+                || self.correlation.finished_requests.contains(key)
+                || self.request_id(key).is_some())
         {
             return false;
         }
@@ -295,6 +301,7 @@ impl AgentRun {
         monotonic_ms: u64,
     ) -> bool {
         if evidence.confidence != Confidence::Confirmed
+            || self.was_interrupted(&key.turn)
             || self.correlation.finished_requests.contains(&key)
             || self.correlation.orphan_results.contains_key(&key)
             || self.correlation.expired_results.contains(&key)
@@ -359,9 +366,13 @@ impl AgentRun {
             if !self.correlation.completed_turns.insert(turn.clone()) {
                 return false;
             }
-            let observed_start = self.active_turns.remove(turn).is_some();
+            let observed_start = self.active_turns.remove(turn).is_some()
+                || self.correlation.tentative_turns.contains(turn);
             current_boundary =
                 observed_start && self.correlation.current_turn.as_ref() == Some(turn);
+            if response.outcome == ResponseOutcome::Interrupted {
+                self.interrupt_scopes(turn, evidence);
+            }
             self.refresh_work_activity(evidence);
         }
 
@@ -385,8 +396,36 @@ impl AgentRun {
                 self.correlation.response_for_prompt = activity == Activity::AwaitingPrompt;
             }
         }
-        self.recent_response = Some(Observed::new(response, evidence));
+        let is_current = self
+            .correlation
+            .current_turn
+            .as_ref()
+            .zip(response.turn.as_ref())
+            .is_none_or(|(current, reported)| current == reported);
+        if is_current {
+            self.recent_response = Some(Observed::new(response, evidence));
+        }
         true
+    }
+
+    fn interrupt_scopes(&mut self, turn: &str, evidence: &Evidence) {
+        self.correlation.interrupted_turns.insert(turn.to_owned());
+        self.work.retain(|key, _| key.turn.as_deref() != Some(turn));
+        self.correlation
+            .orphan_results
+            .retain(|key, _| key.turn.as_deref() != Some(turn));
+        for request in self.requests.values_mut() {
+            if is_open(request.state.value)
+                && request.key.as_ref().and_then(|key| key.turn.as_deref()) == Some(turn)
+            {
+                request.state = Observed::new(RequestStatus::Cancelled, evidence);
+            }
+        }
+    }
+
+    fn was_interrupted(&self, turn: &Option<String>) -> bool {
+        turn.as_ref()
+            .is_some_and(|turn| self.correlation.interrupted_turns.contains(turn))
     }
 
     fn can_assert_wait(&self, evidence: &Evidence) -> bool {
