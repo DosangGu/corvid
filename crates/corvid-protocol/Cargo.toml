@@ -15,7 +15,13 @@ tokio = { workspace = true, features = ["io-util"] }
 prost-build.workspace = true
 prost-types.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow.workspace = true
+nix = { workspace = true, features = ["fs", "user"] }
+tokio = { workspace = true, features = ["net", "time"] }
+
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

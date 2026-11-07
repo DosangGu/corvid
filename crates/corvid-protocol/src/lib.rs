@@ -2,6 +2,9 @@ mod frame;
 mod preflight;
 mod session;
 
+#[cfg(target_os = "linux")]
+pub mod unix;
+
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/corvid.protocol.v1.rs"));
 }
