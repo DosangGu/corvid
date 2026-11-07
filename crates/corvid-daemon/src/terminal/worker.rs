@@ -965,6 +965,7 @@ impl ManagedProcess {
 
 impl Launch {
     fn into_command(self, qualified: Option<PathBuf>) -> CommandBuilder {
+        let isolated_codex = qualified.is_some() && self.provider == Some(Provider::Codex);
         let mut argv = self.argv.into_iter();
         let program = qualified
             .map(PathBuf::into_os_string)
@@ -975,6 +976,10 @@ impl Launch {
             });
         let mut command = if let Some(program) = program {
             let mut command = CommandBuilder::new(program);
+            if isolated_codex {
+                // A shared Codex app server can outlive the managed launcher.
+                command.args(["-c", "features.daemon_auto_start=false"]);
+            }
             command.args(argv);
             command
         } else {

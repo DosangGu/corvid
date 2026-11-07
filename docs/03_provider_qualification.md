@@ -98,13 +98,17 @@ inspect the outer terminal. Corvid does not need tmux to run the adapter.
 | `request_user_input` | Plan mode displays the question and emits a matching `PostToolUse` after the user answers. Default mode can emit `PreToolUse` without a dialog. Corvid records a typed Unverified question and resolves it only on the matching result. |
 | `Interrupt` | Canceling a Plan question reports its exact turn. Corvid cancels that turn's correlated open scopes and rejects late attempts to reopen them. Other runs and uncorrelated permission observations retain their state. |
 | `Stop` | Reports a turn and `stop_hook_active`. Corvid records the first response boundary for a turn. The hook emits a fixed empty JSON object and does not request continuation. |
+| `/compact` | The manual `PreCompact` and `PostCompact` hooks share the current session and turn IDs. The next prompt emits `SessionStart` with `source=compact` for that session. Corvid retains the run and its requests. |
+| `resume` | The first prompt after resuming emits `SessionStart` with `source=resume` for the same conversation ID. A fresh managed process gets a new run and an empty request history. |
 | `notify` | A root completion can match the hook session and turn. The same executable also delivers completions with other thread IDs that have no matching lifecycle hook in this fixture. Corvid does not use `notify` to establish an interactive run's identity. |
 
-The official references describe the [Codex Hook contract](https://learn.chatgpt.com/docs/hooks)
-and [notification payload](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications).
-`SessionEnd` was not observed during the fixture's normal exit. Corvid uses OS
-exit evidence. Resume, compaction, plan approval, and child event ownership
-remain outside this release qualification.
+The in-process `/resume` can switch the view before its first hook. Its
+`SessionEnd` reports `reason=other` without a transition ID. Corvid marks the
+observed in-process boundary uncertain and suspends focus for the old run. It
+uses OS exit evidence for process liveness. Plan approval and child event
+ownership remain outside this release qualification.
+[Codex Hook contract](https://learn.chatgpt.com/docs/hooks)
+[Codex notification payload](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications)
 
 ### Install the observer
 
@@ -113,18 +117,20 @@ the corresponding arrays in `~/.codex/hooks.json`. Review the exact generated
 commands in the CLI and trust them through the normal prompt or `/hooks`.
 
 ```sh
-corvid attach --agent codex -- --disable daemon_auto_start
+corvid attach --agent codex
+corvid attach --agent codex -- resume <session-id>
 corvid control agents
 ```
 
-The explicit `daemon_auto_start` override was tested with two independent local
-interactive processes sharing a working directory and profile. The default
-launch also works when its managed internal app server is a direct child with
-the qualified package path and local daemon arguments. The observer inherits
-the host, epoch, and launch scope. Corvid verifies the launcher and pins the
-producer's PID, start time, and executable identity. A shared Codex daemon
-outside that launch's verified process chain cannot contribute observations.
-An unqualified release reports process-only coverage.
+For the qualified release, Corvid passes `-c features.daemon_auto_start=false`
+to keep each managed launch independent. Later CLI arguments can override the
+setting. With `--enable daemon_auto_start`, a broker can supply observations
+when its executable and arguments match the qualified local app server and it
+is a direct child of the launcher. An already running broker can serve the
+CLI while the new Corvid run has no verified hook producer. The observer
+inherits the host, epoch, and launch scope. Corvid verifies the launcher and
+pins the producer's PID, start time, and executable identity. An unqualified
+release reports process-only coverage.
 
 ### Reproduce
 
@@ -132,9 +138,14 @@ An unqualified release reports process-only coverage.
 cargo build --locked
 export PYTHONDONTWRITEBYTECODE=1
 python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid
+python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation
 python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --parallel
+python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --enable-auto-start
 for fault in missing-helper missing-collector timeout collector-saturated; do
   python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --fault "$fault"
+done
+for fault in missing-helper missing-collector; do
+  python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation --fault "$fault"
 done
 ```
 
@@ -145,5 +156,7 @@ the exact registered TUI, and acknowledged its alert while the dialog stayed
 visible. Answering that question left the second request open until it was
 interrupted. The failure tests exercised a real approval and completed its
 response despite the missing or timed-out observer, missing socket, and 32
-occupied collector connections. The standalone helper tests cover malformed,
-oversized, and stalled input with neutral output.
+occupied collector connections. The conversation fixture also completed
+compaction and resume with either the helper or the collector socket absent.
+The standalone helper tests cover malformed, oversized, and stalled input with
+neutral output.

@@ -29,7 +29,12 @@ impl Input {
     fn event(&self) -> Option<HookEvent> {
         let tool = self.tool_name.as_deref();
         Some(match self.hook_event_name.as_str() {
-            "SessionStart" if self.source.as_deref() == Some("startup") => HookEvent::Startup,
+            "SessionStart" => match self.source.as_deref()? {
+                "startup" => HookEvent::Startup,
+                "resume" => HookEvent::Resume,
+                "compact" => HookEvent::Compact,
+                _ => return None,
+            },
             "UserPromptSubmit" => HookEvent::PromptSubmitted,
             "PreToolUse" if tool == Some("Bash") => HookEvent::ToolStarted,
             "PostToolUse" if tool == Some("Bash") => HookEvent::ToolFinished,
@@ -47,7 +52,10 @@ impl Input {
         if event == HookEvent::DeliveryGap {
             return None;
         }
-        let turn_id = if event == HookEvent::Startup {
+        let turn_id = if matches!(
+            event,
+            HookEvent::Startup | HookEvent::Resume | HookEvent::Compact
+        ) {
             None
         } else {
             Some(valid_id(self.turn_id?)?)
@@ -76,7 +84,7 @@ pub(super) fn settings(executable: &str) -> Value {
     let command = format!("exec '{path}' observe --provider codex");
     let mut hooks = Map::new();
     for (event, matcher) in [
-        ("SessionStart", Some("startup")),
+        ("SessionStart", Some("startup|resume|compact")),
         ("UserPromptSubmit", None),
         ("PreToolUse", Some("Bash|request_user_input")),
         ("PostToolUse", Some("Bash|request_user_input")),

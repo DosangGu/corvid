@@ -55,7 +55,13 @@ impl Hook {
             return Err(invalid());
         }
         if provider == Provider::Codex {
-            let turn_expected = !matches!(event, HookEvent::Startup | HookEvent::DeliveryGap);
+            let turn_expected = !matches!(
+                event,
+                HookEvent::Startup
+                    | HookEvent::Resume
+                    | HookEvent::Compact
+                    | HookEvent::DeliveryGap
+            );
             let tool_expected = matches!(
                 event,
                 HookEvent::ToolStarted
@@ -173,15 +179,15 @@ impl Hook {
 fn supported_event(provider: Provider, event: HookEvent) -> bool {
     match event {
         HookEvent::Startup
+        | HookEvent::Resume
+        | HookEvent::Compact
         | HookEvent::PromptSubmitted
         | HookEvent::QuestionStarted
         | HookEvent::QuestionResult
         | HookEvent::PermissionRequested
         | HookEvent::ResponseObserved
         | HookEvent::DeliveryGap => true,
-        HookEvent::Resume
-        | HookEvent::Clear
-        | HookEvent::Compact
+        HookEvent::Clear
         | HookEvent::ContextEnded
         | HookEvent::ContextReplaced
         | HookEvent::ResumeContextEnded => provider == Provider::Claude,
@@ -368,6 +374,13 @@ impl Launch {
                 return None;
             }
             HookEvent::Clear if reused => return None,
+            HookEvent::Resume if has_context && hook.provider == Provider::Codex => {
+                self.abandon_resume(
+                    current,
+                    "in-process Codex resume lacks a qualified boundary",
+                );
+                return None;
+            }
             HookEvent::Resume if has_context => {
                 if !self.confirm_resume(current, hook.turn.as_deref()) {
                     return None;
@@ -682,5 +695,49 @@ mod tests {
         assert_eq!(current.run.process.value, ProcessLiveness::Running);
         assert!(current.run.requests.is_empty());
         assert!(fixture.agents.focus_terminal(run).is_none());
+    }
+
+    #[test]
+    fn codex_compaction_and_fresh_resume_keep_request_history_separate() {
+        let mut original = Fixture::new(Provider::Codex);
+        original.apply("conversation", HookEvent::Startup);
+        original.apply("conversation", HookEvent::QuestionStarted);
+        original.apply("conversation", HookEvent::QuestionResult);
+        let run = original.current().run.identity.id;
+        let request = *original.current().run.requests.keys().next().unwrap();
+
+        original.apply("conversation", HookEvent::Compact);
+        assert_eq!(original.current().run.identity.id, run);
+        assert_eq!(original.current().run.collection.value, Collection::Healthy);
+        assert!(original.agents.focus_terminal(run).is_some());
+        assert_eq!(
+            original.current().run.requests[&request].state.value,
+            RequestStatus::Resolved
+        );
+
+        original.apply("conversation", HookEvent::Resume);
+        assert_eq!(original.current().run.identity.id, run);
+        assert_eq!(
+            original.current().run.collection.value,
+            Collection::GapDetected
+        );
+        assert!(original.agents.focus_terminal(run).is_none());
+
+        let mut fresh = Fixture::new(Provider::Codex);
+        fresh.apply("conversation", HookEvent::Resume);
+        let resumed = fresh.current();
+        assert_ne!(resumed.run.identity.id, run);
+        assert_eq!(
+            resumed.run.identity.provider_session.as_deref(),
+            Some("conversation")
+        );
+        assert_eq!(resumed.run.collection.value, Collection::Healthy);
+        assert!(resumed.run.requests.is_empty());
+        assert!(
+            fresh
+                .agents
+                .focus_terminal(resumed.run.identity.id)
+                .is_some()
+        );
     }
 }

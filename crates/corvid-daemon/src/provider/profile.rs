@@ -21,6 +21,8 @@ const CLAUDE_EVENTS: &[HookEvent] = &[
 
 const CODEX_EVENTS: &[HookEvent] = &[
     HookEvent::Startup,
+    HookEvent::Resume,
+    HookEvent::Compact,
     HookEvent::PromptSubmitted,
     HookEvent::QuestionStarted,
     HookEvent::QuestionResult,
@@ -124,8 +126,8 @@ fn qualification(provider: Provider, kind: Kind) -> (Level, &'static str) {
             "Plan mode answers correlate by tool ID and interruptions by turn ID",
         ),
         (Provider::Codex, Kind::ContextReplacement) => (
-            Level::Unavailable,
-            "an additional startup does not establish the previous context's end",
+            Level::Partial,
+            "a fresh managed process can resume a session; in-process boundaries are ambiguous",
         ),
         (_, Kind::Unspecified) => unreachable!("unknown provider capability"),
     }

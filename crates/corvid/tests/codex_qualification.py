@@ -23,7 +23,7 @@ VERSION = "codex-cli 0.167.0"
 ROOT = Path(__file__).resolve().parents[3]
 EVENTS = (
     "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-    "PermissionRequest", "Stop", "Interrupt",
+    "PermissionRequest", "Stop", "Interrupt", "PreCompact", "PostCompact",
 )
 CAPTURE = '''
 import json
@@ -38,7 +38,7 @@ else:
     payload = json.load(sys.stdin)
     allow = (
         "hook_event_name", "session_id", "source", "turn_id", "tool_name",
-        "tool_use_id", "permission_mode", "stop_hook_active",
+        "tool_use_id", "permission_mode", "stop_hook_active", "reason", "trigger",
     )
 event = {key: payload[key] for key in allow if key in payload}
 parent = Path(f"/proc/{os.getppid()}")
@@ -266,15 +266,15 @@ class FixtureTerminal:
         payload = self.trace.read_bytes()
         return [json.loads(line) for line in payload[:payload.rfind(b"\n") + 1].splitlines()]
 
-    def event(self, **expected):
+    def event(self, *, after=0, **expected):
         return self.wait(
-            lambda: next((event for event in self.events()
+            lambda: next((event for event in self.events()[after:]
                           if all(event.get(key) == value for key, value in expected.items())), None),
             repr(expected),
         )
 
 
-def agent_state(terminal, command, **expected):
+def agent_state(terminal, command, /, **expected):
     if command is None:
         return None
 
@@ -299,20 +299,25 @@ def trust_hooks(terminal):
     terminal.screen(b"OpenAI Codex")
 
 
-def exercise(terminal, command, fault):
+def exercise(terminal, command, fault, conversation):
     trust_hooks(terminal)
-    session, initial = exercise_permission(terminal, None if fault else command)
+    collector = None if fault else command
+    session, initial = exercise_permission(terminal, collector)
     if fault:
         expected_collection = "Healthy" if fault == "timeout" else "NotRegistered"
         agent_state(terminal, command, provider="Codex", collection=expected_collection, response="false")
-        terminal.send_line("/exit")
-        terminal.wait_exit()
-        return
+        if not conversation:
+            terminal.send_line("/exit")
+            terminal.wait_exit()
+            return
 
     terminal.send_line("/plan")
     terminal.screen(b"Plan mode")
-    exercise_question(terminal, command, session, "answer")
-    exercise_question(terminal, command, session, "cancel")
+    exercise_question(terminal, collector, session, "answer")
+    exercise_question(terminal, collector, session, "cancel")
+
+    if conversation:
+        exercise_compaction(terminal, command, session, initial)
 
     terminal.send_line("/new")
     def choose_context():
@@ -334,10 +339,69 @@ def exercise(terminal, command, fault):
     terminal.event(hook_event_name="Stop", session_id=next_start["session_id"])
     if initial:
         agent_state(terminal, command, run=initial["run"], collection="GapDetected", process="Running")
+    if conversation:
+        exercise_interactive_resume(terminal, command, session, initial)
     terminal.send_line("/exit")
     terminal.wait_exit()
     if initial:
         agent_state(terminal, command, run=initial["run"], process="Exited")
+    return session, initial
+
+
+def submit_followup(terminal, prompt, session, source, offset):
+    terminal.send_line(prompt)
+    start = terminal.event(after=offset, hook_event_name="SessionStart", source=source, session_id=session)
+    assert "turn_id" not in start
+    turn = terminal.event(after=offset, hook_event_name="UserPromptSubmit", session_id=session)["turn_id"]
+    terminal.event(hook_event_name="Stop", session_id=session, turn_id=turn)
+
+
+def exercise_compaction(terminal, command, session, initial):
+    offset = len(terminal.events())
+    terminal.send_line("/compact")
+    before = terminal.event(hook_event_name="PreCompact", trigger="manual", session_id=session)
+    terminal.event(
+        hook_event_name="PostCompact", trigger="manual", session_id=session, turn_id=before["turn_id"],
+    )
+    terminal.screen(b"Context compacted")
+    submit_followup(terminal, "fixture after compaction", session, "compact", offset)
+    if initial:
+        agent_state(
+            terminal, command, run=initial["run"], terminal=initial["terminal"], pid=initial["pid"],
+            session=session, collection="Healthy", process="Running", resolved="1", cancelled="1",
+            unverified="1", pending="0",
+        )
+
+
+def exercise_interactive_resume(terminal, command, session, initial):
+    offset = len(terminal.events())
+    terminal.send_line(f"/resume {session}")
+    terminal.screen(b"fixture after compaction")
+    submit_followup(terminal, "fixture after interactive resume", session, "resume", offset)
+    if initial:
+        agent_state(terminal, command, run=initial["run"], collection="GapDetected", process="Running")
+
+
+def exercise_resume_launch(terminal, launch, project, env, session, command, previous):
+    offset = len(terminal.events())
+    terminal.start([*launch, "resume", session], project, env)
+    terminal.screen(b"gpt-5.4")
+    submit_followup(terminal, "fixture after fresh resume", session, "resume", offset)
+    if previous:
+        resumed = agent_state(
+            terminal, command, provider="Codex", session=session, collection="Healthy", process="Running",
+            pending="0", resolved="0", cancelled="0", unverified="0", response="true",
+        )
+        assert resumed["run"] != previous["run"] and resumed["terminal"] != previous["terminal"]
+        assert resumed["pid"] != previous["pid"]
+        agent_state(terminal, command, run=previous["run"], process="Exited", resolved="1")
+    elif command is not None:
+        agent_state(
+            terminal, command, provider="Codex", collection="NotRegistered", process="Running",
+            pending="0", unverified="0", response="false",
+        )
+    terminal.send_line("/exit")
+    terminal.wait_exit()
 
 
 def exercise_permission(terminal, command):
@@ -453,7 +517,7 @@ def focus_and_ack_question(first, second, command, companion, one, two):
     first.screen(b"Which synthetic answer option?")
 
 
-def capture(binary, corvid, directory, port, fault, disable_auto_start, parallel):
+def capture(binary, corvid, directory, port, fault, auto_start, parallel, conversation):
     project = directory / "project"
     project.mkdir()
     trace, env = configure(directory, project, port, binary, corvid, fault)
@@ -475,17 +539,30 @@ def capture(binary, corvid, directory, port, fault, disable_auto_start, parallel
             if fault == "missing-collector":
                 (runtime / "collector.sock").unlink()
             launch = [*command, "attach", "--agent", "codex"]
-        if disable_auto_start:
+        if auto_start is not None:
             if command is not None:
                 launch.append("--")
-            launch.extend(["--disable", "daemon_auto_start"])
+            launch.extend(["--enable" if auto_start else "--disable", "daemon_auto_start"])
         terminal.start(launch, project, env)
         if second is None:
-            exercise(terminal, command, fault)
+            try:
+                result = exercise(terminal, command, fault, conversation)
+                if conversation:
+                    second = FixtureTerminal(directory, trace, "mux-resume")
+                    session, previous = result
+                    resume = launch if command is None or "--" in launch else [*launch, "--"]
+                    exercise_resume_launch(second, resume, project, env, session, command, previous)
+            except AssertionError:
+                if conversation:
+                    active = second or terminal
+                    print(active.screen_bytes().decode(errors="replace"), file=sys.stderr)
+                    sanitize(terminal.events())
+                raise
         else:
             trust_hooks(terminal)
-            second.start([*command, "attach", "--agent", "codex", "--new-workspace", "Other",
-                          "--", "--disable", "daemon_auto_start"], project, env)
+            second.start(
+                [*command, "attach", "--agent", "codex", "--new-workspace", "Other"], project, env,
+            )
             second.screen(b"gpt-5.4")
             parallel_questions(terminal, second, command, directory)
             for tty in (terminal, second):
@@ -500,7 +577,7 @@ def capture(binary, corvid, directory, port, fault, disable_auto_start, parallel
             second.close()
         if daemon is not None:
             stop(daemon)
-        if not disable_auto_start:
+        if auto_start is not False:
             stop_local_broker(Path(env["HOME"]))
     assert events and all(event["parent"] == "codex" for event in events)
     return events
@@ -552,13 +629,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corvid", type=Path)
     parser.add_argument("--fault", choices=("missing-helper", "missing-collector", "timeout", "collector-saturated"))
-    parser.add_argument("--disable-auto-start", action="store_true")
+    broker = parser.add_mutually_exclusive_group()
+    broker.add_argument("--disable-auto-start", dest="auto_start", action="store_false")
+    broker.add_argument("--enable-auto-start", dest="auto_start", action="store_true")
+    parser.set_defaults(auto_start=None)
     parser.add_argument("--parallel", action="store_true")
+    parser.add_argument("--conversation", action="store_true")
     args = parser.parse_args()
     if args.fault and not args.corvid:
         parser.error("--fault requires --corvid")
     if args.parallel and (not args.corvid or args.fault):
         parser.error("--parallel requires a managed Corvid fixture without fault injection")
+    if args.parallel and args.auto_start is True:
+        parser.error("--parallel requires independent Codex processes")
+    if args.conversation and (args.parallel or args.fault not in (None, "missing-helper", "missing-collector")):
+        parser.error("--conversation supports missing-helper or missing-collector for a single CLI")
     executable = shutil.which("codex")
     assert executable, "codex must be installed on PATH"
     binary = Path(executable).resolve()
@@ -571,8 +656,10 @@ def main():
             worker = threading.Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
-                events = capture(binary, corvid, Path(temporary), server.server_port, args.fault,
-                                 args.disable_auto_start or args.parallel, args.parallel)
+                events = capture(
+                    binary, corvid, Path(temporary), server.server_port, args.fault,
+                    args.auto_start, args.parallel, args.conversation,
+                )
             finally:
                 server.shutdown()
                 worker.join()
