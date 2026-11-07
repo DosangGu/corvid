@@ -6,16 +6,15 @@ use anyhow::{Context, Result, ensure};
 use corvid_protocol::snapshot::{
     SNAPSHOT_CAPABILITY, SnapshotAssembler, SynchronizedSnapshot, WATCH_CAPABILITY,
 };
-use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, GetSnapshot, Ping, SnapshotWatch as WatchRequest};
-use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
+use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until, timeout};
 use uuid::Uuid;
 
-use crate::connection::{Connection, open};
+use crate::endpoint::{ControlConnection, ControlEndpoint};
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 const PING_INTERVAL: Duration = Duration::from_secs(10);
@@ -23,12 +22,27 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CACHE_QUEUE: usize = 16;
 
 pub async fn snapshot(runtime: &Path) -> Result<SynchronizedSnapshot> {
-    let (_, snapshot) = connect(runtime, false).await?;
+    let endpoint = ControlEndpoint::Local(runtime.to_owned());
+    let (_, snapshot) = connect(&endpoint, false, None, None).await?;
     Ok(snapshot)
 }
 
 pub async fn watch_snapshot(runtime: &Path) -> Result<SnapshotWatch> {
-    let (connection, cache) = connect(runtime, true).await?;
+    watch(&ControlEndpoint::Local(runtime.to_owned()), None, None).await
+}
+
+impl ControlEndpoint {
+    pub async fn watch(&self, controller: &str, expected_host: &str) -> Result<SnapshotWatch> {
+        watch(self, Some(controller), Some(expected_host)).await
+    }
+}
+
+async fn watch(
+    endpoint: &ControlEndpoint,
+    controller: Option<&str>,
+    expected_host: Option<&str>,
+) -> Result<SnapshotWatch> {
+    let (connection, cache) = connect(endpoint, true, controller, expected_host).await?;
     let subscription = cache
         .subscription_id()
         .context("watch subscription missing")?
@@ -105,22 +119,34 @@ impl Drop for SnapshotWatch {
     }
 }
 
-async fn connect(runtime: &Path, watch: bool) -> Result<(Connection, SynchronizedSnapshot)> {
+async fn connect(
+    endpoint: &ControlEndpoint,
+    watch: bool,
+    controller: Option<&str>,
+    expected_host: Option<&str>,
+) -> Result<(ControlConnection, SynchronizedSnapshot)> {
     let capability = if watch {
         WATCH_CAPABILITY
     } else {
         SNAPSHOT_CAPABILITY
     };
-    let stream = open(runtime, SocketRole::Control).await?;
-    let mut connection =
-        Connection::establish(stream, PeerRole::Control, vec![capability.to_owned()]).await?;
+    let mut connection = endpoint
+        .connect(capability, controller.map(str::to_owned))
+        .await?;
+    if expected_host.is_some_and(|expected| expected != connection.wire.session.host_id) {
+        return Err(ProtocolFault::new("HostMismatch", "daemon host has changed").into());
+    }
     let cache = timeout(SETUP_TIMEOUT, receive_initial(&mut connection, watch))
         .await
         .context("snapshot setup timed out")??;
     Ok((connection, cache))
 }
 
-async fn receive_initial(connection: &mut Connection, watch: bool) -> Result<SynchronizedSnapshot> {
+async fn receive_initial(
+    connection: &mut ControlConnection,
+    watch: bool,
+) -> Result<SynchronizedSnapshot> {
+    let connection = &mut connection.wire;
     let request_id = Uuid::new_v4().to_string();
     let mut assembler =
         SnapshotAssembler::new(connection.session.clone(), request_id.clone(), watch);
@@ -144,7 +170,7 @@ async fn receive_initial(connection: &mut Connection, watch: bool) -> Result<Syn
 }
 
 async fn pump(
-    mut connection: Connection,
+    mut connection: ControlConnection,
     subscription: &str,
     sender: mpsc::Sender<Envelope>,
 ) -> Result<()> {
@@ -156,7 +182,7 @@ async fn pump(
     };
     loop {
         let frame = heartbeat.read(&mut connection).await?;
-        connection.session.validate_scope(&frame)?;
+        connection.wire.session.validate_scope(&frame)?;
         if let Some(Body::Error(fault)) = &frame.body {
             ensure!(
                 frame.subscription_id.as_deref() == Some(subscription)
@@ -189,7 +215,8 @@ struct Heartbeat {
 }
 
 impl Heartbeat {
-    async fn read(&mut self, connection: &mut Connection) -> Result<Envelope> {
+    async fn read(&mut self, connection: &mut ControlConnection) -> Result<Envelope> {
+        let connection = &mut connection.wire;
         let pending_read = connection.reader.next_envelope();
         tokio::pin!(pending_read);
         loop {

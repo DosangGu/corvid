@@ -12,7 +12,7 @@ corvid-core.workspace = true
 corvid-protocol.workspace = true
 crossterm.workspace = true
 nix = { workspace = true, features = ["term"] }
-tokio = { workspace = true, features = ["io-std", "macros", "net", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 uuid.workspace = true
 
 [lints]

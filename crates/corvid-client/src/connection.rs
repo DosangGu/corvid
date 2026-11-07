@@ -6,15 +6,16 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result,
     hello,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-pub(crate) struct Connection {
+pub(crate) struct Connection<R = OwnedReadHalf, W = OwnedWriteHalf> {
     pub(crate) session: Session,
-    pub(crate) reader: FrameReader<OwnedReadHalf>,
-    pub(crate) writer: FrameWriter<OwnedWriteHalf>,
+    pub(crate) reader: FrameReader<R>,
+    pub(crate) writer: FrameWriter<W>,
 }
 
 pub(crate) async fn open(path: &Path, role: SocketRole) -> Result<UnixStream> {
@@ -28,31 +29,24 @@ impl Connection {
         role: PeerRole,
         capabilities: Vec<String>,
     ) -> Result<Self> {
-        let controller = (role == PeerRole::Control).then(|| Uuid::new_v4().to_string());
-        Self::establish_as(stream, role, capabilities, controller).await
-    }
-
-    pub(crate) async fn establish_as(
-        stream: UnixStream,
-        role: PeerRole,
-        capabilities: Vec<String>,
-        controller: Option<String>,
-    ) -> Result<Self> {
+        let (read, write) = stream.into_split();
         timeout(
             COMMAND_TIMEOUT,
-            Self::handshake(stream, role, capabilities, controller),
+            Self::negotiate(read, write, role, capabilities, None),
         )
         .await
         .context("daemon handshake timed out")?
     }
+}
 
-    async fn handshake(
-        stream: UnixStream,
+impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Connection<R, W> {
+    pub(crate) async fn negotiate(
+        read: R,
+        write: W,
         role: PeerRole,
         capabilities: Vec<String>,
         controller: Option<String>,
     ) -> Result<Self> {
-        let (read, write) = stream.into_split();
         let (input, output) = match role {
             PeerRole::Control => (FrameRole::StructuredOnly, FrameRole::StructuredOnly),
             PeerRole::Tui => (FrameRole::TuiOutput, FrameRole::StructuredOnly),

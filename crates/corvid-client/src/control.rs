@@ -2,18 +2,17 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
-use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AcknowledgeAttention, AgentList, ClientList, ConnectionStatus, FocusAgentRequest,
     GetConnectionStatus, GetHost, HostInfo, ListAgents, ListClients, ListWorkspaces, Ping,
     RegisterClientBinding, UnregisterClientBinding, WorkspaceList,
 };
-use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
+use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::connection::{Connection, open};
+use crate::endpoint::{ControlConnection, ControlEndpoint};
 
 pub async fn host(runtime: &Path) -> Result<HostInfo> {
     match request(runtime, Body::GetHost(GetHost {}), "host.v1").await? {
@@ -100,68 +99,81 @@ pub async fn controller(
     request_id: String,
     command: ControllerRequest,
 ) -> Result<Body> {
-    let controller_id = scope.controller_id.clone();
-    let (capability, body) = match command {
-        ControllerRequest::Register { code } => (
-            PAIR_CAPABILITY,
-            Body::RegisterClientBinding(RegisterClientBinding {
-                controller_id,
-                code: code.to_string(),
-            }),
-        ),
-        ControllerRequest::Unregister { client, revision } => (
-            PAIR_CAPABILITY,
-            Body::UnregisterClientBinding(UnregisterClientBinding {
-                controller_id,
-                client_id: client.to_string(),
-                binding_revision: Some(revision),
-            }),
-        ),
-        ControllerRequest::Acknowledge { run, attention } => (
-            ACK_CAPABILITY,
-            Body::AcknowledgeAttention(AcknowledgeAttention {
-                controller_id,
-                agent_run_id: run.to_string(),
-                attention_id: attention.to_string(),
-            }),
-        ),
-        ControllerRequest::Focus {
-            client,
-            run,
-            revision,
-        } => (
-            FOCUS_CAPABILITY,
-            Body::FocusAgent(FocusAgentRequest {
-                controller_id,
-                client_id: client.to_string(),
-                agent_run_id: run.to_string(),
-                binding_revision: Some(revision),
-            }),
-        ),
-    };
-    let stream = open(runtime, SocketRole::Control).await?;
-    let connection = Connection::establish_as(
-        stream,
-        PeerRole::Control,
-        vec![capability.to_owned()],
-        Some(scope.controller_id.clone()),
-    )
-    .await?;
-    if connection.session.host_id != scope.host_id {
-        return Err(ProtocolFault::new("HostMismatch", "daemon host has changed").into());
-    }
-    if connection.session.server_epoch != scope.server_epoch {
-        return Err(ProtocolFault::new("EpochMismatch", "daemon epoch has changed").into());
-    }
-    timeout(COMMAND_TIMEOUT, exchange(connection, body, request_id))
+    ControlEndpoint::Local(runtime.to_owned())
+        .controller(scope, request_id, command)
         .await
-        .context("controller result timed out")?
+}
+
+impl ControlEndpoint {
+    pub async fn controller(
+        &self,
+        scope: &ControllerScope,
+        request_id: String,
+        command: ControllerRequest,
+    ) -> Result<Body> {
+        let (capability, body) = command.body(scope.controller_id.clone());
+        let connection = self
+            .connect(capability, Some(scope.controller_id.clone()))
+            .await?;
+        if connection.wire.session.host_id != scope.host_id {
+            return Err(ProtocolFault::new("HostMismatch", "daemon host has changed").into());
+        }
+        if connection.wire.session.server_epoch != scope.server_epoch {
+            return Err(ProtocolFault::new("EpochMismatch", "daemon epoch has changed").into());
+        }
+        timeout(COMMAND_TIMEOUT, exchange(connection, body, request_id))
+            .await
+            .context("controller result timed out")?
+    }
+}
+
+impl ControllerRequest {
+    fn body(self, controller_id: String) -> (&'static str, Body) {
+        match self {
+            ControllerRequest::Register { code } => (
+                PAIR_CAPABILITY,
+                Body::RegisterClientBinding(RegisterClientBinding {
+                    controller_id,
+                    code: code.to_string(),
+                }),
+            ),
+            ControllerRequest::Unregister { client, revision } => (
+                PAIR_CAPABILITY,
+                Body::UnregisterClientBinding(UnregisterClientBinding {
+                    controller_id,
+                    client_id: client.to_string(),
+                    binding_revision: Some(revision),
+                }),
+            ),
+            ControllerRequest::Acknowledge { run, attention } => (
+                ACK_CAPABILITY,
+                Body::AcknowledgeAttention(AcknowledgeAttention {
+                    controller_id,
+                    agent_run_id: run.to_string(),
+                    attention_id: attention.to_string(),
+                }),
+            ),
+            ControllerRequest::Focus {
+                client,
+                run,
+                revision,
+            } => (
+                FOCUS_CAPABILITY,
+                Body::FocusAgent(FocusAgentRequest {
+                    controller_id,
+                    client_id: client.to_string(),
+                    agent_run_id: run.to_string(),
+                    binding_revision: Some(revision),
+                }),
+            ),
+        }
+    }
 }
 
 async fn request(runtime: &Path, request: Body, capability: &str) -> Result<Body> {
-    let stream = open(runtime, SocketRole::Control).await?;
-    let connection =
-        Connection::establish(stream, PeerRole::Control, vec![capability.to_owned()]).await?;
+    let connection = ControlEndpoint::Local(runtime.to_owned())
+        .connect(capability, None)
+        .await?;
     timeout(
         COMMAND_TIMEOUT,
         exchange(connection, request, Uuid::new_v4().to_string()),
@@ -170,15 +182,17 @@ async fn request(runtime: &Path, request: Body, capability: &str) -> Result<Body
     .context("control command timed out")?
 }
 
-async fn exchange(connection: Connection, body: Body, request_id: String) -> Result<Body> {
-    let Connection {
-        session,
-        mut reader,
-        mut writer,
-    } = connection;
+async fn exchange(
+    mut connection: ControlConnection,
+    body: Body,
+    request_id: String,
+) -> Result<Body> {
+    let wire = &mut connection.wire;
+    let session = &wire.session;
     let request = session.envelope(Some(request_id), body);
-    writer.envelope(&request).await?;
-    let reply = reader
+    wire.writer.envelope(&request).await?;
+    let reply = wire
+        .reader
         .next_envelope()
         .await?
         .context("daemon closed during command")?;
