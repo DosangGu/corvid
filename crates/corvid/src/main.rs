@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
+use corvid_protocol::snapshot::SynchronizedSnapshot;
+use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
     LayoutRecovery, PersistenceState,
@@ -91,6 +93,9 @@ enum ControlRequest {
     Status,
     Workspaces,
     Agents,
+    Clients,
+    Snapshot,
+    Watch,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -236,8 +241,65 @@ async fn run(options: Options) -> Result<u32> {
                 }
                 Ok(0)
             }
+            ControlRequest::Clients => {
+                for client in corvid_client::clients(&runtime).await?.clients {
+                    print!(
+                        "{} generation={}",
+                        client.client_id, client.connection_generation
+                    );
+                    if let Some(terminal) = client.terminal_id {
+                        print!(" terminal={terminal}");
+                    }
+                    if let Some(revision) = client.view_revision {
+                        print!(" view_revision={revision}");
+                    }
+                    for lease in client.writer_leases {
+                        print!(" writer={}/{}", lease.workspace_id, lease.generation);
+                    }
+                    println!();
+                }
+                Ok(0)
+            }
+            ControlRequest::Snapshot => {
+                print_snapshot(&corvid_client::snapshot(&runtime).await?);
+                Ok(0)
+            }
+            ControlRequest::Watch => {
+                let mut watch = corvid_client::watch_snapshot(&runtime).await?;
+                print_snapshot(watch.state());
+                loop {
+                    watch.next_change().await?;
+                    print_snapshot(watch.state());
+                }
+            }
         },
     }
+}
+
+fn print_snapshot(cache: &SynchronizedSnapshot) {
+    let mut workspaces = 0;
+    let mut terminals = 0;
+    let mut clients = 0;
+    let mut agents = 0;
+    let mut requests = 0;
+    let mut attention = 0;
+    for entry in cache.snapshot().entities() {
+        match &entry.body {
+            Some(EntityBody::Workspace(_)) => workspaces += 1,
+            Some(EntityBody::Terminal(_)) => terminals += 1,
+            Some(EntityBody::Client(_)) => clients += 1,
+            Some(EntityBody::Agent(_)) => agents += 1,
+            Some(EntityBody::Request(_)) => requests += 1,
+            Some(EntityBody::Attention(_)) => attention += 1,
+            None => {}
+        }
+    }
+    println!(
+        "host_id={} server_epoch={} sequence={} workspaces={workspaces} terminals={terminals} clients={clients} agents={agents} requests={requests} attention={attention}",
+        cache.session().host_id,
+        cache.session().server_epoch,
+        cache.snapshot().sequence(),
+    );
 }
 
 fn print_agent(agent: AgentInfo) {

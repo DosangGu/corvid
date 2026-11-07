@@ -573,6 +573,48 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
 }
 
 #[tokio::test]
+async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let mut original = daemon(&runtime, &state).await;
+
+    timeout(WAIT, async {
+        let mut watch = corvid_client::watch_snapshot(&runtime).await.unwrap();
+        assert!(watch.is_ready());
+        let session = watch.state().session().clone();
+        // A caller may cancel a pending read without dropping a partial frame.
+        assert!(timeout(Duration::from_millis(20), watch.next_change()).await.is_err());
+
+        let tui = Tui::attach_command(&runtime, Some(echo_fixture("SYNC"))).await;
+        let client_id = tui.route.client_id.clone();
+        let terminal_id = tui.route.terminal_id.clone();
+        let has_client = |watch: &corvid_client::SnapshotWatch| watch.state().snapshot().entities()
+            .any(|entry| matches!(&entry.body, Some(EntityBody::Client(client)) if client.client_id == client_id));
+        while !has_client(&watch) {
+            watch.next_change().await.unwrap();
+        }
+        drop(tui);
+        while has_client(&watch) {
+            watch.next_change().await.unwrap();
+        }
+
+        original.kill().await.unwrap();
+        assert!(watch.next_change().await.is_err());
+        assert!(!watch.is_ready());
+        assert!(watch.state().snapshot().entities().any(|entry| matches!(&entry.body,
+            Some(EntityBody::Terminal(terminal)) if terminal.terminal_id == terminal_id)));
+
+        let _replacement = daemon(&runtime, &state).await;
+        let replacement = corvid_client::snapshot(&runtime).await.unwrap();
+        assert_eq!(replacement.session().host_id, session.host_id);
+        assert_ne!(replacement.session().server_epoch, session.server_epoch);
+        assert_eq!(replacement.snapshot().sequence(), 0);
+        assert!(replacement.snapshot().entities().all(|entry| matches!(entry.body, Some(EntityBody::Workspace(_)))));
+    }).await.unwrap();
+}
+
+#[tokio::test]
 async fn separate_workspace_writers_and_tab_transitions_preserve_exact_routes() {
     let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let runtime = temporary.path().join("runtime");

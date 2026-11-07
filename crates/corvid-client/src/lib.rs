@@ -4,9 +4,11 @@ mod connection;
 mod control;
 mod keys;
 mod relay;
+mod snapshot;
 mod tty;
 
 pub use attach::{AttachOptions, attach};
 pub use collector::submit_hook;
-pub use control::{agents, host, ping, status, workspaces};
+pub use control::{agents, clients, host, ping, status, workspaces};
 pub use relay::relay;
+pub use snapshot::{SnapshotWatch, snapshot, watch_snapshot};

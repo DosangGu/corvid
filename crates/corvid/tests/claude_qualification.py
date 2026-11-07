@@ -220,6 +220,8 @@ def exercise(terminal, scenario, managed):
     if managed:
         question = managed.expect(terminal, run=initial["run"], pending="1", badge="NeedsInput")
         assert question["unverified"] == "1"
+        snapshot = managed.snapshot()
+        assert snapshot["agents"] == "1" and snapshot["requests"] == snapshot["attention"] == "2"
         managed.reject_foreign_hook(question)
     terminal.send(b"1\r")
     terminal.event(hook_event_name="PostToolUse", tool_name="AskUserQuestion")
@@ -271,6 +273,10 @@ class CorvidFixture:
             agent["run"] = run
             agents.append(agent)
         return agents
+
+    def snapshot(self):
+        output = subprocess.check_output([*self.command, "control", "snapshot"], text=True, timeout=3)
+        return dict(field.split("=", 1) for field in output.split())
 
     def expect(self, tty, **fields):
         def matching():

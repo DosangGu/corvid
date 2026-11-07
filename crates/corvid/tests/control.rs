@@ -9,8 +9,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH};
+use corvid_protocol::snapshot::{SnapshotAssembler, WATCH_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{GetHost, HostInfo};
+use corvid_protocol::wire::{GetHost, HostInfo, Ping, SnapshotWatch};
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello};
 use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
@@ -119,6 +120,64 @@ async fn relays_real_control_session_over_binary_stdio() {
                 server_epoch: session.server_epoch,
             }))
         );
+        assert!(reader.next_envelope().await.unwrap().is_none());
+        assert!(relay.wait().await.unwrap().success());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn relays_a_complete_watch_setup_and_heartbeat_over_stdio() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+
+    timeout(WAIT, async {
+        let mut relay = command(&runtime)
+            .args(["control", "--stdio"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut writer = FrameWriter::start(relay.stdin.take().unwrap(), FrameRole::StructuredOnly)
+            .await
+            .unwrap();
+        let mut reader =
+            FrameReader::start(relay.stdout.take().unwrap(), FrameRole::StructuredOnly)
+                .await
+                .unwrap();
+        let greeting = hello(
+            "hello".into(),
+            Some("watch-controller".into()),
+            vec![WATCH_CAPABILITY.into()],
+        );
+        writer.envelope(&greeting).await.unwrap();
+        let reply = reader.next_envelope().await.unwrap().unwrap();
+        let session = check_hello_result(&greeting, &reply, PeerRole::Control).unwrap();
+
+        let mut assembler = SnapshotAssembler::new(session.clone(), "watch".to_owned(), true);
+        let request = session.envelope(Some("watch".into()), Body::SnapshotWatch(SnapshotWatch {}));
+        writer.envelope(&request).await.unwrap();
+        let snapshot = loop {
+            let frame = reader.next_envelope().await.unwrap().unwrap();
+            if let Some(snapshot) = assembler.push(frame).unwrap() {
+                break snapshot;
+            }
+        };
+        assert_eq!(snapshot.snapshot().sequence(), 0);
+        assert_eq!(snapshot.snapshot().entities().count(), 1);
+        assert!(snapshot.subscription_id().is_some());
+
+        let ping = session.envelope(Some("ping".into()), Body::Ping(Ping {}));
+        writer.envelope(&ping).await.unwrap();
+        let pong = reader.next_envelope().await.unwrap().unwrap();
+        assert!(matches!(pong.body, Some(Body::Pong(_))));
+        assert_eq!(pong.request_id, ping.request_id);
+        assert!(pong.subscription_id.is_none());
+
+        writer.shutdown().await.unwrap();
+        drop(writer);
         assert!(reader.next_envelope().await.unwrap().is_none());
         assert!(relay.wait().await.unwrap().success());
     })
