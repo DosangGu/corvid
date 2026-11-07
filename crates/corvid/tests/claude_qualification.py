@@ -25,7 +25,7 @@ from interactive import stop, wait_for_daemon
 VERSION = "2.1.318 (Claude Code)"
 HOOKS = (
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
-    "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "SessionEnd",
+    "PermissionDenied", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "SessionEnd",
 )
 IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id")
 CAPTURE = """
@@ -57,8 +57,22 @@ class ModelFixture(BaseHTTPRequestHandler):
             return
 
         offered_tools = {tool.get("name") for tool in request.get("tools", [])}
-        question = "AskUserQuestion" in offered_tools and not self.server.question_sent
-        self.server.question_sent |= question
+        requested = self.server.fixture_tool
+        tool = requested if requested in offered_tools and not self.server.tool_sent else None
+        arguments = None
+        if requested == "ExitPlanMode" and not self.server.plan_drafted:
+            plan_root = re.escape(str(self.server.plan_directory))
+            path = re.search(rf"{plan_root}/[\w-]+\.md", json.dumps(request.get("messages", [])))
+            assert "Write" in offered_tools and path, "missing fixture plan file in plan-mode context"
+            tool = "Write"
+            arguments = {"file_path": path[0], "content": "# Fixture plan\n\nReturn a synthetic response.\n"}
+            self.server.plan_drafted = True
+        elif requested == "ExitPlanMode" and tool is None and not self.server.plan_search_sent:
+            assert "ToolSearch" in offered_tools, "plan tool is absent and tool search is unavailable"
+            tool = "ToolSearch"
+            arguments = {"query": "select:ExitPlanMode"}
+            self.server.plan_search_sent = True
+        self.server.tool_sent |= tool == requested
         self.server.message_count += 1
         message = {
             "id": f"msg_corvid_{self.server.message_count}",
@@ -70,7 +84,7 @@ class ModelFixture(BaseHTTPRequestHandler):
             "stop_sequence": None,
             "usage": {"input_tokens": 123, "output_tokens": 1},
         }
-        block, delta, reason = response_content(question)
+        block, delta, reason = response_content(tool, arguments)
         events = (
             {"type": "message_start", "message": message},
             {"type": "content_block_start", "index": 0, "content_block": block},
@@ -91,8 +105,8 @@ class ModelFixture(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def response_content(question):
-    if not question:
+def response_content(tool, arguments):
+    if not tool:
         return (
             {"type": "text", "text": ""},
             {"type": "text_delta", "text": "Fixture response."},
@@ -100,20 +114,23 @@ def response_content(question):
         )
     block = {
         "type": "tool_use",
-        "name": "AskUserQuestion",
-        "id": "toolu_corvid_fixture",
+        "name": tool,
+        "id": f"toolu_corvid_{tool.lower()}" if tool in {"Write", "ToolSearch"} else "toolu_corvid_fixture",
         "input": {},
     }
-    question = {
-        "question": "Which fixture option do you choose?",
-        "header": "Fixture",
-        "options": [
-            {"label": "Alpha", "description": "First fixture option"},
-            {"label": "Beta", "description": "Second fixture option"},
-        ],
-        "multiSelect": False,
-    }
-    delta = {"type": "input_json_delta", "partial_json": json.dumps({"questions": [question]})}
+    if tool == "AskUserQuestion":
+        arguments = {"questions": [{
+            "question": "Which fixture option do you choose?",
+            "header": "Fixture",
+            "options": [
+                {"label": "Alpha", "description": "First fixture option"},
+                {"label": "Beta", "description": "Second fixture option"},
+            ],
+            "multiSelect": False,
+        }]}
+    if arguments is None:
+        arguments = {}
+    delta = {"type": "input_json_delta", "partial_json": json.dumps(arguments)}
     return block, delta, "tool_use"
 
 
@@ -189,9 +206,9 @@ class FixtureTerminal:
         end = contents.rfind(b"\n")
         return [json.loads(line) for line in contents[:end + 1].splitlines()]
 
-    def event(self, **match):
+    def event(self, *, after=0, **match):
         def matching():
-            return next((event for event in self.events()
+            return next((event for event in self.events()[after:]
                          if all(event.get(key) == value for key, value in match.items())), None)
 
         self.wait(matching, ", ".join(match.values()))
@@ -220,7 +237,11 @@ def exercise(terminal, scenario, managed):
     initial = managed.expect(terminal, collection="Healthy", process="Running") if managed else None
     current = initial
     terminal.send(b"Corvid hook schema fixture\r")
+    if scenario == "plan":
+        return exercise_plan(terminal, managed, initial)
     terminal.expect(b"Enter to submit or Escape to cancel:")
+    if scenario == "cancel":
+        return exercise_cancel(terminal, managed, initial)
     if managed:
         question = managed.expect(terminal, run=initial["run"], pending="1", badge="NeedsInput")
         assert question["unverified"] == "1"
@@ -273,6 +294,43 @@ def exercise(terminal, scenario, managed):
     assert terminal.process.wait(timeout=5) == 0, "fixture Claude exit failed"
     if managed:
         managed.expect(terminal, run=current["run"], process="Exited")
+    return terminal.events()
+
+
+def exercise_plan(terminal, managed, initial):
+    terminal.expect(b"Would you like to proceed?")
+    if managed:
+        managed.expect(terminal, run=initial["run"], pending="1", unverified="1", badge="NeedsInput")
+        alerts = managed.attention()
+        assert any(alert["run_id"] == initial["run"] and alert["request_kind"] == "PlanApproval"
+                   for alert in alerts)
+    terminal.send(b"1\r")
+    terminal.event(hook_event_name="PostToolUse", tool_name="ExitPlanMode")
+    terminal.event(hook_event_name="Stop")
+    if managed:
+        managed.expect(
+            terminal, run=initial["run"], pending="0", resolved="1", unverified="1", process="Running",
+        )
+    terminal.send(b"/exit\r")
+    assert terminal.process.wait(timeout=5) == 0
+    return terminal.events()
+
+
+def exercise_cancel(terminal, managed, initial):
+    if managed:
+        managed.expect(terminal, run=initial["run"], pending="1", unverified="1", badge="NeedsInput")
+    offset = len(terminal.events())
+    terminal.send(b"\x1b")
+    time.sleep(0.5)
+    terminal.send(b"Corvid after question cancellation\r")
+    followup = terminal.event(after=offset, hook_event_name="UserPromptSubmit")
+    terminal.event(hook_event_name="Stop", prompt_id=followup["prompt_id"])
+    if managed:
+        managed.expect(
+            terminal, run=initial["run"], pending="0", unverified="2", cancelled="0", resolved="0",
+        )
+    terminal.send(b"/exit\r")
+    assert terminal.process.wait(timeout=5) == 0
     return terminal.events()
 
 
@@ -395,9 +453,7 @@ class CorvidFixture:
 
     def acknowledge_question(self, question):
         view, slot = self.presented_question(question)
-        output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
-        alerts = [dict(field.split("=", 1) for field in line.split()) for line in output.splitlines()]
-        first = next(alert for alert in alerts
+        first = next(alert for alert in self.attention()
                      if alert["run_id"] == question["run"] and alert["request_kind"] == "Question")
         assert first["acknowledged"] == "false"
         ack = ["ack", "--control", view["header"]["control_capture"], "--run", slot["run"],
@@ -410,6 +466,10 @@ class CorvidFixture:
         assert actual["pending"] == "1" and actual["unverified"] == "1"
         output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
         assert output.count("acknowledged=true") == 1
+
+    def attention(self):
+        output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
+        return [fields(line) for line in output.splitlines()]
 
     def expect(self, tty, **fields):
         def matching():
@@ -451,7 +511,7 @@ def capture(binary, directory, port, scenario, corvid, fault):
     project.mkdir()
     arguments = [
         "--model", "sonnet", "--strict-mcp-config", "--no-chrome", "--ax-screen-reader",
-        "--permission-mode", "manual",
+        "--permission-mode", "plan" if scenario == "plan" else "manual",
     ]
     if corvid is None:
         args = ["setsid", "--ctty", "--wait", str(binary.resolve()), *arguments]
@@ -515,16 +575,29 @@ def verify(events, scenario):
     session = first["session_id"]
     submitted = next(event for event in events if event["hook_event_name"] == "UserPromptSubmit")
     turn = submitted["prompt_id"]
-    before = next(event for event in events if event["hook_event_name"] == "PreToolUse")
-    after = next(event for event in events if event["hook_event_name"] == "PostToolUse")
-    permission = next(event for event in events if event["hook_event_name"] == "PermissionRequest")
-    response = next(event for event in events if event["hook_event_name"] == "Stop")
-    for event in (submitted, before, after, permission, response):
+    tool = "ExitPlanMode" if scenario == "plan" else "AskUserQuestion"
+    before = next(event for event in events if event["hook_event_name"] == "PreToolUse"
+                  and event.get("tool_name") == tool)
+    permission = next(event for event in events if event["hook_event_name"] == "PermissionRequest"
+                      and event.get("tool_name") == tool)
+    for event in (submitted, before, permission):
         assert event["session_id"] == session
         assert event["prompt_id"] == turn
-    assert before["tool_name"] == after["tool_name"] == permission["tool_name"] == "AskUserQuestion"
-    assert before["tool_use_id"] == after["tool_use_id"]
     assert "tool_use_id" not in permission
+    outcomes = [event for event in events if event.get("tool_name") == tool
+                and event["hook_event_name"] in {"PostToolUse", "PostToolUseFailure", "PermissionDenied"}]
+    response = next(event for event in events if event["hook_event_name"] == "Stop")
+    assert response["session_id"] == session
+    if scenario == "cancel":
+        assert not outcomes
+        followup = next(event for event in events if event["hook_event_name"] == "UserPromptSubmit"
+                        and event["prompt_id"] != turn)
+        assert response["prompt_id"] == followup["prompt_id"] and followup["session_id"] == session
+    else:
+        after, = outcomes
+        assert after["hook_event_name"] == "PostToolUse"
+        assert after["session_id"] == session and after["prompt_id"] == response["prompt_id"] == turn
+        assert before["tool_use_id"] == after["tool_use_id"]
     assert events[-1]["hook_event_name"] == "SessionEnd"
     assert events[-1]["reason"] == "prompt_input_exit"
     if scenario in {"clear", "resume"}:
@@ -550,7 +623,7 @@ def verify(events, scenario):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("answer", "clear", "resume"), default="answer")
+    parser.add_argument("--scenario", choices=("answer", "clear", "resume", "cancel", "plan"), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=("missing-helper", "missing-collector"))
     args = parser.parse_args()
@@ -566,7 +639,11 @@ def main():
     parent = Path(__file__).resolve().parents[3] if corvid is not None else None
     with tempfile.TemporaryDirectory(prefix=".corvid-claude-", dir=parent) as directory:
         with HTTPServer(("127.0.0.1", 0), ModelFixture) as server:
-            server.question_sent = False
+            server.fixture_tool = "ExitPlanMode" if args.scenario == "plan" else "AskUserQuestion"
+            server.tool_sent = False
+            server.plan_drafted = False
+            server.plan_search_sent = False
+            server.plan_directory = Path(directory) / "home/.claude/plans"
             server.message_count = 0
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()

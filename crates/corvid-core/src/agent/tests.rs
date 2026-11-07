@@ -301,6 +301,31 @@ fn delayed_process_status_can_add_an_exit_code_without_reviving_the_run() {
 }
 
 #[test]
+fn a_new_interactive_prompt_preserves_unsettled_requests_as_uncertain() {
+    let mut fixture = Fixture::new();
+    let submit = |fixture: &mut Fixture, id: &str| {
+        fixture.now += 1;
+        let mut prompt =
+            fixture.observation(ObservationKind::InteractivePromptSubmitted(id.to_owned()));
+        prompt.evidence.confidence = Confidence::Inferred;
+        fixture.run.apply(prompt, fixture.now)
+    };
+    assert!(submit(&mut fixture, "first"));
+    let previous = fixture.request("first", "first-question");
+    assert!(submit(&mut fixture, "next"));
+    let current = fixture.request("next", "new-question");
+    let delayed = fixture.request("first", "delayed-question");
+    assert_eq!(fixture.request_state(previous), RequestStatus::Unverified);
+    assert_eq!(fixture.request_state(delayed), RequestStatus::Unverified);
+
+    assert!(!submit(&mut fixture, "first"));
+    assert!(fixture.resolve("first", "first-question"));
+    assert_eq!(fixture.request_state(previous), RequestStatus::Resolved);
+    assert_eq!(fixture.request_state(current), RequestStatus::Pending);
+    assert_eq!(fixture.request_state(delayed), RequestStatus::Unverified);
+}
+
+#[test]
 fn out_of_order_result_creates_resolved_history_without_an_alert() {
     let mut fixture = Fixture::new();
     assert!(!fixture.resolve("turn", "question"));

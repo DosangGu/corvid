@@ -206,6 +206,8 @@ pub struct WorkKey {
 pub enum ObservationKind {
     ContextObserved,
     TurnStarted(String),
+    /// Another interactive submission was observed without a result for the prior prompt.
+    InteractivePromptSubmitted(String),
     WorkStarted(WorkKey),
     WorkFinished(WorkKey),
     /// A key is present only when the adapter can prove its correlation scope.

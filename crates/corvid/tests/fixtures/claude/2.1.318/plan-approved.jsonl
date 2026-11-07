@@ -1,0 +1,11 @@
+{"hook_event_name":"SessionStart","source":"startup","session_id":"00000000-0000-4000-8000-000000000001"}
+{"hook_event_name":"UserPromptSubmit","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002"}
+{"hook_event_name":"PreToolUse","tool_name":"Write","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_3"}
+{"hook_event_name":"PostToolUse","tool_name":"Write","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_3"}
+{"hook_event_name":"PreToolUse","tool_name":"ToolSearch","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_4"}
+{"hook_event_name":"PostToolUse","tool_name":"ToolSearch","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_4"}
+{"hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_5"}
+{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002"}
+{"hook_event_name":"PostToolUse","tool_name":"ExitPlanMode","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_5"}
+{"hook_event_name":"Stop","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002"}
+{"hook_event_name":"SessionEnd","reason":"prompt_input_exit","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000006"}

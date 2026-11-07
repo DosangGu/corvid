@@ -12,6 +12,8 @@ const CLAUDE_EVENTS: &[HookEvent] = &[
     HookEvent::PromptSubmitted,
     HookEvent::QuestionStarted,
     HookEvent::QuestionResult,
+    HookEvent::PlanApprovalStarted,
+    HookEvent::PlanApprovalResult,
     HookEvent::PermissionRequested,
     HookEvent::ResponseObserved,
     HookEvent::ContextEnded,
@@ -111,7 +113,7 @@ fn qualification(provider: Provider, kind: Kind) -> (Level, &'static str) {
         ),
         (Provider::Claude, Kind::RequestResolution) => (
             Level::Partial,
-            "question answers correlate, while permission outcomes remain unverified",
+            "question answers and plan results correlate; manual dismissals and permissions can lack results",
         ),
         (Provider::Claude, Kind::ContextReplacement) => (
             Level::Partial,

@@ -3,17 +3,19 @@
 ## Claude Code 2.1.318 on Linux
 
 Recorded on Linux 7.2.14 on 2026-11-07. The fixture launches the installed
-interactive CLI in a real PTY with screen-reader output and manual permission
-mode. It uses a temporary home, an empty workspace, and a loopback Messages
-server that supplies synthetic responses. The fixture answers its own question
-through the PTY and exits through the normal command prompt.
+interactive CLI in a real PTY with screen-reader output. It uses a temporary
+home, an empty workspace, and a loopback Messages server that supplies synthetic
+responses. Question scenarios use manual permission mode. The plan scenario
+starts in plan mode and the fixture chooses the approval in the PTY.
 
 | Event | Observed fields and behavior |
 |---|---|
 | `SessionStart` | Startup supplies a session ID and `source=startup`. The first prompt ID is absent. |
 | `UserPromptSubmit` | Supplies a prompt ID under the current session. |
 | `PreToolUse` and `PostToolUse` | The observed `AskUserQuestion` invocation and result share session, prompt, and tool-use IDs. |
+| `ExitPlanMode` | After writing a draft and loading the deferred tool, the CLI shows an approval dialog. Its `PreToolUse` and successful `PostToolUse` share session, prompt, and tool-use IDs. |
 | `PermissionRequest` | The same question also emits this event with the session, prompt, and tool name. The tool-use ID is absent. Require separate correlation evidence before resolving a permission observation. |
+| Question dismissal | Esc closes the question. The next submission and `Stop` carry a new prompt ID. The dismissed question has no matching result, failure, or denial hook in this trace. |
 | `Stop` | The response retains the prompt ID after the tool result. Other hooks can continue the turn, so this boundary provides response evidence. |
 | `SessionEnd` and `SessionStart` | `/clear` ends the old session with `reason=clear` and starts a distinct session with `source=clear`. The CLI stays in the same PTY. `/exit` later ends the new context with `reason=prompt_input_exit`. |
 | `/compact` and `/resume` | Manual compaction emits `SessionStart` with `source=compact` and the same session ID. Switching back to a previous conversation emits `SessionEnd` with `reason=resume` for the outgoing session, followed by `SessionStart` with `source=resume` for the target. Both sides report the same prompt ID. |
@@ -28,6 +30,8 @@ for the fixture server's response format.
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario answer
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario clear
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario resume
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario cancel
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario plan
 ```
 
 The [fixtures](../crates/corvid/tests/fixtures/claude/2.1.318/) keep allowlisted
@@ -43,8 +47,10 @@ provider's executable and process incarnation on submission. The hook must run
 as a direct child of the managed CLI.
 
 The current adapter records submitted prompts with inferred confidence and
-`Stop` as response evidence. It correlates question start and result by session,
-prompt, and tool IDs. Permission observations without a tool ID remain unverified.
+`Stop` as response evidence. It correlates questions and plan approvals by
+session, prompt, and tool IDs. Permission observations without a tool ID remain
+unverified. A new prompt makes unresolved requests from the previous prompt
+unverified. An exact result can still settle those requests.
 A confirmed `/clear` boundary gets a fresh run under the same terminal. An observed
 manual compaction retains the run and its request records. During an in-process
 resume, Corvid fences focus on the outgoing run and matches the start to the end
@@ -59,8 +65,12 @@ cargo build --locked
 export PYTHONDONTWRITEBYTECODE=1
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario clear
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario resume
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault missing-helper
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel --fault missing-collector
 ```
 
 The managed PTY test observed a pending question, its matching resolution, a
@@ -78,9 +88,13 @@ resumed the first by its exact session ID. The Claude PID and Corvid terminal
 stayed the same across both context switches. The original resolved question
 remained in history, and the resumed run accepted focus through a fresh slot.
 
-Qualification remains for question cancellation, plan approval, child records,
-and collector saturation. Delivery failures that occur before
-the daemon receives a frame can leave coverage unchanged.
+The plan fixture observed a typed pending approval and its exact resolution.
+The dismissal fixture observed the same run move from one pending question to
+an unverified question after the next submission. The approval completed with
+the observer absent, and dismissal completed with the collector socket absent.
+Exact manual cancellation, plan rejection, child records, and collector
+saturation remain unqualified.
+Delivery failures before the daemon receives a frame can leave coverage unchanged.
 
 ## Codex CLI 0.167.0 on Linux
 

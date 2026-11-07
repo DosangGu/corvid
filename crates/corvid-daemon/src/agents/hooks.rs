@@ -130,7 +130,11 @@ impl Hook {
         let kind = match self.event {
             HookEvent::PromptSubmitted => {
                 confidence = Confidence::Inferred;
-                ObservationKind::TurnStarted(self.turn.clone()?)
+                let turn = self.turn.clone()?;
+                match self.provider {
+                    Provider::Claude => ObservationKind::InteractivePromptSubmitted(turn),
+                    Provider::Codex => ObservationKind::TurnStarted(turn),
+                }
             }
             HookEvent::QuestionStarted => {
                 if self.provider == Provider::Codex {
@@ -141,10 +145,16 @@ impl Hook {
                     kind: RequestKind::Question,
                 }
             }
-            HookEvent::QuestionResult => ObservationKind::InputResolved {
-                key: self.request_key()?,
-                resolution: Resolution::Resolved,
+            HookEvent::PlanApprovalStarted => ObservationKind::InputRequested {
+                key: self.request_key(),
+                kind: RequestKind::PlanApproval,
             },
+            HookEvent::QuestionResult | HookEvent::PlanApprovalResult => {
+                ObservationKind::InputResolved {
+                    key: self.request_key()?,
+                    resolution: Resolution::Resolved,
+                }
+            }
             HookEvent::PermissionRequested => ObservationKind::InputRequested {
                 key: None,
                 kind: RequestKind::Permission,
@@ -188,6 +198,8 @@ fn supported_event(provider: Provider, event: HookEvent) -> bool {
         | HookEvent::ResponseObserved
         | HookEvent::DeliveryGap => true,
         HookEvent::Clear
+        | HookEvent::PlanApprovalStarted
+        | HookEvent::PlanApprovalResult
         | HookEvent::ContextEnded
         | HookEvent::ContextReplaced
         | HookEvent::ResumeContextEnded => provider == Provider::Claude,
@@ -274,7 +286,7 @@ impl Agents {
             current.apply(hook.delivery, kind, evidence);
         } else if matches!(
             hook.event,
-            HookEvent::PromptSubmitted | HookEvent::QuestionResult
+            HookEvent::PromptSubmitted | HookEvent::QuestionResult | HookEvent::PlanApprovalResult
         ) {
             launch.record_gap(current, "correlation fields are missing");
         }

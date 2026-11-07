@@ -133,6 +133,7 @@ fn delivery_gap(provider: AgentProvider) -> CollectHook {
 impl ClaudeInput {
     fn into_observation(self) -> Option<CollectHook> {
         let question = self.tool_name.as_deref() == Some("AskUserQuestion");
+        let plan = self.tool_name.as_deref() == Some("ExitPlanMode");
         let kind = match self.hook_event_name.as_str() {
             "SessionStart" => match self.source.as_deref()? {
                 "startup" => HookEvent::Startup,
@@ -144,6 +145,8 @@ impl ClaudeInput {
             "UserPromptSubmit" => HookEvent::PromptSubmitted,
             "PreToolUse" if question => HookEvent::QuestionStarted,
             "PostToolUse" if question => HookEvent::QuestionResult,
+            "PreToolUse" if plan => HookEvent::PlanApprovalStarted,
+            "PostToolUse" if plan => HookEvent::PlanApprovalResult,
             "PermissionRequest" => HookEvent::PermissionRequested,
             "Stop" => HookEvent::ResponseObserved,
             "SessionEnd" => match self.reason.as_deref() {
@@ -153,7 +156,13 @@ impl ClaudeInput {
             },
             _ => return None,
         };
-        let tool_id = if matches!(kind, HookEvent::QuestionStarted | HookEvent::QuestionResult) {
+        let tool_id = if matches!(
+            kind,
+            HookEvent::QuestionStarted
+                | HookEvent::QuestionResult
+                | HookEvent::PlanApprovalStarted
+                | HookEvent::PlanApprovalResult
+        ) {
             self.tool_use_id
         } else {
             None
@@ -210,7 +219,7 @@ pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
                 hooks.insert(
                     event.to_owned(),
                     json!([{
-                        "matcher": "AskUserQuestion",
+                        "matcher": "AskUserQuestion|ExitPlanMode",
                         "hooks": [handler.clone()],
                     }]),
                 );

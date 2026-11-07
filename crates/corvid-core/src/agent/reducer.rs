@@ -25,6 +25,7 @@ pub(super) struct Correlation {
     deliveries: Recent<Uuid>,
     provider_events: Recent<(Source, String)>,
     tentative_turns: Recent<String>,
+    displaced_prompts: Recent<String>,
     completed_turns: Recent<String>,
     interrupted_turns: Recent<String>,
     completed_work: Recent<WorkKey>,
@@ -131,7 +132,10 @@ impl AgentRun {
             ObservationKind::ContextObserved if evidence.confidence == Confidence::Confirmed => {
                 replace(&mut self.lifecycle, Lifecycle::Live, evidence)
             }
-            ObservationKind::TurnStarted(turn) => self.start_turn(turn, evidence),
+            ObservationKind::TurnStarted(turn) => self.start_turn(turn, evidence, false),
+            ObservationKind::InteractivePromptSubmitted(turn) => {
+                self.start_turn(turn, evidence, true)
+            }
             ObservationKind::WorkStarted(key) => self.start_work(key, evidence),
             ObservationKind::WorkFinished(key) => self.finish_work(key, evidence),
             ObservationKind::InputRequested { key, kind } => {
@@ -159,7 +163,7 @@ impl AgentRun {
         }
     }
 
-    fn start_turn(&mut self, turn: String, evidence: &Evidence) -> bool {
+    fn start_turn(&mut self, turn: String, evidence: &Evidence, recheck_input: bool) -> bool {
         if self.correlation.completed_turns.contains(&turn) || self.active_turns.contains_key(&turn)
         {
             return false;
@@ -172,7 +176,10 @@ impl AgentRun {
         if !confirmed && !self.correlation.tentative_turns.insert(turn.clone()) {
             return false;
         }
-        self.correlation.current_turn = Some(turn.clone());
+        let previous = self.correlation.current_turn.replace(turn.clone());
+        if recheck_input && let Some(previous) = previous.filter(|previous| previous != &turn) {
+            self.displace_prompt(previous, evidence);
+        }
         self.correlation.response_for_prompt = false;
         self.activity = Observed::new(Activity::Unknown, evidence);
         if confirmed {
@@ -180,6 +187,18 @@ impl AgentRun {
         }
         self.refresh_work_activity(evidence);
         true
+    }
+
+    fn displace_prompt(&mut self, turn: String, evidence: &Evidence) {
+        let uncertain = evidence.uncertain("another prompt was submitted before an input result");
+        for request in self.requests.values_mut() {
+            if request.state.value == RequestStatus::Pending
+                && request.key.as_ref().and_then(|key| key.turn.as_deref()) == Some(turn.as_str())
+            {
+                request.state = Observed::new(RequestStatus::Unverified, &uncertain);
+            }
+        }
+        self.correlation.displaced_prompts.insert(turn);
     }
 
     fn start_work(&mut self, key: WorkKey, evidence: &Evidence) -> bool {
@@ -281,6 +300,14 @@ impl AgentRun {
             if let Some(result) = self.correlation.orphan_results.remove(key) {
                 self.correlation.finished_requests.insert(key.clone());
                 return result.state;
+            }
+            if key
+                .turn
+                .as_ref()
+                .is_some_and(|turn| self.correlation.displaced_prompts.contains(turn))
+            {
+                let uncertain = evidence.uncertain("input request belongs to a previous prompt");
+                return Observed::new(RequestStatus::Unverified, &uncertain);
             }
             if evidence.confidence == Confidence::Confirmed
                 && !self.correlation.expired_results.contains(key)
@@ -561,7 +588,8 @@ impl Observation {
             return false;
         }
         match &self.kind {
-            ObservationKind::TurnStarted(turn) => valid_id(turn),
+            ObservationKind::TurnStarted(turn)
+            | ObservationKind::InteractivePromptSubmitted(turn) => valid_id(turn),
             ObservationKind::WorkStarted(key) | ObservationKind::WorkFinished(key) => {
                 valid_optional_id(&key.turn) && valid_id(&key.item)
             }
