@@ -10,10 +10,15 @@ publish.workspace = true
 anyhow.workspace = true
 corvid-core.workspace = true
 corvid-protocol.workspace = true
-crossterm.workspace = true
-nix = { workspace = true, features = ["term"] }
 tokio = { workspace = true, features = ["io-std", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 uuid.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+crossterm.workspace = true
+nix = { workspace = true, features = ["term"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [lints]
 workspace = true

@@ -1,178 +1,60 @@
 mod companion;
+#[cfg(target_os = "linux")]
 mod hooks;
+#[cfg(target_os = "linux")]
+mod linux;
 
-use std::collections::BTreeMap;
-use std::env;
-use std::ffi::OsString;
+use std::future::Future;
 use std::io::{self, BufRead, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 
-use anyhow::{Context, Result, bail, ensure};
-use clap::{Parser, Subcommand, ValueEnum};
-use corvid_client::{ControllerRequest, ControllerScope};
-use corvid_protocol::snapshot::SynchronizedSnapshot;
-use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
-use corvid_protocol::wire::{
-    AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
-    AttentionReason, InputRequestKind, LayoutRecovery, PersistenceState, ProviderExecutionMode,
-};
-use tokio::signal::unix::{SignalKind, signal};
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
-use crate::hooks::HookProvider;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::runtime_path;
 
 #[derive(Parser)]
 #[command(version, about = "Terminal multiplexer for interactive coding agents")]
 struct Options {
     /// Override the private directory containing daemon sockets.
+    #[cfg(target_os = "linux")]
     #[arg(long, global = true)]
     runtime_dir: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the daemon in the foreground.
-    Daemon {
-        /// Override the private directory containing daemon metadata.
-        #[arg(long)]
-        state_dir: Option<PathBuf>,
-    },
-    /// Attach to the live terminal, or start one explicitly.
-    Attach {
-        /// Start a new terminal with the user's shell.
-        #[arg(long)]
-        new: bool,
-        /// Start the named provider; arguments after -- go to its CLI.
-        #[arg(long, value_enum)]
-        agent: Option<ManagedAgent>,
-        /// Attach to a workspace by ID.
-        #[arg(long, conflicts_with = "new_workspace")]
-        workspace: Option<String>,
-        /// Attach to a tab by ID within the workspace.
-        #[arg(long, conflicts_with_all = ["new_workspace", "new_tab"])]
-        tab: Option<String>,
-        /// Create a workspace with this label and open a terminal.
-        #[arg(long)]
-        new_workspace: Option<String>,
-        /// Create a tab with this label and open a terminal.
-        #[arg(long)]
-        new_tab: Option<String>,
-        /// Start the shell in the last recorded directory if it still exists.
-        #[arg(long, requires = "new")]
-        restore_cwd: bool,
-        /// Milliseconds to wait for a fragmented escape sequence.
-        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=2000))]
-        escape_delay_ms: u64,
-        /// Program and arguments for an explicitly started terminal.
-        #[arg(last = true)]
-        argv: Vec<OsString>,
-    },
-    /// Send a read-only command or relay the control protocol over stdio.
-    Control {
-        #[arg(long, conflicts_with = "request")]
-        stdio: bool,
-        #[arg(value_enum)]
-        request: Option<ControlRequest>,
-    },
-    /// Manage an explicit controller registration or acknowledge an alert.
-    Controller {
-        #[arg(long)]
-        controller_id: String,
-        #[arg(long)]
-        host_id: String,
-        #[arg(long)]
-        server_epoch: String,
-        /// Reuse this ID only to obtain the result of the same command.
-        #[arg(long)]
-        request_id: Option<String>,
-        #[command(subcommand)]
-        action: ControllerAction,
-    },
     /// Run or use the local controller companion.
     Companion(companion::Options),
-    /// Print an additive provider hook configuration for explicit installation.
-    Hooks {
-        #[arg(value_enum)]
-        provider: HookProvider,
-    },
-    /// Submit one provider observation from stdin.
-    Observe {
-        #[arg(long, value_enum)]
-        provider: HookProvider,
-        /// Emit a fixed empty object for Codex hooks that expect JSON.
-        #[arg(long, hide = true)]
-        neutral_json: bool,
-    },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum ControlRequest {
-    Host,
-    Ping,
-    Status,
-    Workspaces,
-    Agents,
-    Attention,
-    Clients,
-    Snapshot,
-    Watch,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum ManagedAgent {
-    Claude,
-    Codex,
-}
-
-#[derive(Subcommand)]
-enum ControllerAction {
-    /// Read the attached TUI's single-use pairing code from stdin.
-    Pair,
-    Unpair {
-        #[arg(long)]
-        client_id: Uuid,
-        #[arg(long)]
-        binding_revision: u64,
-    },
-    Ack {
-        #[arg(long)]
-        run_id: Uuid,
-        #[arg(long)]
-        attention_id: Uuid,
-    },
-    /// Select the exact managed agent in an existing registered client.
-    Focus {
-        #[arg(long)]
-        client_id: Uuid,
-        #[arg(long)]
-        binding_revision: u64,
-        #[arg(long)]
-        run_id: Uuid,
-    },
+    #[cfg(target_os = "linux")]
+    #[command(flatten)]
+    Linux(linux::Command),
 }
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
     let started = Instant::now();
     let options = Options::parse();
+    #[cfg(target_os = "linux")]
+    let daemon_runtime = options.runtime_dir;
+    #[cfg(windows)]
+    let daemon_runtime: Option<PathBuf> = None;
+
     let result = match options.command {
-        Command::Observe {
-            provider,
-            neutral_json,
-        } => {
-            hooks::observe(provider, neutral_json, options.runtime_dir, started);
+        Command::Companion(companion) => execute(async move {
+            companion::execute(companion, daemon_runtime).await?;
             Ok(0)
-        }
-        Command::Hooks { provider } => hooks::settings(provider).map(|settings| {
-            println!("{settings:#}");
-            0
         }),
-        _ => execute(options),
+        #[cfg(target_os = "linux")]
+        Command::Linux(command) => linux::execute(command, daemon_runtime, started),
     };
     match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
@@ -183,380 +65,20 @@ fn main() -> ExitCode {
     }
 }
 
-fn execute(options: Options) -> Result<u32> {
+fn execute(run: impl Future<Output = Result<u32>>) -> Result<u32> {
     let executor = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let result = executor.block_on(run(options));
+    let result = executor.block_on(run);
     // Relay stdin uses blocking reads. A closed daemon must end the CLI even when
     // the other end of the SSH pipe remains open.
     executor.shutdown_timeout(Duration::from_millis(50));
     result
 }
 
-async fn run(options: Options) -> Result<u32> {
-    if let Command::Companion(companion) = options.command {
-        companion::execute(companion, options.runtime_dir).await?;
-        return Ok(0);
-    }
-    let runtime = runtime_path(options.runtime_dir)?;
-    match options.command {
-        Command::Hooks { .. } | Command::Observe { .. } | Command::Companion(_) => {
-            unreachable!("handled before daemon runtime")
-        }
-        Command::Daemon { state_dir } => {
-            let state = state_path(state_dir)?;
-            let mut terminate = signal(SignalKind::terminate())?;
-            let mut interrupt = signal(SignalKind::interrupt())?;
-            corvid_daemon::run(&runtime, &state, async move {
-                tokio::select! {
-                    _ = terminate.recv() => {}
-                    _ = interrupt.recv() => {}
-                }
-            })
-            .await
-            .map(|()| 0)
-        }
-        Command::Attach {
-            new,
-            agent,
-            restore_cwd,
-            escape_delay_ms,
-            argv,
-            workspace,
-            tab,
-            new_workspace,
-            new_tab,
-        } => {
-            let launch = (new
-                || agent.is_some()
-                || !argv.is_empty()
-                || new_workspace.is_some()
-                || new_tab.is_some())
-            .then_some(argv);
-            let options = corvid_client::AttachOptions {
-                launch,
-                agent: agent.map(|agent| match agent {
-                    ManagedAgent::Claude => AgentProvider::Claude,
-                    ManagedAgent::Codex => AgentProvider::Codex,
-                }),
-                restore_cwd,
-                escape_delay: Duration::from_millis(escape_delay_ms),
-                workspace,
-                tab,
-                new_workspace,
-                new_tab,
-            };
-            corvid_client::attach(&runtime, options).await
-        }
-        Command::Controller {
-            controller_id,
-            host_id,
-            server_epoch,
-            request_id,
-            action,
-        } => {
-            let scope = ControllerScope {
-                controller_id,
-                host_id,
-                server_epoch,
-            };
-            controller_action(&runtime, &scope, request_id, action).await
-        }
-        Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
-        Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {
-            ControlRequest::Host => {
-                let host = corvid_client::host(&runtime).await?;
-                println!(
-                    "host_id={}\nserver_epoch={}",
-                    host.host_id, host.server_epoch
-                );
-                Ok(0)
-            }
-            ControlRequest::Ping => {
-                corvid_client::ping(&runtime).await?;
-                println!("pong");
-                Ok(0)
-            }
-            ControlRequest::Status => {
-                let status = corvid_client::status(&runtime).await?;
-                let persistence = match PersistenceState::try_from(status.persistence) {
-                    Ok(PersistenceState::Saved) => "saved",
-                    Ok(PersistenceState::Pending) => "pending",
-                    Ok(PersistenceState::Failed) => "failed",
-                    _ => bail!("unknown persistence status"),
-                };
-                let recovery = match LayoutRecovery::try_from(status.layout_recovery) {
-                    Ok(LayoutRecovery::Normal) => "normal",
-                    Ok(LayoutRecovery::Backup) => "backup",
-                    Ok(LayoutRecovery::Fresh) => "fresh",
-                    _ => bail!("unknown layout recovery state"),
-                };
-                println!(
-                    "terminal_live={}\npersistence={persistence}\nlayout_recovery={recovery}",
-                    status.terminal_live
-                );
-                Ok(0)
-            }
-            ControlRequest::Workspaces => {
-                let list = corvid_client::workspaces(&runtime).await?;
-                for workspace in list.workspaces {
-                    println!("workspace {} {}", workspace.workspace_id, workspace.label);
-                    for tab in workspace.tabs {
-                        println!("  tab {} {}", tab.tab_id, tab.label);
-                        for pane in tab.pane_ids {
-                            println!("    pane {pane}");
-                        }
-                    }
-                }
-                Ok(0)
-            }
-            ControlRequest::Agents => {
-                let list = corvid_client::agents(&runtime).await?;
-                for agent in list.agents {
-                    print_agent(agent);
-                }
-                Ok(0)
-            }
-            ControlRequest::Attention => {
-                let cache = corvid_client::snapshot(&runtime).await?;
-                print_attention(&cache);
-                Ok(0)
-            }
-            ControlRequest::Clients => {
-                for client in corvid_client::clients(&runtime).await?.clients {
-                    print!(
-                        "{} generation={}",
-                        client.client_id, client.connection_generation
-                    );
-                    if let Some(terminal) = client.terminal_id {
-                        print!(" terminal={terminal}");
-                    }
-                    if let Some(revision) = client.view_revision {
-                        print!(" view_revision={revision}");
-                    }
-                    for lease in client.writer_leases {
-                        print!(" writer={}/{}", lease.workspace_id, lease.generation);
-                    }
-                    for binding in client.bindings {
-                        print!(
-                            " binding={}/{}",
-                            binding.controller_id, binding.binding_revision
-                        );
-                    }
-                    println!();
-                }
-                Ok(0)
-            }
-            ControlRequest::Snapshot => {
-                print_snapshot(&corvid_client::snapshot(&runtime).await?);
-                Ok(0)
-            }
-            ControlRequest::Watch => {
-                let mut watch = corvid_client::watch_snapshot(&runtime).await?;
-                print_snapshot(watch.state());
-                loop {
-                    watch.next_change().await?;
-                    print_snapshot(watch.state());
-                }
-            }
-        },
-    }
-}
-
-fn print_attention(cache: &SynchronizedSnapshot) {
-    let kinds: BTreeMap<_, _> = cache
-        .snapshot()
-        .entities()
-        .filter_map(|entry| {
-            let Some(EntityBody::Request(request)) = &entry.body else {
-                return None;
-            };
-            Some((
-                (request.agent_run_id.as_str(), request.request_id.as_str()),
-                request.kind,
-            ))
-        })
-        .collect();
-    for entry in cache.snapshot().entities() {
-        let Some(EntityBody::Attention(alert)) = &entry.body else {
-            continue;
-        };
-        let reason =
-            AttentionReason::try_from(alert.reason).unwrap_or(AttentionReason::Unspecified);
-        let kind = alert
-            .request_id
-            .as_deref()
-            .and_then(|request| kinds.get(&(alert.agent_run_id.as_str(), request)))
-            .and_then(|kind| InputRequestKind::try_from(*kind).ok())
-            .unwrap_or(InputRequestKind::Unspecified);
-        println!(
-            "run_id={} attention_id={} reason={reason:?} request_kind={kind:?} acknowledged={}",
-            alert.agent_run_id,
-            alert.attention_id,
-            alert.acknowledged_unix_ms.is_some(),
-        );
-    }
-}
-
-async fn controller_action(
-    runtime: &std::path::Path,
-    scope: &ControllerScope,
-    request_id: Option<String>,
-    action: ControllerAction,
-) -> Result<u32> {
-    let command = match action {
-        ControllerAction::Pair => ControllerRequest::Register {
-            code: read_pairing_code()?,
-        },
-        ControllerAction::Unpair {
-            client_id,
-            binding_revision,
-        } => ControllerRequest::Unregister {
-            client: client_id,
-            revision: binding_revision,
-        },
-        ControllerAction::Ack {
-            run_id,
-            attention_id,
-        } => ControllerRequest::Acknowledge {
-            run: run_id,
-            attention: attention_id,
-        },
-        ControllerAction::Focus {
-            client_id,
-            binding_revision,
-            run_id,
-        } => ControllerRequest::Focus {
-            client: client_id,
-            run: run_id,
-            revision: binding_revision,
-        },
-    };
-    let request_id = request_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    match corvid_client::controller(runtime, scope, request_id, command).await? {
-        Body::ClientBindingRegistered(binding) => println!(
-            "client_id={} binding_revision={} sequence={}",
-            binding.client_id, binding.binding_revision, binding.commit_sequence,
-        ),
-        Body::ClientBindingUnregistered(binding) => {
-            println!("sequence={}", binding.commit_sequence)
-        }
-        Body::AttentionAcknowledged(ack) => println!(
-            "attention_id={} acknowledged_unix_ms={} sequence={}",
-            ack.attention_id, ack.acknowledged_unix_ms, ack.commit_sequence,
-        ),
-        Body::FocusApplied(applied) => {
-            let selection = applied
-                .selection
-                .context("focus response is missing a selection")?;
-            println!(
-                "client_id={} run_id={} terminal_id={} workspace_id={} tab_id={} pane_id={} view_revision={} sequence={}",
-                applied.client_id,
-                applied.agent_run_id,
-                applied.terminal_id,
-                selection.workspace_id,
-                selection.tab_id,
-                selection.pane_id,
-                applied.view_revision,
-                applied.commit_sequence,
-            );
-        }
-        _ => bail!("unexpected controller response"),
-    }
-    Ok(0)
-}
-
-fn print_snapshot(cache: &SynchronizedSnapshot) {
-    let mut workspaces = 0;
-    let mut terminals = 0;
-    let mut clients = 0;
-    let mut agents = 0;
-    let mut requests = 0;
-    let mut attention = 0;
-    for entry in cache.snapshot().entities() {
-        match &entry.body {
-            Some(EntityBody::Workspace(_)) => workspaces += 1,
-            Some(EntityBody::Terminal(_)) => terminals += 1,
-            Some(EntityBody::Client(_)) => clients += 1,
-            Some(EntityBody::Agent(_)) => agents += 1,
-            Some(EntityBody::Request(_)) => requests += 1,
-            Some(EntityBody::Attention(_)) => attention += 1,
-            None => {}
-        }
-    }
-    println!(
-        "host_id={} server_epoch={} sequence={} workspaces={workspaces} terminals={terminals} clients={clients} agents={agents} requests={requests} attention={attention}",
-        cache.session().host_id,
-        cache.session().server_epoch,
-        cache.snapshot().sequence(),
-    );
-}
-
-fn print_agent(agent: AgentInfo) {
-    let provider = AgentProvider::try_from(agent.provider).unwrap_or(AgentProvider::Unspecified);
-    let process =
-        AgentProcessState::try_from(agent.process).unwrap_or(AgentProcessState::Unspecified);
-    let badge = AgentBadge::try_from(agent.badge).unwrap_or(AgentBadge::Unspecified);
-    let collection =
-        AgentCollection::try_from(agent.collection).unwrap_or(AgentCollection::Unspecified);
-    let end = AgentEndReason::try_from(agent.end_reason).unwrap_or(AgentEndReason::Unspecified);
-    print!(
-        "{} terminal={} provider={provider:?} process={process:?} badge={badge:?} collection={collection:?} end={end:?} pending={} unverified={} resolved={} cancelled={} response={}",
-        agent.agent_run_id,
-        agent.terminal_id,
-        agent.pending_requests,
-        agent.unverified_requests,
-        agent.resolved_requests,
-        agent.cancelled_requests,
-        agent.response_observed_unix_ms.is_some(),
-    );
-    if let Some(process) = agent.process_identity {
-        print!(" pid={}", process.pid);
-    }
-    if let Some(session) = agent.provider_session_id {
-        print!(" session={session}");
-    }
-    if let Some(version) = agent.qualified_provider_version {
-        print!(" version={version}");
-    }
-    if let Some(adapter) = agent.adapter {
-        let mode = ProviderExecutionMode::try_from(adapter.mode)
-            .unwrap_or(ProviderExecutionMode::Unspecified);
-        print!(
-            " adapter={mode:?} adapter_schema={}",
-            adapter.schema_revision
-        );
-    }
-    println!();
-}
-
-fn runtime_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) =
-        override_path.or_else(|| env::var_os("CORVID_RUNTIME_DIR").map(PathBuf::from))
-    {
-        return Ok(path);
-    }
-    let base = env::var_os("XDG_RUNTIME_DIR").context("set XDG_RUNTIME_DIR or --runtime-dir")?;
-    ensure!(!base.is_empty(), "set XDG_RUNTIME_DIR or --runtime-dir");
-    Ok(PathBuf::from(base).join("corvid"))
-}
-
 fn read_pairing_code() -> Result<Uuid> {
     let mut input = String::new();
     io::stdin().lock().take(128).read_line(&mut input)?;
     Uuid::parse_str(input.trim()).context("invalid pairing code")
-}
-
-fn state_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = override_path {
-        return Ok(path);
-    }
-    if let Some(base) = env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(base).join("corvid"));
-    }
-    let home = env::var_os("HOME").context("set XDG_STATE_HOME or --state-dir")?;
-    ensure!(!home.is_empty(), "set XDG_STATE_HOME or --state-dir");
-    Ok(PathBuf::from(home).join(".local/state/corvid"))
 }

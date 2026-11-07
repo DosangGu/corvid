@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until, timeout};
 use uuid::Uuid;
 
-use crate::connection::{Connection, open};
+use crate::connection::{UnixConnection as Connection, open};
 use crate::keys::{Decoder, Input};
 use crate::tty::Tty;
 

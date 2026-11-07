@@ -1,4 +1,5 @@
 use std::env;
+use std::future::Future;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -13,16 +14,24 @@ use corvid_protocol::wire::{
     PairTerminal, PinSlot, PlaceSlot, PresentationSlots, PresentedBinding, PresentedRun,
     PresentedRunKey, PresentedSlotToken, RunAvailability, UnpairTerminal,
 };
+#[cfg(target_os = "linux")]
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
 
-use super::{read_pairing_code, runtime_path, state_path};
+use super::read_pairing_code;
+#[cfg(target_os = "linux")]
+use crate::{linux::state_path, runtime_path};
 
 #[derive(Args)]
 pub(super) struct Options {
     /// Override the private local companion socket directory.
+    #[cfg(target_os = "linux")]
     #[arg(long, global = true)]
     socket_dir: Option<PathBuf>,
+    /// Choose a named-pipe instance under the current Windows user.
+    #[cfg(windows)]
+    #[arg(long, global = true, default_value = "main")]
+    pipe_instance: String,
     /// Override the private companion metadata directory.
     #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
@@ -36,8 +45,8 @@ enum Command {
     Init {
         #[arg(long)]
         host_id: Uuid,
-        /// Use an OpenSSH alias. By default connect to a local daemon socket.
-        #[arg(long)]
+        /// Use an OpenSSH alias for the execution host.
+        #[arg(long, required = cfg!(windows))]
         ssh_alias: Option<String>,
         #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_SLOTS)))]
         count: u32,
@@ -111,60 +120,70 @@ enum Command {
 }
 
 pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -> Result<()> {
-    match options.command {
-        Command::Init {
+    if let Command::Init {
+        host_id,
+        ssh_alias,
+        count,
+    } = options.command
+    {
+        let endpoint = host_endpoint(ssh_alias, daemon_runtime)?;
+        let controller = corvid_companion::initialize(
+            &companion_state(options.state_dir)?,
             host_id,
-            ssh_alias,
+            endpoint,
             count,
-        } => {
-            let endpoint = match ssh_alias {
-                Some(alias) => HostEndpoint::Ssh { alias },
-                None => HostEndpoint::Local {
-                    runtime_dir: runtime_path(daemon_runtime)?,
-                },
-            };
-            let controller = corvid_companion::initialize(
-                &companion_state(options.state_dir)?,
-                host_id,
-                endpoint,
-                count,
-            )?;
-            println!("controller_id={controller}");
-        }
-        Command::Run => {
-            let mut interrupt = signal(SignalKind::interrupt())?;
-            let mut terminate = signal(SignalKind::terminate())?;
-            corvid_companion::run(
-                &companion_socket(options.socket_dir)?,
-                &companion_state(options.state_dir)?,
-                async move {
-                    tokio::select! {
-                        _ = interrupt.recv() => {}
-                        _ = terminate.recv() => {}
-                    }
-                },
-            )
-            .await?;
-        }
-        command => {
-            let mut client =
-                PresentationClient::connect(&companion_socket(options.socket_dir)?).await?;
-            let request = command.request(&client.session().server_epoch)?;
-            let reply = client.request(request).await?;
-            show(
-                reply,
-                &client.session().host_id,
-                &client.session().server_epoch,
-            )?;
-        }
+        )?;
+        println!("controller_id={controller}");
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(target_os = "linux")]
+    let address = companion_socket(options.socket_dir)?;
+    #[cfg(windows)]
+    let address = options.pipe_instance;
+    if matches!(options.command, Command::Run) {
+        return corvid_companion::run(&address, &companion_state(options.state_dir)?, shutdown()?)
+            .await;
+    }
+
+    let mut client = PresentationClient::connect(&address).await?;
+    let request = options.command.request(&client.session().server_epoch)?;
+    let reply = client.request(request).await?;
+    show(
+        reply,
+        &client.session().host_id,
+        &client.session().server_epoch,
+    )
+}
+
+fn host_endpoint(alias: Option<String>, _daemon_runtime: Option<PathBuf>) -> Result<HostEndpoint> {
+    if let Some(alias) = alias {
+        return Ok(HostEndpoint::Ssh { alias });
+    }
+    #[cfg(target_os = "linux")]
+    return Ok(HostEndpoint::Local {
+        runtime_dir: runtime_path(_daemon_runtime)?,
+    });
+    #[cfg(windows)]
+    bail!("Windows companion init requires --ssh-alias");
 }
 
 fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
-    path.map_or_else(|| Ok(state_path(None)?.join("companion")), Ok)
+    if let Some(path) = path {
+        return Ok(path);
+    }
+    #[cfg(target_os = "linux")]
+    return Ok(state_path(None)?.join("companion"));
+    #[cfg(windows)]
+    {
+        let base = env::var_os("LOCALAPPDATA")
+            .filter(|path| !path.is_empty())
+            .context("set LOCALAPPDATA or companion --state-dir")?;
+        Ok(PathBuf::from(base).join(r"Corvid\companion"))
+    }
 }
 
+#[cfg(target_os = "linux")]
 fn companion_socket(path: Option<PathBuf>) -> Result<PathBuf> {
     path.map_or_else(
         || {
@@ -175,6 +194,30 @@ fn companion_socket(path: Option<PathBuf>) -> Result<PathBuf> {
         },
         Ok,
     )
+}
+
+#[cfg(target_os = "linux")]
+fn shutdown() -> Result<impl Future<Output = ()>> {
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+    })
+}
+
+#[cfg(windows)]
+fn shutdown() -> Result<impl Future<Output = ()>> {
+    let mut interrupt = tokio::signal::windows::ctrl_c()?;
+    let mut break_signal = tokio::signal::windows::ctrl_break()?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = break_signal.recv() => {}
+        }
+    })
 }
 
 impl Command {

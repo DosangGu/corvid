@@ -1,8 +1,10 @@
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+#[cfg(target_os = "linux")]
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::{COMMAND_TIMEOUT, FrameError, PeerRole, ProtocolFault};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
@@ -11,7 +13,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::connection::{Connection, open};
+use crate::connection::Connection;
+#[cfg(target_os = "linux")]
+use crate::connection::open;
 
 const SSH_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_millis(250);
@@ -19,6 +23,7 @@ const MAX_DIAGNOSTIC: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub enum ControlEndpoint {
+    #[cfg(target_os = "linux")]
     Local(PathBuf),
     Ssh(SshAlias),
 }
@@ -44,8 +49,8 @@ impl SshAlias {
         &self.0
     }
 
-    fn command(&self) -> Command {
-        let mut command = Command::new("ssh");
+    fn command(&self) -> Result<Command> {
+        let mut command = ssh_command()?;
         command.args([
             "-T",
             "-oBatchMode=yes",
@@ -70,8 +75,36 @@ impl SshAlias {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        command
+        Ok(command)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn ssh_command() -> Result<Command> {
+    Ok(Command::new("ssh"))
+}
+
+#[cfg(windows)]
+fn ssh_command() -> Result<Command> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    let mut directory = [0; 1024];
+    // The buffer is writable for the supplied number of UTF-16 code units.
+    let len =
+        unsafe { GetSystemDirectoryW(directory.as_mut_ptr(), directory.len() as u32) } as usize;
+    ensure!(
+        (1..directory.len()).contains(&len),
+        "Windows system directory is unavailable"
+    );
+    let path = PathBuf::from(OsString::from_wide(&directory[..len])).join(r"OpenSSH\ssh.exe");
+    let mut command = Command::new(path);
+    command.creation_flags(CREATE_NO_WINDOW);
+    Ok(command)
 }
 
 type Input = Box<dyn AsyncRead + Send + Unpin>;
@@ -89,13 +122,14 @@ impl ControlEndpoint {
         controller: Option<String>,
     ) -> Result<ControlConnection> {
         let (read, write, mut ssh): (Input, Output, _) = match self {
+            #[cfg(target_os = "linux")]
             Self::Local(path) => {
                 let (read, write) = open(path, SocketRole::Control).await?.into_split();
                 (Box::new(read), Box::new(write), None)
             }
             Self::Ssh(alias) => {
                 let mut child = alias
-                    .command()
+                    .command()?
                     .spawn()
                     .context("starting SSH control link")?;
                 let read = child.stdout.take().context("SSH stdout is unavailable")?;
@@ -209,7 +243,7 @@ mod tests {
             assert!(SshAlias::new(invalid.to_owned()).is_err());
         }
         let alias = SshAlias::new("work.remote-1".to_owned()).unwrap();
-        let command = alias.command();
+        let command = alias.command().unwrap();
         let args: Vec<_> = command.as_std().get_args().collect();
         assert_eq!(args[0], "-T");
         assert_eq!(

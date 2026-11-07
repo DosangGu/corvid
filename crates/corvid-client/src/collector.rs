@@ -10,7 +10,7 @@ use corvid_protocol::{PeerRole, ProtocolFault};
 use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
 
-use crate::connection::{Connection, open};
+use crate::connection::{UnixConnection, open};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(20);
 const SUBMIT_TIMEOUT: Duration = Duration::from_millis(50);
@@ -41,7 +41,7 @@ async fn send_hook(
     observation: CollectHook,
 ) -> Result<()> {
     let mut connection =
-        Connection::establish(stream, PeerRole::Collector, vec![CAPABILITY.to_owned()]).await?;
+        UnixConnection::establish(stream, PeerRole::Collector, vec![CAPABILITY.to_owned()]).await?;
     let session = &connection.session;
     ensure!(
         session.host_id == host_id && session.server_epoch == epoch,

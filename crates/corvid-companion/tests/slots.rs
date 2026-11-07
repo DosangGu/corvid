@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use corvid_companion::{
     HostEndpoint, Recovery, RunKey, RunObservation, SlotLayout, Store, initialize,
 };
-use corvid_protocol::unix::RuntimeDir;
 use uuid::Uuid;
 
 fn key(run: u128) -> RunKey {
@@ -27,6 +26,13 @@ fn endpoint() -> HostEndpoint {
     HostEndpoint::Ssh {
         alias: "configured-host".to_owned(),
     }
+}
+
+fn private_parent() -> tempfile::TempDir {
+    #[cfg(target_os = "linux")]
+    return tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    #[cfg(windows)]
+    tempfile::tempdir().unwrap()
 }
 
 #[test]
@@ -93,7 +99,7 @@ fn retains_missing_and_old_epoch_bindings_until_explicit_evidence() {
 
 #[test]
 fn keeps_controller_and_slots_across_restart_and_recovers_from_backup() {
-    let parent = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let parent = private_parent();
     let path = parent.path().join("companion");
     let run = key(2);
     let controller = initialize(&path, run.host, endpoint(), 2).unwrap();
@@ -131,13 +137,13 @@ fn keeps_controller_and_slots_across_restart_and_recovers_from_backup() {
 
 #[test]
 fn refuses_to_replace_newer_state_or_corrupt_identity() {
-    let parent = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let parent = private_parent();
     let path = parent.path().join("companion");
     let host = Uuid::new_v4();
     initialize(&path, host, endpoint(), 2).unwrap();
-    let private = RuntimeDir::open(&path).unwrap();
+    drop(Store::open(&path).unwrap());
     let newer = br#"{"schema_version":2}"#;
-    private.replace_private_file("slots.json", newer).unwrap();
+    std::fs::write(path.join("slots.json"), newer).unwrap();
     assert!(
         Store::open(&path)
             .err()

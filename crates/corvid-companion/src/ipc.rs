@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+#[cfg(target_os = "linux")]
 use corvid_protocol::unix::{BoundSocket, RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, Pong};
@@ -10,14 +11,19 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole,
     ProtocolFault, Session, accept_hello, check_hello_result, hello,
 };
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+#[cfg(target_os = "linux")]
+use tokio::net::UnixStream as ClientStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{NamedPipeClient as ClientStream, NamedPipeServer};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::Store;
+#[cfg(windows)]
+use crate::platform::{PipeListener, open_pipe};
 use crate::service::{Call, Service};
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
@@ -27,26 +33,66 @@ const MAX_CALLS: usize = 8;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
-pub async fn run(runtime: &Path, state: &Path, shutdown: impl Future<Output = ()>) -> Result<()> {
+#[cfg(target_os = "linux")]
+pub type PresentationAddress = Path;
+#[cfg(windows)]
+pub type PresentationAddress = str;
+
+pub async fn run(
+    runtime: &PresentationAddress,
+    state: &Path,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
     let store = Store::open(state)?;
     let host = store.config().host_id.to_string();
     let epoch = Uuid::new_v4().to_string();
     let service = Service::new(store)?;
 
-    let directory = RuntimeDir::create_all(runtime)?;
-    let instance = directory.lock_instance()?;
-    let socket = instance.bind(SocketRole::Presentation).await?;
+    #[cfg(target_os = "linux")]
+    let (directory, instance);
+    #[cfg(target_os = "linux")]
+    let mut listener = {
+        directory = RuntimeDir::create_all(runtime)?;
+        instance = directory.lock_instance()?;
+        instance.bind(SocketRole::Presentation).await?
+    };
+    #[cfg(windows)]
+    let mut listener = PipeListener::bind(runtime)?;
     let (sender, calls) = mpsc::channel(MAX_CALLS);
 
     tokio::select! {
-        result = accept(&socket, sender, &host, &epoch) => result,
+        result = accept(&mut listener, sender, &host, &epoch) => result,
         result = service.run(calls) => result,
         _ = shutdown => Ok(()),
     }
 }
 
+trait Listener {
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+
+    fn next_peer(&mut self) -> impl Future<Output = Result<Self::Stream>> + Send;
+}
+
+#[cfg(target_os = "linux")]
+impl Listener for BoundSocket<'_> {
+    type Stream = ClientStream;
+
+    async fn next_peer(&mut self) -> Result<Self::Stream> {
+        self.accept().await
+    }
+}
+
+#[cfg(windows)]
+impl Listener for PipeListener {
+    type Stream = NamedPipeServer;
+
+    async fn next_peer(&mut self) -> Result<Self::Stream> {
+        self.accept().await
+    }
+}
+
 async fn accept(
-    socket: &BoundSocket<'_>,
+    listener: &mut impl Listener,
     calls: mpsc::Sender<Call>,
     host: &str,
     epoch: &str,
@@ -54,7 +100,7 @@ async fn accept(
     let mut peers = JoinSet::new();
     loop {
         tokio::select! {
-            result = socket.accept() => {
+            result = listener.next_peer() => {
                 let Ok(stream) = result else {
                     sleep(Duration::from_millis(25)).await;
                     continue;
@@ -68,18 +114,20 @@ async fn accept(
     }
 }
 
-type Reader = FrameReader<OwnedReadHalf>;
-type Writer = FrameWriter<OwnedWriteHalf>;
+type Reader<S> = FrameReader<ReadHalf<S>>;
+type Writer<S> = FrameWriter<WriteHalf<S>>;
 
-async fn open_frames(stream: UnixStream) -> Result<(Reader, Writer)> {
-    let (input, output) = stream.into_split();
+async fn open_frames<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+) -> Result<(Reader<S>, Writer<S>)> {
+    let (input, output) = tokio::io::split(stream);
     let writer = FrameWriter::start(output, ROLE).await?;
     let reader = FrameReader::start(input, ROLE).await?;
     Ok((reader, writer))
 }
 
-async fn serve(
-    stream: UnixStream,
+async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
     calls: mpsc::Sender<Call>,
     host: String,
     epoch: String,
@@ -98,7 +146,11 @@ async fn serve(
     Ok(())
 }
 
-async fn server_hello(stream: UnixStream, host: &str, epoch: &str) -> Result<PresentationClient> {
+async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    host: &str,
+    epoch: &str,
+) -> Result<Peer<S>> {
     let (mut reader, mut writer) = open_frames(stream).await?;
     let request = reader
         .next_envelope()
@@ -127,7 +179,7 @@ async fn server_hello(stream: UnixStream, host: &str, epoch: &str) -> Result<Pre
         }
     };
     writer.envelope(&reply).await?;
-    Ok(PresentationClient {
+    Ok(Peer {
         session,
         reader,
         writer,
@@ -151,25 +203,23 @@ async fn dispatch(calls: &mpsc::Sender<Call>, body: Body) -> Result<Body, Protoc
         })
 }
 
-pub struct PresentationClient {
+struct Peer<S> {
     session: Session,
-    reader: Reader,
-    writer: Writer,
+    reader: Reader<S>,
+    writer: Writer<S>,
 }
 
+pub struct PresentationClient(Peer<ClientStream>);
+
 impl PresentationClient {
-    pub async fn connect(runtime: &Path) -> Result<Self> {
+    pub async fn connect(runtime: &PresentationAddress) -> Result<Self> {
         timeout(COMMAND_TIMEOUT, Self::negotiate(runtime))
             .await
             .context("companion Hello timed out")?
     }
 
-    async fn negotiate(runtime: &Path) -> Result<Self> {
-        let directory = RuntimeDir::open(runtime).context("CompanionUnavailable")?;
-        let stream = directory
-            .connect(SocketRole::Presentation)
-            .await
-            .context("CompanionUnavailable")?;
+    async fn negotiate(runtime: &PresentationAddress) -> Result<Self> {
+        let stream = open_local(runtime).await.context("CompanionUnavailable")?;
         let (mut reader, mut writer) = open_frames(stream).await?;
         let request = hello(
             Uuid::new_v4().to_string(),
@@ -182,24 +232,38 @@ impl PresentationClient {
             .await?
             .context("companion closed during Hello")?;
         let session = check_hello_result(&request, &reply, PeerRole::Presentation)?;
-        Ok(Self {
+        Ok(Self(Peer {
             session,
             reader,
             writer,
-        })
+        }))
     }
 
     pub fn session(&self) -> &Session {
-        &self.session
+        &self.0.session
     }
 
     /// A cancelled request leaves this connection unusable. Reconnect to refresh slots.
     pub async fn request(&mut self, body: Body) -> Result<Body> {
-        timeout(CALL_TIMEOUT + COMMAND_TIMEOUT, self.exchange(body))
+        timeout(CALL_TIMEOUT + COMMAND_TIMEOUT, self.0.exchange(body))
             .await
             .context("companion result timed out")?
     }
+}
 
+#[cfg(target_os = "linux")]
+async fn open_local(runtime: &PresentationAddress) -> Result<ClientStream> {
+    RuntimeDir::open(runtime)?
+        .connect(SocketRole::Presentation)
+        .await
+}
+
+#[cfg(windows)]
+async fn open_local(runtime: &PresentationAddress) -> Result<ClientStream> {
+    open_pipe(runtime).await
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Peer<S> {
     async fn exchange(&mut self, body: Body) -> Result<Body> {
         let request = self
             .session

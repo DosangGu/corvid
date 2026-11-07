@@ -1,13 +1,13 @@
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::{ControlEndpoint, SshAlias};
-use corvid_protocol::unix::RuntimeDir;
-use nix::fcntl::Flock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::platform::{StateDirectory, StateLock};
 use crate::slots::{MAX_SLOTS, SlotLayout};
 
 const CONFIG: &str = "config.json";
@@ -21,8 +21,13 @@ const STATE_LIMIT: u64 = 2 * 1024 * 1024;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostEndpoint {
-    Local { runtime_dir: PathBuf },
-    Ssh { alias: String },
+    #[cfg(target_os = "linux")]
+    Local {
+        runtime_dir: PathBuf,
+    },
+    Ssh {
+        alias: String,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -37,6 +42,7 @@ pub struct Config {
 impl Config {
     pub fn control_endpoint(&self) -> Result<ControlEndpoint> {
         Ok(match &self.endpoint {
+            #[cfg(target_os = "linux")]
             HostEndpoint::Local { runtime_dir } => {
                 ensure!(
                     runtime_dir.is_absolute(),
@@ -81,8 +87,8 @@ pub enum Recovery {
 }
 
 pub struct Store {
-    directory: RuntimeDir,
-    _lock: Flock<File>,
+    directory: StateDirectory,
+    _lock: StateLock,
     config: Config,
     layout: SlotLayout,
     last_good: Vec<u8>,
@@ -104,7 +110,7 @@ pub fn initialize(
     };
     config.validate()?;
     let bytes = encode(&config, CONFIG_LIMIT)?;
-    let directory = RuntimeDir::create_all(path)?;
+    let directory = StateDirectory::create_all(path)?;
     let _lock = directory.lock_storage()?;
     for file in [CONFIG, SLOTS, BACKUP, QUARANTINE] {
         ensure!(
@@ -119,7 +125,7 @@ pub fn initialize(
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let directory =
-            RuntimeDir::open(path).context("open companion state created by companion init")?;
+            StateDirectory::open(path).context("open companion state created by companion init")?;
         let lock = directory.lock_storage()?;
         let bytes = directory
             .read_private_file(CONFIG, CONFIG_LIMIT)?
@@ -183,7 +189,10 @@ enum Candidate {
     Damaged(Vec<u8>),
 }
 
-fn load_slots(directory: &RuntimeDir, config: &Config) -> Result<(SlotLayout, Vec<u8>, Recovery)> {
+fn load_slots(
+    directory: &StateDirectory,
+    config: &Config,
+) -> Result<(SlotLayout, Vec<u8>, Recovery)> {
     let damaged = match read_slots(directory, SLOTS, config)? {
         Candidate::Valid(layout, bytes) => return Ok((layout, bytes, Recovery::Normal)),
         Candidate::Damaged(bytes) => Some(bytes),
@@ -208,7 +217,7 @@ fn load_slots(directory: &RuntimeDir, config: &Config) -> Result<(SlotLayout, Ve
     Ok((layout, bytes, recovery))
 }
 
-fn read_slots(directory: &RuntimeDir, name: &str, config: &Config) -> Result<Candidate> {
+fn read_slots(directory: &StateDirectory, name: &str, config: &Config) -> Result<Candidate> {
     let Some(bytes) = directory.read_private_file(name, STATE_LIMIT)? else {
         return Ok(Candidate::Missing);
     };
