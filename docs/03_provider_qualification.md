@@ -71,6 +71,10 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault missing-helper
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel --fault missing-collector
+for fault in timeout collector-saturated malformed-result; do
+  python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault "$fault"
+done
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault collector-saturated
 ```
 
 The managed PTY test observed a pending question, its matching resolution, a
@@ -92,9 +96,22 @@ The plan fixture observed a typed pending approval and its exact resolution.
 The dismissal fixture observed the same run move from one pending question to
 an unverified question after the next submission. The approval completed with
 the observer absent, and dismissal completed with the collector socket absent.
-Exact manual cancellation, plan rejection, child records, and collector
-saturation remain unqualified.
-Delivery failures before the daemon receives a frame can leave coverage unchanged.
+
+The A17 timeout fixture observed Claude terminate the stalled Stop helper and
+complete the interactive turn. The typed question result had already arrived.
+The saturation fixture confirmed 32 admitted handshakes and refused the next
+connection before each observer invocation. Both the question and plan approval
+completed in the CLI while Corvid received no usable observations. Loss before
+the daemon receives a frame can leave collection coverage unchanged.
+
+For A22, the fixture disconnected the local companion while a question was
+pending. It sent the result's hook metadata to the observer with an invalid
+tool-use ID. The verified observer reported a collection gap. A fresh
+companion snapshot retained the same run, slot, and slot revision with
+`GapDetected` and the unverified question. The separately unverified permission
+record remained present.
+
+Exact manual cancellation, plan rejection, and child records remain unqualified.
 
 ## Codex CLI 0.167.0 on Linux
 
@@ -170,7 +187,8 @@ the exact registered TUI, and acknowledged its alert while the dialog stayed
 visible. Answering that question left the second request open until it was
 interrupted. The failure tests exercised a real approval and completed its
 response despite the missing or timed-out observer, missing socket, and 32
-occupied collector connections. The conversation fixture also completed
+occupied collector connections. The saturation test also checked that the next
+connection was refused. The conversation fixture completed
 compaction and resume with either the helper or the collector socket absent.
 The standalone helper tests cover malformed, oversized, and stalled input with
 neutral output.

@@ -19,6 +19,7 @@ import termios
 import threading
 import time
 
+from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE
 from companion_fixture import Companion, fields
 from interactive import stop, wait_for_daemon
 
@@ -28,6 +29,7 @@ HOOKS = (
     "PermissionDenied", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "SessionEnd",
 )
 IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id")
+FAULT_TRACE = "collector-faults"
 CAPTURE = """
 import json
 from pathlib import Path
@@ -147,10 +149,9 @@ def configure(directory, port, corvid, fault):
     if corvid is not None:
         generated = json.loads(subprocess.check_output([corvid, "hooks", "claude"], timeout=3))
         for event, handlers in generated["hooks"].items():
-            if fault == "missing-helper":
-                for matcher in handlers:
-                    for hook in matcher["hooks"]:
-                        hook["command"] = str(directory / "missing-observer")
+            for matcher in handlers:
+                for observer in matcher["hooks"]:
+                    inject_fault(observer, event, fault, directory)
             settings["hooks"][event].extend(handlers)
     (config / "settings.json").write_text(json.dumps(settings))
     environment = {
@@ -165,6 +166,24 @@ def configure(directory, port, corvid, fault):
         "CLAUDE_CODE_MAX_RETRIES": "0",
     }
     return trace, environment
+
+
+def inject_fault(observer, event, fault, directory):
+    if fault == "missing-helper":
+        observer["command"] = str(directory / "missing-observer")
+        return
+    if fault == "collector-saturated":
+        mode = "saturate"
+    elif fault == "timeout" and event == "Stop":
+        mode = "timeout"
+    elif fault == "malformed-result" and event == "PostToolUse":
+        mode = "malformed"
+    else:
+        return
+
+    command = [observer["command"], *observer["args"]]
+    observer["command"] = sys.executable
+    observer["args"] = [str(COLLECTOR_FIXTURE), mode, str(directory / FAULT_TRACE), *command]
 
 
 class FixtureTerminal:
@@ -215,7 +234,7 @@ class FixtureTerminal:
         return matching()
 
 
-def exercise(terminal, scenario, managed):
+def exercise(terminal, scenario, managed, fault):
     for screen, answer in (
         (b"Select with numbers [1-7]", b"2\r"),
         (b"Enter y/n:", b"y\r"),
@@ -250,13 +269,20 @@ def exercise(terminal, scenario, managed):
         managed.focus_question(terminal, question)
         managed.acknowledge_question(question)
         managed.reject_foreign_hook(question)
+        if fault == "malformed-result":
+            before_view, before_slot = managed.presented_question(question)
+            managed.companion.close()
     terminal.send(b"1\r")
     terminal.event(hook_event_name="PostToolUse", tool_name="AskUserQuestion")
     terminal.event(hook_event_name="Stop")
-    if managed:
+    if fault == "malformed-result":
+        managed.verify_gap_resync(terminal, question, before_view, before_slot)
+    elif managed:
         resolved = managed.expect(terminal, run=initial["run"], pending="0", resolved="1", response="true")
         assert resolved["process"] == "Running"
         assert resolved["unverified"] == "1"
+    if fault == "timeout":
+        wait_for_hook_timeout(terminal)
     if scenario == "resume":
         terminal.deadline = time.monotonic() + 20
         terminal.send(b"/compact\r")
@@ -295,6 +321,21 @@ def exercise(terminal, scenario, managed):
     if managed:
         managed.expect(terminal, run=current["run"], process="Exited")
     return terminal.events()
+
+
+def wait_for_hook_timeout(terminal):
+    trace = terminal.trace.with_name(FAULT_TRACE)
+
+    def stopped():
+        entries = trace.read_text().splitlines() if trace.exists() else []
+        if not entries:
+            return False
+        assert len(entries) == 1, "hook completed its full sleep"
+        status, pid = entries[0].split()
+        assert status == "started" and pid.isdecimal()
+        return not Path(f"/proc/{pid}").exists()
+
+    terminal.wait(stopped, "provider to terminate the timed-out hook")
 
 
 def exercise_plan(terminal, managed, initial):
@@ -378,6 +419,19 @@ class CorvidFixture:
         view = self.companion.wait(has_question)
         slot = next(slot for slot in view["slots"] if slot.get("run", "").endswith("/" + question["run"]))
         return view, slot
+
+    def verify_gap_resync(self, terminal, question, before_view, before_slot):
+        self.expect(
+            terminal, run=question["run"], collection="GapDetected", badge="Unknown",
+            process="Running", pending="0", resolved="0", unverified="2",
+        )
+        view = self.companion.start()
+        slot = next(item for item in view["slots"] if item.get("run") == before_slot["run"])
+        assert slot["slot"] == before_slot["slot"] and slot["revision"] == before_slot["revision"]
+        assert slot["last_badge"] == "Unknown" and slot["collection"] == "GapDetected"
+        assert slot["pending"] == "0" and slot["unverified"] == "2"
+        assert view["header"]["remote_epoch"] == before_view["header"]["remote_epoch"]
+        assert view["header"]["control_capture"] != before_view["header"]["control_capture"]
 
     def focus_question(self, tty, question):
         self.companion = Companion(self.command, self.directory)
@@ -515,19 +569,28 @@ def capture(binary, directory, port, scenario, corvid, fault):
     ]
     if corvid is None:
         args = ["setsid", "--ctty", "--wait", str(binary.resolve()), *arguments]
-        return run_terminal(args, environment, project, trace, scenario, None)
+        return run_terminal(args, environment, project, trace, scenario, None, fault)
 
     managed = CorvidFixture(corvid, binary, directory, project, environment)
     try:
         if fault == "missing-collector":
             (directory / "run/collector.sock").unlink()
         args = [*managed.command, "attach", "--agent", "claude", "--", *arguments]
-        active_collector = managed if fault is None else None
-        events = run_terminal(args, environment, project, trace, scenario, active_collector)
+        active_collector = managed if fault in (None, "malformed-result") else None
+        events = run_terminal(args, environment, project, trace, scenario, active_collector, fault)
         if fault is not None:
             agent, = managed.agents()
-            assert agent["collection"] == "NotRegistered"
             assert agent["process"] == "Exited"
+            if fault == "timeout":
+                assert agent["collection"] == "Healthy" and agent["response"] == "false"
+                assert agent["resolved"] == "1"
+            elif fault == "malformed-result":
+                assert agent["collection"] == "GapDetected" and agent["resolved"] == "0"
+                assert (directory / FAULT_TRACE).read_text().splitlines() == ["invalid tool-use ID"]
+            else:
+                assert agent["collection"] == "NotRegistered"
+                if fault == "collector-saturated":
+                    assert (directory / FAULT_TRACE).read_text().splitlines() == [SATURATION] * 7
         return events
     finally:
         if managed.companion is not None:
@@ -535,7 +598,7 @@ def capture(binary, directory, port, scenario, corvid, fault):
         stop(managed.process)
 
 
-def run_terminal(args, environment, project, trace, scenario, managed):
+def run_terminal(args, environment, project, trace, scenario, managed, fault):
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
@@ -543,7 +606,7 @@ def run_terminal(args, environment, project, trace, scenario, managed):
             args, env=environment, cwd=project, stdin=slave, stdout=slave, stderr=slave,
         )
         try:
-            return exercise(FixtureTerminal(process, master, trace), scenario, managed)
+            return exercise(FixtureTerminal(process, master, trace), scenario, managed, fault)
         finally:
             stop(process)
     finally:
@@ -625,10 +688,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=("answer", "clear", "resume", "cancel", "plan"), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
-    parser.add_argument("--fault", choices=("missing-helper", "missing-collector"))
+    parser.add_argument("--fault", choices=(
+        "missing-helper", "missing-collector", "collector-saturated", "timeout", "malformed-result",
+    ))
     args = parser.parse_args()
     if args.fault is not None and args.corvid is None:
         parser.error("--fault requires --corvid")
+    if args.fault == "collector-saturated" and args.scenario not in {"answer", "plan"}:
+        parser.error("collector saturation requires --scenario answer or plan")
+    if args.fault in {"timeout", "malformed-result"} and args.scenario != "answer":
+        parser.error("this collector fault requires --scenario answer")
     executable = shutil.which("claude")
     if executable is None:
         parser.error("claude must be installed on PATH")

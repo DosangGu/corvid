@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 
+from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE
 from companion_fixture import Companion, fields
 from interactive import stop, wait_for_daemon
 
@@ -51,27 +52,6 @@ with open(sys.argv[1], "a") as trace:
 if event.get("hook_event_name") == "Stop":
     print("{}")
 '''
-
-SATURATE = '''
-import os
-from pathlib import Path
-import socket
-import sys
-
-sockets = []
-path = str(Path(os.environ["CORVID_RUNTIME_DIR"]) / "collector.sock")
-for _ in range(32):
-    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    peer.settimeout(0.03)
-    peer.connect(path)
-    assert peer.recv(4, socket.MSG_WAITALL) == b"CRV1"
-    os.set_inheritable(peer.fileno(), True)
-    sockets.append(peer)
-with open(sys.argv[1], "a") as trace:
-    trace.write("32 handshakes\\n")
-os.execv(sys.argv[2], sys.argv[2:])
-'''
-
 
 class ModelFixture(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -159,9 +139,6 @@ def configure(directory, project, port, binary, corvid, fault):
     handler = {"type": "command", "command": "exec " + shlex.join(observer), "timeout": 1}
     hooks = {event: [{"hooks": [handler]}] for event in EVENTS}
     if corvid is not None:
-        saturate = directory / "saturate.py"
-        if fault == "collector-saturated":
-            saturate.write_text(SATURATE)
         generated = json.loads(subprocess.check_output([corvid, "hooks", "codex"], timeout=3))
         for event, groups in generated["hooks"].items():
             for group in groups:
@@ -172,7 +149,9 @@ def configure(directory, project, port, binary, corvid, fault):
                         hook["command"] = "exec /bin/sleep 2"
                     elif fault == "collector-saturated":
                         command = shlex.split(hook["command"])[1:]
-                        prefix = [sys.executable, str(saturate), str(directory / "saturation")]
+                        prefix = [
+                            sys.executable, str(COLLECTOR_FIXTURE), "saturate", str(directory / "saturation"),
+                        ]
                         hook["command"] = "exec " + shlex.join([*prefix, *command])
             hooks[event].extend(groups)
     (config / "hooks.json").write_text(json.dumps({"hooks": hooks}))
@@ -570,7 +549,7 @@ def capture(binary, corvid, directory, port, fault, auto_start, parallel, conver
                 tty.wait_exit()
         events = terminal.events()
         if fault == "collector-saturated":
-            assert (directory / "saturation").read_text().splitlines() == ["32 handshakes"] * 6
+            assert (directory / "saturation").read_text().splitlines() == [SATURATION] * 6
     finally:
         terminal.close()
         if second is not None:

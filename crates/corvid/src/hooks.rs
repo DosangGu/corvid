@@ -105,7 +105,7 @@ fn read_hook(deadline: Instant) -> Result<Vec<u8>> {
 #[derive(Deserialize)]
 struct ClaudeInput {
     hook_event_name: String,
-    session_id: String,
+    session_id: Option<String>,
     prompt_id: Option<String>,
     agent_id: Option<String>,
     source: Option<String>,
@@ -115,11 +115,16 @@ struct ClaudeInput {
 }
 
 fn claude_fields(input: Option<&[u8]>) -> Option<CollectHook> {
-    let parsed = input.and_then(|input| serde_json::from_slice::<ClaudeInput>(input).ok());
-    let Some(fields) = parsed else {
-        return Some(delivery_gap(AgentProvider::Claude));
+    let gap = || delivery_gap(AgentProvider::Claude);
+    let Some(input) = input.and_then(|input| serde_json::from_slice::<ClaudeInput>(input).ok())
+    else {
+        return Some(gap());
     };
-    fields.into_observation()
+    if input.agent_id.is_some() {
+        return None;
+    }
+    let event = input.event()?;
+    Some(input.observation(event).unwrap_or_else(gap))
 }
 
 fn delivery_gap(provider: AgentProvider) -> CollectHook {
@@ -131,15 +136,16 @@ fn delivery_gap(provider: AgentProvider) -> CollectHook {
 }
 
 impl ClaudeInput {
-    fn into_observation(self) -> Option<CollectHook> {
+    fn event(&self) -> Option<HookEvent> {
         let question = self.tool_name.as_deref() == Some("AskUserQuestion");
         let plan = self.tool_name.as_deref() == Some("ExitPlanMode");
-        let kind = match self.hook_event_name.as_str() {
-            "SessionStart" => match self.source.as_deref()? {
-                "startup" => HookEvent::Startup,
-                "resume" => HookEvent::Resume,
-                "clear" => HookEvent::Clear,
-                "compact" => HookEvent::Compact,
+        Some(match self.hook_event_name.as_str() {
+            "SessionStart" => match self.source.as_deref() {
+                Some("startup") => HookEvent::Startup,
+                Some("resume") => HookEvent::Resume,
+                Some("clear") => HookEvent::Clear,
+                Some("compact") => HookEvent::Compact,
+                None => HookEvent::DeliveryGap,
                 _ => return None,
             },
             "UserPromptSubmit" => HookEvent::PromptSubmitted,
@@ -155,9 +161,15 @@ impl ClaudeInput {
                 _ => HookEvent::ContextEnded,
             },
             _ => return None,
-        };
+        })
+    }
+
+    fn observation(self, event: HookEvent) -> Option<CollectHook> {
+        if event == HookEvent::DeliveryGap {
+            return None;
+        }
         let tool_id = if matches!(
-            kind,
+            event,
             HookEvent::QuestionStarted
                 | HookEvent::QuestionResult
                 | HookEvent::PlanApprovalStarted
@@ -169,11 +181,10 @@ impl ClaudeInput {
         };
         Some(CollectHook {
             provider: AgentProvider::Claude as i32,
-            event: kind as i32,
-            session_id: Some(valid_id(self.session_id)?),
+            event: event as i32,
+            session_id: Some(valid_id(self.session_id?)?),
             turn_id: optional_id(self.prompt_id)?,
             tool_id: optional_id(tool_id)?,
-            actor_id: optional_id(self.agent_id)?,
             ..Default::default()
         })
     }
@@ -227,5 +238,21 @@ pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
             Ok(json!({ "hooks": hooks }))
         }
         HookProvider::Codex => Ok(codex::settings(executable)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::claude_fields;
+
+    #[test]
+    fn unsupported_hooks_and_child_identifiers_do_not_report_a_parent_gap() {
+        let unknown = br#"{"hook_event_name":"Notification"}"#;
+        let child = br#"{
+            "hook_event_name":"PostToolUse", "session_id":"session", "agent_id":"child",
+            "tool_name":"AskUserQuestion", "tool_use_id":""
+        }"#;
+        assert!(claude_fields(Some(unknown)).is_none());
+        assert!(claude_fields(Some(child)).is_none());
     }
 }
