@@ -1,12 +1,13 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentList, ClientList, ConnectionStatus, GetConnectionStatus, GetHost, HostInfo, ListAgents,
     ListClients, ListWorkspaces, Ping, WorkspaceList,
 };
+use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -47,10 +48,26 @@ pub async fn workspaces(runtime: &Path) -> Result<WorkspaceList> {
 }
 
 pub async fn agents(runtime: &Path) -> Result<AgentList> {
-    match request(runtime, Body::ListAgents(ListAgents {}), "list_agents.v1").await? {
-        Body::AgentList(agents) => Ok(agents),
-        _ => bail!("unexpected response to ListAgents"),
+    match request(runtime, Body::ListAgents(ListAgents {}), "list_agents.v1").await {
+        Ok(Body::AgentList(agents)) => return Ok(agents),
+        Ok(_) => bail!("unexpected response to ListAgents"),
+        Err(error)
+            if error
+                .downcast_ref::<ProtocolFault>()
+                .is_some_and(|fault| fault.code == "InventoryTooLarge") => {}
+        Err(error) => return Err(error),
     }
+
+    let snapshot = crate::snapshot(runtime).await?;
+    let agents = snapshot
+        .snapshot()
+        .entities()
+        .filter_map(|entity| match &entity.body {
+            Some(EntityBody::Agent(agent)) => agent.summary.clone(),
+            _ => None,
+        })
+        .collect();
+    Ok(AgentList { agents })
 }
 
 pub async fn clients(runtime: &Path) -> Result<ClientList> {

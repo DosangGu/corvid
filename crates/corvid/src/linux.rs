@@ -481,6 +481,15 @@ fn print_agent(agent: AgentInfo) {
     if let Some(session) = agent.provider_session_id {
         print!(" session={session}");
     }
+    if let Some(parent) = agent.parent_run_id {
+        print!(" parent_run={parent}");
+    }
+    if let Some(actor) = agent.actor_id {
+        print!(" actor={actor}");
+    }
+    if agent.child_coverage_gap {
+        print!(" child_coverage_gap=true");
+    }
     if let Some(version) = agent.qualified_provider_version {
         print!(" version={version}");
     }

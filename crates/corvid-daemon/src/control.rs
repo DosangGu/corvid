@@ -9,9 +9,10 @@ use corvid_protocol::wire::{
     WorkspaceInfo, WorkspaceList,
 };
 use corvid_protocol::{
-    COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole,
-    ProtocolFault, Session, accept_hello,
+    COMMAND_TIMEOUT, CONTROL_LIMIT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
+    PROTOCOL_MINOR, PeerRole, ProtocolFault, Session, accept_hello,
 };
+use prost::Message;
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{Instant, sleep_until, timeout};
@@ -138,7 +139,11 @@ impl Control<'_> {
     }
 
     async fn reply(&mut self, request_id: Option<String>, body: Body) -> Result<()> {
-        let reply = self.session.envelope(request_id, body);
+        let mut reply = self.session.envelope(request_id, body);
+        if matches!(&reply.body, Some(Body::AgentList(_))) && reply.encoded_len() > CONTROL_LIMIT {
+            let fault = ProtocolFault::new("InventoryTooLarge", "read agents from a snapshot");
+            reply.body = Some(Body::Error(fault.into_wire()));
+        }
         timeout(COMMAND_TIMEOUT, self.writer.envelope(&reply)).await??;
         Ok(())
     }

@@ -1,3 +1,4 @@
+mod children;
 mod hooks;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -21,6 +22,7 @@ use crate::projection;
 use crate::provider::qualified_version;
 use crate::publication::{Group, Projection};
 use crate::workspaces::Registry;
+use children::{ChildEntry, ChildKey};
 
 pub(crate) use hooks::Hook;
 
@@ -65,6 +67,8 @@ struct ManagedRun {
     qualified_version: Option<&'static str>,
     published: bool,
     terminal_available: bool,
+    children: BTreeMap<ChildKey, ChildEntry>,
+    child_coverage_gap: bool,
 }
 
 impl Agents {
@@ -95,6 +99,8 @@ impl Agents {
                 qualified_version: qualified.then(|| qualified_version(provider)),
                 published: false,
                 terminal_available: false,
+                children: BTreeMap::new(),
+                child_coverage_gap: false,
             },
         );
         self.launches.insert(
@@ -125,11 +131,17 @@ impl Agents {
         }
         record.terminal_available = false;
         self.dirty.insert(id);
+        self.end_children(id);
         self.retired.push_back(id);
         if self.retired.len() > RETAINED_RUNS
             && let Some(oldest) = self.retired.pop_front()
         {
-            self.runs.remove(&oldest);
+            if let Some(expired) = self.runs.remove(&oldest) {
+                for child in expired.children.values().filter_map(ChildEntry::run) {
+                    self.runs.remove(&child);
+                    self.dirty.insert(child);
+                }
+            }
             self.dirty.insert(oldest);
         }
     }
@@ -279,6 +291,9 @@ impl ManagedRun {
                 run.identity.provider,
                 self.qualified_version.is_some(),
             )),
+            parent_run_id: run.identity.parent_run_id.map(|id| id.to_string()),
+            actor_id: run.identity.actor.clone(),
+            child_coverage_gap: self.child_coverage_gap,
         }
     }
 
@@ -448,7 +463,8 @@ impl ManagedLaunch {
                 return;
             };
             launch.owner = None;
-            let Some(current) = agents.runs.get_mut(&launch.current) else {
+            let current_id = launch.current;
+            let Some(current) = agents.runs.get_mut(&current_id) else {
                 return;
             };
             current.terminal_available = false;
@@ -464,7 +480,8 @@ impl ManagedLaunch {
                 ObservationKind::ContextEnded(EndReason::ContextReplaced),
                 observed,
             );
-            agents.dirty.insert(launch.current);
+            agents.dirty.insert(current_id);
+            agents.end_children(current_id);
             registry.publish(Vec::new());
         });
     }
@@ -477,11 +494,10 @@ impl ManagedLaunch {
     ) {
         self.with_registry(|registry| {
             let agents = &mut registry.agents;
-            for record in agents
-                .runs
-                .values_mut()
-                .filter(|record| record.run.identity.launch_association == self.association)
-            {
+            for record in agents.runs.values_mut().filter(|record| {
+                record.run.identity.launch_association == self.association
+                    && record.run.identity.parent_run_id.is_none()
+            }) {
                 if record.observe_process(liveness, identity, source) {
                     agents.dirty.insert(record.run.identity.id);
                 }

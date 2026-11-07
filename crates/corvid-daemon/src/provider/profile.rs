@@ -19,6 +19,9 @@ const CLAUDE_EVENTS: &[HookEvent] = &[
     HookEvent::ContextEnded,
     HookEvent::ContextReplaced,
     HookEvent::ResumeContextEnded,
+    HookEvent::SubagentStarted,
+    HookEvent::SubagentResponseObserved,
+    HookEvent::SubagentLinked,
 ];
 
 const CODEX_EVENTS: &[HookEvent] = &[
@@ -58,9 +61,10 @@ pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
             [Field::DirectChild, Field::Session, Field::Turn, Field::Tool]
                 .map(|field| field as i32),
         );
-        if provider == Provider::Codex {
-            correlation.push(Field::ManagedCodexBroker as i32);
-        }
+        correlation.push(match provider {
+            Provider::Claude => Field::Actor as i32,
+            Provider::Codex => Field::ManagedCodexBroker as i32,
+        });
     }
     ProviderAdapter {
         mode: mode as i32,
@@ -102,7 +106,13 @@ fn qualification(provider: Provider, kind: Kind) -> (Level, &'static str) {
             Level::Partial,
             "the permission hook lacks an exact request ID",
         ),
-        (_, Kind::SubagentIdentity) => (Level::Unavailable, "child ownership is unqualified"),
+        (Provider::Claude, Kind::SubagentIdentity) => (
+            Level::Partial,
+            "child work is scoped by session, prompt, and actor; process liveness is unknown",
+        ),
+        (Provider::Codex, Kind::SubagentIdentity) => {
+            (Level::Unavailable, "child ownership is unqualified")
+        }
         (_, Kind::RevalidateCurrentState) => (
             Level::Unavailable,
             "the interactive hook feed cannot recover missed events",

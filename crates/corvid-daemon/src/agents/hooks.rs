@@ -7,7 +7,7 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use uuid::Uuid;
 
-use super::{Agents, Launch, ManagedRun, PendingResume, evidence, monotonic_ms};
+use super::{Agents, ChildKey, Launch, ManagedRun, PendingResume, evidence, monotonic_ms};
 use crate::process::{HookProducer, ProcessImage};
 use crate::provider::qualified_version;
 
@@ -74,6 +74,13 @@ impl Hook {
             {
                 return Err(invalid());
             }
+        }
+        if is_child_event(event)
+            && (request.actor_id.is_none()
+                || request.turn_id.is_none()
+                || request.tool_id.is_some())
+        {
+            return Err(invalid());
         }
         Ok(Self {
             association,
@@ -202,12 +209,24 @@ fn supported_event(provider: Provider, event: HookEvent) -> bool {
         | HookEvent::PlanApprovalResult
         | HookEvent::ContextEnded
         | HookEvent::ContextReplaced
-        | HookEvent::ResumeContextEnded => provider == Provider::Claude,
+        | HookEvent::ResumeContextEnded
+        | HookEvent::SubagentStarted
+        | HookEvent::SubagentResponseObserved
+        | HookEvent::SubagentLinked => provider == Provider::Claude,
         HookEvent::ToolStarted | HookEvent::ToolFinished | HookEvent::TurnInterrupted => {
             provider == Provider::Codex
         }
         HookEvent::Unspecified => false,
     }
+}
+
+fn is_child_event(event: HookEvent) -> bool {
+    matches!(
+        event,
+        HookEvent::SubagentStarted
+            | HookEvent::SubagentResponseObserved
+            | HookEvent::SubagentLinked
+    )
 }
 
 impl Agents {
@@ -230,9 +249,29 @@ impl Agents {
         if current.run.identity.provider != hook.provider {
             return Err(unauthorized());
         }
-        if matches!(current.run.process.value, ProcessLiveness::Exited { .. })
-            || hook.actor.is_some()
-        {
+        if matches!(current.run.process.value, ProcessLiveness::Exited { .. }) {
+            return Ok(());
+        }
+        if let Some(actor) = hook.actor.as_ref() {
+            if is_child_event(hook.event)
+                && launch.producer == Some(producer)
+                && !launch.ambiguous
+                && launch.resume.is_none()
+                && current.run.lifecycle.value == Lifecycle::Live
+                && current.run.identity.provider_session == hook.session
+                && let Some(turn) = hook.turn.as_ref()
+            {
+                let key = ChildKey {
+                    turn: turn.clone(),
+                    actor: actor.clone(),
+                };
+                self.observe_child(
+                    current_id,
+                    key,
+                    hook.event,
+                    hook.evidence(Confidence::Confirmed),
+                );
+            }
             return Ok(());
         }
         self.dirty.insert(current_id);
@@ -283,7 +322,10 @@ impl Agents {
         }
         if let Some((kind, confidence)) = hook.observation() {
             let evidence = hook.evidence(confidence);
-            current.apply(hook.delivery, kind, evidence);
+            let ends_context = matches!(kind, ObservationKind::ContextEnded(_));
+            if current.apply(hook.delivery, kind, evidence) && ends_context {
+                self.end_children(current_id);
+            }
         } else if matches!(
             hook.event,
             HookEvent::PromptSubmitted | HookEvent::QuestionResult | HookEvent::PlanApprovalResult
@@ -433,6 +475,8 @@ impl Launch {
             qualified_version: current.qualified_version,
             published: true,
             terminal_available: true,
+            children: Default::default(),
+            child_coverage_gap: false,
         };
         self.establish_context(&mut next, hook.delivery, session);
         Some(next)
@@ -548,6 +592,13 @@ mod tests {
             self.submit(hook).unwrap();
         }
 
+        fn child(&mut self, session: &str, actor: &str, event: HookEvent) {
+            let mut hook = self.hook(session, event);
+            hook.actor = Some(actor.to_owned());
+            hook.tool = None;
+            self.submit(hook).unwrap();
+        }
+
         fn resume_boundary(&mut self, session: &str, event: HookEvent, turn: &str) {
             let mut hook = self.hook(session, event);
             hook.turn = Some(turn.to_owned());
@@ -566,6 +617,82 @@ mod tests {
         fn current(&self) -> &ManagedRun {
             &self.agents.runs[&self.agents.launches[&self.association].current]
         }
+    }
+
+    #[test]
+    fn child_response_waits_for_parent_link_and_does_not_settle_the_parent_question() {
+        let mut fixture = Fixture::new(Provider::Claude);
+        fixture.apply("conversation", HookEvent::Startup);
+        fixture.apply("conversation", HookEvent::QuestionStarted);
+        let parent_id = fixture.current().run.identity.id;
+
+        fixture.child("conversation", "actor", HookEvent::SubagentResponseObserved);
+        fixture.child("conversation", "internal", HookEvent::SubagentStarted);
+        fixture.child("conversation", "actor", HookEvent::SubagentStarted);
+        fixture.child("foreign", "actor", HookEvent::SubagentLinked);
+        assert_eq!(fixture.agents.runs.len(), 1);
+
+        fixture.child("conversation", "actor", HookEvent::SubagentLinked);
+        fixture.child("conversation", "actor", HookEvent::SubagentStarted);
+        fixture.child("conversation", "actor", HookEvent::SubagentResponseObserved);
+        assert_eq!(fixture.agents.runs.len(), 2);
+        let child = fixture
+            .agents
+            .runs
+            .values()
+            .find(|record| record.run.identity.parent_run_id == Some(parent_id))
+            .unwrap();
+        assert_eq!(child.run.identity.actor.as_deref(), Some("actor"));
+        assert!(child.run.work.is_empty());
+        assert!(child.run.recent_response.is_some());
+        assert_eq!(child.run.attention.len(), 1);
+        assert!(
+            fixture
+                .agents
+                .focus_terminal(child.run.identity.id)
+                .is_none()
+        );
+
+        let parent = &fixture.current().run;
+        assert_eq!(parent.collection.value, Collection::Healthy);
+        assert!(parent.recent_response.is_none());
+        assert_eq!(
+            parent.requests.values().next().unwrap().state.value,
+            RequestStatus::Pending
+        );
+    }
+
+    #[test]
+    fn children_retire_and_leave_the_inventory_with_their_parent() {
+        let mut fixture = Fixture::new(Provider::Claude);
+        fixture.apply("original", HookEvent::Startup);
+        let parent = fixture.current().run.identity.id;
+        fixture.child("original", "actor", HookEvent::SubagentLinked);
+        fixture.child("original", "actor", HookEvent::SubagentStarted);
+        let child = *fixture
+            .agents
+            .runs
+            .keys()
+            .find(|&&id| id != parent)
+            .unwrap();
+        assert!(!fixture.agents.runs[&child].run.work.is_empty());
+
+        fixture.apply("replacement", HookEvent::Clear);
+        fixture.child("original", "actor", HookEvent::SubagentResponseObserved);
+        let ended = &fixture.agents.runs[&child].run;
+        assert_eq!(
+            ended.lifecycle.value,
+            Lifecycle::Ended(EndReason::ContextEnded)
+        );
+        assert_eq!(ended.process.value, ProcessLiveness::Unknown);
+        assert!(ended.work.is_empty());
+        assert!(ended.recent_response.is_none());
+
+        for index in 0..super::super::RETAINED_RUNS {
+            fixture.apply(&format!("replacement-{index}"), HookEvent::Clear);
+        }
+        assert!(!fixture.agents.runs.contains_key(&parent));
+        assert!(!fixture.agents.runs.contains_key(&child));
     }
 
     #[test]

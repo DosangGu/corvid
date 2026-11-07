@@ -32,7 +32,7 @@ pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
 pub(crate) use focus::{FocusDispatch, FocusRecovery};
 
-const MAX_PTY_WORKERS: usize = 32;
+pub(crate) const MAX_PTY_WORKERS: usize = 32;
 const EVENT_CAPACITY: usize = 4;
 
 type Reply<T> = Result<T, ProtocolFault>;

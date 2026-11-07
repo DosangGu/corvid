@@ -2,7 +2,7 @@
 
 import argparse
 import fcntl
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -27,8 +27,9 @@ VERSION = "2.1.318 (Claude Code)"
 HOOKS = (
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
     "PermissionDenied", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "SessionEnd",
+    "SubagentStart", "SubagentStop",
 )
-IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id")
+IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id", "result_agent_id")
 FAULT_TRACE = "collector-faults"
 CAPTURE = """
 import json
@@ -40,8 +41,18 @@ fields = (
     "hook_event_name", "source", "reason", "tool_name", "session_id",
     "prompt_id", "tool_use_id", "agent_id", "is_interrupt",
 )
+record = {field: event[field] for field in fields if field in event}
+if event["hook_event_name"] in {"SubagentStart", "SubagentStop"}:
+    record.update({field: event[field] for field in ("agent_type", "stop_hook_active") if field in event})
+if event["hook_event_name"] == "PostToolUse" and event.get("tool_name") == "Agent":
+    result = event.get("tool_response")
+    if isinstance(result, dict):
+        if isinstance(result.get("agentId"), str):
+            record["result_agent_id"] = result["agentId"]
+        if isinstance(result.get("status"), str):
+            record["result_status"] = result["status"]
 with Path(sys.argv[1]).open("a") as trace:
-    print(json.dumps({field: event[field] for field in fields if field in event}), file=trace)
+    print(json.dumps(record), file=trace)
 """
 
 
@@ -74,7 +85,10 @@ class ModelFixture(BaseHTTPRequestHandler):
             tool = "ToolSearch"
             arguments = {"query": "select:ExitPlanMode"}
             self.server.plan_search_sent = True
-        self.server.tool_sent |= tool == requested
+        if self.server.child_fixture:
+            tool, arguments = self.child_response(request, offered_tools)
+        else:
+            self.server.tool_sent |= tool == requested
         self.server.message_count += 1
         message = {
             "id": f"msg_corvid_{self.server.message_count}",
@@ -99,6 +113,45 @@ class ModelFixture(BaseHTTPRequestHandler):
         body = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
         self.reply(body.encode(), "text/event-stream")
 
+    def child_response(self, request, offered_tools):
+        if not self.server.agent_sent:
+            assert "Agent" in offered_tools
+            self.server.agent_sent = True
+            return "Agent", {
+                "description": "Read fixture note",
+                "prompt": "Corvid fixture child reads the test note.",
+                "subagent_type": "general-purpose",
+            }
+
+        child_prompt = "Corvid fixture child reads the test note."
+        texts = []
+        for message in request.get("messages", []):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content", [])
+            if isinstance(content, str):
+                texts.append(content)
+            else:
+                texts.extend(block.get("text", "") for block in content if block.get("type") == "text")
+        from_child = any(child_prompt in text for text in texts)
+        if from_child:
+            if not self.server.child_read_sent.is_set():
+                assert "Read" in offered_tools
+                self.server.child_read_sent.set()
+                return "Read", {"file_path": str(self.server.child_note), "limit": 1}
+            deadline = time.monotonic() + 6
+            while not self.server.child_release.exists():
+                assert time.monotonic() < deadline, "child response was not released"
+                time.sleep(0.02)
+            return None, None
+        if self.server.parent_question_sent:
+            return None, None
+
+        assert self.server.child_read_sent.wait(5), "child never asked to read its fixture"
+        assert "AskUserQuestion" in offered_tools
+        self.server.parent_question_sent = True
+        return "AskUserQuestion", None
+
     def reply(self, body, content_type):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -117,7 +170,8 @@ def response_content(tool, arguments):
     block = {
         "type": "tool_use",
         "name": tool,
-        "id": f"toolu_corvid_{tool.lower()}" if tool in {"Write", "ToolSearch"} else "toolu_corvid_fixture",
+        "id": "toolu_corvid_fixture" if tool in {"AskUserQuestion", "ExitPlanMode"}
+              else f"toolu_corvid_{tool.lower()}",
         "input": {},
     }
     if tool == "AskUserQuestion":
@@ -256,17 +310,29 @@ def exercise(terminal, scenario, managed, fault):
     initial = managed.expect(terminal, collection="Healthy", process="Running") if managed else None
     current = initial
     terminal.send(b"Corvid hook schema fixture\r")
+    child_start = terminal.event(hook_event_name="SubagentStart") if scenario == "child" else None
     if scenario == "plan":
         return exercise_plan(terminal, managed, initial)
     terminal.expect(b"Enter to submit or Escape to cancel:")
     if scenario == "cancel":
         return exercise_cancel(terminal, managed, initial)
+    child = None
     if managed:
         question = managed.expect(terminal, run=initial["run"], pending="1", badge="NeedsInput")
         assert question["unverified"] == "1"
+    if child_start:
+        child = exercise_child(terminal, managed, initial, child_start)
+    elif managed:
         snapshot = managed.snapshot()
-        assert snapshot["agents"] == "1" and snapshot["requests"] == snapshot["attention"] == "2"
+        assert snapshot["agents"] == "1"
+        assert snapshot["requests"] == snapshot["attention"] == "2"
+    if managed:
         managed.focus_question(terminal, question)
+        if child:
+            view = managed.companion.slots()
+            assigned = [slot["run"].split("/")[-1] for slot in view["slots"] if slot.get("run", "-") != "-"]
+            assert assigned == [initial["run"]]
+            assert not view["ended"]
         managed.acknowledge_question(question)
         managed.reject_foreign_hook(question)
         if fault == "malformed-result":
@@ -320,7 +386,28 @@ def exercise(terminal, scenario, managed, fault):
     assert terminal.process.wait(timeout=5) == 0, "fixture Claude exit failed"
     if managed:
         managed.expect(terminal, run=current["run"], process="Exited")
+        if child:
+            managed.expect(terminal, run=child["run"], process="Unknown", end="ContextEnded")
     return terminal.events()
+
+
+def exercise_child(terminal, managed, parent, start):
+    child = None
+    if managed:
+        child = managed.expect(
+            terminal, parent_run=parent["run"], actor=start["agent_id"], terminal=parent["terminal"],
+            process="Unknown", badge="Working", response="false",
+        )
+        assert "pid" not in child
+        snapshot = managed.snapshot()
+        assert snapshot["agents"] == "2"
+        assert snapshot["requests"] == snapshot["attention"] == "2"
+    terminal.trace.with_name("child-release").touch()
+    terminal.event(hook_event_name="SubagentStop", agent_id=start["agent_id"])
+    if managed:
+        managed.expect(terminal, run=child["run"], process="Unknown", badge="Unknown", response="true")
+        managed.expect(terminal, run=parent["run"], pending="1", process="Running", response="false")
+    return child
 
 
 def wait_for_hook_timeout(terminal):
@@ -563,6 +650,9 @@ def capture(binary, directory, port, scenario, corvid, fault):
     trace, environment = configure(directory, port, corvid, fault)
     project = directory / "project"
     project.mkdir()
+    if scenario == "child":
+        (project / "child-note.txt").write_text("Synthetic fixture note.\n")
+        environment["API_TIMEOUT_MS"] = "9000"
     arguments = [
         "--model", "sonnet", "--strict-mcp-config", "--no-chrome", "--ax-screen-reader",
         "--permission-mode", "plan" if scenario == "plan" else "manual",
@@ -663,6 +753,17 @@ def verify(events, scenario):
         assert before["tool_use_id"] == after["tool_use_id"]
     assert events[-1]["hook_event_name"] == "SessionEnd"
     assert events[-1]["reason"] == "prompt_input_exit"
+    if scenario == "child":
+        child = next(event for event in events if event["hook_event_name"] == "SubagentStart")
+        stopped = next(event for event in events if event["hook_event_name"] == "SubagentStop")
+        linked = next(event for event in events if event.get("result_status") == "async_launched")
+        read = next(event for event in events if event["hook_event_name"] == "PostToolUse"
+                    and event.get("tool_name") == "Read")
+        assert child["agent_id"] == stopped["agent_id"] == linked["result_agent_id"] == read["agent_id"]
+        assert stopped["stop_hook_active"] is False and "agent_id" not in linked
+        for event in (child, stopped, linked, read):
+            assert event["session_id"] == session and event["prompt_id"] == turn
+        assert events.index(before) < events.index(stopped) < events.index(after)
     if scenario in {"clear", "resume"}:
         ended = next(event for event in events if event.get("reason") == "clear")
         started = next(event for event in events if event.get("source") == "clear")
@@ -686,7 +787,7 @@ def verify(events, scenario):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("answer", "clear", "resume", "cancel", "plan"), default="answer")
+    parser.add_argument("--scenario", choices=("answer", "clear", "resume", "cancel", "plan", "child"), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
         "missing-helper", "missing-collector", "collector-saturated", "timeout", "malformed-result",
@@ -707,12 +808,19 @@ def main():
     corvid = args.corvid.resolve() if args.corvid is not None else None
     parent = Path(__file__).resolve().parents[3] if corvid is not None else None
     with tempfile.TemporaryDirectory(prefix=".corvid-claude-", dir=parent) as directory:
-        with HTTPServer(("127.0.0.1", 0), ModelFixture) as server:
+        server_type = ThreadingHTTPServer if args.scenario == "child" else HTTPServer
+        with server_type(("127.0.0.1", 0), ModelFixture) as server:
             server.fixture_tool = "ExitPlanMode" if args.scenario == "plan" else "AskUserQuestion"
             server.tool_sent = False
             server.plan_drafted = False
             server.plan_search_sent = False
             server.plan_directory = Path(directory) / "home/.claude/plans"
+            server.child_fixture = args.scenario == "child"
+            server.agent_sent = False
+            server.child_read_sent = threading.Event()
+            server.parent_question_sent = False
+            server.child_note = Path(directory) / "project/child-note.txt"
+            server.child_release = Path(directory) / "child-release"
             server.message_count = 0
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()

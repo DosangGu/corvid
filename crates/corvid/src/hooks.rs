@@ -112,18 +112,37 @@ struct ClaudeInput {
     reason: Option<String>,
     tool_name: Option<String>,
     tool_use_id: Option<String>,
+    stop_hook_active: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct ClaudeAgentResult {
+    #[serde(rename = "agentId")]
+    actor: String,
+    status: String,
 }
 
 fn claude_fields(input: Option<&[u8]>) -> Option<CollectHook> {
     let gap = || delivery_gap(AgentProvider::Claude);
-    let Some(input) = input.and_then(|input| serde_json::from_slice::<ClaudeInput>(input).ok())
-    else {
+    let Some(payload) = input else {
         return Some(gap());
     };
+    let Ok(input) = serde_json::from_slice::<ClaudeInput>(payload) else {
+        return Some(gap());
+    };
+    let event = input.event()?;
+    if matches!(
+        event,
+        HookEvent::SubagentStarted | HookEvent::SubagentResponseObserved
+    ) {
+        return input.subagent_observation(event);
+    }
+    if event == HookEvent::SubagentLinked {
+        return input.subagent_link(payload);
+    }
     if input.agent_id.is_some() {
         return None;
     }
-    let event = input.event()?;
     Some(input.observation(event).unwrap_or_else(gap))
 }
 
@@ -153,8 +172,17 @@ impl ClaudeInput {
             "PostToolUse" if question => HookEvent::QuestionResult,
             "PreToolUse" if plan => HookEvent::PlanApprovalStarted,
             "PostToolUse" if plan => HookEvent::PlanApprovalResult,
+            "PostToolUse"
+                if self.tool_name.as_deref() == Some("Agent") && self.agent_id.is_none() =>
+            {
+                HookEvent::SubagentLinked
+            }
             "PermissionRequest" => HookEvent::PermissionRequested,
             "Stop" => HookEvent::ResponseObserved,
+            "SubagentStart" => HookEvent::SubagentStarted,
+            "SubagentStop" if self.stop_hook_active == Some(false) => {
+                HookEvent::SubagentResponseObserved
+            }
             "SessionEnd" => match self.reason.as_deref() {
                 Some("clear") => HookEvent::ContextReplaced,
                 Some("resume") => HookEvent::ResumeContextEnded,
@@ -162,6 +190,34 @@ impl ClaudeInput {
             },
             _ => return None,
         })
+    }
+
+    fn subagent_observation(self, event: HookEvent) -> Option<CollectHook> {
+        Some(CollectHook {
+            provider: AgentProvider::Claude as i32,
+            event: event as i32,
+            session_id: Some(valid_id(self.session_id?)?),
+            turn_id: Some(valid_id(self.prompt_id?)?),
+            actor_id: Some(valid_id(self.agent_id?)?),
+            ..Default::default()
+        })
+    }
+
+    fn subagent_link(mut self, payload: &[u8]) -> Option<CollectHook> {
+        #[derive(Deserialize)]
+        struct ResultInput {
+            tool_response: ClaudeAgentResult,
+        }
+
+        let result = serde_json::from_slice::<ResultInput>(payload)
+            .ok()?
+            .tool_response;
+        if result.status != "async_launched" {
+            return None;
+        }
+        valid_id(self.tool_use_id.take()?)?;
+        self.agent_id = Some(result.actor);
+        self.subagent_observation(HookEvent::SubagentLinked)
     }
 
     fn observation(self, event: HookEvent) -> Option<CollectHook> {
@@ -223,14 +279,19 @@ pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
                 "PermissionRequest",
                 "Stop",
                 "SessionEnd",
+                "SubagentStart",
+                "SubagentStop",
             ] {
                 hooks.insert(event.to_owned(), json!([{ "hooks": [handler.clone()] }]));
             }
-            for event in ["PreToolUse", "PostToolUse"] {
+            for (event, matcher) in [
+                ("PreToolUse", "^(AskUserQuestion|ExitPlanMode)$"),
+                ("PostToolUse", "^(AskUserQuestion|ExitPlanMode|Agent)$"),
+            ] {
                 hooks.insert(
                     event.to_owned(),
                     json!([{
-                        "matcher": "AskUserQuestion|ExitPlanMode",
+                        "matcher": matcher,
                         "hooks": [handler.clone()],
                     }]),
                 );

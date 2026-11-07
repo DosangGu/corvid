@@ -218,6 +218,18 @@ fn agent_state(entries: &Entries, agent: &AgentState) -> Result<()> {
             "agent parent is missing",
         )?;
     }
+    require(
+        match (&summary.parent_run_id, &summary.actor_id) {
+            (None, None) => true,
+            (Some(parent), Some(actor)) => {
+                agent.parent_run_id.as_ref() == Some(parent)
+                    && valid_id(actor)
+                    && !summary.terminal_available
+            }
+            _ => false,
+        },
+        "invalid child agent identity",
+    )?;
     if let Some(location) = &summary.location {
         require(valid_location(location), "invalid agent location")?;
     }

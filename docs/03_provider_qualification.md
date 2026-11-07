@@ -4,7 +4,7 @@
 
 Recorded on Linux 7.2.14 on 2026-11-07. The fixture launches the installed
 interactive CLI in a real PTY with screen-reader output. It uses a temporary
-home, an empty workspace, and a loopback Messages server that supplies synthetic
+home, an isolated workspace, and a loopback Messages server that supplies synthetic
 responses. Question scenarios use manual permission mode. The plan scenario
 starts in plan mode and the fixture chooses the approval in the PTY.
 
@@ -17,6 +17,7 @@ starts in plan mode and the fixture chooses the approval in the PTY.
 | `PermissionRequest` | The same question also emits this event with the session, prompt, and tool name. The tool-use ID is absent. Require separate correlation evidence before resolving a permission observation. |
 | Question dismissal | Esc closes the question. The next submission and `Stop` carry a new prompt ID. The dismissed question has no matching result, failure, or denial hook in this trace. |
 | `Stop` | The response retains the prompt ID after the tool result. Other hooks can continue the turn, so this boundary provides response evidence. |
+| Background `Agent` | `SubagentStart` and `SubagentStop` report the parent's session and prompt IDs with a distinct `agent_id`. The parent's `PostToolUse` result reports that ID as `tool_response.agentId` with `status=async_launched`. |
 | `SessionEnd` and `SessionStart` | `/clear` ends the old session with `reason=clear` and starts a distinct session with `source=clear`. The CLI stays in the same PTY. `/exit` later ends the new context with `reason=prompt_input_exit`. |
 | `/compact` and `/resume` | Manual compaction emits `SessionStart` with `source=compact` and the same session ID. Switching back to a previous conversation emits `SessionEnd` with `reason=resume` for the outgoing session, followed by `SessionStart` with `source=resume` for the target. Both sides report the same prompt ID. |
 
@@ -32,6 +33,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario resume
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario cancel
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario plan
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child
 ```
 
 The [fixtures](../crates/corvid/tests/fixtures/claude/2.1.318/) keep allowlisted
@@ -67,6 +69,7 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario resume
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault missing-helper
@@ -111,7 +114,19 @@ companion snapshot retained the same run, slot, and slot revision with
 `GapDetected` and the unverified question. The separately unverified permission
 record remained present.
 
-Exact manual cancellation, plan rejection, and child records remain unqualified.
+The A9 child fixture ran a background `Agent` while the parent waited on an
+interactive question. The child became visible after the start and the parent's
+tool result agreed on session, prompt, and actor IDs. `SubagentStop` closed the
+child's work and recorded its response while the parent's question stayed
+pending. The companion assigned a slot only to the parent. The child record
+has unknown OS process liveness and no independent focus target. Its context
+retires with the parent.
+
+Early child responses have a five-second correlation window. The inventory
+reports a child coverage gap if the registry reaches its child observation
+limit. Use the control snapshot for inventories larger than one control frame.
+Exact manual cancellation, plan rejection, and synchronous or nested child
+ownership remain unqualified.
 
 ## Codex CLI 0.167.0 on Linux
 

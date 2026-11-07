@@ -634,6 +634,9 @@ message AgentInfo {
   optional string qualified_provider_version = 18;
   uint32 cancelled_requests = 19;
   ProviderAdapter adapter = 20;
+  optional string parent_run_id = 21;
+  optional string actor_id = 22;
+  bool child_coverage_gap = 23;
 }
 
 message ProviderAdapter {
@@ -659,6 +662,7 @@ enum ProviderCorrelation {
   PROVIDER_CORRELATION_TURN = 4;
   PROVIDER_CORRELATION_TOOL = 5;
   PROVIDER_CORRELATION_MANAGED_CODEX_BROKER = 6;
+  PROVIDER_CORRELATION_ACTOR = 7;
 }
 
 message ProviderCapability {
@@ -722,6 +726,9 @@ enum HookEvent {
   HOOK_EVENT_RESUME_CONTEXT_ENDED = 16;
   HOOK_EVENT_PLAN_APPROVAL_STARTED = 17;
   HOOK_EVENT_PLAN_APPROVAL_RESULT = 18;
+  HOOK_EVENT_SUBAGENT_STARTED = 19;
+  HOOK_EVENT_SUBAGENT_RESPONSE_OBSERVED = 20;
+  HOOK_EVENT_SUBAGENT_LINKED = 21;
 }
 
 message CollectHook {
