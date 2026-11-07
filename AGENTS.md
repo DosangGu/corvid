@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-Corvid is a planned Rust TUI coding-agent multiplexer. Read `docs/00_project_design.md`
-before architectural changes. No Cargo manifest, application source, executable tests,
-or assets exist yet.
+Corvid is a Rust TUI coding-agent multiplexer. Read `docs/00_project_design.md`
+before architectural changes. The initial Cargo workspace contains the terminal
+qualification package in `spikes/terminal/` with its tests and terminfo profile.
 
 Proposed packages under `crates/`: `corvid` (CLI), `corvid-core` (domain models),
 `corvid-protocol` (Protobuf/framing), `corvid-daemon` (PTY/VT/rendering), and
@@ -12,8 +12,7 @@ Proposed packages under `crates/`: `corvid` (CLI), `corvid-core` (domain models)
 
 ## Build, Test, and Development Commands
 
-Currently, run `git diff --check` and inspect Markdown headings, links, examples, and
-design consistency. Once the Cargo workspace exists, use:
+Run `git diff --check` for whitespace. From the workspace root:
 
 - `cargo build --workspace`: compile workspace packages.
 - `cargo test --workspace`: run unit and integration tests.
@@ -39,7 +38,7 @@ field numbers; reserve them instead.
 
 ## Testing Guidelines
 
-When implementing, use Rust unit tests beside modules and integration tests under each
+Keep Rust unit tests beside modules and integration tests under each
 crate's `tests/`. Name tests after behavior, e.g. `rejects_stale_epoch`. Follow the design's
 acceptance matrix: identity, reconnection, input fencing, and malformed frames. No coverage
 threshold is configured. Distinguish executed checks from planned tests and unverified
