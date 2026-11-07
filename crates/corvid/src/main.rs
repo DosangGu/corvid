@@ -32,6 +32,9 @@ enum Command {
         /// Start a new terminal with the user's shell.
         #[arg(long)]
         new: bool,
+        /// Milliseconds to wait for a fragmented escape sequence.
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=2000))]
+        escape_delay_ms: u64,
         /// Program and arguments for an explicitly started terminal.
         #[arg(last = true)]
         argv: Vec<OsString>,
@@ -90,9 +93,13 @@ async fn run(options: Options) -> Result<u32> {
             .await
             .map(|()| 0)
         }
-        Command::Attach { new, argv } => {
+        Command::Attach {
+            new,
+            escape_delay_ms,
+            argv,
+        } => {
             let launch = (new || !argv.is_empty()).then_some(argv);
-            corvid_client::attach(&runtime, launch).await
+            corvid_client::attach(&runtime, launch, Duration::from_millis(escape_delay_ms)).await
         }
         Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
         Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {

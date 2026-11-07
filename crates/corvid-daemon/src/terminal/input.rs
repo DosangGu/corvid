@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 use std::io::{ErrorKind, Write};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
+use corvid_core::{MAX_PASTE_BYTES, PASTE_END, PASTE_START};
 
 const USER_LIMIT: usize = 128 * 1024;
 const REPLY_LIMIT: usize = 64 * 1024;
@@ -10,17 +11,30 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(super) struct InputQueue {
-    user: VecDeque<Vec<u8>>,
+    user: VecDeque<(Vec<u8>, Kind)>,
     replies: VecDeque<Vec<u8>>,
     user_bytes: usize,
     reply_bytes: usize,
     active: Option<Batch>,
+    paste_pending: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    Keys,
+    Paste,
+    Reply,
+}
+
+pub(super) struct WriteFailure {
+    pub(super) kind: Kind,
+    pub(super) partial: bool,
 }
 
 struct Batch {
     bytes: Vec<u8>,
     sent: usize,
-    user: bool,
+    kind: Kind,
     progress: Instant,
 }
 
@@ -30,7 +44,42 @@ impl InputQueue {
             return false;
         }
         self.user_bytes += bytes.len();
-        self.user.push_back(bytes);
+        self.user.push_back((bytes, Kind::Keys));
+        true
+    }
+
+    pub(super) fn paste_pending(&self) -> bool {
+        self.paste_pending
+    }
+
+    pub(super) fn interrupted_paste(&self) -> Option<WriteFailure> {
+        self.paste_pending.then(|| WriteFailure {
+            kind: Kind::Paste,
+            partial: self
+                .active
+                .as_ref()
+                .is_some_and(|batch| batch.kind == Kind::Paste && batch.sent > 0),
+        })
+    }
+
+    pub(super) fn paste(&mut self, bytes: Vec<u8>, bracketed: bool) -> bool {
+        if self.paste_pending || bytes.len() > MAX_PASTE_BYTES {
+            return false;
+        }
+        let bytes = if bracketed {
+            [
+                PASTE_START.as_slice(),
+                bytes.as_slice(),
+                PASTE_END.as_slice(),
+            ]
+            .concat()
+        } else {
+            bytes
+        };
+        if !bytes.is_empty() {
+            self.user.push_back((bytes, Kind::Paste));
+            self.paste_pending = true;
+        }
         true
     }
 
@@ -50,12 +99,17 @@ impl InputQueue {
     pub(super) fn fence(&mut self) {
         self.user.clear();
         self.user_bytes = 0;
-        if self.active.as_ref().is_some_and(|batch| batch.user) {
+        self.paste_pending = false;
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|batch| batch.kind != Kind::Reply)
+        {
             self.active = None;
         }
     }
 
-    pub(super) fn flush(&mut self, writer: &mut impl Write) -> Result<()> {
+    pub(super) fn flush(&mut self, writer: &mut impl Write) -> Result<(), WriteFailure> {
         for _ in 0..16 {
             if self.active.is_none() {
                 self.active = self.next_batch();
@@ -64,44 +118,52 @@ impl InputQueue {
                 return Ok(());
             };
             match writer.write(&batch.bytes[batch.sent..]) {
-                Ok(0) => bail!("PTY write made no progress"),
+                Ok(0) => return Err(batch.failure()),
                 Ok(written) => {
                     batch.sent += written;
                     batch.progress = Instant::now();
                     if batch.sent == batch.bytes.len() {
-                        if batch.user {
-                            self.user_bytes -= batch.bytes.len();
-                        } else {
-                            self.reply_bytes -= batch.bytes.len();
+                        match batch.kind {
+                            Kind::Keys => self.user_bytes -= batch.bytes.len(),
+                            Kind::Reply => self.reply_bytes -= batch.bytes.len(),
+                            Kind::Paste => self.paste_pending = false,
                         }
                         self.active = None;
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    ensure!(
-                        batch.progress.elapsed() < WRITE_TIMEOUT,
-                        "PTY input stalled"
-                    );
+                Err(error)
+                    if error.kind() == ErrorKind::WouldBlock
+                        && batch.progress.elapsed() < WRITE_TIMEOUT =>
+                {
                     return Ok(());
                 }
-                Err(error) => return Err(error.into()),
+                Err(_) => return Err(batch.failure()),
             }
         }
         Ok(())
     }
 
     fn next_batch(&mut self) -> Option<Batch> {
-        let (bytes, user) = if let Some(reply) = self.replies.pop_front() {
-            (reply, false)
+        let (bytes, kind) = if let Some(reply) = self.replies.pop_front() {
+            (reply, Kind::Reply)
         } else {
-            (self.user.pop_front()?, true)
+            self.user.pop_front()?
         };
         Some(Batch {
             bytes,
             sent: 0,
-            user,
+            kind,
             progress: Instant::now(),
         })
+    }
+}
+
+impl Batch {
+    fn failure(&self) -> WriteFailure {
+        WriteFailure {
+            kind: self.kind,
+            partial: self.sent > 0,
+        }
     }
 }

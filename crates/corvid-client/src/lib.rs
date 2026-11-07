@@ -1,6 +1,7 @@
 mod attach;
 mod connection;
 mod control;
+mod keys;
 mod relay;
 mod tty;
 

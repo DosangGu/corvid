@@ -1,4 +1,5 @@
 mod input;
+mod paste;
 mod pty;
 mod screen;
 mod worker;

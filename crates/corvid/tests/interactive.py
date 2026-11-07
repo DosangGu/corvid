@@ -14,6 +14,11 @@ import termios
 import time
 import tty
 
+PASTE_START = b"\x1b[200~"
+PASTE_END = b"\x1b[201~"
+PASTE = "한글".encode() + b"\x1dd\x1b[20X\n"
+KEYS = b"\x1b\x1bx\x1b[A" + "한글".encode() + b"\x1d\x03"
+
 
 def child(progress):
     tty.setraw(0)
@@ -39,6 +44,31 @@ def child(progress):
             if b"q" in data:
                 os.write(1, b"\x1b[4;1HTERMINAL-EXIT")
                 return 7
+
+
+def read_exact(length):
+    deadline = time.monotonic() + 5
+    output = bytearray()
+    while len(output) < length:
+        wait = max(0, deadline - time.monotonic())
+        assert select.select([0], [], [], wait)[0], output
+        chunk = os.read(0, length - len(output))
+        assert chunk, output
+        output.extend(chunk)
+    return output
+
+
+def paste_child():
+    tty.setraw(0)
+    os.write(1, b"PLAIN-READY")
+    assert read_exact(len(PASTE)) == PASTE
+    os.write(1, b"\x1b[2;1H\x1b[?2004hBRACKET-READY")
+    bracketed = PASTE_START + PASTE + PASTE_END
+    assert read_exact(len(bracketed)) == bracketed
+    os.write(1, b"\x1b[3;1HKEYS-READY")
+    assert read_exact(len(KEYS)) == KEYS
+    os.write(1, b"\x1b[4;1HINPUT-COMPLETE")
+    return 0
 
 
 class OuterTerminal:
@@ -122,7 +152,7 @@ def verify(command, directory):
 
         first.resize(100, 30)
         first.expect(b"RESIZED=100x30")
-        first.process.terminate()
+        first.send(b"\x1dd")
         first.wait(0)
 
     ticks_at_detach = len(progress.read_text().splitlines())
@@ -136,6 +166,30 @@ def verify(command, directory):
         second.send(b"q")
         second.expect(b"TERMINAL-EXIT")
         second.wait(7)
+
+
+def send_paste(outer):
+    for chunk in (PASTE_START[:4], PASTE_START[4:], PASTE, PASTE_END[:2], PASTE_END[2:]):
+        outer.send(chunk)
+        time.sleep(0.01)
+
+
+def verify_paste(command):
+    start = [*command, "attach", "--", sys.executable, __file__, "--paste-child"]
+    with OuterTerminal(start) as outer:
+        outer.expect(b"PLAIN-READY")
+        send_paste(outer)
+        outer.expect(b"BRACKET-READY")
+        send_paste(outer)
+        outer.expect(b"KEYS-READY")
+
+        outer.send(b"\x1b")
+        time.sleep(0.15)
+        for chunk in (b"\x1b", b"x", b"\x1b[", b"A", *[bytes([byte]) for byte in "한글".encode()], b"\x1d\x1d", b"\x03"):
+            outer.send(chunk)
+            time.sleep(0.01)
+        outer.expect(b"INPUT-COMPLETE")
+        outer.wait(0)
 
 
 def run(binary):
@@ -153,12 +207,15 @@ def run(binary):
         try:
             wait_for_daemon(command, daemon)
             verify(command, directory)
+            verify_paste(command)
         finally:
             stop(daemon)
-    print("Live TTYs verified exclusive writer, resize, detach, retained screen, and child exit.")
+    print("Live TTYs verified writer fencing, redraw, paste modes, fragmented keys, and modal detach.")
 
 
 if __name__ == "__main__":
     if sys.argv[1] == "--child":
         sys.exit(child(Path(sys.argv[2])))
+    if sys.argv[1] == "--paste-child":
+        sys.exit(paste_child())
     run(sys.argv[1])

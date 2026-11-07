@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use corvid_core::{InputRoute, Viewport};
+use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use tokio::sync::{mpsc, oneshot};
@@ -12,13 +12,15 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
 
-use super::input::InputQueue;
+use super::input::{InputQueue, Kind, WriteFailure};
+use super::paste::Paste;
 use super::{TerminalPty, TerminalScreen};
 
 const COMMAND_CAPACITY: usize = 32;
 const TICK: Duration = Duration::from_millis(8);
 const FRAME_INTERVAL: Duration = Duration::from_millis(34);
 const MAX_ANSI: usize = RENDER_LIMIT - 16 * 1024 - 5;
+const LEADER_TIMEOUT: Duration = Duration::from_secs(2);
 
 type Reply<T> = Result<T, ProtocolFault>;
 
@@ -39,6 +41,18 @@ pub(crate) enum Action {
         route: InputRoute,
         sequence: u64,
         bytes: Vec<u8>,
+    },
+    PasteBegin {
+        route: InputRoute,
+        sequence: u64,
+        id: Uuid,
+    },
+    PasteChunk {
+        id: Uuid,
+        bytes: Vec<u8>,
+    },
+    PasteEnd {
+        id: Uuid,
     },
     Resize {
         connection_generation: u64,
@@ -66,6 +80,7 @@ pub(crate) enum Event {
     Pong {
         request_id: Option<String>,
     },
+    Detached,
 }
 
 pub(crate) struct Render {
@@ -106,19 +121,23 @@ impl TerminalHandle {
         receive.await.map_err(|_| overloaded())?
     }
 
-    pub(crate) fn action(
+    pub(crate) async fn action(
         &self,
         client: Uuid,
         request_id: Option<String>,
         action: Action,
     ) -> Reply<()> {
-        self.commands
-            .try_send(Command::Action {
+        tokio::time::timeout(
+            COMMAND_TIMEOUT,
+            self.commands.send(Command::Action {
                 client,
                 request_id,
                 action,
-            })
-            .map_err(|_| overloaded())
+            }),
+        )
+        .await
+        .map_err(|_| overloaded())?
+        .map_err(|_| overloaded())
     }
 
     pub(crate) fn disconnect(&self, client: Uuid) {
@@ -256,16 +275,43 @@ impl Worker {
                 sequence,
                 bytes,
             } => {
-                if route != lease.route
-                    || sequence <= lease.input_sequence
-                    || terminal.exit.is_some()
-                {
+                lease.check_input(route, sequence, terminal)?;
+                if lease.keys(sequence, bytes, &mut terminal.input)? {
+                    let _ = lease.events.try_send(Event::Detached);
+                    self.revoke();
+                }
+            }
+            Action::PasteBegin {
+                route,
+                sequence,
+                id,
+            } => {
+                lease.check_input(route, sequence, terminal)?;
+                if terminal.input.paste_pending() {
+                    return Err(input_busy());
+                }
+                lease.flush_leader(&mut terminal.input)?;
+                lease.paste = Some(Paste::new(id, route, request_id));
+                lease.input_sequence = sequence;
+            }
+            Action::PasteChunk { id, bytes } => {
+                let mut paste = lease.paste.take().ok_or_else(stale_route)?;
+                paste.check(id, lease.route)?;
+                paste.append(&bytes)?;
+                lease.paste = Some(paste);
+            }
+            Action::PasteEnd { id } => {
+                let paste = lease.paste.take().ok_or_else(stale_route)?;
+                paste.check(id, lease.route)?;
+                if terminal.exit.is_some() {
                     return Err(stale_route());
                 }
-                if !terminal.input.user(bytes) {
-                    return Err(overloaded());
+                if !terminal
+                    .input
+                    .paste(paste.finish(), terminal.screen.bracketed_paste())
+                {
+                    return Err(input_busy());
                 }
-                lease.input_sequence = sequence;
             }
             Action::Resize {
                 connection_generation,
@@ -273,6 +319,9 @@ impl Worker {
             } => {
                 if connection_generation != lease.route.connection_generation {
                     return Err(stale_route());
+                }
+                if terminal.input.paste_pending() {
+                    return Err(input_busy());
                 }
                 let revision = lease
                     .route
@@ -285,6 +334,19 @@ impl Worker {
                     .ok_or_else(overloaded)?;
                 terminal.resize(viewport).map_err(|_| terminal_fault())?;
                 terminal.input.fence();
+                lease.leader = None;
+                if let Some(paste) = lease.paste.take()
+                    && lease
+                        .events
+                        .try_send(Event::Error {
+                            request_id: paste.request_id,
+                            fault: stale_route(),
+                        })
+                        .is_err()
+                {
+                    self.revoke();
+                    return Ok(());
+                }
                 terminal.dirty = true;
                 lease.route.view_revision = revision;
                 lease.render_generation = generation;
@@ -316,24 +378,68 @@ impl Worker {
         let Some(terminal) = &mut self.terminal else {
             return;
         };
-        if terminal.advance().is_err() {
-            if let Some(lease) = &self.lease {
-                let _ = lease.events.try_send(Event::Error {
-                    request_id: None,
-                    fault: terminal_fault(),
-                });
+        let state = match terminal.advance() {
+            Ok(state) => state,
+            Err(_) => {
+                self.fail(terminal_fault(), true);
+                return;
             }
-            self.revoke();
-            self.terminal = None;
+        };
+        if terminal.exit.is_some()
+            && let Some(failure) = terminal.input.interrupted_paste()
+        {
+            self.write_failed(failure);
+            self.finish_exited();
             return;
         }
-
+        if let Some(lease) = &mut self.lease
+            && lease.expire_input(&mut terminal.input).is_err()
+        {
+            self.fail(overloaded(), false);
+            return;
+        }
+        if terminal.exit.is_none()
+            && !matches!(state, ReadState::Eof)
+            && let Err(error) = terminal.input.flush(&mut terminal.pty)
+        {
+            self.write_failed(error);
+            return;
+        }
         if let Some(lease) = &mut self.lease
             && lease.render(terminal).is_err()
         {
             self.revoke();
         }
         self.finish_exited();
+    }
+
+    fn write_failed(&mut self, error: WriteFailure) {
+        if error.kind == Kind::Reply {
+            self.fail(terminal_fault(), true);
+            return;
+        }
+        let fault = if error.partial {
+            ProtocolFault::new(
+                "PartialDelivery",
+                "input was partially written; inspect the terminal before retrying",
+            )
+        } else {
+            ProtocolFault::new("InputFailed", "PTY input write failed before delivery")
+        };
+        self.fail(fault, false);
+    }
+
+    fn fail(&mut self, fault: ProtocolFault, terminal_failed: bool) {
+        if let Some(lease) = &self.lease {
+            let _ = lease.events.try_send(Event::Error {
+                request_id: None,
+                fault,
+            });
+        }
+        self.revoke();
+        if terminal_failed {
+            self.terminal = None;
+        }
     }
 
     fn finish_exited(&mut self) {
@@ -420,19 +526,17 @@ impl Running {
         Ok(())
     }
 
-    fn advance(&mut self) -> Result<()> {
+    fn advance(&mut self) -> Result<ReadState> {
         if self.exit.is_some() {
-            return Ok(());
+            return Ok(ReadState::Eof);
         }
         let state = self.read_output()?;
         if !matches!(state, ReadState::BudgetUsed)
             && let Some(status) = self.pty.try_wait()?
         {
             self.exit = Some(status);
-        } else if !matches!(state, ReadState::Eof) {
-            self.input.flush(&mut self.pty)?;
         }
-        Ok(())
+        Ok(state)
     }
 
     fn read_output(&mut self) -> Result<ReadState> {
@@ -470,6 +574,8 @@ struct Lease {
     frame_id: u64,
     in_flight: Option<Flight>,
     next_frame: Instant,
+    paste: Option<Paste>,
+    leader: Option<Instant>,
 }
 
 impl Lease {
@@ -483,7 +589,78 @@ impl Lease {
             frame_id: 0,
             in_flight: None,
             next_frame: Instant::now(),
+            paste: None,
+            leader: None,
         }
+    }
+
+    fn check_input(&self, route: InputRoute, sequence: u64, terminal: &Running) -> Reply<()> {
+        if route != self.route || sequence <= self.input_sequence || terminal.exit.is_some() {
+            return Err(stale_route());
+        }
+        if self.paste.is_some() {
+            return Err(input_busy());
+        }
+        Ok(())
+    }
+
+    fn keys(&mut self, sequence: u64, mut bytes: Vec<u8>, queue: &mut InputQueue) -> Reply<bool> {
+        if self
+            .leader
+            .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
+        {
+            self.flush_leader(queue)?;
+        }
+        if self.leader.take().is_some() {
+            if bytes == b"d" {
+                if queue.paste_pending() {
+                    return Err(input_busy());
+                }
+                return Ok(true);
+            }
+            if bytes != [KEY_LEADER] {
+                bytes.insert(0, KEY_LEADER);
+            }
+        } else if bytes == [KEY_LEADER] {
+            self.leader = Some(Instant::now());
+            self.input_sequence = sequence;
+            return Ok(false);
+        }
+        if !queue.user(bytes) {
+            return Err(overloaded());
+        }
+        self.input_sequence = sequence;
+        Ok(false)
+    }
+
+    fn flush_leader(&mut self, queue: &mut InputQueue) -> Reply<()> {
+        if self.leader.is_some() {
+            if !queue.user(vec![KEY_LEADER]) {
+                return Err(overloaded());
+            }
+            self.leader = None;
+        }
+        Ok(())
+    }
+
+    fn expire_input(&mut self, queue: &mut InputQueue) -> Reply<()> {
+        if self
+            .leader
+            .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
+        {
+            self.flush_leader(queue)?;
+        }
+        if self.paste.as_ref().is_some_and(Paste::expired)
+            && let Some(paste) = self.paste.take()
+        {
+            self.events
+                .try_send(Event::Error {
+                    request_id: paste.request_id,
+                    fault: ProtocolFault::new("Timeout", "paste expired before completion"),
+                })
+                .map_err(|_| overloaded())?;
+        }
+        Ok(())
     }
 
     fn ack(&mut self, generation: u64, frame_id: u64) -> Reply<()> {
@@ -543,4 +720,10 @@ fn terminal_fault() -> ProtocolFault {
         "TerminalUnavailable",
         "terminal I/O failed or the terminal is no longer live",
     )
+}
+
+fn input_busy() -> ProtocolFault {
+    let mut fault = ProtocolFault::new("InputBusy", "a paste transaction is in progress");
+    fault.retryable = true;
+    fault
 }

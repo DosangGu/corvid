@@ -100,7 +100,11 @@ impl TerminalScreen {
     }
 
     pub fn redraw(&self) -> Result<String> {
-        self.render(None)
+        self.render_frame(None, self.bracketed_paste())
+    }
+
+    pub(super) fn bracketed_paste(&self) -> bool {
+        self.parser.screen().bracketed_paste()
     }
 
     pub(crate) fn snapshot(&self) -> Screen {
@@ -108,6 +112,10 @@ impl TerminalScreen {
     }
 
     pub(crate) fn render(&self, previous: Option<&Screen>) -> Result<String> {
+        self.render_frame(previous, true)
+    }
+
+    fn render_frame(&self, previous: Option<&Screen>, outer_paste: bool) -> Result<String> {
         let screen = self.parser.screen();
         let mut frame = if let Some(previous) = previous {
             screen.contents_diff(previous)
@@ -123,7 +131,7 @@ impl TerminalScreen {
         } else {
             'l'
         };
-        let paste = if screen.bracketed_paste() { 'h' } else { 'l' };
+        let paste = if outer_paste { 'h' } else { 'l' };
         write!(frame, "\x1b[?1{cursor}\x1b[?2004{paste}")?;
         frame.push_str(if screen.application_keypad() {
             "\x1b="

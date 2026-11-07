@@ -8,8 +8,8 @@ use std::time::Duration;
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, FrameApplied, InputChunk, LaunchCommand, ResizeViewport, RouteToken,
-    Viewport,
+    Attach, AttachRole, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk, PasteEnd,
+    ResizeViewport, RouteToken, Viewport,
 };
 use corvid_protocol::{
     Frame, FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result,
@@ -96,6 +96,169 @@ fn shell(script: &str) -> Vec<Vec<u8>> {
     ["/bin/sh", "-c", script]
         .map(|arg| arg.as_bytes().to_vec())
         .to_vec()
+}
+
+const TEST_PASTE_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+async fn begin_paste(tui: &mut Tui, sequence: u64) {
+    tui.send(Body::PasteBegin(PasteBegin {
+        route_token: Some(tui.route.clone()),
+        paste_id: TEST_PASTE_ID.into(),
+        input_sequence: sequence,
+    }))
+    .await;
+}
+
+async fn paste_chunk(tui: &mut Tui, data: Vec<u8>) {
+    tui.send(Body::PasteChunk(PasteChunk {
+        paste_id: TEST_PASTE_ID.into(),
+        data,
+    }))
+    .await;
+}
+
+async fn end_paste(tui: &mut Tui) {
+    tui.send(Body::PasteEnd(PasteEnd {
+        paste_id: TEST_PASTE_ID.into(),
+    }))
+    .await;
+}
+
+async fn resize(tui: &mut Tui) {
+    tui.send(Body::ResizeViewport(ResizeViewport {
+        client_id: tui.route.client_id.clone(),
+        connection_generation: tui.route.connection_generation,
+        viewport: Some(Viewport {
+            cols: 100,
+            rows: 30,
+        }),
+    }))
+    .await;
+}
+
+async fn wait_for_text(tui: &mut Tui, output: &mut Vec<u8>, needle: &str) {
+    while !String::from_utf8_lossy(output).contains(needle) {
+        assert!(tui.event(output).await.is_none());
+    }
+}
+
+#[tokio::test]
+async fn incomplete_and_oversized_pastes_cannot_write_across_resize() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let mut tui = Tui::attach(&runtime, Some(shell(
+            "stty -echo; printf 'READY\\n'; while IFS= read -r line; do printf 'INPUT=%s\\n' \"$line\"; done"
+        ))).await;
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "READY").await;
+        begin_paste(&mut tui, 1).await;
+        paste_chunk(&mut tui, b"BAD\n".to_vec()).await;
+        resize(&mut tui).await;
+        let mut aborted = false;
+        loop {
+            match tui.event(&mut output).await {
+                Some(Body::Error(error)) if error.code == "StaleRoute" => aborted = true,
+                Some(Body::ViewChanged(view)) => {
+                    tui.route = view.route_token.unwrap();
+                    break;
+                }
+                None => {}
+                _ => panic!("unexpected resize event"),
+            }
+        }
+        assert!(aborted);
+        end_paste(&mut tui).await;
+        loop {
+            if let Some(Body::Error(error)) = tui.event(&mut output).await {
+                assert_eq!(error.code, "StaleRoute");
+                break;
+            }
+        }
+
+        begin_paste(&mut tui, 2).await;
+        for _ in 0..128 {
+            paste_chunk(&mut tui, vec![b'X'; 8192]).await;
+        }
+        paste_chunk(&mut tui, vec![b'\n']).await;
+        loop {
+            if let Some(Body::Error(error)) = tui.event(&mut output).await {
+                assert_eq!(error.code, "LimitExceeded");
+                break;
+            }
+        }
+        begin_paste(&mut tui, 3).await;
+        paste_chunk(&mut tui, b"YES\n".to_vec()).await;
+        end_paste(&mut tui).await;
+        wait_for_text(&mut tui, &mut output, "INPUT=YES").await;
+        let transcript = String::from_utf8_lossy(&output);
+        assert!(!transcript.contains("INPUT=BAD") && !transcript.contains("INPUT=XXXX"));
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn accepted_paste_blocks_resize_until_its_full_batch_is_written() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let argv = shell("stty -echo -icanon min 1 time 0; printf 'READY\\n'; sleep .7; head -c 65536 >/dev/null; printf 'COMPLETE\\n'; sleep 10");
+        let mut tui = Tui::attach(&runtime, Some(argv)).await;
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "READY").await;
+        begin_paste(&mut tui, 1).await;
+        for _ in 0..8 {
+            paste_chunk(&mut tui, vec![b'X'; 8192]).await;
+        }
+        end_paste(&mut tui).await;
+        resize(&mut tui).await;
+        loop {
+            if let Some(Body::Error(error)) = tui.event(&mut output).await {
+                assert_eq!(error.code, "InputBusy");
+                break;
+            }
+        }
+        wait_for_text(&mut tui, &mut output, "COMPLETE").await;
+        resize(&mut tui).await;
+        loop {
+            if let Some(Body::ViewChanged(view)) = tui.event(&mut output).await {
+                assert_eq!(view.view_revision, tui.route.view_revision + 1);
+                break;
+            }
+        }
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn stalled_partial_paste_reports_failure_and_fences_the_writer() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let argv = shell("stty -echo -icanon min 1 time 0; printf 'READY\\n'; sleep 15");
+        let mut tui = Tui::attach(&runtime, Some(argv)).await;
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "READY").await;
+        begin_paste(&mut tui, 1).await;
+        for _ in 0..8 {
+            paste_chunk(&mut tui, vec![b'X'; 8192]).await;
+        }
+        end_paste(&mut tui).await;
+        loop {
+            if let Some(Body::Error(error)) = tui.event(&mut output).await {
+                assert_eq!(error.code, "PartialDelivery");
+                assert!(!error.retryable);
+                break;
+            }
+        }
+        assert!(tui.reader.next_frame().await.unwrap().is_none());
+        let next = Tui::attach(&runtime, None).await;
+        assert_eq!(next.route.terminal_id, tui.route.terminal_id);
+        assert_ne!(next.route.client_id, tui.route.client_id);
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

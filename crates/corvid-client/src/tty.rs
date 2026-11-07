@@ -63,6 +63,10 @@ impl Tty {
         }
     }
 
+    pub(crate) fn try_read(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.input.get_ref().read(buffer)
+    }
+
     pub(crate) async fn write_all(&self, mut bytes: &[u8]) -> io::Result<()> {
         while !bytes.is_empty() {
             let mut guard = self.output.writable().await?;

@@ -22,7 +22,7 @@ use crate::control::handshake;
 use crate::identity::Identity;
 use crate::terminal::{Action, AttachSpec, Event, Launch, TerminalHandle};
 
-const CAPABILITIES: &[&str] = &["attach.v1", "render.v1", "ping.v1"];
+const CAPABILITIES: &[&str] = &["attach.v1", "render.v1", "ping.v1", "paste.v1"];
 const WORKSPACE: &str = "main";
 const MAX_INPUT_CHUNK: usize = 8192;
 const EVENTS_CAPACITY: usize = 4;
@@ -102,7 +102,7 @@ async fn read_commands(
             Ok(body) => command(client, body).unwrap_or_else(Action::Rejected),
             Err(error) => Action::Rejected(error),
         };
-        terminal.action(client, request.request_id, action)?;
+        terminal.action(client, request.request_id, action).await?;
     }
     Ok(())
 }
@@ -123,6 +123,29 @@ fn command(client: Uuid, body: &Body) -> Result<Action, ProtocolFault> {
             })
         }
         Body::InputChunk(_) => Err(invalid("invalid input chunk size")),
+        Body::PasteBegin(paste) => {
+            let route = paste
+                .route_token
+                .as_ref()
+                .ok_or_else(|| invalid("missing paste route"))?;
+            Ok(Action::PasteBegin {
+                route: parse_route(route)?,
+                sequence: paste.input_sequence,
+                id: paste_id(&paste.paste_id)?,
+            })
+        }
+        Body::PasteChunk(paste)
+            if !paste.data.is_empty() && paste.data.len() <= MAX_INPUT_CHUNK =>
+        {
+            Ok(Action::PasteChunk {
+                id: paste_id(&paste.paste_id)?,
+                bytes: paste.data.clone(),
+            })
+        }
+        Body::PasteChunk(_) => Err(invalid("invalid paste chunk size")),
+        Body::PasteEnd(paste) => Ok(Action::PasteEnd {
+            id: paste_id(&paste.paste_id)?,
+        }),
         Body::ResizeViewport(resize) if Uuid::parse_str(&resize.client_id) == Ok(client) => {
             Ok(Action::Resize {
                 connection_generation: resize.connection_generation,
@@ -191,6 +214,16 @@ async fn write_events(
             }
             Event::Pong { request_id } => {
                 send(session, writer, request_id, Body::Pong(Pong {})).await?;
+            }
+            Event::Detached => {
+                send(
+                    session,
+                    writer,
+                    None,
+                    Body::Detach(corvid_protocol::wire::Detach {}),
+                )
+                .await?;
+                return Ok(());
             }
         }
     }
@@ -313,4 +346,8 @@ fn selection() -> ViewSelection {
 
 fn invalid(message: &str) -> ProtocolFault {
     ProtocolFault::new("InvalidMessage", message)
+}
+
+fn paste_id(id: &str) -> Result<Uuid, ProtocolFault> {
+    Uuid::parse_str(id).map_err(|_| invalid("invalid paste ID"))
 }

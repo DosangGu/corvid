@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+use std::future::pending;
+use std::io::ErrorKind;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::Duration;
@@ -8,8 +10,8 @@ use corvid_core::Viewport;
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand, ResizeViewport,
-    RouteToken, Viewport as WireViewport,
+    Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk,
+    PasteEnd, ResizeViewport, RouteToken, Viewport as WireViewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, Frame, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
@@ -19,19 +21,26 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{MissedTickBehavior, interval, timeout};
+use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until, timeout};
 use uuid::Uuid;
 
 use crate::connection::{Connection, open};
+use crate::keys::{Decoder, Input};
 use crate::tty::Tty;
 
-pub async fn attach(runtime: &Path, launch: Option<Vec<OsString>>) -> Result<u32> {
+const INPUT_CHUNK: usize = 8192;
+
+pub async fn attach(
+    runtime: &Path,
+    launch: Option<Vec<OsString>>,
+    escape_delay: Duration,
+) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
     let connection = Connection::establish(
         stream,
         PeerRole::Tui,
-        vec!["attach.v1".into(), "render.v1".into()],
+        vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()],
     )
     .await?;
     let (connection, route) = timeout(
@@ -44,8 +53,8 @@ pub async fn attach(runtime: &Path, launch: Option<Vec<OsString>>) -> Result<u32
     let mut interrupt = signal(SignalKind::interrupt())?;
 
     let tty = Tty::enter()?;
-    timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h")).await??;
-    let mut client = Interactive::new(connection, viewport, route);
+    timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
+    let mut client = Interactive::new(connection, viewport, route, escape_delay);
     tokio::select! {
         result = client.run(&tty) => result,
         // A signal can interrupt a partially written frame. Drop the stream so
@@ -151,14 +160,26 @@ struct Interactive {
     incoming: Incoming,
     route: RouteToken,
     viewport: Viewport,
-    pending_resize: Option<Viewport>,
+    pending_resize: Option<PendingResize>,
+    keys: Decoder,
     input_sequence: u64,
     request_sequence: u64,
     applied: Option<(u64, u64)>,
 }
 
+struct PendingResize {
+    viewport: Viewport,
+    request_id: String,
+    deadline: Instant,
+}
+
 impl Interactive {
-    fn new(connection: Connection, viewport: Viewport, route: RouteToken) -> Self {
+    fn new(
+        connection: Connection,
+        viewport: Viewport,
+        route: RouteToken,
+        escape_delay: Duration,
+    ) -> Self {
         Self {
             session: connection.session,
             writer: connection.writer,
@@ -166,6 +187,7 @@ impl Interactive {
             route,
             viewport,
             pending_resize: None,
+            keys: Decoder::new(escape_delay),
             input_sequence: 0,
             request_sequence: 0,
             applied: None,
@@ -173,10 +195,11 @@ impl Interactive {
     }
 
     async fn run(&mut self, tty: &Tty) -> Result<u32> {
-        let mut buffer = [0; 8192];
+        let mut buffer = [0; INPUT_CHUNK];
         let mut resize_tick = interval(Duration::from_millis(50));
         resize_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
+            let input_deadline = self.keys.deadline();
             tokio::select! {
                 item = self.incoming.frames.recv() => {
                     let frame = item.context("daemon closed the attached connection")??;
@@ -189,11 +212,14 @@ impl Interactive {
                     if count == 0 {
                         return self.detach().await;
                     }
-                    if self.pending_resize.is_none() {
-                        self.input(&buffer[..count]).await?;
-                    }
+                    let events = self.keys.feed(&buffer[..count], self.pending_resize.is_none())?;
+                    self.forward(events).await?;
                 }
                 _ = resize_tick.tick() => self.resize().await?,
+                _ = wait_until(input_deadline) => {
+                    let events = self.keys.expire()?;
+                    self.forward(events).await?;
+                }
             }
         }
     }
@@ -220,7 +246,17 @@ impl Interactive {
                         );
                         return Ok(Some(exited.exit_code));
                     }
+                    Some(Body::Error(error)) if error.code == "InputBusy" => {
+                        if self.pending_resize.as_ref().is_some_and(|resize| {
+                            envelope.request_id.as_deref() == Some(resize.request_id.as_str())
+                        }) {
+                            self.pending_resize = None;
+                        } else {
+                            timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
+                        }
+                    }
                     Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error).into()),
+                    Some(Body::Detach(_)) => return Ok(Some(0)),
                     _ => bail!("unsupported daemon event"),
                 }
             }
@@ -261,6 +297,7 @@ impl Interactive {
             frame_id: header.frame_id,
         }))
         .await
+        .map(|_| ())
     }
 
     fn view_changed(&mut self, tty: &Tty, route: RouteToken) -> Result<()> {
@@ -275,58 +312,130 @@ impl Interactive {
         self.viewport = self
             .pending_resize
             .take()
-            .context("unexpected viewport update")?;
-        tty.discard_input()?;
+            .context("unexpected viewport update")?
+            .viewport;
+        self.drain_retired_input(tty)?;
         self.route = route;
         self.applied = None;
         Ok(())
     }
 
-    async fn input(&mut self, data: &[u8]) -> Result<()> {
+    fn drain_retired_input(&mut self, tty: &Tty) -> Result<()> {
+        self.keys.retire();
+        let mut bytes = [0; INPUT_CHUNK];
+        for _ in 0..8 {
+            match tty.try_read(&mut bytes) {
+                Ok(0) => return Ok(()),
+                Ok(count) => {
+                    self.keys.feed(&bytes[..count], false)?;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(()),
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        bail!("TTY input did not drain during route change")
+    }
+
+    async fn forward(&mut self, events: Vec<Input>) -> Result<()> {
+        if self.pending_resize.is_some() {
+            return Ok(());
+        }
+        for event in events {
+            let sequence = self.next_input_sequence()?;
+            match event {
+                Input::Keys(data) => {
+                    self.send(Body::InputChunk(InputChunk {
+                        route_token: Some(self.route.clone()),
+                        input_sequence: sequence,
+                        data,
+                    }))
+                    .await?;
+                }
+                Input::Paste(bytes) => self.paste(sequence, &bytes).await?,
+            }
+        }
+        Ok(())
+    }
+
+    fn next_input_sequence(&mut self) -> Result<u64> {
         self.input_sequence = self
             .input_sequence
             .checked_add(1)
             .context("input sequence exhausted")?;
-        self.send(Body::InputChunk(InputChunk {
-            route_token: Some(self.route.clone()),
-            input_sequence: self.input_sequence,
-            data: data.to_vec(),
-        }))
-        .await
+        Ok(self.input_sequence)
     }
 
-    async fn resize(&mut self) -> Result<()> {
-        let Ok(viewport) = Tty::viewport() else {
-            return Ok(());
-        };
-        if self.pending_resize.is_some() || viewport == self.viewport {
-            return Ok(());
-        }
-        self.send(Body::ResizeViewport(ResizeViewport {
-            client_id: self.route.client_id.clone(),
-            connection_generation: self.route.connection_generation,
-            viewport: Some(wire_viewport(viewport)),
+    async fn paste(&mut self, sequence: u64, bytes: &[u8]) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        self.send(Body::PasteBegin(PasteBegin {
+            route_token: Some(self.route.clone()),
+            input_sequence: sequence,
+            paste_id: id.clone(),
         }))
         .await?;
-        self.pending_resize = Some(viewport);
+        for chunk in bytes.chunks(INPUT_CHUNK) {
+            self.send(Body::PasteChunk(PasteChunk {
+                paste_id: id.clone(),
+                data: chunk.to_vec(),
+            }))
+            .await?;
+        }
+        self.send(Body::PasteEnd(PasteEnd { paste_id: id })).await?;
         Ok(())
     }
 
-    async fn send(&mut self, body: Body) -> Result<()> {
+    async fn resize(&mut self) -> Result<()> {
+        if let Some(resize) = &self.pending_resize {
+            ensure!(
+                Instant::now() < resize.deadline,
+                "daemon resize reply timed out"
+            );
+            return Ok(());
+        }
+        let Ok(viewport) = Tty::viewport() else {
+            return Ok(());
+        };
+        if viewport == self.viewport || self.keys.capturing_paste() {
+            return Ok(());
+        }
+        self.keys.retire();
+        let request_id = self
+            .send(Body::ResizeViewport(ResizeViewport {
+                client_id: self.route.client_id.clone(),
+                connection_generation: self.route.connection_generation,
+                viewport: Some(wire_viewport(viewport)),
+            }))
+            .await?;
+        self.pending_resize = Some(PendingResize {
+            viewport,
+            request_id,
+            deadline: Instant::now() + COMMAND_TIMEOUT,
+        });
+        Ok(())
+    }
+
+    async fn send(&mut self, body: Body) -> Result<String> {
         self.request_sequence = self
             .request_sequence
             .checked_add(1)
             .context("request sequence exhausted")?;
-        let request = self
-            .session
-            .envelope(Some(self.request_sequence.to_string()), body);
+        let id = self.request_sequence.to_string();
+        let request = self.session.envelope(Some(id.clone()), body);
         timeout(COMMAND_TIMEOUT, self.writer.envelope(&request)).await??;
-        Ok(())
+        Ok(id)
     }
 
     async fn detach(&mut self) -> Result<u32> {
         self.send(Body::Detach(Detach {})).await?;
         Ok(0)
+    }
+}
+
+async fn wait_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => sleep_until(deadline).await,
+        None => pending().await,
     }
 }
 
