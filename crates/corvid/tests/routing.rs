@@ -7,15 +7,16 @@ use std::path::Path;
 use std::time::Duration;
 
 use corvid_client::{ControllerRequest, ControllerScope, controller};
+use corvid_protocol::controller::FOCUS_CAPABILITY;
 use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
-    ClaimWorkspaceWriter, EntityKind, Envelope, FrameApplied, GetSnapshot, InputChunk,
-    IssuePairingCode, LaunchCommand, ListClients, PasteBegin, PasteChunk, PasteEnd, ResizeViewport,
-    RouteToken, SelectView, SnapshotWatch, ViewSelection, Viewport,
+    ClaimWorkspaceWriter, EntityKind, Envelope, FocusAgentRequest, FocusApplied, FrameApplied,
+    GetSnapshot, InputChunk, IssuePairingCode, LaunchCommand, ListClients, PasteBegin, PasteChunk,
+    PasteEnd, Ping, ResizeViewport, RouteToken, SelectView, SnapshotWatch, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     Frame, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
@@ -450,6 +451,156 @@ async fn issue_pairing(tui: &mut Tui) -> Uuid {
     };
     assert_eq!(code.expires_in_seconds, 60);
     Uuid::parse_str(&code.code).unwrap()
+}
+
+async fn focus(
+    runtime: &Path,
+    scope: &ControllerScope,
+    request: &str,
+    client: Uuid,
+    revision: u64,
+    run: &AgentInfo,
+) -> Result<FocusApplied, ProtocolFault> {
+    let result = controller(
+        runtime,
+        scope,
+        request.to_owned(),
+        ControllerRequest::Focus {
+            client,
+            revision,
+            run: Uuid::parse_str(&run.agent_run_id).unwrap(),
+        },
+    )
+    .await;
+    match result {
+        Ok(Body::FocusApplied(applied)) => Ok(applied),
+        Ok(other) => panic!("unexpected focus response: {other:?}"),
+        Err(fault) => Err(fault.downcast().unwrap()),
+    }
+}
+
+#[tokio::test]
+async fn registered_focus_fences_input_and_changes_only_the_named_client() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let fixture = temporary.path().join("claude");
+    std::fs::write(
+        &fixture,
+        concat!(
+            "#!/bin/sh\n",
+            "[ \"$1\" != --version ] || exit 1\n",
+            "stty -echo\n",
+            "printf '%s-READY\\n' \"$1\"\n",
+            "while IFS= read -r line; do printf '%s=%s\\n' \"$1\" \"$line\"; done\n",
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut daemon_command = command(&runtime);
+    let path =
+        std::env::join_paths([temporary.path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    daemon_command.env("PATH", path);
+    let _daemon = start_daemon(daemon_command, &runtime, &temporary.path().join("state")).await;
+    let launch = |label: &str| LaunchCommand {
+        argv: vec![label.as_bytes().to_vec()],
+        agent_provider: Some(AgentProvider::Claude as i32),
+        ..Default::default()
+    };
+
+    timeout(WAIT, async {
+        let mut first = Tui::attach_command(&runtime, Some(launch("A"))).await;
+        wait_for_text(&mut first, &mut Vec::new(), "A-READY").await;
+        let a = wait_for_agent(&runtime, &first.route.terminal_id, |agent| agent.terminal_available).await;
+        drop(first);
+        while !corvid_client::clients(&runtime).await.unwrap().clients.is_empty() {
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut main = Tui::attach_target(&runtime, Attach {
+            create_tab: Some("Agent B".to_owned()), launch: Some(launch("B")), ..Default::default()
+        }).await;
+        let mut other = Tui::attach_target(&runtime, Attach {
+            create_workspace: Some("Agent C".to_owned()), launch: Some(launch("C")), ..Default::default()
+        }).await;
+        let mut output = Vec::new();
+        wait_for_text(&mut main, &mut output, "B-READY").await;
+        wait_for_text(&mut other, &mut Vec::new(), "C-READY").await;
+        let b = wait_for_agent(&runtime, &main.route.terminal_id, |agent| agent.terminal_available).await;
+        let c = wait_for_agent(&runtime, &other.route.terminal_id, |agent| agent.terminal_available).await;
+        let scope = controller_scope(&main, "test");
+        let client = Uuid::parse_str(&main.route.client_id).unwrap();
+        let code = issue_pairing(&mut main).await;
+        let Body::ClientBindingRegistered(binding) = controller(
+            &runtime, &scope, "bind".into(), ControllerRequest::Register { code },
+        ).await.unwrap() else { panic!("missing binding") };
+        let revision = binding.binding_revision;
+        let wrong_owner = focus(&runtime, &scope, "busy-c", client, revision, &c).await.unwrap_err();
+        assert_eq!(wrong_owner.code, "WorkspaceBusy");
+
+        let original = main.route.clone();
+        let paste_id = Uuid::new_v4().to_string();
+        main.send(Body::PasteBegin(PasteBegin {
+            route_token: Some(original.clone()), input_sequence: 1, paste_id: paste_id.clone(),
+        })).await;
+        main.send(Body::Ping(Ping {})).await;
+        assert!(matches!(main.next_body(&mut output).await, Body::Pong(_)));
+        let blocked = focus(&runtime, &scope, "paste-busy", client, revision, &a).await.unwrap_err();
+        assert_eq!(blocked.code, "InputBusy");
+        main.send(Body::PasteChunk(PasteChunk { paste_id: paste_id.clone(), data: b"kept-on-b\n".to_vec() })).await;
+        main.send(Body::PasteEnd(PasteEnd { paste_id })).await;
+        wait_for_text(&mut main, &mut output, "B=kept-on-b").await;
+
+        let applied = focus(&runtime, &scope, "focus-a", client, revision, &a).await.unwrap();
+        assert_eq!(applied.agent_run_id, a.agent_run_id);
+        assert_eq!(applied.terminal_id, a.terminal_id);
+        assert_eq!(applied.view_revision, original.view_revision + 1);
+        main.input(original, 2, b"retired-route\n").await;
+        main.moved(&mut output, a.location.as_ref().unwrap()).await;
+        let Body::Error(fault) = main.next_body(&mut output).await else { panic!("missing stale route rejection") };
+        assert_eq!(fault.code, "StaleRoute");
+        main.input(main.route.clone(), 3, b"fresh\n").await;
+        wait_for_text(&mut main, &mut output, "A=fresh").await;
+        assert!(!String::from_utf8_lossy(&output).contains("retired-route"));
+
+        other.input(other.route.clone(), 1, b"unchanged\n").await;
+        wait_for_text(&mut other, &mut Vec::new(), "C=unchanged").await;
+        focus(&runtime, &scope, "focus-b", client, revision, &b).await.unwrap();
+        main.moved(&mut output, b.location.as_ref().unwrap()).await;
+
+        let mut wire = ControlWire::connect(&runtime, FOCUS_CAPABILITY).await;
+        let run = Uuid::parse_str(&a.agent_run_id).unwrap();
+        let encoded_differently = FocusAgentRequest {
+            controller_id: scope.controller_id.clone(),
+            client_id: client.simple().to_string(),
+            agent_run_id: run.simple().to_string(),
+            binding_revision: Some(revision),
+        };
+        wire.request("focus-a", Body::FocusAgent(encoded_differently.clone())).await;
+        assert_eq!(wire.next().await.body, Some(Body::FocusApplied(applied)));
+        let clients = corvid_client::clients(&runtime).await.unwrap();
+        assert!(clients.clients.iter().any(|view| view.client_id == client.to_string() && view.terminal_id.as_deref() == Some(&b.terminal_id)));
+
+        let missing_revision = FocusAgentRequest { binding_revision: None, ..encoded_differently };
+        wire.request("no-revision", Body::FocusAgent(missing_revision.clone())).await;
+        assert!(matches!(wire.next().await.body, Some(Body::Error(error)) if error.code == "InvalidMessage"));
+        let mut stale = wire.session.envelope(Some("old-epoch".to_owned()), Body::FocusAgent(missing_revision));
+        stale.server_epoch = Some("retired-epoch".to_owned());
+        wire.writer.envelope(&stale).await.unwrap();
+        assert!(matches!(wire.next().await.body, Some(Body::Error(error)) if error.code == "EpochMismatch"));
+
+        drop(other);
+        while corvid_client::clients(&runtime).await.unwrap().clients.len() > 1 {
+            sleep(Duration::from_millis(10)).await;
+        }
+        let unclaimed = focus(&runtime, &scope, "unclaimed-c", client, revision, &c).await.unwrap_err();
+        assert_eq!(unclaimed.code, "WriterRequired");
+        main.send(Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
+            workspace_id: c.location.as_ref().unwrap().workspace_id.clone(),
+        })).await;
+        assert!(matches!(main.next_body(&mut output).await, Body::WriterClaimed(_)));
+        focus(&runtime, &scope, "preclaimed-c", client, revision, &c).await.unwrap();
+        main.moved(&mut output, c.location.as_ref().unwrap()).await;
+    }).await.unwrap();
 }
 
 #[tokio::test]

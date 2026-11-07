@@ -131,7 +131,8 @@ impl Session {
                 | Body::SnapshotWatch(_)
                 | Body::RegisterClientBinding(_)
                 | Body::UnregisterClientBinding(_)
-                | Body::AcknowledgeAttention(_),
+                | Body::AcknowledgeAttention(_)
+                | Body::FocusAgent(_),
             ) => Ok(body),
             (PeerRole::Tui, Body::Attach(attach)) => {
                 match AttachRole::try_from(attach.requested_role) {

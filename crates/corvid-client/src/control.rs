@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use corvid_protocol::controller::{ACK_CAPABILITY, PAIR_CAPABILITY};
+use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AcknowledgeAttention, AgentList, ClientList, ConnectionStatus, GetConnectionStatus, GetHost,
-    HostInfo, ListAgents, ListClients, ListWorkspaces, Ping, RegisterClientBinding,
-    UnregisterClientBinding, WorkspaceList,
+    AcknowledgeAttention, AgentList, ClientList, ConnectionStatus, FocusAgentRequest,
+    GetConnectionStatus, GetHost, HostInfo, ListAgents, ListClients, ListWorkspaces, Ping,
+    RegisterClientBinding, UnregisterClientBinding, WorkspaceList,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
 use tokio::time::timeout;
@@ -76,9 +76,22 @@ pub struct ControllerScope {
 }
 
 pub enum ControllerRequest {
-    Register { code: Uuid },
-    Unregister { client: Uuid, revision: u64 },
-    Acknowledge { run: Uuid, attention: Uuid },
+    Register {
+        code: Uuid,
+    },
+    Unregister {
+        client: Uuid,
+        revision: u64,
+    },
+    Acknowledge {
+        run: Uuid,
+        attention: Uuid,
+    },
+    Focus {
+        client: Uuid,
+        run: Uuid,
+        revision: u64,
+    },
 }
 
 pub async fn controller(
@@ -110,6 +123,19 @@ pub async fn controller(
                 controller_id,
                 agent_run_id: run.to_string(),
                 attention_id: attention.to_string(),
+            }),
+        ),
+        ControllerRequest::Focus {
+            client,
+            run,
+            revision,
+        } => (
+            FOCUS_CAPABILITY,
+            Body::FocusAgent(FocusAgentRequest {
+                controller_id,
+                client_id: client.to_string(),
+                agent_run_id: run.to_string(),
+                binding_revision: Some(revision),
             }),
         ),
     };

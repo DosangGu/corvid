@@ -17,6 +17,7 @@ use corvid_protocol::{
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -25,7 +26,9 @@ use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::projection::selection;
 use crate::terminal::{Action, Event, Launch, Render};
-use crate::workspaces::{Active, AttachTarget, Destination, Workspaces};
+use crate::workspaces::{
+    Active, AttachTarget, Destination, FocusDispatch, FocusRecovery, Workspaces,
+};
 
 const CAPABILITIES: &[&str] = &[
     "attach.v1",
@@ -56,13 +59,14 @@ pub(crate) async fn serve(
         .await??
         .context("missing Attach request")?;
     let client = Uuid::new_v4();
+    let (focus_tx, focuses) = mpsc::channel(1);
     let target = match session.validate_request(&request) {
         Ok(Body::Attach(attach)) => attach_target(attach),
         Ok(_) => Err(invalid("expected Attach request")),
         Err(error) => Err(error),
     };
     let active = match target {
-        Ok(target) => workspaces.attach(client, target).await,
+        Ok(target) => workspaces.attach(client, target, focus_tx).await,
         Err(error) => Err(error),
     };
     let active = match active {
@@ -85,6 +89,7 @@ pub(crate) async fn serve(
         request.request_id,
         active,
         workspaces,
+        focuses,
     )
     .await;
     workspaces.release(client);
@@ -98,6 +103,7 @@ async fn serve_active(
     request_id: Option<String>,
     active: Active,
     workspaces: &Workspaces,
+    focuses: mpsc::Receiver<FocusDispatch>,
 ) -> Result<()> {
     let route = active.route;
     let attached = Attached {
@@ -113,6 +119,7 @@ async fn serve_active(
         writer,
         active,
         workspaces,
+        focuses,
     }
     .run(reader)
     .await
@@ -123,6 +130,7 @@ struct TuiConnection<'a> {
     writer: FrameWriter<OwnedWriteHalf>,
     active: Active,
     workspaces: &'a Workspaces,
+    focuses: mpsc::Receiver<FocusDispatch>,
 }
 
 impl TuiConnection<'_> {
@@ -137,6 +145,10 @@ impl TuiConnection<'_> {
                 event = self.active.events.recv() => {
                     let Some(event) = event else { return Ok(()) };
                     if self.event(event).await? { return Ok(()) }
+                }
+                command = self.focuses.recv() => {
+                    let Some(command) = command else { return Ok(()) };
+                    if self.focus(command).await? { return Ok(()) }
                 }
             }
         }
@@ -193,7 +205,10 @@ impl TuiConnection<'_> {
 
     async fn event(&mut self, event: Event) -> Result<bool> {
         match event {
-            Event::Render(render) => self.render(render).await?,
+            Event::Render(render) if render.route == self.active.route => {
+                self.render(render).await?
+            }
+            Event::Render(_) => {}
             Event::ViewChanged { route, viewport } => {
                 self.active.route = route;
                 self.active.viewport = viewport;
@@ -234,6 +249,33 @@ impl TuiConnection<'_> {
             Ok(code) => self.send(id, Body::PairingCode(code)).await,
             Err(fault) => self.fault(id, fault).await,
         }
+    }
+
+    async fn focus(&mut self, command: FocusDispatch) -> Result<bool> {
+        match self.workspaces.focus(&self.active, &command).await {
+            Ok(focused) => {
+                let changed = focused.active.is_some();
+                if let Some(active) = focused.active {
+                    self.active = active;
+                }
+                command.complete(Ok(focused.reply));
+                if changed {
+                    self.view_changed(None, false).await?;
+                }
+            }
+            Err(rejected) => {
+                command.complete(Err(rejected.fault));
+                match rejected.recovery {
+                    FocusRecovery::Unchanged => {}
+                    FocusRecovery::Restored(route) => {
+                        self.active.route = route;
+                        self.view_changed(None, false).await?;
+                    }
+                    FocusRecovery::Lost => return Ok(true),
+                }
+            }
+        }
+        Ok(false)
     }
 
     async fn switch(

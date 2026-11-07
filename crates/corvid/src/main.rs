@@ -139,6 +139,15 @@ enum ControllerAction {
         #[arg(long)]
         attention_id: Uuid,
     },
+    /// Select the exact managed agent in an existing registered client.
+    Focus {
+        #[arg(long)]
+        client_id: Uuid,
+        #[arg(long)]
+        binding_revision: u64,
+        #[arg(long)]
+        run_id: Uuid,
+    },
 }
 
 fn main() -> ExitCode {
@@ -402,6 +411,15 @@ async fn controller_action(
             run: run_id,
             attention: attention_id,
         },
+        ControllerAction::Focus {
+            client_id,
+            binding_revision,
+            run_id,
+        } => ControllerRequest::Focus {
+            client: client_id,
+            run: run_id,
+            revision: binding_revision,
+        },
     };
     let request_id = request_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     match corvid_client::controller(runtime, scope, request_id, command).await? {
@@ -416,6 +434,22 @@ async fn controller_action(
             "attention_id={} acknowledged_unix_ms={} sequence={}",
             ack.attention_id, ack.acknowledged_unix_ms, ack.commit_sequence,
         ),
+        Body::FocusApplied(applied) => {
+            let selection = applied
+                .selection
+                .context("focus response is missing a selection")?;
+            println!(
+                "client_id={} run_id={} terminal_id={} workspace_id={} tab_id={} pane_id={} view_revision={} sequence={}",
+                applied.client_id,
+                applied.agent_run_id,
+                applied.terminal_id,
+                selection.workspace_id,
+                selection.tab_id,
+                selection.pane_id,
+                applied.view_revision,
+                applied.commit_sequence,
+            );
+        }
         _ => bail!("unexpected controller response"),
     }
     Ok(0)

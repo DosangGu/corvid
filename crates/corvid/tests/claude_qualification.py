@@ -222,6 +222,7 @@ def exercise(terminal, scenario, managed):
         assert question["unverified"] == "1"
         snapshot = managed.snapshot()
         assert snapshot["agents"] == "1" and snapshot["requests"] == snapshot["attention"] == "2"
+        managed.focus_question(terminal, question)
         managed.acknowledge_question(question)
         managed.reject_foreign_hook(question)
     terminal.send(b"1\r")
@@ -279,14 +280,51 @@ class CorvidFixture:
         output = subprocess.check_output([*self.command, "control", "snapshot"], text=True, timeout=3)
         return dict(field.split("=", 1) for field in output.split())
 
-    def acknowledge_question(self, question):
+    def controller_args(self, request):
         host = subprocess.check_output([*self.command, "control", "host"], text=True, timeout=3)
         identity = dict(field.split("=", 1) for field in host.split())
-        command = [
+        return [
             *self.command, "controller", "--controller-id", "fixture-controller",
             "--host-id", identity["host_id"], "--server-epoch", identity["server_epoch"],
-            "--request-id", "fixture-ack",
+            "--request-id", request,
         ]
+
+    def focus_question(self, tty, question):
+        tty.screen = b""
+        tty.send(b"\x1dr")
+        tty.expect(b"Controller pairing code")
+        code = re.search(rb"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", tty.screen)[0].decode()
+        paired = subprocess.run(
+            [*self.controller_args("fixture-pair"), "pair"], input=code + "\n",
+            text=True, capture_output=True, timeout=3, check=True,
+        )
+        binding = dict(field.split("=", 1) for field in paired.stdout.split())
+        tty.screen = b""
+        tty.send(b"\r")
+        prompt = b"Enter to submit or Escape to cancel:"
+        tty.expect(prompt)
+        tty.send(b"\x1dt")
+
+        def selected_other_terminal():
+            clients = subprocess.check_output(
+                [*self.command, "control", "clients"], text=True, timeout=3,
+            ).splitlines()
+            return (len(clients) == 1 and "terminal=" in clients[0]
+                    and "terminal=" + question["terminal"] not in clients[0])
+
+        tty.wait(selected_other_terminal, "second terminal selected")
+        assert self.snapshot()["terminals"] == "2"
+        tty.screen = b""
+        applied = subprocess.check_output([
+            *self.controller_args("fixture-focus"), "focus",
+            "--client-id", binding["client_id"], "--binding-revision", binding["binding_revision"],
+            "--run-id", question["run"],
+        ], text=True, timeout=3)
+        assert "terminal_id=" + question["terminal"] in applied
+        tty.expect(prompt)
+
+    def acknowledge_question(self, question):
+        command = self.controller_args("fixture-ack")
         output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
         alerts = [dict(field.split("=", 1) for field in line.split()) for line in output.splitlines()]
         first = next(alert for alert in alerts

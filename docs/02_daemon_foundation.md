@@ -81,6 +81,18 @@ that registration. `corvid control attention` lists alert IDs and request kinds.
 Use `controller ... ack --run-id RUN --attention-id ALERT` to acknowledge one
 alert. Its input request remains pending until the provider reports a result.
 
+Use `corvid control agents` to find the run ID, then select it in the paired TUI.
+
+```sh
+corvid controller --controller-id ID --host-id HOST --server-epoch EPOCH \
+  focus --client-id CLIENT --binding-revision REVISION --run-id RUN
+```
+
+The client must already hold the destination workspace's writer lease. Successful
+focus reports the selected terminal, view revision, and daemon sequence. Bring the
+local terminal window forward manually. If a paste is active, let it finish before
+issuing a fresh request.
+
 The daemon saves layout IDs and the last observed launch directory in `state.json`.
 It publishes changes to a separate writer and debounces disk writes by one second.
 The state directory lock allows one writer. A successful save retains the preceding
@@ -127,6 +139,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Identity and control | Restart changes the epoch and preserves the host ID. Concurrent startup fails. Corrupt identity bytes are preserved. A real CLI subprocess relays framed control messages over pipes. |
 | Snapshot and watch | A watch established before attach receives the workspace, terminal, and client at contiguous revisions. Detach removes the client while a one-shot snapshot still shows the terminal. Tests cover capture races, sequence exhaustion, slow subscribers, malformed transactions, and the stdio relay. The Rust client preserves its last view on connection loss and obtains a fresh epoch on reconnect. |
 | Pairing and attention | The real TUI issues a private code, restores its redraw after dismissal, and accepts one pairing. Tests verify expiry, the host-wide guess budget, revision rotation, detach cleanup, and RPC replay. A Claude question stays pending after its exact alert is acknowledged. |
+| Exact focus | Integration tests cover two independent clients, stale input tokens, paste blocking, writer ownership, and request replay. Revoking a binding after the fence restores the original view with a fresh token. |
 | Layout recovery | After killing a daemon that owns a live PTY, a new daemon restores the workspace, tab, and pane IDs with an empty terminal slot. An explicit launch uses the saved directory and gets a new TerminalId. Corrupt state recovers from backup or a fresh layout, and a newer schema remains intact. |
 | Writer and redraw | A competing attach at a different size is refused and leaves the child size unchanged. A successful resize resets the render generation. The detached child progresses, then the next TUI shows its retained screen and PID. |
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |

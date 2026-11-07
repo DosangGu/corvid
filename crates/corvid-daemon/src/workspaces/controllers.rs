@@ -12,6 +12,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use super::focus::{FocusDispatch, FocusTarget};
 use super::{Registry, Reply, Workspaces};
 
 const PAIR_LIFETIME: Duration = Duration::from_secs(PAIRING_SECONDS as u64);
@@ -23,9 +24,22 @@ const RPC_LIFETIME: Duration = Duration::from_secs(600);
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ControllerCommand {
-    Register { code: Uuid },
-    Unregister { client: Uuid, revision: u64 },
-    Acknowledge { run: Uuid, attention: Uuid },
+    Register {
+        code: Uuid,
+    },
+    Unregister {
+        client: Uuid,
+        revision: u64,
+    },
+    Acknowledge {
+        run: Uuid,
+        attention: Uuid,
+    },
+    Focus {
+        client: Uuid,
+        run: Uuid,
+        revision: u64,
+    },
 }
 
 impl ControllerCommand {
@@ -49,6 +63,14 @@ impl ControllerCommand {
                 Self::Acknowledge {
                     run: parse_uuid(&ack.agent_run_id)?,
                     attention: parse_uuid(&ack.attention_id)?,
+                },
+            ),
+            Body::FocusAgent(focus) => (
+                &focus.controller_id,
+                Self::Focus {
+                    client: parse_uuid(&focus.client_id)?,
+                    run: parse_uuid(&focus.agent_run_id)?,
+                    revision: binding_revision(focus.binding_revision)?,
                 },
             ),
             _ => return Err(invalid("unknown controller command")),
@@ -159,12 +181,23 @@ impl Controllers {
     }
 
     fn unregister(&mut self, client: Uuid, controller: &str, revision: u64) -> Reply<()> {
+        self.verify(client, controller, revision)?;
         let bindings = self.bindings.get_mut(&client).ok_or_else(stale_binding)?;
-        if bindings.get(controller) != Some(&revision) {
-            return Err(stale_binding());
-        }
         bindings.remove(controller);
         Ok(())
+    }
+
+    pub(super) fn verify(&self, client: Uuid, controller: &str, revision: u64) -> Reply<()> {
+        if self
+            .bindings
+            .get(&client)
+            .and_then(|bindings| bindings.get(controller))
+            == Some(&revision)
+        {
+            Ok(())
+        } else {
+            Err(stale_binding())
+        }
     }
 }
 
@@ -176,7 +209,7 @@ struct Journal {
 
 type RpcKey = (String, String);
 type Outcome = Reply<Body>;
-type Sender = watch::Sender<Option<Outcome>>;
+pub(super) type Sender = watch::Sender<Option<Outcome>>;
 type Receipt = watch::Receiver<Option<Outcome>>;
 
 struct Entry {
@@ -244,15 +277,30 @@ impl Workspaces {
     ) -> Outcome {
         let receipt = {
             let mut registry = self.lock_registry();
-            let (receipt, sender) = registry.controllers.journal.begin(
-                controller,
-                request,
-                &command,
-                Instant::now(),
-            )?;
+            let now = Instant::now();
+            let (receipt, sender) = registry
+                .controllers
+                .journal
+                .begin(controller, request, &command, now)?;
             if let Some(sender) = sender {
-                let outcome = registry.execute_controller(controller, command);
-                sender.send_replace(Some(outcome));
+                if let ControllerCommand::Focus {
+                    client,
+                    run,
+                    revision,
+                } = command
+                {
+                    let target = FocusTarget {
+                        controller: controller.to_owned(),
+                        client,
+                        run,
+                        revision,
+                        expires: now + COMMAND_TIMEOUT,
+                    };
+                    registry.dispatch_focus(FocusDispatch::new(target, sender));
+                } else {
+                    let outcome = registry.execute_controller(controller, command);
+                    sender.send_replace(Some(outcome));
+                }
             }
             receipt
         };
@@ -308,6 +356,7 @@ impl Registry {
                     commit_sequence: self.publication.sequence()?,
                 }))
             }
+            ControllerCommand::Focus { .. } => unreachable!("focus is dispatched to the TUI"),
         }
     }
 
@@ -323,7 +372,7 @@ impl Registry {
         }
     }
 
-    fn require_publication(&self) -> Reply<()> {
+    pub(super) fn require_publication(&self) -> Reply<()> {
         if self.publication.sequence()? == u64::MAX {
             Err(ProtocolFault::new(
                 "LimitExceeded",
@@ -356,7 +405,7 @@ fn stale_binding() -> ProtocolFault {
     ProtocolFault::new("StaleBinding", "controller binding is absent or changed")
 }
 
-fn no_client() -> ProtocolFault {
+pub(super) fn no_client() -> ProtocolFault {
     ProtocolFault::new("NoAttachedClient", "requested TUI client is unavailable")
 }
 

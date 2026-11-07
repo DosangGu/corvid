@@ -147,6 +147,8 @@ enum Command {
         action: Action,
     },
     Fence(InputRoute, oneshot::Sender<Reply<bool>>),
+    Freeze(InputRoute, oneshot::Sender<Reply<()>>),
+    Thaw(InputRoute, oneshot::Sender<Reply<InputRoute>>),
     Activate(InputRoute, Viewport, oneshot::Sender<Reply<()>>),
     Resume(InputRoute),
 }
@@ -211,6 +213,22 @@ impl TerminalHandle {
         let (send, receive) = oneshot::channel();
         self.commands
             .try_send(Command::Fence(route, send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
+    }
+
+    pub(crate) async fn freeze(&self, route: InputRoute) -> Reply<()> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Freeze(route, send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
+    }
+
+    pub(crate) async fn thaw(&self, route: InputRoute) -> Reply<InputRoute> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Thaw(route, send))
             .map_err(|_| overloaded())?;
         timeout_reply(receive).await
     }
@@ -303,6 +321,16 @@ impl Worker {
             Command::Fence(route, reply) => {
                 if !reply.is_closed() {
                     let _ = reply.send(self.fence(route));
+                }
+            }
+            Command::Freeze(route, reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.freeze(route));
+                }
+            }
+            Command::Thaw(route, reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.thaw(route));
                 }
             }
             Command::Activate(route, viewport, reply) => {
@@ -408,6 +436,51 @@ impl Worker {
         Ok(discarded)
     }
 
+    fn freeze(&mut self, route: InputRoute) -> Reply<()> {
+        let lease = self
+            .lease
+            .as_mut()
+            .filter(|lease| lease.armed && lease.route == route && !lease.frozen)
+            .ok_or_else(stale_route)?;
+        let terminal = self
+            .terminal
+            .as_mut()
+            .filter(|terminal| terminal.exit.is_none())
+            .ok_or_else(terminal_fault)?;
+        if lease.switch_pending || lease.paste.is_some() || terminal.input.paste_pending() {
+            return Err(input_busy());
+        }
+        lease.frozen = true;
+        lease.leader = None;
+        terminal.input.fence();
+        Ok(())
+    }
+
+    fn thaw(&mut self, route: InputRoute) -> Reply<InputRoute> {
+        let lease = self
+            .lease
+            .as_mut()
+            .filter(|lease| lease.armed && lease.route == route && lease.frozen)
+            .ok_or_else(stale_route)?;
+        let terminal = self
+            .terminal
+            .as_mut()
+            .filter(|terminal| terminal.exit.is_none())
+            .ok_or_else(terminal_fault)?;
+        let revision = route.view_revision.checked_add(1).ok_or_else(overloaded)?;
+        let generation = lease
+            .render_generation
+            .checked_add(1)
+            .ok_or_else(overloaded)?;
+        lease.route.view_revision = revision;
+        lease.render_generation = generation;
+        lease.previous = None;
+        lease.in_flight = None;
+        lease.frozen = false;
+        terminal.dirty = true;
+        Ok(lease.route)
+    }
+
     fn activate(&mut self, route: InputRoute, viewport: Viewport) -> Reply<()> {
         let lease = self
             .lease
@@ -432,6 +505,9 @@ impl Worker {
             .filter(|lease| lease.armed && lease.route.client_id == client)
             .ok_or_else(stale_route)?;
         let terminal = self.terminal.as_mut().ok_or_else(terminal_fault)?;
+        if lease.frozen && !matches!(action, Action::FrameApplied { .. } | Action::Ping) {
+            return Err(stale_route());
+        }
         if lease.switch_pending
             && !matches!(
                 action,
@@ -679,10 +755,11 @@ impl Worker {
     fn revoke_if_disconnected(&mut self) {
         if self.lease.as_ref().is_some_and(|lease| {
             lease.events.is_closed()
-                || lease
-                    .in_flight
-                    .as_ref()
-                    .is_some_and(|flight| flight.sent.elapsed() >= COMMAND_TIMEOUT)
+                || (!lease.frozen
+                    && lease
+                        .in_flight
+                        .as_ref()
+                        .is_some_and(|flight| flight.sent.elapsed() >= COMMAND_TIMEOUT))
         }) {
             self.revoke();
         }
@@ -918,6 +995,7 @@ struct Lease {
     paste: Option<Paste>,
     leader: Option<Instant>,
     armed: bool,
+    frozen: bool,
     switch_pending: bool,
     tab_keys: bool,
     pair_keys: bool,
@@ -943,6 +1021,7 @@ impl Lease {
             paste: None,
             leader: None,
             armed,
+            frozen: false,
             switch_pending: false,
             tab_keys,
             pair_keys,
@@ -1052,7 +1131,12 @@ impl Lease {
 
     fn render(&mut self, terminal: &mut Running) -> Result<()> {
         let now = Instant::now();
-        if !self.armed || !terminal.dirty || self.in_flight.is_some() || now < self.next_frame {
+        if !self.armed
+            || self.frozen
+            || !terminal.dirty
+            || self.in_flight.is_some()
+            || now < self.next_frame
+        {
             return Ok(());
         }
 

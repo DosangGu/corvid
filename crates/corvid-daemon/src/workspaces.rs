@@ -1,3 +1,6 @@
+mod controllers;
+mod focus;
+
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
@@ -27,6 +30,7 @@ use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, Termin
 
 pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
+pub(crate) use focus::{FocusDispatch, FocusRecovery};
 
 const MAX_PTY_WORKERS: usize = 32;
 const EVENT_CAPACITY: usize = 4;
@@ -95,6 +99,7 @@ pub(crate) struct Registry {
 struct Client {
     generation: u64,
     view: Option<ClientView>,
+    focuses: mpsc::Sender<FocusDispatch>,
 }
 
 struct ClientView {
@@ -187,7 +192,12 @@ impl Workspaces {
             .any(|slot| slot.terminal.has_live_terminal())
     }
 
-    pub(crate) async fn attach(&self, client: Uuid, mut target: AttachTarget) -> Reply<Active> {
+    pub(crate) async fn attach(
+        &self,
+        client: Uuid,
+        mut target: AttachTarget,
+        focuses: mpsc::Sender<FocusDispatch>,
+    ) -> Reply<Active> {
         let (location, generation, terminal) = self.reserve(client, &mut target)?;
         let cwd = target.launch.as_ref().and_then(|launch| launch.cwd.clone());
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
@@ -215,6 +225,14 @@ impl Workspaces {
                     self.record_cwd(location, &cwd);
                 }
                 registry.resize_hidden(client, active.viewport, Some(active.location.pane));
+                registry.clients.insert(
+                    client,
+                    Client {
+                        generation,
+                        view: None,
+                        focuses,
+                    },
+                );
                 registry.record_view(&active);
                 Ok(active)
             }
@@ -364,12 +382,24 @@ impl Workspaces {
             return Err(busy());
         }
         let lease_generation = claim.generation;
-        let revision = old.route.view_revision.checked_add(1).ok_or_else(limit)?;
-        let terminal = self.reserve_slot(&mut registry, location, launch.is_some())?;
-        if launch.is_some() {
+        let reserved = self.reserve_view(&mut registry, old, location, lease_generation, launch)?;
+        if reserved.spec.launch.is_some() {
             registry.publish(vec![projection::layout(&layout)]);
             self.layouts.send_replace(layout);
         }
+        Ok(Some(reserved))
+    }
+
+    fn reserve_view(
+        &self,
+        registry: &mut Registry,
+        old: &Active,
+        location: Location,
+        lease_generation: u64,
+        launch: Option<Launch>,
+    ) -> Reply<ReservedSwitch> {
+        let revision = old.route.view_revision.checked_add(1).ok_or_else(limit)?;
+        let terminal = self.reserve_slot(registry, location, launch.is_some())?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
             client_id: old.route.client_id,
@@ -383,12 +413,12 @@ impl Workspaces {
             launch,
             events,
         };
-        Ok(Some(ReservedSwitch {
+        Ok(ReservedSwitch {
             location,
             terminal,
             spec,
             events: receiver,
-        }))
+        })
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -504,14 +534,12 @@ impl Registry {
                 location: active.location,
                 viewport: active.viewport,
             });
-        self.clients.insert(
-            route.client_id,
-            Client {
-                generation: route.connection_generation,
-                view,
-            },
-        );
-        self.publish_client(route.client_id);
+        if let Some(client) = self.clients.get_mut(&route.client_id)
+            && client.generation == route.connection_generation
+        {
+            client.view = view;
+            self.publish_client(route.client_id);
+        }
     }
 
     fn publish_client(&mut self, client: Uuid) {
@@ -798,4 +826,3 @@ fn invalid_layout() -> ProtocolFault {
         "invalid workspace label, tab label, or layout size",
     )
 }
-mod controllers;

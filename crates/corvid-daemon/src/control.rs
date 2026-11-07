@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use corvid_protocol::controller::{ACK_CAPABILITY, PAIR_CAPABILITY};
+use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
@@ -34,6 +34,7 @@ const CAPABILITIES: &[&str] = &[
     WATCH_CAPABILITY,
     PAIR_CAPABILITY,
     ACK_CAPABILITY,
+    FOCUS_CAPABILITY,
 ];
 
 pub(crate) async fn serve(
@@ -120,7 +121,8 @@ impl Control<'_> {
             Ok(
                 body @ (Body::RegisterClientBinding(_)
                 | Body::UnregisterClientBinding(_)
-                | Body::AcknowledgeAttention(_)),
+                | Body::AcknowledgeAttention(_)
+                | Body::FocusAgent(_)),
             ) => match self.controller(&request, body).await {
                 Ok(body) => body,
                 Err(fault) => Body::Error(fault.into_wire()),

@@ -22,6 +22,7 @@ message Envelope {
     ConnectionStatus connection_status = 17;
     ListWorkspaces list_workspaces = 18;
     WorkspaceList workspace_list = 19;
+    FocusAgentRequest focus_agent = 20;
     ListAgents list_agents = 21;
     AgentList agent_list = 22;
     ListClients list_clients = 23;
@@ -49,6 +50,7 @@ message Envelope {
     RedrawView redraw_view = 46;
     AcknowledgeAttention acknowledge_attention = 50;
     AttentionAcknowledged attention_acknowledged = 51;
+    FocusApplied focus_applied = 52;
     CollectHook collect_hook = 60;
     HookCollected hook_collected = 61;
     GetSnapshot get_snapshot = 70;
@@ -206,6 +208,22 @@ message AttentionAcknowledged {
   string attention_id = 2;
   uint64 acknowledged_unix_ms = 3;
   uint64 commit_sequence = 4;
+}
+
+message FocusAgentRequest {
+  string controller_id = 1;
+  string client_id = 2;
+  string agent_run_id = 3;
+  optional uint64 binding_revision = 4;
+}
+
+message FocusApplied {
+  string client_id = 1;
+  string agent_run_id = 2;
+  string terminal_id = 3;
+  ViewSelection selection = 4;
+  uint64 view_revision = 5;
+  uint64 commit_sequence = 6;
 }
 
 message WriterLeaseState {

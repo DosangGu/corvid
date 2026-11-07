@@ -172,6 +172,19 @@ impl Agents {
         record.run.attention.get(&attention)?.acknowledged_unix_ms
     }
 
+    pub(crate) fn focus_terminal(&self, run: Uuid) -> Option<Uuid> {
+        let record = self.runs.get(&run)?;
+        let identity = &record.run.identity;
+        let launch = self.launches.get(&identity.launch_association)?;
+        (launch.current == run
+            && identity.parent_run_id.is_none()
+            && record.published
+            && record.terminal_available
+            && !matches!(record.run.lifecycle.value, Lifecycle::Ended(_))
+            && !matches!(record.run.process.value, ProcessLiveness::Exited { .. }))
+        .then_some(identity.terminal_id)
+    }
+
     pub(crate) fn binding(&self, association: Uuid) -> HookBinding {
         let Some(launch) = self.launches.get(&association) else {
             return HookBinding::Unavailable;
