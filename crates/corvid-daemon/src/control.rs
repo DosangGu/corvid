@@ -123,12 +123,13 @@ pub(crate) async fn handshake(
     capabilities: &[&str],
 ) -> Result<Option<Connection>> {
     let (read, write) = stream.into_split();
-    let output = match role {
-        PeerRole::Control => FrameRole::StructuredOnly,
-        PeerRole::Tui => FrameRole::TuiOutput,
+    let (input, output) = match role {
+        PeerRole::Control => (FrameRole::StructuredOnly, FrameRole::StructuredOnly),
+        PeerRole::Tui => (FrameRole::StructuredOnly, FrameRole::TuiOutput),
+        PeerRole::Collector => (FrameRole::Collector, FrameRole::Collector),
     };
     let mut writer = FrameWriter::start(write, output).await?;
-    let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
+    let mut reader = FrameReader::start(read, input).await?;
     let request = reader
         .next_envelope()
         .await?

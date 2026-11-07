@@ -17,7 +17,9 @@ use uuid::Uuid;
 use vt100::Screen;
 
 use crate::agents::ManagedLaunch;
-use crate::process::{Probe, ProbeBudget};
+use crate::collector::HookEnvironment;
+use crate::process::{self, Executable, Probe, ProbeBudget};
+use crate::provider::QualifiedProvider;
 use crate::workspaces::Registry;
 
 use super::input::{InputQueue, Kind, WriteFailure};
@@ -44,6 +46,7 @@ pub(crate) struct LaunchScope {
     pub(crate) registry: Weak<Mutex<Registry>>,
     pub(crate) boot_id: Option<Uuid>,
     pub(crate) probes: Arc<ProbeBudget>,
+    pub(crate) hook_environment: Arc<HookEnvironment>,
 }
 
 pub(crate) struct AttachSpec {
@@ -689,13 +692,30 @@ enum ReadState {
 impl Running {
     fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
         let id = Uuid::new_v4();
+        let qualified = launch.provider.and_then(QualifiedProvider::detect);
         let reservation = launch
             .provider
-            .map(|provider| ManagedLaunch::reserve(&scope.registry, scope.location, id, provider))
+            .map(|provider| {
+                ManagedLaunch::reserve(
+                    &scope.registry,
+                    scope.location,
+                    id,
+                    provider,
+                    qualified.is_some(),
+                )
+            })
             .transpose()?;
-        let mut pty = TerminalPty::spawn(launch.into_command(), viewport)?;
-        let managed =
-            reservation.map(|launch| ManagedProcess::started(launch, &mut pty, scope.boot_id, id));
+        let association = qualified
+            .as_ref()
+            .and(reservation.as_ref())
+            .map(|launch| launch.association);
+        let executable = qualified.as_ref().map(|qualified| qualified.executable);
+        let mut command = launch.into_command(qualified.map(|qualified| qualified.path));
+        scope.hook_environment.configure(&mut command, association);
+
+        let mut pty = TerminalPty::spawn(command, viewport)?;
+        let managed = reservation
+            .map(|launch| ManagedProcess::started(launch, &mut pty, scope.boot_id, id, executable));
         Ok(Self {
             id,
             pty,
@@ -781,32 +801,34 @@ impl ManagedProcess {
         pty: &mut TerminalPty,
         boot: Option<Uuid>,
         terminal: Uuid,
+        executable: Option<Executable>,
     ) -> Self {
         let (liveness, source) = match pty.try_wait() {
             Ok(None) => (ProcessLiveness::Running, Source::ProcessProbe),
             Ok(Some(status)) => (exited(&status), Source::ChildExit),
             Err(_) => (ProcessLiveness::Unknown, Source::ProcessProbe),
         };
-        let probe = if matches!(liveness, ProcessLiveness::Exited { .. }) {
-            None
-        } else {
-            pty.pid()
-                .zip(boot)
-                .map(|(pid, boot)| Probe::new(pid, boot, terminal))
-        };
-        launch.started(liveness, source);
+        let process = pty
+            .pid()
+            .zip(boot)
+            .filter(|_| !matches!(liveness, ProcessLiveness::Exited { .. }));
+        let identity = process.and_then(|(pid, boot)| process::incarnation(pid, boot));
+        let probe = process.map(|(pid, boot)| Probe::new(pid, boot, terminal, identity));
+        launch.started(liveness, source, identity, executable);
         Self { launch, probe }
     }
 }
 
 impl Launch {
-    fn into_command(self) -> CommandBuilder {
+    fn into_command(self, qualified: Option<PathBuf>) -> CommandBuilder {
         let mut argv = self.argv.into_iter();
-        let program = match self.provider {
-            Some(Provider::Claude) => Some(OsString::from("claude")),
-            Some(Provider::Codex) => Some(OsString::from("codex")),
-            None => argv.next(),
-        };
+        let program = qualified
+            .map(PathBuf::into_os_string)
+            .or_else(|| match self.provider {
+                Some(Provider::Claude) => Some(OsString::from("claude")),
+                Some(Provider::Codex) => Some(OsString::from("codex")),
+                None => argv.next(),
+            });
         let mut command = if let Some(program) = program {
             let mut command = CommandBuilder::new(program);
             command.args(argv);

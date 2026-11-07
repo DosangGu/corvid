@@ -12,7 +12,11 @@ clap.workspace = true
 corvid-client.workspace = true
 corvid-daemon.workspace = true
 corvid-protocol.workspace = true
+nix = { workspace = true, features = ["poll"] }
+serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

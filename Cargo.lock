@@ -170,8 +170,12 @@ dependencies = [
  "corvid-client",
  "corvid-daemon",
  "corvid-protocol",
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

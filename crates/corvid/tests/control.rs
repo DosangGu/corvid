@@ -6,11 +6,15 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
+use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetHost, HostInfo};
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello};
+use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
+use uuid::Uuid;
 
 use common::{WAIT, command, daemon};
 
@@ -155,4 +159,46 @@ async fn relay_reports_unavailable_without_creating_runtime_directory() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn observe_exits_silently_with_missing_daemon_and_bad_or_stalled_input() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("missing");
+    let valid = br#"{"hook_event_name":"SessionStart","source":"startup","session_id":"session"}"#;
+    let oversized = vec![b'x'; 65 * 1024];
+    for (input, close_stdin) in [
+        (valid.as_slice(), true),
+        (b"{".as_slice(), true),
+        (oversized.as_slice(), true),
+        (b"{".as_slice(), false),
+    ] {
+        let mut child = command(&runtime)
+            .args(["observe", "--provider", "claude"])
+            .env(HOST_ID, Uuid::new_v4().to_string())
+            .env(SERVER_EPOCH, Uuid::new_v4().to_string())
+            .env(LAUNCH_ASSOCIATION, Uuid::new_v4().to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let write = timeout(Duration::from_millis(250), stdin.write_all(input))
+            .await
+            .unwrap();
+        // The helper can close an oversized pipe as soon as it reaches the bound.
+        if input.len() < 64 * 1024 {
+            write.unwrap();
+        }
+        let _held_open = (!close_stdin).then_some(stdin);
+        let output = timeout(Duration::from_millis(250), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        assert!(!runtime.exists());
+    }
 }

@@ -39,11 +39,12 @@ impl Connection {
         capabilities: Vec<String>,
     ) -> Result<Self> {
         let (read, write) = stream.into_split();
-        let input = match role {
-            PeerRole::Control => FrameRole::StructuredOnly,
-            PeerRole::Tui => FrameRole::TuiOutput,
+        let (input, output) = match role {
+            PeerRole::Control => (FrameRole::StructuredOnly, FrameRole::StructuredOnly),
+            PeerRole::Tui => (FrameRole::TuiOutput, FrameRole::StructuredOnly),
+            PeerRole::Collector => (FrameRole::Collector, FrameRole::Collector),
         };
-        let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
+        let mut writer = FrameWriter::start(write, output).await?;
         let mut reader = FrameReader::start(read, input).await?;
         let controller_id = (role == PeerRole::Control).then(|| Uuid::new_v4().to_string());
         let greeting = hello(Uuid::new_v4().to_string(), controller_id, capabilities);

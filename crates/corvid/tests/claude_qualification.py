@@ -19,7 +19,7 @@ import termios
 import threading
 import time
 
-from interactive import stop
+from interactive import stop, wait_for_daemon
 
 VERSION = "2.1.318 (Claude Code)"
 HOOKS = (
@@ -116,7 +116,7 @@ def response_content(question):
     return block, delta, "tool_use"
 
 
-def configure(directory, port):
+def configure(directory, port, corvid, fault):
     home = directory / "home"
     config = home / ".claude"
     config.mkdir(parents=True)
@@ -126,6 +126,14 @@ def configure(directory, port):
     hook = shlex.join([sys.executable, str(capture), str(trace)])
     handler = {"type": "command", "command": hook, "timeout": 1}
     settings = {"hooks": {event: [{"hooks": [handler]}] for event in HOOKS}}
+    if corvid is not None:
+        generated = json.loads(subprocess.check_output([corvid, "hooks", "claude"], timeout=3))
+        for event, handlers in generated["hooks"].items():
+            if fault == "missing-helper":
+                for matcher in handlers:
+                    for hook in matcher["hooks"]:
+                        hook["command"] = str(directory / "missing-observer")
+            settings["hooks"][event].extend(handlers)
     (config / "settings.json").write_text(json.dumps(settings))
     environment = {
         "HOME": str(home),
@@ -188,7 +196,7 @@ class FixtureTerminal:
         )
 
 
-def exercise(terminal, scenario):
+def exercise(terminal, scenario, managed):
     for screen, answer in (
         (b"Select with numbers [1-7]", b"2\r"),
         (b"Enter y/n:", b"y\r"),
@@ -196,7 +204,7 @@ def exercise(terminal, scenario):
         terminal.expect(screen)
         terminal.send(answer)
     security = b"Press Enter to continue"
-    trust = b"Is this a project you created"
+    trust = b"Accessing workspace:"
     terminal.wait(
         lambda: security in terminal.text() or trust in terminal.text(),
         "workspace setup",
@@ -206,36 +214,135 @@ def exercise(terminal, scenario):
     terminal.expect(trust)
     terminal.send(b"y\r")
     terminal.event(hook_event_name="SessionStart", source="startup")
+    initial = managed.expect(terminal, collection="Healthy", process="Running") if managed else None
     terminal.send(b"Corvid hook schema fixture\r")
-    terminal.expect(b"First fixture option")
+    terminal.expect(b"Enter to submit or Escape to cancel:")
+    if managed:
+        question = managed.expect(terminal, run=initial["run"], pending="1", badge="NeedsInput")
+        assert question["unverified"] == "1"
+        managed.reject_foreign_hook(question)
     terminal.send(b"1\r")
     terminal.event(hook_event_name="PostToolUse", tool_name="AskUserQuestion")
     terminal.event(hook_event_name="Stop")
+    if managed:
+        resolved = managed.expect(terminal, run=initial["run"], pending="0", resolved="1", response="true")
+        assert resolved["process"] == "Running"
+        assert resolved["unverified"] == "1"
     if scenario == "clear":
         terminal.send(b"/clear\r")
         terminal.event(hook_event_name="SessionStart", source="clear")
+        if managed:
+            ended = managed.expect(terminal, run=initial["run"], end="ContextReplaced")
+            assert ended["process"] == "Running"
+            replacement = managed.expect(terminal, collection="Healthy", process="Running", end="Unspecified")
+            assert replacement["terminal"] == initial["terminal"]
+            assert replacement["run"] != initial["run"]
+            assert replacement["resolved"] == replacement["pending"] == replacement["unverified"] == "0"
     terminal.send(b"/exit\r")
     assert terminal.process.wait(timeout=5) == 0, "fixture Claude exit failed"
+    if managed:
+        managed.expect(terminal, terminal=initial["terminal"], process="Exited")
     return terminal.events()
 
 
-def capture(binary, directory, port, scenario):
-    trace, environment = configure(directory, port)
+class CorvidFixture:
+    def __init__(self, binary, claude, directory, project, environment):
+        self.command = [binary, "--runtime-dir", directory / "run"]
+        environment["PATH"] = f"{claude.parent}:{environment['PATH']}"
+        environment["TERMINFO"] = str(directory / "terminfo")
+        profile = Path(__file__).resolve().parents[3] / "spikes/terminal/corvid.terminfo"
+        subprocess.run(["tic", "-x", "-o", environment["TERMINFO"], profile], check=True, timeout=3)
+        self.process = subprocess.Popen(
+            [*self.command, "daemon", "--state-dir", directory / "state"],
+            cwd=project, env=environment,
+        )
+        try:
+            wait_for_daemon(self.command, self.process)
+        except BaseException:
+            stop(self.process)
+            raise
+
+    def agents(self):
+        output = subprocess.check_output([*self.command, "control", "agents"], text=True, timeout=3)
+        agents = []
+        for line in output.splitlines():
+            run, *fields = line.split()
+            agent = dict(field.split("=", 1) for field in fields)
+            agent["run"] = run
+            agents.append(agent)
+        return agents
+
+    def expect(self, tty, **fields):
+        def matching():
+            return next((agent for agent in self.agents()
+                         if all(agent.get(key) == value for key, value in fields.items())), None)
+
+        tty.wait(matching, str(fields))
+        return matching()
+
+    def reject_foreign_hook(self, question):
+        child_env = Path(f"/proc/{question['pid']}/environ").read_bytes()
+        required = {b"CORVID_LAUNCH_ASSOCIATION", b"CORVID_HOST_ID", b"CORVID_SERVER_EPOCH"}
+        scope = {}
+        for entry in child_env.split(b"\0"):
+            key, _, value = entry.partition(b"=")
+            if key in required:
+                scope[key.decode()] = value.decode()
+        assert len(scope) == len(required)
+
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "session_id": question["session"],
+            "prompt_id": "unowned-prompt",
+            "tool_name": "AskUserQuestion",
+            "tool_use_id": "unowned-tool",
+        }
+        result = subprocess.run(
+            [*self.command, "observe", "--provider", "claude"],
+            input=json.dumps(payload), env=scope, capture_output=True, text=True, timeout=1,
+        )
+        assert result.returncode == 0 and not result.stdout and not result.stderr
+        actual = next(agent for agent in self.agents() if agent["run"] == question["run"])
+        assert actual["pending"] == question["pending"]
+
+
+def capture(binary, directory, port, scenario, corvid, fault):
+    trace, environment = configure(directory, port, corvid, fault)
     project = directory / "project"
     project.mkdir()
+    arguments = [
+        "--model", "sonnet", "--strict-mcp-config", "--no-chrome", "--ax-screen-reader",
+        "--permission-mode", "manual",
+    ]
+    if corvid is None:
+        args = ["setsid", "--ctty", "--wait", str(binary.resolve()), *arguments]
+        return run_terminal(args, environment, project, trace, scenario, None)
+
+    managed = CorvidFixture(corvid, binary, directory, project, environment)
+    try:
+        if fault == "missing-collector":
+            (directory / "run/collector.sock").unlink()
+        args = [*managed.command, "attach", "--agent", "claude", "--", *arguments]
+        active_collector = managed if fault is None else None
+        events = run_terminal(args, environment, project, trace, scenario, active_collector)
+        if fault is not None:
+            agent, = managed.agents()
+            assert agent["collection"] == "NotRegistered"
+            assert agent["process"] == "Exited"
+        return events
+    finally:
+        stop(managed.process)
+
+
+def run_terminal(args, environment, project, trace, scenario, managed):
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
-        args = [
-            "setsid", "--ctty", "--wait", str(binary), "--model", "sonnet",
-            "--strict-mcp-config", "--no-chrome", "--ax-screen-reader",
-            "--permission-mode", "manual",
-        ]
         process = subprocess.Popen(
             args, env=environment, cwd=project, stdin=slave, stdout=slave, stderr=slave,
         )
         try:
-            return exercise(FixtureTerminal(process, master, trace), scenario)
+            return exercise(FixtureTerminal(process, master, trace), scenario, managed)
         finally:
             stop(process)
     finally:
@@ -292,21 +399,29 @@ def verify(events, scenario):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=("answer", "clear"), default="answer")
+    parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
+    parser.add_argument("--fault", choices=("missing-helper", "missing-collector"))
     args = parser.parse_args()
+    if args.fault is not None and args.corvid is None:
+        parser.error("--fault requires --corvid")
     executable = shutil.which("claude")
     if executable is None:
         parser.error("claude must be installed on PATH")
-    binary = Path(executable).resolve()
+    binary = Path(executable).absolute()
     version = subprocess.check_output([binary, "--version"], text=True, timeout=3).strip()
     assert version == VERSION, f"expected {VERSION}, found {version}"
-    with tempfile.TemporaryDirectory(prefix="corvid-claude-") as directory:
+    corvid = args.corvid.resolve() if args.corvid is not None else None
+    parent = Path(__file__).resolve().parents[3] if corvid is not None else None
+    with tempfile.TemporaryDirectory(prefix=".corvid-claude-", dir=parent) as directory:
         with HTTPServer(("127.0.0.1", 0), ModelFixture) as server:
             server.question_sent = False
             server.message_count = 0
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                events = capture(binary, Path(directory), server.server_port, args.scenario)
+                events = capture(
+                    binary, Path(directory), server.server_port, args.scenario, corvid, args.fault,
+                )
             finally:
                 server.shutdown()
                 thread.join()

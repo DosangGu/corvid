@@ -38,6 +38,8 @@ message Envelope {
     SelectView select_view = 41;
     ClaimWorkspaceWriter claim_workspace_writer = 42;
     WriterClaimed writer_claimed = 43;
+    CollectHook collect_hook = 60;
+    HookCollected hook_collected = 61;
     RpcError error = 90;
   }
 }
@@ -165,7 +167,58 @@ message AgentInfo {
   AgentBadge badge = 9;
   uint32 pending_requests = 10;
   bool terminal_available = 11;
+  optional string provider_session_id = 12;
+  AgentCollection collection = 13;
+  uint32 unverified_requests = 14;
+  uint32 resolved_requests = 15;
+  optional uint64 response_observed_unix_ms = 16;
+  AgentEndReason end_reason = 17;
+  optional string qualified_provider_version = 18;
 }
+
+enum AgentCollection {
+  AGENT_COLLECTION_UNSPECIFIED = 0;
+  AGENT_COLLECTION_NOT_REGISTERED = 1;
+  AGENT_COLLECTION_HEALTHY = 2;
+  AGENT_COLLECTION_DEGRADED = 3;
+  AGENT_COLLECTION_GAP_DETECTED = 4;
+  AGENT_COLLECTION_UNSUPPORTED = 5;
+}
+
+enum AgentEndReason {
+  AGENT_END_REASON_UNSPECIFIED = 0;
+  AGENT_END_REASON_PROCESS_EXITED = 1;
+  AGENT_END_REASON_CONTEXT_ENDED = 2;
+  AGENT_END_REASON_CONTEXT_REPLACED = 3;
+}
+
+enum HookEvent {
+  HOOK_EVENT_UNSPECIFIED = 0;
+  HOOK_EVENT_STARTUP = 1;
+  HOOK_EVENT_RESUME = 2;
+  HOOK_EVENT_CLEAR = 3;
+  HOOK_EVENT_COMPACT = 4;
+  HOOK_EVENT_PROMPT_SUBMITTED = 5;
+  HOOK_EVENT_QUESTION_STARTED = 6;
+  HOOK_EVENT_QUESTION_RESULT = 7;
+  HOOK_EVENT_PERMISSION_REQUESTED = 8;
+  HOOK_EVENT_RESPONSE_OBSERVED = 9;
+  HOOK_EVENT_CONTEXT_ENDED = 10;
+  HOOK_EVENT_CONTEXT_REPLACED = 11;
+  HOOK_EVENT_DELIVERY_GAP = 12;
+}
+
+message CollectHook {
+  string launch_association = 1;
+  AgentProvider provider = 2;
+  HookEvent event = 3;
+  optional string session_id = 4;
+  optional string turn_id = 5;
+  optional string tool_id = 6;
+  optional string actor_id = 7;
+}
+
+message HookCollected {}
 
 enum AttachRole {
   ATTACH_ROLE_UNSPECIFIED = 0;

@@ -15,8 +15,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::agents::Agents;
-use crate::process::{self, ProbeBudget};
+use crate::agents::{Agents, Hook, HookBinding};
+use crate::collector::HookEnvironment;
+use crate::process::{self, HookOwner, ProbeBudget};
 use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, TerminalHandle};
 
 const MAX_PTY_WORKERS: usize = 32;
@@ -65,6 +66,7 @@ pub(crate) struct Workspaces {
     layouts: watch::Sender<Arc<Layout>>,
     boot_id: Option<Uuid>,
     probes: Arc<ProbeBudget>,
+    hook_environment: Arc<HookEnvironment>,
 }
 
 #[derive(Default)]
@@ -90,12 +92,16 @@ struct Slot {
 }
 
 impl Workspaces {
-    pub(crate) fn new(layouts: watch::Sender<Arc<Layout>>) -> Self {
+    pub(crate) fn new(
+        layouts: watch::Sender<Arc<Layout>>,
+        hook_environment: Arc<HookEnvironment>,
+    ) -> Self {
         Self {
             registry: Arc::new(Mutex::new(Registry::default())),
             layouts,
             boot_id: process::boot_id(),
             probes: Arc::new(ProbeBudget::default()),
+            hook_environment,
         }
     }
 
@@ -107,6 +113,18 @@ impl Workspaces {
 
     pub(crate) fn agents(&self) -> AgentList {
         self.lock_registry().agents.inventory()
+    }
+
+    pub(crate) fn tick_agents(&self) {
+        self.lock_registry().agents.tick();
+    }
+
+    pub(crate) fn hook_binding(&self, association: Uuid) -> HookBinding {
+        self.lock_registry().agents.binding(association)
+    }
+
+    pub(crate) fn apply_hook(&self, hook: Hook, owner: HookOwner) -> Reply<()> {
+        self.lock_registry().agents.apply_hook(hook, owner)
     }
 
     pub(crate) fn any_live(&self) -> bool {
@@ -351,6 +369,7 @@ impl Workspaces {
             registry: Arc::downgrade(&self.registry),
             boot_id: self.boot_id,
             probes: Arc::clone(&self.probes),
+            hook_environment: Arc::clone(&self.hook_environment),
         };
         let (terminal, task) = TerminalHandle::start(scope);
         registry.slots.insert(

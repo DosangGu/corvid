@@ -37,7 +37,14 @@ when available. Corvid keeps the latest 64 retired runs in memory within the
 current daemon epoch. Process probing is staggered at roughly two seconds per
 managed terminal and limited to 20 procfs samples per second across the daemon.
 The retained child handle supplies exit evidence, including the normal exit code.
-Provider context, activity, and input requests require separate hook evidence.
+
+Run `corvid hooks claude` and merge its entries into the hook arrays in your
+Claude settings. The command prints an exec-form configuration for the current
+Corvid executable. Start a fresh managed Claude session to load the settings.
+Claude Code 2.1.318 can supply context, question, permission, and response
+observations. `corvid control agents` shows collection health, pending and
+unverified requests, and whether a response was observed. The installation and
+coverage details are in [provider qualification](03_provider_qualification.md).
 
 The TUI recognizes split legacy VT keys, UTF-8, and bracketed paste. The
 `--escape-delay-ms` option defaults to 100 ms. Network delays above this setting

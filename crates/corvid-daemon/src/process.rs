@@ -1,5 +1,7 @@
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -32,9 +34,67 @@ pub(crate) struct Incarnation {
 }
 
 struct Stat {
+    parent_pid: u32,
     start_ticks: u64,
     foreground_group: Option<i32>,
     exited: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Executable {
+    device: u64,
+    inode: u64,
+}
+
+impl Executable {
+    pub(crate) fn read(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        metadata.is_file().then_some(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HookOwner {
+    pub(crate) incarnation: Incarnation,
+    pub(crate) executable: Executable,
+}
+
+impl HookOwner {
+    /// Exec-form hooks are direct children. Descendants can inherit launch data
+    /// through tool shells, including hooks from a nested provider invocation.
+    pub(crate) fn owns_peer(self, peer: u32) -> bool {
+        let pid = self.incarnation.pid;
+        let Some(peer) = read_stat(peer) else {
+            return false;
+        };
+        let Some(parent) = read_stat(pid) else {
+            return false;
+        };
+        peer.parent_pid == pid
+            && !peer.exited
+            && !parent.exited
+            && parent.start_ticks == self.incarnation.start_ticks
+            && Executable::read(Path::new(&format!("/proc/{pid}/exe"))) == Some(self.executable)
+    }
+}
+
+pub(crate) fn incarnation(pid: u32, boot_id: Uuid) -> Option<Incarnation> {
+    let stat = read_stat(pid)?;
+    (!stat.exited).then(|| stat.incarnation(pid, boot_id))
+}
+
+impl Stat {
+    fn incarnation(&self, pid: u32, boot_id: Uuid) -> Incarnation {
+        Incarnation {
+            boot_id,
+            pid,
+            start_ticks: self.start_ticks,
+            foreground_group: self.foreground_group,
+        }
+    }
 }
 
 pub(crate) fn boot_id() -> Option<Uuid> {
@@ -50,13 +110,18 @@ pub(crate) struct Probe {
 }
 
 impl Probe {
-    pub(crate) fn new(pid: u32, boot_id: Uuid, terminal_id: Uuid) -> Self {
+    pub(crate) fn new(
+        pid: u32,
+        boot_id: Uuid,
+        terminal_id: Uuid,
+        identity: Option<Incarnation>,
+    ) -> Self {
         let stagger = Duration::from_millis((terminal_id.as_u128() % 2_000) as u64);
         Self {
             pid,
             boot_id,
             next: Instant::now() + stagger,
-            identity: None,
+            identity,
         }
     }
 
@@ -79,12 +144,7 @@ impl Probe {
         {
             return Some((ProcessLiveness::Unknown, None));
         }
-        let identity = Incarnation {
-            boot_id: self.boot_id,
-            pid: self.pid,
-            start_ticks: stat.start_ticks,
-            foreground_group: stat.foreground_group,
-        };
+        let identity = stat.incarnation(self.pid, self.boot_id);
         self.identity = Some(identity);
         let liveness = if stat.exited {
             ProcessLiveness::Exited { code: None }
@@ -124,13 +184,15 @@ fn parse_stat(bytes: &[u8], pid: u32) -> Option<Stat> {
     let fields = std::str::from_utf8(bytes.get(closing + 1..)?).ok()?;
     let mut fields = fields.split_ascii_whitespace();
     let state = fields.next()?;
+    let parent_pid = fields.next()?.parse().ok()?;
     let foreground_group = fields
-        .nth(4)?
+        .nth(3)?
         .parse::<i32>()
         .ok()
         .filter(|group| *group > 0);
     let start_ticks = fields.nth(13)?.parse().ok()?;
     Some(Stat {
+        parent_pid,
         start_ticks,
         foreground_group,
         exited: matches!(state, "Z" | "X" | "x"),
@@ -148,6 +210,7 @@ mod tests {
             31,
         )
         .unwrap();
+        assert_eq!(stat.parent_pid, 8);
         assert_eq!(stat.start_ticks, 987);
         assert_eq!(stat.foreground_group, Some(46));
         assert!(stat.exited);

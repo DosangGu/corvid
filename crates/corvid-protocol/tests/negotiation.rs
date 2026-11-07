@@ -1,5 +1,5 @@
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{Attach, AttachRole, InputChunk, Ping};
+use corvid_protocol::wire::{Attach, AttachRole, CollectHook, InputChunk, Ping};
 use corvid_protocol::{PeerRole, accept_hello, check_hello_result, decode_envelope, hello};
 use prost::Message;
 use prost::encoding::{WireType, encode_key, encode_varint};
@@ -103,4 +103,42 @@ fn control_session_cannot_attach_or_submit_input() {
         session.validate_request(&input).unwrap_err().code,
         "UnsupportedCapability"
     );
+}
+
+#[test]
+fn collector_is_separate_from_control_and_terminal_roles() {
+    let request = hello("hello".into(), None, vec![]);
+    let (session, _) = accept_hello(&request, PeerRole::Collector, "host", "epoch", &[]).unwrap();
+    let mut hook = session.envelope(
+        Some("delivery".into()),
+        Body::CollectHook(CollectHook::default()),
+    );
+    assert!(session.validate_request(&hook).is_ok());
+    hook.server_epoch = Some("old-epoch".into());
+    assert_eq!(
+        session.validate_request(&hook).unwrap_err().code,
+        "EpochMismatch"
+    );
+
+    let input = session.envelope(
+        Some("input".into()),
+        Body::InputChunk(InputChunk::default()),
+    );
+    assert_eq!(
+        session.validate_request(&input).unwrap_err().code,
+        "UnsupportedCapability"
+    );
+
+    let request = hello("hello".into(), Some("controller".into()), vec![]);
+    for role in [PeerRole::Control, PeerRole::Tui] {
+        let (session, _) = accept_hello(&request, role, "host", "epoch", &[]).unwrap();
+        let hook = session.envelope(
+            Some("delivery".into()),
+            Body::CollectHook(CollectHook::default()),
+        );
+        assert_eq!(
+            session.validate_request(&hook).unwrap_err().code,
+            "UnsupportedCapability"
+        );
+    }
 }

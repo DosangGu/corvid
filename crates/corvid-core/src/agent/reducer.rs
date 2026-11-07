@@ -24,6 +24,7 @@ pub(super) struct Correlation {
     generation: u64,
     deliveries: Recent<Uuid>,
     provider_events: Recent<(Source, String)>,
+    tentative_turns: Recent<String>,
     completed_turns: Recent<String>,
     completed_work: Recent<WorkKey>,
     finished_requests: Recent<RequestKey>,
@@ -162,14 +163,20 @@ impl AgentRun {
         {
             return false;
         }
-        if self.active_turns.len() == MAX_SCOPES {
+        let confirmed = evidence.confidence == Confidence::Confirmed;
+        if confirmed && self.active_turns.len() == MAX_SCOPES {
             self.record_gap(evidence.observed_unix_ms, "active turn limit reached");
             return true;
+        }
+        if !confirmed && !self.correlation.tentative_turns.insert(turn.clone()) {
+            return false;
         }
         self.correlation.current_turn = Some(turn.clone());
         self.correlation.response_for_prompt = false;
         self.activity = Observed::new(Activity::Unknown, evidence);
-        self.active_turns.insert(turn, evidence.clone());
+        if confirmed {
+            self.active_turns.insert(turn, evidence.clone());
+        }
         self.refresh_work_activity(evidence);
         true
     }

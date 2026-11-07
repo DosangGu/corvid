@@ -17,3 +17,4 @@ pub use session::{
     COMMAND_TIMEOUT, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault, Session,
     accept_hello, check_hello_result, hello,
 };
+pub mod collector;

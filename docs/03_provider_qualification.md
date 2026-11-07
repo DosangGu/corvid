@@ -30,7 +30,37 @@ PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --
 
 The [fixtures](../crates/corvid/tests/fixtures/claude/2.1.318/) keep allowlisted
 fields and replace captured IDs with deterministic placeholders. The capture
-hook exits successfully with empty stdout. The production collector, its
-failure behavior, and live delivery through the daemon require separate tests.
-Question cancellation, plan approval, subagent ownership, compaction, and
-resume still need version-specific qualification.
+hook exits successfully with empty stdout.
+
+## Corvid Collector
+
+Generate the exec-form hook settings with `corvid hooks claude` and merge the
+generated entries into the existing arrays. A fresh `corvid attach --agent claude`
+uses the daemon's PATH. The daemon probes the release before launch and verifies the
+provider's executable and process incarnation on submission. The hook must run
+as a direct child of the managed CLI.
+
+The current adapter records submitted prompts with inferred confidence and
+`Stop` as response evidence. It correlates question start and result by session,
+prompt, and tool IDs. Permission observations without a tool ID remain unverified.
+A confirmed `/clear` boundary gets a fresh run under the same terminal. An observed
+reuse of the same session ID creates a fresh run with uncertain coverage.
+
+```sh
+cargo build --locked
+export PYTHONDONTWRITEBYTECODE=1
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario clear
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
+```
+
+The managed PTY test observed a pending question, its matching resolution, a
+separately unverified permission request, and a replacement run. A process
+outside the qualified CLI used the test launch scope and left the pending count
+unchanged. Claude completed the fixture question and response with either the
+observer executable or the collector socket absent. The helper also passed
+isolated checks for malformed JSON, oversized input, and an open stalled pipe.
+
+Qualification remains for question cancellation, plan approval, child records,
+compaction, resume, and collector saturation. Delivery failures that occur before
+the daemon receives a frame can leave coverage unchanged.

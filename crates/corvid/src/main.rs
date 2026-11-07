@@ -1,15 +1,20 @@
+mod hooks;
+
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use corvid_protocol::wire::{
-    AgentBadge, AgentProcessState, AgentProvider, LayoutRecovery, PersistenceState,
+    AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
+    LayoutRecovery, PersistenceState,
 };
 use tokio::signal::unix::{SignalKind, signal};
+
+use crate::hooks::HookProvider;
 
 #[derive(Parser)]
 #[command(version, about = "Terminal multiplexer for interactive coding agents")]
@@ -67,6 +72,16 @@ enum Command {
         #[arg(value_enum)]
         request: Option<ControlRequest>,
     },
+    /// Print an additive provider hook configuration for explicit installation.
+    Hooks {
+        #[arg(value_enum)]
+        provider: HookProvider,
+    },
+    /// Submit one provider observation from stdin.
+    Observe {
+        #[arg(long, value_enum)]
+        provider: HookProvider,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -84,8 +99,20 @@ enum ManagedAgent {
 }
 
 fn main() -> ExitCode {
+    let started = Instant::now();
     let options = Options::parse();
-    match execute(options) {
+    let result = match options.command {
+        Command::Observe { provider } => {
+            hooks::observe(provider, options.runtime_dir, started);
+            Ok(0)
+        }
+        Command::Hooks { provider } => hooks::settings(provider).map(|settings| {
+            println!("{settings:#}");
+            0
+        }),
+        _ => execute(options),
+    };
+    match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(error) => {
             eprintln!("corvid: {error:#}");
@@ -109,6 +136,7 @@ fn execute(options: Options) -> Result<u32> {
 async fn run(options: Options) -> Result<u32> {
     let runtime = runtime_path(options.runtime_dir)?;
     match options.command {
+        Command::Hooks { .. } | Command::Observe { .. } => unreachable!("handled before runtime"),
         Command::Daemon { state_dir } => {
             let state = state_path(state_dir)?;
             let mut terminate = signal(SignalKind::terminate())?;
@@ -204,21 +232,41 @@ async fn run(options: Options) -> Result<u32> {
             ControlRequest::Agents => {
                 let list = corvid_client::agents(&runtime).await?;
                 for agent in list.agents {
-                    println!(
-                        "{} terminal={} provider={:?} process={:?} badge={:?}",
-                        agent.agent_run_id,
-                        agent.terminal_id,
-                        AgentProvider::try_from(agent.provider)
-                            .unwrap_or(AgentProvider::Unspecified),
-                        AgentProcessState::try_from(agent.process)
-                            .unwrap_or(AgentProcessState::Unspecified),
-                        AgentBadge::try_from(agent.badge).unwrap_or(AgentBadge::Unspecified),
-                    );
+                    print_agent(agent);
                 }
                 Ok(0)
             }
         },
     }
+}
+
+fn print_agent(agent: AgentInfo) {
+    let provider = AgentProvider::try_from(agent.provider).unwrap_or(AgentProvider::Unspecified);
+    let process =
+        AgentProcessState::try_from(agent.process).unwrap_or(AgentProcessState::Unspecified);
+    let badge = AgentBadge::try_from(agent.badge).unwrap_or(AgentBadge::Unspecified);
+    let collection =
+        AgentCollection::try_from(agent.collection).unwrap_or(AgentCollection::Unspecified);
+    let end = AgentEndReason::try_from(agent.end_reason).unwrap_or(AgentEndReason::Unspecified);
+    print!(
+        "{} terminal={} provider={provider:?} process={process:?} badge={badge:?} collection={collection:?} end={end:?} pending={} unverified={} resolved={} response={}",
+        agent.agent_run_id,
+        agent.terminal_id,
+        agent.pending_requests,
+        agent.unverified_requests,
+        agent.resolved_requests,
+        agent.response_observed_unix_ms.is_some(),
+    );
+    if let Some(process) = agent.process_identity {
+        print!(" pid={}", process.pid);
+    }
+    if let Some(session) = agent.provider_session_id {
+        print!(" session={session}");
+    }
+    if let Some(version) = agent.qualified_provider_version {
+        print!(" version={version}");
+    }
+    println!();
 }
 
 fn runtime_path(override_path: Option<PathBuf>) -> Result<PathBuf> {

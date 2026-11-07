@@ -18,6 +18,7 @@ const WRITER_POLICY: &str = "exclusive_or_reject";
 pub enum PeerRole {
     Tui,
     Control,
+    Collector,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -117,7 +118,8 @@ impl Session {
 
         let body = known_body(request)?;
         match (self.role, body) {
-            (_, Body::Ping(_))
+            (PeerRole::Tui | PeerRole::Control, Body::Ping(_))
+            | (PeerRole::Collector, Body::CollectHook(_))
             | (
                 PeerRole::Control,
                 Body::GetHost(_)

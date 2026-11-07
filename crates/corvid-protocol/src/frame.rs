@@ -10,6 +10,7 @@ use crate::wire::{Envelope, RenderHeader};
 
 pub const FRAME_PREAMBLE: [u8; 4] = *b"CRV1";
 pub const CONTROL_LIMIT: usize = 256 * 1024;
+const COLLECTOR_LIMIT: usize = 8 * 1024;
 pub const RENDER_LIMIT: usize = 4 * 1024 * 1024;
 
 const STRUCTURED: u8 = 1;
@@ -19,6 +20,7 @@ const RENDER_HEADER_LIMIT: usize = 16 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameRole {
     StructuredOnly,
+    Collector,
     TuiOutput,
 }
 
@@ -26,18 +28,26 @@ impl FrameRole {
     fn limit(self) -> usize {
         match self {
             Self::StructuredOnly => CONTROL_LIMIT,
+            Self::Collector => COLLECTOR_LIMIT,
             Self::TuiOutput => RENDER_LIMIT,
         }
     }
 
     fn check(self, length: usize, kind: u8) -> Result<(), FrameError> {
         match kind {
-            STRUCTURED if length > CONTROL_LIMIT => Err(FrameError::TooLarge),
+            STRUCTURED if length > self.structured_limit() => Err(FrameError::TooLarge),
             STRUCTURED => Ok(()),
             RENDER if self != Self::TuiOutput => Err(FrameError::WrongRole),
             RENDER if length > RENDER_LIMIT => Err(FrameError::TooLarge),
             RENDER => Ok(()),
             _ => Err(FrameError::UnknownKind(kind)),
+        }
+    }
+
+    fn structured_limit(self) -> usize {
+        match self {
+            Self::Collector => COLLECTOR_LIMIT,
+            _ => CONTROL_LIMIT,
         }
     }
 }
@@ -213,7 +223,7 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     }
 
     pub async fn envelope(&mut self, envelope: &Envelope) -> Result<(), FrameError> {
-        if envelope.encoded_len() >= CONTROL_LIMIT {
+        if envelope.encoded_len() >= self.role.structured_limit() {
             return Err(FrameError::TooLarge);
         }
 
