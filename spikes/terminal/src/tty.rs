@@ -3,7 +3,7 @@ use std::io::{self, IsTerminal, Stdout, Write};
 use anyhow::{Result, ensure};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 
-use crate::viewport::Viewport;
+use corvid_core::Viewport;
 
 pub struct OuterTty {
     stdout: Stdout,
@@ -25,7 +25,7 @@ impl OuterTty {
 
     pub fn viewport() -> Result<Viewport> {
         let (cols, rows) = size()?;
-        Viewport::new(cols, rows)
+        Ok(Viewport::new(cols, rows)?)
     }
 
     pub fn write(&mut self, ansi: &str) -> io::Result<()> {

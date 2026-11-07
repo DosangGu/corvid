@@ -8,11 +8,12 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+corvid-core.workspace = true
+corvid-daemon.workspace = true
 crossterm.workspace = true
 nix = { workspace = true, features = ["fs", "poll"] }
 portable-pty.workspace = true
 signal-hook.workspace = true
-vt100.workspace = true
 
 [lints]
 workspace = true

@@ -1,52 +1,18 @@
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Duration;
 
-use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetHost, HostInfo};
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello};
-use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 
-const BINARY: &str = env!("CARGO_BIN_EXE_corvid");
-const WAIT: Duration = Duration::from_secs(8);
-
-fn command(runtime: &Path) -> Command {
-    let mut command = Command::new(BINARY);
-    command.arg("--runtime-dir").arg(runtime).kill_on_drop(true);
-    command
-}
-
-async fn daemon(runtime: &Path, state: &Path) -> Child {
-    let mut daemon = command(runtime)
-        .arg("daemon")
-        .arg("--state-dir")
-        .arg(state)
-        .spawn()
-        .unwrap();
-    timeout(WAIT, async {
-        loop {
-            assert!(
-                daemon.try_wait().unwrap().is_none(),
-                "daemon exited during startup"
-            );
-            if let Ok(directory) = RuntimeDir::open(runtime)
-                && directory.connect(SocketRole::Control).await.is_ok()
-            {
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    daemon
-}
+use common::{WAIT, command, daemon};
 
 async fn local_host(runtime: &Path) -> String {
     let output = timeout(WAIT, command(runtime).args(["control", "host"]).output())

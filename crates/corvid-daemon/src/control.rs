@@ -17,8 +17,11 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CAPABILITIES: &[&str] = &["host.v1", "ping.v1"];
 
 pub(crate) async fn serve(stream: UnixStream, identity: &Identity) -> Result<()> {
-    let Some((session, mut reader, mut writer)) =
-        timeout(COMMAND_TIMEOUT, handshake(stream, identity)).await??
+    let Some((session, mut reader, mut writer)) = timeout(
+        COMMAND_TIMEOUT,
+        handshake(stream, identity, PeerRole::Control, CAPABILITIES),
+    )
+    .await??
     else {
         return Ok(());
     };
@@ -48,9 +51,18 @@ type Connection = (
     FrameWriter<OwnedWriteHalf>,
 );
 
-async fn handshake(stream: UnixStream, identity: &Identity) -> Result<Option<Connection>> {
+pub(crate) async fn handshake(
+    stream: UnixStream,
+    identity: &Identity,
+    role: PeerRole,
+    capabilities: &[&str],
+) -> Result<Option<Connection>> {
     let (read, write) = stream.into_split();
-    let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
+    let output = match role {
+        PeerRole::Control => FrameRole::StructuredOnly,
+        PeerRole::Tui => FrameRole::TuiOutput,
+    };
+    let mut writer = FrameWriter::start(write, output).await?;
     let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
     let request = reader
         .next_envelope()
@@ -58,10 +70,10 @@ async fn handshake(stream: UnixStream, identity: &Identity) -> Result<Option<Con
         .context("missing control Hello")?;
     match accept_hello(
         &request,
-        PeerRole::Control,
+        role,
         &identity.host_id,
         &identity.epoch,
-        CAPABILITIES,
+        capabilities,
     ) {
         Ok((session, reply)) => {
             writer.envelope(&reply).await?;

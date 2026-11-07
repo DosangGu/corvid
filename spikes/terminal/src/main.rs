@@ -1,7 +1,4 @@
-mod pty;
-mod screen;
 mod tty;
-mod viewport;
 
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
@@ -17,10 +14,9 @@ use nix::poll::{PollFd, PollFlags, poll};
 use portable_pty::CommandBuilder;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::pty::TerminalPty;
-use crate::screen::TerminalScreen;
 use crate::tty::OuterTty;
-use crate::viewport::Viewport;
+use corvid_core::Viewport;
+use corvid_daemon::terminal::{TerminalPty, TerminalScreen};
 
 const BUFFER_BYTES: usize = 8192;
 const INPUT_LIMIT: usize = 128 * 1024;

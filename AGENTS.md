@@ -4,9 +4,10 @@
 
 Corvid is a Rust TUI coding-agent multiplexer. Read `docs/00_project_design.md`
 before architectural changes. The workspace has `crates/corvid/` for the CLI,
-`corvid-daemon` for daemon services, `corvid-client` for client connections,
+`corvid-daemon` for PTYs and daemon services, `corvid-client` for IPC and TTY,
+`corvid-core` for domain types,
 `corvid-protocol` for Protobuf and Unix transport, and `spikes/terminal/` for terminal
-qualification. The domain and companion packages come later.
+qualification. The companion comes later.
 
 ## Build, Test, and Development Commands
 

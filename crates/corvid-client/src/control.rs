@@ -1,16 +1,14 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use corvid_protocol::unix::{RuntimeDir, SocketRole};
+use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetHost, HostInfo, Ping};
-use corvid_protocol::{
-    COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault,
-    check_hello_result, hello,
-};
-use tokio::net::UnixStream;
+use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
 use tokio::time::timeout;
 use uuid::Uuid;
+
+use crate::connection::{Connection, open};
 
 pub async fn host(runtime: &Path) -> Result<HostInfo> {
     match request(runtime, Body::GetHost(GetHost {}), "host.v1").await? {
@@ -27,36 +25,20 @@ pub async fn ping(runtime: &Path) -> Result<()> {
 }
 
 async fn request(runtime: &Path, request: Body, capability: &str) -> Result<Body> {
-    let stream = connect(runtime).await?;
-    timeout(COMMAND_TIMEOUT, exchange(stream, request, capability))
+    let stream = open(runtime, SocketRole::Control).await?;
+    let connection =
+        Connection::establish(stream, PeerRole::Control, vec![capability.to_owned()]).await?;
+    timeout(COMMAND_TIMEOUT, exchange(connection, request))
         .await
         .context("control command timed out")?
 }
 
-pub(crate) async fn connect(path: &Path) -> Result<UnixStream> {
-    let runtime = RuntimeDir::open(path).context("DaemonUnavailable")?;
-    runtime
-        .connect(SocketRole::Control)
-        .await
-        .context("DaemonUnavailable")
-}
-
-async fn exchange(stream: UnixStream, body: Body, capability: &str) -> Result<Body> {
-    let (read, write) = stream.into_split();
-    let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
-    let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
-    let greeting = hello(
-        Uuid::new_v4().to_string(),
-        Some(Uuid::new_v4().to_string()),
-        vec![capability.to_owned()],
-    );
-    writer.envelope(&greeting).await?;
-    let reply = reader
-        .next_envelope()
-        .await?
-        .context("daemon closed during Hello")?;
-    let session = check_hello_result(&greeting, &reply, PeerRole::Control)?;
-
+async fn exchange(connection: Connection, body: Body) -> Result<Body> {
+    let Connection {
+        session,
+        mut reader,
+        mut writer,
+    } = connection;
     let request = session.envelope(Some(Uuid::new_v4().to_string()), body);
     writer.envelope(&request).await?;
     let reply = reader

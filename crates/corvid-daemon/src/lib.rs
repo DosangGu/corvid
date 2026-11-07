@@ -1,5 +1,7 @@
 mod control;
 mod identity;
+pub mod terminal;
+mod tui;
 
 use std::future::Future;
 use std::path::Path;
@@ -11,8 +13,10 @@ use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use tokio::task::JoinSet;
 
 use crate::identity::Identity;
+use crate::terminal::TerminalHandle;
 
 const MAX_CONTROL_CONNECTIONS: usize = 8;
+const MAX_TUI_CONNECTIONS: usize = 8;
 
 pub async fn run(
     runtime_path: &Path,
@@ -24,13 +28,17 @@ pub async fn run(
     let state = RuntimeDir::create_all(state_path)?;
     let identity = Arc::new(Identity::load(&state)?);
     let control_socket = instance.bind(SocketRole::Control).await?;
+    let client_socket = instance.bind(SocketRole::Client).await?;
+    let (terminal, worker) = TerminalHandle::start();
     let mut controls = JoinSet::new();
+    let mut clients = JoinSet::new();
     tokio::pin!(shutdown);
 
     loop {
         tokio::select! {
             () = &mut shutdown => break,
             _ = controls.join_next(), if !controls.is_empty() => {}
+            _ = clients.join_next(), if !clients.is_empty() => {}
             peer = control_socket.accept() => match peer {
                 Ok(stream) if controls.len() < MAX_CONTROL_CONNECTIONS => {
                     let identity = Arc::clone(&identity);
@@ -38,9 +46,21 @@ pub async fn run(
                 }
                 Ok(_) => {}
                 Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+            },
+            peer = client_socket.accept() => match peer {
+                Ok(stream) if clients.len() < MAX_TUI_CONNECTIONS => {
+                    let identity = Arc::clone(&identity);
+                    let terminal = terminal.clone();
+                    clients.spawn(async move { tui::serve(stream, &identity, terminal).await });
+                }
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             }
         }
     }
     controls.shutdown().await;
+    clients.shutdown().await;
+    drop(terminal);
+    worker.await?;
     Ok(())
 }

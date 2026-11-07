@@ -4,7 +4,7 @@ use std::mem;
 use anyhow::{Result, ensure};
 use vt100::{Callbacks, Parser, Screen};
 
-use crate::viewport::Viewport;
+use corvid_core::Viewport;
 
 const SCROLLBACK_ROWS: usize = 512;
 const MAX_REPLY_BYTES: usize = 32 * 1024;
@@ -100,9 +100,22 @@ impl TerminalScreen {
     }
 
     pub fn redraw(&self) -> Result<String> {
+        self.render(None)
+    }
+
+    pub(crate) fn snapshot(&self) -> Screen {
+        self.parser.screen().clone()
+    }
+
+    pub(crate) fn render(&self, previous: Option<&Screen>) -> Result<String> {
         let screen = self.parser.screen();
-        let mut frame = String::from(RESET_DRAWING);
-        frame.push_str(&screen.contents_formatted());
+        let mut frame = if let Some(previous) = previous {
+            screen.contents_diff(previous)
+        } else {
+            let mut frame = String::from(RESET_DRAWING);
+            frame.push_str(&screen.contents_formatted());
+            frame
+        };
 
         // Only these input modes are part of the spike's outer terminal profile.
         let cursor = if screen.application_cursor() {

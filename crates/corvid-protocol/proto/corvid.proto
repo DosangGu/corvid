@@ -82,6 +82,12 @@ message Attach {
   Viewport viewport = 2;
   repeated string terminal_capabilities = 3;
   AttachRole requested_role = 4;
+  LaunchCommand launch = 5;
+}
+
+message LaunchCommand {
+  repeated bytes argv = 1;
+  optional bytes cwd = 2;
 }
 
 message ViewSelection {

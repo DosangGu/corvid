@@ -2,6 +2,7 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
+use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::Envelope;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{
@@ -24,7 +25,7 @@ pub async fn relay(runtime: &Path) -> Result<()> {
     .await
     .context("relay preamble timed out")??;
 
-    let stream = match crate::control::connect(runtime).await {
+    let stream = match crate::connection::open(runtime, SocketRole::Control).await {
         Ok(stream) => stream,
         Err(error) => {
             timeout(COMMAND_TIMEOUT, unavailable(&mut incoming, &mut outgoing)).await??;

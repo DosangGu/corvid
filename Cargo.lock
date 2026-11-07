@@ -179,8 +179,19 @@ name = "corvid-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "corvid-core",
  "corvid-protocol",
+ "crossterm",
+ "nix 0.31.3",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "corvid-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
  "uuid",
 ]
 
@@ -189,13 +200,16 @@ name = "corvid-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "corvid-core",
  "corvid-protocol",
  "nix 0.31.3",
+ "portable-pty",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "uuid",
+ "vt100",
 ]
 
 [[package]]
@@ -217,11 +231,12 @@ name = "corvid-terminal-spike"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "corvid-core",
+ "corvid-daemon",
  "crossterm",
  "nix 0.31.3",
  "portable-pty",
  "signal-hook",
- "vt100",
 ]
 
 [[package]]

@@ -3,10 +3,18 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 
 use anyhow::{Context, Result};
+use corvid_core::Viewport;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
-use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, native_pty_system};
+use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 
-use crate::viewport::Viewport;
+fn pty_size(viewport: Viewport) -> PtySize {
+    PtySize {
+        rows: viewport.rows.get(),
+        cols: viewport.cols.get(),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
 
 pub struct TerminalPty {
     master: Box<dyn MasterPty + Send>,
@@ -16,7 +24,7 @@ pub struct TerminalPty {
 
 impl TerminalPty {
     pub fn spawn(command: CommandBuilder, viewport: Viewport) -> Result<Self> {
-        let pair = native_pty_system().openpty(viewport.into())?;
+        let pair = native_pty_system().openpty(pty_size(viewport))?;
         let raw_fd = pair
             .master
             .as_raw_fd()
@@ -37,7 +45,7 @@ impl TerminalPty {
     }
 
     pub fn resize(&self, viewport: Viewport) -> Result<()> {
-        self.master.resize(viewport.into())
+        self.master.resize(pty_size(viewport))
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {

@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -26,6 +27,15 @@ enum Command {
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
+    /// Attach to the live terminal, or start one explicitly.
+    Attach {
+        /// Start a new terminal with the user's shell.
+        #[arg(long)]
+        new: bool,
+        /// Program and arguments for an explicitly started terminal.
+        #[arg(last = true)]
+        argv: Vec<OsString>,
+    },
     /// Send a read-only command or relay the control protocol over stdio.
     Control {
         #[arg(long, conflicts_with = "request")]
@@ -44,7 +54,7 @@ enum ControlRequest {
 fn main() -> ExitCode {
     let options = Options::parse();
     match execute(options) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(error) => {
             eprintln!("corvid: {error:#}");
             ExitCode::FAILURE
@@ -52,7 +62,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn execute(options: Options) -> Result<()> {
+fn execute(options: Options) -> Result<u32> {
     let executor = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -64,7 +74,7 @@ fn execute(options: Options) -> Result<()> {
     result
 }
 
-async fn run(options: Options) -> Result<()> {
+async fn run(options: Options) -> Result<u32> {
     let runtime = runtime_path(options.runtime_dir)?;
     match options.command {
         Command::Daemon { state_dir } => {
@@ -78,8 +88,13 @@ async fn run(options: Options) -> Result<()> {
                 }
             })
             .await
+            .map(|()| 0)
         }
-        Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await,
+        Command::Attach { new, argv } => {
+            let launch = (new || !argv.is_empty()).then_some(argv);
+            corvid_client::attach(&runtime, launch).await
+        }
+        Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
         Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {
             ControlRequest::Host => {
                 let host = corvid_client::host(&runtime).await?;
@@ -87,12 +102,12 @@ async fn run(options: Options) -> Result<()> {
                     "host_id={}\nserver_epoch={}",
                     host.host_id, host.server_epoch
                 );
-                Ok(())
+                Ok(0)
             }
             ControlRequest::Ping => {
                 corvid_client::ping(&runtime).await?;
                 println!("pong");
-                Ok(())
+                Ok(0)
             }
         },
     }
