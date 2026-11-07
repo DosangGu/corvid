@@ -192,6 +192,7 @@ impl Control<'_> {
                             let frame = snapshot::event(
                                 &self.session, &live.watch.id, None, Body::Error(fault.clone().into_wire()),
                             );
+                            drop(live);
                             timeout(COMMAND_TIMEOUT, self.writer.envelope(&frame)).await??;
                         }
                         return Err(error);

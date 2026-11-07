@@ -25,9 +25,11 @@ use tokio::task::JoinSet;
 
 use crate::collector::HookEnvironment;
 use crate::identity::Identity;
+use crate::publication::MAX_WATCHES;
 use crate::workspaces::Workspaces;
 
-const MAX_CONTROL_CONNECTIONS: usize = 8;
+// Keep room for ordinary requests when the snapshot watch limit is full.
+const MAX_CONTROL_CONNECTIONS: usize = MAX_WATCHES + 8;
 const MAX_TUI_CONNECTIONS: usize = 8;
 const MAX_COLLECTOR_CONNECTIONS: usize = 32;
 

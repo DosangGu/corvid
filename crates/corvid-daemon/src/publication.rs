@@ -10,7 +10,7 @@ use prost::Message;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
-const MAX_WATCHES: usize = 8;
+pub(crate) const MAX_WATCHES: usize = 8;
 const MAX_QUEUED_DELTAS: usize = 1024;
 const MAX_QUEUED_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const BODY_BUDGET: usize = CONTROL_LIMIT - 1024;
@@ -260,6 +260,11 @@ impl Watch {
         } else {
             Ok(())
         }
+    }
+
+    pub(crate) async fn invalidated(&self) {
+        let mut overflow = self.overflow.clone();
+        let _ = overflow.wait_for(|value| *value).await;
     }
 
     pub(crate) async fn next(&mut self) -> Result<Arc<Delta>, ProtocolFault> {

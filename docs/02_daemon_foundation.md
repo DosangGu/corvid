@@ -79,6 +79,12 @@ leases. `corvid control snapshot` reads a consistent view at one daemon sequence
 transaction. Its Rust client retains the last valid cache on disconnect and
 reports the watch unavailable. Establish a fresh watch to resynchronize.
 
+The daemon admits up to eight snapshot watches across sixteen control
+connections. Each watch queues up to 1,024 deltas or 4 MiB of changes. The
+daemon reports `ResyncRequired` if it detects overflow at a frame boundary.
+If overflow interrupts a frame write, it closes that connection. A fresh
+watch always starts with a full snapshot.
+
 In an attached TUI, press Ctrl-] then r to display a single-use pairing code.
 Use Enter or Esc to restore the terminal display. Read the current host and
 epoch with `corvid control host`, then run the following command and enter the
@@ -175,7 +181,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Managed agent process | Two isolated CLI fixtures launched in the same directory have distinct run IDs, terminal IDs, and Linux process incarnations. A verified exit changes only that run. A subsequent launch in the same pane gets new run and terminal IDs. Claude Code 2.1.318 printed its version and exited successfully through the managed launch path. |
 | Silent process changes (A27) | A managed shell fixture changes its foreground group without terminal output, then replaces its executable under the same PID. Focus rejects the old run even before the periodic sample, and the next sample retires that run while its PTY stays live. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
-| Backpressure | A client that withholds a frame acknowledgement loses its lease after five seconds. A child writing 32 KiB bursts continues and control ping stays responsive. Reattach begins with a full frame. |
+| Backpressure (A13) | Eight watchers stop reading while the daemon publishes 48 moves between large workspaces. A ninth watch receives `LimitExceeded`, control ping and input to a separate PTY succeed, and a new watch resynchronizes after overflow. The output-heavy PTY answers cursor position queries while the stalled renderer loses its lease. Reattach begins with a full frame. |
 | SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |
 | Last login (A21) | Debian 13 in a disposable QEMU guest ran the shipped user unit with systemd 257.13 and OpenSSH 10.0p2 using PAM. The fixture passed after clean detach and forced SSH loss with `KillUserProcesses=yes`, `UserStopDelaySec=0`, and lingering enabled for the Corvid account. |
 
@@ -200,3 +206,20 @@ The SSH fixture uses temporary keys, a pinned host key, a loopback-only SSH
 listener, and a transient user unit. It ran with other user sessions active and
 lingering disabled. Use the last-login fixture to qualify the logout policy on
 the intended deployment host.
+
+### Backpressure measurements
+
+```sh
+cargo test --locked -p corvid --test routing \
+  stalled_render_and_snapshot_consumers_release_their_connections -- --exact --nocapture
+```
+
+Three debug runs on Linux 7.2.14 with a Ryzen 9 5950X used four live PTYs and
+eight unread watch streams over Unix sockets. Each run moved a hidden tab 48
+times between workspaces with 120 one-KiB tab labels, taking 820–829 ms.
+Across the runs, the largest local ping round trip was 0.95 ms and the largest
+input-to-redraw sample on a separate PTY was 40.4 ms. The flooding PTY verified
+153–154 cursor position replies from its 32 KiB output bursts before the
+render client disconnected at about five seconds. The daemon's peak resident
+memory from `/proc` was 22.6–22.8 MiB. These measurements cover the four-PTY
+local workload on the recorded host.

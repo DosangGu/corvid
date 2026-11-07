@@ -22,14 +22,17 @@ use corvid_protocol::wire::{
     SnapshotWatch, ViewSelection, Viewport,
 };
 use corvid_protocol::{
-    Frame, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
+    Frame, FrameError, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
     check_hello_result, decode_envelope, hello,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::time::{sleep, timeout};
+use tokio::time::{Instant, sleep, timeout};
 use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon};
+
+const PRESSURE_MOVES: usize = 48;
+const PRESSURE_WATCHES: usize = 8;
 
 struct Tui {
     reader: FrameReader<OwnedReadHalf>,
@@ -1549,44 +1552,271 @@ async fn resize_fences_previous_route_before_any_pty_write() {
 }
 
 #[tokio::test]
-async fn stalled_render_ack_releases_writer_while_pty_and_control_progress() {
+async fn stalled_render_and_snapshot_consumers_release_their_connections() {
     let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let runtime = temporary.path().join("runtime");
-    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
-    timeout(WAIT, async {
+    let state = temporary.path().join("state");
+    let layout = PressureLayout::seed(&state);
+    let daemon = daemon(&runtime, &state).await;
+    let daemon_pid = daemon.id().unwrap();
+
+    timeout(Duration::from_secs(15), async {
+        let mut independent = layout.open_views(&runtime).await;
+        let mut watchers = stall_watchers(&runtime).await;
+        let mut control = ControlWire::connect(&runtime, "ping.v1").await;
+
         let progress = temporary.path().join("progress");
-        let mut argv = shell(
-            "i=0; while :; do i=$((i+1)); printf '%s\\n' \"$i\" >> \"$1\"; printf '%32768d\\n' \"$i\"; sleep .02; done",
-        );
-        argv.push(b"progress-fixture".to_vec());
-        argv.push(progress.as_os_str().as_encoded_bytes().to_vec());
-        let mut stalled = Tui::attach(&runtime, Some(argv)).await;
+        let mut stalled = attach_at(&runtime, &layout.flood, flooding_child(&progress)).await;
         let Some(Frame::Render(_)) = stalled.reader.next_frame().await.unwrap() else {
             panic!("expected initial render");
         };
-        sleep(Duration::from_millis(150)).await;
-        let ping = timeout(Duration::from_secs(2), command(&runtime).args(["control", "ping"]).output())
-            .await.unwrap().unwrap();
-        assert!(ping.status.success());
-        let mut independent = Tui::attach_target(&runtime, Attach {
-            create_workspace: Some("Independent".into()),
-            launch: Some(echo_fixture("INDEPENDENT")),
-            ..Default::default()
-        }).await;
+        let stalled_since = Instant::now();
         let mut independent_output = Vec::new();
-        wait_for_text(&mut independent, &mut independent_output, "INDEPENDENT-READY").await;
+        let pressure = layout.churn(&mut independent, &mut control, &mut independent_output).await;
+        assert_watch_disconnected(&mut watchers[0]).await;
+
+        let recovered = corvid_client::watch_snapshot(&runtime).await.unwrap();
+        assert!(recovered.state().snapshot().sequence() >= pressure.sequence);
         independent.input(independent.route.clone(), 1, b"OK\n").await;
         wait_for_text(&mut independent, &mut independent_output, "INDEPENDENT=OK").await;
-        assert!(stalled.reader.next_frame().await.unwrap().is_none());
-        let count = std::fs::read_to_string(progress).unwrap().lines().count();
-        assert!(count > 20, "PTY stalled while waiting for render acknowledgement");
 
-        let mut reattached = Tui::attach(&runtime, None).await;
+        assert!(stalled.reader.next_frame().await.unwrap().is_none());
+        let render_timeout = stalled_since.elapsed();
+        let queries = std::fs::read_to_string(progress).unwrap().lines().count();
+        assert!(queries > 20, "PTY stopped parsing output or replying to queries");
+
+        let mut reattached = Tui::attach_target(&runtime, Attach {
+            workspace_id: Some(layout.flood.workspace_id.clone()),
+            ..Default::default()
+        }).await;
         assert_eq!(reattached.route.terminal_id, stalled.route.terminal_id);
         assert_ne!(reattached.route.client_id, stalled.route.client_id);
         let Some(Frame::Render(frame)) = reattached.reader.next_frame().await.unwrap() else {
             panic!("expected full redraw");
         };
         assert!(frame.header.base_frame_id.is_none());
+        reattached.send(Body::FrameApplied(FrameApplied {
+            render_generation: frame.header.render_generation,
+            frame_id: frame.header.frame_id,
+        })).await;
+        let mut redraw = frame.ansi;
+        wait_for_text(&mut reattached, &mut redraw, "ORDERED-OUTPUT").await;
+
+        let status = std::fs::read_to_string(format!("/proc/{daemon_pid}/status")).unwrap();
+        let high_water = status.lines().find(|line| line.starts_with("VmHWM:")).unwrap();
+        eprintln!("pressure moves={PRESSURE_MOVES} watch_count={PRESSURE_WATCHES} churn={:?} ping_max={:?} input_max={:?} render_disconnect={render_timeout:?} pty_queries={queries} {high_water}",
+            pressure.elapsed, pressure.ping_max, pressure.input_max);
+    }).await.unwrap();
+}
+
+struct PressureLayout {
+    views: [ViewSelection; 2],
+    hidden: ViewSelection,
+    flood: ViewSelection,
+}
+
+struct PressureSample {
+    sequence: u64,
+    elapsed: Duration,
+    ping_max: Duration,
+    input_max: Duration,
+}
+
+impl PressureLayout {
+    fn seed(state: &Path) -> Self {
+        let (left, left_tab) = pressure_tab("Left", &Uuid::new_v4().to_string());
+        let (right, right_tab) = pressure_tab("Right", &Uuid::new_v4().to_string());
+        let (hidden, hidden_tab) = pressure_tab("Movable", &left.workspace_id);
+        let (flood, flood_tab) = pressure_tab("Flood", &Uuid::new_v4().to_string());
+        let mut left_tabs = vec![left_tab, hidden_tab];
+        let mut right_tabs = vec![right_tab];
+        let padding = "x".repeat(1024);
+        for _ in 0..60 {
+            left_tabs.push(pressure_tab(&padding, &left.workspace_id).1);
+            right_tabs.push(pressure_tab(&padding, &right.workspace_id).1);
+        }
+
+        let layout = serde_json::json!({"schema_version": 1, "layout": {"workspaces": [
+            {"id": left.workspace_id, "label": "Left", "tabs": left_tabs},
+            {"id": right.workspace_id, "label": "Right", "tabs": right_tabs},
+            {"id": flood.workspace_id, "label": "Flood", "tabs": [flood_tab]},
+        ]}});
+        RuntimeDir::create(state)
+            .unwrap()
+            .replace_private_file("state.json", &serde_json::to_vec(&layout).unwrap())
+            .unwrap();
+        Self {
+            views: [left, right],
+            hidden,
+            flood,
+        }
+    }
+
+    async fn open_views(&self, runtime: &Path) -> Tui {
+        for selection in [&self.hidden, &self.views[1]] {
+            drop(attach_at(runtime, selection, echo_fixture("INDEPENDENT")).await);
+            while !corvid_client::clients(runtime)
+                .await
+                .unwrap()
+                .clients
+                .is_empty()
+            {
+                sleep(Duration::from_millis(10)).await;
+            }
+        }
+        let mut tui = attach_at(runtime, &self.views[0], echo_fixture("INDEPENDENT")).await;
+        tui.send(Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
+            workspace_id: self.views[1].workspace_id.clone(),
+        }))
+        .await;
+        assert!(matches!(
+            tui.next_body(&mut Vec::new()).await,
+            Body::WriterClaimed(_)
+        ));
+        tui
+    }
+
+    async fn churn(
+        &self,
+        tui: &mut Tui,
+        control: &mut ControlWire,
+        output: &mut Vec<u8>,
+    ) -> PressureSample {
+        let started = Instant::now();
+        let mut sequence = 0;
+        let mut ping_max = Duration::ZERO;
+        let mut input_max = Duration::ZERO;
+        for index in 0..PRESSURE_MOVES {
+            let destination = &self.views[(index + 1) % self.views.len()];
+            let moved = tui
+                .move_tab(&self.hidden.tab_id, &destination.workspace_id, output)
+                .await;
+            let Body::TabMoved(moved) = moved else {
+                panic!("unexpected move result {moved:?}")
+            };
+            sequence = moved.commit_sequence;
+
+            if index % 8 == 0 {
+                let start = Instant::now();
+                control.request("ping", Body::Ping(Ping {})).await;
+                let pong = timeout(Duration::from_secs(2), control.next())
+                    .await
+                    .unwrap();
+                assert!(matches!(pong.body, Some(Body::Pong(_))));
+                ping_max = ping_max.max(start.elapsed());
+
+                let marker = format!("pressure-{index}");
+                let start = Instant::now();
+                tui.input(tui.route.clone(), 1, format!("{marker}\n").as_bytes())
+                    .await;
+                wait_for_text(tui, output, &format!("INDEPENDENT={marker}")).await;
+                input_max = input_max.max(start.elapsed());
+            }
+            tui.select(destination).await;
+            tui.moved(output, destination).await;
+        }
+        PressureSample {
+            sequence,
+            elapsed: started.elapsed(),
+            ping_max,
+            input_max,
+        }
+    }
+}
+
+fn pressure_tab(label: &str, workspace: &str) -> (ViewSelection, serde_json::Value) {
+    let location = ViewSelection {
+        workspace_id: workspace.to_owned(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let tab = serde_json::json!({"id": location.tab_id, "label": label, "root": {
+        "kind": "pane", "id": location.pane_id, "last_cwd": null,
+    }});
+    (location, tab)
+}
+
+async fn attach_at(runtime: &Path, selection: &ViewSelection, launch: LaunchCommand) -> Tui {
+    Tui::attach_target(
+        runtime,
+        Attach {
+            workspace_id: Some(selection.workspace_id.clone()),
+            tab_id: Some(selection.tab_id.clone()),
+            launch: Some(launch),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+fn flooding_child(progress: &Path) -> LaunchCommand {
+    let mut argv = shell(
+        r#"
+        stty raw -echo
+        i=0
+        while :; do
+            printf '%32768s\033[3;5H\033[6n' ''
+            reply=$(head -c 6)
+            [ "$reply" = "$(printf '\033[3;5R')" ] || exit 42
+            i=$((i+1))
+            printf '%s\n' "$i" >> "$1"
+            printf '\033[4;1HORDERED-OUTPUT'
+            sleep .02
+        done
+    "#,
+    );
+    argv.push(b"progress-fixture".to_vec());
+    argv.push(progress.as_os_str().as_encoded_bytes().to_vec());
+    LaunchCommand {
+        argv,
+        ..Default::default()
+    }
+}
+
+async fn stall_watchers(runtime: &Path) -> Vec<ControlWire> {
+    let mut watchers = Vec::new();
+    for _ in 0..PRESSURE_WATCHES {
+        let mut watch = ControlWire::connect(runtime, WATCH_CAPABILITY).await;
+        watch
+            .request("watch", Body::SnapshotWatch(SnapshotWatch {}))
+            .await;
+        loop {
+            match watch.next().await.body {
+                Some(Body::WatchReady(_)) => break,
+                Some(Body::SnapshotBegin(_) | Body::SnapshotChunk(_) | Body::SnapshotEnd(_)) => {}
+                body => panic!("unexpected watch setup frame {body:?}"),
+            }
+        }
+        watchers.push(watch);
+    }
+    let mut excess = ControlWire::connect(runtime, WATCH_CAPABILITY).await;
+    excess
+        .request("watch", Body::SnapshotWatch(SnapshotWatch {}))
+        .await;
+    assert!(
+        matches!(excess.next().await.body, Some(Body::Error(fault)) if fault.code == "LimitExceeded")
+    );
+    watchers
+}
+
+async fn assert_watch_disconnected(watch: &mut ControlWire) {
+    timeout(Duration::from_secs(2), async {
+        let mut last_sequence = None;
+        loop {
+            match watch.reader.next_envelope().await {
+                Ok(None) | Err(FrameError::Truncated) => break,
+                Ok(Some(frame)) if matches!(&frame.body, Some(Body::SnapshotDelta(_))) => {
+                    let sequence = frame.sequence.unwrap();
+                    assert!(last_sequence.is_none_or(|previous| sequence == previous + 1));
+                    last_sequence = Some(sequence);
+                }
+                Ok(Some(frame)) if matches!(&frame.body, Some(Body::Error(fault)) if fault.code == "ResyncRequired") => {
+                    assert!(watch.reader.next_envelope().await.unwrap().is_none());
+                    break;
+                }
+                result => panic!("unexpected stalled watch result {result:?}"),
+            }
+        }
+        assert!(last_sequence.is_some(), "watch closed before receiving any deltas");
     }).await.unwrap();
 }
