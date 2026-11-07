@@ -33,6 +33,18 @@ enum Command {
         /// Start a new terminal with the user's shell.
         #[arg(long)]
         new: bool,
+        /// Attach to a workspace by ID.
+        #[arg(long, conflicts_with = "new_workspace")]
+        workspace: Option<String>,
+        /// Attach to a tab by ID within the workspace.
+        #[arg(long, conflicts_with_all = ["new_workspace", "new_tab"])]
+        tab: Option<String>,
+        /// Create a workspace with this label and open a terminal.
+        #[arg(long)]
+        new_workspace: Option<String>,
+        /// Create a tab with this label and open a terminal.
+        #[arg(long)]
+        new_tab: Option<String>,
         /// Start the shell in the last recorded directory if it still exists.
         #[arg(long, requires = "new")]
         restore_cwd: bool,
@@ -104,15 +116,23 @@ async fn run(options: Options) -> Result<u32> {
             restore_cwd,
             escape_delay_ms,
             argv,
+            workspace,
+            tab,
+            new_workspace,
+            new_tab,
         } => {
-            let launch = (new || !argv.is_empty()).then_some(argv);
-            corvid_client::attach(
-                &runtime,
+            let launch = (new || !argv.is_empty() || new_workspace.is_some() || new_tab.is_some())
+                .then_some(argv);
+            let options = corvid_client::AttachOptions {
                 launch,
-                Duration::from_millis(escape_delay_ms),
                 restore_cwd,
-            )
-            .await
+                escape_delay: Duration::from_millis(escape_delay_ms),
+                workspace,
+                tab,
+                new_workspace,
+                new_tab,
+            };
+            corvid_client::attach(&runtime, options).await
         }
         Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
         Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {

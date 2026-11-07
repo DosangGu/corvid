@@ -124,6 +124,87 @@ impl Layout {
         })
     }
 
+    pub fn locate(&self, workspace: Option<Uuid>, tab: Option<Uuid>) -> Option<Location> {
+        let workspace = match workspace {
+            Some(id) => self
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == id)?,
+            None => self.workspaces.first()?,
+        };
+        let tab = match tab {
+            Some(id) => workspace.tabs.iter().find(|tab| tab.id == id)?,
+            None => workspace.tabs.first()?,
+        };
+        Some(Location {
+            workspace: workspace.id,
+            tab: tab.id,
+            pane: tab.root.first_pane()?,
+        })
+    }
+
+    pub fn add_workspace(
+        &mut self,
+        label: String,
+        tab_label: String,
+    ) -> Result<Location, InvalidLayout> {
+        validate_label(&label)?;
+        if self.workspaces.len() >= MAX_WORKSPACES {
+            return Err(InvalidLayout);
+        }
+        let workspace = Uuid::new_v4();
+        let (tab, pane) = self.make_tab(tab_label)?;
+        let location = Location {
+            workspace,
+            tab: tab.id,
+            pane,
+        };
+        self.workspaces.push(Workspace {
+            id: workspace,
+            label,
+            tabs: vec![tab],
+        });
+        Ok(location)
+    }
+
+    pub fn add_tab(&mut self, workspace: Uuid, label: String) -> Result<Location, InvalidLayout> {
+        let (tab, pane) = self.make_tab(label)?;
+        let location = Location {
+            workspace,
+            tab: tab.id,
+            pane,
+        };
+        self.workspaces
+            .iter_mut()
+            .find(|item| item.id == workspace)
+            .ok_or(InvalidLayout)?
+            .tabs
+            .push(tab);
+        Ok(location)
+    }
+
+    fn make_tab(&self, label: String) -> Result<(Tab, Uuid), InvalidLayout> {
+        validate_label(&label)?;
+        let tabs = self.workspaces.iter().flat_map(|workspace| &workspace.tabs);
+        if tabs.clone().count() >= MAX_TABS
+            || tabs.map(|tab| tab.root.node_count()).sum::<usize>() >= MAX_NODES
+        {
+            return Err(InvalidLayout);
+        }
+        let pane = Uuid::new_v4();
+        Ok((
+            Tab {
+                id: Uuid::new_v4(),
+                label,
+                root: Node::Pane {
+                    id: pane,
+                    last_cwd: None,
+                },
+            },
+            pane,
+        ))
+    }
+
     pub fn last_cwd(&self, location: Location) -> Option<&CwdObservation> {
         let workspace = self
             .workspaces
@@ -155,6 +236,15 @@ impl Layout {
 }
 
 impl Node {
+    fn node_count(&self) -> usize {
+        match self {
+            Self::Pane { .. } => 1,
+            Self::Split { children, .. } => {
+                1 + children.iter().map(Self::node_count).sum::<usize>()
+            }
+        }
+    }
+
     fn first_pane(&self) -> Option<Uuid> {
         match self {
             Self::Pane { id, .. } => Some(*id),

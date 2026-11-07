@@ -141,6 +141,8 @@ impl Session {
                 | Body::PasteChunk(_)
                 | Body::PasteEnd(_)
                 | Body::ResizeViewport(_)
+                | Body::SelectView(_)
+                | Body::ClaimWorkspaceWriter(_)
                 | Body::FrameApplied(_)
                 | Body::Detach(_),
             ) => Ok(body),

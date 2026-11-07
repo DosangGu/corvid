@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use crate::identity::Identity;
 use crate::metadata::{MetadataView, Recovery, SaveState};
-use crate::terminal::TerminalHandle;
+use crate::workspaces::Workspaces;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CAPABILITIES: &[&str] = &["host.v1", "ping.v1", "connection_status.v1", "list.v1"];
@@ -25,7 +25,7 @@ pub(crate) async fn serve(
     stream: UnixStream,
     identity: &Identity,
     metadata: &MetadataView,
-    terminal: &TerminalHandle,
+    workspaces: &Workspaces,
 ) -> Result<()> {
     let Some((session, mut reader, mut writer)) = timeout(
         COMMAND_TIMEOUT,
@@ -43,8 +43,10 @@ pub(crate) async fn serve(
                 host_id: identity.host_id.clone(),
                 server_epoch: identity.epoch.clone(),
             }),
-            Ok(Body::GetConnectionStatus(_)) => Body::ConnectionStatus(status(metadata, terminal)),
-            Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(workspaces(metadata)),
+            Ok(Body::GetConnectionStatus(_)) => {
+                Body::ConnectionStatus(status(metadata, workspaces.any_live().await))
+            }
+            Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(inventory(metadata)),
             Ok(_) => Body::Error(
                 ProtocolFault::new("UnsupportedCapability", "unavailable control method")
                     .into_wire(),
@@ -57,7 +59,7 @@ pub(crate) async fn serve(
     Ok(())
 }
 
-fn status(metadata: &MetadataView, terminal: &TerminalHandle) -> ConnectionStatus {
+fn status(metadata: &MetadataView, terminal_live: bool) -> ConnectionStatus {
     let persistence = match metadata.save_state() {
         SaveState::Saved => PersistenceState::Saved,
         SaveState::Pending => PersistenceState::Pending,
@@ -69,13 +71,13 @@ fn status(metadata: &MetadataView, terminal: &TerminalHandle) -> ConnectionStatu
         Recovery::Fresh => LayoutRecovery::Fresh,
     };
     ConnectionStatus {
-        terminal_live: terminal.has_live_terminal(),
+        terminal_live,
         persistence: persistence as i32,
         layout_recovery: recovery as i32,
     }
 }
 
-fn workspaces(metadata: &MetadataView) -> WorkspaceList {
+fn inventory(metadata: &MetadataView) -> WorkspaceList {
     let layout = metadata.layout();
     let workspaces = layout
         .workspaces

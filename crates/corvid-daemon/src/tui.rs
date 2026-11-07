@@ -7,31 +7,39 @@ use corvid_core::layout::Location;
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, Attached, LaunchCommand, Pong, RenderHeader, RouteToken, TerminalExited, ViewChanged,
-    ViewSelection, Viewport as WireViewport,
+    Attach, Attached, Envelope, LaunchCommand, Pong, RenderHeader, RouteToken, TerminalExited,
+    ViewChanged, ViewSelection, Viewport as WireViewport, WriterClaimed,
 };
 use corvid_protocol::{
-    COMMAND_TIMEOUT, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame, Session,
+    COMMAND_TIMEOUT, FrameError, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
+    Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::control::handshake;
 use crate::identity::Identity;
-use crate::terminal::{Action, AttachSpec, Event, Launch, TerminalHandle};
+use crate::terminal::{Action, Event, Launch, Render};
+use crate::workspaces::{Active, AttachTarget, Destination, Workspaces};
 
-const CAPABILITIES: &[&str] = &["attach.v1", "render.v1", "ping.v1", "paste.v1"];
+const CAPABILITIES: &[&str] = &[
+    "attach.v1",
+    "render.v1",
+    "ping.v1",
+    "paste.v1",
+    "tabs.v1",
+    "select_view.v1",
+];
 const MAX_INPUT_CHUNK: usize = 8192;
-const EVENTS_CAPACITY: usize = 4;
 
 pub(crate) async fn serve(
     stream: UnixStream,
     identity: &Identity,
-    terminal: TerminalHandle,
-    location: Location,
+    workspaces: &Workspaces,
 ) -> Result<()> {
     let Some((session, mut reader, mut writer)) = timeout(
         COMMAND_TIMEOUT,
@@ -45,18 +53,17 @@ pub(crate) async fn serve(
         .await??
         .context("missing Attach request")?;
     let client = Uuid::new_v4();
-    let (events, receiver) = mpsc::channel(EVENTS_CAPACITY);
-    let attach = match session.validate_request(&request) {
-        Ok(Body::Attach(attach)) => attach_spec(client, attach, events, location),
+    let target = match session.validate_request(&request) {
+        Ok(Body::Attach(attach)) => attach_target(attach),
         Ok(_) => Err(invalid("expected Attach request")),
         Err(error) => Err(error),
     };
-    let route = match attach {
-        Ok(spec) => timeout(COMMAND_TIMEOUT, terminal.attach(spec)).await?,
+    let active = match target {
+        Ok(target) => workspaces.attach(client, target).await,
         Err(error) => Err(error),
     };
-    let route = match route {
-        Ok(route) => route,
+    let active = match active {
+        Ok(active) => active,
         Err(error) => {
             send(
                 &session,
@@ -68,44 +75,283 @@ pub(crate) async fn serve(
             return Ok(());
         }
     };
-
-    let attached = Attached {
-        client_id: client.to_string(),
-        connection_generation: route.connection_generation,
-        route_token: Some(wire_route(route)),
-        writer_leases: vec![location.workspace.to_string()],
-        selection: Some(selection(location)),
-    };
-    send(
-        &session,
-        &mut writer,
+    let result = serve_active(
+        session,
+        reader,
+        writer,
         request.request_id,
-        Body::Attached(attached),
+        active,
+        workspaces,
     )
-    .await?;
-    let result = tokio::select! {
-        result = read_commands(&session, &terminal, client, &mut reader) => result,
-        result = write_events(&session, &mut writer, receiver, location) => result,
-    };
-    terminal.disconnect(client);
+    .await;
+    workspaces.release(client).await;
     result
 }
 
-async fn read_commands(
-    session: &Session,
-    terminal: &TerminalHandle,
-    client: Uuid,
-    reader: &mut FrameReader<OwnedReadHalf>,
+async fn serve_active(
+    session: Session,
+    reader: FrameReader<OwnedReadHalf>,
+    mut writer: FrameWriter<OwnedWriteHalf>,
+    request_id: Option<String>,
+    active: Active,
+    workspaces: &Workspaces,
 ) -> Result<()> {
-    while let Some(request) = reader.next_envelope().await? {
-        let action = match session.validate_request(&request) {
-            Ok(Body::Detach(_)) => return Ok(()),
-            Ok(body) => command(client, body).unwrap_or_else(Action::Rejected),
-            Err(error) => Action::Rejected(error),
-        };
-        terminal.action(client, request.request_id, action).await?;
+    let route = active.route;
+    let attached = Attached {
+        client_id: route.client_id.to_string(),
+        connection_generation: route.connection_generation,
+        route_token: Some(wire_route(route)),
+        writer_leases: vec![active.location.workspace.to_string()],
+        selection: Some(selection(active.location)),
+    };
+    send(&session, &mut writer, request_id, Body::Attached(attached)).await?;
+    TuiConnection {
+        session,
+        writer,
+        active,
+        workspaces,
     }
-    Ok(())
+    .run(reader)
+    .await
+}
+
+struct Requests {
+    incoming: mpsc::Receiver<Result<Envelope, FrameError>>,
+    task: JoinHandle<()>,
+}
+
+impl Requests {
+    fn start(mut reader: FrameReader<OwnedReadHalf>) -> Self {
+        let (sender, incoming) = mpsc::channel(4);
+        let task = tokio::spawn(async move {
+            loop {
+                match reader.next_envelope().await {
+                    Ok(Some(request)) => {
+                        if sender.send(Ok(request)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => return,
+                    Err(error) => {
+                        let _ = sender.send(Err(error)).await;
+                        return;
+                    }
+                }
+            }
+        });
+        Self { incoming, task }
+    }
+}
+
+impl Drop for Requests {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+struct TuiConnection<'a> {
+    session: Session,
+    writer: FrameWriter<OwnedWriteHalf>,
+    active: Active,
+    workspaces: &'a Workspaces,
+}
+
+impl TuiConnection<'_> {
+    async fn run(mut self, reader: FrameReader<OwnedReadHalf>) -> Result<()> {
+        let mut requests = Requests::start(reader);
+        loop {
+            tokio::select! {
+                request = requests.incoming.recv() => {
+                    let Some(request) = request else { return Ok(()) };
+                    if self.request(request?).await? { return Ok(()) }
+                }
+                event = self.active.events.recv() => {
+                    let Some(event) = event else { return Ok(()) };
+                    if self.event(event).await? { return Ok(()) }
+                }
+            }
+        }
+    }
+
+    async fn request(&mut self, request: Envelope) -> Result<bool> {
+        let client = self.active.route.client_id;
+        let body = match self.session.validate_request(&request) {
+            Ok(body) => body,
+            Err(fault) => {
+                self.fault(request.request_id, fault).await?;
+                return Ok(false);
+            }
+        };
+        match body {
+            Body::Detach(_) => return Ok(true),
+            Body::SelectView(view) => {
+                let destination = exact_destination(view, self.active.route.view_revision);
+                match destination {
+                    Ok(destination) => self.switch(destination, request.request_id, false).await?,
+                    Err(fault) => self.fault(request.request_id, fault).await?,
+                }
+            }
+            Body::ClaimWorkspaceWriter(claim) => {
+                let workspace = parse_id(&claim.workspace_id);
+                let result = match workspace {
+                    Ok(workspace) => {
+                        self.workspaces
+                            .claim(client, workspace, self.active.viewport)
+                            .await
+                    }
+                    Err(fault) => Err(fault),
+                };
+                match result {
+                    Ok(generation) => {
+                        let reply = Body::WriterClaimed(WriterClaimed {
+                            workspace_id: claim.workspace_id.clone(),
+                            generation,
+                        });
+                        self.send(request.request_id, reply).await?
+                    }
+                    Err(fault) => self.fault(request.request_id, fault).await?,
+                }
+            }
+            body => {
+                let action = command(client, body).unwrap_or_else(Action::Rejected);
+                self.active
+                    .terminal
+                    .action(client, request.request_id, action)
+                    .await?;
+            }
+        }
+        Ok(false)
+    }
+
+    async fn event(&mut self, event: Event) -> Result<bool> {
+        match event {
+            Event::Render(render) => self.render(render).await?,
+            Event::ViewChanged { route, viewport } => {
+                self.active.route = route;
+                self.active.viewport = viewport;
+                self.workspaces.resize_hidden(&self.active).await;
+                self.view_changed(None, false).await?;
+            }
+            Event::Exited {
+                terminal_id,
+                status,
+            } => {
+                let exited = TerminalExited {
+                    terminal_id: terminal_id.to_string(),
+                    exit_code: status.exit_code(),
+                    signal: status.signal().map(str::to_owned),
+                };
+                self.send(None, Body::TerminalExited(exited)).await?;
+                return Ok(true);
+            }
+            Event::Error { request_id, fault } => self.fault(request_id, fault).await?,
+            Event::Pong { request_id } => self.send(request_id, Body::Pong(Pong {})).await?,
+            Event::Detached => {
+                self.send(None, Body::Detach(corvid_protocol::wire::Detach {}))
+                    .await?;
+                return Ok(true);
+            }
+            Event::Tab(command) => self.switch(Destination::Tab(command), None, true).await?,
+        }
+        Ok(false)
+    }
+
+    async fn switch(
+        &mut self,
+        destination: Destination,
+        request_id: Option<String>,
+        modal: bool,
+    ) -> Result<()> {
+        match self.workspaces.switch(&self.active, destination).await {
+            Ok(Some(switched)) => {
+                self.active = switched.active;
+                self.view_changed(request_id, switched.paste_discarded)
+                    .await?;
+            }
+            Ok(None) => {
+                if modal {
+                    self.active.terminal.resume(self.active.route).await?;
+                }
+                if request_id.is_some() {
+                    self.view_changed(request_id, false).await?;
+                }
+            }
+            Err(fault) => {
+                if modal {
+                    self.active.terminal.resume(self.active.route).await?;
+                }
+                self.fault(request_id, fault).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn view_changed(
+        &mut self,
+        request_id: Option<String>,
+        paste_discarded: bool,
+    ) -> Result<()> {
+        let viewport = self.active.viewport;
+        let view = ViewChanged {
+            view_revision: self.active.route.view_revision,
+            selection: Some(selection(self.active.location)),
+            route_token: Some(wire_route(self.active.route)),
+            viewport: Some(WireViewport {
+                cols: viewport.cols.get().into(),
+                rows: viewport.rows.get().into(),
+            }),
+            paste_discarded,
+        };
+        self.send(request_id, Body::ViewChanged(view)).await
+    }
+
+    async fn render(&mut self, render: Render) -> Result<()> {
+        let header = RenderHeader {
+            host_id: self.session.host_id.clone(),
+            server_epoch: self.session.server_epoch.clone(),
+            client_id: render.route.client_id.to_string(),
+            view_revision: render.route.view_revision,
+            render_generation: render.generation,
+            frame_id: render.frame_id,
+            base_frame_id: render.base_frame_id,
+            ansi_bytes: render.ansi.len() as u32,
+        };
+        let frame = RenderFrame {
+            header,
+            ansi: render.ansi,
+        };
+        timeout(COMMAND_TIMEOUT, self.writer.render(&frame)).await??;
+        Ok(())
+    }
+
+    async fn send(&mut self, id: Option<String>, body: Body) -> Result<()> {
+        send(&self.session, &mut self.writer, id, body).await
+    }
+
+    async fn fault(&mut self, id: Option<String>, fault: ProtocolFault) -> Result<()> {
+        self.send(id, Body::Error(fault.into_wire())).await
+    }
+}
+
+fn exact_destination(
+    view: &corvid_protocol::wire::SelectView,
+    revision: u64,
+) -> Result<Destination, ProtocolFault> {
+    if view.expected_view_revision != Some(revision) {
+        return Err(ProtocolFault::new(
+            "StaleRoute",
+            "view revision has changed",
+        ));
+    }
+    Ok(Destination::Exact(Location {
+        workspace: parse_id(&view.workspace_id)?,
+        tab: parse_id(&view.tab_id)?,
+        pane: parse_id(&view.pane_id)?,
+    }))
+}
+
+fn parse_id(id: &str) -> Result<Uuid, ProtocolFault> {
+    Uuid::parse_str(id).map_err(|_| invalid("invalid layout ID"))
 }
 
 fn command(client: Uuid, body: &Body) -> Result<Action, ProtocolFault> {
@@ -166,72 +412,6 @@ fn command(client: Uuid, body: &Body) -> Result<Action, ProtocolFault> {
     }
 }
 
-async fn write_events(
-    session: &Session,
-    writer: &mut FrameWriter<OwnedWriteHalf>,
-    mut events: mpsc::Receiver<Event>,
-    location: Location,
-) -> Result<()> {
-    while let Some(event) = events.recv().await {
-        match event {
-            Event::Render(render) => {
-                let header = RenderHeader {
-                    host_id: session.host_id.clone(),
-                    server_epoch: session.server_epoch.clone(),
-                    client_id: render.route.client_id.to_string(),
-                    view_revision: render.route.view_revision,
-                    render_generation: render.generation,
-                    frame_id: render.frame_id,
-                    base_frame_id: render.base_frame_id,
-                    ansi_bytes: render.ansi.len() as u32,
-                };
-                let frame = RenderFrame {
-                    header,
-                    ansi: render.ansi,
-                };
-                timeout(COMMAND_TIMEOUT, writer.render(&frame)).await??;
-            }
-            Event::ViewChanged(route) => {
-                let view = ViewChanged {
-                    view_revision: route.view_revision,
-                    selection: Some(selection(location)),
-                    route_token: Some(wire_route(route)),
-                };
-                send(session, writer, None, Body::ViewChanged(view)).await?;
-            }
-            Event::Exited {
-                terminal_id,
-                status,
-            } => {
-                let exited = TerminalExited {
-                    terminal_id: terminal_id.to_string(),
-                    exit_code: status.exit_code(),
-                    signal: status.signal().map(str::to_owned),
-                };
-                send(session, writer, None, Body::TerminalExited(exited)).await?;
-                return Ok(());
-            }
-            Event::Error { request_id, fault } => {
-                send(session, writer, request_id, Body::Error(fault.into_wire())).await?;
-            }
-            Event::Pong { request_id } => {
-                send(session, writer, request_id, Body::Pong(Pong {})).await?;
-            }
-            Event::Detached => {
-                send(
-                    session,
-                    writer,
-                    None,
-                    Body::Detach(corvid_protocol::wire::Detach {}),
-                )
-                .await?;
-                return Ok(());
-            }
-        }
-    }
-    Ok(())
-}
-
 async fn send(
     session: &Session,
     writer: &mut FrameWriter<OwnedWriteHalf>,
@@ -243,19 +423,7 @@ async fn send(
     Ok(())
 }
 
-fn attach_spec(
-    client: Uuid,
-    attach: &Attach,
-    events: mpsc::Sender<Event>,
-    location: Location,
-) -> Result<AttachSpec, ProtocolFault> {
-    if attach
-        .workspace_id
-        .as_deref()
-        .is_some_and(|workspace| Uuid::parse_str(workspace) != Ok(location.workspace))
-    {
-        return Err(ProtocolFault::new("TargetGone", "workspace does not exist"));
-    }
+fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
     if attach.terminal_capabilities.len() > 64
         || !attach
             .terminal_capabilities
@@ -268,12 +436,24 @@ fn attach_spec(
         ));
     }
 
-    Ok(AttachSpec {
-        client_id: client,
+    Ok(AttachTarget {
+        workspace: parse_optional_id(attach.workspace_id.as_deref())?,
+        tab: parse_optional_id(attach.tab_id.as_deref())?,
+        new_workspace: attach.create_workspace.clone(),
+        new_tab: attach.create_tab.clone(),
+        tab_keys: attach
+            .terminal_capabilities
+            .iter()
+            .any(|name| name == "tabs.v1"),
         viewport: viewport(attach.viewport.as_ref())?,
         launch: attach.launch.as_ref().map(launch).transpose()?,
-        events,
     })
+}
+
+fn parse_optional_id(id: Option<&str>) -> Result<Option<Uuid>, ProtocolFault> {
+    id.map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| invalid("invalid layout ID"))
 }
 
 fn viewport(value: Option<&WireViewport>) -> Result<Viewport, ProtocolFault> {

@@ -8,8 +8,8 @@ use std::time::Duration;
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk, PasteEnd,
-    ResizeViewport, RouteToken, Viewport,
+    Attach, AttachRole, ClaimWorkspaceWriter, FrameApplied, InputChunk, LaunchCommand, PasteBegin,
+    PasteChunk, PasteEnd, ResizeViewport, RouteToken, SelectView, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     Frame, FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result,
@@ -25,6 +25,7 @@ struct Tui {
     writer: FrameWriter<OwnedWriteHalf>,
     session: Session,
     route: RouteToken,
+    selection: ViewSelection,
 }
 
 impl Tui {
@@ -34,6 +35,17 @@ impl Tui {
     }
 
     async fn attach_command(runtime: &Path, launch: Option<LaunchCommand>) -> Self {
+        Self::attach_target(
+            runtime,
+            Attach {
+                launch,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn attach_target(runtime: &Path, attach: Attach) -> Self {
         let directory = RuntimeDir::open(runtime).unwrap();
         let (read, write) = directory
             .connect(SocketRole::Client)
@@ -51,11 +63,10 @@ impl Tui {
         let reply = reader.next_envelope().await.unwrap().unwrap();
         let session = check_hello_result(&greeting, &reply, PeerRole::Tui).unwrap();
         let attach = Attach {
-            workspace_id: None,
             viewport: Some(Viewport { cols: 80, rows: 24 }),
             terminal_capabilities: vec!["legacy_vt.v1".into()],
             requested_role: AttachRole::Writer as i32,
-            launch,
+            ..attach
         };
         writer
             .envelope(&session.envelope(Some("attach".into()), Body::Attach(attach)))
@@ -70,6 +81,7 @@ impl Tui {
             writer,
             session,
             route: attached.route_token.unwrap(),
+            selection: attached.selection.unwrap(),
         }
     }
 
@@ -78,6 +90,42 @@ impl Tui {
             .envelope(&self.session.envelope(Some("request".into()), body))
             .await
             .unwrap();
+    }
+
+    async fn select(&mut self, selection: &ViewSelection) {
+        self.send(Body::SelectView(SelectView {
+            expected_view_revision: Some(self.route.view_revision),
+            workspace_id: selection.workspace_id.clone(),
+            tab_id: selection.tab_id.clone(),
+            pane_id: selection.pane_id.clone(),
+        }))
+        .await;
+    }
+
+    async fn input(&mut self, route: RouteToken, sequence: u64, bytes: &[u8]) {
+        self.send(Body::InputChunk(InputChunk {
+            route_token: Some(route),
+            input_sequence: sequence,
+            data: bytes.to_vec(),
+        }))
+        .await;
+    }
+
+    async fn next_body(&mut self, output: &mut Vec<u8>) -> Body {
+        loop {
+            if let Some(body) = self.event(output).await {
+                return body;
+            }
+        }
+    }
+
+    async fn moved(&mut self, output: &mut Vec<u8>, destination: &ViewSelection) {
+        let Body::ViewChanged(view) = self.next_body(output).await else {
+            panic!("expected view change")
+        };
+        assert_eq!(view.selection.as_ref(), Some(destination));
+        self.route = view.route_token.unwrap();
+        self.selection = view.selection.unwrap();
     }
 
     async fn event(&mut self, output: &mut Vec<u8>) -> Option<Body> {
@@ -213,6 +261,121 @@ fn shell(script: &str) -> Vec<Vec<u8>> {
     ["/bin/sh", "-c", script]
         .map(|arg| arg.as_bytes().to_vec())
         .to_vec()
+}
+
+fn echo_fixture(label: &str) -> LaunchCommand {
+    let mut argv = shell(
+        "stty -echo; printf '%s-READY\\n' \"$1\"; while IFS= read -r line; do printf '%s=%s\\n' \"$1\" \"$line\"; done",
+    );
+    argv.extend([b"echo-fixture".to_vec(), label.as_bytes().to_vec()]);
+    LaunchCommand { argv, cwd: None }
+}
+
+#[tokio::test]
+async fn separate_workspace_writers_and_tab_transitions_preserve_exact_routes() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let mut first = Tui::attach_command(&runtime, Some(echo_fixture("A"))).await;
+        let mut other = Tui::attach_target(
+            &runtime,
+            Attach {
+                create_workspace: Some("Other".into()),
+                launch: Some(echo_fixture("B")),
+                ..Default::default()
+            },
+        )
+        .await;
+        let (mut first_output, mut other_output) = (Vec::new(), Vec::new());
+        wait_for_text(&mut first, &mut first_output, "A-READY").await;
+        wait_for_text(&mut other, &mut other_output, "B-READY").await;
+        assert_ne!(first.selection.workspace_id, other.selection.workspace_id);
+        assert_ne!(first.route.terminal_id, other.route.terminal_id);
+
+        first.select(&other.selection).await;
+        let Body::Error(error) = first.next_body(&mut first_output).await else {
+            panic!("expected conflict")
+        };
+        assert_eq!(error.code, "WorkspaceBusy");
+        first.input(first.route.clone(), 1, b"FIRST\n").await;
+        other.input(other.route.clone(), 1, b"OTHER\n").await;
+        wait_for_text(&mut first, &mut first_output, "A=FIRST").await;
+        wait_for_text(&mut other, &mut other_output, "B=OTHER").await;
+
+        let first_selection = first.selection.clone();
+        let first_terminal = first.route.terminal_id.clone();
+        first
+            .send(Body::Detach(corvid_protocol::wire::Detach {}))
+            .await;
+        while first.reader.next_frame().await.unwrap().is_some() {}
+        drop(first);
+        sleep(Duration::from_millis(40)).await;
+
+        let mut second_tab = Tui::attach_target(
+            &runtime,
+            Attach {
+                workspace_id: Some(first_selection.workspace_id.clone()),
+                create_tab: Some("Second".into()),
+                launch: Some(echo_fixture("C")),
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut switched_output = Vec::new();
+        wait_for_text(&mut second_tab, &mut switched_output, "C-READY").await;
+        let retired = second_tab.route.clone();
+        second_tab.select(&first_selection).await;
+        second_tab
+            .moved(&mut switched_output, &first_selection)
+            .await;
+        assert_eq!(second_tab.route.terminal_id, first_terminal);
+        assert_eq!(second_tab.route.client_id, retired.client_id);
+        assert_eq!(second_tab.route.view_revision, retired.view_revision + 1);
+        second_tab.input(retired, 1, b"BAD\n").await;
+        second_tab
+            .input(second_tab.route.clone(), 2, b"AFTER\n")
+            .await;
+        let Body::Error(error) = second_tab.next_body(&mut switched_output).await else {
+            panic!("expected stale route")
+        };
+        assert_eq!(error.code, "StaleRoute");
+        wait_for_text(&mut second_tab, &mut switched_output, "A=AFTER").await;
+        assert!(!String::from_utf8_lossy(&switched_output).contains("A=BAD"));
+
+        let other_selection = other.selection.clone();
+        let other_terminal = other.route.terminal_id.clone();
+        other.input(other.route.clone(), 2, b"UNCHANGED\n").await;
+        wait_for_text(&mut other, &mut other_output, "B=UNCHANGED").await;
+        other
+            .send(Body::Detach(corvid_protocol::wire::Detach {}))
+            .await;
+        while other.reader.next_frame().await.unwrap().is_some() {}
+        drop(other);
+        sleep(Duration::from_millis(40)).await;
+
+        second_tab.select(&other_selection).await;
+        let Body::Error(error) = second_tab.next_body(&mut switched_output).await else {
+            panic!("expected writer requirement")
+        };
+        assert_eq!(error.code, "WriterRequired");
+        second_tab
+            .send(Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
+                workspace_id: other_selection.workspace_id.clone(),
+            }))
+            .await;
+        let Body::WriterClaimed(claim) = second_tab.next_body(&mut switched_output).await else {
+            panic!("expected claim")
+        };
+        second_tab.select(&other_selection).await;
+        second_tab
+            .moved(&mut switched_output, &other_selection)
+            .await;
+        assert_eq!(second_tab.route.terminal_id, other_terminal);
+        assert_eq!(second_tab.route.writer_lease_generation, claim.generation);
+    })
+    .await
+    .unwrap();
 }
 
 const TEST_PASTE_ID: &str = "00000000-0000-0000-0000-000000000001";
@@ -441,6 +604,15 @@ async fn stalled_render_ack_releases_writer_while_pty_and_control_progress() {
         let ping = timeout(Duration::from_secs(2), command(&runtime).args(["control", "ping"]).output())
             .await.unwrap().unwrap();
         assert!(ping.status.success());
+        let mut independent = Tui::attach_target(&runtime, Attach {
+            create_workspace: Some("Independent".into()),
+            launch: Some(echo_fixture("INDEPENDENT")),
+            ..Default::default()
+        }).await;
+        let mut independent_output = Vec::new();
+        wait_for_text(&mut independent, &mut independent_output, "INDEPENDENT-READY").await;
+        independent.input(independent.route.clone(), 1, b"OK\n").await;
+        wait_for_text(&mut independent, &mut independent_output, "INDEPENDENT=OK").await;
         assert!(stalled.reader.next_frame().await.unwrap().is_none());
         let count = std::fs::read_to_string(progress).unwrap().lines().count();
         assert!(count > 20, "PTY stalled while waiting for render acknowledgement");

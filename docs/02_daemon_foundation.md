@@ -1,6 +1,6 @@
 # Linux Daemon Foundation
 
-The daemon owns the PTY and the screen. The attach process owns the outer TTY.
+The daemon owns PTYs and their screens. The attach process owns the outer TTY.
 The control socket supports host identity, health, workspace inventory, and ping
 independently of the attached TUI.
 
@@ -19,6 +19,14 @@ Use `corvid attach` to join the retained terminal. Press Ctrl-] then d to detach
 Ctrl-] twice sends one literal Ctrl-]. The daemon returns an unmatched leader
 to the PTY after two seconds. A signal or connection loss also releases the writer.
 The shell's exit status reaches the attach process on normal completion.
+
+Use `corvid attach --new-workspace "Review"` to create a separate workspace and
+`corvid attach --workspace WORKSPACE_ID --new-tab "Tests"` to add a tab when that
+workspace has no writer. `corvid control workspaces` lists the IDs. Attach to
+an exact tab with `--workspace WORKSPACE_ID --tab TAB_ID`. In an attached TUI,
+Ctrl-] then t starts a new shell tab. Ctrl-] then n or p visits the next or
+previous live tab in the workspace. Each workspace has one writer, and other
+workspaces continue independently.
 
 The TUI recognizes split legacy VT keys, UTF-8, and bracketed paste. The
 `--escape-delay-ms` option defaults to 100 ms. Network delays above this setting
@@ -81,11 +89,16 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Layout recovery | After killing a daemon that owns a live PTY, a new daemon restores the workspace, tab, and pane IDs with an empty terminal slot. An explicit launch uses the saved directory and gets a new TerminalId. Corrupt state recovers from backup or a fresh layout, and a newer schema remains intact. |
 | Writer and redraw | A competing attach at a different size is refused and leaves the child size unchanged. A successful resize resets the render generation. The detached child progresses, then the next TUI shows its retained screen and PID. |
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |
+| Workspaces and tabs | Two writers operate concurrently in different workspaces. Switching targets the exact existing pane and preserves the other writer. An occupied destination rejects the switch. An unowned destination requires an explicit writer claim. Old view tokens fail at the PTY boundary. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
 | Backpressure | A client that withholds a frame acknowledgement loses its lease after five seconds. A child writing 32 KiB bursts continues and control ping stays responsive. Reattach begins with a full frame. |
 | SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |
 
-The single-pane renderer uses the qualified VT engine's screen comparison.
+The current renderer shows one pane at a time with the qualified VT engine's
+screen comparison. Each live PTY has a separate worker. The runtime allows up
+to 32 workers and 8 attached TUI connections. Production history is limited to
+128 rows per PTY to leave room for the screen and per-client comparison buffers
+under the aggregate screen budget.
 It sends one frame at a time and waits for the TTY write acknowledgement.
 The PTY worker drains up to 128 KiB per tick and continues parsing without a writer.
 The SSH fixture uses temporary keys, a pinned host key, a loopback-only SSH

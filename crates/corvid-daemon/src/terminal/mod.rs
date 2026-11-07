@@ -6,4 +6,4 @@ mod worker;
 
 pub use pty::TerminalPty;
 pub use screen::TerminalScreen;
-pub(crate) use worker::{Action, AttachSpec, Event, Launch, TerminalHandle};
+pub(crate) use worker::{Action, AttachSpec, Event, Launch, Render, TabCommand, TerminalHandle};

@@ -33,7 +33,7 @@ def child(progress):
         os.write(1, status.encode())
         ticks += 1
         with progress.open("a") as log:
-            log.write(f"{ticks}\n")
+            log.write(f"{ticks} {cols}x{rows}\n")
         if select.select([0], [], [], 0.05)[0]:
             data = os.read(0, 4096)
             if b"a" in data:
@@ -192,6 +192,36 @@ def verify_paste(command):
         outer.wait(0)
 
 
+def verify_tabs(command, directory):
+    attach = [*command, "attach"]
+    fixture = [sys.executable, __file__, "--child"]
+    marker = rb"PID=(\d+) TICK=\d+ SIZE=80x24"
+    with OuterTerminal([*attach, "--", *fixture, directory / "first-tab"]) as first:
+        first_pid = first.expect(marker)[1]
+        first.send(b"\x1dd")
+        first.wait(0)
+
+    time.sleep(0.05)
+    second_log = directory / "second-tab"
+    with OuterTerminal([*attach, "--new-tab", "Second", "--", *fixture, second_log]) as second:
+        second_pid = second.expect(marker)[1]
+        assert second_pid != first_pid
+        second.output.clear()
+        second.send(b"\x1dp")
+        assert second.expect(marker)[1] == first_pid
+        second.resize(100, 30)
+        second.expect(b"RESIZED=100x30")
+        deadline = time.monotonic() + 5
+        while not second_log.read_text().strip().endswith("100x30"):
+            assert time.monotonic() < deadline, "hidden tab kept the old PTY size"
+            time.sleep(0.02)
+        second.output.clear()
+        second.send(b"\x1dn")
+        assert second.expect(rb"PID=(\d+) TICK=\d+ SIZE=100x30")[1] == second_pid
+        second.send(b"\x1dd")
+        second.wait(0)
+
+
 def run(binary):
     root = Path(__file__).resolve().parents[3]
     profile = root / "spikes/terminal/corvid.terminfo"
@@ -208,9 +238,10 @@ def run(binary):
             wait_for_daemon(command, daemon)
             verify(command, directory)
             verify_paste(command)
+            verify_tabs(command, directory)
         finally:
             stop(daemon)
-    print("Live TTYs verified writer fencing, redraw, paste modes, fragmented keys, and modal detach.")
+    print("Live TTYs verified writer fencing, redraw, paste modes, fragmented keys, detach, and tab switching.")
 
 
 if __name__ == "__main__":

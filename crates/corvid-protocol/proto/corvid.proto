@@ -33,6 +33,9 @@ message Envelope {
     FrameApplied frame_applied = 38;
     Detach detach = 39;
     TerminalExited terminal_exited = 40;
+    SelectView select_view = 41;
+    ClaimWorkspaceWriter claim_workspace_writer = 42;
+    WriterClaimed writer_claimed = 43;
     RpcError error = 90;
   }
 }
@@ -127,6 +130,9 @@ message Attach {
   repeated string terminal_capabilities = 3;
   AttachRole requested_role = 4;
   LaunchCommand launch = 5;
+  optional string tab_id = 6;
+  optional string create_workspace = 7;
+  optional string create_tab = 8;
 }
 
 message LaunchCommand {
@@ -187,6 +193,24 @@ message ViewChanged {
   uint64 view_revision = 1;
   ViewSelection selection = 2;
   RouteToken route_token = 3;
+  Viewport viewport = 4;
+  bool paste_discarded = 5;
+}
+
+message SelectView {
+  optional uint64 expected_view_revision = 1;
+  string workspace_id = 2;
+  string tab_id = 3;
+  string pane_id = 4;
+}
+
+message ClaimWorkspaceWriter {
+  string workspace_id = 1;
+}
+
+message WriterClaimed {
+  string workspace_id = 1;
+  uint64 generation = 2;
 }
 
 message FrameApplied {

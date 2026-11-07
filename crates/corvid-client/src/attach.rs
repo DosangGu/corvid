@@ -11,7 +11,7 @@ use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk,
-    PasteEnd, ResizeViewport, RouteToken, Viewport as WireViewport,
+    PasteEnd, ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, Frame, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
@@ -30,12 +30,17 @@ use crate::tty::Tty;
 
 const INPUT_CHUNK: usize = 8192;
 
-pub async fn attach(
-    runtime: &Path,
-    launch: Option<Vec<OsString>>,
-    escape_delay: Duration,
-    restore_cwd: bool,
-) -> Result<u32> {
+pub struct AttachOptions {
+    pub launch: Option<Vec<OsString>>,
+    pub escape_delay: Duration,
+    pub restore_cwd: bool,
+    pub workspace: Option<String>,
+    pub tab: Option<String>,
+    pub new_workspace: Option<String>,
+    pub new_tab: Option<String>,
+}
+
+pub async fn attach(runtime: &Path, options: AttachOptions) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
     let connection = Connection::establish(
@@ -44,9 +49,10 @@ pub async fn attach(
         vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()],
     )
     .await?;
+    let escape_delay = options.escape_delay;
     let (connection, route) = timeout(
         COMMAND_TIMEOUT,
-        request_attach(connection, viewport, launch, restore_cwd),
+        request_attach(connection, viewport, options),
     )
     .await??;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -69,14 +75,14 @@ pub async fn attach(
 async fn request_attach(
     mut connection: Connection,
     viewport: Viewport,
-    launch: Option<Vec<OsString>>,
-    restore_cwd: bool,
+    options: AttachOptions,
 ) -> Result<(Connection, RouteToken)> {
-    let launch = launch
+    let launch = options
+        .launch
         .map(|argv| -> Result<LaunchCommand> {
             Ok(LaunchCommand {
                 argv: argv.into_iter().map(OsString::into_encoded_bytes).collect(),
-                cwd: if restore_cwd {
+                cwd: if options.restore_cwd {
                     None
                 } else {
                     Some(std::env::current_dir()?.as_os_str().as_bytes().to_vec())
@@ -87,9 +93,12 @@ async fn request_attach(
     let request = connection.session.envelope(
         Some(Uuid::new_v4().to_string()),
         Body::Attach(Attach {
-            workspace_id: None,
+            workspace_id: options.workspace,
+            tab_id: options.tab,
+            create_workspace: options.new_workspace,
+            create_tab: options.new_tab,
             viewport: Some(wire_viewport(viewport)),
-            terminal_capabilities: vec!["legacy_vt.v1".into()],
+            terminal_capabilities: vec!["legacy_vt.v1".into(), "tabs.v1".into()],
             requested_role: AttachRole::Writer as i32,
             launch,
         }),
@@ -238,12 +247,11 @@ impl Interactive {
                 self.session.validate_scope(&envelope)?;
                 match envelope.body {
                     Some(Body::ViewChanged(view)) => {
-                        let route = view.route_token.context("view update has no input route")?;
-                        ensure!(
-                            route.view_revision == view.view_revision,
-                            "inconsistent view revision"
-                        );
-                        self.view_changed(tty, route)?;
+                        let paste_discarded = view.paste_discarded || self.keys.capturing_paste();
+                        self.view_changed(tty, view)?;
+                        if paste_discarded {
+                            timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
+                        }
                     }
                     Some(Body::TerminalExited(exited)) => {
                         ensure!(
@@ -260,6 +268,18 @@ impl Interactive {
                         } else {
                             timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
                         }
+                    }
+                    Some(Body::Error(error))
+                        if matches!(
+                            error.code.as_str(),
+                            "StaleRoute"
+                                | "WorkspaceBusy"
+                                | "WriterRequired"
+                                | "TargetGone"
+                                | "NoTerminal"
+                        ) =>
+                    {
+                        timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
                     }
                     Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error).into()),
                     Some(Body::Detach(_)) => return Ok(Some(0)),
@@ -306,20 +326,30 @@ impl Interactive {
         .map(|_| ())
     }
 
-    fn view_changed(&mut self, tty: &Tty, route: RouteToken) -> Result<()> {
+    fn view_changed(&mut self, tty: &Tty, view: ViewChanged) -> Result<()> {
+        let route = view.route_token.context("view update has no input route")?;
+        ensure!(
+            route.view_revision == view.view_revision,
+            "inconsistent view revision"
+        );
+        if route == self.route {
+            return Ok(());
+        }
         ensure!(
             route.client_id == self.route.client_id
                 && route.connection_generation == self.route.connection_generation
-                && route.writer_lease_generation == self.route.writer_lease_generation
-                && route.terminal_id == self.route.terminal_id
+                && route.writer_lease_generation > 0
+                && Uuid::parse_str(&route.terminal_id).is_ok()
                 && self.route.view_revision.checked_add(1) == Some(route.view_revision),
             "view update targets a different or retired route"
         );
-        self.viewport = self
-            .pending_resize
-            .take()
-            .context("unexpected viewport update")?
-            .viewport;
+        let pending = self.pending_resize.take();
+        self.viewport = match view.viewport {
+            Some(viewport) => {
+                Viewport::new(u16::try_from(viewport.cols)?, u16::try_from(viewport.rows)?)?
+            }
+            None => pending.context("view update has no viewport")?.viewport,
+        };
         self.drain_retired_input(tty)?;
         self.route = route;
         self.applied = None;

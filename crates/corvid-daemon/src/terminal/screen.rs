@@ -77,12 +77,12 @@ pub struct TerminalScreen {
 
 impl TerminalScreen {
     pub fn new(viewport: Viewport) -> Self {
-        let parser = Parser::new_with_callbacks(
-            viewport.rows,
-            viewport.cols,
-            SCROLLBACK_ROWS,
-            QueryReplies::default(),
-        );
+        Self::with_scrollback(viewport, SCROLLBACK_ROWS)
+    }
+
+    pub(super) fn with_scrollback(viewport: Viewport, rows: usize) -> Self {
+        let parser =
+            Parser::new_with_callbacks(viewport.rows, viewport.cols, rows, QueryReplies::default());
 
         Self { parser }
     }

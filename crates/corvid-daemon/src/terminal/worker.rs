@@ -1,17 +1,15 @@
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read};
-use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
@@ -24,6 +22,7 @@ const COMMAND_CAPACITY: usize = 32;
 const TICK: Duration = Duration::from_millis(8);
 const FRAME_INTERVAL: Duration = Duration::from_millis(34);
 const MAX_ANSI: usize = RENDER_LIMIT - 16 * 1024 - 5;
+const LIVE_SCROLLBACK_ROWS: usize = 128;
 const LEADER_TIMEOUT: Duration = Duration::from_secs(2);
 
 type Reply<T> = Result<T, ProtocolFault>;
@@ -35,6 +34,11 @@ pub(crate) struct Launch {
 
 pub(crate) struct AttachSpec {
     pub(crate) client_id: Uuid,
+    pub(crate) generation: u64,
+    pub(crate) lease_generation: u64,
+    pub(crate) revision: u64,
+    pub(crate) dormant: bool,
+    pub(crate) tab_keys: bool,
     pub(crate) viewport: Viewport,
     pub(crate) launch: Option<Launch>,
     pub(crate) events: mpsc::Sender<Event>,
@@ -72,7 +76,10 @@ pub(crate) enum Action {
 
 pub(crate) enum Event {
     Render(Render),
-    ViewChanged(InputRoute),
+    ViewChanged {
+        route: InputRoute,
+        viewport: Viewport,
+    },
     Exited {
         terminal_id: Uuid,
         status: ExitStatus,
@@ -85,6 +92,20 @@ pub(crate) enum Event {
         request_id: Option<String>,
     },
     Detached,
+    Tab(TabCommand),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TabCommand {
+    Next,
+    Previous,
+    Create,
+}
+
+enum KeyEffect {
+    Forwarded,
+    Detach,
+    Tab(TabCommand),
 }
 
 pub(crate) struct Render {
@@ -102,36 +123,56 @@ enum Command {
         request_id: Option<String>,
         action: Action,
     },
-    Disconnect(Uuid),
+    Fence(InputRoute, oneshot::Sender<Reply<bool>>),
+    Activate(InputRoute, Viewport, oneshot::Sender<Reply<()>>),
+    Resume(InputRoute),
 }
 
 #[derive(Clone)]
 pub(crate) struct TerminalHandle {
     commands: mpsc::Sender<Command>,
     live: Arc<AtomicBool>,
+    viewing: Arc<AtomicBool>,
+    hidden_viewport: Arc<Mutex<Option<Viewport>>>,
 }
 
 impl TerminalHandle {
-    pub(crate) fn start(
-        layouts: watch::Sender<Arc<Layout>>,
-        location: Location,
-    ) -> (Self, JoinHandle<()>) {
+    pub(crate) fn start() -> (Self, JoinHandle<()>) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let live = Arc::new(AtomicBool::new(false));
+        let viewing = Arc::new(AtomicBool::new(false));
+        let hidden_viewport = Arc::new(Mutex::new(None));
         let mut worker = Worker {
             terminal: None,
             lease: None,
-            generation: 0,
-            layouts,
-            location,
             live: Arc::clone(&live),
+            viewing: Arc::clone(&viewing),
+            hidden_viewport: Arc::clone(&hidden_viewport),
         };
         let worker = tokio::task::spawn_blocking(move || worker.run(receiver));
-        (Self { commands, live }, worker)
+        (
+            Self {
+                commands,
+                live,
+                viewing,
+                hidden_viewport,
+            },
+            worker,
+        )
     }
 
     pub(crate) fn has_live_terminal(&self) -> bool {
         self.live.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn has_view(&self) -> bool {
+        self.viewing.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn resize_hidden(&self, viewport: Viewport) {
+        if let Ok(mut pending) = self.hidden_viewport.lock() {
+            *pending = Some(viewport);
+        }
     }
 
     pub(crate) async fn attach(&self, spec: AttachSpec) -> Reply<InputRoute> {
@@ -140,6 +181,29 @@ impl TerminalHandle {
             .try_send(Command::Attach(spec, send))
             .map_err(|_| overloaded())?;
         receive.await.map_err(|_| overloaded())?
+    }
+
+    pub(crate) async fn fence(&self, route: InputRoute) -> Reply<bool> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Fence(route, send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
+    }
+
+    pub(crate) async fn activate(&self, route: InputRoute, viewport: Viewport) -> Reply<()> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Activate(route, viewport, send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
+    }
+
+    pub(crate) async fn resume(&self, route: InputRoute) -> Reply<()> {
+        tokio::time::timeout(COMMAND_TIMEOUT, self.commands.send(Command::Resume(route)))
+            .await
+            .map_err(|_| overloaded())?
+            .map_err(|_| terminal_fault())
     }
 
     pub(crate) async fn action(
@@ -160,24 +224,25 @@ impl TerminalHandle {
         .map_err(|_| overloaded())?
         .map_err(|_| overloaded())
     }
-
-    pub(crate) fn disconnect(&self, client: Uuid) {
-        // A dropped receiver also revokes the lease on the next worker tick.
-        let _ = self.commands.try_send(Command::Disconnect(client));
-    }
 }
 
 fn overloaded() -> ProtocolFault {
     ProtocolFault::new("LimitExceeded", "terminal command queue is unavailable")
 }
 
+async fn timeout_reply<T>(reply: oneshot::Receiver<Reply<T>>) -> Reply<T> {
+    tokio::time::timeout(COMMAND_TIMEOUT, reply)
+        .await
+        .map_err(|_| ProtocolFault::new("Timeout", "terminal transition timed out"))?
+        .map_err(|_| terminal_fault())?
+}
+
 struct Worker {
     terminal: Option<Running>,
     lease: Option<Lease>,
-    generation: u64,
-    layouts: watch::Sender<Arc<Layout>>,
-    location: Location,
     live: Arc<AtomicBool>,
+    viewing: Arc<AtomicBool>,
+    hidden_viewport: Arc<Mutex<Option<Viewport>>>,
 }
 
 impl Worker {
@@ -210,6 +275,23 @@ impl Worker {
                 let _ = reply.send(self.attach(spec));
             }
             Command::Attach(_, _) => {}
+            Command::Fence(route, reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.fence(route));
+                }
+            }
+            Command::Activate(route, viewport, reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.activate(route, viewport));
+                }
+            }
+            Command::Resume(route) => {
+                if let Some(lease) = &mut self.lease
+                    && lease.route == route
+                {
+                    lease.switch_pending = false;
+                }
+            }
             Command::Action {
                 client,
                 request_id,
@@ -226,15 +308,6 @@ impl Worker {
                     self.revoke();
                 }
             }
-            Command::Disconnect(client) => {
-                if self
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.route.client_id == client)
-                {
-                    self.revoke();
-                }
-            }
         }
     }
 
@@ -245,8 +318,9 @@ impl Worker {
                 "workspace already has a writer",
             ));
         }
-        let generation = self.generation.checked_add(1).ok_or_else(overloaded)?;
         match (&mut self.terminal, spec.launch) {
+            (Some(terminal), None) if terminal.exit.is_some() => return Err(terminal_fault()),
+            (Some(_), None) if spec.dormant => {}
             (Some(terminal), None) => terminal
                 .resize(spec.viewport)
                 .map_err(|_| terminal_fault())?,
@@ -257,7 +331,12 @@ impl Worker {
                 ));
             }
             (None, Some(launch)) => {
-                self.terminal = Some(self.start_terminal(launch, spec.viewport)?);
+                self.terminal = Some(Running::spawn(launch, spec.viewport).map_err(|_| {
+                    ProtocolFault::new(
+                        "TerminalStartFailed",
+                        "unable to start the requested terminal",
+                    )
+                })?);
                 self.live.store(true, Ordering::Release);
             }
             (None, None) => {
@@ -272,66 +351,62 @@ impl Worker {
         let route = InputRoute {
             client_id: spec.client_id,
             terminal_id: terminal.id,
-            connection_generation: generation,
-            view_revision: 1,
-            writer_lease_generation: generation,
+            connection_generation: spec.generation,
+            view_revision: spec.revision,
+            writer_lease_generation: spec.lease_generation,
         };
-        self.lease = Some(Lease::new(route, spec.events));
-        self.generation = generation;
+        self.lease = Some(Lease::new(route, spec.events, !spec.dormant, spec.tab_keys));
+        self.viewing.store(true, Ordering::Release);
         Ok(route)
     }
 
-    fn start_terminal(&self, mut launch: Launch, viewport: Viewport) -> Reply<Running> {
-        let mut layout = Arc::clone(&self.layouts.borrow());
-        if launch.cwd.is_none() {
-            launch.cwd = layout
-                .last_cwd(self.location)
-                .map(|cwd| PathBuf::from(OsString::from_vec(cwd.path.clone())))
-                .filter(|path| path.is_dir());
+    fn fence(&mut self, route: InputRoute) -> Reply<bool> {
+        let lease = self
+            .lease
+            .as_ref()
+            .filter(|lease| lease.armed && lease.route == route)
+            .ok_or_else(stale_route)?;
+        let terminal = self.terminal.as_ref().ok_or_else(terminal_fault)?;
+        if terminal.input.paste_pending() {
+            return Err(input_busy());
         }
-        let record = if let Some(path) = &launch.cwd {
-            if !path.is_dir() {
-                return Err(ProtocolFault::new(
-                    "InvalidMessage",
-                    "launch directory does not exist",
-                ));
-            }
-            let time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default();
-            let cwd = CwdObservation {
-                path: path.as_os_str().as_encoded_bytes().to_vec(),
-                observed_unix_ms: u64::try_from(time.as_millis()).unwrap_or(u64::MAX),
-                source: CwdSource::LaunchDirectory,
-            };
-            Arc::make_mut(&mut layout)
-                .record_cwd(self.location, cwd)
-                .map_err(|_| {
-                    ProtocolFault::new("InvalidMessage", "invalid layout working directory")
-                })?;
-            true
-        } else {
-            false
-        };
-        let terminal = Running::spawn(launch, viewport).map_err(|_| {
-            ProtocolFault::new(
-                "TerminalStartFailed",
-                "unable to start the requested terminal",
-            )
-        })?;
-        if record {
-            self.layouts.send_replace(layout);
-        }
-        Ok(terminal)
+        let discarded = lease.paste.is_some();
+        self.revoke();
+        Ok(discarded)
+    }
+
+    fn activate(&mut self, route: InputRoute, viewport: Viewport) -> Reply<()> {
+        let lease = self
+            .lease
+            .as_mut()
+            .filter(|lease| !lease.armed && lease.route == route)
+            .ok_or_else(stale_route)?;
+        let terminal = self
+            .terminal
+            .as_mut()
+            .filter(|terminal| terminal.exit.is_none())
+            .ok_or_else(terminal_fault)?;
+        terminal.resize(viewport).map_err(|_| terminal_fault())?;
+        terminal.dirty = true;
+        lease.armed = true;
+        Ok(())
     }
 
     fn apply(&mut self, client: Uuid, request_id: Option<String>, action: Action) -> Reply<()> {
         let lease = self
             .lease
             .as_mut()
-            .filter(|lease| lease.route.client_id == client)
+            .filter(|lease| lease.armed && lease.route.client_id == client)
             .ok_or_else(stale_route)?;
         let terminal = self.terminal.as_mut().ok_or_else(terminal_fault)?;
+        if lease.switch_pending
+            && !matches!(
+                action,
+                Action::FrameApplied { .. } | Action::Ping | Action::Rejected(_)
+            )
+        {
+            return Ok(());
+        }
         match action {
             Action::Input {
                 route,
@@ -339,9 +414,18 @@ impl Worker {
                 bytes,
             } => {
                 lease.check_input(route, sequence, terminal)?;
-                if lease.keys(sequence, bytes, &mut terminal.input)? {
-                    let _ = lease.events.try_send(Event::Detached);
-                    self.revoke();
+                match lease.keys(sequence, bytes, &mut terminal.input)? {
+                    KeyEffect::Forwarded => {}
+                    KeyEffect::Detach => {
+                        let _ = lease.events.try_send(Event::Detached);
+                        self.revoke();
+                    }
+                    KeyEffect::Tab(command) => {
+                        lease.switch_pending = true;
+                        if lease.events.try_send(Event::Tab(command)).is_err() {
+                            self.revoke();
+                        }
+                    }
                 }
             }
             Action::PasteBegin {
@@ -416,7 +500,10 @@ impl Worker {
                 lease.previous = None;
                 if lease
                     .events
-                    .try_send(Event::ViewChanged(lease.route))
+                    .try_send(Event::ViewChanged {
+                        route: lease.route,
+                        viewport,
+                    })
                     .is_err()
                 {
                     self.revoke();
@@ -441,6 +528,17 @@ impl Worker {
         let Some(terminal) = &mut self.terminal else {
             return;
         };
+        let viewport = self
+            .hidden_viewport
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take());
+        if self.lease.is_none()
+            && terminal.exit.is_none()
+            && let Some(viewport) = viewport
+        {
+            let _ = terminal.resize(viewport);
+        }
         let state = match terminal.advance() {
             Ok(state) => state,
             Err(_) => {
@@ -524,6 +622,7 @@ impl Worker {
             });
         }
         self.lease = None;
+        self.viewing.store(false, Ordering::Release);
         self.terminal = None;
     }
 
@@ -541,6 +640,7 @@ impl Worker {
 
     fn revoke(&mut self) {
         self.lease = None;
+        self.viewing.store(false, Ordering::Release);
         if let Some(terminal) = &mut self.terminal {
             terminal.input.fence();
         }
@@ -580,7 +680,7 @@ impl Running {
         Ok(Self {
             id: Uuid::new_v4(),
             pty: TerminalPty::spawn(command, viewport)?,
-            screen: TerminalScreen::new(viewport),
+            screen: TerminalScreen::with_scrollback(viewport, LIVE_SCROLLBACK_ROWS),
             input: InputQueue::default(),
             dirty: true,
             exit: None,
@@ -643,21 +743,27 @@ struct Lease {
     next_frame: Instant,
     paste: Option<Paste>,
     leader: Option<Instant>,
+    armed: bool,
+    switch_pending: bool,
+    tab_keys: bool,
 }
 
 impl Lease {
-    fn new(route: InputRoute, events: mpsc::Sender<Event>) -> Self {
+    fn new(route: InputRoute, events: mpsc::Sender<Event>, armed: bool, tab_keys: bool) -> Self {
         Self {
             route,
             input_sequence: 0,
             events,
-            render_generation: 1,
+            render_generation: route.view_revision,
             previous: None,
             frame_id: 0,
             in_flight: None,
             next_frame: Instant::now(),
             paste: None,
             leader: None,
+            armed,
+            switch_pending: false,
+            tab_keys,
         }
     }
 
@@ -671,7 +777,12 @@ impl Lease {
         Ok(())
     }
 
-    fn keys(&mut self, sequence: u64, mut bytes: Vec<u8>, queue: &mut InputQueue) -> Reply<bool> {
+    fn keys(
+        &mut self,
+        sequence: u64,
+        mut bytes: Vec<u8>,
+        queue: &mut InputQueue,
+    ) -> Reply<KeyEffect> {
         if self
             .leader
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
@@ -679,11 +790,19 @@ impl Lease {
             self.flush_leader(queue)?;
         }
         if self.leader.take().is_some() {
-            if bytes == b"d" {
+            let command = match bytes.as_slice() {
+                b"d" => Some(KeyEffect::Detach),
+                b"n" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Next)),
+                b"p" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Previous)),
+                b"t" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Create)),
+                _ => None,
+            };
+            if let Some(command) = command {
                 if queue.paste_pending() {
                     return Err(input_busy());
                 }
-                return Ok(true);
+                self.input_sequence = sequence;
+                return Ok(command);
             }
             if bytes != [KEY_LEADER] {
                 bytes.insert(0, KEY_LEADER);
@@ -691,13 +810,13 @@ impl Lease {
         } else if bytes == [KEY_LEADER] {
             self.leader = Some(Instant::now());
             self.input_sequence = sequence;
-            return Ok(false);
+            return Ok(KeyEffect::Forwarded);
         }
         if !queue.user(bytes) {
             return Err(overloaded());
         }
         self.input_sequence = sequence;
-        Ok(false)
+        Ok(KeyEffect::Forwarded)
     }
 
     fn flush_leader(&mut self, queue: &mut InputQueue) -> Reply<()> {
@@ -738,6 +857,8 @@ impl Lease {
         {
             self.in_flight = None;
             Ok(())
+        } else if generation < self.render_generation {
+            Ok(())
         } else {
             Err(ProtocolFault::new(
                 "InvalidMessage",
@@ -748,7 +869,7 @@ impl Lease {
 
     fn render(&mut self, terminal: &mut Running) -> Result<()> {
         let now = Instant::now();
-        if !terminal.dirty || self.in_flight.is_some() || now < self.next_frame {
+        if !self.armed || !terminal.dirty || self.in_flight.is_some() || now < self.next_frame {
             return Ok(());
         }
 
