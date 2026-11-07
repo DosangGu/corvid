@@ -125,6 +125,14 @@ impl TerminalScreen {
             frame
         };
 
+        // The Unicode Bidi_Control characters can reorder untrusted cell text
+        // in the outer terminal. Their removal leaves the VT cell widths intact.
+        if !frame.is_ascii() {
+            frame.retain(|ch| {
+                !matches!(ch, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            });
+        }
+
         // Only these input modes are part of the spike's outer terminal profile.
         let cursor = if screen.application_cursor() {
             'h'
@@ -249,6 +257,49 @@ mod tests {
         let redraw = terminal.redraw().unwrap();
         assert!(redraw.contains("visible"));
         assert!(!redraw.contains("\x1b]"));
+    }
+
+    #[test]
+    fn full_and_incremental_frames_omit_direction_controls_and_keep_visible_unicode() {
+        let mut inner = terminal(80, 24);
+        let mut outer = terminal(80, 24);
+        let controls = "\u{061c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}";
+        let marked: String = controls
+            .chars()
+            .flat_map(|control| ['X', control])
+            .collect();
+        let text = format!("{marked} 한글 e\u{301} שלום");
+        for byte in text.as_bytes() {
+            inner.process(&[*byte]).unwrap();
+        }
+
+        let full = inner.redraw().unwrap();
+        assert!(!full.contains(|ch| controls.contains(ch)));
+        outer.process(full.as_bytes()).unwrap();
+        assert_eq!(
+            outer.parser.screen().contents(),
+            "XXXXXXXXXXXX 한글 e\u{301} שלום"
+        );
+        assert_eq!(
+            outer.parser.screen().cursor_position(),
+            inner.parser.screen().cursor_position()
+        );
+
+        let previous = inner.snapshot();
+        inner
+            .process("\x1b[2;1Hvisible\u{202e} update".as_bytes())
+            .unwrap();
+        let diff = inner.render(Some(&previous)).unwrap();
+        assert!(!diff.contains('\u{202e}'));
+        outer.process(diff.as_bytes()).unwrap();
+        assert_eq!(
+            outer.parser.screen().contents(),
+            "XXXXXXXXXXXX 한글 e\u{301} שלום\nvisible update"
+        );
+        assert_eq!(
+            outer.parser.screen().cursor_position(),
+            inner.parser.screen().cursor_position()
+        );
     }
 
     #[test]

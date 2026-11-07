@@ -182,6 +182,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Silent process changes (A27) | A managed shell fixture changes its foreground group without terminal output, then replaces its executable under the same PID. Focus rejects the old run even before the periodic sample, and the next sample retires that run while its PTY stays live. |
 | Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
 | Backpressure (A13) | Eight watchers stop reading while the daemon publishes 48 moves between large workspaces. A ninth watch receives `LimitExceeded`, control ping and input to a separate PTY succeed, and a new watch resynchronizes after overflow. The output-heavy PTY answers cursor position queries while the stalled renderer loses its lease. Reattach begins with a full frame. |
+| Untrusted terminal output (A18) | A managed Claude fixture writes forged OSC and question text into a live PTY. The outer TTY displays literal text, and the exact request stays pending until the fixture answers through the terminal. |
 | SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |
 | Last login (A21) | Debian 13 in a disposable QEMU guest ran the shipped user unit with systemd 257.13 and OpenSSH 10.0p2 using PAM. The fixture passed after clean detach and forced SSH loss with `KillUserProcesses=yes`, `UserStopDelaySec=0`, and lingering enabled for the Corvid account. |
 
@@ -192,6 +193,11 @@ to 32 workers and 8 attached TUI connections. Production history is limited to
 under the aggregate screen budget.
 It sends one frame at a time and waits for the TTY write acknowledgement.
 The PTY worker drains up to 128 KiB per tick and continues parsing without a writer.
+The VT engine consumes child OSC title and clipboard commands. Both full and
+incremental redraws strip Unicode `Bidi_Control` characters from cell output
+and preserve visible Unicode and cell positions.
+[Unicode character properties](https://www.unicode.org/Public/17.0.0/ucd/PropList.txt)
+
 For managed PTYs, foreground and executable checks run on a staggered two-second
 timer. PTY output can bring a check forward after a 500 ms debounce. Due checks
 wait in arrival order, at least 50 ms apart host-wide. At the 32-PTY limit, allow

@@ -70,6 +70,7 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario forged-output
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault missing-helper
@@ -127,6 +128,15 @@ reports a child coverage gap if the registry reaches its child observation
 limit. Use the control snapshot for inventories larger than one control frame.
 Exact manual cancellation, plan rejection, and synchronous or nested child
 ownership remain unqualified.
+
+The A18 fixture writes raw bytes to the managed Claude PTY while a real
+question is pending. It sends a title with shell syntax, clipboard set and
+query operations, a window resize, and a notification containing a forged
+result with the real question's correlation IDs. It also draws shell syntax
+and hook-shaped text using a bidirectional override. The outer TTY receives
+literal text after display filtering. The registered view, slot capture,
+request counts, and exact attention records match their pre-injection values.
+The question resolves after the fixture enters the answer in the TTY.
 
 ## Codex CLI 0.167.0 on Linux
 
