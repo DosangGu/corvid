@@ -23,10 +23,15 @@ use windows_sys::core::BOOL;
 const SID_LIMIT: usize = 256;
 
 pub(super) fn current_user() -> Result<String> {
+    // GetCurrentProcess returns a valid pseudo-handle to this process.
+    process_user(unsafe { GetCurrentProcess() })
+}
+
+pub(super) fn process_user(process: HANDLE) -> Result<String> {
     let mut token: HANDLE = null_mut();
     // OpenProcessToken writes a new handle to the supplied pointer.
-    checked(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) })
-        .context("opening current user token")?;
+    checked(unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) })
+        .context("opening Windows user token")?;
     // The successful call transfers ownership of the handle.
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
     let mut size = 0;

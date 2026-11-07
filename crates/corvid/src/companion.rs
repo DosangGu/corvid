@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, Subcommand};
+#[cfg(windows)]
+use corvid_companion::WEZTERM_CAPABILITY;
 use corvid_companion::{HostEndpoint, MAX_SLOTS, PresentationClient};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::edit_slot_layout::Action;
@@ -14,6 +16,8 @@ use corvid_protocol::wire::{
     PairTerminal, PinSlot, PlaceSlot, PresentationSlots, PresentedBinding, PresentedRun,
     PresentedRunKey, PresentedSlotToken, RunAvailability, UnpairTerminal,
 };
+#[cfg(windows)]
+use corvid_protocol::wire::{WezTermLocation, WezTermTarget};
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
@@ -61,7 +65,16 @@ enum Command {
         overflow_page: u32,
     },
     /// Read the selected TUI's private single-use pairing code from stdin.
-    Pair,
+    Pair {
+        /// Explicit ID of the WezTerm pane containing the attached TUI.
+        #[cfg(windows)]
+        #[arg(long)]
+        wezterm_pane: Option<u32>,
+        /// GUI socket from that WezTerm instance, or use WEZTERM_UNIX_SOCKET.
+        #[cfg(windows)]
+        #[arg(long, requires = "wezterm_pane")]
+        wezterm_socket: Option<String>,
+    },
     /// Remove an explicit TUI registration.
     Unpair {
         #[arg(long)]
@@ -148,6 +161,17 @@ pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -
 
     let mut client = PresentationClient::connect(&address).await?;
     let request = options.command.request(&client.session().server_epoch)?;
+    #[cfg(windows)]
+    if matches!(&request, Body::PairTerminal(pair) if pair.wezterm.is_some()) {
+        ensure!(
+            client
+                .session()
+                .capabilities
+                .iter()
+                .any(|cap| cap == WEZTERM_CAPABILITY),
+            "companion does not support local WezTerm registration"
+        );
+    }
     let reply = client.request(request).await?;
     show(
         reply,
@@ -231,9 +255,29 @@ impl Command {
                 count,
                 overflow_page,
             }),
-            Self::Pair => Body::PairTerminal(PairTerminal {
-                code: read_pairing_code()?.to_string(),
-            }),
+            Self::Pair {
+                #[cfg(windows)]
+                wezterm_pane,
+                #[cfg(windows)]
+                wezterm_socket,
+            } => {
+                #[cfg(windows)]
+                let wezterm = match wezterm_pane {
+                    Some(pane_id) => Some(WezTermTarget {
+                        gui_socket: wezterm_socket
+                            .or_else(|| env::var("WEZTERM_UNIX_SOCKET").ok())
+                            .context("set WEZTERM_UNIX_SOCKET or pass --wezterm-socket")?,
+                        pane_id: Some(pane_id),
+                    }),
+                    None => None,
+                };
+                #[cfg(not(windows))]
+                let wezterm = None;
+                Body::PairTerminal(PairTerminal {
+                    code: read_pairing_code()?.to_string(),
+                    wezterm,
+                })
+            }
             Self::Unpair { binding } => {
                 let (generation, binding) = parse_binding(&binding, epoch)?;
                 Body::UnpairTerminal(UnpairTerminal {
@@ -314,6 +358,7 @@ fn parse_binding(token: &str, epoch: &str) -> Result<(String, PresentedBinding)>
         PresentedBinding {
             client_id: uuid(client)?,
             revision: revision.parse().context("invalid binding revision")?,
+            wezterm: None,
         },
     ))
 }
@@ -367,7 +412,7 @@ fn show(reply: Body, host: &str, epoch: &str) -> Result<()> {
                 activation != LocalActivation::Unspecified,
                 "missing local activation status"
             );
-            println!(
+            print!(
                 "remote_selection=Applied local_activation={activation:?} client_id={} run_id={} terminal_id={} view_revision={} commit_sequence={}",
                 applied.client_id,
                 applied.agent_run_id,
@@ -375,6 +420,11 @@ fn show(reply: Body, host: &str, epoch: &str) -> Result<()> {
                 applied.view_revision,
                 applied.commit_sequence
             );
+            #[cfg(windows)]
+            if let Some(location) = &focused.wezterm {
+                show_wezterm(location);
+            }
+            println!();
         }
         _ => bail!("unexpected companion response"),
     }
@@ -431,10 +481,15 @@ fn show_slots(slots: PresentationSlots, host: &str, epoch: &str) -> Result<()> {
     }
     if let Some(generation) = &slots.control_generation {
         for binding in slots.bindings {
-            println!(
+            print!(
                 "binding client_id={} revision={} capture={epoch}/{generation}/{}/{}",
                 binding.client_id, binding.revision, binding.client_id, binding.revision
             );
+            #[cfg(windows)]
+            if let Some(location) = &binding.wezterm {
+                show_wezterm(location);
+            }
+            println!();
         }
     }
     println!(
@@ -442,6 +497,14 @@ fn show_slots(slots: PresentationSlots, host: &str, epoch: &str) -> Result<()> {
         slots.overflow_count, slots.suppressed_count
     );
     Ok(())
+}
+
+#[cfg(windows)]
+fn show_wezterm(location: &WezTermLocation) {
+    print!(
+        " wezterm_pid={} wezterm_window={} wezterm_tab={} wezterm_pane={}",
+        location.gui_pid, location.window_id, location.tab_id, location.pane_id,
+    );
 }
 
 fn show_run(run: &PresentedRun) -> Result<()> {

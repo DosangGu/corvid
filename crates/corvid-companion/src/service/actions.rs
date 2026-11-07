@@ -5,11 +5,13 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::edit_slot_layout::Action;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AckPresentedAttention, FocusSlot, LocalActivation, PresentedBinding, PresentedSlotToken,
-    SlotFocused, SlotLayoutEdited,
+    AckPresentedAttention, FocusSlot, LocalActivation, PairTerminal, PresentedBinding,
+    PresentedSlotToken, SlotFocused, SlotLayoutEdited,
 };
 use uuid::Uuid;
 
+#[cfg(windows)]
+use super::{LocalTerminal, WezTermPane};
 use super::{Outcome, Remote, Service, observations, store_fault};
 use crate::remote::{invalid, parse_id};
 use crate::{RunKey, SlotLayout};
@@ -18,26 +20,7 @@ impl Service {
     pub(super) async fn execute(&mut self, body: Body) -> Outcome {
         match body {
             Body::GetPresentationSlots(query) => self.presentation(query),
-            Body::PairTerminal(pair) => {
-                let remote = self.require_ready()?;
-                let reply = self
-                    .command(
-                        remote,
-                        ControllerRequest::Register {
-                            code: parse_id(&pair.code)?,
-                        },
-                    )
-                    .await?;
-                match reply {
-                    Body::ClientBindingRegistered(ref binding)
-                        if binding.binding_revision != 0
-                            && parse_id(&binding.client_id).is_ok() =>
-                    {
-                        Ok(reply)
-                    }
-                    _ => Err(invalid_reply()),
-                }
-            }
+            Body::PairTerminal(pair) => self.pair(pair).await,
             Body::UnpairTerminal(unpair) => {
                 let remote = self.require_generation(&unpair.control_generation)?;
                 let (client, revision) = require_binding(remote, unpair.binding.as_ref())?;
@@ -45,7 +28,11 @@ impl Service {
                     .command(remote, ControllerRequest::Unregister { client, revision })
                     .await?;
                 match reply {
-                    Body::ClientBindingUnregistered(_) => Ok(reply),
+                    Body::ClientBindingUnregistered(_) => {
+                        #[cfg(windows)]
+                        self.terminals.remove(&client);
+                        Ok(reply)
+                    }
                     _ => Err(invalid_reply()),
                 }
             }
@@ -54,6 +41,54 @@ impl Service {
             Body::EditSlotLayout(edit) => self.edit(edit.action.ok_or_else(invalid)?),
             _ => Err(invalid()),
         }
+    }
+
+    async fn pair(&mut self, pair: PairTerminal) -> Outcome {
+        let remote = self.require_ready()?;
+        let code = parse_id(&pair.code)?;
+        #[cfg(not(windows))]
+        if pair.wezterm.is_some() {
+            return Err(ProtocolFault::new(
+                "UnsupportedCapability",
+                "WezTerm registration requires the Windows companion",
+            ));
+        }
+        #[cfg(windows)]
+        let pane = match pair.wezterm {
+            Some(target) => Some(
+                WezTermPane::capture(target)
+                    .await
+                    .map_err(|_| local_unavailable())?,
+            ),
+            None => None,
+        };
+        let reply = self
+            .command(remote, ControllerRequest::Register { code })
+            .await?;
+        let Body::ClientBindingRegistered(binding) = &reply else {
+            return Err(invalid_reply());
+        };
+        let client = parse_id(&binding.client_id).map_err(|_| invalid_reply())?;
+        if binding.binding_revision == 0 || binding.commit_sequence < remote.sequence {
+            return Err(invalid_reply());
+        }
+        #[cfg(windows)]
+        if let Some(pane) = pane {
+            self.terminals.insert(
+                client,
+                LocalTerminal {
+                    epoch: remote.epoch,
+                    revision: binding.binding_revision,
+                    commit_sequence: binding.commit_sequence,
+                    pane,
+                },
+            );
+        } else {
+            self.terminals.remove(&client);
+        }
+        #[cfg(not(windows))]
+        let _ = client;
+        Ok(reply)
     }
 
     async fn focus(&self, focus: FocusSlot) -> Outcome {
@@ -72,6 +107,12 @@ impl Service {
             ));
         }
         let (client, revision) = require_binding(remote, focus.binding.as_ref())?;
+        #[cfg(windows)]
+        let pane = self.local_pane(remote, client, revision);
+        #[cfg(windows)]
+        if let Some(pane) = pane {
+            pane.check().await.map_err(|_| local_unavailable())?;
+        }
         let command = ControllerRequest::Focus {
             client,
             run: key.run,
@@ -86,9 +127,17 @@ impl Service {
                     && applied.view_revision != 0
                     && applied.commit_sequence >= remote.sequence =>
             {
+                #[cfg(windows)]
+                let (activation, wezterm) = match pane {
+                    Some(pane) => (pane.activate().await, Some(pane.location())),
+                    None => (LocalActivation::ManualRequired, None),
+                };
+                #[cfg(not(windows))]
+                let (activation, wezterm) = (LocalActivation::ManualRequired, None);
                 Ok(Body::SlotFocused(SlotFocused {
                     remote: Some(applied),
-                    local_activation: LocalActivation::ManualRequired as i32,
+                    local_activation: activation as i32,
+                    wezterm,
                 }))
             }
             _ => Err(invalid_reply()),
@@ -213,6 +262,14 @@ impl Service {
         }
         Ok(remote)
     }
+}
+
+#[cfg(windows)]
+fn local_unavailable() -> ProtocolFault {
+    ProtocolFault::new(
+        "LocalTerminalUnavailable",
+        "cannot verify the selected WezTerm instance and pane. Pair the intended terminal again",
+    )
 }
 
 fn require_binding(

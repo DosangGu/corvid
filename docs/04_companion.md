@@ -76,6 +76,40 @@ To acknowledge one alert, use the displayed `control_capture`, `run`, and
 matching result. Use `companion unpair --binding "$BINDING_CAPTURE"` to revoke
 one registration.
 
+### WezTerm on Windows
+
+Keep the ordinary SSH session and its Corvid TUI open. In a separate local
+shell in the same WezTerm GUI, list panes and choose the numeric ID for the
+pane containing the TUI. Read its pairing code as above. Run the following
+locally, with the chosen ID in `$PaneId`.
+
+```powershell
+wezterm --skip-config cli --no-auto-start list --format json
+corvid.exe companion pair --wezterm-pane $PaneId
+```
+
+Use `--wezterm-socket` with that GUI's `WEZTERM_UNIX_SOCKET` value when the
+pairing shell is outside the target WezTerm instance. The companion checks
+the running GUI's user, process, and socket peer and records the exact
+window, tab, and pane IDs. It uses its pairing record before and after remote
+focus. If the pane moves, closes, or belongs to a replacement process,
+pair the intended pane again. [WezTerm CLI instance selection](https://wezterm.org/cli/cli/index.html)
+
+The same `focus-slot` command selects the registered WezTerm pane after
+remote focus succeeds. `Activated` means Windows reported the registered
+window in the foreground. `PaneSelectedForegroundUnknown` means the pane
+selection succeeded and Windows foreground activation could not be confirmed.
+The slot output shows the registered PID and window/tab/pane IDs to locate
+it. Windows activation is attempted only for a single unambiguous GUI window
+with WezTerm's default window class.
+`Unavailable` after `Applied` means the remote selection succeeded but the
+local activation could not be completed. [WezTerm pane activation](https://wezterm.org/cli/cli/activate-pane.html)
+[Windows foreground restrictions](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features)
+
+Local WezTerm registrations currently live for the companion process.
+After a companion restart a surviving remote TUI binding remains available
+for manual focus. Pair again to enable automatic activation.
+
 ## Slot Management and Recovery
 
 - `slots --overflow-page 0` shows the first overflow page. Use `pin` and `unpin`
@@ -114,5 +148,17 @@ DACL with an extra ACE. The storage tests fail closed in that environment.
 
 Run `cargo test --locked -p corvid-companion` on native Windows to verify
 pipe exclusivity, state replacement and recovery, and two presentation clients.
-Native Windows storage, OpenSSH runtime, terminal activation, desktop
+The WezTerm adapter follows the per-process socket layout and CLI options in
+WezTerm `20240203-110809-5046fc22`. The Windows-target binary and adapter
+tests cross-link. Wine ran the pane matching tests and CLI help, but failed
+to create a Windows AF_UNIX socket with error 10047. Run the peer PID and
+socket pinning test on native Windows before qualifying the adapter.
+[WezTerm GUI socket source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm-gui/src/main.rs)
+[WezTerm CLI option source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm/src/cli/mod.rs)
+
+On native Windows, check focus with two GUI processes that each have a pane
+with the same numeric ID. Move the paired pane to another tab, close it, and
+restart its GUI. Verify the old registration cannot activate the replacement.
+Check both confirmed foreground activation and the fallback when the OS denies
+it. Native Windows storage, OpenSSH runtime, terminal activation, desktop
 presentation, and hardware integration remain unqualified.

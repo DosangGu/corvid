@@ -288,6 +288,7 @@ message PresentedSlot {
 message PresentedBinding {
   string client_id = 1;
   uint64 revision = 2;
+  WezTermLocation wezterm = 3;
 }
 
 message PresentationSlots {
@@ -309,6 +310,19 @@ message PresentationSlots {
 
 message PairTerminal {
   string code = 1;
+  WezTermTarget wezterm = 2;
+}
+
+message WezTermTarget {
+  string gui_socket = 1;
+  optional uint32 pane_id = 2;
+}
+
+message WezTermLocation {
+  uint32 gui_pid = 1;
+  uint32 window_id = 2;
+  uint32 tab_id = 3;
+  uint32 pane_id = 4;
 }
 
 message UnpairTerminal {
@@ -340,6 +354,7 @@ enum LocalActivation {
 message SlotFocused {
   FocusApplied remote = 1;
   LocalActivation local_activation = 2;
+  WezTermLocation wezterm = 3;
 }
 
 message EditSlotLayout {

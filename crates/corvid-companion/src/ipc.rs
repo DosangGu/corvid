@@ -27,11 +27,23 @@ use crate::platform::{PipeListener, open_pipe};
 use crate::service::{Call, Service};
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
+#[cfg(windows)]
+pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
+const CAPABILITIES: &[&str] = &[
+    PRESENTATION_CAPABILITY,
+    #[cfg(windows)]
+    WEZTERM_CAPABILITY,
+];
 const ROLE: FrameRole = FrameRole::StructuredOnly;
 const MAX_PEERS: usize = 8;
 const MAX_CALLS: usize = 8;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(windows))]
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
+// Windows focus also verifies the pane around the remote command and may
+// wait briefly for the verified window to reach the foreground.
+#[cfg(windows)]
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(target_os = "linux")]
 pub type PresentationAddress = Path;
@@ -156,28 +168,23 @@ async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(
         .next_envelope()
         .await?
         .context("missing presentation Hello")?;
-    let (session, reply) = match accept_hello(
-        &request,
-        PeerRole::Presentation,
-        host,
-        epoch,
-        &[PRESENTATION_CAPABILITY],
-    ) {
-        Ok(accepted) => accepted,
-        Err(fault) => {
-            let reply = Envelope {
-                protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
-                request_id: request
-                    .request_id
-                    .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
-                body: Some(Body::Error(fault.clone().into_wire())),
-                ..Default::default()
-            };
-            writer.envelope(&reply).await?;
-            return Err(fault.into());
-        }
-    };
+    let (session, reply) =
+        match accept_hello(&request, PeerRole::Presentation, host, epoch, CAPABILITIES) {
+            Ok(accepted) => accepted,
+            Err(fault) => {
+                let reply = Envelope {
+                    protocol_major: PROTOCOL_MAJOR,
+                    protocol_minor: PROTOCOL_MINOR,
+                    request_id: request
+                        .request_id
+                        .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
+                    body: Some(Body::Error(fault.clone().into_wire())),
+                    ..Default::default()
+                };
+                writer.envelope(&reply).await?;
+                return Err(fault.into());
+            }
+        };
     writer.envelope(&reply).await?;
     Ok(Peer {
         session,

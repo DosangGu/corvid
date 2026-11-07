@@ -13,6 +13,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 use uuid::Uuid;
 
+#[cfg(windows)]
+use crate::platform::WezTermPane;
 use crate::remote::Remote;
 use crate::{RunKey, RunObservation, Store};
 
@@ -33,6 +35,16 @@ pub(crate) struct Service {
     issue: Option<&'static str>,
     generation: Option<Uuid>,
     remote: Option<Remote>,
+    #[cfg(windows)]
+    terminals: BTreeMap<Uuid, LocalTerminal>,
+}
+
+#[cfg(windows)]
+struct LocalTerminal {
+    epoch: Uuid,
+    revision: u64,
+    commit_sequence: u64,
+    pane: WezTermPane,
 }
 
 impl Service {
@@ -47,6 +59,8 @@ impl Service {
             issue: None,
             generation: None,
             remote: None,
+            #[cfg(windows)]
+            terminals: BTreeMap::new(),
         })
     }
 
@@ -82,6 +96,14 @@ impl Service {
                 }
             }
         }
+    }
+
+    #[cfg(windows)]
+    fn local_pane(&self, remote: &Remote, client: Uuid, revision: u64) -> Option<&WezTermPane> {
+        self.terminals
+            .get(&client)
+            .filter(|terminal| terminal.epoch == remote.epoch && terminal.revision == revision)
+            .map(|terminal| &terminal.pane)
     }
 
     async fn connect(&mut self, calls: &mut mpsc::Receiver<Call>) -> Result<SnapshotWatch> {
@@ -171,6 +193,12 @@ impl Service {
         self.store
             .update(|layout| Ok(layout.reconcile(&runs, &removed)?))
             .map_err(store_fault)?;
+        #[cfg(windows)]
+        self.terminals.retain(|client, terminal| {
+            terminal.epoch == remote.epoch
+                && (remote.sequence < terminal.commit_sequence
+                    || remote.bindings.get(client) == Some(&terminal.revision))
+        });
         self.remote = Some(remote);
         Ok(())
     }

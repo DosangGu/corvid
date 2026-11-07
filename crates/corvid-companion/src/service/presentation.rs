@@ -41,6 +41,12 @@ impl Service {
                     .map(|(client, revision)| PresentedBinding {
                         client_id: client.to_string(),
                         revision: *revision,
+                        #[cfg(windows)]
+                        wezterm: self
+                            .local_pane(remote, *client, *revision)
+                            .map(crate::platform::WezTermPane::location),
+                        #[cfg(not(windows))]
+                        wezterm: None,
                     })
                     .collect()
             });

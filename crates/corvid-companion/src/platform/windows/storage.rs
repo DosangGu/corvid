@@ -13,10 +13,10 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_TYPE_DISK, GetDriveTypeW, GetFileInformationByHandle, GetFileType, GetVolumeInformationW,
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING,
-    READ_CONTROL,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_TYPE_DISK, GetDriveTypeW, GetFileInformationByHandle, GetFileType,
+    GetVolumeInformationW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL,
 };
 use windows_sys::Win32::System::SystemServices::FILE_PERSISTENT_ACLS;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
@@ -64,7 +64,8 @@ impl StateDirectory {
             check_component(name)?;
             path.push(name);
             let last = components.peek().is_none();
-            let access = FILE_READ_ATTRIBUTES | if last { READ_CONTROL } else { 0 };
+            let access =
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | if last { READ_CONTROL } else { 0 };
             let directory = match open_directory(&path, access) {
                 Err(error) if create && error.kind() == ErrorKind::NotFound => {
                     create_directory(&path, &descriptor)?;
@@ -184,7 +185,7 @@ impl StateDirectory {
     }
 }
 
-fn require_local_acl_volume(drive: u8) -> Result<()> {
+pub(super) fn require_local_acl_volume(drive: u8) -> Result<()> {
     let root: Vec<_> = format!(r"{}:\", char::from(drive))
         .encode_utf16()
         .chain(Some(0))
@@ -215,7 +216,7 @@ fn require_local_acl_volume(drive: u8) -> Result<()> {
     Ok(())
 }
 
-fn check_component(name: &OsStr) -> Result<()> {
+pub(super) fn check_component(name: &OsStr) -> Result<()> {
     let mut last = None;
     for unit in name.encode_wide() {
         ensure!(
