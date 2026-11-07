@@ -26,6 +26,10 @@ message Envelope {
     AgentList agent_list = 22;
     ListClients list_clients = 23;
     ClientList client_list = 24;
+    RegisterClientBinding register_client_binding = 25;
+    ClientBindingRegistered client_binding_registered = 26;
+    UnregisterClientBinding unregister_client_binding = 27;
+    ClientBindingUnregistered client_binding_unregistered = 28;
     Attach attach = 30;
     Attached attached = 31;
     InputChunk input_chunk = 32;
@@ -40,6 +44,11 @@ message Envelope {
     SelectView select_view = 41;
     ClaimWorkspaceWriter claim_workspace_writer = 42;
     WriterClaimed writer_claimed = 43;
+    IssuePairingCode issue_pairing_code = 44;
+    PairingCode pairing_code = 45;
+    RedrawView redraw_view = 46;
+    AcknowledgeAttention acknowledge_attention = 50;
+    AttentionAcknowledged attention_acknowledged = 51;
     CollectHook collect_hook = 60;
     HookCollected hook_collected = 61;
     GetSnapshot get_snapshot = 70;
@@ -146,6 +155,57 @@ message ClientState {
   optional uint64 view_revision = 5;
   Viewport viewport = 6;
   repeated WriterLeaseState writer_leases = 7;
+  repeated ClientBindingState bindings = 8;
+}
+
+message ClientBindingState {
+  string controller_id = 1;
+  uint64 binding_revision = 2;
+}
+
+message IssuePairingCode {}
+
+message PairingCode {
+  string code = 1;
+  uint32 expires_in_seconds = 2;
+}
+
+message RedrawView {
+  optional uint64 view_revision = 1;
+}
+
+message RegisterClientBinding {
+  string controller_id = 1;
+  string code = 2;
+}
+
+message ClientBindingRegistered {
+  string client_id = 1;
+  uint64 binding_revision = 2;
+  uint64 commit_sequence = 3;
+}
+
+message UnregisterClientBinding {
+  string controller_id = 1;
+  string client_id = 2;
+  optional uint64 binding_revision = 3;
+}
+
+message ClientBindingUnregistered {
+  uint64 commit_sequence = 1;
+}
+
+message AcknowledgeAttention {
+  string controller_id = 1;
+  string agent_run_id = 2;
+  string attention_id = 3;
+}
+
+message AttentionAcknowledged {
+  string agent_run_id = 1;
+  string attention_id = 2;
+  uint64 acknowledged_unix_ms = 3;
+  uint64 commit_sequence = 4;
 }
 
 message WriterLeaseState {

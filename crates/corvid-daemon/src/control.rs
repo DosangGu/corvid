@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use corvid_protocol::controller::{ACK_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
@@ -19,7 +20,7 @@ use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::metadata::{MetadataView, Recovery, SaveState};
 use crate::snapshot::{self, LiveWatch};
-use crate::workspaces::Workspaces;
+use crate::workspaces::{ControllerCommand, Workspaces};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CAPABILITIES: &[&str] = &[
@@ -31,6 +32,8 @@ const CAPABILITIES: &[&str] = &[
     "list_clients.v1",
     SNAPSHOT_CAPABILITY,
     WATCH_CAPABILITY,
+    PAIR_CAPABILITY,
+    ACK_CAPABILITY,
 ];
 
 pub(crate) async fn serve(
@@ -114,6 +117,14 @@ impl Control<'_> {
             Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(inventory(self.metadata)),
             Ok(Body::ListAgents(_)) => Body::AgentList(self.workspaces.agents()),
             Ok(Body::ListClients(_)) => Body::ClientList(self.workspaces.clients()),
+            Ok(
+                body @ (Body::RegisterClientBinding(_)
+                | Body::UnregisterClientBinding(_)
+                | Body::AcknowledgeAttention(_)),
+            ) => match self.controller(&request, body).await {
+                Ok(body) => body,
+                Err(fault) => Body::Error(fault.into_wire()),
+            },
             Ok(_) => Body::Error(
                 ProtocolFault::new("UnsupportedCapability", "unavailable control method")
                     .into_wire(),
@@ -128,6 +139,22 @@ impl Control<'_> {
         let reply = self.session.envelope(request_id, body);
         timeout(COMMAND_TIMEOUT, self.writer.envelope(&reply)).await??;
         Ok(())
+    }
+
+    async fn controller(&self, request: &Envelope, body: &Body) -> Result<Body, ProtocolFault> {
+        let command = ControllerCommand::parse(&self.session, body)?;
+        let controller = self
+            .session
+            .controller_id
+            .as_deref()
+            .expect("control handshake has controller");
+        let id = request
+            .request_id
+            .as_deref()
+            .expect("validated request has ID");
+        self.workspaces
+            .controller_command(controller, id, command)
+            .await
     }
 
     async fn watch(

@@ -128,7 +128,10 @@ impl Session {
                 | Body::ListAgents(_)
                 | Body::ListClients(_)
                 | Body::GetSnapshot(_)
-                | Body::SnapshotWatch(_),
+                | Body::SnapshotWatch(_)
+                | Body::RegisterClientBinding(_)
+                | Body::UnregisterClientBinding(_)
+                | Body::AcknowledgeAttention(_),
             ) => Ok(body),
             (PeerRole::Tui, Body::Attach(attach)) => {
                 match AttachRole::try_from(attach.requested_role) {
@@ -151,6 +154,8 @@ impl Session {
                 | Body::ResizeViewport(_)
                 | Body::SelectView(_)
                 | Body::ClaimWorkspaceWriter(_)
+                | Body::IssuePairingCode(_)
+                | Body::RedrawView(_)
                 | Body::FrameApplied(_)
                 | Body::Detach(_),
             ) => Ok(body),

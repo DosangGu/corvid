@@ -106,6 +106,16 @@ fn client_state(entries: &Entries, client: &ClientState) -> Result<()> {
         "invalid client generation",
     )?;
     require(client.writer_leases.len() <= 32, "too many writer leases")?;
+    require(client.bindings.len() <= 8, "too many client bindings")?;
+    let mut controllers = BTreeSet::new();
+    for binding in &client.bindings {
+        require(
+            binding.binding_revision > 0
+                && valid_id(&binding.controller_id)
+                && controllers.insert(&binding.controller_id),
+            "invalid client binding",
+        )?;
+    }
     for lease in &client.writer_leases {
         require(
             lease.generation > 0 && workspace(entries, &lease.workspace_id).is_some(),

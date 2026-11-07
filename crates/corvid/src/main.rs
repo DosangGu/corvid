@@ -1,20 +1,25 @@
 mod hooks;
 
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
+use std::io::{self, BufRead, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
+use corvid_client::{ControllerRequest, ControllerScope};
 use corvid_protocol::snapshot::SynchronizedSnapshot;
+use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
-    LayoutRecovery, PersistenceState,
+    AttentionReason, InputRequestKind, LayoutRecovery, PersistenceState,
 };
 use tokio::signal::unix::{SignalKind, signal};
+use uuid::Uuid;
 
 use crate::hooks::HookProvider;
 
@@ -74,6 +79,20 @@ enum Command {
         #[arg(value_enum)]
         request: Option<ControlRequest>,
     },
+    /// Manage an explicit controller registration or acknowledge an alert.
+    Controller {
+        #[arg(long)]
+        controller_id: String,
+        #[arg(long)]
+        host_id: String,
+        #[arg(long)]
+        server_epoch: String,
+        /// Reuse this ID only to obtain the result of the same command.
+        #[arg(long)]
+        request_id: Option<String>,
+        #[command(subcommand)]
+        action: ControllerAction,
+    },
     /// Print an additive provider hook configuration for explicit installation.
     Hooks {
         #[arg(value_enum)]
@@ -93,6 +112,7 @@ enum ControlRequest {
     Status,
     Workspaces,
     Agents,
+    Attention,
     Clients,
     Snapshot,
     Watch,
@@ -101,6 +121,24 @@ enum ControlRequest {
 #[derive(Clone, Copy, ValueEnum)]
 enum ManagedAgent {
     Claude,
+}
+
+#[derive(Subcommand)]
+enum ControllerAction {
+    /// Read the attached TUI's single-use pairing code from stdin.
+    Pair,
+    Unpair {
+        #[arg(long)]
+        client_id: Uuid,
+        #[arg(long)]
+        binding_revision: u64,
+    },
+    Ack {
+        #[arg(long)]
+        run_id: Uuid,
+        #[arg(long)]
+        attention_id: Uuid,
+    },
 }
 
 fn main() -> ExitCode {
@@ -186,6 +224,20 @@ async fn run(options: Options) -> Result<u32> {
             };
             corvid_client::attach(&runtime, options).await
         }
+        Command::Controller {
+            controller_id,
+            host_id,
+            server_epoch,
+            request_id,
+            action,
+        } => {
+            let scope = ControllerScope {
+                controller_id,
+                host_id,
+                server_epoch,
+            };
+            controller_action(&runtime, &scope, request_id, action).await
+        }
         Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
         Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {
             ControlRequest::Host => {
@@ -241,6 +293,11 @@ async fn run(options: Options) -> Result<u32> {
                 }
                 Ok(0)
             }
+            ControlRequest::Attention => {
+                let cache = corvid_client::snapshot(&runtime).await?;
+                print_attention(&cache);
+                Ok(0)
+            }
             ControlRequest::Clients => {
                 for client in corvid_client::clients(&runtime).await?.clients {
                     print!(
@@ -255,6 +312,12 @@ async fn run(options: Options) -> Result<u32> {
                     }
                     for lease in client.writer_leases {
                         print!(" writer={}/{}", lease.workspace_id, lease.generation);
+                    }
+                    for binding in client.bindings {
+                        print!(
+                            " binding={}/{}",
+                            binding.controller_id, binding.binding_revision
+                        );
                     }
                     println!();
                 }
@@ -274,6 +337,88 @@ async fn run(options: Options) -> Result<u32> {
             }
         },
     }
+}
+
+fn print_attention(cache: &SynchronizedSnapshot) {
+    let kinds: BTreeMap<_, _> = cache
+        .snapshot()
+        .entities()
+        .filter_map(|entry| {
+            let Some(EntityBody::Request(request)) = &entry.body else {
+                return None;
+            };
+            Some((
+                (request.agent_run_id.as_str(), request.request_id.as_str()),
+                request.kind,
+            ))
+        })
+        .collect();
+    for entry in cache.snapshot().entities() {
+        let Some(EntityBody::Attention(alert)) = &entry.body else {
+            continue;
+        };
+        let reason =
+            AttentionReason::try_from(alert.reason).unwrap_or(AttentionReason::Unspecified);
+        let kind = alert
+            .request_id
+            .as_deref()
+            .and_then(|request| kinds.get(&(alert.agent_run_id.as_str(), request)))
+            .and_then(|kind| InputRequestKind::try_from(*kind).ok())
+            .unwrap_or(InputRequestKind::Unspecified);
+        println!(
+            "run_id={} attention_id={} reason={reason:?} request_kind={kind:?} acknowledged={}",
+            alert.agent_run_id,
+            alert.attention_id,
+            alert.acknowledged_unix_ms.is_some(),
+        );
+    }
+}
+
+async fn controller_action(
+    runtime: &std::path::Path,
+    scope: &ControllerScope,
+    request_id: Option<String>,
+    action: ControllerAction,
+) -> Result<u32> {
+    let command = match action {
+        ControllerAction::Pair => {
+            let mut input = String::new();
+            io::stdin().lock().take(128).read_line(&mut input)?;
+            ControllerRequest::Register {
+                code: Uuid::parse_str(input.trim()).context("invalid pairing code")?,
+            }
+        }
+        ControllerAction::Unpair {
+            client_id,
+            binding_revision,
+        } => ControllerRequest::Unregister {
+            client: client_id,
+            revision: binding_revision,
+        },
+        ControllerAction::Ack {
+            run_id,
+            attention_id,
+        } => ControllerRequest::Acknowledge {
+            run: run_id,
+            attention: attention_id,
+        },
+    };
+    let request_id = request_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    match corvid_client::controller(runtime, scope, request_id, command).await? {
+        Body::ClientBindingRegistered(binding) => println!(
+            "client_id={} binding_revision={} sequence={}",
+            binding.client_id, binding.binding_revision, binding.commit_sequence,
+        ),
+        Body::ClientBindingUnregistered(binding) => {
+            println!("sequence={}", binding.commit_sequence)
+        }
+        Body::AttentionAcknowledged(ack) => println!(
+            "attention_id={} acknowledged_unix_ms={} sequence={}",
+            ack.attention_id, ack.acknowledged_unix_ms, ack.commit_sequence,
+        ),
+        _ => bail!("unexpected controller response"),
+    }
+    Ok(0)
 }
 
 fn print_snapshot(cache: &SynchronizedSnapshot) {

@@ -164,6 +164,14 @@ impl Agents {
         }
     }
 
+    pub(crate) fn acknowledge(&mut self, run: Uuid, attention: Uuid) -> Option<u64> {
+        let record = self.runs.get_mut(&run).filter(|record| record.published)?;
+        if record.run.acknowledge(attention, unix_ms()) {
+            self.dirty.insert(run);
+        }
+        record.run.attention.get(&attention)?.acknowledged_unix_ms
+    }
+
     pub(crate) fn binding(&self, association: Uuid) -> HookBinding {
         let Some(launch) = self.launches.get(&association) else {
             return HookBinding::Unavailable;

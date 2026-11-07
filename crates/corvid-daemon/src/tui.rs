@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use corvid_core::agent::Provider;
 use corvid_core::layout::Location;
 use corvid_core::{InputRoute, Viewport};
+use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentProvider, Attach, Attached, Envelope, LaunchCommand, Pong, RenderHeader, RouteToken,
@@ -33,6 +34,7 @@ const CAPABILITIES: &[&str] = &[
     "paste.v1",
     "tabs.v1",
     "select_view.v1",
+    PAIR_CAPABILITY,
     "agent_launch.v1",
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
@@ -151,6 +153,7 @@ impl TuiConnection<'_> {
         };
         match body {
             Body::Detach(_) => return Ok(true),
+            Body::IssuePairingCode(_) => self.pair(request.request_id).await?,
             Body::SelectView(view) => {
                 let destination = exact_destination(view, self.active.route.view_revision);
                 match destination {
@@ -217,8 +220,20 @@ impl TuiConnection<'_> {
                 return Ok(true);
             }
             Event::Tab(command) => self.switch(Destination::Tab(command), None, true).await?,
+            Event::PairController => self.pair(None).await?,
         }
         Ok(false)
+    }
+
+    async fn pair(&mut self, id: Option<String>) -> Result<()> {
+        let route = self.active.route;
+        match self
+            .workspaces
+            .issue_pairing_code(route.client_id, route.connection_generation)
+        {
+            Ok(code) => self.send(id, Body::PairingCode(code)).await,
+            Err(fault) => self.fault(id, fault).await,
+        }
     }
 
     async fn switch(
@@ -369,6 +384,12 @@ fn command(client: Uuid, body: &Body) -> Result<Action, ProtocolFault> {
             generation: frame.render_generation,
             frame_id: frame.frame_id,
         }),
+        Body::RedrawView(redraw) => Ok(Action::Redraw {
+            view_revision: redraw
+                .view_revision
+                .filter(|revision| *revision > 0)
+                .ok_or_else(|| invalid("missing redraw view revision"))?,
+        }),
         Body::Ping(_) => Ok(Action::Ping),
         _ => Err(ProtocolFault::new(
             "UnsupportedCapability",
@@ -410,6 +431,10 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
             .terminal_capabilities
             .iter()
             .any(|name| name == "tabs.v1"),
+        pair_keys: attach
+            .terminal_capabilities
+            .iter()
+            .any(|name| name == PAIR_CAPABILITY),
         viewport: viewport(attach.viewport.as_ref())?,
         launch: attach.launch.as_ref().map(launch).transpose()?,
     })

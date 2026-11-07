@@ -56,6 +56,7 @@ pub(crate) struct AttachSpec {
     pub(crate) revision: u64,
     pub(crate) dormant: bool,
     pub(crate) tab_keys: bool,
+    pub(crate) pair_keys: bool,
     pub(crate) viewport: Viewport,
     pub(crate) launch: Option<Launch>,
     pub(crate) events: mpsc::Sender<Event>,
@@ -87,6 +88,9 @@ pub(crate) enum Action {
         generation: u64,
         frame_id: u64,
     },
+    Redraw {
+        view_revision: u64,
+    },
     Ping,
     Rejected(ProtocolFault),
 }
@@ -110,6 +114,7 @@ pub(crate) enum Event {
     },
     Detached,
     Tab(TabCommand),
+    PairController,
 }
 
 #[derive(Clone, Copy)]
@@ -123,6 +128,7 @@ enum KeyEffect {
     Forwarded,
     Detach,
     Tab(TabCommand),
+    PairController,
 }
 
 pub(crate) struct Render {
@@ -376,7 +382,13 @@ impl Worker {
             view_revision: spec.revision,
             writer_lease_generation: spec.lease_generation,
         };
-        self.lease = Some(Lease::new(route, spec.events, !spec.dormant, spec.tab_keys));
+        self.lease = Some(Lease::new(
+            route,
+            spec.events,
+            !spec.dormant,
+            spec.tab_keys,
+            spec.pair_keys,
+        ));
         self.viewing.store(true, Ordering::Release);
         Ok(route)
     }
@@ -444,6 +456,11 @@ impl Worker {
                     KeyEffect::Tab(command) => {
                         lease.switch_pending = true;
                         if lease.events.try_send(Event::Tab(command)).is_err() {
+                            self.revoke();
+                        }
+                    }
+                    KeyEffect::PairController => {
+                        if lease.events.try_send(Event::PairController).is_err() {
                             self.revoke();
                         }
                     }
@@ -534,6 +551,18 @@ impl Worker {
                 generation,
                 frame_id,
             } => lease.ack(generation, frame_id)?,
+            Action::Redraw { view_revision } => {
+                if view_revision != lease.route.view_revision {
+                    return Err(stale_route());
+                }
+                lease.render_generation = lease
+                    .render_generation
+                    .checked_add(1)
+                    .ok_or_else(overloaded)?;
+                lease.previous = None;
+                lease.in_flight = None;
+                terminal.dirty = true;
+            }
             Action::Ping => {
                 if lease.events.try_send(Event::Pong { request_id }).is_err() {
                     self.revoke();
@@ -891,10 +920,17 @@ struct Lease {
     armed: bool,
     switch_pending: bool,
     tab_keys: bool,
+    pair_keys: bool,
 }
 
 impl Lease {
-    fn new(route: InputRoute, events: mpsc::Sender<Event>, armed: bool, tab_keys: bool) -> Self {
+    fn new(
+        route: InputRoute,
+        events: mpsc::Sender<Event>,
+        armed: bool,
+        tab_keys: bool,
+        pair_keys: bool,
+    ) -> Self {
         Self {
             route,
             input_sequence: 0,
@@ -909,6 +945,7 @@ impl Lease {
             armed,
             switch_pending: false,
             tab_keys,
+            pair_keys,
         }
     }
 
@@ -940,6 +977,7 @@ impl Lease {
                 b"n" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Next)),
                 b"p" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Previous)),
                 b"t" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Create)),
+                b"r" if self.pair_keys => Some(KeyEffect::PairController),
                 _ => None,
             };
             if let Some(command) = command {

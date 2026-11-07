@@ -143,6 +143,7 @@ def verify(command, directory):
         pid, tick = int(initial[1]), int(initial[2])
         first.send(b"a")
         first.expect("한글 e\u0301".encode())
+        verify_pairing(command, first, pid)
 
         with OuterTerminal([*command, "attach"], cols=110, rows=31) as busy:
             busy.expect(b"WorkspaceBusy")
@@ -166,6 +167,26 @@ def verify(command, directory):
         second.send(b"q")
         second.expect(b"TERMINAL-EXIT")
         second.wait(7)
+
+
+def verify_pairing(command, outer, pid):
+    outer.send(b"\x1dr")
+    outer.expect(b"Controller pairing code")
+    code = outer.expect(rb"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")[0].decode()
+    host = subprocess.check_output([*command, "control", "host"], text=True, timeout=3)
+    identity = dict(field.split("=", 1) for field in host.split())
+    paired = subprocess.run(
+        [*command, "controller", "--controller-id", "tty-fixture", "--host-id", identity["host_id"],
+         "--server-epoch", identity["server_epoch"], "pair"],
+        input=code + "\n", text=True, capture_output=True, timeout=3, check=True,
+    )
+    assert "binding_revision=1" in paired.stdout
+    clients = subprocess.check_output([*command, "control", "clients"], text=True, timeout=3)
+    assert "binding=tty-fixture/1" in clients and code not in clients
+    outer.output.clear()
+    outer.send(b"\r")
+    restored = outer.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x24")
+    assert int(restored[1]) == pid
 
 
 def send_paste(outer):

@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
+use corvid_client::{ControllerRequest, ControllerScope, controller};
 use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
@@ -13,15 +14,16 @@ use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
     ClaimWorkspaceWriter, EntityKind, Envelope, FrameApplied, GetSnapshot, InputChunk,
-    LaunchCommand, ListClients, PasteBegin, PasteChunk, PasteEnd, ResizeViewport, RouteToken,
-    SelectView, SnapshotWatch, ViewSelection, Viewport,
+    IssuePairingCode, LaunchCommand, ListClients, PasteBegin, PasteChunk, PasteEnd, ResizeViewport,
+    RouteToken, SelectView, SnapshotWatch, ViewSelection, Viewport,
 };
 use corvid_protocol::{
-    Frame, FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result,
-    decode_envelope, hello,
+    Frame, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
+    check_hello_result, decode_envelope, hello,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{sleep, timeout};
+use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon};
 
@@ -431,6 +433,146 @@ impl ControlWire {
         self.session.validate_scope(&reply).unwrap();
         reply
     }
+}
+
+fn controller_scope(tui: &Tui, controller_id: &str) -> ControllerScope {
+    ControllerScope {
+        controller_id: controller_id.to_owned(),
+        host_id: tui.session.host_id.clone(),
+        server_epoch: tui.session.server_epoch.clone(),
+    }
+}
+
+async fn issue_pairing(tui: &mut Tui) -> Uuid {
+    tui.send(Body::IssuePairingCode(IssuePairingCode {})).await;
+    let Body::PairingCode(code) = tui.next_body(&mut Vec::new()).await else {
+        panic!("missing pairing code");
+    };
+    assert_eq!(code.expires_in_seconds, 60);
+    Uuid::parse_str(&code.code).unwrap()
+}
+
+#[tokio::test]
+async fn pairing_code_is_single_use_and_rpc_replay_preserves_the_first_revision() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let mut tui = Tui::attach_command(&runtime, Some(echo_fixture("PAIR"))).await;
+        let scope = controller_scope(&tui, "pair-fixture");
+        let client = Uuid::parse_str(&tui.route.client_id).unwrap();
+        let code = issue_pairing(&mut tui).await;
+        let first = controller(
+            &runtime,
+            &scope,
+            "pair".into(),
+            ControllerRequest::Register { code },
+        )
+        .await
+        .unwrap();
+        let replay = controller(
+            &runtime,
+            &scope,
+            "pair".into(),
+            ControllerRequest::Register { code },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, replay);
+        let Body::ClientBindingRegistered(binding) = first else {
+            panic!("missing binding")
+        };
+        assert_eq!(binding.client_id, client.to_string());
+
+        let conflict = controller(
+            &runtime,
+            &scope,
+            "pair".into(),
+            ControllerRequest::Unregister {
+                client,
+                revision: binding.binding_revision,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            conflict.downcast::<ProtocolFault>().unwrap().code,
+            "InvalidMessage"
+        );
+
+        let reused = controller(
+            &runtime,
+            &scope,
+            "pair-again".into(),
+            ControllerRequest::Register { code },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            reused.downcast::<ProtocolFault>().unwrap().code,
+            "Unauthorized"
+        );
+
+        let refreshed = issue_pairing(&mut tui).await;
+        let Body::ClientBindingRegistered(next) = controller(
+            &runtime,
+            &scope,
+            "rotate".into(),
+            ControllerRequest::Register { code: refreshed },
+        )
+        .await
+        .unwrap() else {
+            panic!("missing rotated binding")
+        };
+        assert!(next.binding_revision > binding.binding_revision);
+        let old = controller(
+            &runtime,
+            &scope,
+            "stale-unpair".into(),
+            ControllerRequest::Unregister {
+                client,
+                revision: binding.binding_revision,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            old.downcast::<ProtocolFault>().unwrap().code,
+            "StaleBinding"
+        );
+
+        let list = corvid_client::clients(&runtime).await.unwrap();
+        assert_eq!(
+            list.clients[0].bindings[0].binding_revision,
+            next.binding_revision
+        );
+        drop(tui);
+        while !corvid_client::clients(&runtime)
+            .await
+            .unwrap()
+            .clients
+            .is_empty()
+        {
+            sleep(Duration::from_millis(10)).await;
+        }
+        let disconnected = controller(
+            &runtime,
+            &scope,
+            "unpair-after-detach".into(),
+            ControllerRequest::Unregister {
+                client,
+                revision: next.binding_revision,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            disconnected.downcast::<ProtocolFault>().unwrap().code,
+            "StaleBinding"
+        );
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

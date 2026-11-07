@@ -90,6 +90,7 @@ fn client() -> SnapshotEntity {
                 workspace_id: "workspace".into(),
                 generation: 2,
             }],
+            bindings: Vec::new(),
         })),
     }
 }

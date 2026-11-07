@@ -222,6 +222,7 @@ def exercise(terminal, scenario, managed):
         assert question["unverified"] == "1"
         snapshot = managed.snapshot()
         assert snapshot["agents"] == "1" and snapshot["requests"] == snapshot["attention"] == "2"
+        managed.acknowledge_question(question)
         managed.reject_foreign_hook(question)
     terminal.send(b"1\r")
     terminal.event(hook_event_name="PostToolUse", tool_name="AskUserQuestion")
@@ -277,6 +278,27 @@ class CorvidFixture:
     def snapshot(self):
         output = subprocess.check_output([*self.command, "control", "snapshot"], text=True, timeout=3)
         return dict(field.split("=", 1) for field in output.split())
+
+    def acknowledge_question(self, question):
+        host = subprocess.check_output([*self.command, "control", "host"], text=True, timeout=3)
+        identity = dict(field.split("=", 1) for field in host.split())
+        command = [
+            *self.command, "controller", "--controller-id", "fixture-controller",
+            "--host-id", identity["host_id"], "--server-epoch", identity["server_epoch"],
+            "--request-id", "fixture-ack",
+        ]
+        output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
+        alerts = [dict(field.split("=", 1) for field in line.split()) for line in output.splitlines()]
+        first = next(alert for alert in alerts
+                     if alert["run_id"] == question["run"] and alert["request_kind"] == "Question")
+        assert first["acknowledged"] == "false"
+        ack = [*command, "ack", "--run-id", question["run"], "--attention-id", first["attention_id"]]
+        result = subprocess.check_output(ack, text=True, timeout=3)
+        assert subprocess.check_output(ack, text=True, timeout=3) == result
+        actual = next(agent for agent in self.agents() if agent["run"] == question["run"])
+        assert actual["pending"] == "1" and actual["unverified"] == "1"
+        output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
+        assert output.count("acknowledged=true") == 1
 
     def expect(self, tty, **fields):
         def matching():

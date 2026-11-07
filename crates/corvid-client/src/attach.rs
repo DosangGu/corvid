@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::future::pending;
 use std::io::ErrorKind;
 use std::os::unix::ffi::OsStrExt;
@@ -7,11 +8,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use corvid_core::Viewport;
+use corvid_protocol::controller::{PAIR_CAPABILITY, PAIRING_SECONDS};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand, PasteBegin,
-    PasteChunk, PasteEnd, ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
+    AgentProvider, Attach, AttachRole, Detach, FrameApplied, InputChunk, LaunchCommand,
+    PairingCode, PasteBegin, PasteChunk, PasteEnd, RedrawView, ResizeViewport, RouteToken,
+    ViewChanged, Viewport as WireViewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, Frame, FrameReader, FrameWriter, PeerRole, ProtocolFault, RenderFrame,
@@ -77,6 +80,15 @@ async fn request_attach(
     viewport: Viewport,
     options: AttachOptions,
 ) -> Result<(Connection, RouteToken)> {
+    let mut terminal_capabilities = vec!["legacy_vt.v1".into(), "tabs.v1".into()];
+    if connection
+        .session
+        .capabilities
+        .iter()
+        .any(|name| name == PAIR_CAPABILITY)
+    {
+        terminal_capabilities.push(PAIR_CAPABILITY.into());
+    }
     let launch = options
         .launch
         .map(|argv| -> Result<LaunchCommand> {
@@ -99,7 +111,7 @@ async fn request_attach(
             create_workspace: options.new_workspace,
             create_tab: options.new_tab,
             viewport: Some(wire_viewport(viewport)),
-            terminal_capabilities: vec!["legacy_vt.v1".into(), "tabs.v1".into()],
+            terminal_capabilities,
             requested_role: AttachRole::Writer as i32,
             launch,
         }),
@@ -181,11 +193,18 @@ struct Interactive {
     input_sequence: u64,
     request_sequence: u64,
     applied: Option<(u64, u64)>,
+    pairing: Option<PairingDisplay>,
+    restoring: bool,
 }
 
 struct PendingResize {
     viewport: Viewport,
     request_id: String,
+    deadline: Instant,
+}
+
+struct PairingDisplay {
+    code: Uuid,
     deadline: Instant,
 }
 
@@ -207,6 +226,8 @@ impl Interactive {
             input_sequence: 0,
             request_sequence: 0,
             applied: None,
+            pairing: None,
+            restoring: false,
         }
     }
 
@@ -216,6 +237,7 @@ impl Interactive {
         resize_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             let input_deadline = self.keys.deadline();
+            let pairing_deadline = self.pairing.as_ref().map(|pairing| pairing.deadline);
             tokio::select! {
                 item = self.incoming.frames.recv() => {
                     let frame = item.context("daemon closed the attached connection")??;
@@ -228,10 +250,20 @@ impl Interactive {
                     if count == 0 {
                         return self.detach().await;
                     }
+                    if self.pairing.is_some() {
+                        if buffer[..count].iter().any(|byte| matches!(byte, b'\r' | b'\n' | 0x1b)) {
+                            self.dismiss_pairing(tty).await?;
+                        }
+                        continue;
+                    }
+                    if self.restoring {
+                        continue;
+                    }
                     let events = self.keys.feed(&buffer[..count], self.pending_resize.is_none())?;
                     self.forward(events).await?;
                 }
                 _ = resize_tick.tick() => self.resize().await?,
+                _ = wait_until(pairing_deadline) => self.dismiss_pairing(tty).await?,
                 _ = wait_until(input_deadline) => {
                     let events = self.keys.expire()?;
                     self.forward(events).await?;
@@ -250,10 +282,14 @@ impl Interactive {
                     Some(Body::ViewChanged(view)) => {
                         let paste_discarded = view.paste_discarded || self.keys.capturing_paste();
                         self.view_changed(tty, view)?;
+                        if self.pairing.is_some() {
+                            self.paint_pairing(tty).await?;
+                        }
                         if paste_discarded {
                             timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
                         }
                     }
+                    Some(Body::PairingCode(code)) => self.show_pairing(tty, code).await?,
                     Some(Body::TerminalExited(exited)) => {
                         ensure!(
                             exited.terminal_id == self.route.terminal_id,
@@ -317,7 +353,10 @@ impl Interactive {
             _ => bail!("render stream requires a full redraw"),
         }
 
-        timeout(COMMAND_TIMEOUT, tty.write_all(&render.ansi)).await??;
+        if self.pairing.is_none() && (!self.restoring || header.base_frame_id.is_none()) {
+            timeout(COMMAND_TIMEOUT, tty.write_all(&render.ansi)).await??;
+            self.restoring = false;
+        }
         self.applied = Some((header.render_generation, header.frame_id));
         self.send(Body::FrameApplied(FrameApplied {
             render_generation: header.render_generation,
@@ -375,7 +414,7 @@ impl Interactive {
     }
 
     async fn forward(&mut self, events: Vec<Input>) -> Result<()> {
-        if self.pending_resize.is_some() {
+        if self.pending_resize.is_some() || self.pairing.is_some() || self.restoring {
             return Ok(());
         }
         for event in events {
@@ -392,6 +431,64 @@ impl Interactive {
                 Input::Paste(bytes) => self.paste(sequence, &bytes).await?,
             }
         }
+        Ok(())
+    }
+
+    async fn show_pairing(&mut self, tty: &Tty, code: PairingCode) -> Result<()> {
+        ensure!(
+            (1..=PAIRING_SECONDS).contains(&code.expires_in_seconds),
+            "invalid pairing expiry"
+        );
+        let code_id = Uuid::parse_str(&code.code)?;
+        ensure!(!code_id.is_nil(), "invalid pairing code");
+        self.keys.retire();
+        self.pairing = Some(PairingDisplay {
+            code: code_id,
+            deadline: Instant::now() + Duration::from_secs(u64::from(code.expires_in_seconds)),
+        });
+        self.paint_pairing(tty).await
+    }
+
+    async fn paint_pairing(&self, tty: &Tty) -> Result<()> {
+        let pairing = self
+            .pairing
+            .as_ref()
+            .context("pairing display is unavailable")?;
+        let cols = usize::from(self.viewport.cols.get());
+        let rows = usize::from(self.viewport.rows.get());
+        let code = pairing.code.to_string();
+        let text = if cols * rows >= code.len() {
+            format!("{code}\nController pairing code\nEnter or Esc to return")
+        } else {
+            "Resize to show pairing code".to_owned()
+        };
+        let mut output = String::from("\x1b[?6l\x1b[r\x1b[0m\x1b[?25l\x1b[2J");
+        for (index, line) in text
+            .lines()
+            .flat_map(|line| line.as_bytes().chunks(cols))
+            .take(rows)
+            .enumerate()
+        {
+            write!(
+                output,
+                "\x1b[{};1H{}",
+                index + 1,
+                std::str::from_utf8(line)?
+            )?;
+        }
+        timeout(COMMAND_TIMEOUT, tty.write_all(output.as_bytes())).await??;
+        Ok(())
+    }
+
+    async fn dismiss_pairing(&mut self, tty: &Tty) -> Result<()> {
+        self.pairing = None;
+        self.restoring = true;
+        self.keys.retire();
+        tty.discard_input()?;
+        self.send(Body::RedrawView(RedrawView {
+            view_revision: Some(self.route.view_revision),
+        }))
+        .await?;
         Ok(())
     }
 

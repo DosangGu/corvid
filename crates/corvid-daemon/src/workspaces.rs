@@ -25,6 +25,9 @@ use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
 use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, TerminalHandle};
 
+pub(crate) use controllers::ControllerCommand;
+use controllers::Controllers;
+
 const MAX_PTY_WORKERS: usize = 32;
 const EVENT_CAPACITY: usize = 4;
 
@@ -36,6 +39,7 @@ pub(crate) struct AttachTarget {
     pub(crate) new_workspace: Option<String>,
     pub(crate) new_tab: Option<String>,
     pub(crate) tab_keys: bool,
+    pub(crate) pair_keys: bool,
     pub(crate) viewport: Viewport,
     pub(crate) launch: Option<Launch>,
 }
@@ -47,6 +51,7 @@ pub(crate) struct Active {
     pub(crate) terminal: TerminalHandle,
     pub(crate) events: mpsc::Receiver<Event>,
     tab_keys: bool,
+    pair_keys: bool,
 }
 
 pub(crate) enum Destination {
@@ -80,6 +85,7 @@ pub(crate) struct Registry {
     publication: Publication,
     terminals: HashMap<Uuid, Location>,
     clients: HashMap<Uuid, Client>,
+    controllers: Controllers,
     generation: u64,
     claims: HashMap<Uuid, Claim>,
     slots: HashMap<Uuid, Slot>,
@@ -192,6 +198,7 @@ impl Workspaces {
             revision: 1,
             dormant: false,
             tab_keys: target.tab_keys,
+            pair_keys: target.pair_keys,
             viewport: target.viewport,
             launch: target.launch,
             events,
@@ -263,6 +270,7 @@ impl Workspaces {
         let mut registry = self.lock_registry();
         registry.claims.retain(|_, claim| claim.client != client);
         registry.clients.remove(&client);
+        registry.controllers.disconnect(client);
         registry.publish(vec![(Group::Client(client), Vec::new())]);
     }
 
@@ -370,6 +378,7 @@ impl Workspaces {
             revision,
             dormant: true,
             tab_keys: old.tab_keys,
+            pair_keys: old.pair_keys,
             viewport: old.viewport,
             launch,
             events,
@@ -542,6 +551,7 @@ impl Registry {
                 rows: u32::from(view.viewport.rows.get()),
             }),
             writer_leases,
+            bindings: self.controllers.bindings(id),
         })
     }
 
@@ -597,6 +607,7 @@ async fn open_pane(
 ) -> Reply<Active> {
     let viewport = spec.viewport;
     let tab_keys = spec.tab_keys;
+    let pair_keys = spec.pair_keys;
     let route = timeout(COMMAND_TIMEOUT, terminal.attach(spec))
         .await
         .map_err(|_| ProtocolFault::new("Timeout", "terminal attach timed out"))??;
@@ -607,6 +618,7 @@ async fn open_pane(
         terminal,
         events: receiver,
         tab_keys,
+        pair_keys,
     })
 }
 
@@ -786,3 +798,4 @@ fn invalid_layout() -> ProtocolFault {
         "invalid workspace label, tab label, or layout size",
     )
 }
+mod controllers;

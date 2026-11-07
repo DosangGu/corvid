@@ -28,15 +28,29 @@ impl Connection {
         role: PeerRole,
         capabilities: Vec<String>,
     ) -> Result<Self> {
-        timeout(COMMAND_TIMEOUT, Self::handshake(stream, role, capabilities))
-            .await
-            .context("daemon handshake timed out")?
+        let controller = (role == PeerRole::Control).then(|| Uuid::new_v4().to_string());
+        Self::establish_as(stream, role, capabilities, controller).await
+    }
+
+    pub(crate) async fn establish_as(
+        stream: UnixStream,
+        role: PeerRole,
+        capabilities: Vec<String>,
+        controller: Option<String>,
+    ) -> Result<Self> {
+        timeout(
+            COMMAND_TIMEOUT,
+            Self::handshake(stream, role, capabilities, controller),
+        )
+        .await
+        .context("daemon handshake timed out")?
     }
 
     async fn handshake(
         stream: UnixStream,
         role: PeerRole,
         capabilities: Vec<String>,
+        controller: Option<String>,
     ) -> Result<Self> {
         let (read, write) = stream.into_split();
         let (input, output) = match role {
@@ -46,8 +60,7 @@ impl Connection {
         };
         let mut writer = FrameWriter::start(write, output).await?;
         let mut reader = FrameReader::start(read, input).await?;
-        let controller_id = (role == PeerRole::Control).then(|| Uuid::new_v4().to_string());
-        let greeting = hello(Uuid::new_v4().to_string(), controller_id, capabilities);
+        let greeting = hello(Uuid::new_v4().to_string(), controller, capabilities);
         writer.envelope(&greeting).await?;
         let reply = reader
             .next_envelope()

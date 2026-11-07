@@ -19,3 +19,4 @@ pub use session::{
     accept_hello, check_hello_result, hello,
 };
 pub mod collector;
+pub mod controller;
