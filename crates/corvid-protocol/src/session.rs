@@ -19,6 +19,7 @@ pub enum PeerRole {
     Tui,
     Control,
     Collector,
+    Presentation,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -118,8 +119,17 @@ impl Session {
 
         let body = known_body(request)?;
         match (self.role, body) {
-            (PeerRole::Tui | PeerRole::Control, Body::Ping(_))
+            (PeerRole::Tui | PeerRole::Control | PeerRole::Presentation, Body::Ping(_))
             | (PeerRole::Collector, Body::CollectHook(_))
+            | (
+                PeerRole::Presentation,
+                Body::GetPresentationSlots(_)
+                | Body::PairTerminal(_)
+                | Body::UnpairTerminal(_)
+                | Body::FocusSlot(_)
+                | Body::EditSlotLayout(_)
+                | Body::AckPresentedAttention(_),
+            )
             | (
                 PeerRole::Control,
                 Body::GetHost(_)

@@ -10,6 +10,7 @@ publish.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
+corvid-companion.workspace = true
 corvid-daemon.workspace = true
 corvid-protocol.workspace = true
 nix = { workspace = true, features = ["poll"] }

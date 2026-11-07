@@ -48,7 +48,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Connection<R, W> {
         controller: Option<String>,
     ) -> Result<Self> {
         let (input, output) = match role {
-            PeerRole::Control => (FrameRole::StructuredOnly, FrameRole::StructuredOnly),
+            PeerRole::Control | PeerRole::Presentation => {
+                (FrameRole::StructuredOnly, FrameRole::StructuredOnly)
+            }
             PeerRole::Tui => (FrameRole::TuiOutput, FrameRole::StructuredOnly),
             PeerRole::Collector => (FrameRole::Collector, FrameRole::Collector),
         };

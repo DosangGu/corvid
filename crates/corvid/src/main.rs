@@ -1,3 +1,4 @@
+mod companion;
 mod hooks;
 
 use std::collections::BTreeMap;
@@ -93,6 +94,8 @@ enum Command {
         #[command(subcommand)]
         action: ControllerAction,
     },
+    /// Run or use the local controller companion.
+    Companion(companion::Options),
     /// Print an additive provider hook configuration for explicit installation.
     Hooks {
         #[arg(value_enum)]
@@ -186,9 +189,15 @@ fn execute(options: Options) -> Result<u32> {
 }
 
 async fn run(options: Options) -> Result<u32> {
+    if let Command::Companion(companion) = options.command {
+        companion::execute(companion, options.runtime_dir).await?;
+        return Ok(0);
+    }
     let runtime = runtime_path(options.runtime_dir)?;
     match options.command {
-        Command::Hooks { .. } | Command::Observe { .. } => unreachable!("handled before runtime"),
+        Command::Hooks { .. } | Command::Observe { .. } | Command::Companion(_) => {
+            unreachable!("handled before daemon runtime")
+        }
         Command::Daemon { state_dir } => {
             let state = state_path(state_dir)?;
             let mut terminate = signal(SignalKind::terminate())?;
@@ -390,13 +399,9 @@ async fn controller_action(
     action: ControllerAction,
 ) -> Result<u32> {
     let command = match action {
-        ControllerAction::Pair => {
-            let mut input = String::new();
-            io::stdin().lock().take(128).read_line(&mut input)?;
-            ControllerRequest::Register {
-                code: Uuid::parse_str(input.trim()).context("invalid pairing code")?,
-            }
-        }
+        ControllerAction::Pair => ControllerRequest::Register {
+            code: read_pairing_code()?,
+        },
         ControllerAction::Unpair {
             client_id,
             binding_revision,
@@ -519,6 +524,12 @@ fn runtime_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
     let base = env::var_os("XDG_RUNTIME_DIR").context("set XDG_RUNTIME_DIR or --runtime-dir")?;
     ensure!(!base.is_empty(), "set XDG_RUNTIME_DIR or --runtime-dir");
     Ok(PathBuf::from(base).join("corvid"))
+}
+
+fn read_pairing_code() -> Result<Uuid> {
+    let mut input = String::new();
+    io::stdin().lock().take(128).read_line(&mut input)?;
+    Uuid::parse_str(input.trim()).context("invalid pairing code")
 }
 
 fn state_path(override_path: Option<PathBuf>) -> Result<PathBuf> {

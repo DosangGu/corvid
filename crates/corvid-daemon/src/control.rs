@@ -255,7 +255,9 @@ pub(crate) async fn handshake(
 ) -> Result<Option<Connection>> {
     let (read, write) = stream.into_split();
     let (input, output) = match role {
-        PeerRole::Control => (FrameRole::StructuredOnly, FrameRole::StructuredOnly),
+        PeerRole::Control | PeerRole::Presentation => {
+            (FrameRole::StructuredOnly, FrameRole::StructuredOnly)
+        }
         PeerRole::Tui => (FrameRole::StructuredOnly, FrameRole::TuiOutput),
         PeerRole::Collector => (FrameRole::Collector, FrameRole::Collector),
     };

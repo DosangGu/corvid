@@ -61,6 +61,15 @@ message Envelope {
     SnapshotDelta snapshot_delta = 75;
     WatchReady watch_ready = 76;
     RpcError error = 90;
+    GetPresentationSlots get_presentation_slots = 100;
+    PresentationSlots presentation_slots = 101;
+    PairTerminal pair_terminal = 102;
+    UnpairTerminal unpair_terminal = 103;
+    FocusSlot focus_slot = 104;
+    SlotFocused slot_focused = 105;
+    EditSlotLayout edit_slot_layout = 106;
+    SlotLayoutEdited slot_layout_edited = 107;
+    AckPresentedAttention ack_presented_attention = 108;
   }
 }
 
@@ -224,6 +233,141 @@ message FocusApplied {
   ViewSelection selection = 4;
   uint64 view_revision = 5;
   uint64 commit_sequence = 6;
+}
+
+message GetPresentationSlots {
+  optional uint32 count = 1;
+  uint32 overflow_page = 2;
+}
+
+enum CompanionConnection {
+  COMPANION_CONNECTION_UNSPECIFIED = 0;
+  COMPANION_CONNECTION_CONNECTING = 1;
+  COMPANION_CONNECTION_SYNCING = 2;
+  COMPANION_CONNECTION_READY = 3;
+  COMPANION_CONNECTION_OFFLINE = 4;
+  COMPANION_CONNECTION_INCOMPATIBLE = 5;
+  COMPANION_CONNECTION_ERROR = 6;
+}
+
+message PresentedRunKey {
+  string host_id = 1;
+  string remote_epoch = 2;
+  string agent_run_id = 3;
+}
+
+enum RunAvailability {
+  RUN_AVAILABILITY_UNSPECIFIED = 0;
+  RUN_AVAILABILITY_AVAILABLE = 1;
+  RUN_AVAILABILITY_CHECK_NEEDED = 2;
+  RUN_AVAILABILITY_HISTORICAL = 3;
+  RUN_AVAILABILITY_OFFLINE = 4;
+}
+
+message PresentedRun {
+  PresentedRunKey key = 1;
+  RunAvailability availability = 2;
+  AgentBadge last_badge = 3;
+  AgentProvider provider = 4;
+  EvidenceConfidence confidence = 5;
+  AgentCollection collection = 6;
+  uint32 pending_requests = 7;
+  uint32 unverified_requests = 8;
+  uint32 unseen_attention = 9;
+  optional string latest_unseen_attention_id = 10;
+  optional uint64 last_response_unix_ms = 11;
+}
+
+message PresentedSlot {
+  uint32 slot_id = 1;
+  uint64 revision = 2;
+  bool pinned = 3;
+  PresentedRun run = 4;
+}
+
+message PresentedBinding {
+  string client_id = 1;
+  uint64 revision = 2;
+}
+
+message PresentationSlots {
+  string controller_id = 1;
+  CompanionConnection connection = 2;
+  optional string issue_code = 3;
+  optional string remote_epoch = 4;
+  optional uint64 remote_sequence = 5;
+  optional string control_generation = 6;
+  repeated PresentedSlot slots = 7;
+  repeated PresentedRun overflow = 8;
+  uint32 overflow_count = 9;
+  repeated PresentedBinding bindings = 10;
+  repeated PresentedRunKey recent_ended = 11;
+  repeated PresentedRunKey suppressed = 12;
+  uint32 suppressed_count = 13;
+  LayoutRecovery layout_recovery = 14;
+}
+
+message PairTerminal {
+  string code = 1;
+}
+
+message UnpairTerminal {
+  string control_generation = 1;
+  PresentedBinding binding = 2;
+}
+
+message PresentedSlotToken {
+  uint32 slot_id = 1;
+  optional uint64 revision = 2;
+  PresentedRunKey run = 3;
+}
+
+message FocusSlot {
+  string control_generation = 1;
+  PresentedSlotToken slot = 2;
+  PresentedBinding binding = 3;
+}
+
+enum LocalActivation {
+  LOCAL_ACTIVATION_UNSPECIFIED = 0;
+  LOCAL_ACTIVATION_MANUAL_REQUIRED = 1;
+  LOCAL_ACTIVATION_ACTIVATED = 2;
+  LOCAL_ACTIVATION_PANE_SELECTED_FOREGROUND_UNKNOWN = 3;
+  LOCAL_ACTIVATION_UNAVAILABLE = 4;
+  LOCAL_ACTIVATION_NOT_ATTEMPTED = 5;
+}
+
+message SlotFocused {
+  FocusApplied remote = 1;
+  LocalActivation local_activation = 2;
+}
+
+message EditSlotLayout {
+  oneof action {
+    PinSlot pin = 1;
+    PresentedSlotToken remove = 2;
+    PresentedRunKey readd = 3;
+    PlaceSlot place = 4;
+    PresentedRunKey remove_overflow = 5;
+  }
+}
+
+message PinSlot {
+  PresentedSlotToken slot = 1;
+  optional bool pinned = 2;
+}
+
+message PlaceSlot {
+  PresentedSlotToken slot = 1;
+  PresentedRunKey run = 2;
+}
+
+message SlotLayoutEdited {}
+
+message AckPresentedAttention {
+  string control_generation = 1;
+  PresentedRunKey run = 2;
+  string attention_id = 3;
 }
 
 message WriterLeaseState {

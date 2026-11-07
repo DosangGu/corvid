@@ -55,9 +55,11 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 ```
 
 The managed PTY test observed a pending question, its matching resolution, a
-separately unverified permission request, and a replacement run. The controller
-selected the pending run in its paired TUI from a shell tab. The TUI redrew the
-question, which stayed pending after the controller acknowledged its alert. A process
+separately unverified permission request, and a replacement run. After the local
+companion restarted, it restored the slot and revalidated the live TUI binding.
+A fresh virtual-slot click selected the pending run from a shell tab. The TUI
+redrew the question, which stayed pending after the companion acknowledged its
+alert. A click captured before `/clear` failed once the slot held the new run. A process
 outside the qualified CLI used the test launch scope and left the pending count
 unchanged. Claude completed the fixture question and response with either the
 observer executable or the collector socket absent. The helper also passed

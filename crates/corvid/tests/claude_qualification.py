@@ -19,6 +19,7 @@ import termios
 import threading
 import time
 
+from companion_fixture import Companion, fields
 from interactive import stop, wait_for_daemon
 
 VERSION = "2.1.318 (Claude Code)"
@@ -242,6 +243,7 @@ def exercise(terminal, scenario, managed):
             assert replacement["terminal"] == initial["terminal"]
             assert replacement["run"] != initial["run"]
             assert replacement["resolved"] == replacement["pending"] == replacement["unverified"] == "0"
+            managed.verify_reassigned_slot(initial["run"], replacement["run"])
     terminal.send(b"/exit\r")
     assert terminal.process.wait(timeout=5) == 0, "fixture Claude exit failed"
     if managed:
@@ -252,6 +254,9 @@ def exercise(terminal, scenario, managed):
 class CorvidFixture:
     def __init__(self, binary, claude, directory, project, environment):
         self.command = [binary, "--runtime-dir", directory / "run"]
+        self.directory = directory
+        self.companion = None
+        self.focus_capture = None
         environment["PATH"] = f"{claude.parent}:{environment['PATH']}"
         environment["TERMINFO"] = str(directory / "terminfo")
         profile = Path(__file__).resolve().parents[3] / "spikes/terminal/corvid.terminfo"
@@ -280,25 +285,25 @@ class CorvidFixture:
         output = subprocess.check_output([*self.command, "control", "snapshot"], text=True, timeout=3)
         return dict(field.split("=", 1) for field in output.split())
 
-    def controller_args(self, request):
-        host = subprocess.check_output([*self.command, "control", "host"], text=True, timeout=3)
-        identity = dict(field.split("=", 1) for field in host.split())
-        return [
-            *self.command, "controller", "--controller-id", "fixture-controller",
-            "--host-id", identity["host_id"], "--server-epoch", identity["server_epoch"],
-            "--request-id", request,
-        ]
+    def presented_question(self, question):
+        def has_question(view):
+            return view["bindings"] and any(
+                slot.get("run", "").endswith("/" + question["run"]) and slot["pending"] == "1"
+                for slot in view["slots"]
+            )
+
+        view = self.companion.wait(has_question)
+        slot = next(slot for slot in view["slots"] if slot.get("run", "").endswith("/" + question["run"]))
+        return view, slot
 
     def focus_question(self, tty, question):
+        self.companion = Companion(self.command, self.directory)
+        self.companion.start()
         tty.screen = b""
         tty.send(b"\x1dr")
         tty.expect(b"Controller pairing code")
         code = re.search(rb"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", tty.screen)[0].decode()
-        paired = subprocess.run(
-            [*self.controller_args("fixture-pair"), "pair"], input=code + "\n",
-            text=True, capture_output=True, timeout=3, check=True,
-        )
-        binding = dict(field.split("=", 1) for field in paired.stdout.split())
+        self.companion.run("pair", input=code + "\n")
         tty.screen = b""
         tty.send(b"\r")
         prompt = b"Enter to submit or Escape to cancel:"
@@ -314,25 +319,57 @@ class CorvidFixture:
 
         tty.wait(selected_other_terminal, "second terminal selected")
         assert self.snapshot()["terminals"] == "2"
+        old_view, old_slot = self.presented_question(question)
+        old_binding = old_view["bindings"][0]
+        self.companion.close()
+        self.companion.start()
+        view, slot = self.presented_question(question)
+        binding = view["bindings"][0]
+        assert slot["slot"] == old_slot["slot"] and slot["revision"] == old_slot["revision"]
+        assert binding["client_id"] == old_binding["client_id"] and binding["revision"] == old_binding["revision"]
+        assert view["header"]["controller_id"] == self.companion.controller
+        stale = self.companion.run(
+            "focus-slot", "--slot", old_slot["capture"], "--binding", old_binding["capture"], check=False,
+        )
+        assert stale.returncode != 0 and "StaleBinding" in stale.stderr
+        assert selected_other_terminal()
+
         tty.screen = b""
-        applied = subprocess.check_output([
-            *self.controller_args("fixture-focus"), "focus",
-            "--client-id", binding["client_id"], "--binding-revision", binding["binding_revision"],
-            "--run-id", question["run"],
-        ], text=True, timeout=3)
+        applied = self.companion.run("focus-slot", "--slot", slot["capture"], "--binding", binding["capture"]).stdout
         assert "terminal_id=" + question["terminal"] in applied
+        assert "local_activation=ManualRequired" in applied
+        self.focus_capture = (slot, binding)
         tty.expect(prompt)
 
+    def verify_reassigned_slot(self, previous, replacement):
+        slot, binding = self.focus_capture
+
+        def replaced(view):
+            return any(item.get("run", "").endswith("/" + replacement) for item in view["slots"])
+
+        view = self.companion.wait(replaced)
+        current = next(item for item in view["slots"] if item.get("run", "").endswith("/" + replacement))
+        assert current["slot"] == slot["slot"] and int(current["revision"]) > int(slot["revision"])
+        assert any(run.endswith("/" + previous) for run in view["ended"])
+        assert binding["capture"] == view["bindings"][0]["capture"]
+        stale = self.companion.run(
+            "focus-slot", "--slot", slot["capture"], "--binding", binding["capture"], check=False,
+        )
+        assert stale.returncode != 0 and "StaleBinding" in stale.stderr
+
     def acknowledge_question(self, question):
-        command = self.controller_args("fixture-ack")
+        view, slot = self.presented_question(question)
         output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
         alerts = [dict(field.split("=", 1) for field in line.split()) for line in output.splitlines()]
         first = next(alert for alert in alerts
                      if alert["run_id"] == question["run"] and alert["request_kind"] == "Question")
         assert first["acknowledged"] == "false"
-        ack = [*command, "ack", "--run-id", question["run"], "--attention-id", first["attention_id"]]
-        result = subprocess.check_output(ack, text=True, timeout=3)
-        assert subprocess.check_output(ack, text=True, timeout=3) == result
+        ack = ["ack", "--control", view["header"]["control_capture"], "--run", slot["run"],
+               "--attention-id", first["attention_id"]]
+        result = fields(self.companion.run(*ack).stdout)
+        repeated = fields(self.companion.run(*ack).stdout)
+        assert result["attention_id"] == repeated["attention_id"] == first["attention_id"]
+        assert result["acknowledged_unix_ms"] == repeated["acknowledged_unix_ms"]
         actual = next(agent for agent in self.agents() if agent["run"] == question["run"])
         assert actual["pending"] == "1" and actual["unverified"] == "1"
         output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
@@ -397,6 +434,8 @@ def capture(binary, directory, port, scenario, corvid, fault):
             assert agent["process"] == "Exited"
         return events
     finally:
+        if managed.companion is not None:
+            managed.companion.close()
         stop(managed.process)
 
 

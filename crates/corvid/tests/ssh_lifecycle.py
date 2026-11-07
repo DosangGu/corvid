@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pwd
 import shlex
+import signal
 import socket
 import struct
 import subprocess
@@ -12,6 +13,7 @@ import tempfile
 import time
 import uuid
 
+from companion_fixture import Companion
 from interactive import OuterTerminal, stop
 
 
@@ -120,6 +122,60 @@ def progress_during_disconnect(progress):
     assert len(progress.read_text().splitlines()) > before
 
 
+def check_companion_ssh(ssh, command, directory):
+    # The test key accepts exactly the production relay command and maps it to
+    # this fixture's isolated executable and runtime directory.
+    gate = directory / "relay"
+    gate.write_text(
+        '#!/bin/sh\n[ "$SSH_ORIGINAL_COMMAND" = "corvid control --stdio" ] || exit 1\n'
+        f"exec {shlex.join([*command, 'control', '--stdio'])}\n"
+    )
+    gate.chmod(0o700)
+    public = key(directory / "companion-key").read_text().strip()
+    with (directory / "client.pub").open("a") as authorized:
+        authorized.write(f'restrict,command="{shlex.quote(str(gate))}" {public}\n')
+
+    alias = "corvid-fixture"
+    account = ssh[-1].split("@", 1)[0]
+    config = directory / "ssh_config"
+    config.write_text(f"""Host {alias}
+    HostName 127.0.0.1
+    Port {ssh[ssh.index('-p') + 1]}
+    User {account}
+    IdentitiesOnly yes
+    IdentityFile {directory / 'companion-key'}
+    GlobalKnownHostsFile /dev/null
+    UserKnownHostsFile {directory / 'known_hosts'}
+""")
+    attempts = directory / "control-pids"
+    executable = directory / "ssh"
+    executable.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$$" >> {shlex.quote(str(attempts))}\n'
+        f'exec /usr/bin/ssh -F {shlex.quote(str(config))} "$@"\n'
+    )
+    executable.chmod(0o700)
+    environment = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}")
+    companion = Companion(command, directory, alias, environment)
+    try:
+        first = companion.start()["header"]
+        assert first["host_id"] == companion.host
+        assert first["controller_id"] == companion.controller
+        control_pid, = [int(line) for line in attempts.read_text().splitlines()]
+        os.kill(control_pid, signal.SIGKILL)
+        second = companion.wait(
+            lambda view: view["header"]["connection"] == "Ready"
+            and view["header"].get("control_capture") != first["control_capture"]
+        )["header"]
+        assert second["remote_epoch"] == first["remote_epoch"]
+        assert second["companion_epoch"] == first["companion_epoch"]
+        stale = companion.run(
+            "unpair", "--binding", f"{first['control_capture']}/{uuid.uuid4()}/1", check=False,
+        )
+        assert stale.returncode != 0 and "StaleBinding" in stale.stderr
+    finally:
+        companion.close()
+
+
 def check_working_ssh(ssh, command, directory):
     fixture = Path(__file__).with_name("interactive.py").resolve()
     progress = directory / "progress"
@@ -130,6 +186,9 @@ def check_working_ssh(ssh, command, directory):
         pid = ready[1]
         first.send(b"a")
         first.expect("한글 e\u0301".encode())
+        check_companion_ssh(ssh, command, directory)
+        assert first.process.poll() is None
+        progress_during_disconnect(progress)
         first.send(b"\x1dd")
         first.wait(0)
     progress_during_disconnect(progress)
@@ -196,7 +255,7 @@ def run(binary):
                 stop(server)
         finally:
             subprocess.run(["systemctl", "--user", "stop", unit], check=True, timeout=12)
-    print("OpenSSH control and work channels verified clean detach, abrupt loss, and same-PTY reattach.")
+    print("OpenSSH companion resync, stale control captures, working-channel loss, and same-PTY reattach verified.")
 
 
 if __name__ == "__main__":

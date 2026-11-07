@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use corvid_client::{ControllerRequest, ControllerScope, controller};
+use corvid_companion::{HostEndpoint, PresentationClient, initialize};
 use corvid_protocol::controller::FOCUS_CAPABILITY;
 use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
@@ -14,9 +15,10 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
-    ClaimWorkspaceWriter, EntityKind, Envelope, FocusAgentRequest, FocusApplied, FrameApplied,
-    GetSnapshot, InputChunk, IssuePairingCode, LaunchCommand, ListClients, PasteBegin, PasteChunk,
-    PasteEnd, Ping, ResizeViewport, RouteToken, SelectView, SnapshotWatch, ViewSelection, Viewport,
+    ClaimWorkspaceWriter, CompanionConnection, EntityKind, Envelope, FocusAgentRequest,
+    FocusApplied, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode,
+    LaunchCommand, ListClients, PasteBegin, PasteChunk, PasteEnd, Ping, PresentationSlots,
+    ResizeViewport, RouteToken, SelectView, SnapshotWatch, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     Frame, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
@@ -297,9 +299,9 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
     )
     .unwrap();
     std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut command = command(&runtime);
-    command.env("PATH", temporary.path());
-    let _daemon = start_daemon(command, &runtime, &temporary.path().join("state")).await;
+    let mut daemon_command = command(&runtime);
+    daemon_command.env("PATH", temporary.path());
+    let _daemon = start_daemon(daemon_command, &runtime, &temporary.path().join("state")).await;
     let launch = |name: &str| LaunchCommand {
         argv: vec![name.as_bytes().to_vec()],
         cwd: Some(temporary.path().as_os_str().as_encoded_bytes().to_vec()),
@@ -340,6 +342,37 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert!(one_process.start_ticks > 0);
         assert!(one_process.foreground_group.is_some());
 
+        let state = temporary.path().join("companion");
+        let socket = temporary.path().join("presentation");
+        initialize(
+            &state,
+            Uuid::parse_str(&first.session.host_id).unwrap(),
+            HostEndpoint::Local {
+                runtime_dir: runtime.clone(),
+            },
+            2,
+        )
+        .unwrap();
+        let _companion = command(&runtime)
+            .args(["companion", "run", "--state-dir"])
+            .arg(state)
+            .arg("--socket-dir")
+            .arg(&socket)
+            .spawn()
+            .unwrap();
+        let mut companion = loop {
+            if let Ok(companion) = PresentationClient::connect(&socket).await {
+                break companion;
+            }
+            sleep(Duration::from_millis(20)).await;
+        };
+        let placements = presented(&mut companion, |view| {
+            view.connection == CompanionConnection::Ready as i32
+        })
+        .await;
+        assert_eq!(slot_run(&placements, 0), Some(one.agent_run_id.as_str()));
+        assert_eq!(slot_run(&placements, 1), Some(two.agent_run_id.as_str()));
+
         first.input(first.route.clone(), 1, b"7\n").await;
         assert!(matches!(
             first.next_body(&mut first_output).await,
@@ -366,9 +399,40 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         let unchanged = wait_for_agent(&runtime, &two.terminal_id, |_| true).await;
         assert_eq!(unchanged.agent_run_id, two.agent_run_id);
         assert_eq!(unchanged.process, AgentProcessState::Running as i32);
+        let changed = presented(&mut companion, |view| {
+            slot_run(view, 0) == Some(fresh.agent_run_id.as_str())
+        })
+        .await;
+        assert!(changed.slots[0].revision > placements.slots[0].revision);
+        assert_eq!(changed.slots[1], placements.slots[1]);
+        assert_eq!(changed.recent_ended[0].agent_run_id, one.agent_run_id);
     })
     .await
     .unwrap();
+}
+
+async fn presented(
+    companion: &mut PresentationClient,
+    condition: impl Fn(&PresentationSlots) -> bool,
+) -> PresentationSlots {
+    loop {
+        let reply = companion
+            .request(Body::GetPresentationSlots(GetPresentationSlots::default()))
+            .await
+            .unwrap();
+        let Body::PresentationSlots(view) = reply else {
+            panic!("missing presentation slots")
+        };
+        if condition(&view) {
+            return view;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn slot_run(view: &PresentationSlots, index: usize) -> Option<&str> {
+    let run = view.slots.get(index)?.run.as_ref()?;
+    Some(&run.key.as_ref()?.agent_run_id)
 }
 
 async fn wait_for_agent(

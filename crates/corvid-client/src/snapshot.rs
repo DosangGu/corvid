@@ -23,17 +23,28 @@ const CACHE_QUEUE: usize = 16;
 
 pub async fn snapshot(runtime: &Path) -> Result<SynchronizedSnapshot> {
     let endpoint = ControlEndpoint::Local(runtime.to_owned());
-    let (_, snapshot) = connect(&endpoint, false, None, None).await?;
+    let (_, snapshot) = connect(&endpoint, false, None, None, || {}).await?;
     Ok(snapshot)
 }
 
 pub async fn watch_snapshot(runtime: &Path) -> Result<SnapshotWatch> {
-    watch(&ControlEndpoint::Local(runtime.to_owned()), None, None).await
+    watch(
+        &ControlEndpoint::Local(runtime.to_owned()),
+        None,
+        None,
+        || {},
+    )
+    .await
 }
 
 impl ControlEndpoint {
-    pub async fn watch(&self, controller: &str, expected_host: &str) -> Result<SnapshotWatch> {
-        watch(self, Some(controller), Some(expected_host)).await
+    pub async fn watch(
+        &self,
+        controller: &str,
+        expected_host: &str,
+        syncing: impl FnOnce(),
+    ) -> Result<SnapshotWatch> {
+        watch(self, Some(controller), Some(expected_host), syncing).await
     }
 }
 
@@ -41,8 +52,9 @@ async fn watch(
     endpoint: &ControlEndpoint,
     controller: Option<&str>,
     expected_host: Option<&str>,
+    syncing: impl FnOnce(),
 ) -> Result<SnapshotWatch> {
-    let (connection, cache) = connect(endpoint, true, controller, expected_host).await?;
+    let (connection, cache) = connect(endpoint, true, controller, expected_host, syncing).await?;
     let subscription = cache
         .subscription_id()
         .context("watch subscription missing")?
@@ -124,6 +136,7 @@ async fn connect(
     watch: bool,
     controller: Option<&str>,
     expected_host: Option<&str>,
+    syncing: impl FnOnce(),
 ) -> Result<(ControlConnection, SynchronizedSnapshot)> {
     let capability = if watch {
         WATCH_CAPABILITY
@@ -136,6 +149,7 @@ async fn connect(
     if expected_host.is_some_and(|expected| expected != connection.wire.session.host_id) {
         return Err(ProtocolFault::new("HostMismatch", "daemon host has changed").into());
     }
+    syncing();
     let cache = timeout(SETUP_TIMEOUT, receive_initial(&mut connection, watch))
         .await
         .context("snapshot setup timed out")??;
