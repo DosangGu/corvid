@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package corvid.protocol.v1;
+
+message Envelope {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  optional string request_id = 3;
+  optional string host_id = 4;
+  optional string server_epoch = 5;
+  optional string subscription_id = 6;
+  optional uint64 sequence = 7;
+
+  oneof body {
+    Hello hello = 10;
+    HelloResult hello_result = 11;
+    Ping ping = 12;
+    Pong pong = 13;
+    GetHost get_host = 14;
+    HostInfo host_info = 15;
+    Attach attach = 30;
+    Attached attached = 31;
+    InputChunk input_chunk = 32;
+    PasteBegin paste_begin = 33;
+    PasteChunk paste_chunk = 34;
+    PasteEnd paste_end = 35;
+    ResizeViewport resize_viewport = 36;
+    ViewChanged view_changed = 37;
+    FrameApplied frame_applied = 38;
+    Detach detach = 39;
+    TerminalExited terminal_exited = 40;
+    RpcError error = 90;
+  }
+}
+
+message Hello {
+  optional string controller_id = 1;
+  repeated uint32 supported_major_versions = 2;
+  repeated string required_capabilities = 3;
+}
+
+message HelloResult {
+  repeated string capabilities = 1;
+  Limits limits = 2;
+  string writer_policy = 3;
+}
+
+message Limits {
+  uint32 control_frame_bytes = 1;
+  uint32 command_timeout_ms = 2;
+}
+
+message RpcError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  repeated uint32 supported_major_versions = 4;
+}
+
+message Ping {}
+message Pong {}
+message GetHost {}
+
+message HostInfo {
+  string host_id = 1;
+  string server_epoch = 2;
+}
+
+enum AttachRole {
+  ATTACH_ROLE_UNSPECIFIED = 0;
+  ATTACH_ROLE_WRITER = 1;
+  ATTACH_ROLE_OBSERVER = 2;
+}
+
+message Viewport {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message Attach {
+  optional string workspace_id = 1;
+  Viewport viewport = 2;
+  repeated string terminal_capabilities = 3;
+  AttachRole requested_role = 4;
+}
+
+message ViewSelection {
+  string workspace_id = 1;
+  string tab_id = 2;
+  string pane_id = 3;
+}
+
+message Attached {
+  string client_id = 1;
+  uint64 connection_generation = 2;
+  RouteToken route_token = 3;
+  repeated string writer_leases = 4;
+  ViewSelection selection = 5;
+}
+
+message RouteToken {
+  string client_id = 1;
+  uint64 connection_generation = 2;
+  uint64 view_revision = 3;
+  string terminal_id = 4;
+  uint64 writer_lease_generation = 5;
+}
+
+message InputChunk {
+  RouteToken route_token = 1;
+  uint64 input_sequence = 2;
+  bytes data = 3;
+}
+
+message PasteBegin {
+  RouteToken route_token = 1;
+  string paste_id = 2;
+  uint64 input_sequence = 3;
+}
+
+message PasteChunk {
+  string paste_id = 1;
+  bytes data = 2;
+}
+
+message PasteEnd {
+  string paste_id = 1;
+}
+
+message ResizeViewport {
+  string client_id = 1;
+  uint64 connection_generation = 2;
+  Viewport viewport = 3;
+}
+
+message ViewChanged {
+  uint64 view_revision = 1;
+  ViewSelection selection = 2;
+  RouteToken route_token = 3;
+}
+
+message FrameApplied {
+  uint64 render_generation = 1;
+  uint64 frame_id = 2;
+}
+
+message Detach {}
+
+message TerminalExited {
+  string terminal_id = 1;
+  uint32 exit_code = 2;
+  optional string signal = 3;
+}
+
+message RenderHeader {
+  string host_id = 1;
+  string server_epoch = 2;
+  string client_id = 3;
+  uint64 view_revision = 4;
+  uint64 render_generation = 5;
+  uint64 frame_id = 6;
+  optional uint64 base_frame_id = 7;
+  uint32 ansi_bytes = 8;
+}

@@ -3,8 +3,8 @@
 ## Project Structure & Module Organization
 
 Corvid is a Rust TUI coding-agent multiplexer. Read `docs/00_project_design.md`
-before architectural changes. The initial Cargo workspace contains the terminal
-qualification package in `spikes/terminal/` with its tests and terminfo profile.
+before architectural changes. The workspace contains the terminal spike under
+`spikes/terminal/` and the shared wire schema and codec under `crates/corvid-protocol/`.
 
 Proposed packages under `crates/`: `corvid` (CLI), `corvid-core` (domain models),
 `corvid-protocol` (Protobuf/framing), `corvid-daemon` (PTY/VT/rendering), and
@@ -12,7 +12,8 @@ Proposed packages under `crates/`: `corvid` (CLI), `corvid-core` (domain models)
 
 ## Build, Test, and Development Commands
 
-Run `git diff --check` for whitespace. From the workspace root:
+Install `protoc` 36.1 for schema generation. Run `git diff --check` for whitespace.
+From the workspace root:
 
 - `cargo build --workspace`: compile workspace packages.
 - `cargo test --workspace`: run unit and integration tests.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["spikes/terminal"]
+members = ["crates/corvid-protocol", "spikes/terminal"]
 resolver = "3"
 
 [workspace.package]
@@ -13,7 +13,12 @@ anyhow = "1.0"
 crossterm = { version = "=0.29.0", default-features = false }
 nix = { version = "0.31.3", default-features = false }
 portable-pty = "=0.9.0"
+prost = "=0.14.4"
+prost-build = "=0.14.4"
+prost-types = "=0.14.4"
 signal-hook = "0.3.18"
+thiserror = "2.0"
+tokio = "=1.53.3"
 vt100 = { version = "=0.18.1", default-features = false }
 
 [workspace.lints.rust]
