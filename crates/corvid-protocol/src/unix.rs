@@ -1,5 +1,6 @@
 use std::fs::{self, File, Metadata, Permissions};
 use std::io::{self, ErrorKind};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -43,14 +44,22 @@ pub struct RuntimeDir {
 
 impl RuntimeDir {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::validate(path, false)
+        Self::validate(path, Create::None)
     }
 
     pub fn create(path: &Path) -> Result<Self> {
-        Self::validate(path, true)
+        Self::validate(path, Create::Final)
     }
 
-    fn validate(path: &Path, create: bool) -> Result<Self> {
+    pub fn create_all(path: &Path) -> Result<Self> {
+        Self::validate(path, Create::Parents)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn validate(path: &Path, create: Create) -> Result<Self> {
         let uid = geteuid().as_raw();
         let directory = open_runtime_path(path, uid, create)?;
         Ok(Self {
@@ -105,7 +114,20 @@ impl RuntimeDir {
     }
 }
 
-fn open_runtime_path(path: &Path, uid: u32, create: bool) -> Result<File> {
+impl AsFd for RuntimeDir {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.directory.as_fd()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Create {
+    None,
+    Final,
+    Parents,
+}
+
+fn open_runtime_path(path: &Path, uid: u32, create: Create) -> Result<File> {
     let mut components = path.components().peekable();
     ensure!(
         matches!(components.next(), Some(Component::RootDir)) && components.peek().is_some(),
@@ -119,15 +141,9 @@ fn open_runtime_path(path: &Path, uid: u32, create: bool) -> Result<File> {
             bail!("runtime directory cannot contain parent traversal");
         };
         let is_final = components.peek().is_none();
-        if create && is_final {
-            match mkdirat(&parent, name, Mode::from_bits_truncate(0o700)) {
-                Ok(()) | Err(Errno::EEXIST) => {}
-                Err(error) => return Err(error).context("creating private runtime directory"),
-            }
-        }
-        let fd = openat(&parent, name, DIRECTORY_FLAGS, Mode::empty())
-            .context("opening runtime path without following symlinks")?;
-        parent = File::from(fd);
+        let may_create =
+            matches!(create, Create::Parents) || (is_final && matches!(create, Create::Final));
+        parent = open_component(&parent, name, may_create)?;
         let metadata = parent.metadata()?;
         if is_final {
             ensure!(
@@ -139,6 +155,21 @@ fn open_runtime_path(path: &Path, uid: u32, create: bool) -> Result<File> {
         }
     }
     Ok(parent)
+}
+
+fn open_component(parent: &File, name: &std::ffi::OsStr, create: bool) -> Result<File> {
+    let fd = match openat(parent, name, DIRECTORY_FLAGS, Mode::empty()) {
+        Err(Errno::ENOENT) if create => {
+            match mkdirat(parent, name, Mode::from_bits_truncate(0o700)) {
+                Ok(()) | Err(Errno::EEXIST) => {}
+                Err(error) => return Err(error).context("creating private directory"),
+            }
+            openat(parent, name, DIRECTORY_FLAGS, Mode::empty())
+        }
+        result => result,
+    }
+    .context("opening private path without following symlinks")?;
+    Ok(File::from(fd))
 }
 
 fn check_parent(metadata: &Metadata, uid: u32) -> Result<()> {

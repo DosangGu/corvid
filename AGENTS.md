@@ -3,12 +3,10 @@
 ## Project Structure & Module Organization
 
 Corvid is a Rust TUI coding-agent multiplexer. Read `docs/00_project_design.md`
-before architectural changes. The workspace contains the terminal spike under
-`spikes/terminal/` and the shared wire schema and codec under `crates/corvid-protocol/`.
-
-Proposed packages under `crates/`: `corvid` (CLI), `corvid-core` (domain models),
-`corvid-protocol` (Protobuf/framing), `corvid-daemon` (PTY/VT/rendering), and
-`corvid-client` (IPC/TTY). The companion comes later.
+before architectural changes. The workspace has `crates/corvid/` for the CLI,
+`corvid-daemon` for daemon services, `corvid-client` for client connections,
+`corvid-protocol` for Protobuf and Unix transport, and `spikes/terminal/` for terminal
+qualification. The domain and companion packages come later.
 
 ## Build, Test, and Development Commands
 

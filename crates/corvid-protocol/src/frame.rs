@@ -138,6 +138,14 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         };
         Ok(Some(frame))
     }
+
+    pub async fn next_envelope(&mut self) -> Result<Option<Envelope>, FrameError> {
+        match self.next_frame().await? {
+            Some(Frame::Structured(payload)) => decode_envelope(&payload).map(Some),
+            Some(Frame::Render(_)) => Err(FrameError::WrongRole),
+            None => Ok(None),
+        }
+    }
 }
 
 async fn read_render(

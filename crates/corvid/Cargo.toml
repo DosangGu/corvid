@@ -1,0 +1,22 @@
+[package]
+name = "corvid"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+corvid-client.workspace = true
+corvid-daemon.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+
+[dev-dependencies]
+corvid-protocol.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["process"] }
+
+[lints]
+workspace = true

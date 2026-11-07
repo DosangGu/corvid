@@ -1,0 +1,16 @@
+[package]
+name = "corvid-client"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+corvid-protocol.workspace = true
+tokio = { workspace = true, features = ["io-std", "macros", "net", "time"] }
+uuid.workspace = true
+
+[lints]
+workspace = true
