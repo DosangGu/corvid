@@ -3,6 +3,7 @@ use std::num::NonZeroU16;
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod agent;
 pub mod layout;
 
 pub const KEY_LEADER: u8 = 0x1d;
