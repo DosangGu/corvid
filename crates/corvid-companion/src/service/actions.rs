@@ -11,8 +11,10 @@ use corvid_protocol::wire::{
 use uuid::Uuid;
 
 #[cfg(windows)]
-use super::{LocalTerminal, WezTermPane};
+use super::TerminalRecord;
 use super::{Outcome, Remote, Service, observations, store_fault};
+#[cfg(windows)]
+use crate::platform::WezTermPane;
 use crate::remote::{invalid, parse_id};
 use crate::{RunKey, SlotLayout};
 
@@ -30,7 +32,9 @@ impl Service {
                 match reply {
                     Body::ClientBindingUnregistered(_) => {
                         #[cfg(windows)]
-                        self.terminals.remove(&client);
+                        if self.terminals.remove(&client).is_some() {
+                            self.save_terminals();
+                        }
                         Ok(reply)
                     }
                     _ => Err(invalid_reply()),
@@ -76,15 +80,16 @@ impl Service {
         if let Some(pane) = pane {
             self.terminals.insert(
                 client,
-                LocalTerminal {
+                TerminalRecord {
                     epoch: remote.epoch,
                     revision: binding.binding_revision,
                     commit_sequence: binding.commit_sequence,
                     pane,
                 },
             );
-        } else {
-            self.terminals.remove(&client);
+            self.save_terminals();
+        } else if self.terminals.remove(&client).is_some() {
+            self.save_terminals();
         }
         #[cfg(not(windows))]
         let _ = client;
@@ -108,11 +113,14 @@ impl Service {
         }
         let (client, revision) = require_binding(remote, focus.binding.as_ref())?;
         #[cfg(windows)]
-        let pane = self.local_pane(remote, client, revision);
-        #[cfg(windows)]
-        if let Some(pane) = pane {
-            pane.check().await.map_err(|_| local_unavailable())?;
-        }
+        let pane = match self.local_pane(remote, client, revision) {
+            Some(saved) => Some(
+                WezTermPane::restore(saved)
+                    .await
+                    .map_err(|_| local_unavailable())?,
+            ),
+            None => None,
+        };
         let command = ControllerRequest::Focus {
             client,
             run: key.run,

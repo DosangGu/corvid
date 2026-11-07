@@ -9,27 +9,28 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_protocol::wire::{LocalActivation, WezTermLocation, WezTermTarget};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use socket2::{Domain, SockAddr, Socket, Type};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
-use windows_sys::Win32::Foundation::{HANDLE, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::Networking::WinSock::{
     SIO_AF_UNIX_GETPEERPID, SOCKET_ERROR, WSAGetLastError, WSAIoctl,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, GetFileInformationByHandleEx,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
+    FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileIdInfo,
+    GetFileInformationByHandleEx,
 };
 use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_AF_UNIX;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    QueryFullProcessImageNameW, WaitForSingleObject,
+    CREATE_NO_WINDOW, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW, WaitForSingleObject,
 };
 
-use super::security::{checked, current_user, process_user};
+use super::security::{checked, current_logon, current_user, process_logon, process_user};
 use super::storage::{check_component, require_local_acl_volume};
 
 mod foreground;
@@ -43,8 +44,32 @@ pub(crate) struct WezTermPane {
     location: PaneLocation,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct WezTermRegistration {
+    gui: GuiIdentity,
+    location: PaneLocation,
+}
+
+impl WezTermRegistration {
+    pub(crate) fn location(&self) -> WezTermLocation {
+        self.location.wire(self.gui.pid)
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        self.gui.created != 0
+            && self.gui.file.id != [0; 16]
+            && self.gui.socket.is_absolute()
+            && self
+                .gui
+                .socket
+                .to_str()
+                .is_some_and(|path| path.len() < 108)
+            && socket_pid(&self.gui.socket).is_ok_and(|pid| pid == self.gui.pid)
+    }
+}
+
 impl WezTermPane {
-    pub(crate) async fn capture(target: WezTermTarget) -> Result<Self> {
+    pub(crate) async fn capture(target: WezTermTarget) -> Result<WezTermRegistration> {
         let pane = target.pane_id.context("missing WezTerm pane ID")?;
         ensure!(
             target.gui_socket.len() < 108,
@@ -52,7 +77,24 @@ impl WezTermPane {
         );
         let gui = Gui::open(Path::new(&target.gui_socket))?;
         let location = find_pane(&gui.panes().await?, pane)?;
-        Ok(Self { gui, location })
+        Ok(WezTermRegistration {
+            gui: gui.identity,
+            location,
+        })
+    }
+
+    pub(crate) async fn restore(saved: &WezTermRegistration) -> Result<Self> {
+        let gui = Gui::open(&saved.gui.socket)?;
+        ensure!(
+            gui.identity == saved.gui,
+            "WezTerm GUI process or socket was replaced"
+        );
+        let pane = Self {
+            gui,
+            location: saved.location,
+        };
+        pane.check().await?;
+        Ok(pane)
     }
 
     pub(crate) async fn check(&self) -> Result<()> {
@@ -60,12 +102,7 @@ impl WezTermPane {
     }
 
     pub(crate) fn location(&self) -> WezTermLocation {
-        WezTermLocation {
-            gui_pid: self.gui.pid,
-            window_id: self.location.window_id,
-            tab_id: self.location.tab_id,
-            pane_id: self.location.pane_id,
-        }
+        self.location.wire(self.gui.identity.pid)
     }
 
     pub(crate) async fn activate(&self) -> LocalActivation {
@@ -102,15 +139,22 @@ impl WezTermPane {
         {
             return Ok(false);
         }
-        foreground::activate(self.gui.pid, &self.gui.process).await
+        foreground::activate(self.gui.identity.pid, &self.gui.process).await
     }
 }
 
 struct Gui {
-    pid: u32,
+    identity: GuiIdentity,
     process: OwnedHandle,
     executable: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct GuiIdentity {
+    pid: u32,
+    created: u64,
     socket: PathBuf,
+    file: SocketIdentity,
 }
 
 impl Gui {
@@ -133,6 +177,10 @@ impl Gui {
             process_user(handle)? == current_user()?,
             "WezTerm GUI belongs to another user"
         );
+        ensure!(
+            process_logon(handle)? == current_logon()?,
+            "WezTerm GUI belongs to another Windows logon"
+        );
         let image = process_image(handle)?;
         ensure!(
             image
@@ -140,11 +188,18 @@ impl Gui {
                 .is_some_and(|name| name.eq_ignore_ascii_case("wezterm-gui.exe")),
             "socket does not identify a WezTerm GUI process"
         );
+        let created = process_creation(handle)?;
+        let guards = pin_socket(&socket)?;
+        let file = socket_identity(&guards)?;
         Ok(Self {
-            pid,
+            identity: GuiIdentity {
+                pid,
+                created,
+                socket,
+                file,
+            },
             process,
             executable: image.with_file_name("wezterm.exe"),
-            socket,
         })
     }
 
@@ -154,10 +209,15 @@ impl Gui {
     }
 
     async fn invoke(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let _path_guard = pin_socket(&self.socket)?;
+        let socket = &self.identity.socket;
+        let path_guard = pin_socket(socket)?;
+        ensure!(
+            socket_identity(&path_guard)? == self.identity.file,
+            "WezTerm GUI socket was replaced"
+        );
         ensure!(
             process_alive(&self.process)
-                && peer_pid(&self.socket)? == self.pid
+                && peer_pid(socket)? == self.identity.pid
                 && process_alive(&self.process),
             "cannot verify the WezTerm GUI socket peer"
         );
@@ -165,7 +225,7 @@ impl Gui {
         let mut child = Command::new(&self.executable)
             .args(["--skip-config", "cli", "--no-auto-start"])
             .args(args)
-            .env("WEZTERM_UNIX_SOCKET", &self.socket)
+            .env("WEZTERM_UNIX_SOCKET", socket)
             .env_remove("WEZTERM_PANE")
             .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
@@ -195,7 +255,7 @@ impl Gui {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct PaneLocation {
     window_id: u32,
     tab_id: u32,
@@ -203,6 +263,15 @@ struct PaneLocation {
 }
 
 impl PaneLocation {
+    fn wire(self, pid: u32) -> WezTermLocation {
+        WezTermLocation {
+            gui_pid: pid,
+            window_id: self.window_id,
+            tab_id: self.tab_id,
+            pane_id: self.pane_id,
+        }
+    }
+
     fn verify(self, panes: &[Self]) -> Result<()> {
         ensure!(
             find_pane(panes, self.pane_id)? == self,
@@ -235,6 +304,48 @@ fn process_image(process: HANDLE) -> Result<PathBuf> {
 fn process_alive(process: &OwnedHandle) -> bool {
     // A process handle becomes signalled when that process exits.
     unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_TIMEOUT }
+}
+
+fn process_creation(process: HANDLE) -> Result<u64> {
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // The live process handle grants query rights and all results are writable.
+    checked(unsafe {
+        GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user)
+    })?;
+    let timestamp = u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime);
+    ensure!(timestamp != 0, "missing WezTerm GUI process creation time");
+    Ok(timestamp)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct SocketIdentity {
+    volume: u64,
+    id: [u8; 16],
+}
+
+fn socket_identity(guards: &[File]) -> Result<SocketIdentity> {
+    let socket = guards.last().context("missing guarded WezTerm socket")?;
+    let mut info = FILE_ID_INFO::default();
+    // The last handle is the checked reparse point, with read attributes access.
+    checked(unsafe {
+        GetFileInformationByHandleEx(
+            socket.as_raw_handle(),
+            FileIdInfo,
+            std::ptr::from_mut(&mut info).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    })?;
+    ensure!(
+        info.FileId.Identifier != [0; 16],
+        "missing WezTerm socket file ID"
+    );
+    Ok(SocketIdentity {
+        volume: info.VolumeSerialNumber,
+        id: info.FileId.Identifier,
+    })
 }
 
 fn socket_path(path: &Path) -> Result<PathBuf> {
@@ -412,10 +523,32 @@ mod tests {
         listener.bind(&SockAddr::unix(&path).unwrap()).unwrap();
         listener.listen(2).unwrap();
         let guard = pin_socket(&path).unwrap();
+        let id = socket_identity(&guard).unwrap();
 
         assert_eq!(peer_pid(&path).unwrap(), std::process::id());
+        assert_eq!(socket_identity(&pin_socket(&path).unwrap()).unwrap(), id);
         assert!(std::fs::rename(&path, directory.path().join("renamed")).is_err());
         drop(guard);
         drop(listener);
+    }
+
+    #[test]
+    fn creation_time_and_file_identity_distinguish_windows_objects() {
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        // This pseudo-handle is valid for process and token queries.
+        let current = unsafe { GetCurrentProcess() };
+        assert_eq!(current_logon().unwrap(), process_logon(current).unwrap());
+        assert_eq!(
+            process_creation(current).unwrap(),
+            process_creation(current).unwrap()
+        );
+
+        let first = [tempfile::tempfile().unwrap()];
+        let replacement = [tempfile::tempfile().unwrap()];
+        assert_ne!(
+            socket_identity(&first).unwrap(),
+            socket_identity(&replacement).unwrap()
+        );
     }
 }

@@ -14,7 +14,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 #[cfg(windows)]
-use crate::platform::WezTermPane;
+use crate::platform::{TerminalRecord, TerminalRegistry, WezTermRegistration};
 use crate::remote::Remote;
 use crate::{RunKey, RunObservation, Store};
 
@@ -36,20 +36,25 @@ pub(crate) struct Service {
     generation: Option<Uuid>,
     remote: Option<Remote>,
     #[cfg(windows)]
-    terminals: BTreeMap<Uuid, LocalTerminal>,
-}
-
-#[cfg(windows)]
-struct LocalTerminal {
-    epoch: Uuid,
-    revision: u64,
-    commit_sequence: u64,
-    pane: WezTermPane,
+    terminals: BTreeMap<Uuid, TerminalRecord>,
+    #[cfg(windows)]
+    terminal_registry: Option<TerminalRegistry>,
 }
 
 impl Service {
     pub(crate) fn new(store: Store) -> Result<Self> {
         let config = store.config();
+        #[cfg(windows)]
+        let (terminal_registry, terminals) =
+            match TerminalRegistry::new(config.controller_id, config.host_id)
+                .and_then(|registry| Ok((registry.load()?, registry)))
+            {
+                Ok((records, registry)) => (Some(registry), records),
+                Err(_) => {
+                    eprintln!("corvid companion: saved WezTerm registrations unavailable");
+                    (None, BTreeMap::new())
+                }
+            };
         Ok(Self {
             endpoint: config.control_endpoint()?,
             controller: config.controller_id.to_string(),
@@ -60,7 +65,9 @@ impl Service {
             generation: None,
             remote: None,
             #[cfg(windows)]
-            terminals: BTreeMap::new(),
+            terminals,
+            #[cfg(windows)]
+            terminal_registry,
         })
     }
 
@@ -99,11 +106,42 @@ impl Service {
     }
 
     #[cfg(windows)]
-    fn local_pane(&self, remote: &Remote, client: Uuid, revision: u64) -> Option<&WezTermPane> {
+    fn local_pane(
+        &self,
+        remote: &Remote,
+        client: Uuid,
+        revision: u64,
+    ) -> Option<&WezTermRegistration> {
         self.terminals
             .get(&client)
-            .filter(|terminal| terminal.epoch == remote.epoch && terminal.revision == revision)
+            .filter(|terminal| {
+                terminal.epoch == remote.epoch
+                    && terminal.revision == revision
+                    && remote.sequence >= terminal.commit_sequence
+            })
             .map(|terminal| &terminal.pane)
+    }
+
+    #[cfg(windows)]
+    fn save_terminals(&self) {
+        if let Some(registry) = &self.terminal_registry
+            && registry.save(&self.terminals).is_err()
+        {
+            eprintln!("corvid companion: could not save WezTerm registrations");
+        }
+    }
+
+    #[cfg(windows)]
+    fn reconcile_terminals(&mut self, remote: &Remote) {
+        let before = self.terminals.len();
+        self.terminals.retain(|client, terminal| {
+            terminal.epoch == remote.epoch
+                && (remote.sequence < terminal.commit_sequence
+                    || remote.bindings.get(client) == Some(&terminal.revision))
+        });
+        if self.terminals.len() != before {
+            self.save_terminals();
+        }
     }
 
     async fn connect(&mut self, calls: &mut mpsc::Receiver<Call>) -> Result<SnapshotWatch> {
@@ -194,11 +232,7 @@ impl Service {
             .update(|layout| Ok(layout.reconcile(&runs, &removed)?))
             .map_err(store_fault)?;
         #[cfg(windows)]
-        self.terminals.retain(|client, terminal| {
-            terminal.epoch == remote.epoch
-                && (remote.sequence < terminal.commit_sequence
-                    || remote.bindings.get(client) == Some(&terminal.revision))
-        });
+        self.reconcile_terminals(&remote);
         self.remote = Some(remote);
         Ok(())
     }

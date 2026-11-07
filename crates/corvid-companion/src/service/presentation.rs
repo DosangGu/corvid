@@ -43,7 +43,7 @@ impl Service {
                         #[cfg(windows)]
                         wezterm: self
                             .local_pane(remote, *client, *revision)
-                            .map(crate::platform::WezTermPane::location),
+                            .map(crate::platform::WezTermRegistration::location),
                         #[cfg(not(windows))]
                         wezterm: None,
                     })

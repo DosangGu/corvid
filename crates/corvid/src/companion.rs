@@ -158,7 +158,6 @@ pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -
         return corvid_companion::run(&address, &companion_state(options.state_dir)?, shutdown()?)
             .await;
     }
-
     let mut client = PresentationClient::connect(&address).await?;
     let request = options.command.request(&client.session().server_epoch)?;
     #[cfg(windows)]

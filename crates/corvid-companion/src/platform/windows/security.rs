@@ -8,14 +8,16 @@ use anyhow::{Context, Result, ensure};
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SE_FILE_OBJECT,
+    SE_FILE_OBJECT, SE_OBJECT_TYPE, SE_REGISTRY_KEY,
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, GetAce,
     GetSecurityDescriptorControl, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
-    PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
+    TokenStatistics, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+use windows_sys::Win32::System::Registry::KEY_ALL_ACCESS;
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::core::BOOL;
@@ -28,12 +30,7 @@ pub(super) fn current_user() -> Result<String> {
 }
 
 pub(super) fn process_user(process: HANDLE) -> Result<String> {
-    let mut token: HANDLE = null_mut();
-    // OpenProcessToken writes a new handle to the supplied pointer.
-    checked(unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) })
-        .context("opening Windows user token")?;
-    // The successful call transfers ownership of the handle.
-    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let token = process_token(process)?;
     let mut size = 0;
     // A zero-sized call reports the required storage size.
     unsafe { GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut size) };
@@ -57,12 +54,55 @@ pub(super) fn process_user(process: HANDLE) -> Result<String> {
     sid_text(user.User.Sid)
 }
 
+pub(super) fn current_logon() -> Result<u64> {
+    // GetCurrentProcess returns a valid pseudo-handle to this process.
+    process_logon(unsafe { GetCurrentProcess() })
+}
+
+pub(super) fn process_logon(process: HANDLE) -> Result<u64> {
+    let token = process_token(process)?;
+    let mut statistics = TOKEN_STATISTICS::default();
+    let mut size = 0;
+    // TokenStatistics writes the fixed-size structure and its actual length.
+    checked(unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenStatistics,
+            std::ptr::from_mut(&mut statistics).cast(),
+            size_of::<TOKEN_STATISTICS>() as u32,
+            &mut size,
+        )
+    })?;
+    ensure!(
+        size as usize == size_of::<TOKEN_STATISTICS>(),
+        "invalid Windows token statistics size"
+    );
+    let id = statistics.AuthenticationId;
+    Ok(u64::from(id.HighPart as u32) << 32 | u64::from(id.LowPart))
+}
+
+fn process_token(process: HANDLE) -> Result<OwnedHandle> {
+    let mut token: HANDLE = null_mut();
+    // OpenProcessToken writes a new handle to the supplied pointer.
+    checked(unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) })
+        .context("opening Windows user token")?;
+    // The successful call transfers ownership of the handle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(token) })
+}
+
 pub(super) struct PrivateDescriptor(LocalAllocation);
 
 impl PrivateDescriptor {
     pub(super) fn new(user: &str, directory: bool) -> Result<Self> {
         let inheritance = if directory { "OICI" } else { "" };
-        let sddl = format!("O:{user}D:P(A;{inheritance};FA;;;{user})");
+        Self::from_sddl(&format!("O:{user}D:P(A;{inheritance};FA;;;{user})"))
+    }
+
+    pub(super) fn registry(user: &str) -> Result<Self> {
+        Self::from_sddl(&format!("O:{user}D:P(A;;KA;;;{user})"))
+    }
+
+    fn from_sddl(sddl: &str) -> Result<Self> {
         let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut descriptor = null_mut();
         // The input is NUL-terminated and Windows allocates the result with LocalAlloc.
@@ -88,6 +128,26 @@ impl PrivateDescriptor {
 }
 
 pub(super) fn verify_private(handle: HANDLE, user: &str, require_protected: bool) -> Result<()> {
+    verify_acl(
+        handle,
+        user,
+        SE_FILE_OBJECT,
+        FILE_ALL_ACCESS,
+        require_protected,
+    )
+}
+
+pub(super) fn verify_private_registry(handle: HANDLE, user: &str) -> Result<()> {
+    verify_acl(handle, user, SE_REGISTRY_KEY, KEY_ALL_ACCESS, true)
+}
+
+fn verify_acl(
+    handle: HANDLE,
+    user: &str,
+    object: SE_OBJECT_TYPE,
+    mask: u32,
+    require_protected: bool,
+) -> Result<()> {
     let mut owner = null_mut();
     let mut acl: *mut ACL = null_mut();
     let mut descriptor = null_mut();
@@ -95,7 +155,7 @@ pub(super) fn verify_private(handle: HANDLE, user: &str, require_protected: bool
     let result = unsafe {
         GetSecurityInfo(
             handle,
-            SE_FILE_OBJECT,
+            object,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
             null_mut(),
@@ -119,7 +179,7 @@ pub(super) fn verify_private(handle: HANDLE, user: &str, require_protected: bool
         unsafe { (*acl).AceCount } == 1,
         "Windows object ACL grants additional access"
     );
-    verify_user_ace(acl, user)?;
+    verify_user_ace(acl, user, mask)?;
     if require_protected {
         let mut control = 0;
         let mut revision = 0;
@@ -135,7 +195,7 @@ pub(super) fn verify_private(handle: HANDLE, user: &str, require_protected: bool
     Ok(())
 }
 
-fn verify_user_ace(acl: *const ACL, user: &str) -> Result<()> {
+fn verify_user_ace(acl: *const ACL, user: &str, mask: u32) -> Result<()> {
     let mut ace: *mut c_void = null_mut();
     // The caller verified there is one ACE in the live ACL.
     checked(unsafe { GetAce(acl, 0, &mut ace) })?;
@@ -158,7 +218,7 @@ fn verify_user_ace(acl: *const ACL, user: &str) -> Result<()> {
         "invalid SID length in Windows access rule"
     );
     ensure!(
-        access.Mask == FILE_ALL_ACCESS && sid_text(sid)? == user,
+        access.Mask == mask && sid_text(sid)? == user,
         "Windows object ACL must grant access only to the current user"
     );
     Ok(())
