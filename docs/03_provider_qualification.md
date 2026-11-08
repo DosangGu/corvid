@@ -2,11 +2,11 @@
 
 ## Claude Code 2.1.318 on Linux
 
-Recorded on Linux 7.2.14 on 2026-11-07. The fixture launches the installed
+Recorded on Linux 7.2.14 on 2026-11-07 and 2026-11-08. The fixture launches the installed
 interactive CLI in a real PTY with screen-reader output. It uses a temporary
 home, an isolated workspace, and a loopback Messages server that supplies synthetic
 responses. Question scenarios use manual permission mode. The plan scenario
-starts in plan mode and the fixture chooses the approval in the PTY.
+starts in plan mode. The fixture approves the plan or returns feedback in the PTY.
 
 | Event | Observed fields and behavior |
 |---|---|
@@ -14,6 +14,7 @@ starts in plan mode and the fixture chooses the approval in the PTY.
 | `UserPromptSubmit` | Supplies a prompt ID under the current session. |
 | `PreToolUse` and `PostToolUse` | The observed `AskUserQuestion` invocation and result share session, prompt, and tool-use IDs. |
 | `ExitPlanMode` | After writing a draft and loading the deferred tool, the CLI shows an approval dialog. Its `PreToolUse` and successful `PostToolUse` share session, prompt, and tool-use IDs. |
+| Plan rejection | The manual rejection reports the exact `ExitPlanMode` tool-use ID in `PostToolBatch` before `Stop` for the same prompt. The batch entry carries no typed outcome. The fixture receives no matching success, failure, or denial hook. |
 | `PermissionRequest` | The same question also emits this event with the session, prompt, and tool name. The tool-use ID is absent. Require separate correlation evidence before resolving a permission observation. |
 | Question dismissal | Esc closes the question. The next submission and `Stop` carry a new prompt ID. The dismissed question has no matching result, failure, or denial hook in this trace. |
 | `Stop` | The response retains the prompt ID after the tool result. Other hooks can continue the turn, so this boundary provides response evidence. |
@@ -33,6 +34,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario resume
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario cancel
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario plan
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario plan-rejected
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child
 ```
 
@@ -69,6 +71,7 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario resume
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan-rejected
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario forged-output
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario offline-pair
@@ -98,6 +101,9 @@ stayed the same across both context switches. The original resolved question
 remained in history, and the resumed run accepted focus through a fresh slot.
 
 The plan fixture observed a typed pending approval and its exact resolution.
+The rejection fixture observed the same approval become Unverified on the next
+prompt and retain its request and attention IDs. Corvid records the response
+boundary separately from the approval outcome.
 The dismissal fixture observed the same run move from one pending question to
 an unverified question after the next submission. The approval completed with
 the observer absent, and dismissal completed with the collector socket absent.
@@ -139,8 +145,8 @@ retires with the parent.
 Early child responses have a five-second correlation window. The inventory
 reports a child coverage gap if the registry reaches its child observation
 limit. Use the control snapshot for inventories larger than one control frame.
-Exact manual cancellation, plan rejection, and synchronous or nested child
-ownership remain unqualified.
+Exact manual cancellation outcomes and synchronous or nested child ownership
+remain unqualified.
 
 The A18 fixture writes raw bytes to the managed Claude PTY while a real
 question is pending. It sends a title with shell syntax, clipboard set and

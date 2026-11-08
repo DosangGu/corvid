@@ -29,11 +29,12 @@ VERSION = "2.1.318 (Claude Code)"
 HOOKS = (
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
     "PermissionDenied", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "SessionEnd",
-    "SubagentStart", "SubagentStop",
+    "SubagentStart", "SubagentStop", "PostToolBatch",
 )
 IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id", "result_agent_id")
 FAULT_TRACE = "collector-faults"
 OFFLINE_PROMPTS = (b"Corvid offline question one", b"Corvid offline question two")
+PLAN_SCENARIOS = {"plan", "plan-rejected"}
 CAPTURE = """
 import json
 from pathlib import Path
@@ -54,6 +55,13 @@ if event["hook_event_name"] == "PostToolUse" and event.get("tool_name") == "Agen
             record["result_agent_id"] = result["agentId"]
         if isinstance(result.get("status"), str):
             record["result_status"] = result["status"]
+if event["hook_event_name"] == "PostToolBatch":
+    record["tool_calls"] = [
+        {key: call[key] for key in ("tool_name", "tool_use_id")}
+        for call in event["tool_calls"] if call["tool_name"] in {"AskUserQuestion", "ExitPlanMode"}
+    ]
+    if not record["tool_calls"]:
+        sys.exit(0)
 with Path(sys.argv[1]).open("a") as trace:
     print(json.dumps(record), file=trace)
 """
@@ -332,8 +340,8 @@ def exercise(terminal, scenario, managed, fault):
     current = initial
     terminal.send(b"Corvid hook schema fixture\r")
     child_start = terminal.event(hook_event_name="SubagentStart") if scenario == "child" else None
-    if scenario == "plan":
-        return exercise_plan(terminal, managed, initial)
+    if scenario in PLAN_SCENARIOS:
+        return exercise_plan(terminal, managed, initial, rejected=scenario == "plan-rejected")
     terminal.expect(b"Enter to submit or Escape to cancel:")
     if scenario == "cancel":
         return exercise_cancel(terminal, managed, initial)
@@ -516,23 +524,58 @@ def wait_for_hook_timeout(terminal):
     terminal.wait(stopped, "provider to terminate the timed-out hook")
 
 
-def exercise_plan(terminal, managed, initial):
+def exercise_plan(terminal, managed, initial, *, rejected):
     terminal.expect(b"Would you like to proceed?")
+    approval = None
     if managed:
         managed.expect(terminal, run=initial["run"], pending="1", unverified="1", badge="NeedsInput")
-        alerts = managed.attention()
-        assert any(alert["run_id"] == initial["run"] and alert["request_kind"] == "PlanApproval"
-                   for alert in alerts)
-    terminal.send(b"1\r")
-    terminal.event(hook_event_name="PostToolUse", tool_name="ExitPlanMode")
-    terminal.event(hook_event_name="Stop")
-    if managed:
-        managed.expect(
-            terminal, run=initial["run"], pending="0", resolved="1", unverified="1", process="Running",
-        )
+        approval = request_for(managed.command, initial["run"], "PlanApproval")
+        assert approval["request_status"] == "Pending"
+    if rejected:
+        reject_plan(terminal, managed, initial, approval)
+    else:
+        terminal.send(b"1\r")
+        terminal.event(hook_event_name="PostToolUse", tool_name="ExitPlanMode")
+        terminal.event(hook_event_name="Stop")
+        if managed:
+            managed.expect(
+                terminal, run=initial["run"], pending="0", resolved="1", unverified="1", process="Running",
+            )
     terminal.send(b"/exit\r")
     assert terminal.process.wait(timeout=5) == 0
     return terminal.events()
+
+
+def reject_plan(terminal, managed, initial, approval):
+    terminal.expect(b"No, keep planning")
+    terminal.send(b"3\r")
+    terminal.expect(b"option 3 (No, keep planning)")
+    terminal.screen = b""
+    terminal.send(b"x")
+    terminal.expect(b"x")
+    terminal.send(b"\r")
+    terminal.expect(b"User rejected ")
+    response = terminal.event(hook_event_name="Stop")
+    if managed:
+        managed.expect(
+            terminal, run=initial["run"], process="Running", response="true",
+            pending="1", unverified="1", resolved="0", cancelled="0",
+        )
+
+    offset = len(terminal.events())
+    terminal.send(b"Corvid after plan rejection\r")
+    followup = terminal.event(after=offset, hook_event_name="UserPromptSubmit")
+    assert followup["prompt_id"] != response["prompt_id"]
+    terminal.event(hook_event_name="Stop", prompt_id=followup["prompt_id"])
+    if managed:
+        managed.expect(
+            terminal, run=initial["run"], process="Running",
+            pending="0", unverified="2", resolved="0", cancelled="0",
+        )
+        current = request_for(managed.command, initial["run"], "PlanApproval")
+        assert current["request_id"] == approval["request_id"]
+        assert current["attention_id"] == approval["attention_id"]
+        assert current["request_status"] == "Unverified"
 
 
 def exercise_cancel(terminal, managed, initial):
@@ -984,7 +1027,7 @@ def capture(binary, directory, port, scenario, corvid, fault):
         environment["API_TIMEOUT_MS"] = "9000"
     arguments = [
         "--model", "sonnet", "--strict-mcp-config", "--no-chrome", "--ax-screen-reader",
-        "--permission-mode", "plan" if scenario == "plan" else "manual",
+        "--permission-mode", "plan" if scenario in PLAN_SCENARIOS else "manual",
     ]
     if corvid is None:
         args = ["setsid", "--ctty", "--wait", str(binary.resolve()), *arguments]
@@ -1051,16 +1094,18 @@ def open_terminal(args, environment, project, trace):
 def sanitize(events):
     ids = {}
     for event in events:
-        for field in IDS:
-            if field in event:
-                value = event[field]
+        for record in (event, *event.get("tool_calls", [])):
+            for field in IDS:
+                if field not in record:
+                    continue
+                value = record[field]
                 if value not in ids:
                     index = len(ids) + 1
                     if field == "tool_use_id":
                         ids[value] = f"toolu_fixture_{index}"
                     else:
                         ids[value] = f"00000000-0000-4000-8000-{index:012d}"
-                event[field] = ids[value]
+                record[field] = ids[value]
         print(json.dumps(event, separators=(",", ":")))
 
 
@@ -1078,7 +1123,7 @@ def verify(events, scenario):
     session = first["session_id"]
     submitted = next(event for event in events if event["hook_event_name"] == "UserPromptSubmit")
     turn = submitted["prompt_id"]
-    tool = "ExitPlanMode" if scenario == "plan" else "AskUserQuestion"
+    tool = "ExitPlanMode" if scenario in PLAN_SCENARIOS else "AskUserQuestion"
     before = next(event for event in events if event["hook_event_name"] == "PreToolUse"
                   and event.get("tool_name") == tool)
     permission = next(event for event in events if event["hook_event_name"] == "PermissionRequest"
@@ -1094,16 +1139,26 @@ def verify(events, scenario):
         return
     response = next(event for event in events if event["hook_event_name"] == "Stop")
     assert response["session_id"] == session
+    if scenario in PLAN_SCENARIOS:
+        batch, = [event for event in events if event["hook_event_name"] == "PostToolBatch"]
+        assert batch["session_id"] == session and batch["prompt_id"] == response["prompt_id"] == turn
+        assert batch["tool_calls"] == [{"tool_name": tool, "tool_use_id": before["tool_use_id"]}]
+        assert events.index(before) < events.index(batch) < events.index(response)
     if scenario == "cancel":
         assert not outcomes
+        assert not any(event["hook_event_name"] == "PostToolBatch" for event in events)
         followup = next(event for event in events if event["hook_event_name"] == "UserPromptSubmit"
                         and event["prompt_id"] != turn)
         assert response["prompt_id"] == followup["prompt_id"] and followup["session_id"] == session
+    elif scenario == "plan-rejected":
+        assert not outcomes
     else:
         after, = outcomes
         assert after["hook_event_name"] == "PostToolUse"
         assert after["session_id"] == session and after["prompt_id"] == response["prompt_id"] == turn
         assert before["tool_use_id"] == after["tool_use_id"]
+        if scenario == "plan":
+            assert events.index(after) < events.index(batch)
     assert events[-1]["hook_event_name"] == "SessionEnd"
     assert events[-1]["reason"] == "prompt_input_exit"
     if scenario == "child":
@@ -1142,7 +1197,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=(
         "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart",
-        "offline-pair", "offline-restart", "snapshot-race",
+        "offline-pair", "offline-restart", "snapshot-race", "plan-rejected",
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
@@ -1170,7 +1225,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix=".corvid-claude-", dir=parent) as directory:
         server_type = ThreadingHTTPServer if args.scenario == "child" else HTTPServer
         with server_type(("127.0.0.1", 0), ModelFixture) as server:
-            server.fixture_tool = "ExitPlanMode" if args.scenario == "plan" else "AskUserQuestion"
+            server.fixture_tool = "ExitPlanMode" if args.scenario in PLAN_SCENARIOS else "AskUserQuestion"
             server.tool_sent = False
             server.plan_drafted = False
             server.plan_search_sent = False
