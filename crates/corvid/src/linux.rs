@@ -6,14 +6,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
-use corvid_client::{ControllerRequest, ControllerScope};
+use corvid_client::{ControlEndpoint, ControllerRequest, ControllerScope};
 use corvid_protocol::snapshot::{HISTORY_CAPABILITY, SynchronizedSnapshot};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentActivity, AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentLifecycle,
-    AgentProcessState, AgentProvider, AttentionReason, InputRequestKind, InputRequestStatus,
-    LayoutRecovery, PersistenceState, ProviderExecutionMode, TuiInputMode,
+    AgentProcessState, AgentProvider, AttentionReason, HelloResult, HookEvent, InputRequestKind,
+    InputRequestStatus, LayoutRecovery, PersistenceState, ProviderCapabilityKind,
+    ProviderCorrelation, ProviderExecutionMode, ProviderQualification, TuiInputMode,
 };
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
@@ -113,6 +114,8 @@ pub(super) enum Command {
 #[derive(Clone, Copy, ValueEnum)]
 pub(super) enum ControlRequest {
     Host,
+    /// Show control features and release-qualified provider profiles.
+    Capabilities,
     Ping,
     Status,
     Workspaces,
@@ -264,6 +267,11 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 println!("pong");
                 Ok(0)
             }
+            ControlRequest::Capabilities => {
+                let capabilities = ControlEndpoint::Local(runtime).capabilities().await?;
+                print_capabilities(capabilities)?;
+                Ok(0)
+            }
             ControlRequest::Status => {
                 let status = corvid_client::status(&runtime).await?;
                 let persistence = match PersistenceState::try_from(status.persistence) {
@@ -361,6 +369,53 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 }
             }
         },
+    }
+}
+
+fn print_capabilities(description: HelloResult) -> Result<()> {
+    let limits = description
+        .limits
+        .context("capability response lacks limits")?;
+    println!("writer_policy={}", description.writer_policy);
+    println!("control_frame_bytes={}", limits.control_frame_bytes);
+    println!("command_timeout_ms={}", limits.command_timeout_ms);
+    for feature in description.capabilities {
+        println!("capability={feature}");
+    }
+
+    for profile in description.provider_profiles {
+        let adapter = profile
+            .adapter
+            .context("provider profile lacks an adapter")?;
+        println!(
+            "provider={} qualified_version={} adapter={} adapter_schema={}",
+            enum_name::<AgentProvider>(profile.provider),
+            profile.version,
+            enum_name::<ProviderExecutionMode>(adapter.mode),
+            adapter.schema_revision,
+        );
+        for event in adapter.qualified_events {
+            println!("  event={}", enum_name::<HookEvent>(event));
+        }
+        for field in adapter.correlation {
+            println!("  correlation={}", enum_name::<ProviderCorrelation>(field));
+        }
+        for capability in adapter.capabilities {
+            println!(
+                "  observation={} qualification={} reason={:?}",
+                enum_name::<ProviderCapabilityKind>(capability.kind),
+                enum_name::<ProviderQualification>(capability.qualification),
+                capability.reason,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn enum_name<T: TryFrom<i32> + std::fmt::Debug>(value: i32) -> String {
+    match T::try_from(value) {
+        Ok(value) => format!("{value:?}"),
+        Err(_) => format!("Unknown({value})"),
     }
 }
 

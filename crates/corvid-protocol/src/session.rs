@@ -2,12 +2,14 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::frame::CONTROL_LIMIT;
+use crate::provider::valid_profiles;
 use crate::wire::envelope::Body;
-use crate::wire::{AttachRole, Envelope, Hello, HelloResult, Limits, RpcError};
+use crate::wire::{AttachRole, Envelope, Hello, HelloResult, Limits, ProviderProfile, RpcError};
 
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const PROTOCOL_MINOR: u32 = 0;
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+pub const CAPABILITY_QUERY: &str = "capabilities.v1";
 
 const MAX_CAPABILITIES: usize = 64;
 const MAX_MAJOR_VERSIONS: usize = 16;
@@ -102,7 +104,7 @@ impl ProtocolFault {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Session {
     pub role: PeerRole,
     pub protocol_minor: u32,
@@ -110,9 +112,22 @@ pub struct Session {
     pub server_epoch: String,
     pub controller_id: Option<String>,
     pub capabilities: Vec<String>,
+    pub provider_profiles: Vec<ProviderProfile>,
 }
 
 impl Session {
+    pub fn description(&self) -> HelloResult {
+        HelloResult {
+            capabilities: self.capabilities.clone(),
+            limits: Some(Limits {
+                control_frame_bytes: CONTROL_LIMIT as u32,
+                command_timeout_ms: COMMAND_TIMEOUT.as_millis() as u32,
+            }),
+            writer_policy: WRITER_POLICY.to_owned(),
+            provider_profiles: self.provider_profiles.clone(),
+        }
+    }
+
     pub fn envelope(&self, request_id: Option<String>, body: Body) -> Envelope {
         Envelope {
             protocol_major: PROTOCOL_MAJOR,
@@ -157,6 +172,7 @@ impl Session {
             | (
                 PeerRole::Control,
                 Body::GetHost(_)
+                | Body::GetCapabilities(_)
                 | Body::GetConnectionStatus(_)
                 | Body::ListWorkspaces(_)
                 | Body::ListAgents(_)
@@ -228,6 +244,17 @@ pub fn accept_hello(
     server_epoch: &str,
     capabilities: &[&str],
 ) -> Result<(Session, Envelope), ProtocolFault> {
+    accept_hello_with_profiles(request, role, host_id, server_epoch, capabilities, &[])
+}
+
+pub fn accept_hello_with_profiles(
+    request: &Envelope,
+    role: PeerRole,
+    host_id: &str,
+    server_epoch: &str,
+    capabilities: &[&str],
+    provider_profiles: &[ProviderProfile],
+) -> Result<(Session, Envelope), ProtocolFault> {
     let request_id = require_request_id(request)?;
     let hello = validate_hello(request, role)?;
     check_identity(request, host_id, server_epoch, true)?;
@@ -240,16 +267,12 @@ pub fn accept_hello(
         server_epoch: server_epoch.to_owned(),
         controller_id: hello.controller_id.clone(),
         capabilities: capabilities.iter().map(ToString::to_string).collect(),
+        provider_profiles: provider_profiles.to_vec(),
     };
-    let result = HelloResult {
-        capabilities: session.capabilities.clone(),
-        limits: Some(Limits {
-            control_frame_bytes: CONTROL_LIMIT as u32,
-            command_timeout_ms: COMMAND_TIMEOUT.as_millis() as u32,
-        }),
-        writer_policy: WRITER_POLICY.to_owned(),
-    };
-    let reply = session.envelope(Some(request_id.to_owned()), Body::HelloResult(result));
+    let reply = session.envelope(
+        Some(request_id.to_owned()),
+        Body::HelloResult(session.description()),
+    );
     Ok((session, reply))
 }
 
@@ -275,6 +298,7 @@ pub fn check_hello_result(
         return Err(ProtocolFault::invalid("expected HelloResult"));
     };
     if !valid_capabilities(&result.capabilities)
+        || !valid_profiles(&result.provider_profiles)
         || result.writer_policy != WRITER_POLICY
         || !valid_limits(result.limits.as_ref())
         || reply.sequence.is_some()
@@ -297,6 +321,7 @@ pub fn check_hello_result(
         server_epoch: server_epoch.to_owned(),
         controller_id: hello.controller_id.clone(),
         capabilities: result.capabilities.clone(),
+        provider_profiles: result.provider_profiles.clone(),
     })
 }
 

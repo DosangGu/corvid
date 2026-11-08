@@ -191,6 +191,7 @@ pub(crate) mod tests {
             server_epoch: Uuid::new_v4().to_string(),
             controller_id: None,
             capabilities: Vec::new(),
+            provider_profiles: Vec::new(),
         };
         let data = PresentationSlots {
             connection: CompanionConnection::Ready as i32,

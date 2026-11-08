@@ -9,8 +9,8 @@ use corvid_protocol::wire::{
     WorkspaceInfo, WorkspaceList,
 };
 use corvid_protocol::{
-    COMMAND_TIMEOUT, CONTROL_LIMIT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
-    PROTOCOL_MINOR, PeerRole, ProtocolFault, Session, accept_hello,
+    CAPABILITY_QUERY, COMMAND_TIMEOUT, CONTROL_LIMIT, FrameReader, FrameRole, FrameWriter,
+    PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault, Session, accept_hello_with_profiles,
 };
 use prost::Message;
 use tokio::net::UnixStream;
@@ -20,12 +20,14 @@ use tokio::time::{Instant, sleep_until, timeout};
 use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::metadata::{MetadataView, Recovery, SaveState};
+use crate::provider::qualified_profiles;
 use crate::snapshot::{self, LiveWatch};
 use crate::workspaces::{ControllerCommand, Workspaces};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CAPABILITIES: &[&str] = &[
     "host.v1",
+    CAPABILITY_QUERY,
     "ping.v1",
     "connection_status.v1",
     "list.v1",
@@ -116,6 +118,7 @@ impl Control<'_> {
                 host_id: self.session.host_id.clone(),
                 server_epoch: self.session.server_epoch.clone(),
             }),
+            Ok(Body::GetCapabilities(_)) => Body::Capabilities(self.session.description()),
             Ok(Body::GetConnectionStatus(_)) => {
                 Body::ConnectionStatus(status(self.metadata, self.workspaces.any_live()))
             }
@@ -276,12 +279,17 @@ pub(crate) async fn handshake(
         .next_envelope()
         .await?
         .context("missing control Hello")?;
-    match accept_hello(
+    let profiles = match role {
+        PeerRole::Control | PeerRole::Tui => qualified_profiles(),
+        PeerRole::Collector | PeerRole::Presentation => &[],
+    };
+    match accept_hello_with_profiles(
         &request,
         role,
         &identity.host_id,
         &identity.epoch,
         capabilities,
+        profiles,
     ) {
         Ok((session, reply)) => {
             writer.envelope(&reply).await?;

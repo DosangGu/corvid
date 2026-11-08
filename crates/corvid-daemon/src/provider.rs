@@ -5,14 +5,17 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::Provider;
 use corvid_protocol::collector::{CLAUDE_VERSION, CODEX_VERSION};
+use corvid_protocol::wire::ProviderProfile;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
 
 use crate::process::Executable;
+use crate::projection;
 
 pub(crate) use profile::adapter;
 
@@ -44,6 +47,17 @@ pub(crate) fn qualified_version(provider: Provider) -> &'static str {
         Provider::Claude => CLAUDE_VERSION,
         Provider::Codex => CODEX_VERSION,
     }
+}
+
+pub(crate) fn qualified_profiles() -> &'static [ProviderProfile] {
+    static PROFILES: OnceLock<[ProviderProfile; 2]> = OnceLock::new();
+    PROFILES.get_or_init(|| {
+        [Provider::Claude, Provider::Codex].map(|provider| ProviderProfile {
+            provider: projection::provider(provider) as i32,
+            version: qualified_version(provider).to_owned(),
+            adapter: Some(adapter(provider, true)),
+        })
+    })
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {

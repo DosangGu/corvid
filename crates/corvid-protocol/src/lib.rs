@@ -1,5 +1,6 @@
 mod frame;
 mod preflight;
+mod provider;
 mod session;
 pub mod snapshot;
 
@@ -15,8 +16,8 @@ pub use frame::{
     RENDER_LIMIT, RenderFrame, decode_envelope,
 };
 pub use session::{
-    COMMAND_TIMEOUT, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault, Session,
-    accept_hello, check_hello_result, hello,
+    CAPABILITY_QUERY, COMMAND_TIMEOUT, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault,
+    Session, accept_hello, accept_hello_with_profiles, check_hello_result, hello,
 };
 pub mod collector;
 pub mod controller;

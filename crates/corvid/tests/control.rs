@@ -8,20 +8,25 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH};
+use corvid_protocol::collector::{
+    CLAUDE_VERSION, CODEX_VERSION, HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH,
+};
 use corvid_protocol::snapshot::{SnapshotAssembler, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{GetHost, HostInfo, Ping, SnapshotWatch};
+use corvid_protocol::wire::{
+    AgentProvider, GetCapabilities, GetHost, HostInfo, Ping, ProviderCapabilityKind,
+    ProviderExecutionMode, ProviderQualification, SnapshotWatch,
+};
 use corvid_protocol::{
-    FRAME_PREAMBLE, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PeerRole,
-    check_hello_result, hello,
+    CAPABILITY_QUERY, FRAME_PREAMBLE, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
+    PeerRole, check_hello_result, hello,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use common::{WAIT, command, daemon};
+use common::{WAIT, command, daemon, start_daemon};
 
 async fn local_host(runtime: &Path) -> String {
     let output = timeout(WAIT, command(runtime).args(["control", "host"]).output())
@@ -86,7 +91,21 @@ async fn daemon_restart_preserves_host_identity_and_changes_epoch() {
 async fn relays_real_control_session_over_binary_stdio() {
     let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let runtime = temporary.path().join("runtime");
-    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    let probe = temporary.path().join("provider-launched");
+    for provider in ["claude", "codex"] {
+        let executable = temporary.path().join(provider);
+        fs::write(
+            &executable,
+            b"#!/bin/sh\nprintf 'launched\\n' > \"$CORVID_TEST_PROBE\"\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut daemon_command = command(&runtime);
+    daemon_command
+        .env("PATH", temporary.path())
+        .env("CORVID_TEST_PROBE", &probe);
+    let _daemon = start_daemon(daemon_command, &runtime, &temporary.path().join("state")).await;
 
     timeout(WAIT, async {
         let mut relay = command(&runtime)
@@ -106,11 +125,22 @@ async fn relays_real_control_session_over_binary_stdio() {
         let hello = hello(
             "greeting".into(),
             Some("test-controller".into()),
-            vec!["host.v1".into()],
+            vec!["host.v1".into(), CAPABILITY_QUERY.into()],
         );
         writer.envelope(&hello).await.unwrap();
         let reply = reader.next_envelope().await.unwrap().unwrap();
         let session = check_hello_result(&hello, &reply, PeerRole::Control).unwrap();
+        let request = session.envelope(
+            Some("features".into()),
+            Body::GetCapabilities(GetCapabilities {}),
+        );
+        writer.envelope(&request).await.unwrap();
+        let reply = reader.next_envelope().await.unwrap().unwrap();
+        session.validate_scope(&reply).unwrap();
+        assert_eq!(reply.request_id.as_deref(), Some("features"));
+        assert_eq!(reply.body, Some(Body::Capabilities(session.description())));
+        verify_qualified_profiles(&session.provider_profiles);
+
         let request = session.envelope(Some("host".into()), Body::GetHost(GetHost {}));
         writer.envelope(&request).await.unwrap();
         writer.shutdown().await.unwrap();
@@ -126,9 +156,53 @@ async fn relays_real_control_session_over_binary_stdio() {
         );
         assert!(reader.next_envelope().await.unwrap().is_none());
         assert!(relay.wait().await.unwrap().success());
+
+        let output = command(&runtime)
+            .args(["control", "capabilities"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let output = String::from_utf8(output.stdout).unwrap();
+        assert!(output.contains(&format!(
+            "provider=Claude qualified_version={CLAUDE_VERSION}"
+        )));
+        assert!(output.contains(&format!("provider=Codex qualified_version={CODEX_VERSION}")));
+        assert!(output.contains("observation=ExplicitQuestion qualification=Partial"));
+        assert!(
+            corvid_client::agents(&runtime)
+                .await
+                .unwrap()
+                .agents
+                .is_empty()
+        );
+        assert!(
+            !probe.exists(),
+            "capability discovery launched a provider executable"
+        );
     })
     .await
     .unwrap();
+}
+
+fn verify_qualified_profiles(profiles: &[corvid_protocol::wire::ProviderProfile]) {
+    assert_eq!(profiles.len(), 2);
+    for (provider, version) in [
+        (AgentProvider::Claude, CLAUDE_VERSION),
+        (AgentProvider::Codex, CODEX_VERSION),
+    ] {
+        let profile = profiles
+            .iter()
+            .find(|profile| profile.provider == provider as i32)
+            .unwrap();
+        assert_eq!(profile.version, version);
+        let adapter = profile.adapter.as_ref().unwrap();
+        assert_eq!(adapter.mode, ProviderExecutionMode::InteractiveCli as i32);
+        assert!(adapter.capabilities.iter().any(|capability| {
+            capability.kind == ProviderCapabilityKind::ExplicitQuestion as i32
+                && capability.qualification == ProviderQualification::Partial as i32
+        }));
+    }
 }
 
 #[tokio::test]

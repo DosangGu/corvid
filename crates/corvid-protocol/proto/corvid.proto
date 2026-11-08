@@ -53,6 +53,8 @@ message Envelope {
     AcknowledgeAttention acknowledge_attention = 50;
     AttentionAcknowledged attention_acknowledged = 51;
     FocusApplied focus_applied = 52;
+    GetCapabilities get_capabilities = 53;
+    HelloResult capabilities = 54;
     CollectHook collect_hook = 60;
     HookCollected hook_collected = 61;
     GetSnapshot get_snapshot = 70;
@@ -85,6 +87,9 @@ message HelloResult {
   repeated string capabilities = 1;
   Limits limits = 2;
   string writer_policy = 3;
+  // Profiles describe exact releases qualified by this daemon build.
+  // Each run reports its own adapter and live collection state separately.
+  repeated ProviderProfile provider_profiles = 4;
 }
 
 message Limits {
@@ -102,6 +107,7 @@ message RpcError {
 message Ping {}
 message Pong {}
 message GetHost {}
+message GetCapabilities {}
 
 message HostInfo {
   string host_id = 1;
@@ -684,6 +690,12 @@ message AgentInfo {
   optional string parent_run_id = 21;
   optional string actor_id = 22;
   bool child_coverage_gap = 23;
+}
+
+message ProviderProfile {
+  AgentProvider provider = 1;
+  string version = 2;
+  ProviderAdapter adapter = 3;
 }
 
 message ProviderAdapter {

@@ -1,9 +1,12 @@
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, CollectHook, FocusAgentRequest, FocusSlot, GetPresentationSlots,
-    InputChunk, Ping,
+    Attach, AttachRole, CollectHook, FocusAgentRequest, FocusSlot, GetCapabilities,
+    GetPresentationSlots, InputChunk, Ping, ProviderAdapter, ProviderExecutionMode,
+    ProviderProfile,
 };
-use corvid_protocol::{PeerRole, accept_hello, check_hello_result, decode_envelope, hello};
+use corvid_protocol::{
+    PeerRole, accept_hello, accept_hello_with_profiles, check_hello_result, decode_envelope, hello,
+};
 use prost::Message;
 use prost::encoding::{WireType, encode_key, encode_varint};
 
@@ -50,6 +53,66 @@ fn a_hello_result_above_the_offered_minor_is_rejected() {
     reply.protocol_minor = request.protocol_minor + 1;
     let fault = check_hello_result(&request, &reply, PeerRole::Tui).unwrap_err();
     assert_eq!(fault.code, "ProtocolMismatch");
+}
+
+#[test]
+fn hello_preserves_an_additive_profile_and_rejects_duplicate_profile_identity() {
+    let request = hello("hello".into(), Some("controller".into()), vec![]);
+    let profile = ProviderProfile {
+        provider: 101,
+        version: "1.2.3".into(),
+        adapter: Some(ProviderAdapter {
+            mode: ProviderExecutionMode::InteractiveCli as i32,
+            schema_revision: 1,
+            ..Default::default()
+        }),
+    };
+    let (_, mut reply) = accept_hello_with_profiles(
+        &request,
+        PeerRole::Control,
+        "host",
+        "epoch",
+        &[],
+        std::slice::from_ref(&profile),
+    )
+    .unwrap();
+    let session = check_hello_result(&request, &reply, PeerRole::Control).unwrap();
+    assert_eq!(
+        session.provider_profiles.as_slice(),
+        std::slice::from_ref(&profile)
+    );
+
+    let Some(Body::HelloResult(description)) = &mut reply.body else {
+        unreachable!()
+    };
+    description.provider_profiles.push(profile);
+    assert_eq!(
+        check_hello_result(&request, &reply, PeerRole::Control)
+            .unwrap_err()
+            .code,
+        "InvalidMessage"
+    );
+}
+
+#[test]
+fn only_the_control_role_can_query_capabilities() {
+    let request = hello("hello".into(), Some("controller".into()), vec![]);
+    for role in [
+        PeerRole::Control,
+        PeerRole::Tui,
+        PeerRole::Presentation,
+        PeerRole::Collector,
+    ] {
+        let (session, _) = accept_hello(&request, role, "host", "epoch", &[]).unwrap();
+        let request = session.envelope(
+            Some("query".into()),
+            Body::GetCapabilities(GetCapabilities {}),
+        );
+        assert_eq!(
+            session.validate_request(&request).is_ok(),
+            role == PeerRole::Control
+        );
+    }
 }
 
 #[test]

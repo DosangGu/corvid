@@ -2,9 +2,10 @@ use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AcknowledgeAttention, FocusAgentRequest, RegisterClientBinding, UnregisterClientBinding,
+    AcknowledgeAttention, FocusAgentRequest, GetCapabilities, HelloResult, RegisterClientBinding,
+    UnregisterClientBinding,
 };
-use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
+use corvid_protocol::{CAPABILITY_QUERY, COMMAND_TIMEOUT, ProtocolFault};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -41,6 +42,29 @@ pub enum ControllerRequest {
 }
 
 impl ControlEndpoint {
+    pub async fn capabilities(&self) -> Result<HelloResult> {
+        let connection = self.connect(CAPABILITY_QUERY, None).await?;
+        let expected = connection.wire.session.description();
+        let response = timeout(
+            COMMAND_TIMEOUT,
+            exchange(
+                connection,
+                Body::GetCapabilities(GetCapabilities {}),
+                Uuid::new_v4().to_string(),
+            ),
+        )
+        .await
+        .context("capability query timed out")??;
+        let Body::Capabilities(description) = response else {
+            bail!("unexpected response to GetCapabilities");
+        };
+        ensure!(
+            description == expected,
+            "capability response contradicts HelloResult"
+        );
+        Ok(description)
+    }
+
     pub async fn controller(
         &self,
         scope: &ControllerScope,
