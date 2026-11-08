@@ -471,6 +471,9 @@ fn peer_pid(path: &Path) -> Result<u32> {
 }
 
 #[cfg(test)]
+mod native_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
