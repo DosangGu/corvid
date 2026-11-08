@@ -5,13 +5,15 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::layout_node_state::Body as NodeBody;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentActivity, AgentLifecycle, AgentProcessState, AgentProvider, ClientState, Envelope,
-    EvidenceConfidence, EvidenceSource, EvidenceState, HistoricalRequest, HistoricalRun,
-    InputRequestKind, InputRequestStatus, LayoutNodeState, SnapshotBegin, SnapshotChunk,
-    SnapshotDelta, SnapshotEnd, SnapshotEntity, TabState, TerminalState, ViewSelection, Viewport,
-    WatchReady, WorkspaceState, WriterLeaseState,
+    AgentActivity, AgentBadge, AgentCollection, AgentInfo, AgentLifecycle, AgentProcessState,
+    AgentProvider, AgentState, ClientState, Envelope, EvidenceConfidence, EvidenceSource,
+    EvidenceState, HistoricalRequest, HistoricalRun, InputRequestKind, InputRequestStatus,
+    LayoutNodeState, RequestState, SnapshotBegin, SnapshotChunk, SnapshotDelta, SnapshotEnd,
+    SnapshotEntity, TabState, TerminalState, ViewSelection, Viewport, WatchReady, WorkspaceState,
+    WriterLeaseState,
 };
-use corvid_protocol::{PeerRole, Session, accept_hello, hello};
+use corvid_protocol::{PeerRole, Session, accept_hello, decode_envelope, hello};
+use prost::Message;
 
 const BASE: u64 = (1 << 53) + 40;
 
@@ -76,6 +78,35 @@ fn terminal() -> SnapshotEntity {
             terminal_id: "terminal".into(),
             location: Some(location()),
         })),
+    }
+}
+
+fn live_agent() -> AgentState {
+    let evidence = EvidenceState {
+        source: EvidenceSource::ProviderHook as i32,
+        source_version: "fixture".into(),
+        confidence: EvidenceConfidence::Confirmed as i32,
+        ..Default::default()
+    };
+    AgentState {
+        summary: Some(AgentInfo {
+            agent_run_id: "run".into(),
+            terminal_id: "terminal".into(),
+            location: Some(location()),
+            provider: AgentProvider::Claude as i32,
+            process: AgentProcessState::Running as i32,
+            badge: AgentBadge::Unknown as i32,
+            collection: AgentCollection::Healthy as i32,
+            terminal_available: true,
+            ..Default::default()
+        }),
+        lifecycle: AgentLifecycle::Live as i32,
+        activity: AgentActivity::Unknown as i32,
+        lifecycle_evidence: Some(evidence.clone()),
+        process_evidence: Some(evidence.clone()),
+        activity_evidence: Some(evidence.clone()),
+        collection_evidence: Some(evidence),
+        ..Default::default()
     }
 }
 
@@ -287,6 +318,81 @@ fn duplicate_sequences_are_idempotent_and_gaps_invalidate_the_watch() {
     assert!(!cache.is_valid());
     assert_eq!(cache.snapshot().sequence(), BASE + 1);
     assert_eq!(cache.snapshot().entities().count(), 3);
+}
+
+#[test]
+fn unknown_live_lifecycle_invalidates_watch_and_rolls_back_the_transaction() {
+    let session = session();
+    let mut cache = ready(&session);
+    let mut agent = live_agent();
+    let initial = SnapshotDelta {
+        upsert: vec![
+            terminal(),
+            SnapshotEntity {
+                body: Some(EntityBody::Agent(Box::new(agent.clone()))),
+            },
+        ],
+        remove: Vec::new(),
+    };
+    assert!(
+        cache
+            .apply(event(&session, BASE + 1, Body::SnapshotDelta(initial)))
+            .unwrap()
+    );
+    let before: Vec<_> = cache.snapshot().entities().cloned().collect();
+
+    agent.lifecycle = 999;
+    let incompatible = SnapshotDelta {
+        upsert: vec![
+            client(),
+            SnapshotEntity {
+                body: Some(EntityBody::Agent(Box::new(agent))),
+            },
+        ],
+        remove: Vec::new(),
+    };
+    let frame = event(&session, BASE + 2, Body::SnapshotDelta(incompatible));
+    let decoded = decode_envelope(&frame.encode_to_vec()).unwrap();
+    let fault = cache.apply(decoded).unwrap_err();
+    assert_eq!(fault.code, "ResyncRequired");
+    assert!(!cache.is_valid());
+    assert_eq!(cache.snapshot().sequence(), BASE + 1);
+    assert!(cache.snapshot().entities().eq(&before));
+}
+
+#[test]
+fn unknown_request_status_during_catch_up_prevents_watch_readiness() {
+    let session = session();
+    let mut assembler = staged(&session);
+    let agent = live_agent();
+    let request = RequestState {
+        agent_run_id: "run".into(),
+        request_id: "question".into(),
+        kind: InputRequestKind::Question as i32,
+        status: 999,
+        evidence: agent.activity_evidence.clone(),
+    };
+    let delta = SnapshotDelta {
+        upsert: vec![
+            terminal(),
+            SnapshotEntity {
+                body: Some(EntityBody::Agent(Box::new(agent))),
+            },
+            SnapshotEntity {
+                body: Some(EntityBody::Request(request)),
+            },
+        ],
+        remove: Vec::new(),
+    };
+    let Err(fault) = assembler.push(event(&session, BASE + 1, Body::SnapshotDelta(delta))) else {
+        panic!("unknown request status was accepted");
+    };
+    assert_eq!(fault.code, "ResyncRequired");
+    let Err(fault) = assembler.push(event(&session, BASE + 1, Body::WatchReady(WatchReady {})))
+    else {
+        panic!("an incompatible watch became ready");
+    };
+    assert_eq!(fault.code, "ResyncRequired");
 }
 
 #[test]

@@ -8,10 +8,11 @@ use crate::session::valid_id;
 use crate::wire::layout_node_state::Body as NodeBody;
 use crate::wire::snapshot_entity::Body;
 use crate::wire::{
-    AgentActivity, AgentEndReason, AgentLifecycle, AgentProcessState, AgentProvider, AgentState,
-    AttentionReason, ClientState, EntityKind, EvidenceConfidence, EvidenceSource, EvidenceState,
-    HistoricalRun, InputRequestKind, InputRequestStatus, LayoutNodeState, SnapshotEntity,
-    SplitAxis, TuiInputMode, ViewSelection, WorkspaceState,
+    AgentActivity, AgentBadge, AgentCollection, AgentEndReason, AgentLifecycle, AgentProcessState,
+    AgentProvider, AgentResponse, AgentState, AttentionReason, ClientState, EntityKind,
+    EvidenceConfidence, EvidenceSource, EvidenceState, HistoricalRun, InputRequestKind,
+    InputRequestStatus, LayoutNodeState, SnapshotEntity, SplitAxis, TuiInputMode, ViewSelection,
+    WorkspaceState,
 };
 
 type Result<T> = std::result::Result<T, ProtocolFault>;
@@ -70,17 +71,13 @@ pub(super) fn historical_run(record: &HistoricalRun, current_epoch: &str) -> Res
         matches!(
             AgentProvider::try_from(record.provider),
             Ok(AgentProvider::Claude | AgentProvider::Codex)
-        ) && matches!(AgentLifecycle::try_from(record.last_lifecycle), Ok(value) if value != AgentLifecycle::Unspecified)
-            && matches!(AgentProcessState::try_from(record.last_process), Ok(value) if value != AgentProcessState::Unspecified)
+        ) && known_state::<AgentLifecycle>(record.last_lifecycle)
+            && known_state::<AgentProcessState>(record.last_process)
             && (record.last_exit_code.is_none()
                 || record.last_process == AgentProcessState::Exited as i32)
-            && matches!(AgentActivity::try_from(record.last_activity), Ok(value) if value != AgentActivity::Unspecified)
+            && known_state::<AgentActivity>(record.last_activity)
             && matches!(AgentEndReason::try_from(record.last_end_reason), Ok(value) if ended == (value != AgentEndReason::Unspecified))
-            && record.last_evidence.as_ref().is_some_and(|value| {
-                evidence(Some(value))
-                    && EvidenceSource::try_from(value.source).is_ok()
-                    && EvidenceConfidence::try_from(value.confidence).is_ok()
-            }),
+            && evidence(record.last_evidence.as_ref()),
         "invalid historical observation",
     )?;
     require(
@@ -92,7 +89,7 @@ pub(super) fn historical_run(record: &HistoricalRun, current_epoch: &str) -> Res
         require(
             valid_id(&request.request_id)
                 && requests.insert(&request.request_id)
-                && matches!(InputRequestKind::try_from(request.kind), Ok(value) if value != InputRequestKind::Unspecified)
+                && known_state::<InputRequestKind>(request.kind)
                 && matches!(
                     InputRequestStatus::try_from(request.status),
                     Ok(InputRequestStatus::Resolved
@@ -108,7 +105,7 @@ pub(super) fn historical_run(record: &HistoricalRun, current_epoch: &str) -> Res
             item.agent_run_id == record.agent_run_id
                 && valid_id(&item.attention_id)
                 && attention.insert(&item.attention_id)
-                && matches!(AttentionReason::try_from(item.reason), Ok(value) if value != AttentionReason::Unspecified)
+                && known_state::<AttentionReason>(item.reason)
                 && item
                     .request_id
                     .as_ref()
@@ -144,7 +141,9 @@ pub(super) fn entity(entries: &Entries, item: &SnapshotEntity) -> Result<()> {
                 "request owner is missing",
             )?;
             require(
-                request.kind != 0 && request.status != 0 && evidence(request.evidence.as_ref()),
+                known_state::<InputRequestKind>(request.kind)
+                    && known_state::<InputRequestStatus>(request.status)
+                    && evidence(request.evidence.as_ref()),
                 "invalid request state",
             )
         }
@@ -153,7 +152,10 @@ pub(super) fn entity(entries: &Entries, item: &SnapshotEntity) -> Result<()> {
                 lookup(entries, EntityKind::Agent, &attention.agent_run_id, None).is_some(),
                 "attention owner is missing",
             )?;
-            require(attention.reason != 0, "invalid attention reason")?;
+            require(
+                known_state::<AttentionReason>(attention.reason),
+                "invalid attention reason",
+            )?;
             if let Some(request) = &attention.request_id {
                 require(
                     lookup(
@@ -233,12 +235,14 @@ fn agent_state(entries: &Entries, agent: &AgentState) -> Result<()> {
         .ok_or_else(|| resync("missing agent summary"))?;
     require(valid_id(&summary.terminal_id), "invalid agent terminal ID")?;
     require(
-        summary.provider != 0
-            && summary.badge != 0
-            && summary.collection != 0
-            && summary.process != 0
-            && agent.lifecycle != 0
-            && agent.activity != 0
+        known_state::<AgentProvider>(summary.provider)
+            && known_state::<AgentBadge>(summary.badge)
+            && known_state::<AgentCollection>(summary.collection)
+            && known_state::<AgentProcessState>(summary.process)
+            && AgentEndReason::try_from(summary.end_reason).is_ok()
+            && known_state::<AgentLifecycle>(agent.lifecycle)
+            && known_state::<AgentActivity>(agent.activity)
+            && AgentResponse::try_from(agent.response).is_ok()
             && agent.active_turns <= 256
             && agent.active_work_items <= 256,
         "invalid agent observation state",
@@ -416,11 +420,15 @@ fn lookup<'a>(
 
 fn evidence(evidence: Option<&EvidenceState>) -> bool {
     evidence.is_some_and(|value| {
-        value.source != 0
-            && value.confidence != 0
+        known_state::<EvidenceSource>(value.source)
+            && known_state::<EvidenceConfidence>(value.confidence)
             && valid_display(&value.source_version)
             && value.uncertainty.as_deref().is_none_or(valid_display)
     })
+}
+
+fn known_state<E: TryFrom<i32>>(value: i32) -> bool {
+    value != 0 && E::try_from(value).is_ok()
 }
 
 fn valid_location(location: &ViewSelection) -> bool {
