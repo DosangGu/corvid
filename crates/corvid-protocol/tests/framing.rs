@@ -1,4 +1,5 @@
-use corvid_protocol::wire::RenderHeader;
+use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{Attach, Envelope, LaunchCommand, RenderHeader};
 use corvid_protocol::{
     CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole, FrameWriter,
     RENDER_LIMIT, RenderFrame, decode_envelope, hello,
@@ -164,6 +165,26 @@ async fn relays_unknown_fields_without_decode_or_reencode() {
         reader.next_frame().await.unwrap(),
         Some(Frame::Structured(payload))
     );
+}
+
+#[test]
+fn round_trips_exact_sequences_and_opaque_bytes() {
+    let mut request = Envelope {
+        protocol_major: 1,
+        body: Some(Body::Attach(Attach {
+            launch: Some(LaunchCommand {
+                argv: vec![vec![0x61, 0xff], vec![0x00, 0x80]],
+                cwd: Some(vec![0x2f, 0x00, 0xfe, 0xff]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    for sequence in [(1 << 53) + 1, u64::MAX] {
+        request.sequence = Some(sequence);
+        assert_eq!(decode_envelope(&request.encode_to_vec()).unwrap(), request);
+    }
 }
 
 #[test]

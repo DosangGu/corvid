@@ -345,6 +345,7 @@ message PresentedSlot {
   uint64 revision = 2;
   bool pinned = 3;
   PresentedRun run = 4;
+  reserved 5;
 }
 
 message PresentedBinding {
