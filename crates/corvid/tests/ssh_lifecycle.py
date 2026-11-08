@@ -1,5 +1,6 @@
 """Exercise Corvid in an isolated loopback SSH server and transient user service."""
 
+import argparse
 import os
 from pathlib import Path
 import pwd
@@ -14,6 +15,7 @@ import time
 import uuid
 
 from companion_fixture import Companion, fields
+from input_latency import measure_input
 from interactive import OuterTerminal, stop
 
 
@@ -261,7 +263,7 @@ def wait_for_unit(command):
     raise AssertionError("Corvid user service did not become ready")
 
 
-def run(binary):
+def run(binary, *, measure_keys=False):
     os.environ["TERM"] = "xterm-256color"
     root = Path(__file__).resolve().parents[3]
     schema = root / "crates/corvid-protocol/proto/corvid.proto"
@@ -286,6 +288,8 @@ def run(binary):
                 check_ssh(server, ssh)
                 check_control(ssh, command, schema)
                 check_working_ssh(ssh, command, directory)
+                if measure_keys:
+                    measure_input(ssh, command, directory)
                 assert unit_pid(unit) == pid
             finally:
                 stop(server)
@@ -295,4 +299,8 @@ def run(binary):
 
 
 if __name__ == "__main__":
-    run(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("--measure-input", action="store_true", help="also measure local and SSH key delivery")
+    args = parser.parse_args()
+    run(args.binary, measure_keys=args.measure_input)
