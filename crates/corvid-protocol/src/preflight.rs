@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use prost::encoding::{WireType, decode_key, decode_varint};
 
 use crate::frame::FrameError;
@@ -12,27 +14,37 @@ struct Field {
     packed_varints: bool,
 }
 
+#[derive(Default)]
+struct MessageBudget {
+    repeated: usize,
+    singular: BTreeMap<u32, MessageBudget>,
+}
+
 include!(concat!(env!("OUT_DIR"), "/wire_preflight.rs"));
 
 pub(crate) fn envelope(bytes: &[u8]) -> Result<(), FrameError> {
-    validate(bytes, ENVELOPE, 1)
+    validate(bytes, ENVELOPE, 1, &mut MessageBudget::default())
 }
 
 pub(crate) fn render_header(bytes: &[u8]) -> Result<(), FrameError> {
-    validate(bytes, RENDER_HEADER, 1)
+    validate(bytes, RENDER_HEADER, 1, &mut MessageBudget::default())
 }
 
-fn validate(mut bytes: &[u8], shape: usize, depth: usize) -> Result<(), FrameError> {
+fn validate(
+    mut bytes: &[u8],
+    shape: usize,
+    depth: usize,
+    budget: &mut MessageBudget,
+) -> Result<(), FrameError> {
     if depth > MAX_DEPTH {
         return Err(FrameError::NestingLimit);
     }
 
-    let mut repeated = 0;
     while !bytes.is_empty() {
         let (tag, wire_type) = decode_key(&mut bytes)?;
         let field = SHAPES[shape].iter().find(|field| field.tag == tag);
         if field.is_some_and(|field| field.repeated) && wire_type != WireType::LengthDelimited {
-            count_element(&mut repeated)?;
+            count_element(&mut budget.repeated)?;
         }
 
         match wire_type {
@@ -49,13 +61,22 @@ fn validate(mut bytes: &[u8], shape: usize, depth: usize) -> Result<(), FrameErr
                 let len = usize::try_from(decode_varint(&mut bytes)?)
                     .map_err(|_| FrameError::MalformedField)?;
                 let value = take(&mut bytes, len)?;
-                if let Some(child) = field.and_then(|field| field.child) {
-                    validate(value, child, depth + 1)?;
+                if let Some(field) = field
+                    && let Some(child) = field.child
+                {
+                    let mut independent = MessageBudget::default();
+                    let child_budget = if field.repeated {
+                        &mut independent
+                    } else {
+                        // The decoder can merge repeated occurrences of a singular child.
+                        budget.singular.entry(tag).or_default()
+                    };
+                    validate(value, child, depth + 1, child_budget)?;
                 }
                 if field.is_some_and(|field| field.packed_varints) {
-                    count_packed_varints(value, &mut repeated)?;
+                    count_packed_varints(value, &mut budget.repeated)?;
                 } else if field.is_some_and(|field| field.repeated) {
-                    count_element(&mut repeated)?;
+                    count_element(&mut budget.repeated)?;
                 }
             }
             // This proto3 contract has no deprecated groups, including in unknown fields.

@@ -22,9 +22,10 @@ use corvid_protocol::wire::{
     SnapshotWatch, ViewSelection, Viewport,
 };
 use corvid_protocol::{
-    Frame, FrameError, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
-    check_hello_result, decode_envelope, hello,
+    COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
+    FrameWriter, PeerRole, ProtocolFault, Session, check_hello_result, decode_envelope, hello,
 };
+use tokio::io::AsyncWriteExt;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{Instant, sleep, timeout};
 use uuid::Uuid;
@@ -1549,6 +1550,119 @@ async fn resize_fences_previous_route_before_any_pty_write() {
         assert!(rejected);
         assert!(!String::from_utf8_lossy(&output).contains("INPUT=BAD"));
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_and_stalled_frames_leave_the_existing_pty_usable() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+
+    timeout(Duration::from_secs(12), async {
+        let mut owner = Tui::attach_command(&runtime, Some(echo_fixture("BOUNDARY"))).await;
+        let mut output = Vec::new();
+        wait_for_text(&mut owner, &mut output, "BOUNDARY-READY").await;
+        let host = control(&runtime, "host").await;
+        let clients = control(&runtime, "clients").await;
+
+        for role in [SocketRole::Control, SocketRole::Client] {
+            reject_invalid_frames(&runtime, role).await;
+        }
+        reject_required_capability(&runtime).await;
+
+        let (mut stalled, mut write) = connect_raw(&runtime, SocketRole::Control).await;
+        {
+            let mut writer = FrameWriter::start(&mut write, FrameRole::StructuredOnly)
+                .await
+                .unwrap();
+            let greeting = hello("stalled".into(), Some("test-controller".into()), vec![]);
+            writer.envelope(&greeting).await.unwrap();
+            let reply = stalled.next_envelope().await.unwrap().unwrap();
+            check_hello_result(&greeting, &reply, PeerRole::Control).unwrap();
+        }
+        write.write_all(&[0, 0]).await.unwrap();
+        let started = Instant::now();
+        owner
+            .input(owner.route.clone(), 1, b"while-stalled\n")
+            .await;
+        wait_for_text(&mut owner, &mut output, "BOUNDARY=while-stalled").await;
+        assert_eq!(control(&runtime, "ping").await, "pong\n");
+
+        let eof = timeout(
+            COMMAND_TIMEOUT + Duration::from_secs(2),
+            stalled.next_frame(),
+        )
+        .await
+        .unwrap();
+        assert!(eof.unwrap().is_none());
+        assert!(started.elapsed() >= COMMAND_TIMEOUT.saturating_sub(Duration::from_millis(250)));
+
+        owner
+            .input(owner.route.clone(), 2, b"after-rejection\n")
+            .await;
+        wait_for_text(&mut owner, &mut output, "BOUNDARY=after-rejection").await;
+        assert_eq!(control(&runtime, "host").await, host);
+        assert_eq!(control(&runtime, "clients").await, clients);
+    })
+    .await
+    .unwrap();
+}
+
+async fn connect_raw(
+    runtime: &Path,
+    role: SocketRole,
+) -> (FrameReader<OwnedReadHalf>, OwnedWriteHalf) {
+    let runtime = RuntimeDir::open(runtime).unwrap();
+    let (read, write) = runtime.connect(role).await.unwrap().into_split();
+    let frame_role = if role == SocketRole::Client {
+        FrameRole::TuiOutput
+    } else {
+        FrameRole::StructuredOnly
+    };
+    let reader = FrameReader::start(read, frame_role).await.unwrap();
+    (reader, write)
+}
+
+async fn reject_invalid_frames(runtime: &Path, role: SocketRole) {
+    let invalid = [
+        (0, &[][..]),
+        (u32::MAX, &[]),
+        (CONTROL_LIMIT as u32 + 1, &[]),
+        (1, &[2]),
+        (1, &[99]),
+        (3, &[1, 0x52]),
+        (6, &[1, 0x52, 3, 0x0a, 1, 0xff]),
+    ];
+    let mut attempts = vec![b"CRV0".to_vec(), b"CRV1\0\0".to_vec()];
+    attempts.extend(invalid.into_iter().map(|(length, payload)| {
+        let mut bytes = FRAME_PREAMBLE.to_vec();
+        bytes.extend(length.to_be_bytes());
+        bytes.extend(payload);
+        bytes
+    }));
+    for bytes in attempts {
+        let (mut reader, mut write) = connect_raw(runtime, role).await;
+        write.write_all(&bytes).await.unwrap();
+        write.shutdown().await.unwrap();
+        assert!(reader.next_frame().await.unwrap().is_none());
+    }
+}
+
+async fn reject_required_capability(runtime: &Path) {
+    let (mut reader, write) = connect_raw(runtime, SocketRole::Client).await;
+    let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly)
+        .await
+        .unwrap();
+    let greeting = hello(
+        "missing-capability".into(),
+        None,
+        vec!["fixture_missing.v1".into()],
+    );
+    writer.envelope(&greeting).await.unwrap();
+    let reply = reader.next_envelope().await.unwrap().unwrap();
+    let fault = check_hello_result(&greeting, &reply, PeerRole::Tui).unwrap_err();
+    assert_eq!(fault.code, "UnsupportedCapability");
+    assert!(reader.next_frame().await.unwrap().is_none());
 }
 
 #[tokio::test]

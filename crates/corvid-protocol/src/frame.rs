@@ -3,9 +3,10 @@ use std::io::{self, ErrorKind};
 use prost::Message;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::timeout;
 
 use crate::preflight;
-use crate::session::valid_id;
+use crate::session::{COMMAND_TIMEOUT, valid_id};
 use crate::wire::{Envelope, RenderHeader};
 
 pub const FRAME_PREAMBLE: [u8; 4] = *b"CRV1";
@@ -62,6 +63,8 @@ pub enum FrameError {
     TooLarge,
     #[error("frame ended before its declared length")]
     Truncated,
+    #[error("frame assembly timed out")]
+    Timeout,
     #[error("unknown frame kind {0}")]
     UnknownKind(u8),
     #[error("frame kind forbidden for this stream")]
@@ -125,6 +128,13 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             return Ok(None);
         }
 
+        let frame = timeout(COMMAND_TIMEOUT, self.complete_frame(length))
+            .await
+            .map_err(|_| FrameError::Timeout)??;
+        Ok(Some(frame))
+    }
+
+    async fn complete_frame(&mut self, mut length: [u8; 4]) -> Result<Frame, FrameError> {
         read_exact(&mut self.reader, &mut length[1..]).await?;
         let length = u32::from_be_bytes(length) as usize;
         if length == 0 {
@@ -146,7 +156,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         } else {
             Frame::Render(read_render(&mut self.reader, body_len).await?)
         };
-        Ok(Some(frame))
+        Ok(frame)
     }
 
     pub async fn next_envelope(&mut self) -> Result<Option<Envelope>, FrameError> {

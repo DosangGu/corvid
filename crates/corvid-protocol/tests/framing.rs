@@ -196,3 +196,32 @@ fn rejects_nested_groups_bad_utf8_and_oversized_packed_collections() {
         Err(FrameError::CollectionLimit)
     ));
 }
+
+#[test]
+fn merged_submessage_fragments_share_the_collection_limit() {
+    use corvid_protocol::wire::envelope::Body;
+
+    let mut request = hello("hello-1".into(), None, vec![]);
+    let Some(Body::Hello(hello)) = &mut request.body else {
+        unreachable!();
+    };
+    hello.supported_major_versions = vec![1; 512];
+    let fragment = hello.encode_to_vec();
+    let mut payload = request.encode_to_vec();
+    encode_key(10, WireType::LengthDelimited, &mut payload);
+    encode_varint(fragment.len() as u64, &mut payload);
+    payload.extend(fragment);
+
+    let Some(Body::Hello(merged)) = decode_envelope(&payload).unwrap().body else {
+        unreachable!();
+    };
+    assert_eq!(merged.supported_major_versions.len(), 1024);
+
+    encode_key(10, WireType::LengthDelimited, &mut payload);
+    encode_varint(2, &mut payload);
+    payload.extend([0x10, 1]);
+    assert!(matches!(
+        decode_envelope(&payload),
+        Err(FrameError::CollectionLimit)
+    ));
+}

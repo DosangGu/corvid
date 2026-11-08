@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 prost.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "time"] }
 
 [build-dependencies]
 prost-build.workspace = true
@@ -19,7 +19,7 @@ prost-types.workspace = true
 anyhow.workspace = true
 nix = { workspace = true, features = ["fs", "user"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["net", "time"] }
+tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 tempfile.workspace = true

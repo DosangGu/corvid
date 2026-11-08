@@ -233,7 +233,7 @@ async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay()
     let socket = instance.bind(SocketRole::Control).await.unwrap();
     let legacy = async {
         for _ in 0..2 {
-            let mut peer = socket.accept().await.unwrap();
+            let mut peer = socket.accept().await.unwrap().unwrap();
             peer.write_all(b"CRV0").await.unwrap();
 
             let mut received = Vec::new();

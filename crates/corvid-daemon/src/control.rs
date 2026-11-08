@@ -140,7 +140,7 @@ impl Control<'_> {
 
     async fn reply(&mut self, request_id: Option<String>, body: Body) -> Result<()> {
         let mut reply = self.session.envelope(request_id, body);
-        if matches!(&reply.body, Some(Body::AgentList(_))) && reply.encoded_len() > CONTROL_LIMIT {
+        if matches!(&reply.body, Some(Body::AgentList(_))) && reply.encoded_len() >= CONTROL_LIMIT {
             let fault = ProtocolFault::new("InventoryTooLarge", "read agents from a snapshot");
             reply.body = Some(Body::Error(fault.into_wire()));
         }

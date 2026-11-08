@@ -335,14 +335,17 @@ pub struct BoundSocket<'a> {
 }
 
 impl BoundSocket<'_> {
-    pub async fn accept(&self) -> Result<UnixStream> {
+    /// A rejected peer yields `None`. Listener errors remain separate.
+    pub async fn accept(&self) -> Result<Option<UnixStream>> {
         let (stream, _) = self
             .listener
             .accept()
             .await
             .context("accepting Unix peer")?;
-        authenticate(&stream, self.instance.runtime.uid)?;
-        Ok(stream)
+        if authenticate(&stream, self.instance.runtime.uid).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(stream))
     }
 }
 

@@ -73,6 +73,10 @@ runs as `corvid control --stdio` over a
 non-PTY connection. Give the runtime directory a trusted absolute path through
 `XDG_RUNTIME_DIR`, `CORVID_RUNTIME_DIR`, or `--runtime-dir`.
 
+The Unix socket checks both filesystem ownership and peer UID. A rejected
+peer is dropped before the handshake. Frame assembly has a five-second
+deadline from its first byte. An idle attached TUI can wait between frames.
+
 `corvid control clients` lists attached TUI clients, view revisions, and writer
 leases. `corvid control snapshot` reads a consistent view at one daemon sequence.
 `corvid control watch` prints a summary once synchronized and after each applied
@@ -171,6 +175,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 |---|---|
 | Identity and control | Restart changes the epoch and preserves the host ID. Concurrent startup fails. Corrupt identity bytes are preserved. A real CLI subprocess relays framed control messages over pipes. |
 | Version skew (A15) | A client offering protocol 1.1 uses 1.0 with the daemon from `3d804e1`. The daemon rejects a 2.0 client and reports its supported major. The same daemon epoch, client view, and child PID survive the rejection. An incompatible upstream framing preamble becomes `ProtocolMismatch` on both the local CLI and stdio relay. |
+| Socket boundary (A24, A30) | A two-UID Linux fixture checks filesystem access and both peer credential checks. Real TUI and control sockets reject invalid lengths, kinds, and Protobuf while a separate PTY handles input. A partial request held open after `Hello` reaches the assembly deadline and its connection closes. |
 | Snapshot and watch | A watch established before attach receives the workspace, terminal, and client at contiguous revisions. Detach removes the client while a one-shot snapshot still shows the terminal. Tests cover capture races, sequence exhaustion, slow subscribers, malformed transactions, and the stdio relay. The Rust client preserves its last view on connection loss and obtains a fresh epoch on reconnect. |
 | Pairing and attention | The real TUI issues a private code, restores its redraw after dismissal, and accepts one pairing. Tests verify expiry, the host-wide guess budget, revision rotation, detach cleanup, and RPC replay. A Claude question stays pending after its exact alert is acknowledged. |
 | Exact focus | Integration tests cover two independent clients, stale input tokens, paste blocking, writer ownership, and request replay. Revoking a binding after the fence restores the original view with a fresh token. |
@@ -250,3 +255,33 @@ the major mismatch and a required capability introduced after `3d804e1`.
 The newer compatible client reattaches after an explicit detach and reads
 the same child's PID and advancing counter. The repository defaults to
 protocol 1.0. Additive features advertise individual capabilities.
+
+### Unix socket and framing reproduction
+
+The peer fixture ran on Linux 7.2.14 in a private mount and user namespace.
+The daemon UID mapped to the invoking host user, and the foreign peer mapped
+to a delegated subordinate UID. The fixture opens up only its temporary
+sockets to exercise the peer check after a successful connect. It also starts
+a foreign listener behind an owner-matching socket file to check the client
+side. The original attached PTY remains usable throughout.
+
+On the Arch host used for the test, set `SUB_UID` and `SUB_GID` to one ID from
+the user's delegated ranges, then run from the repository root.
+
+```sh
+unshare --user --map-root-user --map-users="1:$SUB_UID:1" --map-groups="1:$SUB_GID:1" \
+  bwrap --unshare-pid --proc /proc --dev /dev --ro-bind /usr /usr \
+  --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 --dir /run \
+  --ro-bind "$PWD/target/debug/corvid" /corvid \
+  --ro-bind "$PWD/crates/corvid/tests" /fixtures --setenv PYTHONDONTWRITEBYTECODE 1 \
+  --chdir / -- /usr/bin/python3 /fixtures/socket_peers.py /corvid
+
+cargo test --locked -p corvid --test routing \
+  malformed_and_stalled_frames_leave_the_existing_pty_usable -- --exact
+cargo test --locked -p corvid-protocol --test framing
+```
+
+Protobuf preflight shares the 1,024-item repeated-field budget across
+fragments that the decoder can merge into one singular submessage. The
+framing tests exercise packed and unpacked fragments at the limit, malformed
+headers, and complete render delivery. [Protocol Buffers encoding rules](https://protobuf.dev/programming-guides/encoding/#last-one-wins)

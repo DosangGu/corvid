@@ -83,14 +83,14 @@ pub async fn run(
 trait Listener {
     type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
 
-    fn next_peer(&mut self) -> impl Future<Output = Result<Self::Stream>> + Send;
+    fn next_peer(&mut self) -> impl Future<Output = Result<Option<Self::Stream>>> + Send;
 }
 
 #[cfg(target_os = "linux")]
 impl Listener for BoundSocket<'_> {
     type Stream = ClientStream;
 
-    async fn next_peer(&mut self) -> Result<Self::Stream> {
+    async fn next_peer(&mut self) -> Result<Option<Self::Stream>> {
         self.accept().await
     }
 }
@@ -99,8 +99,8 @@ impl Listener for BoundSocket<'_> {
 impl Listener for PipeListener {
     type Stream = NamedPipeServer;
 
-    async fn next_peer(&mut self) -> Result<Self::Stream> {
-        self.accept().await
+    async fn next_peer(&mut self) -> Result<Option<Self::Stream>> {
+        self.accept().await.map(Some)
     }
 }
 
@@ -113,15 +113,13 @@ async fn accept(
     let mut peers = JoinSet::new();
     loop {
         tokio::select! {
-            result = listener.next_peer() => {
-                let Ok(stream) = result else {
-                    sleep(Duration::from_millis(25)).await;
-                    continue;
-                };
-                if peers.len() < MAX_PEERS {
+            result = listener.next_peer() => match result {
+                Ok(Some(stream)) if peers.len() < MAX_PEERS => {
                     peers.spawn(serve(stream, calls.clone(), host.to_owned(), epoch.to_owned()));
                 }
-            }
+                Ok(_) => {}
+                Err(_) => sleep(Duration::from_millis(25)).await,
+            },
             _ = peers.join_next(), if !peers.is_empty() => {}
         }
     }

@@ -66,7 +66,7 @@ pub async fn run(
             _ = collectors.join_next(), if !collectors.is_empty() => {}
             _ = agent_clock.tick() => workspaces.tick_agents(),
             peer = collector_socket.accept() => match peer {
-                Ok(stream) if collectors.len() < MAX_COLLECTOR_CONNECTIONS => {
+                Ok(Some(stream)) if collectors.len() < MAX_COLLECTOR_CONNECTIONS => {
                     let identity = Arc::clone(&identity);
                     let workspaces = Arc::clone(&workspaces);
                     collectors.spawn(async move { collector::serve(stream, &identity, &workspaces).await });
@@ -75,7 +75,7 @@ pub async fn run(
                 Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             },
             peer = control_socket.accept() => match peer {
-                Ok(stream) if controls.len() < MAX_CONTROL_CONNECTIONS => {
+                Ok(Some(stream)) if controls.len() < MAX_CONTROL_CONNECTIONS => {
                     let identity = Arc::clone(&identity);
                     let metadata = metadata.clone();
                     let workspaces = Arc::clone(&workspaces);
@@ -85,7 +85,7 @@ pub async fn run(
                 Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             },
             peer = client_socket.accept() => match peer {
-                Ok(stream) if clients.len() < MAX_TUI_CONNECTIONS => {
+                Ok(Some(stream)) if clients.len() < MAX_TUI_CONNECTIONS => {
                     let identity = Arc::clone(&identity);
                     let workspaces = Arc::clone(&workspaces);
                     clients.spawn(async move { tui::serve(stream, &identity, &workspaces).await });
