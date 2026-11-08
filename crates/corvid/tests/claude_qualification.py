@@ -952,7 +952,14 @@ class CorvidFixture:
         assert view["header"]["remote_epoch"] == before_view["header"]["remote_epoch"]
         assert view["header"]["control_capture"] != before_view["header"]["control_capture"]
 
-    def focus_question(self, tty, question, *, offline_restart=False):
+    def question_is_parked(self, question):
+        clients = subprocess.check_output(
+            [*self.command, "control", "clients"], text=True, timeout=3,
+        ).splitlines()
+        return (len(clients) == 1 and "terminal=" in clients[0]
+                and "terminal=" + question["terminal"] not in clients[0])
+
+    def park_question(self, tty, question):
         self.companion = Companion(self.command, self.directory)
         self.companion.start()
         tty.screen = b""
@@ -962,19 +969,13 @@ class CorvidFixture:
         self.companion.run("pair", input=code + "\n")
         tty.screen = b""
         tty.send(b"\r")
-        prompt = b"Enter to submit or Escape to cancel:"
-        tty.expect(prompt)
+        tty.expect(b"Enter to submit or Escape to cancel:")
         tty.send(b"\x1dt")
-
-        def selected_other_terminal():
-            clients = subprocess.check_output(
-                [*self.command, "control", "clients"], text=True, timeout=3,
-            ).splitlines()
-            return (len(clients) == 1 and "terminal=" in clients[0]
-                    and "terminal=" + question["terminal"] not in clients[0])
-
-        tty.wait(selected_other_terminal, "second terminal selected")
+        tty.wait(lambda: self.question_is_parked(question), "second terminal selected")
         assert self.snapshot()["terminals"] == "2"
+
+    def focus_question(self, tty, question, *, offline_restart=False):
+        self.park_question(tty, question)
         old_view, old_slot = self.presented_question(question)
         old_binding = old_view["bindings"][0]
         self.companion.close()
@@ -991,14 +992,14 @@ class CorvidFixture:
             "focus-slot", "--slot", old_slot["capture"], "--binding", old_binding["capture"], check=False,
         )
         assert stale.returncode != 0 and "StaleBinding" in stale.stderr
-        assert selected_other_terminal()
+        assert self.question_is_parked(question)
 
         tty.screen = b""
         applied = self.companion.run("focus-slot", "--slot", slot["capture"], "--binding", binding["capture"]).stdout
         assert "terminal_id=" + question["terminal"] in applied
         assert "local_activation=ManualRequired" in applied
         self.focus_capture = (slot, binding)
-        tty.expect(prompt)
+        tty.expect(b"Enter to submit or Escape to cancel:")
 
     def restart_with_control_unavailable(self, before, slot, binding):
         saved = (self.directory / "companion/slots.json").read_text(encoding="utf-8")
@@ -1375,9 +1376,10 @@ def main():
     args = parser.parse_args()
     if args.fault is not None and args.corvid is None:
         parser.error("--fault requires --corvid")
-    if args.scenario in {"forged-output", "restart", "offline-pair", "offline-restart", "snapshot-race"} and (
-        args.corvid is None or args.fault is not None
-    ):
+    healthy_scenarios = {
+        "forged-output", "restart", "offline-pair", "offline-restart", "snapshot-race",
+    }
+    if args.scenario in healthy_scenarios and (args.corvid is None or args.fault is not None):
         parser.error("this scenario requires --corvid and a healthy collector")
     if args.fault == "collector-saturated" and args.scenario not in {"answer", "plan"}:
         parser.error("collector saturation requires --scenario answer or plan")
