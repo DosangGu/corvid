@@ -1,5 +1,6 @@
 mod codex;
 
+use std::collections::BTreeSet;
 use std::env;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use clap::ValueEnum;
-use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH};
+use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, MAX_BATCH_INPUTS, SERVER_EPOCH};
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
@@ -30,16 +31,22 @@ pub(crate) enum HookProvider {
 pub(crate) fn observe(
     provider: HookProvider,
     neutral_json: bool,
+    claude_input_batch: bool,
     runtime: Option<PathBuf>,
     started: Instant,
 ) {
-    let _ = observe_inner(provider, runtime, started);
+    let _ = observe_inner(provider, claude_input_batch, runtime, started);
     if matches!(provider, HookProvider::Codex) && neutral_json {
         let _ = writeln!(io::stdout().lock(), "{{}}");
     }
 }
 
-fn observe_inner(provider: HookProvider, runtime: Option<PathBuf>, started: Instant) -> Result<()> {
+fn observe_inner(
+    provider: HookProvider,
+    claude_input_batch: bool,
+    runtime: Option<PathBuf>,
+    started: Instant,
+) -> Result<()> {
     let launch = env::var(LAUNCH_ASSOCIATION)?;
     let host = env::var(HOST_ID)?;
     let epoch = env::var(SERVER_EPOCH)?;
@@ -51,6 +58,8 @@ fn observe_inner(provider: HookProvider, runtime: Option<PathBuf>, started: Inst
     let deadline = started + TOTAL_TIMEOUT;
     let input = read_hook(started + SOURCE_TIMEOUT).ok();
     let fields = match provider {
+        // Optional batches can exceed the source limit even for unrelated tools.
+        HookProvider::Claude if claude_input_batch => input.as_deref().and_then(claude_batch),
         HookProvider::Claude => claude_fields(input.as_deref()),
         HookProvider::Codex => codex::fields(input.as_deref()),
     };
@@ -120,6 +129,51 @@ struct ClaudeAgentResult {
     #[serde(rename = "agentId")]
     actor: String,
     status: String,
+}
+
+#[derive(Deserialize)]
+struct ClaudeBatch {
+    hook_event_name: String,
+    session_id: String,
+    prompt_id: String,
+    agent_id: Option<String>,
+    tool_calls: Vec<ClaudeBatchCall>,
+}
+
+#[derive(Deserialize)]
+struct ClaudeBatchCall {
+    tool_name: String,
+    tool_use_id: Option<String>,
+}
+
+fn claude_batch(input: &[u8]) -> Option<CollectHook> {
+    let batch: ClaudeBatch = serde_json::from_slice(input).ok()?;
+    if batch.hook_event_name != "PostToolBatch" || batch.agent_id.is_some() {
+        return None;
+    }
+
+    let finished_input_ids = batch
+        .tool_calls
+        .into_iter()
+        .filter(|call| matches!(call.tool_name.as_str(), "AskUserQuestion" | "ExitPlanMode"))
+        .take(MAX_BATCH_INPUTS + 1)
+        .map(|call| valid_id(call.tool_use_id?))
+        .collect::<Option<Vec<_>>>()?;
+    let unique_ids: BTreeSet<_> = finished_input_ids.iter().collect();
+    if !(1..=MAX_BATCH_INPUTS).contains(&finished_input_ids.len())
+        || unique_ids.len() != finished_input_ids.len()
+    {
+        return None;
+    }
+
+    Some(CollectHook {
+        provider: AgentProvider::Claude as i32,
+        event: HookEvent::InputBatchFinished as i32,
+        session_id: Some(valid_id(batch.session_id)?),
+        turn_id: Some(valid_id(batch.prompt_id)?),
+        finished_input_ids,
+        ..Default::default()
+    })
 }
 
 fn claude_fields(input: Option<&[u8]>) -> Option<CollectHook> {
@@ -296,6 +350,9 @@ pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
                     }]),
                 );
             }
+            let mut batch = handler;
+            batch["args"] = json!(["observe", "--provider", "claude", "--claude-input-batch"]);
+            hooks.insert("PostToolBatch".to_owned(), json!([{ "hooks": [batch] }]));
             Ok(json!({ "hooks": hooks }))
         }
         HookProvider::Codex => Ok(codex::settings(executable)),
@@ -304,7 +361,8 @@ pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::claude_fields;
+    use super::{HookEvent, MAX_BATCH_INPUTS, claude_batch, claude_fields};
+    use serde_json::json;
 
     #[test]
     fn unsupported_hooks_and_child_identifiers_do_not_report_a_parent_gap() {
@@ -315,5 +373,30 @@ mod tests {
         }"#;
         assert!(claude_fields(Some(unknown)).is_none());
         assert!(claude_fields(Some(child)).is_none());
+    }
+
+    #[test]
+    fn claude_batches_keep_only_bounded_parent_input_ids() {
+        let mut batch = json!({
+            "hook_event_name": "PostToolBatch", "session_id": "session", "prompt_id": "turn",
+            "tool_calls": [
+                {"tool_name": "Read", "tool_use_id": "read", "tool_response": "untrusted"},
+                {"tool_name": "ExitPlanMode", "tool_use_id": "plan", "tool_input": {"text": "private"}},
+                {"tool_name": "AskUserQuestion", "tool_use_id": "question"}
+            ]
+        });
+        let observation = claude_batch(batch.to_string().as_bytes()).unwrap();
+        assert_eq!(observation.event, HookEvent::InputBatchFinished as i32);
+        assert_eq!(observation.finished_input_ids, ["plan", "question"]);
+
+        batch["agent_id"] = json!("child");
+        assert!(claude_batch(batch.to_string().as_bytes()).is_none());
+        batch["agent_id"] = serde_json::Value::Null;
+        batch["tool_calls"] = json!(
+            (0..=MAX_BATCH_INPUTS)
+                .map(|id| json!({"tool_name": "ExitPlanMode", "tool_use_id": id.to_string()}))
+                .collect::<Vec<_>>()
+        );
+        assert!(claude_batch(batch.to_string().as_bytes()).is_none());
     }
 }

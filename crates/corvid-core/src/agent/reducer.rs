@@ -30,6 +30,7 @@ pub(super) struct Correlation {
     interrupted_turns: Recent<String>,
     completed_work: Recent<WorkKey>,
     finished_requests: Recent<RequestKey>,
+    batch_finished_inputs: Recent<RequestKey>,
     orphan_results: BTreeMap<RequestKey, OrphanResult>,
     expired_results: Recent<RequestKey>,
 }
@@ -143,6 +144,9 @@ impl AgentRun {
             }
             ObservationKind::InputResolved { key, resolution } => {
                 self.resolve_input(key, resolution, evidence, monotonic_ms)
+            }
+            ObservationKind::InputBatchFinished { turn, tools } => {
+                self.finish_input_batch(turn, tools, evidence)
             }
             ObservationKind::Response {
                 response,
@@ -301,6 +305,11 @@ impl AgentRun {
                 self.correlation.finished_requests.insert(key.clone());
                 return result.state;
             }
+            if self.correlation.batch_finished_inputs.contains(key) {
+                let uncertain =
+                    evidence.uncertain("input batch finished without a matching result");
+                return Observed::new(RequestStatus::Unverified, &uncertain);
+            }
             if key
                 .turn
                 .as_ref()
@@ -365,6 +374,41 @@ impl AgentRun {
             .values()
             .find(|request| request.key.as_ref() == Some(key))
             .map(|request| request.id)
+    }
+
+    fn finish_input_batch(
+        &mut self,
+        turn: String,
+        tools: Vec<String>,
+        evidence: &Evidence,
+    ) -> bool {
+        if evidence.confidence != Confidence::Confirmed
+            || self.correlation.interrupted_turns.contains(&turn)
+        {
+            return false;
+        }
+
+        let uncertain = evidence.uncertain("input batch finished without a matching result");
+        let mut changed = false;
+        for tool in tools {
+            let key = RequestKey {
+                turn: Some(turn.clone()),
+                provider_request_id: tool,
+            };
+            if self.correlation.finished_requests.contains(&key)
+                || !self.correlation.batch_finished_inputs.insert(key.clone())
+            {
+                continue;
+            }
+            if let Some(id) = self.request_id(&key)
+                && let Some(request) = self.requests.get_mut(&id)
+                && request.state.value == RequestStatus::Pending
+            {
+                request.state = Observed::new(RequestStatus::Unverified, &uncertain);
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn prune_closed_request(&mut self) {
@@ -596,6 +640,11 @@ impl Observation {
             ObservationKind::InputRequested { key: Some(key), .. }
             | ObservationKind::InputResolved { key, .. } => {
                 valid_optional_id(&key.turn) && valid_id(&key.provider_request_id)
+            }
+            ObservationKind::InputBatchFinished { turn, tools } => {
+                valid_id(turn)
+                    && (1..=MAX_SCOPES).contains(&tools.len())
+                    && tools.iter().all(|tool| valid_id(tool))
             }
             ObservationKind::Response { response, .. } => valid_optional_id(&response.turn),
             ObservationKind::ContextEnded(EndReason::ProcessExited) => false,

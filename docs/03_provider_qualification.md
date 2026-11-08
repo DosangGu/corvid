@@ -53,8 +53,12 @@ as a direct child of the managed CLI.
 The current adapter records submitted prompts with inferred confidence and
 `Stop` as response evidence. It correlates questions and plan approvals by
 session, prompt, and tool IDs. Permission observations without a tool ID remain
-unverified. A new prompt makes unresolved requests from the previous prompt
-unverified. An exact result can still settle those requests.
+unverified. Install the generated `PostToolBatch` handler to mark matching open
+questions or plan approvals Unverified when their batch finishes without a
+matching result. The optional observer sends only the session, prompt, and input
+tool-use IDs. It skips batches that exceed the observer's input or ID limits.
+A new prompt also makes unresolved requests from the previous prompt unverified.
+An exact result can still settle those requests.
 A confirmed `/clear` boundary gets a fresh run under the same terminal. An observed
 manual compaction retains the run and its request records. During an in-process
 resume, Corvid fences focus on the outgoing run and matches the start to the end
@@ -101,9 +105,10 @@ stayed the same across both context switches. The original resolved question
 remained in history, and the resumed run accepted focus through a fresh slot.
 
 The plan fixture observed a typed pending approval and its exact resolution.
-The rejection fixture observed the same approval become Unverified on the next
-prompt and retain its request and attention IDs. Corvid records the response
-boundary separately from the approval outcome.
+The rejection fixture observed the same approval become Unverified before the
+next prompt and retain its request and attention IDs. The companion updated its
+pending and unverified counts while preserving the slot revision. Corvid records
+the response boundary separately from the approval outcome.
 The dismissal fixture observed the same run move from one pending question to
 an unverified question after the next submission. The approval completed with
 the observer absent, and dismissal completed with the collector socket absent.

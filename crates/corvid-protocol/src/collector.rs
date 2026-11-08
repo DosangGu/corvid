@@ -1,4 +1,7 @@
 pub const CAPABILITY: &str = "collector.v1";
+pub const INPUT_BATCH_CAPABILITY: &str = "collector.input_batch.v1";
+// Leave room for 256-byte IDs and the envelope in the 8 KiB collector frame.
+pub const MAX_BATCH_INPUTS: usize = 24;
 pub const LAUNCH_ASSOCIATION: &str = "CORVID_LAUNCH_ASSOCIATION";
 pub const HOST_ID: &str = "CORVID_HOST_ID";
 pub const SERVER_EPOCH: &str = "CORVID_SERVER_EPOCH";

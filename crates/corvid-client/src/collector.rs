@@ -2,10 +2,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::collector::CAPABILITY;
+use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY};
 use corvid_protocol::unix::SocketRole;
-use corvid_protocol::wire::CollectHook;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{CollectHook, HookEvent};
 use corvid_protocol::{PeerRole, ProtocolFault};
 use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
@@ -40,8 +40,12 @@ async fn send_hook(
     epoch: &str,
     observation: CollectHook,
 ) -> Result<()> {
+    let mut capabilities = vec![CAPABILITY.to_owned()];
+    if observation.event == HookEvent::InputBatchFinished as i32 {
+        capabilities.push(INPUT_BATCH_CAPABILITY.to_owned());
+    }
     let mut connection =
-        UnixConnection::establish(stream, PeerRole::Collector, vec![CAPABILITY.to_owned()]).await?;
+        UnixConnection::establish(stream, PeerRole::Collector, capabilities).await?;
     let session = &connection.session;
     ensure!(
         session.host_id == host_id && session.server_epoch == epoch,

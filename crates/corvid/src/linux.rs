@@ -109,6 +109,9 @@ pub(super) enum Command {
         /// Emit a fixed empty object for Codex hooks that expect JSON.
         #[arg(long, hide = true)]
         neutral_json: bool,
+        /// Read the optional Claude input-batch hook.
+        #[arg(long, hide = true, conflicts_with = "neutral_json")]
+        claude_input_batch: bool,
     },
 }
 
@@ -173,8 +176,15 @@ pub(super) fn execute(
         Command::Observe {
             provider,
             neutral_json,
+            claude_input_batch,
         } => {
-            hooks::observe(provider, neutral_json, runtime_dir, started);
+            hooks::observe(
+                provider,
+                neutral_json,
+                claude_input_batch,
+                runtime_dir,
+                started,
+            );
             Ok(0)
         }
         Command::Hooks { provider } => hooks::settings(provider).map(|settings| {

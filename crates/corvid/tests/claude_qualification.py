@@ -547,6 +547,10 @@ def exercise_plan(terminal, managed, initial, *, rejected):
 
 
 def reject_plan(terminal, managed, initial, approval):
+    if managed:
+        managed.companion = Companion(managed.command, managed.directory)
+        before = assigned_slots(managed.companion.start())[initial["run"]]
+        assert before["pending"] == "1"
     terminal.expect(b"No, keep planning")
     terminal.send(b"3\r")
     terminal.expect(b"option 3 (No, keep planning)")
@@ -559,23 +563,26 @@ def reject_plan(terminal, managed, initial, approval):
     if managed:
         managed.expect(
             terminal, run=initial["run"], process="Running", response="true",
-            pending="1", unverified="1", resolved="0", cancelled="0",
-        )
-
-    offset = len(terminal.events())
-    terminal.send(b"Corvid after plan rejection\r")
-    followup = terminal.event(after=offset, hook_event_name="UserPromptSubmit")
-    assert followup["prompt_id"] != response["prompt_id"]
-    terminal.event(hook_event_name="Stop", prompt_id=followup["prompt_id"])
-    if managed:
-        managed.expect(
-            terminal, run=initial["run"], process="Running",
             pending="0", unverified="2", resolved="0", cancelled="0",
         )
         current = request_for(managed.command, initial["run"], "PlanApproval")
         assert current["request_id"] == approval["request_id"]
         assert current["attention_id"] == approval["attention_id"]
         assert current["request_status"] == "Unverified"
+
+        def approval_uncertain(view):
+            slot = assigned_slots(view).get(initial["run"])
+            return slot and slot["pending"] == "0" and slot["unverified"] == "2"
+
+        view = managed.companion.wait(approval_uncertain)
+        after = assigned_slots(view)[initial["run"]]
+        assert after["slot"] == before["slot"] and after["revision"] == before["revision"]
+
+    offset = len(terminal.events())
+    terminal.send(b"Corvid after plan rejection\r")
+    followup = terminal.event(after=offset, hook_event_name="UserPromptSubmit")
+    assert followup["prompt_id"] != response["prompt_id"]
+    terminal.event(hook_event_name="Stop", prompt_id=followup["prompt_id"])
 
 
 def exercise_cancel(terminal, managed, initial):
@@ -1058,9 +1065,11 @@ def capture(binary, directory, port, scenario, corvid, fault):
             else:
                 assert agent["collection"] == "NotRegistered"
                 if fault == "collector-saturated":
-                    assert (directory / FAULT_TRACE).read_text().splitlines() == [SATURATION] * 7
+                    # The batch observer is called once per tool batch, including Write and ToolSearch.
+                    attempts = 10 if scenario == "plan" else 8
+                    assert (directory / FAULT_TRACE).read_text().splitlines() == [SATURATION] * attempts
                     collector = managed.collector_status()
-                    assert int(collector["saturated_connections"]) >= 7
+                    assert int(collector["saturated_connections"]) >= attempts
                     assert collector["healthy_runs"] == collector["gap_detected_runs"] == "0"
         return events
     finally:

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use corvid_protocol::collector::{
-    CAPABILITY, HOST_ID, LAUNCH_ASSOCIATION, RUNTIME_DIR, SERVER_EPOCH,
+    CAPABILITY, HOST_ID, INPUT_BATCH_CAPABILITY, LAUNCH_ASSOCIATION, RUNTIME_DIR, SERVER_EPOCH,
 };
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{CollectorTraffic, HookCollected};
@@ -101,8 +101,13 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
         .pid()
         .and_then(|pid| u32::try_from(pid).ok())
         .context("collector peer PID unavailable")?;
-    let Some((session, mut reader, mut writer)) =
-        handshake(stream, identity, PeerRole::Collector, &[CAPABILITY]).await?
+    let Some((session, mut reader, mut writer)) = handshake(
+        stream,
+        identity,
+        PeerRole::Collector,
+        &[CAPABILITY, INPUT_BATCH_CAPABILITY],
+    )
+    .await?
     else {
         workspaces.collector.connection_failed();
         return Ok(());

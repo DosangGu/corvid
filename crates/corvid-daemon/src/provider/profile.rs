@@ -14,6 +14,7 @@ const CLAUDE_EVENTS: &[HookEvent] = &[
     HookEvent::QuestionResult,
     HookEvent::PlanApprovalStarted,
     HookEvent::PlanApprovalResult,
+    HookEvent::InputBatchFinished,
     HookEvent::PermissionRequested,
     HookEvent::ResponseObserved,
     HookEvent::ContextEnded,
@@ -50,10 +51,10 @@ const CAPABILITIES: &[Kind] = &[
 ];
 
 pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
-    let (mode, events) = match (provider, qualified) {
-        (Provider::Claude, true) => (Mode::InteractiveCli, CLAUDE_EVENTS),
-        (Provider::Codex, true) => (Mode::InteractiveCli, CODEX_EVENTS),
-        (_, false) => (Mode::ProcessOnly, &[][..]),
+    let (mode, schema_revision, events) = match (provider, qualified) {
+        (Provider::Claude, true) => (Mode::InteractiveCli, 2, CLAUDE_EVENTS),
+        (Provider::Codex, true) => (Mode::InteractiveCli, 1, CODEX_EVENTS),
+        (_, false) => (Mode::ProcessOnly, 1, &[][..]),
     };
     let mut correlation = vec![Field::ProcessIncarnation as i32];
     if qualified {
@@ -68,7 +69,7 @@ pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
     }
     ProviderAdapter {
         mode: mode as i32,
-        schema_revision: 1,
+        schema_revision,
         qualified_events: events.iter().map(|event| *event as i32).collect(),
         correlation,
         capabilities: CAPABILITIES
@@ -123,7 +124,7 @@ fn qualification(provider: Provider, kind: Kind) -> (Level, &'static str) {
         ),
         (Provider::Claude, Kind::RequestResolution) => (
             Level::Partial,
-            "question answers and plan results correlate; manual dismissals and permissions can lack results",
+            "input results correlate; a finished batch without a result leaves the outcome unverified",
         ),
         (Provider::Claude, Kind::ContextReplacement) => (
             Level::Partial,

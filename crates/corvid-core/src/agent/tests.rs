@@ -148,6 +148,35 @@ fn acknowledgement_and_exact_resolution_leave_other_requests_pending() {
 }
 
 #[test]
+fn a_finished_batch_marks_only_unresolved_inputs_in_its_exact_prompt_unverified() {
+    let mut fixture = Fixture::new();
+    let finished = fixture.request("current", "finished");
+    let other_tool = fixture.request("current", "other");
+    let other_turn = fixture.request("previous", "finished");
+    let resolved = fixture.request("current", "resolved");
+    assert!(fixture.resolve("current", "resolved"));
+
+    let batch = ObservationKind::InputBatchFinished {
+        turn: "current".to_owned(),
+        tools: ["finished", "resolved", "late"].map(str::to_owned).to_vec(),
+    };
+    assert!(fixture.push(batch.clone()));
+    assert!(!fixture.push(batch.clone()));
+    assert_eq!(fixture.request_state(finished), RequestStatus::Unverified);
+    assert_eq!(fixture.request_state(other_tool), RequestStatus::Pending);
+    assert_eq!(fixture.request_state(other_turn), RequestStatus::Pending);
+    assert_eq!(fixture.request_state(resolved), RequestStatus::Resolved);
+
+    let late = fixture.request("current", "late");
+    assert_eq!(fixture.request_state(late), RequestStatus::Unverified);
+    assert!(fixture.resolve("current", "late"));
+    assert!(fixture.resolve("current", "finished"));
+    assert!(!fixture.push(batch));
+    assert_eq!(fixture.request_state(late), RequestStatus::Resolved);
+    assert_eq!(fixture.request_state(finished), RequestStatus::Resolved);
+}
+
+#[test]
 fn ambiguous_permission_is_visible_without_inventing_a_pending_request() {
     let mut fixture = Fixture::new();
     assert!(fixture.push(ObservationKind::InputRequested {

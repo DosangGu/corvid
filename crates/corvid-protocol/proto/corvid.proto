@@ -829,6 +829,7 @@ enum HookEvent {
   HOOK_EVENT_SUBAGENT_STARTED = 19;
   HOOK_EVENT_SUBAGENT_RESPONSE_OBSERVED = 20;
   HOOK_EVENT_SUBAGENT_LINKED = 21;
+  HOOK_EVENT_INPUT_BATCH_FINISHED = 22;
 }
 
 message CollectHook {
@@ -839,6 +840,8 @@ message CollectHook {
   optional string turn_id = 5;
   optional string tool_id = 6;
   optional string actor_id = 7;
+  // Tool-use IDs in one prompt whose batch finished. Carries no outcome.
+  repeated string finished_input_ids = 8;
 }
 
 message HookCollected {}

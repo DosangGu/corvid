@@ -1,9 +1,12 @@
+use std::collections::BTreeSet;
+
 use corvid_core::agent::{
     AgentRun, Collection, Confidence, EndReason, Evidence, Lifecycle, ObservationKind,
     ProcessLiveness, Provider, RequestKey, RequestKind, Resolution, Response, ResponseOutcome,
     Source, WorkKey,
 };
 use corvid_protocol::ProtocolFault;
+use corvid_protocol::collector::MAX_BATCH_INPUTS;
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use uuid::Uuid;
 
@@ -23,6 +26,7 @@ pub(crate) struct Hook {
     turn: Option<String>,
     tool: Option<String>,
     actor: Option<String>,
+    finished_input_ids: Vec<String>,
 }
 
 impl Hook {
@@ -82,6 +86,9 @@ impl Hook {
         {
             return Err(invalid());
         }
+        if !valid_input_batch(request, event) {
+            return Err(invalid());
+        }
         Ok(Self {
             association,
             delivery,
@@ -91,6 +98,7 @@ impl Hook {
             turn: request.turn_id.clone(),
             tool: request.tool_id.clone(),
             actor: request.actor_id.clone(),
+            finished_input_ids: request.finished_input_ids.clone(),
         })
     }
 
@@ -162,6 +170,10 @@ impl Hook {
                     resolution: Resolution::Resolved,
                 }
             }
+            HookEvent::InputBatchFinished => ObservationKind::InputBatchFinished {
+                turn: self.turn.clone()?,
+                tools: self.finished_input_ids.clone(),
+            },
             HookEvent::PermissionRequested => ObservationKind::InputRequested {
                 key: None,
                 kind: RequestKind::Permission,
@@ -193,6 +205,20 @@ impl Hook {
     }
 }
 
+fn valid_input_batch(request: &CollectHook, event: HookEvent) -> bool {
+    let tools = &request.finished_input_ids;
+    if event != HookEvent::InputBatchFinished {
+        return tools.is_empty();
+    }
+
+    let mut seen = BTreeSet::new();
+    request.turn_id.is_some()
+        && request.tool_id.is_none()
+        && request.actor_id.is_none()
+        && (1..=MAX_BATCH_INPUTS).contains(&tools.len())
+        && tools.iter().all(|tool| valid_id(tool) && seen.insert(tool))
+}
+
 fn supported_event(provider: Provider, event: HookEvent) -> bool {
     match event {
         HookEvent::Startup
@@ -205,6 +231,7 @@ fn supported_event(provider: Provider, event: HookEvent) -> bool {
         | HookEvent::ResponseObserved
         | HookEvent::DeliveryGap => true,
         HookEvent::Clear
+        | HookEvent::InputBatchFinished
         | HookEvent::PlanApprovalStarted
         | HookEvent::PlanApprovalResult
         | HookEvent::ContextEnded
@@ -584,6 +611,7 @@ mod tests {
                 turn: Some("turn".to_owned()),
                 tool: Some("tool".to_owned()),
                 actor: None,
+                finished_input_ids: Vec::new(),
             }
         }
 
@@ -616,6 +644,46 @@ mod tests {
 
         fn current(&self) -> &ManagedRun {
             &self.agents.runs[&self.agents.launches[&self.association].current]
+        }
+    }
+
+    #[test]
+    fn input_batch_requires_claude_prompt_and_distinct_tool_ids() {
+        let request = CollectHook {
+            launch_association: Uuid::new_v4().to_string(),
+            provider: AgentProvider::Claude as i32,
+            event: HookEvent::InputBatchFinished as i32,
+            session_id: Some("session".into()),
+            turn_id: Some("turn".into()),
+            finished_input_ids: vec!["question".into(), "plan".into()],
+            ..Default::default()
+        };
+        let delivery = Uuid::new_v4().to_string();
+        assert!(Hook::decode(&request, Some(&delivery)).is_ok());
+        for invalid in [
+            CollectHook {
+                turn_id: None,
+                ..request.clone()
+            },
+            CollectHook {
+                actor_id: Some("child".into()),
+                ..request.clone()
+            },
+            CollectHook {
+                finished_input_ids: vec!["plan".into(); 2],
+                ..request.clone()
+            },
+            CollectHook {
+                provider: AgentProvider::Codex as i32,
+                ..request.clone()
+            },
+            CollectHook {
+                event: HookEvent::ResponseObserved as i32,
+                ..request
+            },
+        ] {
+            let error = Hook::decode(&invalid, Some(&delivery)).err().unwrap();
+            assert_eq!(error.code, "InvalidMessage");
         }
     }
 

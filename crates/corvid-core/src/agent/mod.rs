@@ -219,6 +219,10 @@ pub enum ObservationKind {
         key: RequestKey,
         resolution: Resolution,
     },
+    InputBatchFinished {
+        turn: String,
+        tools: Vec<String>,
+    },
     Response {
         response: Response,
         final_boundary: bool,
