@@ -21,6 +21,12 @@ For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
 
 Press Ctrl-] then d to detach and run `corvid` again to return to the shell.
+The bottom status bar shows **CORVID**, the current workspace, and tab numbers
+and names, such as **[1:Shell]** and **2:Tests**. Brackets and highlighting
+identify the active tab. Press Ctrl-] to show command mode and available keys.
+The bar reserves one row on terminals with at least three rows when both
+peers support it.
+
 Use `corvid attach -- program arg` to start an explicit command on the running
 daemon. When starting a daemon directly, install the terminfo entry with
 `tic -x -o "$HOME/.terminfo" spikes/terminal/corvid.terminfo` first.
@@ -34,9 +40,12 @@ Use `corvid attach --new-workspace "Review"` to create a separate workspace and
 `corvid attach --workspace WORKSPACE_ID --new-tab "Tests"` to add a tab when that
 workspace has no writer. `corvid control workspaces` lists the IDs. Attach to
 an exact tab with `--workspace WORKSPACE_ID --tab TAB_ID`. In an attached TUI,
-Ctrl-] then t starts a new shell tab. Ctrl-] then n or p visits the next or
-previous live tab in the workspace. Each workspace has one writer, and other
-workspaces continue independently.
+Ctrl-] then t starts a new shell tab. Ctrl-] then 1–9 switches to the live tab
+with that number. Ctrl-] then w opens the full tab list for the workspace,
+including tabs numbered 10 and above. Use Up or Down to move, Enter to switch
+to a live tab, and Esc to return to the current tab. Closed tabs are labeled
+in the list. Ctrl-] then n or p still cycles through live tabs. Each workspace
+has one writer, and other workspaces continue independently.
 
 To move a hidden live single-pane tab, attach to a different tab in its
 workspace and explicitly claim the destination for that TUI.
@@ -266,6 +275,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Area | Evidence |
 |---|---|
 | Default startup | Two simultaneous invocations share one background daemon. The first writer opens a shell with the bundled terminfo entry, and the other receives `WorkspaceBusy`. After detach, another invocation reaches the same shell PID. A non-TTY invocation and a control ping leave an absent runtime untouched. |
+| Status bar | The live TTY test checks the bottom row, active tab, idle command mode, and the reduced child size across resize and tab switching. The VT composition test verifies cursor position, pending wrap, drawing attributes, and scrolling above the bar. |
 | Identity and control | Restart changes the epoch and preserves the host ID. Concurrent startup fails. Corrupt identity bytes are preserved. A real CLI subprocess relays framed control messages over pipes. |
 | Version skew (A15) | A client offering protocol 1.1 uses 1.0 with the daemon from `3d804e1`. The daemon rejects a 2.0 client and reports its supported major. The same daemon epoch, client view, and child PID survive the rejection. An incompatible upstream framing preamble becomes `ProtocolMismatch` on both the local CLI and stdio relay. |
 | Capability discovery (A29) | `GetCapabilities` returns the negotiated limits, features, and release profiles from the control Hello over binary stdio. The local CLI reports both provider profiles while the provider launch probes remain untouched. Duplicate profile identities invalidate Hello, and an additive provider ID remains descriptive data. |

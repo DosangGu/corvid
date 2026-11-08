@@ -595,6 +595,11 @@ canonical rows/columns. The child process sees exactly one size. Retain the last
 size when the writer disconnects; use a documented initial size (80×24 before layout
 chrome) only for a terminal that has never had a writer. Reject invalid dimensions.
 
+The `status_bar.v1` capability reserves the bottom row when the outer viewport
+has at least three rows. The daemon composes the workspace, tabs, and input
+mode into the render stream and sets each PTY in that writer's workspaces to
+the remaining size. Peers without the capability use the full viewport.
+
 Later, an explicitly requested read-only attach may display the canonical screen using
 crop/pad; it cannot resize it. An observer's larger viewport does not create a larger
 child screen, and a smaller observer may not see the cursor. Writer handoff is an explicit
@@ -621,6 +626,11 @@ legacy Esc disambiguation delay (initial 100 ms) and document the Esc-versus-Alt
 under delayed SSH input. Unknown/incomplete sequences remain buffered within bounds,
 then take the documented literal path; they never become speculative navigation commands.
 Negotiated extended keyboard protocols and automatic remapping are later work.
+
+In command mode, 1–9 selects a live tab by its displayed position and w opens a
+scrolling list of all tabs in the current workspace. While the list is open, the
+daemon consumes keys and pastes locally. Enter resolves the selected tab ID against
+the current workspace before running the ordinary route-fenced switch.
 
 Every input delivery carries `(ClientId, connection_generation, view_revision,
 TerminalId, writer_lease_generation, input_sequence)`. The coordinator and PTY worker
@@ -669,8 +679,8 @@ controller never backpressures PTY parsing or the global reducer. Engine memory 
 for long sequences/combining text must be verified; unsupported hard bounds fail the
 engine qualification gate rather than being claimed by configuration alone.
 Size the inner PTY before allocating its screen to keep worst-case redraws within the
-frame bound. Preserve the available width up to the column budget, then reduce the
-PTY height to fit the cell budget.
+frame bound. Reserve the last outer row for the status bar when active. Preserve the
+available width up to the column budget, then reduce the PTY height to fit the cell budget.
 
 ### 7.6 Minimum compatibility suite
 

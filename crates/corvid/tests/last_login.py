@@ -119,7 +119,7 @@ def run(config, operator_alias, observer_alias):
     ]
     corvid = f"{home}/.local/bin/corvid"
     attach = [*operator, "-tt"]
-    screen = rb"PID=(\d+) TICK=\d+ SIZE=80x24"
+    screen = rb"PID=(\d+) TICK=\d+ SIZE=80x23"
     marker = "한글 e\u0301".encode()
     start = [
         corvid, "attach", "--new", "--", "timeout", "--foreground", "120s",

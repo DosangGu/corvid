@@ -60,7 +60,7 @@ def require_foreign_rejection(command, directory, runtime, uid):
     host = subprocess.check_output([*command, "control", "host"], timeout=3)
 
     with OuterTerminal(attach) as terminal:
-        terminal.expect(rb"PID=\d+ TICK=\d+ SIZE=80x24")
+        terminal.expect(rb"PID=\d+ TICK=\d+ SIZE=80x23")
         before = subprocess.check_output([*command, "control", "clients"], timeout=3)
         foreign_connect(runtime, uid, "permission-denied")
 
@@ -85,7 +85,7 @@ def require_foreign_rejection(command, directory, runtime, uid):
         assert subprocess.check_output([*command, "control", "clients"], timeout=3) == before
         assert subprocess.check_output([*command, "control", "host"], timeout=3) == host
         terminal.send(b"s")
-        terminal.expect(b"MEASURED=80x24")
+        terminal.expect(b"MEASURED=80x23")
         terminal.send(b"q")
         terminal.expect(b"TERMINAL-EXIT")
         terminal.wait(7)

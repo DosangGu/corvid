@@ -137,6 +137,8 @@ def wait_for_daemon(command, process):
 
 def verify_resize(outer, progress, cols, rows, inner_size):
     outer.resize(cols, rows)
+    footer = f"\x1b[{rows};1H\x1b[0;30;46m\x1b[2KCORVID".encode()
+    outer.expect(re.escape(footer))
     wait_for_child_size(progress, inner_size)
 
 
@@ -155,7 +157,8 @@ def verify(command, directory):
     progress = directory / "child-progress"
     start = [*command, "attach", "--", sys.executable, __file__, "--child", progress]
     with OuterTerminal(start) as first:
-        initial = first.expect(rb"PID=(\d+) TICK=(\d+) SIZE=80x24")
+        initial = first.expect(rb"PID=(\d+) TICK=(\d+) SIZE=80x23")
+        first.expect(re.escape(b"\x1b[24;1H\x1b[0;30;46m\x1b[2KCORVID  Main"))
         pid, tick = int(initial[1]), int(initial[2])
         first.send(b"a")
         first.expect("한글 e\u0301".encode())
@@ -165,10 +168,10 @@ def verify(command, directory):
             busy.expect(b"WorkspaceBusy")
             busy.wait(1)
         first.send(b"s")
-        first.expect(b"MEASURED=80x24")
+        first.expect(b"MEASURED=80x23")
 
-        verify_resize(first, progress, 100, 30, "100x30")
-        verify_resize(first, progress, 319, 80, "319x80")
+        verify_resize(first, progress, 100, 30, "100x29")
+        verify_resize(first, progress, 319, 80, "319x79")
         verify_resize(first, progress, 500, 100, "500x72")
         first.expect(re.escape(b"\x1b[1;72r"))
         verify_resize(first, progress, 1200, 81, "1024x35")
@@ -182,7 +185,7 @@ def verify(command, directory):
         retained = second.expect(rb"PID=(\d+) TICK=(\d+) SIZE=\d+x\d+")
         assert int(retained[1]) == pid
         assert int(retained[2]) > tick
-        wait_for_child_size(progress, "319x80")
+        wait_for_child_size(progress, "319x79")
         snapshot = subprocess.check_output([*command, "control", "snapshot"], timeout=3)
         assert b"clients=1" in snapshot
         second.expect("한글 e\u0301".encode())
@@ -207,7 +210,7 @@ def verify_pairing(command, outer, pid):
     assert "binding=tty-fixture/1" in clients and code not in clients
     outer.output.clear()
     outer.send(b"\r")
-    restored = outer.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x24")
+    restored = outer.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x23")
     assert int(restored[1]) == pid
 
 
@@ -238,7 +241,7 @@ def verify_paste(command):
 def verify_tabs(command, directory):
     attach = [*command, "attach"]
     fixture = [sys.executable, __file__, "--child"]
-    marker = rb"PID=(\d+) TICK=\d+ SIZE=80x24"
+    marker = rb"PID=(\d+) TICK=\d+ SIZE=80x23"
     with OuterTerminal([*attach, "--", *fixture, directory / "first-tab"]) as first:
         first_pid = first.expect(marker)[1]
         first.send(b"\x1dd")
@@ -248,19 +251,22 @@ def verify_tabs(command, directory):
     second_log = directory / "second-tab"
     with OuterTerminal([*attach, "--new-tab", "Second", "--", *fixture, second_log]) as second:
         second_pid = second.expect(marker)[1]
+        second.expect(re.escape(b"[2:Second]"))
         assert second_pid != first_pid
         second.output.clear()
-        second.send(b"\x1dp")
+        second.send(b"\x1d1")
         assert second.expect(marker)[1] == first_pid
+        second.expect(re.escape(b"[1:Shell]"))
         second.resize(100, 30)
-        second.expect(b"RESIZED=100x30")
+        second.expect(b"RESIZED=100x29")
         deadline = time.monotonic() + 5
-        while not second_log.read_text().strip().endswith("100x30"):
+        while not second_log.read_text().strip().endswith("100x29"):
             assert time.monotonic() < deadline, "hidden tab kept the old PTY size"
             time.sleep(0.02)
         second.output.clear()
-        second.send(b"\x1dn")
-        assert second.expect(rb"PID=(\d+) TICK=\d+ SIZE=100x30")[1] == second_pid
+        second.send(b"\x1d2")
+        assert second.expect(rb"PID=(\d+) TICK=\d+ SIZE=100x29")[1] == second_pid
+        second.expect(re.escape(b"[2:Second]"))
         second.send(b"\x1dd")
         second.wait(0)
 
@@ -269,13 +275,13 @@ def verify_tabs(command, directory):
 
 def verify_tab_move(command, directory, moved_pid, visible_pid):
     attach = [*command, "attach"]
-    marker = rb"PID=(\d+) TICK=\d+ SIZE=100x30"
+    marker = rb"PID=(\d+) TICK=\d+ SIZE=100x29"
     start = [
         *attach, "--new-workspace", "Destination", "--", sys.executable,
         __file__, "--child", directory / "destination-tab",
     ]
     with OuterTerminal(start) as destination:
-        destination.expect(rb"PID=\d+ TICK=\d+ SIZE=80x24")
+        destination.expect(rb"PID=\d+ TICK=\d+ SIZE=80x23")
         destination.send(b"\x1dd")
         destination.wait(0)
 
@@ -303,8 +309,66 @@ def verify_tab_move(command, directory, moved_pid, visible_pid):
     with OuterTerminal([*attach, "--workspace", destination_id, "--tab", moved_tab],
                        cols=100, rows=30) as moved:
         assert moved.expect(marker)[1] == moved_pid
+        moved.expect(b"CORVID  Destination")
         moved.send(b"\x1dd")
         moved.wait(0)
+
+
+def verify_tab_picker(command, directory):
+    attach = [*command, "attach"]
+    child_command = [sys.executable, __file__, "--child"]
+    marker = rb"PID=(\d+) TICK=\d+ SIZE=\d+x\d+"
+    with OuterTerminal([*attach, "--new-workspace", "Picker", "--", *child_command,
+                        directory / "picker-1"]) as first:
+        pids = {1: first.expect(marker)[1]}
+        first.send(b"\x1dd")
+        first.wait(0)
+
+    layout = subprocess.check_output([*command, "control", "workspaces"], text=True, timeout=3)
+    workspace = re.search(r"^workspace ([\da-f-]+) Picker$", layout, re.M)[1]
+    attach.extend(["--workspace", workspace])
+    tenth = "열번째"
+    for number in range(2, 12):
+        name = tenth if number == 10 else f"Task {number}"
+        with OuterTerminal([*attach, "--new-tab", name, "--", *child_command,
+                            directory / f"picker-{number}"]) as tab:
+            pids[number] = tab.expect(marker)[1]
+            tab.send(b"q" if number == 11 else b"\x1dd")
+            tab.wait(7 if number == 11 else 0)
+
+    with OuterTerminal(attach, rows=6) as outer:
+        assert outer.expect(marker)[1] == pids[1]
+        outer.expect(re.escape(b"[1:Shell]"))
+        outer.output.clear()
+        outer.send(b"\x1dw")
+        outer.expect(b"Tabs 1/11")
+        outer.send(b"\x1b[B" * 8)
+        outer.expect(b"Tabs 9/11")
+        outer.expect(f"10: {tenth}".encode())
+        outer.send(b"q" + PASTE_START + b"q" + PASTE_END + b"\x1b")
+        assert outer.expect(marker)[1] == pids[1]
+
+        outer.output.clear()
+        outer.send(b"\x1d9")
+        assert outer.expect(marker)[1] == pids[9]
+        outer.expect(re.escape(b"[9:Task 9]"))
+        outer.output.clear()
+        outer.send(b"\x1dw")
+        outer.expect(b"Tabs 9/11")
+        outer.output.clear()
+        outer.resize(60, 6)
+        outer.expect(b"Tabs 9/11")
+        outer.send(b"\x1bOB\x1b[B")
+        outer.expect(b"Tabs 11/11")
+        outer.expect(re.escape(b"11 (closed): Task 11"))
+        outer.send(b"\r\x1b[A")
+        outer.expect(b"Tabs 10/11")
+        outer.output.clear()
+        outer.send(b"\r")
+        assert outer.expect(marker)[1] == pids[10]
+        outer.expect(re.escape(f"[10:{tenth}]".encode()))
+        outer.send(b"\x1dd")
+        outer.wait(0)
 
 
 def background_daemon_pid(runtime):
@@ -347,7 +411,7 @@ def verify_default_start(binary, directory):
             b"infocmp corvid >/dev/null && "
             b"printf 'CORVID-SHELL=%s SIZE=%s\\n' \"$$\" \"$(stty size)\"\n"
         )
-        return terminal.expect(rb"CORVID-SHELL=(\d+) SIZE=80 319")[1]
+        return terminal.expect(rb"CORVID-SHELL=(\d+) SIZE=79 319")[1]
 
     try:
         with (
@@ -365,7 +429,10 @@ def verify_default_start(binary, directory):
             pid = shell_pid(active)
             daemon = background_daemon_pid(runtime)
             assert os.getsid(daemon) == daemon
-            active.send(b"\x1dd")
+            active.output.clear()
+            active.send(b"\x1d")
+            active.expect(b"CORVID CMD")
+            active.send(b"d")
             active.wait(0)
 
         with OuterTerminal(command, cols=319, rows=80, env=env) as second:
@@ -373,6 +440,7 @@ def verify_default_start(binary, directory):
             assert background_daemon_pid(runtime) == daemon
             second.send(b"exit\n")
             second.wait(0)
+
     finally:
         try:
             daemon = background_daemon_pid(runtime)
@@ -532,6 +600,7 @@ def run(binary):
             verify(command, directory)
             verify_paste(command)
             verify_tabs(command, directory)
+            verify_tab_picker(command, directory)
         finally:
             stop(daemon)
         verify_default_start(binary, directory)
@@ -541,7 +610,7 @@ def run(binary):
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
                 verify_shell_agent_notifications(binary, directory, database, shell_name=shell)
-    print("Live TTYs verified shell-first startup, agent notifications, resize, input, detach, and tab moves.")
+    print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, detach, tab switching, and the tab picker.")
 
 
 if __name__ == "__main__":

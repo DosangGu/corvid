@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Keymap {
     pub(crate) tabs: bool,
@@ -15,11 +17,14 @@ pub(crate) enum TabCommand {
     Next,
     Previous,
     Create,
+    Index(usize),
+    Select(Uuid),
 }
 
 pub(super) enum KeyCommand {
     Detach,
     Tab(TabCommand),
+    PickTab,
     PairController,
 }
 
@@ -30,6 +35,10 @@ impl Keymap {
             b"n" if self.tabs => Some(KeyCommand::Tab(TabCommand::Next)),
             b"p" if self.tabs => Some(KeyCommand::Tab(TabCommand::Previous)),
             b"t" if self.tabs => Some(KeyCommand::Tab(TabCommand::Create)),
+            [digit @ b'1'..=b'9'] if self.tabs => Some(KeyCommand::Tab(TabCommand::Index(
+                usize::from(digit - b'1'),
+            ))),
+            b"w" if self.tabs => Some(KeyCommand::PickTab),
             b"r" if self.pairing => Some(KeyCommand::PairController),
             _ => None,
         }

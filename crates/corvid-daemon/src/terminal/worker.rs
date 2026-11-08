@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use corvid_core::agent::{ProcessLiveness, Provider, Source};
-use corvid_core::layout::{CwdSource, Location};
+use corvid_core::layout::{CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
@@ -18,6 +18,7 @@ use vt100::Screen;
 
 use crate::agents::ManagedLaunch;
 use crate::collector::HookEnvironment;
+use crate::metadata::MetadataUpdates;
 use crate::process::{
     self, Executable, Incarnation, Probe, ProbeBudget, ProbeResult, ProcessImage,
 };
@@ -27,6 +28,8 @@ use crate::workspaces::Registry;
 use super::input::{InputQueue, Kind, WriteFailure};
 use super::keys::{InputMode, KeyCommand, Keymap, TabCommand};
 use super::paste::Paste;
+use super::status::{self, TuiViewport};
+use super::tabs::{PickerAction, TabPicker};
 use super::{TerminalPty, TerminalScreen};
 
 const COMMAND_CAPACITY: usize = 32;
@@ -47,20 +50,37 @@ pub(crate) struct Launch {
 
 pub(crate) struct LaunchScope {
     pub(crate) location: Location,
+    pub(crate) metadata: MetadataUpdates,
     pub(crate) registry: Weak<Mutex<Registry>>,
     pub(crate) boot_id: Option<Uuid>,
     pub(crate) probes: Arc<ProbeBudget>,
     pub(crate) hook_environment: Arc<HookEnvironment>,
 }
 
+impl LaunchScope {
+    fn tab_picker(&self, location: Location) -> Option<TabPicker> {
+        let registry = self.registry.upgrade()?;
+        let registry = registry.lock().ok()?;
+        let layout = self.metadata.layout();
+        let workspace = layout
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == location.workspace)?;
+        TabPicker::new(workspace, location.tab, |tab| {
+            registry.live_tab(&layout, workspace.id, tab).is_some()
+        })
+    }
+}
+
 pub(crate) struct AttachSpec {
+    pub(crate) location: Location,
     pub(crate) client_id: Uuid,
     pub(crate) generation: u64,
     pub(crate) lease_generation: u64,
     pub(crate) revision: u64,
     pub(crate) dormant: bool,
     pub(crate) keymap: Keymap,
-    pub(crate) viewport: Viewport,
+    pub(crate) viewport: TuiViewport,
     pub(crate) launch: Option<Launch>,
     pub(crate) events: mpsc::Sender<Event>,
 }
@@ -138,7 +158,7 @@ enum Command {
     Fence(InputRoute, oneshot::Sender<Reply<bool>>),
     Freeze(InputRoute, oneshot::Sender<Reply<()>>),
     Thaw(InputRoute, oneshot::Sender<Reply<InputRoute>>),
-    Activate(InputRoute, Viewport, oneshot::Sender<Reply<()>>),
+    Activate(InputRoute, TuiViewport, oneshot::Sender<Reply<()>>),
     Resume(InputRoute),
 }
 
@@ -222,7 +242,7 @@ impl TerminalHandle {
         timeout_reply(receive).await
     }
 
-    pub(crate) async fn activate(&self, route: InputRoute, viewport: Viewport) -> Reply<()> {
+    pub(crate) async fn activate(&self, route: InputRoute, viewport: TuiViewport) -> Reply<()> {
         let (send, receive) = oneshot::channel();
         self.commands
             .try_send(Command::Activate(route, viewport, send))
@@ -385,15 +405,14 @@ impl Worker {
                 "workspace already has a writer",
             ));
         }
+        let content = spec.viewport.content();
         let launch = spec
             .launch
             .filter(|launch| !launch.if_empty || self.terminal.is_none());
         match (&mut self.terminal, launch) {
             (Some(terminal), None) if terminal.exit.is_some() => return Err(terminal_fault()),
             (Some(_), None) if spec.dormant => {}
-            (Some(terminal), None) => terminal
-                .resize(spec.viewport)
-                .map_err(|_| terminal_fault())?,
+            (Some(terminal), None) => terminal.resize(content).map_err(|_| terminal_fault())?,
             (Some(_), Some(_)) => {
                 return Err(ProtocolFault::new(
                     "TerminalExists",
@@ -401,14 +420,13 @@ impl Worker {
                 ));
             }
             (None, Some(launch)) => {
-                self.terminal = Some(Running::spawn(launch, spec.viewport, &self.scope).map_err(
-                    |_| {
+                self.terminal =
+                    Some(Running::spawn(launch, content, &self.scope).map_err(|_| {
                         ProtocolFault::new(
                             "TerminalStartFailed",
                             "unable to start the requested terminal",
                         )
-                    },
-                )?);
+                    })?);
                 self.live.store(true, Ordering::Release);
             }
             (None, None) => {
@@ -433,6 +451,7 @@ impl Worker {
             !spec.dormant,
             spec.keymap,
             spec.viewport,
+            spec.location,
         ));
         self.viewing.store(true, Ordering::Release);
         Ok(route)
@@ -469,6 +488,7 @@ impl Worker {
         }
         lease.frozen = true;
         lease.leader = None;
+        lease.picker = None;
         terminal.input.fence();
         Ok(())
     }
@@ -498,7 +518,7 @@ impl Worker {
         Ok(lease.route)
     }
 
-    fn activate(&mut self, route: InputRoute, viewport: Viewport) -> Reply<()> {
+    fn activate(&mut self, route: InputRoute, viewport: TuiViewport) -> Reply<()> {
         let lease = self
             .lease
             .as_mut()
@@ -509,7 +529,9 @@ impl Worker {
             .as_mut()
             .filter(|terminal| terminal.exit.is_none())
             .ok_or_else(terminal_fault)?;
-        terminal.resize(viewport).map_err(|_| terminal_fault())?;
+        terminal
+            .resize(viewport.content())
+            .map_err(|_| terminal_fault())?;
         lease.viewport = viewport;
         terminal.dirty = true;
         lease.armed = true;
@@ -553,6 +575,9 @@ impl Worker {
                             self.revoke();
                         }
                     }
+                    Some(KeyCommand::PickTab) => {
+                        lease.picker = self.scope.tab_picker(lease.location);
+                    }
                     Some(KeyCommand::PairController) => {
                         if lease.events.try_send(Event::PairController).is_err() {
                             self.revoke();
@@ -585,9 +610,10 @@ impl Worker {
                 if terminal.exit.is_some() {
                     return Err(stale_route());
                 }
-                if !terminal
-                    .input
-                    .paste(paste.finish(), terminal.screen.bracketed_paste())
+                if lease.picker.is_none()
+                    && !terminal
+                        .input
+                        .paste(paste.finish(), terminal.screen.bracketed_paste())
                 {
                     return Err(input_busy());
                 }
@@ -611,8 +637,14 @@ impl Worker {
                     .render_generation
                     .checked_add(1)
                     .ok_or_else(overloaded)?;
-                terminal.resize(viewport).map_err(|_| terminal_fault())?;
-                lease.viewport = viewport;
+                let next_viewport = TuiViewport {
+                    outer: viewport,
+                    ..lease.viewport
+                };
+                terminal
+                    .resize(next_viewport.content())
+                    .map_err(|_| terminal_fault())?;
+                lease.viewport = next_viewport;
                 terminal.input.fence();
                 lease.leader = None;
                 if let Some(paste) = lease.paste.take()
@@ -693,6 +725,9 @@ impl Worker {
         };
         if terminal.exit.is_some() {
             self.live.store(false, Ordering::Release);
+            if let Some(lease) = &mut self.lease {
+                lease.picker = None;
+            }
         }
         if terminal.exit.is_some()
             && let Some(failure) = terminal.input.interrupted_paste()
@@ -715,7 +750,7 @@ impl Worker {
             return;
         }
         if let Some(lease) = &mut self.lease
-            && lease.render(terminal).is_err()
+            && lease.render(terminal, &self.scope.metadata).is_err()
         {
             self.revoke();
         }
@@ -842,7 +877,6 @@ impl Running {
             .hook_environment
             .configure(&mut command, association, shell.then_some(id));
 
-        let viewport = viewport.fit_screen();
         let mut pty = TerminalPty::spawn(command, viewport)?;
         let (process, identity) =
             TerminalProcess::started(reservation, &mut pty, scope, id, executable);
@@ -873,7 +907,6 @@ impl Running {
     }
 
     fn resize(&mut self, viewport: Viewport) -> Result<()> {
-        let viewport = viewport.fit_screen();
         self.pty.resize(viewport)?;
         self.screen.resize(viewport);
         Ok(())
@@ -1051,17 +1084,32 @@ struct Lease {
     input_sequence: u64,
     events: mpsc::Sender<Event>,
     render_generation: u64,
-    previous: Option<Screen>,
+    previous: Option<LastFrame>,
     frame_id: u64,
     in_flight: Option<Flight>,
     next_frame: Instant,
     paste: Option<Paste>,
     leader: Option<Instant>,
+    picker: Option<TabPicker>,
     armed: bool,
     frozen: bool,
     switch_pending: bool,
     keymap: Keymap,
-    viewport: Viewport,
+    viewport: TuiViewport,
+    location: Location,
+    status: Option<Status>,
+}
+
+enum LastFrame {
+    Terminal(Box<Screen>),
+    Picker,
+}
+
+struct Status {
+    layout: Arc<Layout>,
+    mode: InputMode,
+    cols: u16,
+    ansi: String,
 }
 
 impl Lease {
@@ -1070,7 +1118,8 @@ impl Lease {
         events: mpsc::Sender<Event>,
         armed: bool,
         keymap: Keymap,
-        viewport: Viewport,
+        viewport: TuiViewport,
+        location: Location,
     ) -> Self {
         Self {
             route,
@@ -1083,16 +1132,19 @@ impl Lease {
             next_frame: Instant::now(),
             paste: None,
             leader: None,
+            picker: None,
             armed,
             frozen: false,
             switch_pending: false,
             keymap,
             viewport,
+            location,
+            status: None,
         }
     }
 
     fn input_mode(&self) -> InputMode {
-        if self.leader.is_some() {
+        if self.leader.is_some() || self.picker.is_some() {
             InputMode::Command
         } else {
             InputMode::Passthrough
@@ -1115,6 +1167,21 @@ impl Lease {
         mut bytes: Vec<u8>,
         queue: &mut InputQueue,
     ) -> Reply<Option<KeyCommand>> {
+        if let Some(picker) = &mut self.picker {
+            self.input_sequence = sequence;
+            return Ok(match picker.key(&bytes) {
+                PickerAction::Keep => None,
+                PickerAction::Cancel => {
+                    self.picker = None;
+                    None
+                }
+                PickerAction::Select(tab) => {
+                    self.picker = None;
+                    Some(KeyCommand::Tab(TabCommand::Select(tab)))
+                }
+            });
+        }
+
         if self
             .leader
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
@@ -1192,21 +1259,41 @@ impl Lease {
         }
     }
 
-    fn render(&mut self, terminal: &mut Running) -> Result<()> {
+    fn refresh_status(&mut self, metadata: &MetadataUpdates) -> bool {
+        if self.viewport.status_row().is_none() {
+            return self.status.take().is_some();
+        }
+        let layout = metadata.layout();
+        let cols = self.viewport.outer.cols.get();
+        let mode = self.input_mode();
+        if self.status.as_ref().is_some_and(|previous| {
+            Arc::ptr_eq(&previous.layout, &layout) && previous.mode == mode && previous.cols == cols
+        }) {
+            return false;
+        }
+        let ansi = status::line(&layout, self.location, cols, mode, self.keymap);
+        let changed = self
+            .status
+            .as_ref()
+            .is_none_or(|previous| previous.ansi != ansi);
+        self.status = Some(Status {
+            layout,
+            mode,
+            cols,
+            ansi,
+        });
+        changed
+    }
+
+    fn render(&mut self, terminal: &mut Running, metadata: &MetadataUpdates) -> Result<()> {
         let now = Instant::now();
-        if !self.armed
-            || self.frozen
-            || !terminal.dirty
-            || self.in_flight.is_some()
-            || now < self.next_frame
-        {
+        if !self.armed || self.frozen || self.in_flight.is_some() || now < self.next_frame {
             return Ok(());
         }
+        let Some((ansi, painted)) = self.paint(terminal, metadata)? else {
+            return Ok(());
+        };
 
-        let ansi = terminal
-            .screen
-            .render(self.previous.as_ref(), self.viewport)?
-            .into_bytes();
         anyhow::ensure!(ansi.len() <= MAX_ANSI, "render payload exceeds frame limit");
         let frame_id = self.frame_id.checked_add(1).ok_or_else(overloaded)?;
         let render = Render {
@@ -1214,12 +1301,15 @@ impl Lease {
             generation: self.render_generation,
             frame_id,
             base_frame_id: self.previous.as_ref().map(|_| self.frame_id),
-            ansi,
+            ansi: ansi.into_bytes(),
         };
         self.events
             .try_send(Event::Render(render))
             .map_err(|_| overloaded())?;
-        self.previous = Some(terminal.screen.snapshot());
+        if matches!(painted, LastFrame::Terminal(_)) {
+            terminal.dirty = false;
+        }
+        self.previous = Some(painted);
         self.frame_id = frame_id;
         self.in_flight = Some(Flight {
             generation: self.render_generation,
@@ -1227,8 +1317,44 @@ impl Lease {
             sent: now,
         });
         self.next_frame = now + FRAME_INTERVAL;
-        terminal.dirty = false;
         Ok(())
+    }
+
+    fn paint(
+        &mut self,
+        terminal: &Running,
+        metadata: &MetadataUpdates,
+    ) -> Result<Option<(String, LastFrame)>> {
+        if let Some(picker) = &mut self.picker {
+            if !picker.dirty && matches!(self.previous, Some(LastFrame::Picker)) {
+                return Ok(None);
+            }
+            let ansi = picker.paint(self.viewport.outer)?;
+            return Ok(Some((ansi, LastFrame::Picker)));
+        }
+
+        let status_changed = self.refresh_status(metadata);
+        let previous = match &self.previous {
+            Some(LastFrame::Terminal(screen)) => Some(screen.as_ref()),
+            _ => None,
+        };
+        if !terminal.dirty && !status_changed && previous.is_some() {
+            return Ok(None);
+        }
+
+        let footer = self
+            .viewport
+            .status_row()
+            .zip(self.status.as_ref())
+            .filter(|_| status_changed || previous.is_none())
+            .map(|(row, status)| (row, status.ansi.as_str()));
+        let ansi = terminal
+            .screen
+            .render(previous, self.viewport.outer, footer)?;
+        Ok(Some((
+            ansi,
+            LastFrame::Terminal(Box::new(terminal.screen.snapshot())),
+        )))
     }
 }
 

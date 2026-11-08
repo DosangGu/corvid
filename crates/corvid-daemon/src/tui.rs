@@ -17,7 +17,7 @@ use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
     DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter, LEGACY_DEFAULT_LAUNCH_CAPABILITY,
     MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame,
-    Session,
+    STATUS_BAR_CAPABILITY, Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -29,7 +29,7 @@ use crate::control::handshake;
 use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::projection::selection;
-use crate::terminal::{Action, Event, Keymap, Launch, Render};
+use crate::terminal::{Action, Event, Keymap, Launch, Render, TuiViewport};
 use crate::workspaces::{
     Active, AttachTarget, Destination, FocusDispatch, FocusRecovery, Workspaces,
 };
@@ -44,6 +44,7 @@ const CAPABILITIES: &[&str] = &[
     CLAIM_WORKSPACE_CAPABILITY,
     MOVE_TAB_CAPABILITY,
     PAIR_CAPABILITY,
+    STATUS_BAR_CAPABILITY,
     ADAPTIVE_VIEWPORT_CAPABILITY,
     RESPONSE_NOTIFICATION_CAPABILITY,
     DEFAULT_SHELL_CAPABILITY,
@@ -208,9 +209,10 @@ impl TuiConnection<'_> {
             Body::ClaimWorkspaceWriter(claim) => {
                 let workspace = parse_id(&claim.workspace_id);
                 let result = match workspace {
-                    Ok(workspace) => self
-                        .workspaces
-                        .claim(client, workspace, self.active.viewport),
+                    Ok(workspace) => {
+                        self.workspaces
+                            .claim(client, workspace, self.active.viewport.content())
+                    }
                     Err(fault) => Err(fault),
                 };
                 match result {
@@ -257,7 +259,7 @@ impl TuiConnection<'_> {
             Event::Render(_) => {}
             Event::ViewChanged { route, viewport } => {
                 self.active.route = route;
-                self.active.viewport = viewport;
+                self.active.viewport.outer = viewport;
                 self.workspaces.resize_hidden(&self.active);
                 self.view_changed(None, false).await?;
             }
@@ -359,7 +361,7 @@ impl TuiConnection<'_> {
         request_id: Option<String>,
         paste_discarded: bool,
     ) -> Result<()> {
-        let viewport = self.active.viewport;
+        let viewport = self.active.viewport.outer;
         let view = ViewChanged {
             view_revision: self.active.route.view_revision,
             selection: Some(selection(self.active.location)),
@@ -551,7 +553,13 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
                 .iter()
                 .any(|name| name == PAIR_CAPABILITY),
         },
-        viewport: viewport(attach.viewport.as_ref())?,
+        viewport: TuiViewport {
+            outer: viewport(attach.viewport.as_ref())?,
+            status_bar: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == STATUS_BAR_CAPABILITY),
+        },
         launch: attach
             .launch
             .as_ref()

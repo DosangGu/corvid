@@ -24,6 +24,7 @@ pub mod controller;
 
 pub const CLAIM_WORKSPACE_CAPABILITY: &str = "claim_workspace.v1";
 pub const MOVE_TAB_CAPABILITY: &str = "move_tab.v1";
+pub const STATUS_BAR_CAPABILITY: &str = "status_bar.v1";
 pub const ADAPTIVE_VIEWPORT_CAPABILITY: &str = "adaptive_viewport.v1";
 pub const RESPONSE_NOTIFICATION_CAPABILITY: &str = "response_notification.v1";
 pub const DEFAULT_SHELL_CAPABILITY: &str = "default_shell.v1";
