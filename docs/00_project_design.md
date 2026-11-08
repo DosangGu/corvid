@@ -914,6 +914,14 @@ negotiate a compatible subset or return ProtocolMismatch. It must never kill/res
 daemon or corrupt work to force an upgrade. The error includes supported versions and
 manual upgrade guidance. Installation equality does not imply running-version equality.
 
+An explicit `corvid upgrade` uses an authenticated local upgrade socket, separate
+from the control relay. An automatically started daemon advertises
+`daemon_upgrade.v1` there. It pauses TUI admission, rejects the request while a
+terminal or attach is active, and waits for its metadata to be saved before
+approving shutdown. The launcher serializes replacement under the startup lock,
+reopens the same state directory, and verifies the same host in a new epoch.
+Externally managed daemons are upgraded through their supervisor.
+
 Cache results for up to 4,096 `(ControllerId, RpcRequestId)` commands for 10 minutes per
 epoch. Reusing an ID with a different validated semantic command is InvalidMessage. Compare
 normalized command fields, not encoded byte equality: wire ordering is not command

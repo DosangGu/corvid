@@ -29,3 +29,4 @@ pub const ADAPTIVE_VIEWPORT_CAPABILITY: &str = "adaptive_viewport.v1";
 pub const RESPONSE_NOTIFICATION_CAPABILITY: &str = "response_notification.v1";
 pub const DEFAULT_SHELL_CAPABILITY: &str = "default_shell.v1";
 pub const LEGACY_DEFAULT_LAUNCH_CAPABILITY: &str = "default_launch.v1";
+pub const DAEMON_UPGRADE_CAPABILITY: &str = "daemon_upgrade.v1";

@@ -230,6 +230,15 @@ impl Workspaces {
         (terminal_live, collector)
     }
 
+    pub(crate) fn is_idle(&self) -> bool {
+        let mut registry = self.lock_registry();
+        registry.sweep();
+        registry.clients.is_empty()
+            && registry.claims.is_empty()
+            && registry.slots.is_empty()
+            && registry.retired.is_empty()
+    }
+
     pub(crate) async fn attach(
         &self,
         client: Uuid,

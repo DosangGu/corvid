@@ -380,6 +380,32 @@ def background_daemon_pid(runtime):
     return pid
 
 
+def verify_upgrade(command, runtime, home, env, old_pid):
+    def control(request):
+        return subprocess.check_output([*command, "control", request], timeout=5)
+
+    old_host, old_epoch = control("host").splitlines()
+    old_layout = control("workspaces")
+    assert b"Upgrade layout" in old_layout
+    replacement_env = env | {"XDG_STATE_HOME": str(home / "other-state")}
+    deadline = time.monotonic() + 5
+    while True:
+        result = subprocess.run(
+            [*command, "upgrade"], env=replacement_env, capture_output=True, timeout=12,
+        )
+        if result.returncode == 0:
+            break
+        assert b"DaemonBusy" in result.stderr and time.monotonic() < deadline, result
+        time.sleep(0.02)
+
+    assert b"Upgraded the Corvid daemon" in result.stdout
+    assert background_daemon_pid(runtime) != old_pid
+    new_host, new_epoch = control("host").splitlines()
+    assert new_host == old_host and new_epoch != old_epoch
+    assert control("workspaces") == old_layout
+    assert not (home / "other-state").exists()
+
+
 def verify_default_start(binary, directory):
     runtime = directory / "auto"
     home = directory / "home"
@@ -435,12 +461,38 @@ def verify_default_start(binary, directory):
             active.send(b"d")
             active.wait(0)
 
+        refused = subprocess.run(
+            [*command, "upgrade"], env=env, capture_output=True, timeout=5,
+        )
+        assert refused.returncode == 1 and b"DaemonBusy" in refused.stderr, refused
+
         with OuterTerminal(command, cols=319, rows=80, env=env) as second:
             assert shell_pid(second) == pid
             assert background_daemon_pid(runtime) == daemon
             second.send(b"exit\n")
             second.wait(0)
 
+        named_tab = [*command, "attach", "--new-tab", "Upgrade layout"]
+        with OuterTerminal(named_tab, cols=319, rows=80, env=env) as tab:
+            shell_pid(tab)
+            tab.send(b"exit\n")
+            tab.wait(0)
+
+        with socket.socket(socket.AF_UNIX) as attaching:
+            attaching.settimeout(3)
+            attaching.connect(os.fspath(runtime / "client.sock"))
+            assert attaching.recv(1), "daemon did not accept the pending TUI"
+            refused = subprocess.run(
+                [*command, "upgrade"], env=env, capture_output=True, timeout=5,
+            )
+            assert refused.returncode == 1 and b"DaemonBusy" in refused.stderr, refused
+            assert background_daemon_pid(runtime) == daemon
+
+        verify_upgrade(command, runtime, home, env, daemon)
+        with OuterTerminal(command, cols=319, rows=80, env=env) as updated:
+            shell_pid(updated)
+            updated.send(b"exit\n")
+            updated.wait(0)
     finally:
         try:
             daemon = background_daemon_pid(runtime)
@@ -597,6 +649,9 @@ def run(binary):
         )
         try:
             wait_for_daemon(command, daemon)
+            refused = subprocess.run([*command, "upgrade"], capture_output=True, timeout=5)
+            assert refused.returncode == 1 and b"UnsupportedCapability" in refused.stderr
+            assert daemon.poll() is None
             verify(command, directory)
             verify_paste(command)
             verify_tabs(command, directory)
@@ -610,7 +665,7 @@ def run(binary):
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
                 verify_shell_agent_notifications(binary, directory, database, shell_name=shell)
-    print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, detach, tab switching, and the tab picker.")
+    print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, detach, tab switching, the tab picker, and idle daemon upgrade.")
 
 
 if __name__ == "__main__":

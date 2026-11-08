@@ -12,6 +12,8 @@ mod relay;
 mod snapshot;
 #[cfg(target_os = "linux")]
 mod tty;
+#[cfg(target_os = "linux")]
+mod upgrade;
 
 #[cfg(target_os = "linux")]
 pub use attach::{AttachOptions, attach, check_tty};
@@ -28,3 +30,5 @@ pub use relay::relay;
 pub use snapshot::SnapshotWatch;
 #[cfg(target_os = "linux")]
 pub use snapshot::{snapshot, watch_snapshot};
+#[cfg(target_os = "linux")]
+pub use upgrade::{UpgradeTarget, prepare_upgrade};

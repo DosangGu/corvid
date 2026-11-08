@@ -12,6 +12,7 @@ mod publication;
 mod snapshot;
 pub mod terminal;
 mod tui;
+mod upgrade;
 mod workspaces;
 
 use std::future::Future;
@@ -40,6 +41,7 @@ const MAX_COLLECTOR_CONNECTIONS: usize = 32;
 pub async fn run(
     runtime_path: &Path,
     state_path: &Path,
+    autostarted: bool,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
     let runtime = RuntimeDir::create(runtime_path)?;
@@ -50,6 +52,11 @@ pub async fn run(
     let control_socket = instance.bind(SocketRole::Control).await?;
     let client_socket = instance.bind(SocketRole::Client).await?;
     let collector_socket = instance.bind(SocketRole::Collector).await?;
+    let upgrade_socket = if autostarted {
+        Some(instance.bind(SocketRole::Upgrade).await?)
+    } else {
+        None
+    };
     let hook_environment = Arc::new(HookEnvironment {
         runtime: runtime.path().to_owned(),
         identity: Arc::clone(&identity),
@@ -61,6 +68,8 @@ pub async fn run(
     let mut collectors = JoinSet::new();
     let mut agent_clock = tokio::time::interval(Duration::from_millis(250));
     agent_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let incoming_upgrade = upgrade::listen(upgrade_socket.as_ref(), &identity);
+    tokio::pin!(incoming_upgrade);
     tokio::pin!(shutdown);
 
     loop {
@@ -69,6 +78,15 @@ pub async fn run(
             _ = controls.join_next(), if !controls.is_empty() => {}
             _ = clients.join_next(), if !clients.is_empty() => {}
             _ = collectors.join_next(), if !collectors.is_empty() => {}
+            request = &mut incoming_upgrade => {
+                // While this branch runs, the loop cannot accept another TUI.
+                while clients.try_join_next().is_some() {}
+                let idle = clients.is_empty() && workspaces.is_idle();
+                if request.respond(idle, metadata.clone(), state_path).await.unwrap_or(false) {
+                    break;
+                }
+                incoming_upgrade.set(upgrade::listen(upgrade_socket.as_ref(), &identity));
+            }
             _ = agent_clock.tick() => workspaces.tick_agents(),
             peer = collector_socket.accept() => match peer {
                 Ok(Some(stream)) if collectors.len() < MAX_COLLECTOR_CONNECTIONS => {

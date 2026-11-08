@@ -36,7 +36,11 @@ pub(super) enum Command {
         /// Override the private directory containing daemon metadata.
         #[arg(long)]
         state_dir: Option<PathBuf>,
+        #[arg(long, hide = true)]
+        autostarted: bool,
     },
+    /// Replace an idle background daemon with this build.
+    Upgrade,
     /// Attach to the live terminal, or start one explicitly.
     Attach {
         /// Start a new terminal with the user's shell.
@@ -206,11 +210,14 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
         Command::Hooks { .. } | Command::Observe { .. } => {
             unreachable!("handled before daemon runtime")
         }
-        Command::Daemon { state_dir } => {
+        Command::Daemon {
+            state_dir,
+            autostarted,
+        } => {
             let state = state_path(state_dir)?;
             let mut terminate = signal(SignalKind::terminate())?;
             let mut interrupt = signal(SignalKind::interrupt())?;
-            corvid_daemon::run(&runtime, &state, async move {
+            corvid_daemon::run(&runtime, &state, autostarted, async move {
                 tokio::select! {
                     _ = terminate.recv() => {}
                     _ = interrupt.recv() => {}
@@ -219,6 +226,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             .await
             .map(|()| 0)
         }
+        Command::Upgrade => start::upgrade(&runtime).await.map(|()| 0),
         Command::Attach {
             new,
             agent,

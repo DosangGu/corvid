@@ -21,6 +21,7 @@ pub enum PeerRole {
     Control,
     Collector,
     Presentation,
+    Upgrade,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,6 +161,7 @@ impl Session {
         match (self.role, body) {
             (PeerRole::Tui | PeerRole::Control | PeerRole::Presentation, Body::Ping(_))
             | (PeerRole::Collector, Body::CollectHook(_) | Body::RegisterShellAgent(_))
+            | (PeerRole::Upgrade, Body::UpgradeDaemon(_))
             | (
                 PeerRole::Presentation,
                 Body::GetPresentationSlots(_)

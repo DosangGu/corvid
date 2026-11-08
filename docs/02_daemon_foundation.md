@@ -20,6 +20,15 @@ The automatically started daemon uses the bundled terminfo entry.
 For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
 
+After building or installing an updated binary, run `target/debug/corvid upgrade`
+or `corvid upgrade` with the updated executable. The command replaces an idle
+automatically started daemon on the selected runtime directory. Exit every
+live shell first, including detached tabs. The replacement keeps the same
+state directory, host identity, and saved layout, and starts a new daemon
+epoch. If the runtime is stopped, the command starts the updated daemon.
+For foreground or systemd daemons, use their existing start and stop procedure.
+An older daemon without upgrade support also needs one manual restart.
+
 Press Ctrl-] then d to detach and run `corvid` again to return to the shell.
 The bottom status bar shows **CORVID**, the current workspace, and tab numbers
 and names, such as **[1:Shell]** and **2:Tests**. Brackets and highlighting

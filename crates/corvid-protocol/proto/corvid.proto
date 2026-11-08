@@ -66,6 +66,8 @@ message Envelope {
     SnapshotEnd snapshot_end = 74;
     SnapshotDelta snapshot_delta = 75;
     WatchReady watch_ready = 76;
+    UpgradeDaemon upgrade_daemon = 80;
+    DaemonUpgradeReady daemon_upgrade_ready = 81;
     RpcError error = 90;
     GetPresentationSlots get_presentation_slots = 100;
     PresentationSlots presentation_slots = 101;
@@ -113,6 +115,11 @@ message Ping {}
 message Pong {}
 message GetHost {}
 message GetCapabilities {}
+message UpgradeDaemon {}
+
+message DaemonUpgradeReady {
+  bytes state_directory = 1;
+}
 
 message HostInfo {
   string host_id = 1;
