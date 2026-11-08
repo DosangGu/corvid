@@ -93,6 +93,9 @@ for fault in timeout collector-saturated malformed-result; do
   python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault "$fault"
 done
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault collector-saturated
+for scenario in answer plan plan-rejected child-nested resume cancel; do
+  python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario "$scenario" --fault helper-crash
+done
 ```
 
 The managed PTY test observed a pending question, its matching resolution, a
@@ -136,6 +139,15 @@ completed in the CLI while Corvid received no usable observations. Loss before
 the daemon receives a frame can leave collection coverage unchanged.
 `corvid control collector-status` reports the refused connections from the
 saturation fixture. The run's last recorded collection state is NotRegistered.
+
+The crash fixture runs the generated matchers and failure policy with an
+observer that records its event name and dies from `SIGKILL` before sending
+output or contacting the collector. It is the sole handler for each matched
+event. The question, plan, nested child, and conversation scenarios reached
+all configured event types. The loopback model verified manual plan rejection
+from the matching tool result's error flag. Claude also completed question
+dismissal, compaction, and resume. The daemon reported zero hook submissions
+and left collection NotRegistered.
 
 For A22, the fixture disconnected the local companion while a question was
 pending. It sent the result's hook metadata to the observer with an invalid
@@ -245,6 +257,9 @@ done
 for fault in missing-helper missing-collector; do
   python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation --fault "$fault"
 done
+for mode in disable enable; do
+  python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation "--$mode-auto-start" --fault helper-crash
+done
 ```
 
 The [allowlisted traces](../crates/corvid/tests/fixtures/codex/0.167.0/) use
@@ -261,5 +276,11 @@ response despite the missing or timed-out observer, missing socket, and 32
 occupied collector connections. The saturation test also checked that the next
 connection was refused. The conversation fixture completed
 compaction and resume with either the helper or the collector socket absent.
+The crash conversation exercised every generated event type, including Stop
+and Interrupt, in both in-process and managed app-server modes. The only
+matching observer was killed before emitting output, including the empty JSON
+normally returned by the Stop observer. Approval, answering, interruption,
+compaction, and resume still completed. The daemon reported zero hook
+submissions and left collection NotRegistered.
 The standalone helper tests cover malformed, oversized, and stalled input with
 neutral output.

@@ -16,13 +16,14 @@ import tempfile
 import threading
 import time
 
-from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE
+from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE, verify_crashed_hooks
 from companion_fixture import assigned_slots, fields, request_for
 from interactive import stop, wait_for_daemon
 from ssh_lifecycle import check_ssh, setup_companion_ssh, start_ssh
 
 VERSION = "codex-cli 0.167.0"
 ROOT = Path(__file__).resolve().parents[3]
+CRASH_TRACE = "crashed-hooks"
 EVENTS = (
     "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
     "PermissionRequest", "Stop", "Interrupt", "PreCompact", "PostCompact",
@@ -50,6 +51,12 @@ if argv[1:4] == [b"app-server", b"--listen", b"unix://"] and argv[-1] == b"--man
     event["parent_role"] = "managed_app_server"
 with open(sys.argv[1], "a") as trace:
     trace.write(json.dumps(event, separators=(",", ":")) + "\\n")
+if len(sys.argv) == 4:
+    helper, fault_trace = sys.argv[2:]
+    os.execv(
+        sys.executable,
+        [sys.executable, "-B", helper, "crash", fault_trace, event["hook_event_name"]],
+    )
 if event.get("hook_event_name") == "Stop":
     print("{}")
 '''
@@ -139,13 +146,22 @@ def configure(directory, project, port, binary, corvid, fault):
     observer = [sys.executable, str(capture), str(trace)]
     handler = {"type": "command", "command": "exec " + shlex.join(observer), "timeout": 1}
     hooks = {event: [{"hooks": [handler]}] for event in EVENTS}
+    crash_hooks = set()
     if corvid is not None:
         generated = json.loads(subprocess.check_output([corvid, "hooks", "codex"], timeout=3))
         for event, groups in generated["hooks"].items():
+            if fault == "helper-crash":
+                crash_hooks.add(event)
+                hooks[event] = []
             for group in groups:
                 for hook in group["hooks"]:
                     if fault == "missing-helper":
                         hook["command"] = "exec " + shlex.quote(str(directory / "missing-observer"))
+                    elif fault == "helper-crash":
+                        hook["command"] = "exec " + shlex.join([
+                            sys.executable, "-B", str(capture), str(trace),
+                            str(COLLECTOR_FIXTURE), str(directory / CRASH_TRACE),
+                        ])
                     elif fault == "timeout" and event == "Stop":
                         hook["command"] = "exec /bin/sleep 2"
                     elif fault == "collector-saturated":
@@ -186,7 +202,7 @@ remote_plugin = false
 ''')
     path = os.pathsep.join((str(binary.parent), os.defpath))
     env = {"HOME": str(home), "PATH": path, "SHELL": "/bin/sh", "TERM": "xterm-256color"}
-    return trace, env
+    return trace, env, crash_hooks
 
 
 class FixtureTerminal:
@@ -548,7 +564,7 @@ def focus_and_ack_question(first, second, command, companion, one, two):
 def capture(binary, corvid, directory, port, fault, auto_start, parallel, conversation):
     project = directory / "project"
     project.mkdir()
-    trace, env = configure(directory, project, port, binary, corvid, fault)
+    trace, env, crash_hooks = configure(directory, project, port, binary, corvid, fault)
     daemon = command = None
     launch = [binary]
     terminal = FixtureTerminal(directory, trace)
@@ -597,6 +613,21 @@ def capture(binary, corvid, directory, port, fault, auto_start, parallel, conver
                 tty.send_line("/exit")
                 tty.wait_exit()
         events = terminal.events()
+        if fault == "helper-crash":
+            if not conversation:
+                crash_hooks.discard("Interrupt")
+            verify_crashed_hooks(directory / CRASH_TRACE, crash_hooks)
+            if auto_start is not None:
+                managed_stop = any(
+                    event.get("hook_event_name") == "Stop"
+                    and event.get("parent_role") == "managed_app_server"
+                    for event in events
+                )
+                assert managed_stop == auto_start, "Stop did not use the selected provider mode"
+            status = fields(subprocess.check_output(
+                [*command, "control", "collector-status"], text=True, timeout=3,
+            ))
+            assert status["accepted_submissions"] == status["rejected_submissions"] == "0"
         if fault == "collector-saturated":
             assert (directory / "saturation").read_text().splitlines() == [SATURATION] * 6
     finally:
@@ -656,7 +687,9 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corvid", type=Path)
-    parser.add_argument("--fault", choices=("missing-helper", "missing-collector", "timeout", "collector-saturated"))
+    parser.add_argument("--fault", choices=(
+        "missing-helper", "helper-crash", "missing-collector", "timeout", "collector-saturated",
+    ))
     broker = parser.add_mutually_exclusive_group()
     broker.add_argument("--disable-auto-start", dest="auto_start", action="store_false")
     broker.add_argument("--enable-auto-start", dest="auto_start", action="store_true")
@@ -670,8 +703,9 @@ def main():
         parser.error("--parallel requires a managed Corvid fixture without fault injection")
     if args.parallel and args.auto_start is True:
         parser.error("--parallel requires independent Codex processes")
-    if args.conversation and (args.parallel or args.fault not in (None, "missing-helper", "missing-collector")):
-        parser.error("--conversation supports missing-helper or missing-collector for a single CLI")
+    conversation_faults = {None, "missing-helper", "helper-crash", "missing-collector"}
+    if args.conversation and (args.parallel or args.fault not in conversation_faults):
+        parser.error("--conversation supports missing-helper, helper-crash, or missing-collector for a single CLI")
     executable = shutil.which("codex")
     assert executable, "codex must be installed on PATH"
     binary = Path(executable).resolve()

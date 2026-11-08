@@ -20,7 +20,7 @@ import termios
 import threading
 import time
 
-from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE
+from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE, verify_crashed_hooks
 from companion_fixture import Companion, assigned_slots, attention, fields, request_for
 from interactive import stop, wait_for_daemon
 from snapshot_race import paused_watch, seed_history
@@ -33,6 +33,8 @@ HOOKS = (
 )
 IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id", "result_agent_id")
 FAULT_TRACE = "collector-faults"
+PLAN_REJECTION = "plan-rejection"
+INPUT_TOOL_ID = "toolu_corvid_fixture"
 OFFLINE_PROMPTS = (b"Corvid offline question one", b"Corvid offline question two")
 PLAN_SCENARIOS = {"plan", "plan-rejected"}
 SYNC_CHILD_SCENARIOS = {"child-sync", "child-nested"}
@@ -41,6 +43,7 @@ CHILD_PROMPT = "Corvid fixture child reads the test note."
 NESTED_PROMPT = "Corvid fixture grandchild reads the test note."
 CAPTURE = """
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -64,10 +67,15 @@ if event["hook_event_name"] == "PostToolBatch":
         {key: call[key] for key in ("tool_name", "tool_use_id")}
         for call in event["tool_calls"] if call["tool_name"] in {"AskUserQuestion", "ExitPlanMode"}
     ]
-    if not record["tool_calls"]:
-        sys.exit(0)
-with Path(sys.argv[1]).open("a") as trace:
-    print(json.dumps(record), file=trace)
+if event["hook_event_name"] != "PostToolBatch" or record["tool_calls"]:
+    with Path(sys.argv[1]).open("a") as trace:
+        print(json.dumps(record), file=trace)
+if len(sys.argv) > 2:
+    helper, fault_trace = sys.argv[2:]
+    os.execv(
+        sys.executable,
+        [sys.executable, "-B", helper, "crash", fault_trace, event["hook_event_name"]],
+    )
 """
 
 
@@ -86,6 +94,8 @@ class ModelFixture(BaseHTTPRequestHandler):
 
         offered_tools = {tool.get("name") for tool in request.get("tools", [])}
         requested = self.server.fixture_tool
+        if requested == "ExitPlanMode" and self.server.tool_sent and has_rejected_plan(request):
+            self.server.plan_rejection.touch()
         tool = requested if requested in offered_tools and not self.server.tool_sent else None
         arguments = None
         if requested == "ExitPlanMode" and not self.server.plan_drafted:
@@ -206,6 +216,21 @@ def user_texts(request):
             yield from (block.get("text", "") for block in content if block.get("type") == "text")
 
 
+def has_rejected_plan(request):
+    for message in request.get("messages", []):
+        content = message.get("content", [])
+        if message.get("role") != "user" or not isinstance(content, list):
+            continue
+        if any(
+            block.get("type") == "tool_result"
+            and block.get("tool_use_id") == INPUT_TOOL_ID
+            and block.get("is_error") is True
+            for block in content
+        ):
+            return True
+    return False
+
+
 def response_content(tool, arguments):
     if not tool:
         return (
@@ -216,7 +241,7 @@ def response_content(tool, arguments):
     block = {
         "type": "tool_use",
         "name": tool,
-        "id": "toolu_corvid_fixture" if tool in {"AskUserQuestion", "ExitPlanMode"}
+        "id": INPUT_TOOL_ID if tool in {"AskUserQuestion", "ExitPlanMode"}
               else f"toolu_corvid_{tool.lower()}",
         "input": {},
     }
@@ -246,12 +271,30 @@ def configure(directory, port, corvid, fault):
     hook = shlex.join([sys.executable, str(capture), str(trace)])
     handler = {"type": "command", "command": hook, "timeout": 1}
     settings = {"hooks": {event: [{"hooks": [handler]}] for event in HOOKS}}
+    crash_hooks = set()
     if corvid is not None:
         generated = json.loads(subprocess.check_output([corvid, "hooks", "claude"], timeout=3))
         for event, handlers in generated["hooks"].items():
+            if fault == "helper-crash":
+                crash_hooks.add(event)
+                # These child fixture records lie outside the production matchers.
+                capture_tool = {"PreToolUse": "Agent", "PostToolUse": "Read"}.get(event)
+                settings["hooks"][event] = []
+                if capture_tool:
+                    assert all(
+                        re.search(group.get("matcher", ""), capture_tool) is None
+                        for group in handlers
+                    ), f"capture-only tool {capture_tool} overlaps a crashing {event} observer"
+                    settings["hooks"][event].append({"matcher": f"^{capture_tool}$", "hooks": [handler]})
             for matcher in handlers:
                 for observer in matcher["hooks"]:
-                    inject_fault(observer, event, fault, directory)
+                    if fault == "helper-crash":
+                        observer.update(command=sys.executable, args=[
+                            "-B", str(capture), str(trace), str(COLLECTOR_FIXTURE),
+                            str(directory / FAULT_TRACE),
+                        ])
+                    else:
+                        inject_fault(observer, event, fault, directory)
             settings["hooks"][event].extend(handlers)
     (config / "settings.json").write_text(json.dumps(settings))
     environment = {
@@ -265,7 +308,7 @@ def configure(directory, port, corvid, fault):
         "API_TIMEOUT_MS": "1500",
         "CLAUDE_CODE_MAX_RETRIES": "0",
     }
-    return trace, environment
+    return trace, environment, crash_hooks
 
 
 def inject_fault(observer, event, fault, directory):
@@ -613,7 +656,7 @@ def reject_plan(terminal, managed, initial, approval):
     terminal.send(b"x")
     terminal.expect(b"x")
     terminal.send(b"\r")
-    terminal.expect(b"User rejected ")
+    terminal.wait(terminal.trace.with_name(PLAN_REJECTION).is_file, "the model to receive the rejected plan")
     response = terminal.event(hook_event_name="Stop")
     if managed:
         managed.expect(
@@ -1094,8 +1137,23 @@ class CorvidFixture:
         assert subprocess.check_output(clients, timeout=3) == before
 
 
+def verify_observer_crashes(managed, scenario, events, configured):
+    optional = set()
+    if scenario not in CHILD_SCENARIOS:
+        observed = {event["hook_event_name"] for event in events}
+        optional.update({"SubagentStart", "SubagentStop"} - observed)
+    if scenario in {"cancel", "plan-rejected"}:
+        optional.add("PostToolUse")
+    if scenario == "cancel":
+        optional.add("PostToolBatch")
+
+    verify_crashed_hooks(managed.directory / FAULT_TRACE, configured - optional, optional=optional)
+    collector = managed.collector_status()
+    assert collector["accepted_submissions"] == collector["rejected_submissions"] == "0"
+
+
 def capture(binary, directory, port, scenario, corvid, fault):
-    trace, environment = configure(directory, port, corvid, fault)
+    trace, environment, crash_hooks = configure(directory, port, corvid, fault)
     project = directory / "project"
     project.mkdir()
     if scenario in CHILD_SCENARIOS:
@@ -1137,6 +1195,8 @@ def capture(binary, directory, port, scenario, corvid, fault):
                 assert (directory / FAULT_TRACE).read_text().splitlines() == ["invalid tool-use ID"]
             else:
                 assert agent["collection"] == "NotRegistered"
+                if fault == "helper-crash":
+                    verify_observer_crashes(managed, scenario, events, crash_hooks)
                 if fault == "collector-saturated":
                     # The batch observer is called once per tool batch, including Write and ToolSearch.
                     attempts = 10 if scenario == "plan" else 8
@@ -1309,7 +1369,8 @@ def main():
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
-        "missing-helper", "missing-collector", "collector-saturated", "timeout", "malformed-result",
+        "missing-helper", "helper-crash", "missing-collector", "collector-saturated", "timeout",
+        "malformed-result",
     ))
     args = parser.parse_args()
     if args.fault is not None and args.corvid is None:
@@ -1338,6 +1399,7 @@ def main():
             server.plan_drafted = False
             server.plan_search_sent = False
             server.plan_directory = Path(directory) / "home/.claude/plans"
+            server.plan_rejection = Path(directory) / PLAN_REJECTION
             server.child_fixture = args.scenario in CHILD_SCENARIOS
             server.nested_child = args.scenario == "child-nested"
             server.offline_pair = args.scenario == "offline-pair"

@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import sys
 import time
@@ -15,6 +16,13 @@ SCRIPT = Path(__file__).resolve()
 def record(trace, event):
     with trace.open("a") as stream:
         print(event, file=stream)
+
+
+def verify_crashed_hooks(trace, expected, *, optional=frozenset()):
+    actual = set(trace.read_text().splitlines())
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected - optional)
+    assert not missing and not unexpected, f"missing crashes {missing}, unexpected crashes {unexpected}"
 
 
 def saturate(trace, command):
@@ -71,6 +79,10 @@ def main():
     elif fault == "malformed":
         corrupt_stdin(trace)
         os.execv(command[0], command)
+    elif fault == "crash":
+        event, = command
+        record(trace, event)
+        os.kill(os.getpid(), signal.SIGKILL)
     else:
         raise ValueError(f"unknown collector fixture fault {fault!r}")
 
