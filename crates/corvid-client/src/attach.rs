@@ -17,8 +17,9 @@ use corvid_protocol::wire::{
     ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
 };
 use corvid_protocol::{
-    CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, Frame, FrameReader, FrameWriter,
-    MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RenderFrame, Session, decode_envelope,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, Frame, FrameReader,
+    FrameWriter, MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RenderFrame, Session,
+    decode_envelope,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::signal::unix::{SignalKind, signal};
@@ -32,6 +33,8 @@ use crate::keys::{Decoder, Input};
 use crate::tty::Tty;
 
 const INPUT_CHUNK: usize = 8192;
+const LEGACY_MAX_COLS: u16 = 300;
+const LEGACY_MAX_ROWS: u16 = 120;
 
 pub struct AttachOptions {
     pub launch: Option<Vec<OsString>>,
@@ -118,6 +121,7 @@ async fn request_attach(
     viewport: Viewport,
     options: AttachOptions,
 ) -> Result<(Connection, RouteToken)> {
+    check_viewport_support(&connection.session, viewport)?;
     let mut terminal_capabilities = vec!["legacy_vt.v1".into(), "tabs.v1".into()];
     if connection
         .session
@@ -651,6 +655,7 @@ impl Interactive {
         if viewport == self.viewport || self.keys.capturing_paste() {
             return Ok(());
         }
+        check_viewport_support(&self.session, viewport)?;
         self.keys.retire();
         let request_id = self
             .send(Body::ResizeViewport(ResizeViewport {
@@ -689,6 +694,25 @@ async fn wait_until(deadline: Option<Instant>) {
         Some(deadline) => sleep_until(deadline).await,
         None => pending().await,
     }
+}
+
+fn check_viewport_support(session: &Session, viewport: Viewport) -> Result<()> {
+    let cols = viewport.cols.get();
+    let rows = viewport.rows.get();
+    ensure!(
+        (cols <= LEGACY_MAX_COLS && rows <= LEGACY_MAX_ROWS)
+            || session
+                .capabilities
+                .iter()
+                .any(|name| name == ADAPTIVE_VIEWPORT_CAPABILITY),
+        ProtocolFault::new(
+            "ProtocolMismatch",
+            &format!(
+                "the running Corvid daemon supports up to {LEGACY_MAX_COLS}×{LEGACY_MAX_ROWS} cells. Restart it with this build after closing live sessions to use {cols}×{rows}"
+            )
+        )
+    );
+    Ok(())
 }
 
 fn wire_viewport(viewport: Viewport) -> WireViewport {

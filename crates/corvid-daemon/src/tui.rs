@@ -13,8 +13,8 @@ use corvid_protocol::wire::{
     RouteToken, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport, WriterClaimed,
 };
 use corvid_protocol::{
-    CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY,
-    PeerRole, ProtocolFault, RenderFrame, Session,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, FrameReader,
+    FrameWriter, MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RenderFrame, Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -41,6 +41,7 @@ const CAPABILITIES: &[&str] = &[
     CLAIM_WORKSPACE_CAPABILITY,
     MOVE_TAB_CAPABILITY,
     PAIR_CAPABILITY,
+    ADAPTIVE_VIEWPORT_CAPABILITY,
     "agent_launch.v1",
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
@@ -515,10 +516,15 @@ fn parse_optional_id(id: Option<&str>) -> Result<Option<Uuid>, ProtocolFault> {
 
 fn viewport(value: Option<&WireViewport>) -> Result<Viewport, ProtocolFault> {
     let value = value.ok_or_else(|| invalid("missing viewport"))?;
-    let error = |_| invalid("unsupported viewport size");
-    let cols = u16::try_from(value.cols).map_err(error)?;
-    let rows = u16::try_from(value.rows).map_err(error)?;
-    Viewport::new(cols, rows).map_err(|_| invalid("unsupported viewport size"))
+    let error = || {
+        invalid(&format!(
+            "viewport {}×{} requires 2–65535 columns and rows",
+            value.cols, value.rows
+        ))
+    };
+    let cols = u16::try_from(value.cols).map_err(|_| error())?;
+    let rows = u16::try_from(value.rows).map_err(|_| error())?;
+    Viewport::new(cols, rows).map_err(|_| error())
 }
 
 fn launch(command: &LaunchCommand) -> Result<Launch, ProtocolFault> {

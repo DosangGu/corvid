@@ -40,8 +40,9 @@ fn run() -> Result<u32> {
 
     let viewport = OuterTty::viewport().context("reading initial outer terminal size")?;
     let tty = OuterTty::enter()?;
-    let pty = TerminalPty::spawn(child_command(), viewport).context("starting child PTY")?;
-    let screen = TerminalScreen::new(viewport);
+    let content = viewport.fit_screen();
+    let pty = TerminalPty::spawn(child_command(), content).context("starting child PTY")?;
+    let screen = TerminalScreen::new(content);
 
     interact(tty, pty, screen, viewport, &shutdown)
 }
@@ -80,8 +81,9 @@ fn interact(
         if let Ok(size) = OuterTty::viewport()
             && size != viewport
         {
-            pty.resize(size)?;
-            screen.resize(size);
+            let content = size.fit_screen();
+            pty.resize(content)?;
+            screen.resize(content);
             viewport = size;
             dirty = true;
         }
@@ -110,14 +112,14 @@ fn interact(
         }
 
         if dirty && Instant::now() >= next_frame {
-            tty.write(&screen.redraw()?)?;
+            tty.write(&screen.redraw(viewport)?)?;
             next_frame = Instant::now() + FRAME_INTERVAL;
             dirty = false;
         }
 
         if eof && let Some(status) = pty.try_wait()? {
             if dirty {
-                tty.write(&screen.redraw()?)?;
+                tty.write(&screen.redraw(viewport)?)?;
             }
             return Ok(status.exit_code());
         }

@@ -95,7 +95,7 @@ fn register(file: File, interest: Interest) -> io::Result<AsyncFd<File>> {
 impl Drop for Tty {
     fn drop(&mut self) {
         let mut output = self.output.get_ref();
-        let _ = output.write_all(b"\x1b[?2004l\x1b[?1l\x1b>\x1b[0m\x1b[?25h\x1b[?1049l");
+        let _ = output.write_all(b"\x1b[?2004l\x1b[?1l\x1b>\x1b[0m\x1b[?25h\x1b[r\x1b[?1049l");
         let _ = disable_raw_mode();
     }
 }

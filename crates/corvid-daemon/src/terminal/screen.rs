@@ -99,8 +99,8 @@ impl TerminalScreen {
         self.parser.set_size(viewport.rows, viewport.cols);
     }
 
-    pub fn redraw(&self) -> Result<String> {
-        self.render_frame(None, self.bracketed_paste())
+    pub fn redraw(&self, outer: Viewport) -> Result<String> {
+        self.render_frame(None, self.bracketed_paste(), outer)
     }
 
     pub(super) fn bracketed_paste(&self) -> bool {
@@ -111,19 +111,42 @@ impl TerminalScreen {
         self.parser.screen().clone()
     }
 
-    pub(crate) fn render(&self, previous: Option<&Screen>) -> Result<String> {
-        self.render_frame(previous, true)
+    pub(crate) fn render(&self, previous: Option<&Screen>, outer: Viewport) -> Result<String> {
+        self.render_frame(previous, true, outer)
     }
 
-    fn render_frame(&self, previous: Option<&Screen>, outer_paste: bool) -> Result<String> {
+    fn render_frame(
+        &self,
+        previous: Option<&Screen>,
+        outer_paste: bool,
+        outer: Viewport,
+    ) -> Result<String> {
         let screen = self.parser.screen();
-        let mut frame = if let Some(previous) = previous {
-            screen.contents_diff(previous)
+        let (rows, cols) = screen.size();
+        let clipped_width = cols < outer.cols;
+        let mut frame = String::new();
+        if previous.is_none() {
+            frame.push_str(RESET_DRAWING);
+            if rows < outer.rows {
+                write!(frame, "\x1b[1;{rows}r")?;
+            }
+        }
+
+        if clipped_width {
+            Self::draw_rows(&mut frame, screen, previous)?;
+        } else if let Some(previous) = previous {
+            frame.push_str(&screen.contents_diff(previous));
         } else {
-            let mut frame = String::from(RESET_DRAWING);
             frame.push_str(&screen.contents_formatted());
-            frame
-        };
+        }
+
+        if clipped_width {
+            let (row, col) = screen.cursor_position();
+            let col = (col + 1).min(cols.get());
+            let visibility = if screen.hide_cursor() { 'l' } else { 'h' };
+            write!(frame, "\x1b[{};{col}H\x1b[?25{visibility}", row + 1)?;
+            frame.push_str(&screen.attributes_formatted());
+        }
 
         // The Unicode Bidi_Control characters can reorder untrusted cell text
         // in the outer terminal. Their removal leaves the VT cell widths intact.
@@ -152,6 +175,31 @@ impl TerminalScreen {
             "terminal redraw exceeds frame limit"
         );
         Ok(frame)
+    }
+
+    fn draw_rows(frame: &mut String, screen: &Screen, previous: Option<&Screen>) -> Result<()> {
+        let (rows, cols) = screen.size();
+        let blank;
+        let baseline = if let Some(previous) = previous {
+            previous
+        } else {
+            frame.push_str("\x1b[2J");
+            blank = Parser::new(rows, cols, 0);
+            blank.screen()
+        };
+
+        // Position each row explicitly when the outer TTY wraps at a later column.
+        let padding_col = cols.get() + 1;
+        for (row, ansi) in screen.rows_diff(baseline, 0, cols.get()).enumerate() {
+            if !ansi.is_empty() {
+                let row = row + 1;
+                write!(
+                    frame,
+                    "\x1b[{row};1H\x1b[0m{ansi}\x1b[{row};{padding_col}H\x1b[0m\x1b[K"
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -189,7 +237,8 @@ mod tests {
 
         let mut outer = terminal(80, 24);
         outer.process(b"stale\x1b[2;5r\x1b[?6h").unwrap();
-        outer.process(child.redraw().unwrap().as_bytes()).unwrap();
+        let frame = child.redraw(Viewport::new(80, 24).unwrap()).unwrap();
+        outer.process(frame.as_bytes()).unwrap();
 
         let screen = outer.parser.screen();
         let cell = screen.cell(0, 0).unwrap();
@@ -204,6 +253,42 @@ mod tests {
 
         child.process(b"\x1b[?1049l").unwrap();
         assert_eq!(child.parser.screen().contents(), "original");
+    }
+
+    #[test]
+    fn renders_wrapped_rows_and_diffs_inside_a_larger_outer_tty() {
+        let viewport = Viewport::new(12, 8).unwrap();
+        let mut inner = terminal(8, 4);
+        let mut outer = terminal(12, 8);
+        outer.process(b"\x1b[6;1Hstale\x1b[1;9Hstale").unwrap();
+        inner
+            .process(b"\x1b[31mabcdefghW\x1b[4;6H\x1b[46m\x1b[K")
+            .unwrap();
+        let frame = inner.render(None, viewport).unwrap();
+        outer.process(frame.as_bytes()).unwrap();
+
+        let previous = inner.snapshot();
+        assert_eq!(outer.snapshot().cell(1, 0), previous.cell(1, 0));
+        assert_eq!(
+            outer.snapshot().cell(3, 8).unwrap().bgcolor(),
+            Color::Default
+        );
+
+        inner.process(b"\x1b[0m\x1b[4;1HijklmnopZ").unwrap();
+        let frame = inner.render(Some(&previous), viewport).unwrap();
+        outer.process(frame.as_bytes()).unwrap();
+
+        let expected = inner.parser.screen();
+        let composed = outer.parser.screen();
+        for row in 0..4 {
+            for col in 0..8 {
+                assert_eq!(composed.cell(row, col), expected.cell(row, col));
+            }
+            assert!(!composed.cell(row, 8).unwrap().has_contents());
+            assert_eq!(composed.cell(row, 8).unwrap().bgcolor(), Color::Default);
+        }
+        assert!(!composed.cell(5, 0).unwrap().has_contents());
+        assert_eq!(composed.cursor_position(), expected.cursor_position());
     }
 
     #[test]
@@ -254,7 +339,7 @@ mod tests {
             assert!(terminal.process(&[b'x'; 8192]).unwrap().is_empty());
         }
         terminal.process(b"\x07\x1b[2;1Hvisible").unwrap();
-        let redraw = terminal.redraw().unwrap();
+        let redraw = terminal.redraw(Viewport::new(10, 2).unwrap()).unwrap();
         assert!(redraw.contains("visible"));
         assert!(!redraw.contains("\x1b]"));
     }
@@ -263,6 +348,7 @@ mod tests {
     fn full_and_incremental_frames_omit_direction_controls_and_keep_visible_unicode() {
         let mut inner = terminal(80, 24);
         let mut outer = terminal(80, 24);
+        let viewport = Viewport::new(80, 24).unwrap();
         let controls = "\u{061c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}";
         let marked: String = controls
             .chars()
@@ -273,7 +359,7 @@ mod tests {
             inner.process(&[*byte]).unwrap();
         }
 
-        let full = inner.redraw().unwrap();
+        let full = inner.redraw(viewport).unwrap();
         assert!(!full.contains(|ch| controls.contains(ch)));
         outer.process(full.as_bytes()).unwrap();
         assert_eq!(
@@ -289,7 +375,7 @@ mod tests {
         inner
             .process("\x1b[2;1Hvisible\u{202e} update".as_bytes())
             .unwrap();
-        let diff = inner.render(Some(&previous)).unwrap();
+        let diff = inner.render(Some(&previous), viewport).unwrap();
         assert!(!diff.contains('\u{202e}'));
         outer.process(diff.as_bytes()).unwrap();
         assert_eq!(
@@ -327,7 +413,7 @@ mod tests {
             terminal.process(row.as_bytes()).unwrap();
         }
 
-        let frame = terminal.redraw().unwrap();
+        let frame = terminal.redraw(Viewport::new(300, 120).unwrap()).unwrap();
         let mut outer = Parser::new(
             NonZeroU16::new(120).unwrap(),
             NonZeroU16::new(300).unwrap(),

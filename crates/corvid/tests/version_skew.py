@@ -18,8 +18,8 @@ def inventory(command, request):
     return subprocess.check_output([*command, "control", request], timeout=3)
 
 
-def reject_attachment(command, options, error):
-    with OuterTerminal([*command, "attach", *options]) as terminal:
+def reject_attachment(command, options, error, cols=80, rows=24):
+    with OuterTerminal([*command, "attach", *options], cols=cols, rows=rows) as terminal:
         terminal.expect(error)
         terminal.wait(1)
 
@@ -33,6 +33,7 @@ def reject_incompatible_clients(compatible, incompatible, workspace):
     assert b"supported protocol majors: [1]" in result.stderr and b"manually" in result.stderr
     reject_attachment(incompatible, ["--new-workspace", "Incompatible"], b"ProtocolMismatch")
     reject_attachment(compatible, ["--claim-workspace", workspace], b"UnsupportedCapability")
+    reject_attachment(compatible, [], b"running Corvid daemon supports up to", cols=319, rows=80)
 
 
 def verify_retained_terminal(old, compatible, incompatible, daemon, progress):

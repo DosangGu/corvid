@@ -206,6 +206,7 @@ fn client_state(entries: &Entries, client: &ClientState) -> Result<()> {
             "invalid workspace lease",
         )?;
     }
+    let tty_dimensions = 2..=u32::from(u16::MAX);
     match (
         &client.terminal_id,
         &client.selection,
@@ -215,8 +216,8 @@ fn client_state(entries: &Entries, client: &ClientState) -> Result<()> {
         (None, None, None, None) => Ok(()),
         (Some(terminal), Some(location), Some(revision), Some(viewport)) => require(
             revision > 0
-                && (2..=300).contains(&viewport.cols)
-                && (2..=120).contains(&viewport.rows)
+                && tty_dimensions.contains(&viewport.cols)
+                && tty_dimensions.contains(&viewport.rows)
                 && terminal_matches(entries, terminal, location)
                 && client
                     .writer_leases

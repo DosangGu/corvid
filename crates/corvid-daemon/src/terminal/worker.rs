@@ -421,7 +421,13 @@ impl Worker {
             view_revision: spec.revision,
             writer_lease_generation: spec.lease_generation,
         };
-        self.lease = Some(Lease::new(route, spec.events, !spec.dormant, spec.keymap));
+        self.lease = Some(Lease::new(
+            route,
+            spec.events,
+            !spec.dormant,
+            spec.keymap,
+            spec.viewport,
+        ));
         self.viewing.store(true, Ordering::Release);
         Ok(route)
     }
@@ -498,6 +504,7 @@ impl Worker {
             .filter(|terminal| terminal.exit.is_none())
             .ok_or_else(terminal_fault)?;
         terminal.resize(viewport).map_err(|_| terminal_fault())?;
+        lease.viewport = viewport;
         terminal.dirty = true;
         lease.armed = true;
         Ok(())
@@ -599,6 +606,7 @@ impl Worker {
                     .checked_add(1)
                     .ok_or_else(overloaded)?;
                 terminal.resize(viewport).map_err(|_| terminal_fault())?;
+                lease.viewport = viewport;
                 terminal.input.fence();
                 lease.leader = None;
                 if let Some(paste) = lease.paste.take()
@@ -826,6 +834,7 @@ impl Running {
         let mut command = launch.into_command(qualified.map(|qualified| qualified.path));
         scope.hook_environment.configure(&mut command, association);
 
+        let viewport = viewport.fit_screen();
         let mut pty = TerminalPty::spawn(command, viewport)?;
         let process = TerminalProcess::started(reservation, &mut pty, scope, id, executable);
         if (process.managed.is_none() || cwd.is_some())
@@ -852,6 +861,7 @@ impl Running {
     }
 
     fn resize(&mut self, viewport: Viewport) -> Result<()> {
+        let viewport = viewport.fit_screen();
         self.pty.resize(viewport)?;
         self.screen.resize(viewport);
         Ok(())
@@ -1040,10 +1050,17 @@ struct Lease {
     frozen: bool,
     switch_pending: bool,
     keymap: Keymap,
+    viewport: Viewport,
 }
 
 impl Lease {
-    fn new(route: InputRoute, events: mpsc::Sender<Event>, armed: bool, keymap: Keymap) -> Self {
+    fn new(
+        route: InputRoute,
+        events: mpsc::Sender<Event>,
+        armed: bool,
+        keymap: Keymap,
+        viewport: Viewport,
+    ) -> Self {
         Self {
             route,
             input_sequence: 0,
@@ -1059,6 +1076,7 @@ impl Lease {
             frozen: false,
             switch_pending: false,
             keymap,
+            viewport,
         }
     }
 
@@ -1174,7 +1192,10 @@ impl Lease {
             return Ok(());
         }
 
-        let ansi = terminal.screen.render(self.previous.as_ref())?.into_bytes();
+        let ansi = terminal
+            .screen
+            .render(self.previous.as_ref(), self.viewport)?
+            .into_bytes();
         anyhow::ensure!(ansi.len() <= MAX_ANSI, "render payload exceeds frame limit");
         let frame_id = self.frame_id.checked_add(1).ok_or_else(overloaded)?;
         let render = Render {

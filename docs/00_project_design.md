@@ -584,7 +584,7 @@ workspace in the TUI claims it for that client. FocusAgent does not claim/releas
 The writer's viewport and Corvid chrome determine layout dimensions and each PTY's
 canonical rows/columns. The child process sees exactly one size. Retain the last valid
 size when the writer disconnects; use a documented initial size (80×24 before layout
-chrome) only for a terminal that has never had a writer. Reject invalid/oversized sizes.
+chrome) only for a terminal that has never had a writer. Reject invalid dimensions.
 
 Later, an explicitly requested read-only attach may display the canonical screen using
 crop/pad; it cannot resize it. An observer's larger viewport does not create a larger
@@ -639,7 +639,7 @@ These are initial engineering limits, to be measured at phase gates, not benchma
 | Resource | Initial limit / overload action |
 |---|---|
 | Live PTYs / attached TUIs / external watchers | 32 / 8 / 8 per daemon; reject excess |
-| Viewport | Up to 300 columns × 120 rows; reject larger negotiated sizes |
+| Viewport | Use the reported TTY size. Fit the inner PTY within 36,000 cells and 1,024 columns, leaving any excess area blank. |
 | PTY unread user-space queue | 1 MiB per PTY; stop reading only that PTY until parsing catches up |
 | PTY writes / terminal replies | Bounded per-terminal queue; prioritize protocol replies at safe batch boundaries; stall/fail that terminal explicitly, never silently discard replies |
 | In-memory scrollback | 5,000 rows and 8 MiB per terminal, whichever first; also a 256 MiB aggregate screen/scrollback budget |
@@ -659,8 +659,9 @@ per-PTY backpressure may slow that producer, which is an explicit limitation. A 
 controller never backpressures PTY parsing or the global reducer. Engine memory bounds
 for long sequences/combining text must be verified; unsupported hard bounds fail the
 engine qualification gate rather than being claimed by configuration alone.
-Preflight worst-case full-frame size for the negotiated viewport/profile; if it cannot
-fit the frame bound, reject that viewport with LimitExceeded rather than truncate a redraw.
+Size the inner PTY before allocating its screen to keep worst-case redraws within the
+frame bound. Preserve the available width up to the column budget, then reduce the
+PTY height to fit the cell budget.
 
 ### 7.6 Minimum compatibility suite
 
@@ -970,6 +971,10 @@ fits the control-frame limit; a paste may span several chunks while retaining th
 transaction/target rules. Separate per-client I/O tasks and queues prevent a blocked TUI
 from blocking control replies. External watches never carry RenderFrame. EOF or protocol
 error cleans up only that connection and its input leases.
+
+The TUI Hello advertises `adaptive_viewport.v1` when the daemon accepts outer dimensions
+beyond the legacy 300×120 bounds. Clients report an upgrade requirement before sending
+an oversized Attach or ResizeViewport to a legacy daemon.
 
 ### 8.4 Schema evolution and code generation
 

@@ -133,6 +133,18 @@ def wait_for_daemon(command, process):
     raise AssertionError("daemon did not become ready")
 
 
+def verify_resize(outer, progress, cols, rows, inner_size):
+    outer.resize(cols, rows)
+    wait_for_child_size(progress, inner_size)
+
+
+def wait_for_child_size(progress, size):
+    deadline = time.monotonic() + 5
+    while not progress.read_text().endswith(f" {size}\n"):
+        assert time.monotonic() < deadline, f"child never reached {size}"
+        time.sleep(0.02)
+
+
 def verify(command, directory):
     with OuterTerminal([*command, "attach"]) as empty:
         empty.expect(b"NoTerminal")
@@ -153,18 +165,24 @@ def verify(command, directory):
         first.send(b"s")
         first.expect(b"MEASURED=80x24")
 
-        first.resize(100, 30)
-        first.expect(b"RESIZED=100x30")
+        verify_resize(first, progress, 100, 30, "100x30")
+        verify_resize(first, progress, 319, 80, "319x80")
+        verify_resize(first, progress, 500, 100, "500x72")
+        first.expect(re.escape(b"\x1b[1;72r"))
+        verify_resize(first, progress, 1200, 81, "1024x35")
         first.send(b"\x1dd")
         first.wait(0)
 
     ticks_at_detach = len(progress.read_text().splitlines())
     time.sleep(0.3)
     assert len(progress.read_text().splitlines()) > ticks_at_detach
-    with OuterTerminal([*command, "attach"], cols=100, rows=30) as second:
-        retained = second.expect(rb"PID=(\d+) TICK=(\d+) SIZE=100x30")
+    with OuterTerminal([*command, "attach"], cols=319, rows=80) as second:
+        retained = second.expect(rb"PID=(\d+) TICK=(\d+) SIZE=\d+x\d+")
         assert int(retained[1]) == pid
         assert int(retained[2]) > tick
+        wait_for_child_size(progress, "319x80")
+        snapshot = subprocess.check_output([*command, "control", "snapshot"], timeout=3)
+        assert b"clients=1" in snapshot
         second.expect("한글 e\u0301".encode())
         second.send(b"q")
         second.expect(b"TERMINAL-EXIT")
@@ -315,11 +333,17 @@ def verify_default_start(binary, directory):
 
     def shell_pid(terminal):
         terminal.expect(b"CORVID-PROMPT>")
-        terminal.send(b"infocmp corvid >/dev/null && printf 'CORVID-SHELL=%s\\n' \"$$\"\n")
-        return terminal.expect(rb"CORVID-SHELL=(\d+)")[1]
+        terminal.send(
+            b"infocmp corvid >/dev/null && "
+            b"printf 'CORVID-SHELL=%s SIZE=%s\\n' \"$$\" \"$(stty size)\"\n"
+        )
+        return terminal.expect(rb"CORVID-SHELL=(\d+) SIZE=80 319")[1]
 
     try:
-        with OuterTerminal(command, env=env) as first, OuterTerminal(command, env=env) as second:
+        with (
+            OuterTerminal(command, cols=319, rows=80, env=env) as first,
+            OuterTerminal(command, cols=319, rows=80, env=env) as second,
+        ):
             sessions = [first, second]
             startup = rb"CORVID-PROMPT>|WorkspaceBusy"
             active, = [
@@ -334,7 +358,7 @@ def verify_default_start(binary, directory):
             active.send(b"\x1dd")
             active.wait(0)
 
-        with OuterTerminal(command, env=env) as second:
+        with OuterTerminal(command, cols=319, rows=80, env=env) as second:
             assert shell_pid(second) == pid
             assert background_daemon_pid(runtime) == daemon
             second.send(b"exit\n")
@@ -373,7 +397,7 @@ def run(binary):
         finally:
             stop(daemon)
         verify_default_start(binary, directory)
-    print("Live TTYs verified default startup, writer fencing, redraw, paste modes, fragmented keys, detach, and tab moves.")
+    print("Live TTYs verified wide-window startup, resize, redraw, input, detach, and tab moves.")
 
 
 if __name__ == "__main__":
