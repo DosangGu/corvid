@@ -18,8 +18,8 @@ use corvid_protocol::wire::{
     ClaimWorkspaceWriter, ClientKeymap, ClientState, CompanionConnection, EntityKind, Envelope,
     FocusAgentRequest, FocusApplied, FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot,
     InputChunk, IssuePairingCode, LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin,
-    PasteChunk, PasteEnd, Ping, PresentationSlots, PresentedSlotToken, ResizeViewport, RouteToken,
-    SelectView, SnapshotWatch, TuiInputMode, ViewSelection, Viewport,
+    PasteChunk, PasteEnd, Ping, PresentationSlots, PresentedSlot, PresentedSlotToken,
+    ResizeViewport, RouteToken, SelectView, SnapshotWatch, TuiInputMode, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
@@ -886,7 +886,9 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         assert_eq!(applied.view_revision, original.view_revision + 1);
         assert_eq!(other.client_state(&runtime).await, other_before);
         other.input(other.route.clone(), 2, b"r").await;
-        assert!(matches!(other.next_body(&mut other_output).await, Body::PairingCode(_)));
+        let Body::PairingCode(other_pairing) = other.next_body(&mut other_output).await else {
+            panic!("missing pairing code from the second client's keymap")
+        };
         main.input(original, 3, b"retired-route\n").await;
         main.moved(&mut output, a.location.as_ref().unwrap()).await;
         let main_after = main.client_state(&runtime).await;
@@ -925,10 +927,7 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         wire.writer.envelope(&stale).await.unwrap();
         assert!(matches!(wire.next().await.body, Some(Body::Error(error)) if error.code == "EpochMismatch"));
 
-        drop(other);
-        while corvid_client::clients(&runtime).await.unwrap().clients.len() > 1 {
-            sleep(Duration::from_millis(10)).await;
-        }
+        verify_focus_rejections(&runtime, temporary.path(), &mut main, other, other_pairing.code, &a).await;
         let unclaimed = focus(&runtime, &scope, "unclaimed-c", client, revision, &c).await.unwrap_err();
         assert_eq!(unclaimed.code, "WriterRequired");
         let refused = main.move_tab(source_tab, destination, &mut output).await;
@@ -942,6 +941,108 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         focus(&runtime, &scope, "preclaimed-c", client, revision, &c).await.unwrap();
         main.moved(&mut output, c.location.as_ref().unwrap()).await;
     }).await.unwrap();
+}
+
+async fn verify_focus_rejections(
+    runtime: &Path,
+    directory: &Path,
+    main: &mut Tui,
+    other: Tui,
+    other_code: String,
+    agent: &AgentInfo,
+) {
+    let (_process, mut companion) =
+        start_companion(runtime, &directory.join("a10"), &main.session.host_id, 3).await;
+    let before = presented(&mut companion, |view| {
+        view.connection == CompanionConnection::Ready as i32
+            && slot_for_run(view, &agent.agent_run_id).is_some()
+    })
+    .await;
+    assert!(before.bindings.is_empty());
+    let mut capture = capture_slot(&before, slot_for_run(&before, &agent.agent_run_id).unwrap());
+    let initial = control(runtime, "snapshot").await;
+    assert_focus_refused(&mut companion, &capture, "NoAttachedClient").await;
+    assert_eq!(control(runtime, "snapshot").await, initial);
+
+    for code in [issue_pairing(main).await.to_string(), other_code] {
+        let registered = companion
+            .request(Body::PairTerminal(PairTerminal {
+                code,
+                wezterm: None,
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(registered, Body::ClientBindingRegistered(_)));
+    }
+    let paired = presented(&mut companion, |view| view.bindings.len() == 2).await;
+    let both_attached = control(runtime, "snapshot").await;
+    assert_focus_refused(&mut companion, &capture, "AmbiguousClient").await;
+
+    let other_binding = paired
+        .bindings
+        .iter()
+        .find(|binding| binding.client_id == other.route.client_id)
+        .unwrap();
+    let mut wrong_revision = other_binding.clone();
+    wrong_revision.revision += 1;
+    capture.binding = Some(wrong_revision);
+    assert_focus_refused(&mut companion, &capture, "StaleBinding").await;
+    assert_eq!(control(runtime, "snapshot").await, both_attached);
+
+    drop(other);
+    presented(&mut companion, |view| {
+        view.bindings.len() == 1 && view.bindings[0].client_id == main.route.client_id
+    })
+    .await;
+    let one_attached = control(runtime, "snapshot").await;
+    capture.binding = None;
+    assert_focus_refused(&mut companion, &capture, "InvalidMessage").await;
+    capture.binding = Some(other_binding.clone());
+    assert_focus_refused(&mut companion, &capture, "StaleBinding").await;
+    let scope = controller_scope(main, &paired.controller_id);
+    let retired = focus(
+        runtime,
+        &scope,
+        "retired-client",
+        Uuid::parse_str(&other_binding.client_id).unwrap(),
+        other_binding.revision,
+        agent,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(retired.code, "NoAttachedClient");
+    assert_eq!(control(runtime, "snapshot").await, one_attached);
+}
+
+async fn assert_focus_refused(companion: &mut PresentationClient, capture: &FocusSlot, code: &str) {
+    let fault = companion
+        .request(Body::FocusSlot(capture.clone()))
+        .await
+        .unwrap_err()
+        .downcast::<ProtocolFault>()
+        .unwrap();
+    assert_eq!(fault.code, code);
+}
+
+fn slot_for_run<'a>(view: &'a PresentationSlots, run: &str) -> Option<&'a PresentedSlot> {
+    view.slots.iter().find(|slot| {
+        slot.run
+            .as_ref()
+            .and_then(|run| run.key.as_ref())
+            .is_some_and(|key| key.agent_run_id == run)
+    })
+}
+
+fn capture_slot(view: &PresentationSlots, slot: &PresentedSlot) -> FocusSlot {
+    FocusSlot {
+        control_generation: view.control_generation.clone().unwrap(),
+        slot: Some(PresentedSlotToken {
+            slot_id: slot.slot_id,
+            revision: Some(slot.revision),
+            run: slot.run.as_ref().unwrap().key.clone(),
+        }),
+        binding: None,
+    }
 }
 
 async fn verify_tab_move(
@@ -967,34 +1068,12 @@ async fn verify_tab_move(
         .unwrap();
     assert!(matches!(registered, Body::ClientBindingRegistered(_)));
     let before = presented(&mut companion, |view| {
-        !view.bindings.is_empty()
-            && view.slots.iter().any(|slot| {
-                slot.run
-                    .as_ref()
-                    .and_then(|run| run.key.as_ref())
-                    .is_some_and(|key| key.agent_run_id == agent.agent_run_id)
-            })
+        !view.bindings.is_empty() && slot_for_run(view, &agent.agent_run_id).is_some()
     })
     .await;
-    let slot = before
-        .slots
-        .iter()
-        .find(|slot| {
-            slot.run
-                .as_ref()
-                .and_then(|run| run.key.as_ref())
-                .is_some_and(|key| key.agent_run_id == agent.agent_run_id)
-        })
-        .unwrap();
-    let captured = FocusSlot {
-        control_generation: before.control_generation.unwrap(),
-        slot: Some(PresentedSlotToken {
-            slot_id: slot.slot_id,
-            revision: Some(slot.revision),
-            run: slot.run.as_ref().unwrap().key.clone(),
-        }),
-        binding: Some(before.bindings[0].clone()),
-    };
+    let slot = slot_for_run(&before, &agent.agent_run_id).unwrap();
+    let mut captured = capture_slot(&before, slot);
+    captured.binding = Some(before.bindings[0].clone());
 
     let mut output = Vec::new();
     let visible = client.selection.tab_id.clone();
