@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use corvid_protocol::{
-    FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result, hello,
+    FrameError, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, Session,
+    check_hello_result, hello,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
@@ -32,7 +33,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Connection<R, W> {
             PeerRole::Collector => (FrameRole::Collector, FrameRole::Collector),
         };
         let mut writer = FrameWriter::start(write, output).await?;
-        let mut reader = FrameReader::start(read, input).await?;
+        let mut reader = read_preamble(read, input).await?;
         let greeting = hello(Uuid::new_v4().to_string(), controller, capabilities);
         writer.envelope(&greeting).await?;
         let reply = reader
@@ -45,5 +46,16 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Connection<R, W> {
             reader,
             writer,
         })
+    }
+}
+
+pub(crate) async fn read_preamble<R: AsyncRead + Unpin>(
+    read: R,
+    role: FrameRole,
+) -> Result<FrameReader<R>> {
+    match FrameReader::start(read, role).await {
+        Ok(reader) => Ok(reader),
+        Err(FrameError::ProtocolMismatch) => Err(ProtocolFault::unsupported_framing().into()),
+        Err(error) => Err(error.into()),
     }
 }

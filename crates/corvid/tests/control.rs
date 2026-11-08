@@ -10,10 +10,14 @@ use std::time::Duration;
 
 use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH};
 use corvid_protocol::snapshot::{SnapshotAssembler, WATCH_CAPABILITY};
+use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetHost, HostInfo, Ping, SnapshotWatch};
-use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello};
-use tokio::io::AsyncWriteExt;
+use corvid_protocol::{
+    FRAME_PREAMBLE, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PeerRole,
+    check_hello_result, hello,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -218,6 +222,64 @@ async fn relay_reports_unavailable_without_creating_runtime_directory() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let directory = RuntimeDir::create(&runtime).unwrap();
+    let instance = directory.lock_instance().unwrap();
+    let socket = instance.bind(SocketRole::Control).await.unwrap();
+    let legacy = async {
+        for _ in 0..2 {
+            let mut peer = socket.accept().await.unwrap();
+            peer.write_all(b"CRV0").await.unwrap();
+
+            let mut received = Vec::new();
+            peer.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, FRAME_PREAMBLE);
+        }
+    };
+
+    let client = async {
+        let local = command(&runtime)
+            .args(["control", "host"])
+            .output()
+            .await
+            .unwrap();
+        assert!(!local.status.success());
+        assert!(local.stdout.is_empty());
+        let stderr = String::from_utf8(local.stderr).unwrap();
+        assert!(stderr.contains("ProtocolMismatch") && stderr.contains("unsupported framing"));
+
+        let mut relay = command(&runtime)
+            .args(["control", "--stdio"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut writer = FrameWriter::start(relay.stdin.take().unwrap(), FrameRole::StructuredOnly)
+            .await
+            .unwrap();
+        let mut reader =
+            FrameReader::start(relay.stdout.take().unwrap(), FrameRole::StructuredOnly)
+                .await
+                .unwrap();
+        let greeting = hello("legacy".into(), Some("test-controller".into()), vec![]);
+        writer.envelope(&greeting).await.unwrap();
+        let reply = reader.next_envelope().await.unwrap().unwrap();
+        let fault = check_hello_result(&greeting, &reply, PeerRole::Control).unwrap_err();
+        assert_eq!(fault.code, "ProtocolMismatch");
+        assert_eq!(fault.supported_major_versions, [PROTOCOL_MAJOR]);
+        assert!(!fault.retryable);
+        assert!(reader.next_envelope().await.unwrap().is_none());
+        assert!(!relay.wait().await.unwrap().success());
+    };
+    timeout(WAIT, async { tokio::join!(legacy, client) })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

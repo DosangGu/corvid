@@ -1,6 +1,5 @@
+use std::fmt;
 use std::time::Duration;
-
-use thiserror::Error;
 
 use crate::frame::CONTROL_LIMIT;
 use crate::wire::envelope::Body;
@@ -22,14 +21,29 @@ pub enum PeerRole {
     Presentation,
 }
 
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{code}: {message}")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProtocolFault {
     pub code: String,
     pub message: String,
     pub retryable: bool,
     pub supported_major_versions: Vec<u32>,
 }
+
+impl fmt::Display for ProtocolFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)?;
+        if !self.supported_major_versions.is_empty() {
+            write!(
+                formatter,
+                " (supported protocol majors: {:?})",
+                self.supported_major_versions
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ProtocolFault {}
 
 impl ProtocolFault {
     pub fn new(code: &str, message: &str) -> Self {
@@ -46,10 +60,17 @@ impl ProtocolFault {
     }
 
     fn incompatible() -> Self {
-        let mut fault = Self::new(
-            "ProtocolMismatch",
-            "no compatible protocol version; update client or daemon manually",
-        );
+        Self::version_mismatch(
+            "no compatible protocol version. Update the client or daemon manually",
+        )
+    }
+
+    pub fn unsupported_framing() -> Self {
+        Self::version_mismatch("unsupported framing preamble. Update the client or daemon manually")
+    }
+
+    fn version_mismatch(message: &str) -> Self {
+        let mut fault = Self::new("ProtocolMismatch", message);
         fault.supported_major_versions.push(PROTOCOL_MAJOR);
         fault
     }
@@ -84,6 +105,7 @@ impl ProtocolFault {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub role: PeerRole,
+    pub protocol_minor: u32,
     pub host_id: String,
     pub server_epoch: String,
     pub controller_id: Option<String>,
@@ -94,7 +116,7 @@ impl Session {
     pub fn envelope(&self, request_id: Option<String>, body: Body) -> Envelope {
         Envelope {
             protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
+            protocol_minor: self.protocol_minor,
             request_id,
             host_id: Some(self.host_id.clone()),
             server_epoch: Some(self.server_epoch.clone()),
@@ -104,7 +126,9 @@ impl Session {
     }
 
     pub fn validate_scope(&self, envelope: &Envelope) -> Result<(), ProtocolFault> {
-        if envelope.protocol_major != PROTOCOL_MAJOR || envelope.protocol_minor != PROTOCOL_MINOR {
+        if envelope.protocol_major != PROTOCOL_MAJOR
+            || envelope.protocol_minor != self.protocol_minor
+        {
             return Err(ProtocolFault::incompatible());
         }
         check_identity(envelope, &self.host_id, &self.server_epoch, false)
@@ -211,6 +235,7 @@ pub fn accept_hello(
 
     let session = Session {
         role,
+        protocol_minor: shared_minor(request, PROTOCOL_MINOR),
         host_id: host_id.to_owned(),
         server_epoch: server_epoch.to_owned(),
         controller_id: hello.controller_id.clone(),
@@ -240,7 +265,9 @@ pub fn check_hello_result(
     if let Body::Error(error) = known_body(reply)? {
         return Err(ProtocolFault::from_wire(error));
     }
-    if reply.protocol_major != PROTOCOL_MAJOR || reply.protocol_minor != PROTOCOL_MINOR {
+    if reply.protocol_major != PROTOCOL_MAJOR
+        || reply.protocol_minor > shared_minor(request, PROTOCOL_MINOR)
+    {
         return Err(ProtocolFault::incompatible());
     }
 
@@ -265,11 +292,21 @@ pub fn check_hello_result(
     check_identity(request, host_id, server_epoch, true)?;
     Ok(Session {
         role,
+        protocol_minor: reply.protocol_minor,
         host_id: host_id.to_owned(),
         server_epoch: server_epoch.to_owned(),
         controller_id: hello.controller_id.clone(),
         capabilities: result.capabilities.clone(),
     })
+}
+
+fn shared_minor(request: &Envelope, local_minor: u32) -> u32 {
+    if request.protocol_major == PROTOCOL_MAJOR {
+        request.protocol_minor.min(local_minor)
+    } else {
+        // The advertised minor belongs to the offered major in the envelope.
+        0
+    }
 }
 
 fn validate_hello(request: &Envelope, role: PeerRole) -> Result<&Hello, ProtocolFault> {

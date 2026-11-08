@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 #[cfg(target_os = "linux")]
 use corvid_protocol::unix::SocketRole;
-use corvid_protocol::{COMMAND_TIMEOUT, FrameError, PeerRole, ProtocolFault};
+use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, ChildStderr, Command};
 use tokio::task::JoinHandle;
@@ -175,10 +175,6 @@ impl SshProcess {
     async fn classify(&mut self, error: anyhow::Error) -> anyhow::Error {
         if error.is::<ProtocolFault>() {
             return error;
-        }
-        if matches!(error.downcast_ref(), Some(FrameError::ProtocolMismatch)) {
-            return ProtocolFault::new("ProtocolMismatch", "SSH stdout has an invalid preamble")
-                .into();
         }
         let diagnostic = timeout(DIAGNOSTIC_TIMEOUT, async {
             if self.child.wait().await.ok()?.success() {

@@ -12,6 +12,8 @@ use corvid_protocol::{
 use tokio::io::{AsyncRead, AsyncWrite, stdin, stdout};
 use tokio::time::timeout;
 
+use crate::connection::{open, read_preamble};
+
 pub async fn relay(runtime: &Path) -> Result<()> {
     ensure!(
         !io::stdin().is_terminal() && !io::stdout().is_terminal(),
@@ -25,20 +27,32 @@ pub async fn relay(runtime: &Path) -> Result<()> {
     .await
     .context("relay preamble timed out")??;
 
-    let stream = match crate::connection::open(runtime, SocketRole::Control).await {
+    let stream = match open(runtime, SocketRole::Control).await {
         Ok(stream) => stream,
         Err(error) => {
-            timeout(COMMAND_TIMEOUT, unavailable(&mut incoming, &mut outgoing)).await??;
+            let mut fault =
+                ProtocolFault::new("DaemonUnavailable", "start the daemon before connecting");
+            fault.retryable = true;
+            bootstrap_fault(&mut incoming, &mut outgoing, fault).await?;
             return Err(error);
         }
     };
     let (read, write) = stream.into_split();
     let mut to_daemon = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
-    let mut from_daemon = timeout(
+    let mut from_daemon = match timeout(
         COMMAND_TIMEOUT,
-        FrameReader::start(read, FrameRole::StructuredOnly),
+        read_preamble(read, FrameRole::StructuredOnly),
     )
-    .await??;
+    .await?
+    {
+        Ok(reader) => reader,
+        Err(error) => {
+            if let Some(fault) = error.downcast_ref::<ProtocolFault>() {
+                bootstrap_fault(&mut incoming, &mut outgoing, fault.clone()).await?;
+            }
+            return Err(error);
+        }
+    };
 
     let upload = forward(&mut incoming, &mut to_daemon);
     let download = forward(&mut from_daemon, &mut outgoing);
@@ -66,29 +80,31 @@ async fn forward(
     Ok(())
 }
 
-async fn unavailable(
+async fn bootstrap_fault(
     incoming: &mut FrameReader<impl AsyncRead + Unpin>,
     outgoing: &mut FrameWriter<impl AsyncWrite + Unpin>,
+    fault: ProtocolFault,
 ) -> Result<()> {
-    let request = incoming
-        .next_envelope()
-        .await?
-        .context("missing relay Hello")?;
-    ensure!(
-        matches!(request.body, Some(Body::Hello(_))),
-        "expected relay Hello"
-    );
-    let mut error = ProtocolFault::new("DaemonUnavailable", "start the daemon before connecting");
-    error.retryable = true;
-    let reply = Envelope {
-        protocol_major: PROTOCOL_MAJOR,
-        protocol_minor: PROTOCOL_MINOR,
-        request_id: request
-            .request_id
-            .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
-        body: Some(Body::Error(error.into_wire())),
-        ..Default::default()
-    };
-    outgoing.envelope(&reply).await?;
-    Ok(())
+    timeout(COMMAND_TIMEOUT, async {
+        let request = incoming
+            .next_envelope()
+            .await?
+            .context("missing relay Hello")?;
+        ensure!(
+            matches!(request.body, Some(Body::Hello(_))),
+            "expected relay Hello"
+        );
+        let reply = Envelope {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            request_id: request
+                .request_id
+                .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
+            body: Some(Body::Error(fault.into_wire())),
+            ..Default::default()
+        };
+        outgoing.envelope(&reply).await?;
+        Ok(())
+    })
+    .await?
 }

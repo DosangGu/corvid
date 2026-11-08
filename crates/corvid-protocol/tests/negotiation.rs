@@ -26,14 +26,30 @@ fn newer_client_negotiates_supported_version_and_capabilities() {
     assert_eq!(reply.protocol_minor, 0);
     let client = check_hello_result(&request, &reply, PeerRole::Control).unwrap();
     assert_eq!(client, server);
+    assert_eq!(client.protocol_minor, reply.protocol_minor);
 
     let mut ping = client.envelope(Some("ping".into()), Body::Ping(Ping {}));
     assert!(server.validate_request(&ping).is_ok());
+    ping.protocol_minor = request.protocol_minor;
+    assert_eq!(
+        server.validate_request(&ping).unwrap_err().code,
+        "ProtocolMismatch"
+    );
+    ping.protocol_minor = client.protocol_minor;
     ping.server_epoch = Some("old-epoch".into());
     assert_eq!(
         server.validate_request(&ping).unwrap_err().code,
         "EpochMismatch"
     );
+}
+
+#[test]
+fn a_hello_result_above_the_offered_minor_is_rejected() {
+    let request = hello("hello".into(), None, vec![]);
+    let (_, mut reply) = accept_hello(&request, PeerRole::Tui, "host", "epoch", &[]).unwrap();
+    reply.protocol_minor = request.protocol_minor + 1;
+    let fault = check_hello_result(&request, &reply, PeerRole::Tui).unwrap_err();
+    assert_eq!(fault.code, "ProtocolMismatch");
 }
 
 #[test]

@@ -170,6 +170,7 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 | Area | Evidence |
 |---|---|
 | Identity and control | Restart changes the epoch and preserves the host ID. Concurrent startup fails. Corrupt identity bytes are preserved. A real CLI subprocess relays framed control messages over pipes. |
+| Version skew (A15) | A client offering protocol 1.1 uses 1.0 with the daemon from `3d804e1`. The daemon rejects a 2.0 client and reports its supported major. The same daemon epoch, client view, and child PID survive the rejection. An incompatible upstream framing preamble becomes `ProtocolMismatch` on both the local CLI and stdio relay. |
 | Snapshot and watch | A watch established before attach receives the workspace, terminal, and client at contiguous revisions. Detach removes the client while a one-shot snapshot still shows the terminal. Tests cover capture races, sequence exhaustion, slow subscribers, malformed transactions, and the stdio relay. The Rust client preserves its last view on connection loss and obtains a fresh epoch on reconnect. |
 | Pairing and attention | The real TUI issues a private code, restores its redraw after dismissal, and accepts one pairing. Tests verify expiry, the host-wide guess budget, revision rotation, detach cleanup, and RPC replay. A Claude question stays pending after its exact alert is acknowledged. |
 | Exact focus | Integration tests cover two independent clients, stale input tokens, paste blocking, writer ownership, and request replay. Revoking a binding after the fence restores the original view with a fresh token. |
@@ -229,3 +230,23 @@ input-to-redraw sample on a separate PTY was 40.4 ms. The flooding PTY verified
 render client disconnected at about five seconds. The daemon's peak resident
 memory from `/proc` was 22.6–22.8 MiB. These measurements cover the four-PTY
 local workload on the recorded host.
+
+### Version skew reproduction
+
+Build the historical `3d804e1` source with `cargo build --locked -p corvid`.
+In a separate copy of the current source, build two test clients with
+`PROTOCOL_MAJOR` and `PROTOCOL_MINOR` set to `1, 1` and `2, 0` in
+`crates/corvid-protocol/src/session.rs`. Preserve each binary after building
+and use separate Cargo target directories for the historical and current
+schemas.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/version_skew.py \
+  /path/to/corvid-old /path/to/corvid-1.1 /path/to/corvid-2.0
+```
+
+The fixture keeps an old TUI attached to a live child while checking both
+the major mismatch and a required capability introduced after `3d804e1`.
+The newer compatible client reattaches after an explicit detach and reads
+the same child's PID and advancing counter. The repository defaults to
+protocol 1.0. Additive features advertise individual capabilities.

@@ -177,7 +177,7 @@ fn slot_token(slot: &PresentedSlot) -> PresentedSlotToken {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use corvid_protocol::PeerRole;
+    use corvid_protocol::{PROTOCOL_MINOR, PeerRole};
 
     use super::*;
 
@@ -186,6 +186,7 @@ pub(crate) mod tests {
         let epoch = Uuid::new_v4().to_string();
         let session = Session {
             role: PeerRole::Presentation,
+            protocol_minor: PROTOCOL_MINOR,
             host_id: host.clone(),
             server_epoch: Uuid::new_v4().to_string(),
             controller_id: None,
