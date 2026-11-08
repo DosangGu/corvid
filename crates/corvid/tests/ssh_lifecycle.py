@@ -130,16 +130,19 @@ def progress_during_disconnect(progress):
     assert len(progress.read_text().splitlines()) > before
 
 
-def setup_companion_ssh(ssh, command, directory):
+def setup_companion_ssh(ssh, command, directory, *, relay_pids=None):
     # The test key accepts exactly the production relay command and maps it to
     # this fixture's isolated executable and runtime directory.
     gate = directory / "relay"
     blocked = directory / "relay-offline"
     relay = [*map(os.fspath, command), "control", "--stdio"]
+    track_relay = ""
+    if relay_pids is not None:
+        track_relay = f'printf "%s\\n" "$$" >> {shlex.quote(str(relay_pids))}\n'
     gate.write_text(
         '#!/bin/sh\n[ "$SSH_ORIGINAL_COMMAND" = "corvid control --stdio" ] || exit 1\n'
         f'[ ! -e {shlex.quote(str(blocked))} ] || exit 1\n'
-        f"exec {shlex.join(relay)}\n"
+        f"{track_relay}exec {shlex.join(relay)}\n"
     )
     gate.chmod(0o700)
     public = key(directory / "companion-key").read_text().strip()

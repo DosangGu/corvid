@@ -271,8 +271,17 @@ and the two slot placements. It recovers both Unverified question records
 without adding hook events. The companion focuses the exact registered TUI
 and acknowledges its alert while the question stays visible. Answering that
 question resolves only its RequestId. Interrupting the other TUI cancels the
-other RequestId. The failure tests exercised a real approval and completed its
-response despite the missing or timed-out observer, missing socket, and 32
+other RequestId.
+
+For A25 recovery case E, the same fixture also kills the remote
+`corvid control --stdio` watch process after pairing the first TUI and parking
+its question on another tab. The offline view retains both slots. A new relay
+restores the full snapshot with both agent PIDs, TUI client identities, and the
+binding revision intact. The old binding capture is refused, and a fresh one
+focuses the original question without answering it.
+
+The failure tests exercised a real approval and completed its response
+despite the missing or timed-out observer, missing socket, and 32
 occupied collector connections. The saturation test also checked that the next
 connection was refused. The conversation fixture completed
 compaction and resume with either the helper or the collector socket absent.

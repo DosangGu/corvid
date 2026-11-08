@@ -465,19 +465,22 @@ def submit_parallel_questions(first, second, command):
 def parallel_questions(first, second, command, directory):
     ssh_directory = directory / "control-ssh"
     ssh_directory.mkdir(mode=0o700)
+    relay_pids = ssh_directory / "relay-pids"
     server, ssh = start_ssh(ssh_directory)
     try:
         check_ssh(server, ssh)
-        companion, attempts, blocked = setup_companion_ssh(ssh, command, ssh_directory)
+        companion, attempts, blocked = setup_companion_ssh(
+            ssh, command, ssh_directory, relay_pids=relay_pids,
+        )
         try:
-            exercise_control_outage(first, second, command, companion, attempts, blocked)
+            exercise_control_outage(first, second, command, companion, attempts, blocked, relay_pids)
         finally:
             companion.close()
     finally:
         stop(server)
 
 
-def exercise_control_outage(first, second, command, companion, attempts, blocked):
+def exercise_control_outage(first, second, command, companion, attempts, blocked, relay_pids):
     companion.start()
     before = companion.wait(lambda view: len(assigned_slots(view)) == 2)
     control_pid, = map(int, attempts.read_text().splitlines())
@@ -507,7 +510,19 @@ def exercise_control_outage(first, second, command, companion, attempts, blocked
     assert request_for(command, one["run"]) == first_request
     assert request_for(command, two["run"]) == second_request
 
-    focus_and_ack_question(first, second, command, companion, one, two)
+    # Pairing opens a separate, short-lived relay. Capture the watch PID first.
+    watch_pid = int(relay_pids.read_text().splitlines()[-1])
+    paired = pair_and_park_question(first, command, companion, one)
+    restored = restart_control_relay(companion, command, blocked, watch_pid, paired)
+    assert int(relay_pids.read_text().splitlines()[-1]) != watch_pid
+    assert first.events() == events
+    assert request_for(command, one["run"]) == first_request
+    assert request_for(command, two["run"]) == second_request
+    for terminal, run in ((first, one), (second, two)):
+        agent_state(terminal, command, run=run["run"], terminal=run["terminal"], pid=run["pid"],
+                    process="Running", unverified="1", resolved="0")
+
+    focus_and_ack_question(first, second, command, companion, one, restored)
     assert request_for(command, one["run"])["request_status"] == "Unverified"
 
     first.send_key("Enter")
@@ -523,7 +538,7 @@ def exercise_control_outage(first, second, command, companion, attempts, blocked
     assert cancelled["request_id"] == second_request["request_id"] and cancelled["request_status"] == "Cancelled"
 
 
-def focus_and_ack_question(first, second, command, companion, one, two):
+def pair_and_park_question(first, command, companion, question):
     first.send_key("C-]")
     first.send_key("r")
     first.screen(b"Controller pairing code")
@@ -532,27 +547,84 @@ def focus_and_ack_question(first, second, command, companion, one, two):
     first.send_key("Enter")
     first.screen(b"Which synthetic answer option?")
 
-    def presented(view):
-        runs = {slot.get("run", "").rsplit("/", 1)[-1] for slot in view["slots"]}
-        return view["bindings"] and {one["run"], two["run"]} <= runs
-
-    view = companion.wait(presented)
-    slot = next(slot for slot in view["slots"] if slot.get("run", "").endswith("/" + one["run"]))
-    binding, = view["bindings"]
-    assert binding["client_id"] == pair["client_id"]
     first.send_key("C-]")
     first.send_key("t")
 
     def other_tab():
         clients = subprocess.check_output([*command, "control", "clients"], text=True, timeout=3)
         for line in clients.splitlines():
-            if line.split()[0] == pair["client_id"] and fields(line).get("terminal") != one["terminal"]:
+            if line.split()[0] == pair["client_id"] and fields(line)["terminal"] != question["terminal"]:
                 return True
         return None
 
     first.wait(other_tab, "first TUI switches to its shell tab")
-    applied = companion.run("focus-slot", "--slot", slot["capture"], "--binding", binding["capture"])
-    assert fields(applied.stdout)["terminal_id"] == one["terminal"]
+    return companion.wait(lambda view: any(
+        binding["client_id"] == pair["client_id"] for binding in view["bindings"]
+    ))
+
+
+def kill_remote_relay(command, pid):
+    # The forced-command gate execs the relay in place on this loopback host.
+    handle = os.pidfd_open(pid)
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+        assert argv == list(map(os.fsencode, [*command, "control", "--stdio"])), argv
+        signal.pidfd_send_signal(handle, signal.SIGKILL)
+        assert select.select([handle], [], [], 3)[0], "remote relay did not exit"
+    finally:
+        os.close(handle)
+
+
+def restart_control_relay(companion, command, blocked, watch_pid, before):
+    old_slots = assigned_slots(before)
+    clients = [*command, "control", "clients"]
+    working_clients = subprocess.check_output(clients, text=True, timeout=3)
+    assert len(working_clients.splitlines()) == 2
+
+    blocked.touch()
+    try:
+        kill_remote_relay(command, watch_pid)
+        offline = companion.wait(lambda view: view["header"]["connection"] == "Offline")
+        assert not offline["bindings"] and "control_capture" not in offline["header"]
+        offline_slots = assigned_slots(offline)
+        assert offline_slots.keys() == old_slots.keys()
+        for run, slot in offline_slots.items():
+            assert slot["availability"] == "Offline"
+            assert slot["capture"] == old_slots[run]["capture"]
+    finally:
+        blocked.unlink()
+
+    restored = companion.wait(lambda view: view["header"]["connection"] == "Ready", timeout=32)
+    previous, current = before["header"], restored["header"]
+    assert current["remote_epoch"] == previous["remote_epoch"]
+    assert current["companion_epoch"] == previous["companion_epoch"]
+    assert current["control_capture"] != previous["control_capture"]
+    new_slots = assigned_slots(restored)
+    assert new_slots.keys() == old_slots.keys()
+    for run, slot in new_slots.items():
+        assert slot["availability"] == "Available"
+        for key in ("capture", "pending", "unverified", "unseen", "latest_attention_id"):
+            assert slot[key] == old_slots[run][key], (key, old_slots[run], slot)
+
+    old_binding, = before["bindings"]
+    new_binding, = restored["bindings"]
+    for key in ("client_id", "revision"):
+        assert old_binding[key] == new_binding[key], key
+    stale_slot = next(iter(old_slots.values()))
+    stale = companion.run("focus-slot", "--slot", stale_slot["capture"],
+                          "--binding", old_binding["capture"], check=False)
+    assert stale.returncode != 0 and "StaleBinding" in stale.stderr, stale.stderr
+    assert subprocess.check_output(clients, text=True, timeout=3) == working_clients
+    return restored
+
+
+def focus_and_ack_question(first, second, command, companion, one, view):
+    slot = assigned_slots(view)[one["run"]]
+    binding, = view["bindings"]
+    applied = fields(companion.run("focus-slot", "--slot", slot["capture"],
+                                   "--binding", binding["capture"]).stdout)
+    assert applied["client_id"] == binding["client_id"]
+    assert applied["run_id"] == one["run"] and applied["terminal_id"] == one["terminal"]
     first.screen(b"Which synthetic answer option?")
     second.screen(b"Which synthetic answer option?")
     companion.run("ack", "--control", view["header"]["control_capture"], "--run", slot["run"],
