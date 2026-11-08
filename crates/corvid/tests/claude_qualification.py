@@ -35,6 +35,7 @@ IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id", "result_agent_id")
 FAULT_TRACE = "collector-faults"
 OFFLINE_PROMPTS = (b"Corvid offline question one", b"Corvid offline question two")
 PLAN_SCENARIOS = {"plan", "plan-rejected"}
+CHILD_SCENARIOS = {"child", "child-sync"}
 CAPTURE = """
 import json
 from pathlib import Path
@@ -339,7 +340,13 @@ def exercise(terminal, scenario, managed, fault):
     initial = managed.expect(terminal, collection="Healthy", process="Running") if managed else None
     current = initial
     terminal.send(b"Corvid hook schema fixture\r")
-    child_start = terminal.event(hook_event_name="SubagentStart") if scenario == "child" else None
+    child_start = terminal.event(hook_event_name="SubagentStart") if scenario in CHILD_SCENARIOS else None
+    if scenario == "child-sync":
+        terminal.event(hook_event_name="PostToolUse", tool_name="Read", agent_id=child_start["agent_id"])
+        if managed:
+            snapshot = managed.snapshot()
+            assert snapshot["agents"] == "1" and snapshot["requests"] == "0"
+        terminal.trace.with_name("child-release").touch()
     if scenario in PLAN_SCENARIOS:
         return exercise_plan(terminal, managed, initial, rejected=scenario == "plan-rejected")
     terminal.expect(b"Enter to submit or Escape to cancel:")
@@ -353,7 +360,7 @@ def exercise(terminal, scenario, managed, fault):
         question = managed.expect(terminal, run=initial["run"], pending="1", badge="NeedsInput")
         assert question["unverified"] == "1"
     if child_start:
-        child = exercise_child(terminal, managed, initial, child_start)
+        child = exercise_child(terminal, managed, initial, child_start, background=scenario == "child")
     elif managed:
         snapshot = managed.snapshot()
         assert snapshot["agents"] == "1"
@@ -364,9 +371,9 @@ def exercise(terminal, scenario, managed, fault):
             exercise_forged_output(terminal, managed, question)
         if child:
             view = managed.companion.slots()
-            assigned = [slot["run"].split("/")[-1] for slot in view["slots"] if slot.get("run", "-") != "-"]
-            assert assigned == [initial["run"]]
+            assert set(assigned_slots(view)) == {initial["run"]}
             assert not view["ended"]
+            managed.reject_child_focus(child)
         managed.acknowledge_question(question)
         managed.reject_foreign_hook(question)
         if scenario == "restart":
@@ -428,22 +435,27 @@ def exercise(terminal, scenario, managed, fault):
     return terminal.events()
 
 
-def exercise_child(terminal, managed, parent, start):
+def exercise_child(terminal, managed, parent, start, *, background):
     child = None
     if managed:
-        child = managed.expect(
-            terminal, parent_run=parent["run"], actor=start["agent_id"], terminal=parent["terminal"],
-            process="Unknown", badge="Working", response="false",
-        )
-        assert "pid" not in child
-        snapshot = managed.snapshot()
-        assert snapshot["agents"] == "2"
-        assert snapshot["requests"] == snapshot["attention"] == "2"
-    terminal.trace.with_name("child-release").touch()
+        identity = {
+            "parent_run": parent["run"], "actor": start["agent_id"],
+            "terminal": parent["terminal"], "process": "Unknown",
+        }
+        if background:
+            child = managed.expect(terminal, **identity, badge="Working", response="false")
+    if background:
+        terminal.trace.with_name("child-release").touch()
     terminal.event(hook_event_name="SubagentStop", agent_id=start["agent_id"])
     if managed:
-        managed.expect(terminal, run=child["run"], process="Unknown", badge="Unknown", response="true")
+        responded = managed.expect(terminal, **identity, badge="Unknown", response="true")
+        assert "pid" not in responded
+        if child:
+            assert responded["run"] == child["run"]
+        child = responded
         managed.expect(terminal, run=parent["run"], pending="1", process="Running", response="false")
+        snapshot = managed.snapshot()
+        assert snapshot["agents"] == "2" and snapshot["requests"] == "2"
     return child
 
 
@@ -1024,14 +1036,30 @@ class CorvidFixture:
         actual = next(agent for agent in self.agents() if agent["run"] == question["run"])
         assert actual["pending"] == question["pending"]
 
+    def reject_child_focus(self, child):
+        slot, binding = self.focus_capture
+        host, epoch, _ = slot["run"].split("/")
+        clients = [*self.command, "control", "clients"]
+        before = subprocess.check_output(clients, timeout=3)
+        refused = subprocess.run([
+            *self.command, "controller", "--controller-id", self.companion.controller,
+            "--host-id", host, "--server-epoch", epoch, "focus",
+            "--client-id", binding["client_id"], "--binding-revision", binding["revision"],
+            "--run-id", child["run"],
+        ], capture_output=True, text=True, timeout=3)
+        assert refused.returncode != 0 and "TargetGone" in refused.stderr, refused.stderr
+        assert subprocess.check_output(clients, timeout=3) == before
+
 
 def capture(binary, directory, port, scenario, corvid, fault):
     trace, environment = configure(directory, port, corvid, fault)
     project = directory / "project"
     project.mkdir()
-    if scenario == "child":
+    if scenario in CHILD_SCENARIOS:
         (project / "child-note.txt").write_text("Synthetic fixture note.\n")
         environment["API_TIMEOUT_MS"] = "9000"
+    if scenario == "child-sync":
+        environment["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
     arguments = [
         "--model", "sonnet", "--strict-mcp-config", "--no-chrome", "--ax-screen-reader",
         "--permission-mode", "plan" if scenario in PLAN_SCENARIOS else "manual",
@@ -1170,17 +1198,27 @@ def verify(events, scenario):
             assert events.index(after) < events.index(batch)
     assert events[-1]["hook_event_name"] == "SessionEnd"
     assert events[-1]["reason"] == "prompt_input_exit"
-    if scenario == "child":
+    if scenario in CHILD_SCENARIOS:
         child = next(event for event in events if event["hook_event_name"] == "SubagentStart")
         stopped = next(event for event in events if event["hook_event_name"] == "SubagentStop")
-        linked = next(event for event in events if event.get("result_status") == "async_launched")
+        invoked = next(event for event in events if event["hook_event_name"] == "PreToolUse"
+                       and event.get("tool_name") == "Agent")
+        linked = next(event for event in events if event["hook_event_name"] == "PostToolUse"
+                      and event.get("tool_name") == "Agent")
         read = next(event for event in events if event["hook_event_name"] == "PostToolUse"
                     and event.get("tool_name") == "Read")
         assert child["agent_id"] == stopped["agent_id"] == linked["result_agent_id"] == read["agent_id"]
         assert stopped["stop_hook_active"] is False and "agent_id" not in linked
-        for event in (child, stopped, linked, read):
+        assert invoked["tool_use_id"] == linked["tool_use_id"]
+        for event in (invoked, child, stopped, linked, read):
             assert event["session_id"] == session and event["prompt_id"] == turn
-        assert events.index(before) < events.index(stopped) < events.index(after)
+        assert events.index(invoked) < events.index(child) < events.index(linked)
+        if scenario == "child-sync":
+            assert linked["result_status"] == "completed"
+            assert events.index(read) < events.index(stopped) < events.index(linked) < events.index(before)
+        else:
+            assert linked["result_status"] == "async_launched"
+            assert events.index(linked) < events.index(before) < events.index(stopped) < events.index(after)
     if scenario in {"clear", "resume"}:
         ended = next(event for event in events if event.get("reason") == "clear")
         started = next(event for event in events if event.get("source") == "clear")
@@ -1206,7 +1244,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=(
         "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart",
-        "offline-pair", "offline-restart", "snapshot-race", "plan-rejected",
+        "offline-pair", "offline-restart", "snapshot-race", "plan-rejected", "child-sync",
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
@@ -1232,14 +1270,14 @@ def main():
     corvid = args.corvid.resolve() if args.corvid is not None else None
     parent = Path(__file__).resolve().parents[3] if corvid is not None else None
     with tempfile.TemporaryDirectory(prefix=".corvid-claude-", dir=parent) as directory:
-        server_type = ThreadingHTTPServer if args.scenario == "child" else HTTPServer
+        server_type = ThreadingHTTPServer if args.scenario in CHILD_SCENARIOS else HTTPServer
         with server_type(("127.0.0.1", 0), ModelFixture) as server:
             server.fixture_tool = "ExitPlanMode" if args.scenario in PLAN_SCENARIOS else "AskUserQuestion"
             server.tool_sent = False
             server.plan_drafted = False
             server.plan_search_sent = False
             server.plan_directory = Path(directory) / "home/.claude/plans"
-            server.child_fixture = args.scenario == "child"
+            server.child_fixture = args.scenario in CHILD_SCENARIOS
             server.offline_pair = args.scenario == "offline-pair"
             server.questions_sent = set()
             server.agent_sent = False

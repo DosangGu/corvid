@@ -266,7 +266,7 @@ impl ClaudeInput {
         let result = serde_json::from_slice::<ResultInput>(payload)
             .ok()?
             .tool_response;
-        if result.status != "async_launched" {
+        if !matches!(result.status.as_str(), "async_launched" | "completed") {
             return None;
         }
         valid_id(self.tool_use_id.take()?)?;

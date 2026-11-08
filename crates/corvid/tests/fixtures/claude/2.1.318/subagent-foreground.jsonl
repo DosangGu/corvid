@@ -1,0 +1,14 @@
+{"hook_event_name":"SessionStart","source":"startup","session_id":"00000000-0000-4000-8000-000000000001"}
+{"hook_event_name":"UserPromptSubmit","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002"}
+{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_3"}
+{"hook_event_name":"SubagentStart","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","agent_id":"00000000-0000-4000-8000-000000000004","agent_type":"general-purpose"}
+{"hook_event_name":"PreToolUse","tool_name":"Read","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_5","agent_id":"00000000-0000-4000-8000-000000000004"}
+{"hook_event_name":"PostToolUse","tool_name":"Read","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_5","agent_id":"00000000-0000-4000-8000-000000000004"}
+{"hook_event_name":"SubagentStop","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","agent_id":"00000000-0000-4000-8000-000000000004","agent_type":"general-purpose","stop_hook_active":false}
+{"hook_event_name":"PostToolUse","tool_name":"Agent","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_3","result_agent_id":"00000000-0000-4000-8000-000000000004","result_status":"completed"}
+{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_6"}
+{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002"}
+{"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_use_id":"toolu_fixture_6"}
+{"hook_event_name":"PostToolBatch","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002","tool_calls":[{"tool_name":"AskUserQuestion","tool_use_id":"toolu_fixture_6"}]}
+{"hook_event_name":"Stop","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000002"}
+{"hook_event_name":"SessionEnd","reason":"prompt_input_exit","session_id":"00000000-0000-4000-8000-000000000001","prompt_id":"00000000-0000-4000-8000-000000000007"}
