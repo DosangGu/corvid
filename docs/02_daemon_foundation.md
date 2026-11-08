@@ -7,17 +7,25 @@ independently of the attached TUI.
 ## Run Locally
 
 ```sh
-cargo build --locked
-mkdir -p target/terminfo
-tic -x -o target/terminfo spikes/terminal/corvid.terminfo
-TERMINFO="$PWD/target/terminfo" target/debug/corvid daemon
+cargo build --locked -p corvid
+target/debug/corvid
 ```
 
-In a second terminal, run `target/debug/corvid attach --new` to start a shell,
-or provide an explicit command with `target/debug/corvid attach -- program arg`.
-Use `corvid attach` to join the retained terminal. Press Ctrl-] then d to detach.
-Ctrl-] twice sends one literal Ctrl-]. The daemon returns an unmatched leader
-to the PTY after two seconds. A signal or connection loss also releases the writer.
+Linux builds use `protoc` 36.1 and the ncurses `tic` compiler. Running `corvid`
+without a subcommand starts a background daemon if needed. It joins a live
+terminal in the default workspace or opens a shell if that workspace is
+empty. The automatically started daemon uses the bundled terminfo entry.
+For a daemon that must survive the host's last-login policy, follow the
+[systemd setup](#run-under-systemd).
+
+Press Ctrl-] then d to detach and run `corvid` again to return to the shell.
+Use `corvid attach -- program arg` to start an explicit command on the running
+daemon. When starting a daemon directly, install the terminfo entry with
+`tic -x -o "$HOME/.terminfo" spikes/terminal/corvid.terminfo` first.
+Ctrl-] enters command mode for the next complete key. Ctrl-] twice sends one
+literal Ctrl-]. An unmapped key sends the leader and the key as terminal input.
+The daemon returns an idle leader to the current PTY after two seconds.
+A signal or connection loss also releases the writer.
 The shell's exit status reaches the attach process on normal completion.
 
 Use `corvid attach --new-workspace "Review"` to create a separate workspace and
@@ -73,12 +81,33 @@ runs as `corvid control --stdio` over a
 non-PTY connection. Give the runtime directory a trusted absolute path through
 `XDG_RUNTIME_DIR`, `CORVID_RUNTIME_DIR`, or `--runtime-dir`.
 
+Run `corvid control capabilities` to list the negotiated control features,
+command limits, writer policy, and the daemon build's exact provider profiles.
+The profiles include adapter schema revisions, event and correlation fields,
+and qualification levels with their reasons. A control or TUI Hello reports
+the same provider profiles. A managed launch checks the provider executable,
+and `corvid control agents` reports the resulting adapter and collection state
+for that run.
+
+Run `corvid control collector-status` to count current top-level managed runs
+by their observed collection state. The counters for accepted and rejected
+submissions, failed connections, and saturated admission reset each daemon
+epoch. Late connections count toward the epoch that receives them. A connection
+can fail while sending a reply after the collector has
+already accepted its submission. An unattributed transport failure affects
+the traffic counts only. Per-run gap evidence comes from the verified hook
+or process association.
+
 The Unix socket checks both filesystem ownership and peer UID. A rejected
 peer is dropped before the handshake. Frame assembly has a five-second
 deadline from its first byte. An idle attached TUI can wait between frames.
 
-`corvid control clients` lists attached TUI clients, view revisions, and writer
-leases. `corvid control snapshot` reads a consistent view at one daemon sequence.
+`corvid control clients` lists attached TUI clients, view revisions, writer
+leases, and input mode. Each connection's keymap enables tab and pairing
+commands according to its attach capabilities. A new view returns the affected
+client to passthrough and keeps its negotiated keymap. Other clients retain
+their own modes and keymaps. `corvid control snapshot` reads a consistent view
+at one daemon sequence.
 `corvid control watch` prints a summary once synchronized and after each applied
 transaction. Its Rust client retains the last valid cache on disconnect and
 reports the watch unavailable. Establish a fresh watch to resynchronize.
@@ -100,7 +129,8 @@ corvid controller --controller-id ID --host-id HOST --server-epoch EPOCH pair
 
 `corvid control clients` shows the registered client and binding revision.
 `controller ... unpair --client-id CLIENT --binding-revision REVISION` revokes
-that registration. `corvid control attention` lists alert IDs and request kinds.
+that registration. `corvid control attention` lists alert IDs and the IDs,
+kinds, and statuses of associated requests.
 Use `controller ... ack --run-id RUN --attention-id ALERT` to acknowledge one
 alert. Its input request remains pending until the provider reports a result.
 
@@ -116,14 +146,33 @@ focus reports the selected terminal, view revision, and daemon sequence. Bring t
 local terminal window forward manually. If a paste is active, let it finish before
 issuing a fresh request.
 
-The daemon saves layout IDs and the last observed launch directory in `state.json`.
-It publishes changes to a separate writer and debounces disk writes by one second.
+The daemon saves layout IDs, the last observed working directory, and allowlisted
+run history in `state.json`. It publishes changes to a separate writer and
+debounces disk writes by one second. The archive retains up to 128 runs and
+keeps current top-level running agents ahead of older records when evicting.
 The state directory lock allows one writer. A successful save retains the preceding
-valid state in `state.json.bak`. Startup preserves bounded corrupt primary bytes in
+valid state in `state.json.bak`. Startup upgrades validated schema 1 and 2 files
+to schema 3 and keeps the original as the backup. Schema 1 starts with an empty
+archive. Schema 3 adds a process-directory observation source. Startup
+preserves bounded corrupt primary bytes in
 `state.json.corrupt`, then loads a valid backup or opens an empty layout. Newer
 schemas require a compatible binary. The status command reports the recovery source.
+
+Run `corvid control history` after a daemon restart to inspect saved records
+under their original epochs. History includes the last observed state, request
+kinds and statuses, and attention acknowledgments. The current process state of
+a historical run is Unknown, and an unresolved request is Unverified. Snapshot
+clients request this separate archive with `include_history`. It shares the
+snapshot transfer limit and stays outside the live entity and focus graph.
+
 The next terminal is created by an explicit launch. Use `attach --new --restore-cwd`
-to choose the recorded directory when it still exists.
+to choose the recorded directory when it still exists. The daemon records the
+launch directory and samples `/proc/<pid>/cwd` for the original PTY child, even
+when its tab is detached. It checks the process start time and verifies that the
+observed path names the same directory in the daemon's namespace. A valid change
+is stored with its observation time on the pane's current tab. If a sample is
+unavailable, Corvid keeps the last valid directory.
+[Linux `/proc/<pid>/cwd` reference](https://man7.org/linux/man-pages/man5/proc_pid_cwd.5.html)
 
 ## Run Under systemd
 
@@ -173,24 +222,33 @@ isolated runtime, a child with a progress counter, and separate outer TTYs.
 
 | Area | Evidence |
 |---|---|
+| Default startup | Two simultaneous invocations share one background daemon. The first writer opens a shell with the bundled terminfo entry, and the other receives `WorkspaceBusy`. After detach, another invocation reaches the same shell PID. A non-TTY invocation and a control ping leave an absent runtime untouched. |
 | Identity and control | Restart changes the epoch and preserves the host ID. Concurrent startup fails. Corrupt identity bytes are preserved. A real CLI subprocess relays framed control messages over pipes. |
 | Version skew (A15) | A client offering protocol 1.1 uses 1.0 with the daemon from `3d804e1`. The daemon rejects a 2.0 client and reports its supported major. The same daemon epoch, client view, and child PID survive the rejection. An incompatible upstream framing preamble becomes `ProtocolMismatch` on both the local CLI and stdio relay. |
+| Capability discovery (A29) | `GetCapabilities` returns the negotiated limits, features, and release profiles from the control Hello over binary stdio. The local CLI reports both provider profiles while the provider launch probes remain untouched. Duplicate profile identities invalidate Hello, and an additive provider ID remains descriptive data. |
+| Live state compatibility (A29) | An unknown agent lifecycle in a delta returns `ResyncRequired`, rolls back the whole transaction, and preserves the previous view and sequence. An unknown request status during catch-up prevents the watch from becoming ready. Explicit Unknown states remain valid. |
+| Collector status (A17, A22) | A closed collector handshake and an unowned hook submission increment separate counters. Restart clears both. Current coverage counts exclude exited and archived runs. Claude fault fixtures distinguish a verified per-run gap from saturation at the 32-connection admission limit. |
 | Socket boundary (A24, A30) | A two-UID Linux fixture checks filesystem access and both peer credential checks. Real TUI and control sockets reject invalid lengths, kinds, and Protobuf while a separate PTY handles input. A partial request held open after `Hello` reaches the assembly deadline and its connection closes. |
 | Snapshot and watch | A watch established before attach receives the workspace, terminal, and client at contiguous revisions. Detach removes the client while a one-shot snapshot still shows the terminal. Tests cover capture races, sequence exhaustion, slow subscribers, malformed transactions, and the stdio relay. The Rust client preserves its last view on connection loss and obtains a fresh epoch on reconnect. |
 | Pairing and attention | The real TUI issues a private code, restores its redraw after dismissal, and accepts one pairing. Tests verify expiry, the host-wide guess budget, revision rotation, detach cleanup, and RPC replay. A Claude question stays pending after its exact alert is acknowledged. |
-| Exact focus | Integration tests cover two independent clients, stale input tokens, paste blocking, writer ownership, and request replay. Revoking a binding after the fence restores the original view with a fresh token. |
-| Layout recovery | After killing a daemon that owns a live PTY, a new daemon restores the workspace, tab, and pane IDs with an empty terminal slot. An explicit launch uses the saved directory and gets a new TerminalId. Corrupt state recovers from backup or a fresh layout, and a newer schema remains intact. |
+| Exact focus (A3) | Two clients use different keymaps and enter command mode. Focusing a new run clears the focused client's prefix and retains its keymap. The other client keeps its complete view and completes its original pairing command. Tests also cover stale input tokens, paste blocking, writer ownership, and request replay. Revoking a binding after the fence restores the original view with a fresh token. |
+| Remote reboot (A11) | An exact focus request succeeds through the SSH stdio relay before a Debian 13 QEMU guest reboots. The kernel boot ID and daemon epoch change. The host ID and layout persist, live inventory starts empty at sequence zero, and the old run appears as Historical with Unknown process state. The new daemon rejects the identical Protobuf request with `EpochMismatch` and leaves the snapshot unchanged. |
+| Layout recovery (A23) | A shell changes directory and emits a forged OSC 7 path. After the daemon is killed, the new daemon restores the layout with an empty terminal slot. An explicit launch uses the observed shell directory and gets a new TerminalId. Schemas 1 and 2 migrate with a backup. Corrupt state recovers from backup or a fresh layout, and a newer schema remains intact. |
+| Agent history after restart (A23) | With a Claude Code 2.1.318 question open, the fixture acknowledges its alert, waits for persistence, and kills the daemon. The same host starts a new epoch with an empty live inventory. The old question and acknowledgment are visible in history, the question is Unverified, the old focus returns `EpochMismatch`, and the companion slot is Historical. |
 | Writer and redraw | A competing attach at a different size is refused and leaves the child size unchanged. A successful resize resets the render generation. The detached child progresses, then the next TUI shows its retained screen and PID. |
 | Fencing | An input chunk using the pre-resize token is rejected. Input with the new token reaches the child. |
 | Workspaces and tabs | Two writers operate concurrently in different workspaces. Switching targets the exact existing pane and preserves the other writer. An occupied destination rejects the switch. An unowned destination requires an explicit writer claim. Old view tokens fail at the PTY boundary. |
-| Moving a live tab (A2, A8) | The real TUI moves a hidden tab into a claimed workspace and reattaches to the same child PID. The wire test rejects occupied or unclaimed destinations and the visible tab. An active watch applies the new layout, terminal location, and agent location together. A companion capture made before the move focuses the same run and redraws its retained screen. |
+| Moving a live tab (A2) | The real TUI moves a hidden tab into a claimed workspace and reattaches to the same child PID. The wire test rejects occupied or unclaimed destinations and the visible tab. An active watch applies the new layout, terminal location, and agent location together. A companion capture made before the move focuses the same run and redraws its retained screen. |
+| Snapshot catch-up race (A8) | A real Claude question and tab move commit after `SnapshotBegin`. The base chunks keep the old location and exclude the new request. Contiguous deltas carry the request and alert, then both workspaces and the new agent and terminal locations together. The Rust watch first publishes at `WatchReady` after both changes. |
 | Managed agent process | Two isolated CLI fixtures launched in the same directory have distinct run IDs, terminal IDs, and Linux process incarnations. A verified exit changes only that run. A subsequent launch in the same pane gets new run and terminal IDs. Claude Code 2.1.318 printed its version and exited successfully through the managed launch path. |
+| PID and pane reuse (A12) | Two managed runs in the same pane and companion slot reuse PID 4096 and the same executable inode with different start times. With a fresh pairing, the old run returns `TargetGone` and the old slot capture returns `StaleBinding`. The client view and layout stay the same. The replacement capture focuses the new terminal without injecting input. |
 | Silent process changes (A27) | A managed shell fixture changes its foreground group without terminal output, then replaces its executable under the same PID. Focus rejects the old run even before the periodic sample, and the next sample retires that run while its PTY stays live. |
-| Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests cover incomplete and oversized paste, busy resize, and a stalled partial write. |
+| Paste and keys | Real TTY input covers fragmented Esc, Alt, arrows, UTF-8, literal leader, and paste in both child modes. Wire tests check the exact bytes for an expired leader and an unmapped suffix, incomplete and oversized paste, busy resize, and a stalled partial write. |
 | Backpressure (A13) | Eight watchers stop reading while the daemon publishes 48 moves between large workspaces. A ninth watch receives `LimitExceeded`, control ping and input to a separate PTY succeed, and a new watch resynchronizes after overflow. The output-heavy PTY answers cursor position queries while the stalled renderer loses its lease. Reattach begins with a full frame. |
 | Untrusted terminal output (A18) | A managed Claude fixture writes forged OSC and question text into a live PTY. The outer TTY displays literal text, and the exact request stays pending until the fixture answers through the terminal. |
 | SSH lifecycle | OpenSSH 10.6p1 over loopback carries binary control over `ssh -T` and the TUI over `ssh -tt`. After clean detach and a later forced SSH disconnect, the same systemd 262 service and child PID remain active. The advancing counter and retained screen are checked on reattach. |
 | Last login (A21) | Debian 13 in a disposable QEMU guest ran the shipped user unit with systemd 257.13 and OpenSSH 10.0p2 using PAM. The fixture passed after clean detach and forced SSH loss with `KillUserProcesses=yes`, `UserStopDelaySec=0`, and lingering enabled for the Corvid account. |
+| Schema generation (A31) | Two clean Linux builds produce identical Prost types and Rust wire preflight tables. The CLI and framing tests run with the compiler unavailable, including round trips of exact `uint64` values and opaque bytes. |
 
 The current renderer shows one pane at a time with the qualified VT engine's
 screen comparison. Each live PTY has a separate worker. The runtime allows up
@@ -204,20 +262,82 @@ incremental redraws strip Unicode `Bidi_Control` characters from cell output
 and preserve visible Unicode and cell positions.
 [Unicode character properties](https://www.unicode.org/Public/17.0.0/ucd/PropList.txt)
 
-For managed PTYs, foreground and executable checks run on a staggered two-second
-timer. PTY output can bring a check forward after a 500 ms debounce. Due checks
-wait in arrival order, at least 50 ms apart host-wide. At the 32-PTY limit, allow
-about four seconds for a silent change when worker ticks run on schedule, plus
-host scheduling delays. The checks use `/proc` start times and executable device
-and inode numbers. Foreground changes provide process evidence only. An exec of
-the same executable file can leave this evidence unchanged. Focus also checks
-the live process before applying a selection.
+PTY process checks run on a staggered two-second timer. PTY output can bring a
+check forward after a 500 ms debounce. Due checks wait in arrival order, at least
+50 ms apart host-wide. At the 32-PTY limit, allow about four seconds for a silent
+change when worker ticks run on schedule, plus host scheduling delays. Managed
+runs also track the foreground group and executable device and inode. Foreground
+changes provide process evidence only. An exec of the same executable file can
+leave this evidence unchanged. Focus checks the live process before applying a
+selection.
 [Linux `/proc` reference](https://docs.kernel.org/filesystems/proc.html#process-specific-subdirectories)
 
 The SSH fixture uses temporary keys, a pinned host key, a loopback-only SSH
 listener, and a transient user unit. It ran with other user sessions active and
 lingering disabled. Use the last-login fixture to qualify the logout policy on
 the intended deployment host.
+
+Reproduce the A23 history check with Claude Code 2.1.318 and the loopback
+provider fixture. It also checks that the synthetic prompt and question are
+absent from the stored metadata.
+
+```sh
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario restart
+```
+
+### Remote reboot reproduction
+
+A11 ran on QEMU 11.1.3 with Debian 13, Linux 6.12.111, systemd 257.13, and
+OpenSSH 10.0p2. Use the dedicated `operator` and `observer` accounts and
+pinned SSH setup described for A21. The user unit must start at boot, and the
+daemon's live inventory must be empty when the fixture starts. Install `protoc`
+36.1 on the client. In the disposable guest, install this test executable as
+`/usr/local/bin/claude` on the daemon's PATH.
+
+```python
+#!/usr/bin/python3
+import os
+import sys
+import tty
+
+if sys.argv[1:] != ["--reboot-probe"]:
+    raise SystemExit(1)
+
+tty.setraw(0)
+os.write(1, b"REBOOT-READY")
+assert os.read(0, 4096) == b"q"
+```
+
+The version probe selects the process-only adapter. The fixture checks that
+both SSH aliases refer to separate accounts in the same QEMU guest and uses
+the observer account to reboot it. The saved focus request travels over a
+fresh relay connection after reboot, so the rejection comes from the daemon.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/remote_reboot.py \
+  ssh_config operator observer --reboot-disposable-vm
+```
+
+### Snapshot catch-up race reproduction
+
+The A8 fixture uses Claude Code 2.1.318, the loopback model server, and
+`protoc` 36.1. It seeds 80 synthetic historical runs with 256 requests each
+so the base spans multiple frames. A private Unix socket proxy forwards
+`SnapshotBegin` to the normal `control watch` client, then pauses reads while
+the real CLI asks a question and an explicit TUI action moves the agent tab.
+
+```sh
+cargo build --locked -p corvid
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py \
+  --corvid target/debug/corvid --scenario snapshot-race
+```
+
+The fixture verifies the first published view against a separate snapshot.
+Three runs on Linux 7.2.14 sent four base chunks each and reported the tab
+move's commit sequence as the ready watermark.
+It reattaches in the destination to the same terminal, process, and pending
+request. Answering in that TUI resolves the original request ID. The gap and
+overflow tests separately verify invalidation and fresh snapshot recovery.
 
 ### Backpressure measurements
 
@@ -235,6 +355,40 @@ input-to-redraw sample on a separate PTY was 40.4 ms. The flooding PTY verified
 render client disconnected at about five seconds. The daemon's peak resident
 memory from `/proc` was 22.6–22.8 MiB. These measurements cover the four-PTY
 local workload on the recorded host.
+
+### Interactive key latency
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/ssh_lifecycle.py \
+  --measure-input target/debug/corvid
+```
+
+Three debug runs on Linux 7.2.14 with a Ryzen 9 5950X used an 80×24 outer TTY
+and a raw inner PTY. Each run recorded 32 samples per row, both locally and
+through OpenSSH 10.6p1 on loopback. The inner probe timestamps the received
+bytes. The outer probe timestamps receipt of the rendered response. Both use
+the same host's monotonic clock. Alt timings start at the suffix write after
+an intentional 20 ms gap. The ranges are the smallest and largest per-run
+statistics in milliseconds.
+
+| Transport | Esc delay | Input | PTY p50 | Redraw p50 | Redraw p95 |
+|---|---:|---|---:|---:|---:|
+| Local | 100 | Text | 8.0–8.2 | 41.8–41.9 | 42.2–42.3 |
+| Local | 100 | Split Alt | 4.4–4.5 | 21.5–21.6 | 21.9–22.2 |
+| Local | 100 | Esc | 107.8–108.2 | 116.6–117.1 | 117.5–117.7 |
+| Local | 40 | Esc | 49.4–49.5 | 58.2–58.3 | 58.7–59.0 |
+| Local | 40 | Suffix after Esc | 8.1 | 41.7–41.9 | 42.1–42.2 |
+| SSH | 100 | Text | 7.9–8.1 | 41.5–41.8 | 42.0–42.3 |
+| SSH | 100 | Split Alt | 4.3–20.3 | 21.2–29.2 | 30.6–37.5 |
+| SSH | 100 | Esc | 108.0–115.3 | 116.9–124.2 | 133.0–133.2 |
+| SSH | 40 | Esc | 49.6–56.3 | 58.8–64.9 | 67.0–75.2 |
+| SSH | 40 | Suffix after Esc | 8.0–15.8 | 41.6–41.8 | 42.1–42.4 |
+
+The fixture verified the exact bytes and waited for the standalone Esc redraw
+before sending a late suffix. In the split Alt cases the inner PTY received
+Esc after the outer probe sent the suffix. The measurements describe one
+active PTY and a loopback SSH link. Network delay on a remote deployment adds
+to the redraw time and can extend the gap seen by the decoder.
 
 ### Version skew reproduction
 
@@ -255,6 +409,34 @@ the major mismatch and a required capability introduced after `3d804e1`.
 The newer compatible client reattaches after an explicit detach and reads
 the same child's PID and advancing counter. The repository defaults to
 protocol 1.0. Additive features advertise individual capabilities.
+
+The `3d804e1` client also attached to a current daemon, read the client list
+and snapshot while its TUI was in command mode, and detached with Ctrl-] then d.
+It read the new daemon's host identity and snapshot after release profiles were
+added to Hello. The current CLI received `UnsupportedCapability` for its
+capability query against `3d804e1` and could still read that daemon's identity.
+
+### PID reuse reproduction
+
+The A12 fixture ran on Linux 7.2.14. It uses a private PID namespace and procfs
+to set the next child PID before each launch. The two fixture runs use the
+same Python interpreter and different markers. The fixture checks that the
+first child has exited before it starts the replacement in the same pane.
+
+On Arch Linux with user namespaces, `unshare`, `bwrap`, Python, and `tic`,
+run from the repository root.
+
+```sh
+cargo build --locked -p corvid
+unshare --user --map-root-user bwrap --unshare-pid --as-pid-1 \
+  --cap-add CAP_CHECKPOINT_RESTORE --proc /proc --dev /dev --ro-bind /usr /usr \
+  --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 --dir /run \
+  --ro-bind "$PWD/target/debug/corvid" /corvid \
+  --ro-bind "$PWD/crates/corvid/tests" /fixtures \
+  --ro-bind "$PWD/spikes/terminal/corvid.terminfo" /corvid.terminfo \
+  --clearenv --setenv PATH /usr/bin --setenv PYTHONDONTWRITEBYTECODE 1 --chdir / \
+  -- /usr/bin/python3 /fixtures/pid_reuse.py /corvid /corvid.terminfo
+```
 
 ### Unix socket and framing reproduction
 
@@ -285,3 +467,27 @@ Protobuf preflight shares the 1,024-item repeated-field budget across
 fragments that the decoder can merge into one singular submessage. The
 framing tests exercise packed and unpacked fragments at the limit, malformed
 headers, and complete render delivery. [Protocol Buffers encoding rules](https://protobuf.dev/programming-guides/encoding/#last-one-wins)
+
+### Reproducible Protobuf Builds
+
+The Rust build uses Rust 1.93.1 and Prost 0.14.4. Use the official `protoc` 36.1 archive for
+the host that runs the compiler and verify its SHA-256 before extracting it.
+[Protobuf 36.1 release assets](https://github.com/protocolbuffers/protobuf/releases/expanded_assets/v36.1)
+
+| Archive | SHA-256 |
+|---|---|
+| `protoc-36.1-linux-x86_64.zip` | `c4bc672d9d49214dc8cafdceadf4df92182d6ca8e3ec65a56b2d7de5602669b4` |
+| `protoc-36.1-win64.zip` | `390e515cb456e6a978553bdb57baf087b054885077fd6da7f7ff0160279c07d6` |
+
+From a checkout under a trusted directory such as your home directory, run
+the A31 fixture on Linux x86-64 with Python 3.11 or newer, `tic`, and the
+pinned Rust toolchain. The fixture verifies the compiler archive, builds
+two copies of the tracked sources with the lockfile, compares the generated
+files byte for byte, and runs the compiled tests with the compiler unavailable.
+
+```sh
+python3 crates/corvid/tests/schema_reproducibility.py /path/to/protoc-36.1-linux-x86_64.zip
+```
+
+The official Linux compiler and the Windows compiler running under Wine
+also produced byte-identical descriptor sets with source information.

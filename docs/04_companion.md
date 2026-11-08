@@ -41,6 +41,7 @@ companion uses the OpenSSH executable in the Windows system directory.
 corvid.exe companion init --host-id $HostId --ssh-alias work-host --count 8
 corvid.exe companion run
 # In a second PowerShell window
+corvid.exe companion hosts
 corvid.exe companion slots
 ```
 
@@ -52,6 +53,15 @@ Set `--pipe-instance` on `run` and client commands if using a pipe instance
 other than `main`. Separate companion instances also need separate state
 directories. Both ends check the pipe owner and DACL before exchanging
 frames. [Named pipe access controls](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+
+## Inspect the Configured Host
+
+Run `corvid companion hosts` against the running companion. The `ListHosts`
+presentation request returns one configured HostId, the endpoint type (`local`
+or `ssh` with its alias), and the control connection state with any issue code.
+When the watch is ready, the row also includes the verified remote epoch and
+snapshot sequence. The query reads the companion's current state without opening
+an additional control connection. The presentation capability is `list_hosts.v1`.
 
 ## Desktop Slot Board
 
@@ -129,9 +139,19 @@ with WezTerm's default window class.
 local activation could not be completed. [WezTerm pane activation](https://wezterm.org/cli/cli/activate-pane.html)
 [Windows foreground restrictions](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features)
 
-Local WezTerm registrations currently live for the companion process.
-After a companion restart a surviving remote TUI binding remains available
-for manual focus. Pair again to enable automatic activation.
+Local WezTerm and manual registrations are kept in a protected, volatile registry key
+for the current Windows logon. After a companion restart, refresh the slot
+and binding captures once the daemon synchronizes. A matching remote binding
+can recover automatic activation in the same logon. Before remote focus the
+companion checks the process creation time, socket file identity and peer PID,
+and the exact window, tab, and pane. If the local record is missing or
+unreadable, focus returns `LocalTerminalUnavailable` before changing the
+remote view. Pair again after a failed identity check, logoff, or reboot.
+Manual bindings created by older versions require a fresh pairing once.
+If the registry is unavailable, a new pairing works for the current
+companion process.
+[Volatile registry keys](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regcreatekeyexw)
+[Windows logon identity](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_statistics)
 
 ## Slot Management and Recovery
 
@@ -143,15 +163,19 @@ for manual focus. Pair again to enable automatic activation.
   current overflow run to an explicitly selected empty slot.
 - The companion keeps stable IDs and slot revisions in private JSON files.
   Windows flushes a same-directory temporary file before replacing the
-  destination with `MoveFileExW`. On restart, the companion reads placements
-  and synchronizes before enabling focus. Badges are rebuilt from the remote
-  snapshot. A new daemon epoch makes old slots historical until there is end
-  evidence or explicit removal.
+  destination with `MoveFileExW`. The optional cache in `slots.json` stores
+  up to 512 last-known observations, with assigned slots first and overflow
+  in eligibility order. It stores badges, evidence, counts, and timestamps.
+  The companion groups observation saves on a one-second timer and flushes
+  pending observations on clean exit. Existing placement files load with an
+  empty cache. A new daemon epoch makes old slots historical until there is
+  end evidence or explicit removal.
   [Windows file replacement flags](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
-- A broken control channel leaves slots visible with stale state. Reconnection
-  takes a full snapshot, revalidates surviving registrations, and issues fresh
-  captures. A TUI detach retires its registration. Pair the replacement TUI
-  after reattaching.
+- During a control outage, desktop cards show the last known badge and
+  observation age. `companion slots` prints `last_observed_unix_ms`. A fresh
+  snapshot revalidates surviving registrations and enables focus and alert
+  acknowledgment with new captures. A TUI detach retires its registration.
+  Pair the replacement TUI after reattaching.
 
 ## Verification
 
@@ -163,11 +187,33 @@ question focus and acknowledgment, and rejection of a stale click after
 and verifies full resync under the same daemon epoch while the separate TUI
 and its PTY remain active. These checks ran on Linux.
 
+The A10 wire fixture uses two attached TUIs and a real companion. A focus
+request with no registrations returns `NoAttachedClient`. Two registrations
+without an explicit choice return `AmbiguousClient`. A wrong revision or
+retired capture returns `StaleBinding`. After one TUI detaches, a request
+still needs an explicit choice. These failures leave the daemon's snapshot
+and sequence unchanged.
+
+The A25 offline restart fixture holds a question open in Claude Code 2.1.318
+while the control socket is unavailable. A new companion restores the slot,
+badge, counts, and observation time. Attempts to focus or acknowledge return
+`ConnectionRequired`. The original TUI selection and pending question survive.
+After the control socket returns, a fresh capture focuses the same question.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py \
+  --corvid target/debug/corvid --scenario offline-restart
+```
+
 Linux desktop verification used Xvfb 21.1.25 with a synthetic Protobuf companion.
 The GUI retained the captured run and revisions above 2^53 across a slot
 replacement during a mouse press. A fresh click used the replacement's
 revision. Dropping the IPC connection during a press produced no replay
 after reconnect. A desktop pin also persisted through the real Linux companion.
+The A29 version-skew fixture sent an unknown focus activation result and
+then an unknown run availability. The desktop kept the last valid snapshot
+as a cache and disabled actions. A compatible snapshot restored the link,
+and the user had to select the terminal again before focusing.
 `cargo test --locked -p corvid-desktop` checks capture, connection fencing,
 and input-frame behavior without a display. The Windows desktop binary
 cross-linked for `x86_64-pc-windows-gnu`. Wine 11.21 ran its four tests and
@@ -179,8 +225,23 @@ pipe and state-directory ACLs. Its pipe implementation accepted a duplicate
 first instance, and reopening a freshly created state directory returned a
 DACL with an extra ACE. The storage tests fail closed in that environment.
 
-Run `cargo test --locked -p corvid-companion` on native Windows to verify
-pipe exclusivity, state replacement and recovery, and two presentation clients.
+Windows PE build `10.0.26100.9457` from the Windows 11 Enterprise 26H2
+evaluation ISO ran these cross-built tests in QEMU 11.1.3. With the
+temporary directory on a dedicated NTFS volume, both named-pipe integration
+tests and all four slot-storage tests passed. The tests covered exclusive
+pipe ownership, two presentation clients, private directory ACLs, and state
+replacement and recovery. The library passed nine tests, including exact
+file identity and cross-process registry restore, with `SystemTemp` on the
+NTFS volume for the SYSTEM account. The Windows PE image lacked
+`afunix.sys` and the peer PID test returned socket error 10047. The desktop
+test executable exited before running its tests with `0xc0000135`.
+
+The three registration tests also passed in Windows PE after the schema
+update. A new process restored both explicit manual and WezTerm records.
+The tests checked legacy WezTerm records, exact revisions, and rejection of
+missing pane fields and unsupported versions.
+
+Run `cargo test --locked -p corvid-companion` on an installed Windows system.
 The WezTerm adapter follows the per-process socket layout and CLI options in
 WezTerm `20240203-110809-5046fc22`. The Windows-target binary and adapter
 tests cross-link. Wine ran the pane matching tests and CLI help, but failed
@@ -189,9 +250,104 @@ socket pinning test on native Windows before qualifying the adapter.
 [WezTerm GUI socket source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm-gui/src/main.rs)
 [WezTerm CLI option source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm/src/cli/mod.rs)
 
-On native Windows, check focus with two GUI processes that each have a pane
-with the same numeric ID. Move the paired pane to another tab, close it, and
-restart its GUI. Verify the old registration cannot activate the replacement.
-Check both confirmed foreground activation and the fallback when the OS denies
-it. Native Windows storage, OpenSSH runtime, terminal activation, desktop
-presentation, and hardware integration remain unqualified.
+Wine verified Windows process creation queries, distinct file IDs, and
+registration metadata decoding. A separate process read a protected test key
+that had been prepared explicitly. Restarting the isolated Wine session
+cleared the key. Wine's registry creation discarded the supplied security
+descriptor, so the companion rejected a newly created key. The full
+registration save and restore path still needs an interactive Windows run.
+
+On an interactive Windows desktop, point the native WezTerm fixture at the
+installed GUI executable and record the Windows and WezTerm versions. Use its
+absolute path if `wezterm-gui.exe` is outside `PATH`.
+
+```powershell
+$env:CORVID_WEZTERM_GUI = (Get-Command wezterm-gui.exe -ErrorAction Stop).Source
+& (Join-Path (Split-Path $env:CORVID_WEZTERM_GUI) 'wezterm.exe') --version
+Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber
+cargo test --locked -p corvid-companion --lib native_wezterm_activation_keeps_exact_gui_and_pane -- --ignored --nocapture
+```
+
+The fixture starts separate WezTerm instances with its own test panes and
+checks that a colliding pane ID in another GUI keeps its selection. It checks
+rejection after a pane move, closure, or GUI replacement and the foreground
+fallback when the registered GUI owns multiple windows. WezTerm
+`20240203-110809-5046fc22` under Linux Xvfb exercised the CLI sequence with
+two real GUI instances. The Windows fixture cross-links. Its native execution
+remains pending.
+[WezTerm new-process option](https://wezterm.org/cli/start.html)
+
+For the full SSH path, keep the paired TUI open and restart the companion.
+Refresh the captures and verify the original pane still focuses.
+
+### Local PC reboot reproduction
+
+Use a dedicated Linux daemon on a separate machine and a Windows companion
+with its own state directory and pipe instance. Leave a verified Claude Code
+question pending in the only attached TUI. Create a second Corvid tab with
+Ctrl-] then t and return to the question with Ctrl-] then p. Pair that TUI
+to its WezTerm pane and pin the question's slot using `companion pin --slot`.
+From another shell in that WezTerm GUI, capture the starting state. Use
+the actual slot number and put the checkpoint outside the repository.
+
+```powershell
+$checkpoint = Join-Path $env:LOCALAPPDATA 'corvid-a25-reboot.json'
+wezterm --version
+& "$env:SystemRoot\System32\OpenSSH\ssh.exe" -V
+py -3 crates/corvid/tests/local_reboot.py before $checkpoint --ssh-alias work-host --pipe-instance a25 --slot 1
+```
+
+Restart Windows manually. From PowerShell, start the same companion with
+the same pipe instance and state directory. Keep WezTerm closed and run
+`recovered` with the same checkpoint, alias, and pipe instance. The fixture
+checks the new local boot time, the saved pin and slot, the unchanged remote
+daemon and pending request, and rejection of the retired registration.
+
+Open WezTerm and run `ssh -tt work-host corvid attach`. Pair the new TUI to
+its pane. If the question is visible, switch to the existing second tab
+with Ctrl-] then n. From a shell in that GUI, run `repaired` with the same
+arguments. The fixture checks that the old identity cannot change the TUI
+and the new registration selects the original run, terminal, and WezTerm
+pane. It checks the pane inventory and pending request again after focus.
+Record the reported activation outcome and the Windows build and boot times
+from the checkpoint. Keep the checkpoint local.
+
+On a Linux controller, use `python3` and `--socket-dir` in place of the
+Windows launcher and pipe option. Pair the TUI without a WezTerm target.
+A25 recovery case C passed with a Debian 13.7 controller in QEMU 11.1.3
+using OpenSSH 10.0p2. Only the controller guest rebooted. The separate
+Linux execution host used OpenSSH 10.6p1 and Claude Code 2.1.318. The saved
+pin, slot revision, agent PID, and pending RequestId survived. A newly
+paired SSH TUI selected the original question. The request resolved after
+the answer was entered in that TUI.
+
+## Deferred Platform Verification
+
+### Installed Windows
+
+Record the Windows build, architecture, and WezTerm and system OpenSSH versions. Run the desktop
+and companion test suites from a normal user account with an NTFS state
+directory. Check private named-pipe access, registry restoration in the same
+logon, and the [native WezTerm fixture](#verification).
+
+Use an existing SSH TUI to a Linux daemon. Connect the companion through the
+system OpenSSH client, confirm the configured host and epoch, and focus the
+paired run from the desktop. Close or move the registered pane and verify that
+focus reports a local registration error while the remote selection stays put.
+Restart the companion with the working TUI still open, then follow the
+[local reboot procedure](#local-pc-reboot-reproduction) to confirm that a new
+logon restores slots and requires a new pairing.
+
+Use the desktop board to verify held-gesture fencing, overflow, and restart
+recovery. Capture the activation outcome and confirm that focus preserves
+the open terminal inventory and any pending remote question.
+
+### macOS
+
+When the separate macOS execution work is scheduled, record the OS build,
+CPU architecture, terminal emulator, and SSH version. Exercise the pinned
+terminal compatibility suite (A19) on that combination. Qualify private
+local IPC and peer identity (A24), SSH loss and last logout with the chosen
+service manager (A21), and input fencing across resize and reattach (A20).
+Run the local companion, desktop, and recovery suites on macOS after their
+platform paths are implemented.
