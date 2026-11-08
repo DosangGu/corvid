@@ -10,11 +10,12 @@ use corvid_companion::{HostEndpoint, MAX_SLOTS, PresentationClient};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::edit_slot_layout::Action;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::presented_host::Endpoint;
 use corvid_protocol::wire::{
     AckPresentedAttention, AgentBadge, AgentCollection, CompanionConnection, EditSlotLayout,
-    EvidenceConfidence, FocusSlot, GetPresentationSlots, LayoutRecovery, LocalActivation,
-    PairTerminal, PinSlot, PlaceSlot, PresentationSlots, PresentedBinding, PresentedRun,
-    PresentedRunKey, PresentedSlotToken, RunAvailability, UnpairTerminal,
+    EvidenceConfidence, FocusSlot, GetPresentationSlots, HostList, LayoutRecovery, ListHosts,
+    LocalActivation, PairTerminal, PinSlot, PlaceSlot, PresentationSlots, PresentedBinding,
+    PresentedRun, PresentedRunKey, PresentedSlotToken, RunAvailability, UnpairTerminal,
 };
 #[cfg(windows)]
 use corvid_protocol::wire::{WezTermLocation, WezTermTarget};
@@ -57,6 +58,8 @@ enum Command {
     },
     /// Run the local companion and resynchronize the configured host on disconnect.
     Run,
+    /// Show the configured execution host and its control connection status.
+    Hosts,
     /// Show slots, captured slot revisions, and available TUI registrations.
     Slots {
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_SLOTS)))]
@@ -247,6 +250,7 @@ impl Command {
     fn request(self, epoch: &str) -> Result<Body> {
         let body = match self {
             Self::Init { .. } | Self::Run => unreachable!("handled by companion execute"),
+            Self::Hosts => Body::ListHosts(ListHosts {}),
             Self::Slots {
                 count,
                 overflow_page,
@@ -391,6 +395,7 @@ fn require_epoch(captured: &str, expected: &str) -> Result<()> {
 
 fn show(reply: Body, host: &str, epoch: &str) -> Result<()> {
     match reply {
+        Body::HostList(hosts) => show_hosts(hosts, host)?,
         Body::PresentationSlots(slots) => show_slots(slots, host, epoch)?,
         Body::ClientBindingRegistered(binding) => println!(
             "client_id={} binding_revision={} commit_sequence={}",
@@ -427,6 +432,43 @@ fn show(reply: Body, host: &str, epoch: &str) -> Result<()> {
         }
         _ => bail!("unexpected companion response"),
     }
+    Ok(())
+}
+
+fn show_hosts(list: HostList, expected_host: &str) -> Result<()> {
+    let [host] = list.hosts.as_slice() else {
+        bail!("expected one configured companion host");
+    };
+    ensure!(host.host_id == expected_host, "companion host ID mismatch");
+    let connection = CompanionConnection::try_from(host.connection)?;
+    let remote = match (connection, &host.remote_epoch, host.remote_sequence) {
+        (CompanionConnection::Ready, Some(epoch), Some(sequence)) => {
+            let epoch = Uuid::parse_str(epoch).context("invalid remote epoch")?;
+            ensure!(!epoch.is_nil(), "invalid remote epoch");
+            Some((epoch, sequence))
+        }
+        (CompanionConnection::Ready | CompanionConnection::Unspecified, _, _) => {
+            bail!("invalid companion host status");
+        }
+        (_, None, None) => None,
+        _ => bail!("unexpected live remote identity for an unavailable host"),
+    };
+
+    let endpoint = match host.endpoint.as_ref().context("missing host endpoint")? {
+        Endpoint::Local(_) => "endpoint=local".to_owned(),
+        Endpoint::SshAlias(alias) => format!("endpoint=ssh ssh_alias={alias}"),
+    };
+    print!(
+        "host_id={} {endpoint} connection={connection:?}",
+        host.host_id
+    );
+    if let Some(issue) = &host.issue_code {
+        print!(" issue={issue}");
+    }
+    if let Some((epoch, sequence)) = remote {
+        print!(" remote_epoch={epoch} remote_sequence={sequence}");
+    }
+    println!();
     Ok(())
 }
 

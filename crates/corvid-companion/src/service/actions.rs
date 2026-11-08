@@ -22,6 +22,7 @@ impl Service {
     pub(super) async fn execute(&mut self, body: Body) -> Outcome {
         match body {
             Body::GetPresentationSlots(query) => self.presentation(query),
+            Body::ListHosts(_) => Ok(self.list_hosts()),
             Body::PairTerminal(pair) => self.pair(pair).await,
             Body::UnpairTerminal(unpair) => {
                 let remote = self.require_generation(&unpair.control_generation)?;

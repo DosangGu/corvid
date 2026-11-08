@@ -1,7 +1,11 @@
+use corvid_client::ControlEndpoint;
+#[cfg(target_os = "linux")]
+use corvid_protocol::wire::LocalHostEndpoint;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::presented_host::Endpoint;
 use corvid_protocol::wire::{
-    AgentBadge, GetPresentationSlots, LayoutRecovery, PresentationSlots, PresentedBinding,
-    PresentedRun, PresentedSlot, RunAvailability,
+    AgentBadge, GetPresentationSlots, HostList, LayoutRecovery, PresentationSlots,
+    PresentedBinding, PresentedHost, PresentedRun, PresentedSlot, RunAvailability,
 };
 
 use super::{Outcome, Service};
@@ -9,6 +13,26 @@ use crate::remote::invalid;
 use crate::{MAX_SLOTS, PRESENTATION_PAGE_SIZE, Recovery, RunKey};
 
 impl Service {
+    pub(super) fn list_hosts(&self) -> Body {
+        let endpoint = match &self.endpoint {
+            #[cfg(target_os = "linux")]
+            ControlEndpoint::Local(_) => Endpoint::Local(LocalHostEndpoint {}),
+            ControlEndpoint::Ssh(alias) => Endpoint::SshAlias(alias.as_str().to_owned()),
+        };
+        let remote = self.remote.as_ref().filter(|_| self.generation.is_some());
+
+        Body::HostList(HostList {
+            hosts: vec![PresentedHost {
+                host_id: self.host.clone(),
+                endpoint: Some(endpoint),
+                connection: self.connection as i32,
+                issue_code: self.issue.map(str::to_owned),
+                remote_epoch: remote.map(|remote| remote.epoch.to_string()),
+                remote_sequence: remote.map(|remote| remote.sequence),
+            }],
+        })
+    }
+
     pub(super) fn presentation(&self, query: GetPresentationSlots) -> Outcome {
         let count = query.count.unwrap_or(self.store.config().slot_count);
         if !(1..=MAX_SLOTS).contains(&count) {

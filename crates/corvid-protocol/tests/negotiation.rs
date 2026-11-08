@@ -1,7 +1,7 @@
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     Attach, AttachRole, CollectHook, FocusAgentRequest, FocusSlot, GetCapabilities,
-    GetPresentationSlots, InputChunk, Ping, ProviderAdapter, ProviderExecutionMode,
+    GetPresentationSlots, InputChunk, ListHosts, Ping, ProviderAdapter, ProviderExecutionMode,
     ProviderProfile,
 };
 use corvid_protocol::{
@@ -226,11 +226,12 @@ fn collector_is_separate_from_control_and_terminal_roles() {
 }
 
 #[test]
-fn presentation_accepts_slot_actions_without_remote_control_or_terminal_input() {
+fn presentation_accepts_host_and_slot_requests_without_remote_control_or_terminal_input() {
     let request = hello("hello".into(), None, vec![]);
     let (session, _) =
         accept_hello(&request, PeerRole::Presentation, "host", "local-epoch", &[]).unwrap();
     for body in [
+        Body::ListHosts(ListHosts {}),
         Body::GetPresentationSlots(GetPresentationSlots::default()),
         Body::FocusSlot(FocusSlot::default()),
     ] {
@@ -251,9 +252,14 @@ fn presentation_accepts_slot_actions_without_remote_control_or_terminal_input() 
     let request = hello("hello".into(), Some("controller".into()), vec![]);
     let (session, _) =
         accept_hello(&request, PeerRole::Control, "host", "remote-epoch", &[]).unwrap();
-    let focus = session.envelope(Some("slot".into()), Body::FocusSlot(FocusSlot::default()));
-    assert_eq!(
-        session.validate_request(&focus).unwrap_err().code,
-        "UnsupportedCapability"
-    );
+    for body in [
+        Body::ListHosts(ListHosts {}),
+        Body::FocusSlot(FocusSlot::default()),
+    ] {
+        let request = session.envelope(Some("presentation".into()), body);
+        assert_eq!(
+            session.validate_request(&request).unwrap_err().code,
+            "UnsupportedCapability"
+        );
+    }
 }

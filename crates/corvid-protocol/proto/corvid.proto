@@ -74,6 +74,8 @@ message Envelope {
     EditSlotLayout edit_slot_layout = 106;
     SlotLayoutEdited slot_layout_edited = 107;
     AckPresentedAttention ack_presented_attention = 108;
+    ListHosts list_hosts = 109;
+    HostList host_list = 110;
   }
 }
 
@@ -287,6 +289,27 @@ enum CompanionConnection {
   COMPANION_CONNECTION_INCOMPATIBLE = 5;
   COMPANION_CONNECTION_ERROR = 6;
 }
+
+message ListHosts {}
+
+message HostList {
+  repeated PresentedHost hosts = 1;
+}
+
+message PresentedHost {
+  string host_id = 1;
+  oneof endpoint {
+    string ssh_alias = 2;
+    LocalHostEndpoint local = 3;
+  }
+  CompanionConnection connection = 4;
+  optional string issue_code = 5;
+  // Present together only when the companion has a ready control watch.
+  optional string remote_epoch = 6;
+  optional uint64 remote_sequence = 7;
+}
+
+message LocalHostEndpoint {}
 
 message PresentedRunKey {
   string host_id = 1;

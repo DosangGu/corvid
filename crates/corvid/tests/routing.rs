@@ -621,6 +621,45 @@ async fn start_companion(
     }
 }
 
+#[tokio::test]
+async fn companion_hosts_reports_configured_identity_when_daemon_identity_differs() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let _daemon = daemon(&runtime, &state).await;
+    let actual = corvid_client::host(&runtime).await.unwrap().host_id;
+    let configured = Uuid::new_v4().to_string();
+    let expected =
+        format!("host_id={configured} endpoint=local connection=Incompatible issue=HostMismatch");
+
+    timeout(WAIT, async {
+        let (_companion, _) = start_companion(&runtime, temporary.path(), &configured, 1).await;
+        loop {
+            let result = command(&runtime)
+                .args(["companion", "hosts", "--socket-dir"])
+                .arg(temporary.path().join("presentation"))
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let line = String::from_utf8(result.stdout).unwrap();
+            assert!(line.starts_with(&format!("host_id={configured} endpoint=local ")));
+            assert!(!line.contains(&actual));
+            assert!(!line.contains("remote_epoch=") && !line.contains("remote_sequence="));
+            if line.trim_end() == expected {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 async fn presented(
     companion: &mut PresentationClient,
     condition: impl Fn(&PresentationSlots) -> bool,

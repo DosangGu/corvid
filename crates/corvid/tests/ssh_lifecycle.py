@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 
-from companion_fixture import Companion
+from companion_fixture import Companion, fields
 from interactive import OuterTerminal, stop
 
 
@@ -169,13 +169,35 @@ def setup_companion_ssh(ssh, command, directory):
 
 
 def check_companion_ssh(ssh, command, directory):
-    companion, attempts, _ = setup_companion_ssh(ssh, command, directory)
+    companion, attempts, blocked = setup_companion_ssh(ssh, command, directory)
     try:
         first = companion.start()["header"]
         assert first["host_id"] == companion.host
         assert first["controller_id"] == companion.controller
-        control_pid, = [int(line) for line in attempts.read_text().splitlines()]
+        initial_attempts = attempts.read_text()
+        control_pid, = [int(line) for line in initial_attempts.splitlines()]
+        row, = companion.run("hosts", env=companion.env).stdout.splitlines()
+        ready = fields(row)
+        endpoint = {"host_id": companion.host, "endpoint": "ssh", "ssh_alias": "corvid-fixture"}
+        assert int(ready.pop("remote_sequence")) >= int(first["remote_sequence"])
+        assert ready == endpoint | {
+            "connection": "Ready", "remote_epoch": first["remote_epoch"],
+        }, ready
+        assert attempts.read_text() == initial_attempts
+
+        blocked.touch()
         os.kill(control_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 8
+        while True:
+            row, = companion.run("hosts").stdout.splitlines()
+            offline = fields(row)
+            if offline["connection"] == "Offline":
+                break
+            assert time.monotonic() < deadline, offline
+            time.sleep(0.02)
+        assert offline == endpoint | {"connection": "Offline", "issue": "ConnectionRequired"}, offline
+        blocked.unlink()
+
         second = companion.wait(
             lambda view: view["header"]["connection"] == "Ready"
             and view["header"].get("control_capture") != first["control_capture"]
@@ -269,7 +291,7 @@ def run(binary):
                 stop(server)
         finally:
             subprocess.run(["systemctl", "--user", "stop", unit], check=True, timeout=12)
-    print("OpenSSH companion resync, stale control captures, working-channel loss, and same-PTY reattach verified.")
+    print("OpenSSH host listing, companion resync, stale captures, working-channel loss, and same-PTY reattach verified.")
 
 
 if __name__ == "__main__":

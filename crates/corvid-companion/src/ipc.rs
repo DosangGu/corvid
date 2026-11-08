@@ -28,10 +28,12 @@ use crate::service::{Call, Service};
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
 pub const PRESENTATION_PAGE_SIZE: u32 = 32;
+const LIST_HOSTS_CAPABILITY: &str = "list_hosts.v1";
 #[cfg(windows)]
 pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
 const CAPABILITIES: &[&str] = &[
     PRESENTATION_CAPABILITY,
+    LIST_HOSTS_CAPABILITY,
     #[cfg(windows)]
     WEZTERM_CAPABILITY,
 ];
@@ -250,8 +252,21 @@ impl PresentationClient {
         &self.0.session
     }
 
-    /// A cancelled request leaves this connection unusable. Reconnect to refresh slots.
+    /// A cancelled request leaves this connection unusable. Reconnect before requesting again.
     pub async fn request(&mut self, body: Body) -> Result<Body> {
+        if matches!(&body, Body::ListHosts(_))
+            && !self
+                .session()
+                .capabilities
+                .iter()
+                .any(|capability| capability == LIST_HOSTS_CAPABILITY)
+        {
+            return Err(ProtocolFault::new(
+                "UnsupportedCapability",
+                "companion does not support host listing",
+            )
+            .into());
+        }
         timeout(CALL_TIMEOUT + COMMAND_TIMEOUT, self.0.exchange(body))
             .await
             .context("companion result timed out")?
