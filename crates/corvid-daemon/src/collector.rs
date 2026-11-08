@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use corvid_protocol::collector::{
-    CAPABILITY, HOST_ID, INPUT_BATCH_CAPABILITY, LAUNCH_ASSOCIATION, RUNTIME_DIR, SERVER_EPOCH,
+    CAPABILITY, HOST_ID, INPUT_BATCH_CAPABILITY, LAUNCH_ASSOCIATION, NESTED_SUBAGENT_CAPABILITY,
+    RUNTIME_DIR, SERVER_EPOCH,
 };
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{CollectorTraffic, HookCollected};
@@ -105,7 +106,11 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
         stream,
         identity,
         PeerRole::Collector,
-        &[CAPABILITY, INPUT_BATCH_CAPABILITY],
+        &[
+            CAPABILITY,
+            INPUT_BATCH_CAPABILITY,
+            NESTED_SUBAGENT_CAPABILITY,
+        ],
     )
     .await?
     else {

@@ -20,6 +20,7 @@ starts in plan mode. The fixture approves the plan or returns feedback in the PT
 | `Stop` | The response retains the prompt ID after the tool result. Other hooks can continue the turn, so this boundary provides response evidence. |
 | Background `Agent` | `SubagentStart` and `SubagentStop` report the parent's session and prompt IDs with a distinct `agent_id`. The parent's `PostToolUse` result reports that ID as `tool_response.agentId` with `status=async_launched`. |
 | Foreground `Agent` | The child's `SubagentStop` precedes the parent's `PostToolUse`. The result carries `status=completed` and the child's exact `agentId` under the same session and prompt. |
+| Nested `Agent` | The result hook's `agent_id` names the invoking actor, and `tool_response.agentId` names its child. The descendant can finish before the invoking actor is linked to the top-level run. |
 | `SessionEnd` and `SessionStart` | `/clear` ends the old session with `reason=clear` and starts a distinct session with `source=clear`. The CLI stays in the same PTY. `/exit` later ends the new context with `reason=prompt_input_exit`. |
 | `/compact` and `/resume` | Manual compaction emits `SessionStart` with `source=compact` and the same session ID. Switching back to a previous conversation emits `SessionEnd` with `reason=resume` for the outgoing session, followed by `SessionStart` with `source=resume` for the target. Both sides report the same prompt ID. |
 
@@ -38,6 +39,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario plan-rejected
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child
 PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child-sync
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child-nested
 ```
 
 The [fixtures](../crates/corvid/tests/fixtures/claude/2.1.318/) keep allowlisted
@@ -80,6 +82,7 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan-rejected
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child-sync
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child-nested
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario forged-output
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario offline-pair
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
@@ -155,10 +158,18 @@ without changing the attached view. The child's OS process liveness stays
 Unknown, and its context retires with the parent.
 [Claude subagent execution modes](https://code.claude.com/docs/en/sub-agents#let-claude-wait-for-a-subagent)
 
-Early child responses have a five-second correlation window. The inventory
-reports a child coverage gap if the registry reaches its child observation
-limit. Use the control snapshot for inventories larger than one control frame.
-Exact manual cancellation outcomes and nested child ownership remain unqualified.
+The nested fixture reused a tool-use ID under two distinct invoking actors.
+The grandchild's result confirmed its immediate parent. The root remained the
+only published run until the outer result confirmed the remaining link. Both
+descendants then appeared under their exact parents with their own response
+records. Only the root received a slot and its question stayed pending.
+
+Early child responses have five seconds to match a start and immediate owner
+link. A matched response is retained while the remaining parent chain is
+pending. The nested fixture held the outer result longer than that window.
+Conflicting links and registry exhaustion report a child coverage gap.
+Use the control snapshot for inventories larger than one control frame.
+Exact manual cancellation outcomes remain unqualified.
 
 The A18 fixture writes raw bytes to the managed Claude PTY while a real
 question is pending. It sends a title with shell syntax, clipboard set and

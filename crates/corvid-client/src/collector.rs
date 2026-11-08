@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY};
+use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY, NESTED_SUBAGENT_CAPABILITY};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{CollectHook, HookEvent};
@@ -41,8 +41,12 @@ async fn send_hook(
     observation: CollectHook,
 ) -> Result<()> {
     let mut capabilities = vec![CAPABILITY.to_owned()];
-    if observation.event == HookEvent::InputBatchFinished as i32 {
-        capabilities.push(INPUT_BATCH_CAPABILITY.to_owned());
+    match HookEvent::try_from(observation.event) {
+        Ok(HookEvent::InputBatchFinished) => capabilities.push(INPUT_BATCH_CAPABILITY.to_owned()),
+        Ok(HookEvent::NestedSubagentLinked) => {
+            capabilities.push(NESTED_SUBAGENT_CAPABILITY.to_owned());
+        }
+        _ => {}
     }
     let mut connection =
         UnixConnection::establish(stream, PeerRole::Collector, capabilities).await?;

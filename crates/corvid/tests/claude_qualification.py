@@ -35,7 +35,10 @@ IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id", "result_agent_id")
 FAULT_TRACE = "collector-faults"
 OFFLINE_PROMPTS = (b"Corvid offline question one", b"Corvid offline question two")
 PLAN_SCENARIOS = {"plan", "plan-rejected"}
-CHILD_SCENARIOS = {"child", "child-sync"}
+SYNC_CHILD_SCENARIOS = {"child-sync", "child-nested"}
+CHILD_SCENARIOS = SYNC_CHILD_SCENARIOS | {"child"}
+CHILD_PROMPT = "Corvid fixture child reads the test note."
+NESTED_PROMPT = "Corvid fixture grandchild reads the test note."
 CAPTURE = """
 import json
 from pathlib import Path
@@ -144,21 +147,30 @@ class ModelFixture(BaseHTTPRequestHandler):
             self.server.agent_sent = True
             return "Agent", {
                 "description": "Read fixture note",
-                "prompt": "Corvid fixture child reads the test note.",
+                "prompt": CHILD_PROMPT,
                 "subagent_type": "general-purpose",
             }
 
-        child_prompt = "Corvid fixture child reads the test note."
-        from_child = any(child_prompt in text for text in user_texts(request))
-        if from_child:
+        texts = list(user_texts(request))
+        from_child = any(CHILD_PROMPT in text for text in texts)
+        from_nested = any(NESTED_PROMPT in text for text in texts)
+        if self.server.nested_child and from_child and not from_nested:
+            if not self.server.nested_agent_sent:
+                assert "Agent" in offered_tools
+                self.server.nested_agent_sent = True
+                return "Agent", {
+                    "description": "Delegate the fixture note",
+                    "prompt": NESTED_PROMPT,
+                    "subagent_type": "general-purpose",
+                }
+            self.wait_for_release(self.server.parent_release)
+            return None, None
+        if from_child or from_nested:
             if not self.server.child_read_sent.is_set():
                 assert "Read" in offered_tools
                 self.server.child_read_sent.set()
                 return "Read", {"file_path": str(self.server.child_note), "limit": 1}
-            deadline = time.monotonic() + 6
-            while not self.server.child_release.exists():
-                assert time.monotonic() < deadline, "child response was not released"
-                time.sleep(0.02)
+            self.wait_for_release(self.server.child_release)
             return None, None
         if self.server.parent_question_sent:
             return None, None
@@ -167,6 +179,13 @@ class ModelFixture(BaseHTTPRequestHandler):
         assert "AskUserQuestion" in offered_tools
         self.server.parent_question_sent = True
         return "AskUserQuestion", None
+
+    @staticmethod
+    def wait_for_release(path):
+        deadline = time.monotonic() + 8
+        while not path.exists():
+            assert time.monotonic() < deadline, f"fixture did not release {path.name}"
+            time.sleep(0.02)
 
     def reply(self, body, content_type):
         self.send_response(200)
@@ -341,18 +360,15 @@ def exercise(terminal, scenario, managed, fault):
     current = initial
     terminal.send(b"Corvid hook schema fixture\r")
     child_start = terminal.event(hook_event_name="SubagentStart") if scenario in CHILD_SCENARIOS else None
-    if scenario == "child-sync":
-        terminal.event(hook_event_name="PostToolUse", tool_name="Read", agent_id=child_start["agent_id"])
-        if managed:
-            snapshot = managed.snapshot()
-            assert snapshot["agents"] == "1" and snapshot["requests"] == "0"
-        terminal.trace.with_name("child-release").touch()
+    nested_start = None
+    if scenario in SYNC_CHILD_SCENARIOS:
+        nested_start = release_foreground_children(terminal, managed, child_start, nested=scenario == "child-nested")
     if scenario in PLAN_SCENARIOS:
         return exercise_plan(terminal, managed, initial, rejected=scenario == "plan-rejected")
     terminal.expect(b"Enter to submit or Escape to cancel:")
     if scenario == "cancel":
         return exercise_cancel(terminal, managed, initial)
-    child = None
+    children = []
     if managed:
         collector = managed.collector_status()
         assert collector["healthy_runs"] == "1" and collector["gap_detected_runs"] == "0"
@@ -361,6 +377,13 @@ def exercise(terminal, scenario, managed, fault):
         assert question["unverified"] == "1"
     if child_start:
         child = exercise_child(terminal, managed, initial, child_start, background=scenario == "child")
+        if managed:
+            children.append(child)
+            if nested_start:
+                children.append(exercise_child(terminal, managed, child, nested_start, background=False))
+            managed.expect(terminal, run=initial["run"], pending="1", process="Running", response="false")
+            snapshot = managed.snapshot()
+            assert int(snapshot["agents"]) == len(children) + 1 and snapshot["requests"] == "2"
     elif managed:
         snapshot = managed.snapshot()
         assert snapshot["agents"] == "1"
@@ -369,11 +392,12 @@ def exercise(terminal, scenario, managed, fault):
         managed.focus_question(terminal, question, offline_restart=scenario == "offline-restart")
         if scenario == "forged-output":
             exercise_forged_output(terminal, managed, question)
-        if child:
+        if children:
             view = managed.companion.slots()
             assert set(assigned_slots(view)) == {initial["run"]}
             assert not view["ended"]
-            managed.reject_child_focus(child)
+            for child in children:
+                managed.reject_child_focus(child)
         managed.acknowledge_question(question)
         managed.reject_foreign_hook(question)
         if scenario == "restart":
@@ -430,9 +454,31 @@ def exercise(terminal, scenario, managed, fault):
     assert terminal.process.wait(timeout=5) == 0, "fixture Claude exit failed"
     if managed:
         managed.expect(terminal, run=current["run"], process="Exited")
-        if child:
+        for child in children:
             managed.expect(terminal, run=child["run"], process="Unknown", end="ContextEnded")
     return terminal.events()
+
+
+def release_foreground_children(terminal, managed, child, *, nested):
+    nested_child = None
+    if nested:
+        offset = terminal.events().index(child) + 1
+        nested_child = terminal.event(after=offset, hook_event_name="SubagentStart")
+    reader = nested_child or child
+    terminal.event(hook_event_name="PostToolUse", tool_name="Read", agent_id=reader["agent_id"])
+    if managed:
+        snapshot = managed.snapshot()
+        assert snapshot["agents"] == "1" and snapshot["requests"] == "0"
+    terminal.trace.with_name("child-release").touch()
+    if nested:
+        terminal.event(hook_event_name="PostToolUse", tool_name="Agent", agent_id=child["agent_id"])
+        # The descendant's own link is confirmed, but the parent's result is still pending.
+        time.sleep(5.3)
+        if managed:
+            snapshot = managed.snapshot()
+            assert snapshot["agents"] == "1" and snapshot["requests"] == "0"
+        terminal.trace.with_name("parent-release").touch()
+    return nested_child
 
 
 def exercise_child(terminal, managed, parent, start, *, background):
@@ -453,9 +499,6 @@ def exercise_child(terminal, managed, parent, start, *, background):
         if child:
             assert responded["run"] == child["run"]
         child = responded
-        managed.expect(terminal, run=parent["run"], pending="1", process="Running", response="false")
-        snapshot = managed.snapshot()
-        assert snapshot["agents"] == "2" and snapshot["requests"] == "2"
     return child
 
 
@@ -1058,8 +1101,10 @@ def capture(binary, directory, port, scenario, corvid, fault):
     if scenario in CHILD_SCENARIOS:
         (project / "child-note.txt").write_text("Synthetic fixture note.\n")
         environment["API_TIMEOUT_MS"] = "9000"
-    if scenario == "child-sync":
+    if scenario in SYNC_CHILD_SCENARIOS:
         environment["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+    if scenario == "child-nested":
+        environment["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = "2"
     arguments = [
         "--model", "sonnet", "--strict-mcp-config", "--no-chrome", "--ax-screen-reader",
         "--permission-mode", "plan" if scenario in PLAN_SCENARIOS else "manual",
@@ -1199,26 +1244,7 @@ def verify(events, scenario):
     assert events[-1]["hook_event_name"] == "SessionEnd"
     assert events[-1]["reason"] == "prompt_input_exit"
     if scenario in CHILD_SCENARIOS:
-        child = next(event for event in events if event["hook_event_name"] == "SubagentStart")
-        stopped = next(event for event in events if event["hook_event_name"] == "SubagentStop")
-        invoked = next(event for event in events if event["hook_event_name"] == "PreToolUse"
-                       and event.get("tool_name") == "Agent")
-        linked = next(event for event in events if event["hook_event_name"] == "PostToolUse"
-                      and event.get("tool_name") == "Agent")
-        read = next(event for event in events if event["hook_event_name"] == "PostToolUse"
-                    and event.get("tool_name") == "Read")
-        assert child["agent_id"] == stopped["agent_id"] == linked["result_agent_id"] == read["agent_id"]
-        assert stopped["stop_hook_active"] is False and "agent_id" not in linked
-        assert invoked["tool_use_id"] == linked["tool_use_id"]
-        for event in (invoked, child, stopped, linked, read):
-            assert event["session_id"] == session and event["prompt_id"] == turn
-        assert events.index(invoked) < events.index(child) < events.index(linked)
-        if scenario == "child-sync":
-            assert linked["result_status"] == "completed"
-            assert events.index(read) < events.index(stopped) < events.index(linked) < events.index(before)
-        else:
-            assert linked["result_status"] == "async_launched"
-            assert events.index(linked) < events.index(before) < events.index(stopped) < events.index(after)
+        verify_children(events, scenario, session, turn, before, after)
     if scenario in {"clear", "resume"}:
         ended = next(event for event in events if event.get("reason") == "clear")
         started = next(event for event in events if event.get("source") == "clear")
@@ -1240,11 +1266,46 @@ def verify(events, scenario):
         assert events[-1]["session_id"] == session
 
 
+def verify_children(events, scenario, session, turn, before, after):
+    starts = [event for event in events if event["hook_event_name"] == "SubagentStart"]
+    assert len(starts) == (2 if scenario == "child-nested" else 1)
+    read, = [event for event in events if event["hook_event_name"] == "PostToolUse"
+             and event.get("tool_name") == "Read"]
+    assert read["agent_id"] == starts[-1]["agent_id"]
+    assert read["session_id"] == session and read["prompt_id"] == turn
+
+    parent = None
+    tool_ids = []
+    for child in starts:
+        stopped, = [event for event in events if event["hook_event_name"] == "SubagentStop"
+                    and event["agent_id"] == child["agent_id"]]
+        invoked, linked = [event for event in events if event.get("tool_name") == "Agent"
+                           and event.get("agent_id") == parent]
+        assert invoked["hook_event_name"] == "PreToolUse" and linked["hook_event_name"] == "PostToolUse"
+        assert stopped["stop_hook_active"] is False and linked["result_agent_id"] == child["agent_id"]
+        assert invoked["tool_use_id"] == linked["tool_use_id"]
+        tool_ids.append(invoked["tool_use_id"])
+        for event in (invoked, child, stopped, linked):
+            assert event["session_id"] == session and event["prompt_id"] == turn
+
+        if scenario == "child":
+            assert linked["result_status"] == "async_launched"
+            order = (invoked, child, linked, before, stopped, after)
+        else:
+            assert linked["result_status"] == "completed"
+            order = (invoked, child, read, stopped, linked, before)
+        positions = [events.index(event) for event in order]
+        assert positions == sorted(positions)
+        parent = child["agent_id"]
+    if scenario == "child-nested":
+        assert tool_ids[0] == tool_ids[1], "the fixture reuses tool IDs across distinct actors"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=(
         "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart",
-        "offline-pair", "offline-restart", "snapshot-race", "plan-rejected", "child-sync",
+        "offline-pair", "offline-restart", "snapshot-race", "plan-rejected", "child-sync", "child-nested",
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
@@ -1278,13 +1339,16 @@ def main():
             server.plan_search_sent = False
             server.plan_directory = Path(directory) / "home/.claude/plans"
             server.child_fixture = args.scenario in CHILD_SCENARIOS
+            server.nested_child = args.scenario == "child-nested"
             server.offline_pair = args.scenario == "offline-pair"
             server.questions_sent = set()
             server.agent_sent = False
+            server.nested_agent_sent = False
             server.child_read_sent = threading.Event()
             server.parent_question_sent = False
             server.child_note = Path(directory) / "project/child-note.txt"
             server.child_release = Path(directory) / "child-release"
+            server.parent_release = Path(directory) / "parent-release"
             server.message_count = 0
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()

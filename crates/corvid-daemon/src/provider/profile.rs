@@ -23,6 +23,7 @@ const CLAUDE_EVENTS: &[HookEvent] = &[
     HookEvent::SubagentStarted,
     HookEvent::SubagentResponseObserved,
     HookEvent::SubagentLinked,
+    HookEvent::NestedSubagentLinked,
 ];
 
 const CODEX_EVENTS: &[HookEvent] = &[
@@ -52,7 +53,7 @@ const CAPABILITIES: &[Kind] = &[
 
 pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
     let (mode, schema_revision, events) = match (provider, qualified) {
-        (Provider::Claude, true) => (Mode::InteractiveCli, 2, CLAUDE_EVENTS),
+        (Provider::Claude, true) => (Mode::InteractiveCli, 3, CLAUDE_EVENTS),
         (Provider::Codex, true) => (Mode::InteractiveCli, 1, CODEX_EVENTS),
         (_, false) => (Mode::ProcessOnly, 1, &[][..]),
     };
@@ -109,7 +110,7 @@ fn qualification(provider: Provider, kind: Kind) -> (Level, &'static str) {
         ),
         (Provider::Claude, Kind::SubagentIdentity) => (
             Level::Partial,
-            "child work is scoped by session, prompt, and actor; process liveness is unknown",
+            "child work requires a linked parent actor chain; process liveness is unknown",
         ),
         (Provider::Codex, Kind::SubagentIdentity) => {
             (Level::Unavailable, "child ownership is unqualified")

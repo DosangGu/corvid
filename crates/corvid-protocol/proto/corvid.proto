@@ -830,6 +830,7 @@ enum HookEvent {
   HOOK_EVENT_SUBAGENT_RESPONSE_OBSERVED = 20;
   HOOK_EVENT_SUBAGENT_LINKED = 21;
   HOOK_EVENT_INPUT_BATCH_FINISHED = 22;
+  HOOK_EVENT_NESTED_SUBAGENT_LINKED = 23;
 }
 
 message CollectHook {
@@ -842,6 +843,8 @@ message CollectHook {
   optional string actor_id = 7;
   // Tool-use IDs in one prompt whose batch finished. Carries no outcome.
   repeated string finished_input_ids = 8;
+  // The actor that invoked the Agent tool for a nested link.
+  optional string parent_actor_id = 9;
 }
 
 message HookCollected {}

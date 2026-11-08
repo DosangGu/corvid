@@ -226,9 +226,7 @@ impl ClaudeInput {
             "PostToolUse" if question => HookEvent::QuestionResult,
             "PreToolUse" if plan => HookEvent::PlanApprovalStarted,
             "PostToolUse" if plan => HookEvent::PlanApprovalResult,
-            "PostToolUse"
-                if self.tool_name.as_deref() == Some("Agent") && self.agent_id.is_none() =>
-            {
+            "PostToolUse" if self.tool_name.as_deref() == Some("Agent") => {
                 HookEvent::SubagentLinked
             }
             "PermissionRequest" => HookEvent::PermissionRequested,
@@ -270,8 +268,19 @@ impl ClaudeInput {
             return None;
         }
         valid_id(self.tool_use_id.take()?)?;
+        let parent = optional_id(self.agent_id.take())?;
+        if parent.as_ref() == Some(&result.actor) {
+            return None;
+        }
+        let event = if parent.is_some() {
+            HookEvent::NestedSubagentLinked
+        } else {
+            HookEvent::SubagentLinked
+        };
         self.agent_id = Some(result.actor);
-        self.subagent_observation(HookEvent::SubagentLinked)
+        let mut hook = self.subagent_observation(event)?;
+        hook.parent_actor_id = parent;
+        Some(hook)
     }
 
     fn observation(self, event: HookEvent) -> Option<CollectHook> {

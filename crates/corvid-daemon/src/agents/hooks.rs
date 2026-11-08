@@ -10,6 +10,7 @@ use corvid_protocol::collector::MAX_BATCH_INPUTS;
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use uuid::Uuid;
 
+use super::children::{ChildEvent, ChildOwner};
 use super::{Agents, ChildKey, Launch, ManagedRun, PendingResume, evidence, monotonic_ms};
 use crate::process::{HookProducer, ProcessImage};
 use crate::provider::qualified_version;
@@ -26,6 +27,7 @@ pub(crate) struct Hook {
     turn: Option<String>,
     tool: Option<String>,
     actor: Option<String>,
+    parent_actor: Option<String>,
     finished_input_ids: Vec<String>,
 }
 
@@ -52,6 +54,7 @@ impl Hook {
                 &request.turn_id,
                 &request.tool_id,
                 &request.actor_id,
+                &request.parent_actor_id,
             ]
             .into_iter()
             .all(|id| id.as_deref().is_none_or(valid_id))
@@ -86,6 +89,11 @@ impl Hook {
         {
             return Err(invalid());
         }
+        if (event == HookEvent::NestedSubagentLinked) != request.parent_actor_id.is_some()
+            || request.parent_actor_id.is_some() && request.parent_actor_id == request.actor_id
+        {
+            return Err(invalid());
+        }
         if !valid_input_batch(request, event) {
             return Err(invalid());
         }
@@ -98,7 +106,20 @@ impl Hook {
             turn: request.turn_id.clone(),
             tool: request.tool_id.clone(),
             actor: request.actor_id.clone(),
+            parent_actor: request.parent_actor_id.clone(),
             finished_input_ids: request.finished_input_ids.clone(),
+        })
+    }
+
+    fn child_event(&self) -> Option<ChildEvent> {
+        Some(match self.event {
+            HookEvent::SubagentStarted => ChildEvent::Started,
+            HookEvent::SubagentResponseObserved => ChildEvent::Responded,
+            HookEvent::SubagentLinked => ChildEvent::Linked(ChildOwner::Root),
+            HookEvent::NestedSubagentLinked => {
+                ChildEvent::Linked(ChildOwner::Actor(self.parent_actor.clone()?))
+            }
+            _ => return None,
         })
     }
 
@@ -239,7 +260,8 @@ fn supported_event(provider: Provider, event: HookEvent) -> bool {
         | HookEvent::ResumeContextEnded
         | HookEvent::SubagentStarted
         | HookEvent::SubagentResponseObserved
-        | HookEvent::SubagentLinked => provider == Provider::Claude,
+        | HookEvent::SubagentLinked
+        | HookEvent::NestedSubagentLinked => provider == Provider::Claude,
         HookEvent::ToolStarted | HookEvent::ToolFinished | HookEvent::TurnInterrupted => {
             provider == Provider::Codex
         }
@@ -253,6 +275,7 @@ fn is_child_event(event: HookEvent) -> bool {
         HookEvent::SubagentStarted
             | HookEvent::SubagentResponseObserved
             | HookEvent::SubagentLinked
+            | HookEvent::NestedSubagentLinked
     )
 }
 
@@ -280,24 +303,19 @@ impl Agents {
             return Ok(());
         }
         if let Some(actor) = hook.actor.as_ref() {
-            if is_child_event(hook.event)
-                && launch.producer == Some(producer)
+            if launch.producer == Some(producer)
                 && !launch.ambiguous
                 && launch.resume.is_none()
                 && current.run.lifecycle.value == Lifecycle::Live
                 && current.run.identity.provider_session == hook.session
                 && let Some(turn) = hook.turn.as_ref()
+                && let Some(event) = hook.child_event()
             {
                 let key = ChildKey {
                     turn: turn.clone(),
                     actor: actor.clone(),
                 };
-                self.observe_child(
-                    current_id,
-                    key,
-                    hook.event,
-                    hook.evidence(Confidence::Confirmed),
-                );
+                self.observe_child(current_id, key, event, hook.evidence(Confidence::Confirmed));
             }
             return Ok(());
         }
@@ -611,6 +629,7 @@ mod tests {
                 turn: Some("turn".to_owned()),
                 tool: Some("tool".to_owned()),
                 actor: None,
+                parent_actor: None,
                 finished_input_ids: Vec::new(),
             }
         }
@@ -623,6 +642,14 @@ mod tests {
         fn child(&mut self, session: &str, actor: &str, event: HookEvent) {
             let mut hook = self.hook(session, event);
             hook.actor = Some(actor.to_owned());
+            hook.tool = None;
+            self.submit(hook).unwrap();
+        }
+
+        fn nested_link(&mut self, session: &str, actor: &str, parent: &str) {
+            let mut hook = self.hook(session, HookEvent::NestedSubagentLinked);
+            hook.actor = Some(actor.to_owned());
+            hook.parent_actor = Some(parent.to_owned());
             hook.tool = None;
             self.submit(hook).unwrap();
         }
@@ -688,6 +715,39 @@ mod tests {
     }
 
     #[test]
+    fn nested_link_requires_the_distinct_parent_actor() {
+        let request = CollectHook {
+            launch_association: Uuid::new_v4().to_string(),
+            provider: AgentProvider::Claude as i32,
+            event: HookEvent::NestedSubagentLinked as i32,
+            session_id: Some("session".into()),
+            turn_id: Some("turn".into()),
+            actor_id: Some("child".into()),
+            parent_actor_id: Some("parent".into()),
+            ..Default::default()
+        };
+        let delivery = Uuid::new_v4().to_string();
+        assert!(Hook::decode(&request, Some(&delivery)).is_ok());
+        for invalid in [
+            CollectHook {
+                parent_actor_id: None,
+                ..request.clone()
+            },
+            CollectHook {
+                parent_actor_id: request.actor_id.clone(),
+                ..request.clone()
+            },
+            CollectHook {
+                event: HookEvent::SubagentLinked as i32,
+                ..request
+            },
+        ] {
+            let error = Hook::decode(&invalid, Some(&delivery)).err().unwrap();
+            assert_eq!(error.code, "InvalidMessage");
+        }
+    }
+
+    #[test]
     fn child_response_waits_for_parent_link_and_does_not_settle_the_parent_question() {
         let mut fixture = Fixture::new(Provider::Claude);
         fixture.apply("conversation", HookEvent::Startup);
@@ -726,6 +786,64 @@ mod tests {
         assert!(parent.recent_response.is_none());
         assert_eq!(
             parent.requests.values().next().unwrap().state.value,
+            RequestStatus::Pending
+        );
+    }
+
+    #[test]
+    fn nested_children_wait_for_an_anchored_parent_and_cannot_be_reparented() {
+        let mut fixture = Fixture::new(Provider::Claude);
+        fixture.apply("conversation", HookEvent::Startup);
+        fixture.apply("conversation", HookEvent::QuestionStarted);
+        let root = fixture.current().run.identity.id;
+
+        fixture.child("conversation", "outer", HookEvent::SubagentStarted);
+        fixture.child("conversation", "inner", HookEvent::SubagentStarted);
+        fixture.child("conversation", "inner", HookEvent::SubagentResponseObserved);
+        fixture.nested_link("conversation", "inner", "outer");
+        for (actor, parent) in [("cycle-a", "cycle-b"), ("cycle-b", "cycle-a")] {
+            fixture.child("conversation", actor, HookEvent::SubagentStarted);
+            fixture.nested_link("conversation", actor, parent);
+        }
+        assert_eq!(fixture.agents.runs.len(), 1);
+
+        fixture.child("conversation", "outer", HookEvent::SubagentLinked);
+        assert_eq!(fixture.agents.runs.len(), 3);
+        let outer = fixture
+            .agents
+            .runs
+            .values()
+            .find(|record| record.run.identity.actor.as_deref() == Some("outer"))
+            .unwrap();
+        assert_eq!(outer.run.identity.parent_run_id, Some(root));
+        assert!(outer.run.recent_response.is_none());
+        let outer_id = outer.run.identity.id;
+        let inner = fixture
+            .agents
+            .runs
+            .values()
+            .find(|record| record.run.identity.actor.as_deref() == Some("inner"))
+            .unwrap();
+        assert_eq!(inner.run.identity.parent_run_id, Some(outer_id));
+        assert!(inner.run.recent_response.is_some());
+        let inner_id = inner.run.identity.id;
+
+        fixture.child("conversation", "inner", HookEvent::SubagentLinked);
+        assert_eq!(fixture.agents.runs.len(), 3);
+        assert!(fixture.current().child_coverage_gap);
+        let inner = &fixture.agents.runs[&inner_id].run;
+        assert_eq!(inner.identity.parent_run_id, Some(outer_id));
+        assert_eq!(inner.collection.value, Collection::GapDetected);
+        assert_eq!(
+            fixture
+                .current()
+                .run
+                .requests
+                .values()
+                .next()
+                .unwrap()
+                .state
+                .value,
             RequestStatus::Pending
         );
     }
