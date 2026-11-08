@@ -304,7 +304,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Peer<S> {
                 && reply.subscription_id.is_none(),
             "invalid companion response scope"
         );
-        match reply.body.context("unknown companion response body")? {
+        match reply.body.ok_or_else(|| {
+            ProtocolFault::new("UnsupportedCapability", "unknown companion response body")
+        })? {
             Body::Error(fault) => Err(ProtocolFault::from_wire(&fault).into()),
             body => Ok(body),
         }

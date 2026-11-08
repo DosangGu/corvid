@@ -1,13 +1,14 @@
 use anyhow::{Result, ensure};
 use corvid_companion::{MAX_SLOTS, PRESENTATION_PAGE_SIZE};
-use corvid_protocol::Session;
 use corvid_protocol::wire::edit_slot_layout::Action;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AckPresentedAttention, CompanionConnection, EditSlotLayout, FocusSlot, PinSlot, PlaceSlot,
-    PresentationSlots, PresentedBinding, PresentedRun, PresentedRunKey, PresentedSlot,
-    PresentedSlotToken, RunAvailability,
+    AckPresentedAttention, AgentBadge, AgentCollection, CompanionConnection, EditSlotLayout,
+    EvidenceConfidence, FocusSlot, LayoutRecovery, PinSlot, PlaceSlot, PresentationSlots,
+    PresentedBinding, PresentedRun, PresentedRunKey, PresentedSlot, PresentedSlotToken,
+    RunAvailability,
 };
+use corvid_protocol::{ProtocolFault, Session};
 use uuid::Uuid;
 
 pub(crate) struct Snapshot {
@@ -33,10 +34,33 @@ impl Snapshot {
                 && data.recent_ended.len() <= page_size,
             "invalid presentation collection size"
         );
+        ensure!(
+            matches!(
+                CompanionConnection::try_from(data.connection),
+                Ok(state) if state != CompanionConnection::Unspecified
+            ) && LayoutRecovery::try_from(data.layout_recovery).is_ok(),
+            ProtocolFault::new("UnsupportedCapability", "unknown presentation status")
+        );
         for (index, slot) in data.slots.iter().enumerate() {
             ensure!(
                 slot.slot_id == index as u32 + 1 && slot.revision != 0,
                 "invalid presentation slot identity"
+            );
+        }
+        for run in data
+            .slots
+            .iter()
+            .filter_map(|slot| slot.run.as_ref())
+            .chain(&data.overflow)
+        {
+            ensure!(
+                matches!(
+                    RunAvailability::try_from(run.availability),
+                    Ok(state) if state != RunAvailability::Unspecified
+                ) && AgentBadge::try_from(run.last_badge).is_ok()
+                    && AgentCollection::try_from(run.collection).is_ok()
+                    && EvidenceConfidence::try_from(run.confidence).is_ok(),
+                ProtocolFault::new("UnsupportedCapability", "unknown presented run state")
             );
         }
         Ok(Self {
@@ -181,18 +205,22 @@ pub(crate) mod tests {
 
     use super::*;
 
-    pub(crate) fn ready_snapshot() -> Snapshot {
-        let host = Uuid::new_v4().to_string();
-        let epoch = Uuid::new_v4().to_string();
-        let session = Session {
+    fn presentation_session(host: &str) -> Session {
+        Session {
             role: PeerRole::Presentation,
             protocol_minor: PROTOCOL_MINOR,
-            host_id: host.clone(),
+            host_id: host.to_owned(),
             server_epoch: Uuid::new_v4().to_string(),
             controller_id: None,
             capabilities: Vec::new(),
             provider_profiles: Vec::new(),
-        };
+        }
+    }
+
+    pub(crate) fn ready_snapshot() -> Snapshot {
+        let host = Uuid::new_v4().to_string();
+        let epoch = Uuid::new_v4().to_string();
+        let session = presentation_session(&host);
         let data = PresentationSlots {
             connection: CompanionConnection::Ready as i32,
             remote_epoch: Some(epoch.clone()),
@@ -245,5 +273,36 @@ pub(crate) mod tests {
         snapshot.data.slots[0].run.as_mut().unwrap().availability = i32::MAX;
         let binding = &snapshot.data.bindings[0];
         assert!(snapshot.focus(&snapshot.data.slots[0], binding).is_none());
+    }
+
+    #[test]
+    fn rejects_unknown_snapshot_state_but_preserves_descriptive_provider_ids() {
+        let snapshot = ready_snapshot();
+        let session = presentation_session(&snapshot.host.to_string());
+        let mut data = snapshot.data;
+        data.slots[0].run.as_mut().unwrap().provider = i32::MAX;
+        assert!(Snapshot::new(snapshot.link, &session, 0, data.clone()).is_ok());
+
+        let corruptions: [fn(&mut PresentationSlots); 4] = [
+            |data| data.connection = i32::MAX,
+            |data| data.layout_recovery = i32::MAX,
+            |data| data.slots[0].run.as_mut().unwrap().last_badge = i32::MAX,
+            |data| {
+                let mut run = data.slots[0].run.take().unwrap();
+                run.availability = i32::MAX;
+                data.overflow.push(run);
+            },
+        ];
+        for corrupt in corruptions {
+            let mut future = data.clone();
+            corrupt(&mut future);
+            let Err(error) = Snapshot::new(snapshot.link, &session, 0, future) else {
+                panic!("accepted unknown presentation state");
+            };
+            assert_eq!(
+                error.downcast_ref::<ProtocolFault>().unwrap().code,
+                "UnsupportedCapability"
+            );
+        }
     }
 }

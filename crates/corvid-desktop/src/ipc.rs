@@ -122,14 +122,7 @@ impl Worker {
                 },
                 Err(error) => error,
             };
-            let link = match error
-                .downcast_ref::<ProtocolFault>()
-                .map(|fault| fault.code.as_str())
-            {
-                Some("ProtocolMismatch" | "UnsupportedCapability") => Link::Incompatible,
-                _ => Link::Unavailable,
-            };
-            self.publish(|display| display.link = link);
+            self.publish(|display| display.link = failed_link(&error));
             sleep(RETRY).await;
         }
     }
@@ -204,7 +197,9 @@ impl Worker {
         let expected = Expected::for_request(&command.body)?;
         let result = match client.request(command.body).await {
             Ok(reply) => expected.summarize(reply).map(str::to_owned),
-            Err(error) if error.is::<ProtocolFault>() => {
+            Err(error)
+                if error.is::<ProtocolFault>() && failed_link(&error) != Link::Incompatible =>
+            {
                 let fault = error.downcast::<ProtocolFault>()?;
                 return Ok(Completion {
                     id: command.id,
@@ -222,7 +217,7 @@ impl Worker {
             }),
             Err(error) => {
                 self.publish(|display| {
-                    display.link = Link::Unavailable;
+                    display.link = failed_link(&error);
                     display.completion = Some(Completion {
                         id: command.id,
                         message: "Action result unavailable. Check the refreshed slots before trying again.".to_owned(),
@@ -237,6 +232,16 @@ impl Worker {
     fn publish(&self, update: impl FnOnce(&mut Display)) {
         self.display.send_modify(update);
         self.ctx.request_repaint();
+    }
+}
+
+fn failed_link(error: &anyhow::Error) -> Link {
+    match error
+        .downcast_ref::<ProtocolFault>()
+        .map(|fault| fault.code.as_str())
+    {
+        Some("ProtocolMismatch" | "UnsupportedCapability") => Link::Incompatible,
+        _ => Link::Unavailable,
     }
 }
 
@@ -286,6 +291,12 @@ impl Expected {
                     remote.client_id == client && remote.agent_run_id == run,
                     "focus result target mismatch"
                 );
+                ensure!(
+                    remote.view_revision != 0
+                        && remote.selection.is_some()
+                        && Uuid::parse_str(&remote.terminal_id).is_ok_and(|id| !id.is_nil()),
+                    "focus result missing a valid selection"
+                );
                 match LocalActivation::try_from(result.local_activation) {
                     Ok(LocalActivation::Activated) => {
                         "Selected run and brought the registered window forward."
@@ -299,7 +310,16 @@ impl Expected {
                     Ok(LocalActivation::Unavailable) => {
                         "Selected run. Local terminal activation was unavailable."
                     }
-                    _ => "Selected run. Local activation could not be confirmed.",
+                    Ok(LocalActivation::NotAttempted) => {
+                        "Selected run. Local activation was not attempted."
+                    }
+                    _ => {
+                        return Err(ProtocolFault::new(
+                            "UnsupportedCapability",
+                            "unknown local activation result",
+                        )
+                        .into());
+                    }
                 }
             }
             (Self::Acknowledge { run, attention }, Body::AttentionAcknowledged(result))
@@ -339,6 +359,8 @@ fn fault_message(fault: &ProtocolFault) -> String {
 
 #[cfg(test)]
 mod tests {
+    use corvid_protocol::wire::{FocusApplied, SlotFocused, ViewSelection};
+
     use crate::model::tests::ready_snapshot;
 
     use super::*;
@@ -370,5 +392,52 @@ mod tests {
         let current = Arc::get_mut(display.snapshot.as_mut().unwrap()).unwrap();
         current.link = Uuid::new_v4();
         assert!(!display.accepts(&command));
+    }
+
+    #[test]
+    fn rejects_an_unknown_or_incomplete_focus_result() {
+        let snapshot = ready_snapshot();
+        let slot = &snapshot.data.slots[0];
+        let binding = &snapshot.data.bindings[0];
+        let request = snapshot.focus(slot, binding).unwrap();
+        let summarize = |result| {
+            Expected::for_request(&request)
+                .unwrap()
+                .summarize(Body::SlotFocused(result))
+        };
+        let valid = SlotFocused {
+            remote: Some(FocusApplied {
+                client_id: binding.client_id.clone(),
+                agent_run_id: slot
+                    .run
+                    .as_ref()
+                    .unwrap()
+                    .key
+                    .as_ref()
+                    .unwrap()
+                    .agent_run_id
+                    .clone(),
+                terminal_id: Uuid::new_v4().to_string(),
+                selection: Some(ViewSelection {
+                    workspace_id: Uuid::new_v4().to_string(),
+                    tab_id: Uuid::new_v4().to_string(),
+                    pane_id: Uuid::new_v4().to_string(),
+                }),
+                view_revision: 1,
+                commit_sequence: 2,
+            }),
+            local_activation: LocalActivation::ManualRequired as i32,
+            wezterm: None,
+        };
+        assert!(summarize(valid.clone()).is_ok());
+
+        let mut incomplete = valid.clone();
+        incomplete.remote.as_mut().unwrap().view_revision = 0;
+        assert!(summarize(incomplete).is_err());
+
+        let mut future = valid;
+        future.local_activation = i32::MAX;
+        let error = summarize(future).unwrap_err();
+        assert!(failed_link(&error) == Link::Incompatible);
     }
 }
