@@ -83,19 +83,9 @@ def transcode(schema, operation, payload):
     ).stdout
 
 
-def check_control(ssh, command, schema):
-    identity = subprocess.check_output([*command, "control", "host"], text=True)
-    fields = dict(line.split("=", 1) for line in identity.splitlines())
-    greeting = (
-        'protocol_major: 1 request_id: "hello" '
-        'hello { controller_id: "ssh-fixture" supported_major_versions: 1 }'
-    )
-    scope = f'protocol_major: 1 host_id: "{fields["host_id"]}" server_epoch: "{fields["server_epoch"]}"'
-    host = f'{scope} request_id: "host" get_host {{}}'
-    status = f'{scope} request_id: "status" get_connection_status {{}}'
+def relay_exchange(ssh, command, schema, payloads):
     frames = [b"CRV1"]
-    for message in (greeting, host, status):
-        payload = transcode(schema, "encode", message.encode())
+    for payload in payloads:
         frames.append(struct.pack(">IB", len(payload) + 1, 1) + payload)
     result = subprocess.run(
         [*ssh, "-T", shlex.join([*command, "control", "--stdio"])],
@@ -110,6 +100,21 @@ def check_control(ssh, command, schema):
         assert kind == 1 and 1 <= length <= 256 * 1024 and len(remaining) >= length + 4
         replies.append(transcode(schema, "decode", remaining[5:4 + length]))
         remaining = remaining[4 + length:]
+    return replies
+
+
+def check_control(ssh, command, schema):
+    identity = subprocess.check_output([*command, "control", "host"], text=True)
+    fields = dict(line.split("=", 1) for line in identity.splitlines())
+    greeting = (
+        'protocol_major: 1 request_id: "hello" '
+        'hello { controller_id: "ssh-fixture" supported_major_versions: 1 }'
+    )
+    scope = f'protocol_major: 1 host_id: "{fields["host_id"]}" server_epoch: "{fields["server_epoch"]}"'
+    host = f'{scope} request_id: "host" get_host {{}}'
+    status = f'{scope} request_id: "status" get_connection_status {{}}'
+    payloads = [transcode(schema, "encode", message.encode()) for message in (greeting, host, status)]
+    replies = relay_exchange(ssh, command, schema, payloads)
     assert len(replies) == 3 and b"hello_result {" in replies[0] and b"host_info {" in replies[1]
     assert fields["host_id"].encode() in replies[1]
     assert fields["server_epoch"].encode() in replies[1]

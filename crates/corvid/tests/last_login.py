@@ -83,12 +83,16 @@ def check_disconnected(observer, uid, progress, identity, expected):
     wait_for_logout(observer, uid)
 
 
-def run(config, operator_alias, observer_alias):
-    os.environ["TERM"] = "xterm-256color"
-    ssh = [
+def pinned_ssh(config):
+    return [
         "ssh", "-F", config, "-o", "BatchMode=yes", "-o", "ControlPath=none",
         "-o", "StrictHostKeyChecking=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
     ]
+
+
+def run(config, operator_alias, observer_alias):
+    os.environ["TERM"] = "xterm-256color"
+    ssh = pinned_ssh(config)
     operator = [*ssh, operator_alias]
     observer = [*ssh, observer_alias]
     system = "id -u; cat /proc/sys/kernel/random/boot_id"
