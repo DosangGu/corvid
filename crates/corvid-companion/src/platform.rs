@@ -8,8 +8,7 @@ pub(crate) type StateLock = nix::fcntl::Flock<std::fs::File>;
 
 #[cfg(windows)]
 pub(crate) use windows::{
-    PipeListener, StateDirectory, TerminalRecord, TerminalRegistry, WezTermPane,
-    WezTermRegistration, open_pipe,
+    PipeListener, StateDirectory, TerminalRecord, TerminalRegistry, WezTermPane, open_pipe,
 };
 #[cfg(windows)]
 pub(crate) type StateLock = std::fs::File;

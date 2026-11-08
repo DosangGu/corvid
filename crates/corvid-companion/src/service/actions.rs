@@ -78,7 +78,7 @@ impl Service {
             return Err(invalid_reply());
         }
         #[cfg(windows)]
-        if let Some(pane) = pane {
+        {
             self.terminals.insert(
                 client,
                 TerminalRecord {
@@ -88,8 +88,6 @@ impl Service {
                     pane,
                 },
             );
-            self.save_terminals();
-        } else if self.terminals.remove(&client).is_some() {
             self.save_terminals();
         }
         #[cfg(not(windows))]
@@ -114,13 +112,18 @@ impl Service {
         }
         let (client, revision) = require_binding(remote, focus.binding.as_ref())?;
         #[cfg(windows)]
-        let pane = match self.local_pane(remote, client, revision) {
-            Some(saved) => Some(
-                WezTermPane::restore(saved)
-                    .await
-                    .map_err(|_| local_unavailable())?,
-            ),
-            None => None,
+        let pane = {
+            let registration = self
+                .local_registration(remote, client, revision)
+                .ok_or_else(local_unavailable)?;
+            match &registration.pane {
+                Some(saved) => Some(
+                    WezTermPane::restore(saved)
+                        .await
+                        .map_err(|_| local_unavailable())?,
+                ),
+                None => None,
+            }
         };
         let command = ControllerRequest::Focus {
             client,
@@ -282,7 +285,7 @@ impl Service {
 fn local_unavailable() -> ProtocolFault {
     ProtocolFault::new(
         "LocalTerminalUnavailable",
-        "cannot verify the selected WezTerm instance and pane. Pair the intended terminal again",
+        "cannot verify the local terminal registration. Pair the intended terminal again",
     )
 }
 

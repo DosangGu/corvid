@@ -66,8 +66,9 @@ impl Service {
                         revision: *revision,
                         #[cfg(windows)]
                         wezterm: self
-                            .local_pane(remote, *client, *revision)
-                            .map(crate::platform::WezTermRegistration::location),
+                            .local_registration(remote, *client, *revision)
+                            .and_then(|registration| registration.pane.as_ref())
+                            .map(|pane| pane.location()),
                         #[cfg(not(windows))]
                         wezterm: None,
                     })

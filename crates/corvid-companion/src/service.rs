@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::last_known::LastKnown;
 #[cfg(windows)]
-use crate::platform::{TerminalRecord, TerminalRegistry, WezTermRegistration};
+use crate::platform::{TerminalRecord, TerminalRegistry};
 use crate::remote::Remote;
 use crate::{RunKey, RunObservation, Store};
 
@@ -115,20 +115,17 @@ impl Service {
     }
 
     #[cfg(windows)]
-    fn local_pane(
+    fn local_registration(
         &self,
         remote: &Remote,
         client: Uuid,
         revision: u64,
-    ) -> Option<&WezTermRegistration> {
-        self.terminals
-            .get(&client)
-            .filter(|terminal| {
-                terminal.epoch == remote.epoch
-                    && terminal.revision == revision
-                    && remote.sequence >= terminal.commit_sequence
-            })
-            .map(|terminal| &terminal.pane)
+    ) -> Option<&TerminalRecord> {
+        self.terminals.get(&client).filter(|terminal| {
+            terminal.epoch == remote.epoch
+                && terminal.revision == revision
+                && remote.sequence >= terminal.commit_sequence
+        })
     }
 
     #[cfg(windows)]

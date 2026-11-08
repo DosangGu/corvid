@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Registry::{
 use super::security::{PrivateDescriptor, current_logon, current_user, verify_private_registry};
 use super::wezterm::WezTermRegistration;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_RECORDS: usize = 256;
 const MAX_BYTES: u32 = 256 * 1024;
 
@@ -25,7 +25,9 @@ pub(crate) struct TerminalRecord {
     pub(crate) epoch: Uuid,
     pub(crate) revision: u64,
     pub(crate) commit_sequence: u64,
-    pub(crate) pane: WezTermRegistration,
+    // Only an explicit null marks a manual pairing. A missing field is invalid.
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    pub(crate) pane: Option<WezTermRegistration>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -188,8 +190,13 @@ fn encode(records: &BTreeMap<Uuid, TerminalRecord>, host: Uuid) -> Result<Vec<u8
 fn decode(bytes: &[u8], host: Uuid) -> Result<BTreeMap<Uuid, TerminalRecord>> {
     let saved: SavedTerminals<BTreeMap<Uuid, TerminalRecord>> =
         serde_json::from_slice(bytes).context("invalid WezTerm registration metadata")?;
+    let version_supported = match saved.schema_version {
+        1 => saved.records.values().all(|record| record.pane.is_some()),
+        VERSION => true,
+        _ => false,
+    };
     ensure!(
-        saved.schema_version == VERSION && saved.host == host && valid(&saved.records),
+        version_supported && saved.host == host && valid(&saved.records),
         "unsupported WezTerm registration metadata"
     );
     Ok(saved.records)
@@ -202,7 +209,7 @@ fn valid(records: &BTreeMap<Uuid, TerminalRecord>) -> bool {
                 && !record.epoch.is_nil()
                 && record.revision != 0
                 && record.commit_sequence != 0
-                && record.pane.valid()
+                && record.pane.as_ref().is_none_or(WezTermRegistration::valid)
         })
 }
 
@@ -257,6 +264,34 @@ mod tests {
         let mut newer: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         newer["schema_version"] = json!(VERSION + 1);
         assert!(decode(&serde_json::to_vec(&newer).unwrap(), host).is_err());
+    }
+
+    #[test]
+    fn legacy_registration_requires_a_pane_and_manual_pairing_is_explicit() {
+        let host = Uuid::new_v4();
+        let mut records = fixture_records();
+        let manual_client = Uuid::from_u128(3);
+        let mut version_one: serde_json::Value =
+            serde_json::from_slice(&encode(&records, host).unwrap()).unwrap();
+        version_one["schema_version"] = json!(1);
+        assert!(decode(&serde_json::to_vec(&version_one).unwrap(), host).is_err());
+        version_one["records"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&manual_client.to_string());
+        records.remove(&manual_client);
+        assert_eq!(
+            decode(&serde_json::to_vec(&version_one).unwrap(), host).unwrap(),
+            records
+        );
+
+        version_one["schema_version"] = json!(VERSION);
+        let wezterm_client = Uuid::from_u128(2).to_string();
+        version_one["records"][wezterm_client]
+            .as_object_mut()
+            .unwrap()
+            .remove("pane");
+        assert!(decode(&serde_json::to_vec(&version_one).unwrap(), host).is_err());
     }
 
     #[test]
@@ -315,7 +350,7 @@ mod tests {
     }
 
     fn fixture_records() -> BTreeMap<Uuid, TerminalRecord> {
-        let record = serde_json::from_value(json!({
+        let record: TerminalRecord = serde_json::from_value(json!({
             "epoch": Uuid::from_u128(1),
             "revision": u64::MAX - 1,
             "commit_sequence": 9_007_199_254_740_993u64,
@@ -330,7 +365,13 @@ mod tests {
             }
         }))
         .unwrap();
-        BTreeMap::from([(Uuid::from_u128(2), record)])
+        let manual = TerminalRecord {
+            epoch: record.epoch,
+            revision: 7,
+            commit_sequence: 9_007_199_254_740_993,
+            pane: None,
+        };
+        BTreeMap::from([(Uuid::from_u128(2), record), (Uuid::from_u128(3), manual)])
     }
 
     struct TestKey(Vec<u16>);

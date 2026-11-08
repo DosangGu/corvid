@@ -339,7 +339,7 @@ fn fault_message(fault: &ProtocolFault) -> String {
             "The selected slot or registration changed. Review the refreshed slots.".to_owned()
         }
         "LocalTerminalUnavailable" => {
-            "The registered WezTerm pane is unavailable. Pair the intended terminal again."
+            "The local registration could not be verified. Pair the intended terminal again."
                 .to_owned()
         }
         "NoAttachedClient" | "AmbiguousClient" => "Choose an attached, paired terminal.".to_owned(),
