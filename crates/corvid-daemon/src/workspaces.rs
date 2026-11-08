@@ -221,7 +221,6 @@ impl Workspaces {
         focuses: mpsc::Sender<FocusDispatch>,
     ) -> Reply<Active> {
         let (location, generation, terminal) = self.reserve(client, &mut target)?;
-        let cwd = target.launch.as_ref().and_then(|launch| launch.cwd.clone());
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
             client_id: client,
@@ -242,9 +241,6 @@ impl Workspaces {
         }
         match opened {
             Ok(active) => {
-                if let Some(cwd) = cwd {
-                    self.record_cwd(location, &cwd);
-                }
                 registry.resize_hidden(client, active.viewport, Some(active.location.pane));
                 registry.clients.insert(
                     client,
@@ -285,24 +281,6 @@ impl Workspaces {
             .claims
             .insert(location.workspace, Claim { client, generation });
         Ok((location, generation, terminal))
-    }
-
-    fn record_cwd(&self, location: Location, cwd: &Path) {
-        let mut layout = self.metadata.layout();
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        let observation = CwdObservation {
-            path: cwd.as_os_str().as_encoded_bytes().to_vec(),
-            observed_unix_ms: u64::try_from(time.as_millis()).unwrap_or(u64::MAX),
-            source: CwdSource::LaunchDirectory,
-        };
-        if Arc::make_mut(&mut layout)
-            .record_cwd(location, observation)
-            .is_ok()
-        {
-            self.metadata.update(Some(layout), std::iter::empty());
-        }
     }
 
     pub(crate) fn release(&self, client: Uuid) {
@@ -406,16 +384,10 @@ impl Workspaces {
         else {
             return Ok(None);
         };
-        let cwd = spec.launch.as_ref().and_then(|launch| launch.cwd.clone());
         let result = transition(old, terminal, location, spec, events).await;
         let mut registry = self.lock_registry();
         if let Some(slot) = registry.slots.get_mut(&location.pane) {
             slot.reserved = false;
-        }
-        if result.is_ok()
-            && let Some(cwd) = cwd
-        {
-            self.record_cwd(location, &cwd);
         }
         if let Ok(switched) = &result {
             registry.record_view(&switched.active);
@@ -558,6 +530,35 @@ impl Registry {
     pub(crate) fn terminal_started(&mut self, id: Uuid, location: Location) {
         self.terminals.insert(id, location);
         self.publish(vec![terminal_projection(id, location)]);
+    }
+
+    pub(crate) fn record_cwd(&self, terminal: Uuid, cwd: &Path, source: CwdSource) {
+        let Some(&location) = self.terminals.get(&terminal) else {
+            return;
+        };
+        let path = cwd.as_os_str().as_encoded_bytes();
+        let mut layout = self.metadata.layout();
+        if layout
+            .last_cwd(location)
+            .is_some_and(|saved| saved.path == path)
+        {
+            return;
+        }
+
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let observation = CwdObservation {
+            path: path.to_vec(),
+            observed_unix_ms: u64::try_from(time.as_millis()).unwrap_or(u64::MAX),
+            source,
+        };
+        if Arc::make_mut(&mut layout)
+            .record_cwd(location, observation)
+            .is_ok()
+        {
+            self.metadata.update(Some(layout), std::iter::empty());
+        }
     }
 
     pub(crate) fn terminal_closed(&mut self, id: Uuid, association: Option<Uuid>) {

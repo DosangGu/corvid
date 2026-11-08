@@ -61,6 +61,7 @@ pub struct CwdObservation {
 #[serde(rename_all = "snake_case")]
 pub enum CwdSource {
     LaunchDirectory,
+    ProcessDirectory,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

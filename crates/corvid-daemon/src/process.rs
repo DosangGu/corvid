@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use corvid_core::agent::{ProcessLiveness, Provider};
 use corvid_protocol::collector::CODEX_VERSION;
-use nix::fcntl::{AtFlags, OFlag, openat};
+use nix::fcntl::{AtFlags, OFlag, openat, readlinkat};
 use nix::sys::stat::{Mode, SFlag, fstatat};
 use nix::unistd::geteuid;
 use uuid::Uuid;
@@ -245,6 +245,7 @@ pub(crate) struct Probe {
     output_after: Instant,
     identity: Option<Incarnation>,
     executable: Option<Executable>,
+    cwd: Option<PathBuf>,
 }
 
 pub(crate) enum ProbeResult {
@@ -272,10 +273,11 @@ impl Probe {
             output_after: now + OUTPUT_DEBOUNCE,
             identity,
             executable,
+            cwd: None,
         }
     }
 
-    pub(crate) fn sample(&mut self, output: bool) -> Option<ProbeResult> {
+    pub(crate) fn sample(&mut self, output: bool) -> Option<(ProbeResult, Option<PathBuf>)> {
         let now = Instant::now();
         if output && now >= self.output_after {
             self.next = self.next.min(now);
@@ -288,8 +290,8 @@ impl Probe {
         Some(self.read())
     }
 
-    fn read(&mut self) -> ProbeResult {
-        let unknown = ProbeResult::Status(ProcessLiveness::Unknown, None);
+    fn read(&mut self) -> (ProbeResult, Option<PathBuf>) {
+        let unknown = (ProbeResult::Status(ProcessLiveness::Unknown, None), None);
         let Some(process) = ProcessDirectory::open(self.pid) else {
             return unknown;
         };
@@ -305,18 +307,45 @@ impl Probe {
         let identity = stat.incarnation(self.pid, self.boot_id);
         self.identity = Some(identity);
         if stat.exited {
-            return ProbeResult::Status(ProcessLiveness::Exited { code: None }, Some(identity));
+            return (
+                ProbeResult::Status(ProcessLiveness::Exited { code: None }, Some(identity)),
+                None,
+            );
         }
+        let cwd = if stat.parent_pid == std::process::id() {
+            self.changed_cwd(&process)
+        } else {
+            None
+        };
         if let Some(expected) = self.executable {
             let Some(executable) = process.executable() else {
-                return unknown;
+                return (unknown.0, cwd);
             };
             if executable != expected {
                 self.executable = None;
-                return ProbeResult::ImageChanged(identity);
+                return (ProbeResult::ImageChanged(identity), cwd);
             }
         }
-        ProbeResult::Status(ProcessLiveness::Running, Some(identity))
+        (
+            ProbeResult::Status(ProcessLiveness::Running, Some(identity)),
+            cwd,
+        )
+    }
+
+    fn changed_cwd(&mut self, process: &ProcessDirectory) -> Option<PathBuf> {
+        let path = PathBuf::from(readlinkat(&process.directory, "cwd").ok()?);
+        if !path.is_absolute() || self.cwd.as_ref() == Some(&path) {
+            return None;
+        }
+
+        // The printed path must identify the same directory in the daemon's namespace.
+        let observed = fstatat(&process.directory, "cwd", AtFlags::empty()).ok()?;
+        let named = path.metadata().ok()?;
+        if !named.is_dir() || named.dev() != observed.st_dev || named.ino() != observed.st_ino {
+            return None;
+        }
+        self.cwd = Some(path.clone());
+        Some(path)
     }
 }
 
@@ -457,5 +486,45 @@ mod tests {
         };
         assert!(!stale.is_current());
         assert!(ProcessImage::capture(stale.incarnation, Some(image.executable)).is_none());
+    }
+
+    #[test]
+    fn rejects_a_deleted_directory_even_if_the_rendered_path_exists() {
+        use std::process::{Command, Stdio};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let original = root.join("working");
+        let decoy = root.join("working (deleted)");
+        fs::create_dir(&original).unwrap();
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "IFS= read -r line"])
+            .current_dir(&original)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let boot = boot_id().unwrap();
+        let identity = incarnation(child.id(), boot).unwrap();
+        let mut probe = Probe::new(
+            Arc::new(ProbeBudget::default()),
+            child.id(),
+            boot,
+            Uuid::new_v4(),
+            Some(identity),
+            None,
+        );
+        assert_eq!(probe.read().1.as_deref(), Some(original.as_path()));
+
+        fs::remove_dir(&original).unwrap();
+        fs::create_dir(&decoy).unwrap();
+        let process = ProcessDirectory::open(child.id()).unwrap();
+        assert_eq!(
+            readlinkat(&process.directory, "cwd").unwrap(),
+            decoy.as_os_str()
+        );
+        assert!(probe.read().1.is_none());
+
+        drop(child.stdin.take());
+        child.wait().unwrap();
     }
 }

@@ -16,7 +16,7 @@ use crate::history::{History, RunRecord};
 const STATE: &str = "state.json";
 const BACKUP: &str = "state.json.bak";
 const QUARANTINE: &str = "state.json.corrupt";
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const DEBOUNCE: Duration = Duration::from_secs(1);
 
@@ -159,8 +159,8 @@ pub(crate) fn start(
         _lock: lock,
         last_good: bytes,
     };
-    // Convert validated schema 1 files through the normal backup and replace path.
-    if serde_json::from_slice::<Version>(&store.last_good)?.schema_version == 1 {
+    // Convert validated legacy files through the normal backup and replace path.
+    if serde_json::from_slice::<Version>(&store.last_good)?.schema_version != SCHEMA_VERSION {
         store.save(&stored)?;
     }
     let (updates, snapshots) = watch::channel(stored.clone());
@@ -286,7 +286,7 @@ fn read(directory: &RuntimeDir, name: &str) -> Result<Candidate> {
     let stored = match version.schema_version {
         1 => serde_json::from_slice::<LegacyLayout>(&bytes)
             .map(|old| Stored::from_layout(old.layout)),
-        SCHEMA_VERSION => serde_json::from_slice::<Stored>(&bytes),
+        2 | SCHEMA_VERSION => serde_json::from_slice::<Stored>(&bytes),
         version => bail!(
             "{name} uses unsupported layout schema {}; use a compatible Corvid version",
             version

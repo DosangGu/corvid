@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use corvid_core::agent::{ProcessLiveness, Provider, Source};
-use corvid_core::layout::Location;
+use corvid_core::layout::{CwdSource, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
@@ -787,11 +787,11 @@ struct Running {
     input: InputQueue,
     dirty: bool,
     exit: Option<ExitStatus>,
-    managed: Option<ManagedProcess>,
+    process: TerminalProcess,
 }
 
-struct ManagedProcess {
-    launch: ManagedLaunch,
+struct TerminalProcess {
+    managed: Option<ManagedLaunch>,
     probe: Option<Probe>,
 }
 
@@ -804,6 +804,7 @@ enum ReadState {
 impl Running {
     fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
         let id = Uuid::new_v4();
+        let cwd = launch.cwd.clone();
         let qualified = launch.provider.and_then(QualifiedProvider::detect);
         let reservation = launch
             .provider
@@ -826,15 +827,17 @@ impl Running {
         scope.hook_environment.configure(&mut command, association);
 
         let mut pty = TerminalPty::spawn(command, viewport)?;
-        let managed = reservation
-            .map(|launch| ManagedProcess::started(launch, &mut pty, scope, id, executable));
-        if managed.is_none()
+        let process = TerminalProcess::started(reservation, &mut pty, scope, id, executable);
+        if (process.managed.is_none() || cwd.is_some())
             && let Some(registry) = scope.registry.upgrade()
         {
-            registry
-                .lock()
-                .expect("workspace registry lock poisoned")
-                .terminal_started(id, scope.location);
+            let mut registry = registry.lock().expect("workspace registry lock poisoned");
+            if process.managed.is_none() {
+                registry.terminal_started(id, scope.location);
+            }
+            if let Some(cwd) = cwd {
+                registry.record_cwd(id, &cwd, CwdSource::LaunchDirectory);
+            }
         }
         Ok(Self {
             id,
@@ -844,7 +847,7 @@ impl Running {
             input: InputQueue::default(),
             dirty: true,
             exit: None,
-            managed,
+            process,
         })
     }
 
@@ -862,15 +865,18 @@ impl Running {
         if !matches!(state, ReadState::BudgetUsed)
             && let Some(status) = self.pty.try_wait()?
         {
-            if let Some(managed) = &mut self.managed {
-                managed.probe = None;
-                managed
-                    .launch
-                    .observe(exited(&status), None, Source::ChildExit);
+            self.process.probe = None;
+            if let Some(managed) = &self.process.managed {
+                managed.observe(exited(&status), None, Source::ChildExit);
             }
             self.exit = Some(status);
-        } else if let Some(managed) = &mut self.managed {
-            managed.sample(output);
+        } else if let Some(cwd) = self.process.sample(output)
+            && let Some(registry) = self.registry.upgrade()
+        {
+            registry
+                .lock()
+                .expect("workspace registry lock poisoned")
+                .record_cwd(self.id, &cwd, CwdSource::ProcessDirectory);
         }
         Ok(state)
     }
@@ -900,20 +906,21 @@ impl Running {
 impl Drop for Running {
     fn drop(&mut self) {
         if self.exit.is_none()
-            && let Some(managed) = &self.managed
+            && let Some(managed) = &self.process.managed
         {
             let status = self.pty.stop();
             let (liveness, source) = match status.as_ref() {
                 Some(status) => (exited(status), Source::ChildExit),
                 None => (ProcessLiveness::Unknown, Source::ProcessProbe),
             };
-            managed.launch.observe(liveness, None, source);
+            managed.observe(liveness, None, source);
         }
         if let Some(registry) = self.registry.upgrade() {
             let association = self
+                .process
                 .managed
                 .as_ref()
-                .map(|managed| managed.launch.association);
+                .map(|managed| managed.association);
             registry
                 .lock()
                 .expect("workspace registry lock poisoned")
@@ -922,9 +929,9 @@ impl Drop for Running {
     }
 }
 
-impl ManagedProcess {
+impl TerminalProcess {
     fn started(
-        launch: ManagedLaunch,
+        managed: Option<ManagedLaunch>,
         pty: &mut TerminalPty,
         scope: &LaunchScope,
         terminal: Uuid,
@@ -940,7 +947,10 @@ impl ManagedProcess {
             .zip(scope.boot_id)
             .filter(|_| !matches!(liveness, ProcessLiveness::Exited { .. }));
         let identity = process.and_then(|(pid, boot)| process::incarnation(pid, boot));
-        let owner = identity.and_then(|incarnation| ProcessImage::capture(incarnation, executable));
+        let owner = managed
+            .as_ref()
+            .and(identity)
+            .and_then(|incarnation| ProcessImage::capture(incarnation, executable));
         let expected = executable.or(owner.map(|owner| owner.executable));
         let probe = process.map(|(pid, boot)| {
             Probe::new(
@@ -952,19 +962,23 @@ impl ManagedProcess {
                 expected,
             )
         });
-        launch.started(liveness, source, identity, owner);
-        Self { launch, probe }
+        if let Some(managed) = &managed {
+            managed.started(liveness, source, identity, owner);
+        }
+        Self { managed, probe }
     }
 
-    fn sample(&mut self, output: bool) {
-        match self.probe.as_mut().and_then(|probe| probe.sample(output)) {
-            Some(ProbeResult::Status(liveness, identity)) => {
-                self.launch
-                    .observe(liveness, identity, Source::ProcessProbe);
+    fn sample(&mut self, output: bool) -> Option<PathBuf> {
+        let (result, cwd) = self.probe.as_mut()?.sample(output)?;
+        if let Some(managed) = &self.managed {
+            match result {
+                ProbeResult::Status(liveness, identity) => {
+                    managed.observe(liveness, identity, Source::ProcessProbe);
+                }
+                ProbeResult::ImageChanged(identity) => managed.image_changed(identity),
             }
-            Some(ProbeResult::ImageChanged(identity)) => self.launch.image_changed(identity),
-            None => {}
         }
+        cwd
     }
 }
 

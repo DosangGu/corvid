@@ -208,28 +208,41 @@ async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
     let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
-    let workdir = temporary.path().join("recorded-directory");
-    std::fs::create_dir(&workdir).unwrap();
+    let launch_dir = temporary.path().join("launch-directory");
+    let working_dir = launch_dir.join("working directory (deleted)");
+    std::fs::create_dir_all(&working_dir).unwrap();
     let mut first = daemon(&runtime, &state).await;
     timeout(WAIT, async {
         let before = control(&runtime, "workspaces").await;
         let command = LaunchCommand {
-            argv: shell("printf 'OLD-TERMINAL\\n'; sleep 20"),
-            cwd: Some(workdir.as_os_str().as_encoded_bytes().to_vec()),
+            argv: shell(concat!(
+                "printf 'OLD-TERMINAL\\n'; IFS= read -r line; ",
+                "cd 'working directory (deleted)' || exit 1; ",
+                "printf '\\033]7;file://localhost/forged-directory\\033\\\\'; sleep 20",
+            )),
+            cwd: Some(launch_dir.as_os_str().as_encoded_bytes().to_vec()),
             ..Default::default()
         };
         let mut tui = Tui::attach_command(&runtime, Some(command)).await;
         let mut output = Vec::new();
         wait_for_text(&mut tui, &mut output, "OLD-TERMINAL").await;
-        loop {
+        tui.input(tui.route.clone(), 1, b"change directory\n").await;
+        let expected_path = serde_json::json!(working_dir.as_os_str().as_encoded_bytes());
+        let stored = loop {
             let status = control(&runtime, "status").await;
             assert!(status.contains("terminal_live=true"));
             if status.contains("persistence=saved") {
-                break;
+                let saved = std::fs::read_to_string(state.join("state.json")).unwrap();
+                let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
+                let cwd = &json["layout"]["workspaces"][0]["tabs"][0]["root"]["last_cwd"];
+                if cwd["path"] == expected_path {
+                    assert_eq!(cwd["source"], "process_directory");
+                    assert!(cwd["observed_unix_ms"].as_u64().unwrap() > 0);
+                    break saved;
+                }
             }
             sleep(Duration::from_millis(25)).await;
-        }
-        let stored = std::fs::read_to_string(state.join("state.json")).unwrap();
+        };
         assert!(!stored.contains("OLD-TERMINAL"));
         assert!(!stored.contains(&tui.route.terminal_id));
         assert!(state.join("state.json.bak").is_file());
@@ -246,7 +259,12 @@ async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
         let mut reopened = Tui::attach(&runtime, Some(argv)).await;
         assert_ne!(reopened.route.terminal_id, tui.route.terminal_id);
         let mut output = Vec::new();
-        wait_for_text(&mut reopened, &mut output, "RESTORED=recorded-directory").await;
+        wait_for_text(
+            &mut reopened,
+            &mut output,
+            "RESTORED=working directory (deleted)",
+        )
+        .await;
     })
     .await
     .unwrap();
@@ -263,22 +281,25 @@ async fn layout_recovery_preserves_evidence_and_future_schema() {
     let original = control(&runtime, "workspaces").await;
     first.kill().await.unwrap();
 
-    let current: serde_json::Value =
+    let mut current: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&primary).unwrap()).unwrap();
-    let legacy = serde_json::to_vec(&serde_json::json!({
+    let legacy_layout = serde_json::json!({
         "schema_version": 1,
         "layout": current["layout"],
-    }))
-    .unwrap();
-    std::fs::write(&primary, &legacy).unwrap();
-    let mut migrated = daemon(&runtime, &state).await;
-    assert_eq!(control(&runtime, "workspaces").await, original);
-    let updated: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&primary).unwrap()).unwrap();
-    assert_eq!(updated["schema_version"], 2);
-    assert_eq!(updated["history"], serde_json::json!([]));
-    assert_eq!(std::fs::read(&backup).unwrap(), legacy);
-    migrated.kill().await.unwrap();
+    });
+    current["schema_version"] = serde_json::json!(2);
+    for legacy in [legacy_layout, current] {
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(&primary, &bytes).unwrap();
+        let mut migrated = daemon(&runtime, &state).await;
+        assert_eq!(control(&runtime, "workspaces").await, original);
+        let updated: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&primary).unwrap()).unwrap();
+        assert_eq!(updated["schema_version"], 3);
+        assert_eq!(updated["history"], serde_json::json!([]));
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+        migrated.kill().await.unwrap();
+    }
 
     std::fs::copy(&primary, &backup).unwrap();
     std::fs::write(&primary, b"{damaged").unwrap();
