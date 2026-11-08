@@ -90,12 +90,11 @@ def check_control(ssh, command, schema):
         'protocol_major: 1 request_id: "hello" '
         'hello { controller_id: "ssh-fixture" supported_major_versions: 1 }'
     )
-    request = (
-        f'protocol_major: 1 request_id: "host" host_id: "{fields["host_id"]}" '
-        f'server_epoch: "{fields["server_epoch"]}" get_host {{}}'
-    )
+    scope = f'protocol_major: 1 host_id: "{fields["host_id"]}" server_epoch: "{fields["server_epoch"]}"'
+    host = f'{scope} request_id: "host" get_host {{}}'
+    status = f'{scope} request_id: "status" get_connection_status {{}}'
     frames = [b"CRV1"]
-    for message in (greeting, request):
+    for message in (greeting, host, status):
         payload = transcode(schema, "encode", message.encode())
         frames.append(struct.pack(">IB", len(payload) + 1, 1) + payload)
     result = subprocess.run(
@@ -111,9 +110,11 @@ def check_control(ssh, command, schema):
         assert kind == 1 and 1 <= length <= 256 * 1024 and len(remaining) >= length + 4
         replies.append(transcode(schema, "decode", remaining[5:4 + length]))
         remaining = remaining[4 + length:]
-    assert len(replies) == 2 and b"hello_result {" in replies[0] and b"host_info {" in replies[1]
+    assert len(replies) == 3 and b"hello_result {" in replies[0] and b"host_info {" in replies[1]
     assert fields["host_id"].encode() in replies[1]
     assert fields["server_epoch"].encode() in replies[1]
+    assert b"connection_status {" in replies[2] and b"collector {" in replies[2]
+    assert b"traffic {" in replies[2]
 
 
 def progress_during_disconnect(progress):

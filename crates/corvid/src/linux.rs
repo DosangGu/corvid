@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
 use corvid_client::{ControlEndpoint, ControllerRequest, ControllerScope};
+use corvid_protocol::ProtocolFault;
 use corvid_protocol::snapshot::{HISTORY_CAPABILITY, SynchronizedSnapshot};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentActivity, AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentLifecycle,
-    AgentProcessState, AgentProvider, AttentionReason, HelloResult, HookEvent, InputRequestKind,
-    InputRequestStatus, LayoutRecovery, PersistenceState, ProviderCapabilityKind,
+    AgentProcessState, AgentProvider, AttentionReason, CollectorStatus, HelloResult, HookEvent,
+    InputRequestKind, InputRequestStatus, LayoutRecovery, PersistenceState, ProviderCapabilityKind,
     ProviderCorrelation, ProviderExecutionMode, ProviderQualification, TuiInputMode,
 };
 use tokio::signal::unix::{SignalKind, signal};
@@ -118,6 +119,8 @@ pub(super) enum ControlRequest {
     Capabilities,
     Ping,
     Status,
+    /// Show live run coverage and collector traffic for the daemon epoch.
+    CollectorStatus,
     Workspaces,
     Agents,
     /// Show recorded runs and requests from earlier daemon epochs.
@@ -292,6 +295,17 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 );
                 Ok(0)
             }
+            ControlRequest::CollectorStatus => {
+                let status = corvid_client::status(&runtime).await?;
+                let collector = status.collector.ok_or_else(|| {
+                    ProtocolFault::new(
+                        "UnsupportedCapability",
+                        "daemon does not report collector status",
+                    )
+                })?;
+                print_collector_status(collector);
+                Ok(0)
+            }
             ControlRequest::Workspaces => {
                 let list = corvid_client::workspaces(&runtime).await?;
                 for workspace in list.workspaces {
@@ -369,6 +383,20 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 }
             }
         },
+    }
+}
+
+fn print_collector_status(collector: CollectorStatus) {
+    println!("healthy_runs={}", collector.healthy_runs);
+    println!("not_registered_runs={}", collector.not_registered_runs);
+    println!("degraded_runs={}", collector.degraded_runs);
+    println!("gap_detected_runs={}", collector.gap_detected_runs);
+    println!("unsupported_runs={}", collector.unsupported_runs);
+    if let Some(traffic) = collector.traffic {
+        println!("accepted_submissions={}", traffic.accepted_submissions);
+        println!("rejected_submissions={}", traffic.rejected_submissions);
+        println!("connection_failures={}", traffic.connection_failures);
+        println!("saturated_connections={}", traffic.saturated_connections);
     }
 }
 

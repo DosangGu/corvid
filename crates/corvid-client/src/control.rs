@@ -2,8 +2,8 @@ use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AcknowledgeAttention, FocusAgentRequest, GetCapabilities, HelloResult, RegisterClientBinding,
-    UnregisterClientBinding,
+    AcknowledgeAttention, ConnectionStatus, FocusAgentRequest, GetCapabilities,
+    GetConnectionStatus, HelloResult, RegisterClientBinding, UnregisterClientBinding,
 };
 use corvid_protocol::{CAPABILITY_QUERY, COMMAND_TIMEOUT, ProtocolFault};
 use tokio::time::timeout;
@@ -42,6 +42,29 @@ pub enum ControllerRequest {
 }
 
 impl ControlEndpoint {
+    pub async fn status(&self) -> Result<ConnectionStatus> {
+        match self
+            .request(
+                Body::GetConnectionStatus(GetConnectionStatus {}),
+                "connection_status.v1",
+            )
+            .await?
+        {
+            Body::ConnectionStatus(status) => Ok(status),
+            _ => bail!("unexpected response to GetConnectionStatus"),
+        }
+    }
+
+    async fn request(&self, body: Body, capability: &str) -> Result<Body> {
+        let connection = self.connect(capability, None).await?;
+        timeout(
+            COMMAND_TIMEOUT,
+            exchange(connection, body, Uuid::new_v4().to_string()),
+        )
+        .await
+        .context("control command timed out")?
+    }
+
     pub async fn capabilities(&self) -> Result<HelloResult> {
         let connection = self.connect(CAPABILITY_QUERY, None).await?;
         let expected = connection.wire.session.description();

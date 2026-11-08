@@ -12,7 +12,8 @@ use corvid_core::agent::{
 };
 use corvid_core::layout::Location;
 use corvid_protocol::wire::{
-    AgentBadge, AgentCollection, AgentInfo, AgentList, AgentProcessState, ProcessIdentity,
+    AgentBadge, AgentCollection, AgentInfo, AgentList, AgentProcessState, CollectorStatus,
+    ProcessIdentity,
 };
 use uuid::Uuid;
 
@@ -180,6 +181,28 @@ impl Agents {
             .map(ManagedRun::info)
             .collect();
         AgentList { agents }
+    }
+
+    pub(crate) fn collector_status(&self) -> CollectorStatus {
+        let mut status = CollectorStatus::default();
+        let current = self
+            .launches
+            .values()
+            .filter_map(|launch| self.runs.get(&launch.current));
+        for record in current.filter(|record| {
+            record.published
+                && !matches!(record.run.lifecycle.value, Lifecycle::Ended(_))
+                && !matches!(record.run.process.value, ProcessLiveness::Exited { .. })
+        }) {
+            match record.run.collection.value {
+                Collection::Healthy => status.healthy_runs += 1,
+                Collection::NotRegistered => status.not_registered_runs += 1,
+                Collection::Degraded => status.degraded_runs += 1,
+                Collection::GapDetected => status.gap_detected_runs += 1,
+                Collection::Unsupported => status.unsupported_runs += 1,
+            }
+        }
+        status
     }
 
     pub(crate) fn relocate_terminal(&mut self, terminal: Uuid, location: Location) {

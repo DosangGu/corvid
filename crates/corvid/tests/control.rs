@@ -9,21 +9,23 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use corvid_protocol::collector::{
-    CLAUDE_VERSION, CODEX_VERSION, HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH,
+    CAPABILITY as COLLECTOR_CAPABILITY, CLAUDE_VERSION, CODEX_VERSION, HOST_ID, LAUNCH_ASSOCIATION,
+    SERVER_EPOCH,
 };
 use corvid_protocol::snapshot::{SnapshotAssembler, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, GetCapabilities, GetHost, HostInfo, Ping, ProviderCapabilityKind,
-    ProviderExecutionMode, ProviderQualification, SnapshotWatch,
+    AgentProvider, CollectHook, CollectorStatus, CollectorTraffic, GetCapabilities, GetHost,
+    HookEvent, HostInfo, Ping, ProviderCapabilityKind, ProviderExecutionMode,
+    ProviderQualification, SnapshotWatch,
 };
 use corvid_protocol::{
     CAPABILITY_QUERY, FRAME_PREAMBLE, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
     PeerRole, check_hello_result, hello,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon};
@@ -203,6 +205,109 @@ fn verify_qualified_profiles(profiles: &[corvid_protocol::wire::ProviderProfile]
                 && capability.qualification == ProviderQualification::Partial as i32
         }));
     }
+}
+
+#[tokio::test]
+async fn collector_status_separates_rejected_submissions_from_connection_failures() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let mut first = daemon(&runtime, &state).await;
+    let empty = CollectorStatus {
+        traffic: Some(CollectorTraffic::default()),
+        ..Default::default()
+    };
+    let directory = RuntimeDir::open(&runtime).unwrap();
+
+    timeout(WAIT, async {
+        assert_eq!(
+            corvid_client::status(&runtime)
+                .await
+                .unwrap()
+                .collector
+                .as_ref(),
+            Some(&empty)
+        );
+        let peer = directory.connect(SocketRole::Collector).await.unwrap();
+        let reader = FrameReader::start(peer, FrameRole::Collector)
+            .await
+            .unwrap();
+        drop(reader);
+        loop {
+            let status = corvid_client::status(&runtime)
+                .await
+                .unwrap()
+                .collector
+                .unwrap();
+            if status.traffic.unwrap().connection_failures == 1 {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        reject_unowned_hook(&directory).await;
+        let status = corvid_client::status(&runtime)
+            .await
+            .unwrap()
+            .collector
+            .unwrap();
+        assert_eq!(
+            status,
+            CollectorStatus {
+                traffic: Some(CollectorTraffic {
+                    connection_failures: 1,
+                    rejected_submissions: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        );
+        assert!(
+            corvid_client::agents(&runtime)
+                .await
+                .unwrap()
+                .agents
+                .is_empty()
+        );
+    })
+    .await
+    .unwrap();
+    first.kill().await.unwrap();
+    let _second = daemon(&runtime, &state).await;
+    assert_eq!(
+        corvid_client::status(&runtime).await.unwrap().collector,
+        Some(empty)
+    );
+}
+
+async fn reject_unowned_hook(directory: &RuntimeDir) {
+    let (read, write) = directory
+        .connect(SocketRole::Collector)
+        .await
+        .unwrap()
+        .into_split();
+    let mut writer = FrameWriter::start(write, FrameRole::Collector)
+        .await
+        .unwrap();
+    let mut reader = FrameReader::start(read, FrameRole::Collector)
+        .await
+        .unwrap();
+    let greeting = hello("collector".into(), None, vec![COLLECTOR_CAPABILITY.into()]);
+    writer.envelope(&greeting).await.unwrap();
+    let reply = reader.next_envelope().await.unwrap().unwrap();
+    let session = check_hello_result(&greeting, &reply, PeerRole::Collector).unwrap();
+
+    let observation = Body::CollectHook(CollectHook {
+        launch_association: Uuid::new_v4().to_string(),
+        provider: AgentProvider::Claude as i32,
+        event: HookEvent::Startup as i32,
+        session_id: Some(Uuid::new_v4().to_string()),
+        ..Default::default()
+    });
+    let request = session.envelope(Some(Uuid::new_v4().to_string()), observation);
+    writer.envelope(&request).await.unwrap();
+    let reply = reader.next_envelope().await.unwrap().unwrap();
+    assert!(matches!(reply.body, Some(Body::Error(fault)) if fault.code == "Unauthorized"));
 }
 
 #[tokio::test]

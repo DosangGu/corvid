@@ -120,7 +120,7 @@ impl Control<'_> {
             }),
             Ok(Body::GetCapabilities(_)) => Body::Capabilities(self.session.description()),
             Ok(Body::GetConnectionStatus(_)) => {
-                Body::ConnectionStatus(status(self.metadata, self.workspaces.any_live()))
+                Body::ConnectionStatus(status(self.metadata, self.workspaces))
             }
             Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(inventory(self.metadata)),
             Ok(Body::ListAgents(_)) => Body::AgentList(self.workspaces.agents()),
@@ -209,7 +209,7 @@ impl Control<'_> {
     }
 }
 
-fn status(metadata: &MetadataView, terminal_live: bool) -> ConnectionStatus {
+fn status(metadata: &MetadataView, workspaces: &Workspaces) -> ConnectionStatus {
     let persistence = match metadata.save_state() {
         SaveState::Saved => PersistenceState::Saved,
         SaveState::Pending => PersistenceState::Pending,
@@ -220,10 +220,12 @@ fn status(metadata: &MetadataView, terminal_live: bool) -> ConnectionStatus {
         Recovery::Backup => LayoutRecovery::Backup,
         Recovery::Fresh => LayoutRecovery::Fresh,
     };
+    let (terminal_live, collector) = workspaces.runtime_status();
     ConnectionStatus {
         terminal_live,
         persistence: persistence as i32,
         layout_recovery: recovery as i32,
+        collector: Some(collector),
     }
 }
 

@@ -384,6 +384,13 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert_eq!(two.location.as_ref(), Some(&other.selection));
         assert_eq!(one.process, AgentProcessState::Running as i32);
         assert_eq!(one.badge, AgentBadge::Unknown as i32);
+        let collector = corvid_client::status(&runtime)
+            .await
+            .unwrap()
+            .collector
+            .unwrap();
+        assert_eq!(collector.unsupported_runs, 2);
+        assert_eq!(collector.healthy_runs, 0);
         let one_process = one.process_identity.unwrap();
         let two_process = two.process_identity.unwrap();
         assert_ne!(one_process.pid, two_process.pid);
@@ -412,6 +419,12 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert_eq!(exited.agent_run_id, one.agent_run_id);
         assert_eq!(exited.exit_code, Some(7));
         assert_eq!(exited.badge, AgentBadge::Ended as i32);
+        let collector = corvid_client::status(&runtime)
+            .await
+            .unwrap()
+            .collector
+            .unwrap();
+        assert_eq!(collector.unsupported_runs, 1);
         assert!(first.reader.next_frame().await.unwrap().is_none());
         drop(first);
 

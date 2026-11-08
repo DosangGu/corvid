@@ -1,17 +1,15 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
+use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentList, ClientList, ConnectionStatus, GetConnectionStatus, GetHost, HostInfo, ListAgents,
-    ListClients, ListWorkspaces, Ping, WorkspaceList,
+    AgentList, ClientList, ConnectionStatus, GetHost, HostInfo, ListAgents, ListClients,
+    ListWorkspaces, Ping, WorkspaceList,
 };
-use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::time::timeout;
-use uuid::Uuid;
 
-use super::{ControlEndpoint, ControllerRequest, ControllerScope, exchange};
+use super::{ControlEndpoint, ControllerRequest, ControllerScope};
 
 pub async fn host(runtime: &Path) -> Result<HostInfo> {
     match request(runtime, Body::GetHost(GetHost {}), "host.v1").await? {
@@ -28,16 +26,7 @@ pub async fn ping(runtime: &Path) -> Result<()> {
 }
 
 pub async fn status(runtime: &Path) -> Result<ConnectionStatus> {
-    match request(
-        runtime,
-        Body::GetConnectionStatus(GetConnectionStatus {}),
-        "connection_status.v1",
-    )
-    .await?
-    {
-        Body::ConnectionStatus(status) => Ok(status),
-        _ => bail!("unexpected response to GetConnectionStatus"),
-    }
+    ControlEndpoint::Local(runtime.to_owned()).status().await
 }
 
 pub async fn workspaces(runtime: &Path) -> Result<WorkspaceList> {
@@ -95,13 +84,7 @@ pub async fn controller(
 }
 
 async fn request(runtime: &Path, request: Body, capability: &str) -> Result<Body> {
-    let connection = ControlEndpoint::Local(runtime.to_owned())
-        .connect(capability, None)
-        .await?;
-    timeout(
-        COMMAND_TIMEOUT,
-        exchange(connection, request, Uuid::new_v4().to_string()),
-    )
-    .await
-    .context("control command timed out")?
+    ControlEndpoint::Local(runtime.to_owned())
+        .request(request, capability)
+        .await
 }

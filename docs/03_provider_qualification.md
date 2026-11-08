@@ -117,6 +117,8 @@ The saturation fixture confirmed 32 admitted handshakes and refused the next
 connection before each observer invocation. Both the question and plan approval
 completed in the CLI while Corvid received no usable observations. Loss before
 the daemon receives a frame can leave collection coverage unchanged.
+`corvid control collector-status` reports the refused connections from the
+saturation fixture. The run's last recorded collection state is NotRegistered.
 
 For A22, the fixture disconnected the local companion while a question was
 pending. It sent the result's hook metadata to the observer with an invalid
@@ -124,6 +126,7 @@ tool-use ID. The verified observer reported a collection gap. A fresh
 companion snapshot retained the same run, slot, and slot revision with
 `GapDetected` and the unverified question. The separately unverified permission
 record remained present.
+The collector summary changed from one Healthy run to one GapDetected run.
 
 The A9 child fixture ran a background `Agent` while the parent waited on an
 interactive question. The child became visible after the start and the parent's

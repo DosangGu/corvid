@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use corvid_protocol::collector::{
     CAPABILITY, HOST_ID, LAUNCH_ASSOCIATION, RUNTIME_DIR, SERVER_EPOCH,
 };
-use corvid_protocol::wire::HookCollected;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{CollectorTraffic, HookCollected};
 use corvid_protocol::{PeerRole, ProtocolFault};
 use portable_pty::CommandBuilder;
 use tokio::net::UnixStream;
@@ -21,6 +22,47 @@ use crate::process::ProcessImage;
 use crate::workspaces::Workspaces;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_millis(75);
+
+#[derive(Default)]
+pub(crate) struct CollectorDiagnostics {
+    accepted: AtomicU64,
+    rejected: AtomicU64,
+    failed: AtomicU64,
+    saturated: AtomicU64,
+}
+
+impl CollectorDiagnostics {
+    pub(crate) fn traffic(&self) -> CollectorTraffic {
+        CollectorTraffic {
+            accepted_submissions: self.accepted.load(Ordering::Relaxed),
+            rejected_submissions: self.rejected.load(Ordering::Relaxed),
+            connection_failures: self.failed.load(Ordering::Relaxed),
+            saturated_connections: self.saturated.load(Ordering::Relaxed),
+        }
+    }
+
+    fn submission(&self, accepted: bool) {
+        increment(if accepted {
+            &self.accepted
+        } else {
+            &self.rejected
+        });
+    }
+
+    fn connection_failed(&self) {
+        increment(&self.failed);
+    }
+
+    pub(crate) fn admission_refused(&self) {
+        increment(&self.saturated);
+    }
+}
+
+fn increment(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        Some(count.saturating_add(1))
+    });
+}
 
 pub(crate) struct HookEnvironment {
     pub(crate) runtime: PathBuf,
@@ -46,7 +88,11 @@ pub(crate) async fn serve(
     identity: &Identity,
     workspaces: &Workspaces,
 ) -> Result<()> {
-    timeout(CONNECTION_TIMEOUT, collect(stream, identity, workspaces)).await?
+    let outcome = timeout(CONNECTION_TIMEOUT, collect(stream, identity, workspaces)).await;
+    if !matches!(&outcome, Ok(Ok(()))) {
+        workspaces.collector.connection_failed();
+    }
+    outcome?
 }
 
 async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspaces) -> Result<()> {
@@ -58,6 +104,7 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
     let Some((session, mut reader, mut writer)) =
         handshake(stream, identity, PeerRole::Collector, &[CAPABILITY]).await?
     else {
+        workspaces.collector.connection_failed();
         return Ok(());
     };
     let request = reader
@@ -72,6 +119,7 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
         Err(fault) => Err(fault),
         Ok(_) => unreachable!("collector accepts only hook submissions"),
     };
+    workspaces.collector.submission(result.is_ok());
     let body = match result {
         Ok(()) => Body::HookCollected(HookCollected {}),
         Err(fault) => Body::Error(fault.into_wire()),

@@ -72,7 +72,8 @@ pub async fn run(
                     let workspaces = Arc::clone(&workspaces);
                     collectors.spawn(async move { collector::serve(stream, &identity, &workspaces).await });
                 }
-                Ok(_) => {}
+                Ok(Some(_)) => workspaces.collector.admission_refused(),
+                Ok(None) => {}
                 Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             },
             peer = control_socket.accept() => match peer {

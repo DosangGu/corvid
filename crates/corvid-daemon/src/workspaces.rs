@@ -13,8 +13,8 @@ use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentList, ClientKeymap, ClientList, ClientState, TabMoved, TerminalState, TuiInputMode,
-    Viewport as WireViewport, WriterLeaseState,
+    AgentList, ClientKeymap, ClientList, ClientState, CollectorStatus, TabMoved, TerminalState,
+    TuiInputMode, Viewport as WireViewport, WriterLeaseState,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::mpsc;
@@ -23,7 +23,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::agents::{Agents, Hook, HookBinding};
-use crate::collector::HookEnvironment;
+use crate::collector::{CollectorDiagnostics, HookEnvironment};
 use crate::metadata::MetadataUpdates;
 use crate::process::{self, HookProducer, ProbeBudget, ProcessImage};
 use crate::projection;
@@ -77,6 +77,7 @@ struct ReservedSwitch {
 }
 
 pub(crate) struct Workspaces {
+    pub(crate) collector: CollectorDiagnostics,
     registry: Arc<Mutex<Registry>>,
     metadata: MetadataUpdates,
     boot_id: Option<Uuid>,
@@ -130,6 +131,7 @@ impl Workspaces {
         let publication = Publication::seed(projection::layout(&metadata.layout()));
         let epoch = Uuid::parse_str(&hook_environment.identity.epoch).expect("valid daemon epoch");
         Self {
+            collector: CollectorDiagnostics::default(),
             registry: Arc::new(Mutex::new(Registry {
                 agents: Agents::default(),
                 metadata: metadata.clone(),
@@ -201,11 +203,15 @@ impl Workspaces {
         Ok(())
     }
 
-    pub(crate) fn any_live(&self) -> bool {
-        self.lock_registry()
+    pub(crate) fn runtime_status(&self) -> (bool, CollectorStatus) {
+        let registry = self.lock_registry();
+        let terminal_live = registry
             .slots
             .values()
-            .any(|slot| slot.terminal.has_live_terminal())
+            .any(|slot| slot.terminal.has_live_terminal());
+        let mut collector = registry.agents.collector_status();
+        collector.traffic = Some(self.collector.traffic());
+        (terminal_live, collector)
     }
 
     pub(crate) async fn attach(

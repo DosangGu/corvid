@@ -338,6 +338,9 @@ def exercise(terminal, scenario, managed, fault):
         return exercise_cancel(terminal, managed, initial)
     child = None
     if managed:
+        collector = managed.collector_status()
+        assert collector["healthy_runs"] == "1" and collector["gap_detected_runs"] == "0"
+        assert int(collector["accepted_submissions"]) > 0
         question = managed.expect(terminal, run=initial["run"], pending="1", badge="NeedsInput")
         assert question["unverified"] == "1"
     if child_start:
@@ -559,6 +562,7 @@ def run_offline_pair(first_args, second_args, managed, trace):
             second_run = managed.expect(second, session=second_session, process="Running", collection="Healthy")
             for field in ("session", "run", "terminal", "pid"):
                 assert first_run[field] != second_run[field]
+            assert managed.collector_status()["healthy_runs"] == "2"
             collect_offline_questions(managed, ((first, first_run), (second, second_run)))
             for terminal in (first, second):
                 terminal.send(b"/exit\r")
@@ -654,6 +658,10 @@ class CorvidFixture:
         output = subprocess.check_output([*self.command, "control", "snapshot"], text=True, timeout=3)
         return dict(field.split("=", 1) for field in output.split())
 
+    def collector_status(self):
+        output = subprocess.check_output([*self.command, "control", "collector-status"], text=True, timeout=3)
+        return fields(output)
+
     def verify_crash_history(self, terminal, question):
         def saved():
             status = subprocess.check_output([*self.command, "control", "status"], text=True, timeout=3)
@@ -679,6 +687,9 @@ class CorvidFixture:
         assert after["host_id"] == before["host_id"] and after["server_epoch"] != before["server_epoch"]
         assert after["sequence"] == after["agents"] == after["requests"] == after["terminals"] == after["clients"] == "0"
         assert self.agents() == [] and self.attention() == []
+        collector = self.collector_status()
+        assert all(value == "0" for key, value in collector.items() if key.endswith("_runs")), collector
+        assert collector["accepted_submissions"] == collector["rejected_submissions"] == "0", collector
 
         output = subprocess.check_output([*self.command, "control", "history"], text=True, timeout=3)
         run, *items = map(fields, output.splitlines())
@@ -719,6 +730,9 @@ class CorvidFixture:
             terminal, run=question["run"], collection="GapDetected", badge="Unknown",
             process="Running", pending="0", resolved="0", unverified="2",
         )
+        collector = self.collector_status()
+        assert collector["healthy_runs"] == "0" and collector["gap_detected_runs"] == "1"
+        assert int(collector["accepted_submissions"]) > 0
         view = self.companion.start()
         slot = next(item for item in view["slots"] if item.get("run") == before_slot["run"])
         assert slot["slot"] == before_slot["slot"] and slot["revision"] == before_slot["revision"]
@@ -890,6 +904,9 @@ def capture(binary, directory, port, scenario, corvid, fault):
                 assert agent["collection"] == "NotRegistered"
                 if fault == "collector-saturated":
                     assert (directory / FAULT_TRACE).read_text().splitlines() == [SATURATION] * 7
+                    collector = managed.collector_status()
+                    assert int(collector["saturated_connections"]) >= 7
+                    assert collector["healthy_runs"] == collector["gap_detected_runs"] == "0"
         return events
     finally:
         if managed.companion is not None:

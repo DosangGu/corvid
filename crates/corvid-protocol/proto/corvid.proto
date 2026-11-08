@@ -134,6 +134,23 @@ message ConnectionStatus {
   bool terminal_live = 1;
   PersistenceState persistence = 2;
   LayoutRecovery layout_recovery = 3;
+  CollectorStatus collector = 4;
+}
+
+message CollectorStatus {
+  uint32 healthy_runs = 1;
+  uint32 not_registered_runs = 2;
+  uint32 degraded_runs = 3;
+  uint32 gap_detected_runs = 4;
+  uint32 unsupported_runs = 5;
+  CollectorTraffic traffic = 6;
+}
+
+message CollectorTraffic {
+  uint64 accepted_submissions = 1;
+  uint64 rejected_submissions = 2;
+  uint64 connection_failures = 3;
+  uint64 saturated_connections = 4;
 }
 
 message ListWorkspaces {}
