@@ -11,7 +11,7 @@ anyhow.workspace = true
 clap.workspace = true
 corvid-companion.workspace = true
 corvid-protocol.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "time"] }
 uuid.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -20,6 +20,7 @@ corvid-daemon.workspace = true
 nix = { workspace = true, features = ["poll"] }
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

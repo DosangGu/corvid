@@ -6,6 +6,8 @@ from pathlib import Path
 import pty
 import re
 import select
+import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -72,13 +74,13 @@ def paste_child():
 
 
 class OuterTerminal:
-    def __init__(self, command, cols=80, rows=24):
+    def __init__(self, command, cols=80, rows=24, env=None):
         self.master, self.slave = pty.openpty()
         self.original = termios.tcgetattr(self.slave)
         self.output = bytearray()
         self.resize(cols, rows)
         self.process = subprocess.Popen(
-            command, stdin=self.slave, stdout=self.slave, stderr=self.slave
+            command, stdin=self.slave, stdout=self.slave, stderr=self.slave, env=env,
         )
 
     def resize(self, cols, rows):
@@ -285,6 +287,72 @@ def verify_tab_move(command, directory, moved_pid, visible_pid):
         moved.wait(0)
 
 
+def background_daemon_pid(runtime):
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.connect(os.fspath(runtime / "control.sock"))
+        credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    pid, uid, _ = struct.unpack("3i", credentials)
+    assert uid == os.getuid()
+    return pid
+
+
+def verify_default_start(binary, directory):
+    runtime = directory / "auto"
+    home = directory / "home"
+    home.mkdir()
+    env = os.environ | {
+        "HOME": str(home), "SHELL": "/bin/sh", "PS1": "CORVID-PROMPT> ",
+        "XDG_STATE_HOME": str(home),
+    }
+    env.pop("TERMINFO", None)
+    env.pop("TERMINFO_DIRS", None)
+    command = [binary, "--runtime-dir", runtime]
+    for args in ([], ["control", "ping"]):
+        result = subprocess.run(
+            [*command, *args], stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=5,
+        )
+        assert result.returncode != 0 and not runtime.exists(), result
+
+    def shell_pid(terminal):
+        terminal.expect(b"CORVID-PROMPT>")
+        terminal.send(b"infocmp corvid >/dev/null && printf 'CORVID-SHELL=%s\\n' \"$$\"\n")
+        return terminal.expect(rb"CORVID-SHELL=(\d+)")[1]
+
+    try:
+        with OuterTerminal(command, env=env) as first, OuterTerminal(command, env=env) as second:
+            sessions = [first, second]
+            startup = rb"CORVID-PROMPT>|WorkspaceBusy"
+            active, = [
+                terminal for terminal in sessions
+                if terminal.expect(startup)[0] == b"CORVID-PROMPT>"
+            ]
+            rejected, = [terminal for terminal in sessions if terminal is not active]
+            rejected.wait(1)
+            pid = shell_pid(active)
+            daemon = background_daemon_pid(runtime)
+            assert os.getsid(daemon) == daemon
+            active.send(b"\x1dd")
+            active.wait(0)
+
+        with OuterTerminal(command, env=env) as second:
+            assert shell_pid(second) == pid
+            assert background_daemon_pid(runtime) == daemon
+            second.send(b"exit\n")
+            second.wait(0)
+    finally:
+        try:
+            daemon = background_daemon_pid(runtime)
+        except (FileNotFoundError, ConnectionRefusedError):
+            pass
+        else:
+            handle = os.pidfd_open(daemon)
+            try:
+                signal.pidfd_send_signal(handle, signal.SIGTERM)
+                assert select.select([handle], [], [], 5)[0], "background daemon did not stop"
+            finally:
+                os.close(handle)
+
+
 def run(binary):
     root = Path(__file__).resolve().parents[3]
     profile = root / "spikes/terminal/corvid.terminfo"
@@ -304,7 +372,8 @@ def run(binary):
             verify_tabs(command, directory)
         finally:
             stop(daemon)
-    print("Live TTYs verified writer fencing, redraw, paste modes, fragmented keys, detach, and tab moves.")
+        verify_default_start(binary, directory)
+    print("Live TTYs verified default startup, writer fencing, redraw, paste modes, fragmented keys, detach, and tab moves.")
 
 
 if __name__ == "__main__":

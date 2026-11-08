@@ -79,6 +79,10 @@ impl RuntimeDir {
         })
     }
 
+    pub fn lock_startup(&self) -> Result<Flock<File>> {
+        self.lock_file("startup.lock")
+    }
+
     pub fn lock_storage(&self) -> Result<Flock<File>> {
         self.lock_file("state.lock")
     }

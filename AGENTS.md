@@ -12,7 +12,7 @@ qualification.
 
 ## Build, Test, and Development Commands
 
-Install `protoc` 36.1 for schema generation. Run `git diff --check` for whitespace.
+Install `protoc` 36.1 and `tic` for Linux builds. Run `git diff --check` for whitespace.
 From the workspace root:
 
 - `cargo build --workspace`: compile workspace packages.

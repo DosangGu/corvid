@@ -2,7 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use corvid_core::Viewport;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use nix::libc::{O_NOCTTY, O_NONBLOCK};
@@ -26,7 +26,7 @@ impl Tty {
 
     pub(crate) fn viewport() -> Result<Viewport> {
         let (cols, rows) = size()?;
-        Ok(Viewport::new(cols, rows)?)
+        Viewport::new(cols, rows).with_context(|| format!("terminal reports {cols}×{rows} cells"))
     }
 
     pub(crate) fn enter() -> Result<Self> {

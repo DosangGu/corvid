@@ -21,13 +21,18 @@ pub(crate) use linux::runtime_path;
 
 #[derive(Parser)]
 #[command(version, about = "Terminal multiplexer for interactive coding agents")]
+#[cfg_attr(
+    target_os = "linux",
+    command(after_help = "Run without a command to open the default workspace.")
+)]
+#[cfg_attr(windows, command(subcommand_required = true))]
 struct Options {
     /// Override the private directory containing daemon sockets.
     #[cfg(target_os = "linux")]
     #[arg(long, global = true)]
     runtime_dir: Option<PathBuf>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -49,12 +54,16 @@ fn main() -> ExitCode {
     let daemon_runtime: Option<PathBuf> = None;
 
     let result = match options.command {
-        Command::Companion(companion) => execute(async move {
+        Some(Command::Companion(companion)) => execute(async move {
             companion::execute(companion, daemon_runtime).await?;
             Ok(0)
         }),
         #[cfg(target_os = "linux")]
-        Command::Linux(command) => linux::execute(command, daemon_runtime, started),
+        Some(Command::Linux(command)) => linux::execute(command, daemon_runtime, started),
+        #[cfg(target_os = "linux")]
+        None => execute(linux::start(daemon_runtime)),
+        #[cfg(windows)]
+        None => unreachable!("Clap requires a Windows subcommand"),
     };
     match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),

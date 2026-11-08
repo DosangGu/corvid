@@ -14,7 +14,7 @@ mod snapshot;
 mod tty;
 
 #[cfg(target_os = "linux")]
-pub use attach::{AttachOptions, attach};
+pub use attach::{AttachOptions, attach, check_tty};
 #[cfg(target_os = "linux")]
 pub use collector::submit_hook;
 pub use control::{ControllerRequest, ControllerScope};

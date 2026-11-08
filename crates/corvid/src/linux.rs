@@ -1,3 +1,5 @@
+mod start;
+
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
@@ -23,6 +25,8 @@ use uuid::Uuid;
 use crate::hooks::HookProvider;
 
 use crate::{hooks, read_pairing_code};
+
+pub(super) use start::start;
 
 #[derive(Subcommand)]
 pub(super) enum Command {

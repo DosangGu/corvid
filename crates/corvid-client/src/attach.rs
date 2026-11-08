@@ -47,6 +47,27 @@ pub struct AttachOptions {
     pub move_tab: Option<(Uuid, Uuid)>,
 }
 
+impl Default for AttachOptions {
+    fn default() -> Self {
+        Self {
+            launch: None,
+            agent: None,
+            escape_delay: Duration::from_millis(100),
+            restore_cwd: false,
+            workspace: None,
+            tab: None,
+            new_workspace: None,
+            new_tab: None,
+            claim_workspaces: Vec::new(),
+            move_tab: None,
+        }
+    }
+}
+
+pub fn check_tty() -> Result<()> {
+    Tty::check().map(|_| ())
+}
+
 pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
