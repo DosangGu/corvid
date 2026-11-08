@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
@@ -462,9 +462,10 @@ fn describe_run(ui: &mut Ui, run: &PresentedRun, cached: bool) {
     });
 
     let availability = RunAvailability::try_from(run.availability).ok();
+    let last_known = cached || availability != Some(RunAvailability::Available);
     let (badge, color) = badge_style(run.last_badge, ui.visuals());
     ui.horizontal_wrapped(|ui| {
-        if cached || availability != Some(RunAvailability::Available) {
+        if last_known {
             ui.weak(format!("Last known: {badge}"));
         } else {
             ui.label(RichText::new(badge).strong().color(color));
@@ -473,6 +474,9 @@ fn describe_run(ui: &mut Ui, run: &PresentedRun, cached: bool) {
             ui.weak(label);
         }
     });
+    if last_known && let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
+        ui.weak(format!("Observed {age} ago"));
+    }
     ui.horizontal_wrapped(|ui| {
         ui.weak(evidence_label(run));
         if run.pending_requests > 0 {
@@ -485,6 +489,18 @@ fn describe_run(ui: &mut Ui, run: &PresentedRun, cached: bool) {
             ui.label(format!("{} unseen", run.unseen_attention));
         }
     });
+}
+
+fn observation_age(observed_unix_ms: u64) -> Option<String> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    let seconds = now
+        .checked_sub(Duration::from_millis(observed_unix_ms))?
+        .as_secs();
+    let (scale, unit) = [(86_400, "d"), (3600, "h"), (60, "m"), (1, "s")]
+        .into_iter()
+        .find(|&(scale, _)| seconds >= scale)
+        .unwrap_or((1, "s"));
+    Some(format!("{}{unit}", seconds / scale))
 }
 
 fn badge_style(raw: i32, visuals: &egui::Visuals) -> (&'static str, Color32) {

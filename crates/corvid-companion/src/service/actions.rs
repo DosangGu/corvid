@@ -198,7 +198,8 @@ impl Service {
 
     fn edit(&mut self, action: Action) -> Outcome {
         let runs = self.require_ready().ok().map(observations);
-        self.store
+        let edited = self
+            .store
             .update(|layout| {
                 match action {
                     Action::Pin(pin) => {
@@ -254,7 +255,11 @@ impl Service {
                 }
                 Ok(Body::SlotLayoutEdited(SlotLayoutEdited {}))
             })
-            .map_err(store_fault)
+            .map_err(store_fault)?;
+        if self.generation.is_some() {
+            self.schedule_status_save();
+        }
+        Ok(edited)
     }
 
     fn require_ready(&self) -> Result<&Remote, ProtocolFault> {

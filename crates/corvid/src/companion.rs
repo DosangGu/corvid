@@ -522,6 +522,9 @@ fn show_run(run: &PresentedRun) -> Result<()> {
     if let Some(alert) = &run.latest_unseen_attention_id {
         print!(" latest_attention_id={alert}");
     }
+    if let Some(time) = run.last_observed_unix_ms {
+        print!(" last_observed_unix_ms={time}");
+    }
     Ok(())
 }
 

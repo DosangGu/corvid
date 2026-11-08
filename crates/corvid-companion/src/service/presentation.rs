@@ -87,15 +87,14 @@ impl Service {
             .remote
             .as_ref()
             .and_then(|remote| remote.runs.get(&key))
-            .map_or_else(
-                || PresentedRun {
-                    key: Some(key.into()),
-                    last_badge: AgentBadge::Unknown as i32,
-                    availability: RunAvailability::CheckNeeded as i32,
-                    ..Default::default()
-                },
-                |run| run.display.clone(),
-            );
+            .map(|run| run.display.clone())
+            .or_else(|| self.store.last_known(key).map(|cached| cached.display(key)))
+            .unwrap_or_else(|| PresentedRun {
+                key: Some(key.into()),
+                last_badge: AgentBadge::Unknown as i32,
+                availability: RunAvailability::CheckNeeded as i32,
+                ..Default::default()
+            });
 
         if self
             .remote

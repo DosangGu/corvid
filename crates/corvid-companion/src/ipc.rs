@@ -59,7 +59,7 @@ pub async fn run(
     let store = Store::open(state)?;
     let host = store.config().host_id.to_string();
     let epoch = Uuid::new_v4().to_string();
-    let service = Service::new(store)?;
+    let mut service = Service::new(store)?;
 
     #[cfg(target_os = "linux")]
     let (directory, instance);
@@ -73,11 +73,12 @@ pub async fn run(
     let mut listener = PipeListener::bind(runtime)?;
     let (sender, calls) = mpsc::channel(MAX_CALLS);
 
-    tokio::select! {
+    let result = tokio::select! {
         result = accept(&mut listener, sender, &host, &epoch) => result,
         result = service.run(calls) => result,
         _ = shutdown => Ok(()),
-    }
+    };
+    result.and(service.flush_status())
 }
 
 trait Listener {

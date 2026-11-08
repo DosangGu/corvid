@@ -80,19 +80,25 @@ impl Remote {
                         }
                     }
                 }
-                Some(Body::Request(request))
-                    if request.status == InputRequestStatus::Pending as i32 =>
-                {
+                Some(Body::Request(request)) => {
                     let key = RunKey {
                         host,
                         epoch,
                         run: parse_id(&request.agent_run_id)?,
                     };
                     if let Some(run) = remote.runs.get_mut(&key)
-                        && run.display.last_badge == AgentBadge::NeedsInput as i32
                         && let Some(evidence) = &request.evidence
                     {
-                        run.display.confidence = evidence.confidence;
+                        let time = evidence.observed_unix_ms;
+                        run.display.last_observed_unix_ms = run
+                            .display
+                            .last_observed_unix_ms
+                            .max((time != 0).then_some(time));
+                        if request.status == InputRequestStatus::Pending as i32
+                            && run.display.last_badge == AgentBadge::NeedsInput as i32
+                        {
+                            run.display.confidence = evidence.confidence;
+                        }
                     }
                 }
                 _ => {}
@@ -121,6 +127,17 @@ impl ObservedRun {
         } else {
             agent.activity_evidence.as_ref()
         };
+        let last_observed_unix_ms = [
+            &agent.lifecycle_evidence,
+            &agent.process_evidence,
+            &agent.activity_evidence,
+            &agent.collection_evidence,
+            &agent.response_evidence,
+        ]
+        .into_iter()
+        .filter_map(|item| item.as_ref().map(|evidence| evidence.observed_unix_ms))
+        .max()
+        .filter(|time| *time != 0);
         Self {
             observation: RunObservation {
                 created_sequence: agent.created_sequence,
@@ -138,6 +155,7 @@ impl ObservedRun {
                 pending_requests: summary.pending_requests,
                 unverified_requests: summary.unverified_requests,
                 last_response_unix_ms: summary.response_observed_unix_ms,
+                last_observed_unix_ms,
                 ..Default::default()
             },
             latest_alert: None,

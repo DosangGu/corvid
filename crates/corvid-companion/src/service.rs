@@ -10,9 +10,10 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::CompanionConnection;
 use corvid_protocol::wire::envelope::Body;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep, sleep_until};
 use uuid::Uuid;
 
+use crate::last_known::LastKnown;
 #[cfg(windows)]
 use crate::platform::{TerminalRecord, TerminalRegistry, WezTermRegistration};
 use crate::remote::Remote;
@@ -20,6 +21,8 @@ use crate::{RunKey, RunObservation, Store};
 
 type Outcome = Result<Body, ProtocolFault>;
 type Observations = BTreeMap<RunKey, RunObservation>;
+
+const STATUS_SAVE_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct Call {
     pub(crate) body: Body,
@@ -35,6 +38,7 @@ pub(crate) struct Service {
     issue: Option<&'static str>,
     generation: Option<Uuid>,
     remote: Option<Remote>,
+    save_status_at: Option<Instant>,
     #[cfg(windows)]
     terminals: BTreeMap<Uuid, TerminalRecord>,
     #[cfg(windows)]
@@ -64,6 +68,7 @@ impl Service {
             issue: None,
             generation: None,
             remote: None,
+            save_status_at: None,
             #[cfg(windows)]
             terminals,
             #[cfg(windows)]
@@ -71,7 +76,7 @@ impl Service {
         })
     }
 
-    pub(crate) async fn run(mut self, mut calls: mpsc::Receiver<Call>) -> Result<()> {
+    pub(crate) async fn run(&mut self, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let mut failures = 0;
         loop {
             self.connection = CompanionConnection::Connecting;
@@ -89,6 +94,10 @@ impl Service {
                 Err(error) => error,
             };
             self.generation = None;
+            let fault = match self.flush_status() {
+                Ok(()) => fault,
+                Err(error) => store_fault(error).into(),
+            };
             (self.connection, self.issue) = disconnected(&fault);
             let delay = sleep(backoff(failures));
             failures = (failures + 1).min(6);
@@ -179,6 +188,11 @@ impl Service {
         loop {
             tokio::select! {
                 biased;
+                _ = sleep_until(self.save_status_at.unwrap_or_else(Instant::now)), if self.save_status_at.is_some() => {
+                    if let Err(error) = self.flush_status() {
+                        return store_fault(error).into();
+                    }
+                }
                 update = watch.next_change() => {
                     if let Err(error) = update {
                         return error;
@@ -234,6 +248,26 @@ impl Service {
         #[cfg(windows)]
         self.reconcile_terminals(&remote);
         self.remote = Some(remote);
+        self.schedule_status_save();
+        Ok(())
+    }
+
+    fn schedule_status_save(&mut self) {
+        self.save_status_at
+            .get_or_insert_with(|| Instant::now() + STATUS_SAVE_DELAY);
+    }
+
+    pub(crate) fn flush_status(&mut self) -> Result<()> {
+        if self.save_status_at.take().is_some()
+            && let Some(remote) = &self.remote
+        {
+            self.store.save_status(|key| {
+                remote
+                    .runs
+                    .get(&key)
+                    .map(|run| LastKnown::from_display(&run.display))
+            })?;
+        }
         Ok(())
     }
 

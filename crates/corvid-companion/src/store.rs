@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -7,8 +8,9 @@ use corvid_client::{ControlEndpoint, SshAlias};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::last_known::LastKnown;
 use crate::platform::{StateDirectory, StateLock};
-use crate::slots::{MAX_SLOTS, SlotLayout};
+use crate::slots::{MAX_SLOTS, RunKey, SlotLayout};
 
 const CONFIG: &str = "config.json";
 const SLOTS: &str = "slots.json";
@@ -17,6 +19,9 @@ const QUARANTINE: &str = "slots.json.corrupt";
 const VERSION: u32 = 1;
 const CONFIG_LIMIT: u64 = 4096;
 const STATE_LIMIT: u64 = 2 * 1024 * 1024;
+const MAX_CACHED_RUNS: usize = 512;
+
+type StatusCache = BTreeMap<RunKey, LastKnown>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +82,20 @@ struct Version {
 struct SavedSlots<T> {
     schema_version: u32,
     layout: T,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    last_known: Vec<CachedRun>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CachedRun {
+    key: RunKey,
+    observation: LastKnown,
+}
+
+struct LoadedSlots {
+    layout: SlotLayout,
+    last_known: StatusCache,
+    bytes: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,8 +109,7 @@ pub struct Store {
     directory: StateDirectory,
     _lock: StateLock,
     config: Config,
-    layout: SlotLayout,
-    last_good: Vec<u8>,
+    slots: LoadedSlots,
     recovery: Recovery,
 }
 
@@ -135,13 +153,12 @@ impl Store {
         check_version(CONFIG, version)?;
         let config: Config = serde_json::from_slice(&bytes).context("invalid companion config")?;
         config.validate()?;
-        let (layout, last_good, recovery) = load_slots(&directory, &config)?;
+        let (slots, recovery) = load_slots(&directory, &config)?;
         Ok(Self {
             directory,
             _lock: lock,
             config,
-            layout,
-            last_good,
+            slots,
             recovery,
         })
     }
@@ -151,7 +168,7 @@ impl Store {
     }
 
     pub fn layout(&self) -> &SlotLayout {
-        &self.layout
+        &self.slots.layout
     }
 
     pub fn recovery(&self) -> Recovery {
@@ -159,42 +176,66 @@ impl Store {
     }
 
     pub fn update<T>(&mut self, edit: impl FnOnce(&mut SlotLayout) -> Result<T>) -> Result<T> {
-        let mut next = self.layout.clone();
+        let mut next = self.slots.layout.clone();
         let result = edit(&mut next)?;
-        if next == self.layout {
+        if next == self.slots.layout {
             return Ok(result);
         }
         ensure!(
             next.validate(self.config.slot_count, self.config.host_id),
             "invalid slot update"
         );
-        let bytes = encode_layout(&next)?;
+        let last_known = collect_status(&next, |key| self.last_known(key));
+        let bytes = self.write_slots(&next, &last_known)?;
+        self.slots = LoadedSlots {
+            layout: next,
+            last_known,
+            bytes,
+        };
+        Ok(result)
+    }
+
+    pub(crate) fn last_known(&self, key: RunKey) -> Option<LastKnown> {
+        self.slots.last_known.get(&key).copied()
+    }
+
+    pub(crate) fn save_status(
+        &mut self,
+        mut observed: impl FnMut(RunKey) -> Option<LastKnown>,
+    ) -> Result<()> {
+        let last_known = collect_status(&self.slots.layout, |key| {
+            observed(key).or_else(|| self.last_known(key))
+        });
+        if last_known != self.slots.last_known {
+            self.slots.bytes = self.write_slots(&self.slots.layout, &last_known)?;
+            self.slots.last_known = last_known;
+        }
+        Ok(())
+    }
+
+    fn write_slots(&self, layout: &SlotLayout, last_known: &StatusCache) -> Result<Vec<u8>> {
+        let bytes = encode_slots(layout, last_known)?;
         let current = self.directory.read_private_file(SLOTS, STATE_LIMIT)?;
         ensure!(
-            current.as_deref() == Some(&self.last_good),
+            current.as_deref() == Some(&self.slots.bytes),
             "slot file changed outside companion; restart to reload it"
         );
         self.directory
-            .replace_private_file(BACKUP, &self.last_good)?;
+            .replace_private_file(BACKUP, &self.slots.bytes)?;
         self.directory.replace_private_file(SLOTS, &bytes)?;
-        self.layout = next;
-        self.last_good = bytes;
-        Ok(result)
+        Ok(bytes)
     }
 }
 
 enum Candidate {
     Missing,
-    Valid(SlotLayout, Vec<u8>),
+    Valid(LoadedSlots),
     Damaged(Vec<u8>),
 }
 
-fn load_slots(
-    directory: &StateDirectory,
-    config: &Config,
-) -> Result<(SlotLayout, Vec<u8>, Recovery)> {
+fn load_slots(directory: &StateDirectory, config: &Config) -> Result<(LoadedSlots, Recovery)> {
     let damaged = match read_slots(directory, SLOTS, config)? {
-        Candidate::Valid(layout, bytes) => return Ok((layout, bytes, Recovery::Normal)),
+        Candidate::Valid(slots) => return Ok((slots, Recovery::Normal)),
         Candidate::Damaged(bytes) => Some(bytes),
         Candidate::Missing => None,
     };
@@ -202,19 +243,27 @@ fn load_slots(
     if let Some(bytes) = &damaged {
         directory.replace_private_file(QUARANTINE, bytes)?;
     }
-    if let Candidate::Valid(layout, bytes) = backup {
-        directory.replace_private_file(SLOTS, &bytes)?;
-        return Ok((layout, bytes, Recovery::Backup));
+    if let Candidate::Valid(slots) = backup {
+        directory.replace_private_file(SLOTS, &slots.bytes)?;
+        return Ok((slots, Recovery::Backup));
     }
     let layout = SlotLayout::new(config.slot_count)?;
-    let bytes = encode_layout(&layout)?;
+    let last_known = StatusCache::new();
+    let bytes = encode_slots(&layout, &last_known)?;
     directory.replace_private_file(SLOTS, &bytes)?;
     let recovery = if damaged.is_some() || matches!(backup, Candidate::Damaged(_)) {
         Recovery::Fresh
     } else {
         Recovery::Normal
     };
-    Ok((layout, bytes, recovery))
+    Ok((
+        LoadedSlots {
+            layout,
+            last_known,
+            bytes,
+        },
+        recovery,
+    ))
 }
 
 fn read_slots(directory: &StateDirectory, name: &str, config: &Config) -> Result<Candidate> {
@@ -225,12 +274,30 @@ fn read_slots(directory: &StateDirectory, name: &str, config: &Config) -> Result
         return Ok(Candidate::Damaged(bytes));
     };
     check_version(name, version)?;
-    match serde_json::from_slice::<SavedSlots<SlotLayout>>(&bytes) {
-        Ok(saved) if saved.layout.validate(config.slot_count, config.host_id) => {
-            Ok(Candidate::Valid(saved.layout, bytes))
-        }
-        _ => Ok(Candidate::Damaged(bytes)),
+    let Ok(saved) = serde_json::from_slice::<SavedSlots<SlotLayout>>(&bytes) else {
+        return Ok(Candidate::Damaged(bytes));
+    };
+    if !saved.layout.validate(config.slot_count, config.host_id)
+        || saved.last_known.len() > MAX_CACHED_RUNS
+    {
+        return Ok(Candidate::Damaged(bytes));
     }
+    let count = saved.last_known.len();
+    let cached: StatusCache = saved
+        .last_known
+        .into_iter()
+        .filter(|run| run.observation.is_valid())
+        .map(|run| (run.key, run.observation))
+        .collect();
+    let last_known = collect_status(&saved.layout, |key| cached.get(&key).copied());
+    if last_known.len() != count {
+        return Ok(Candidate::Damaged(bytes));
+    }
+    Ok(Candidate::Valid(LoadedSlots {
+        layout: saved.layout,
+        last_known,
+        bytes,
+    }))
 }
 
 fn check_version(name: &str, version: Version) -> Result<()> {
@@ -242,11 +309,29 @@ fn check_version(name: &str, version: Version) -> Result<()> {
     Ok(())
 }
 
-fn encode_layout(layout: &SlotLayout) -> Result<Vec<u8>> {
+fn collect_status(
+    layout: &SlotLayout,
+    mut lookup: impl FnMut(RunKey) -> Option<LastKnown>,
+) -> StatusCache {
+    layout
+        .slots()
+        .iter()
+        .filter_map(|slot| slot.run)
+        .chain(layout.overflow())
+        .filter_map(|key| lookup(key).map(|observation| (key, observation)))
+        .take(MAX_CACHED_RUNS)
+        .collect()
+}
+
+fn encode_slots(layout: &SlotLayout, last_known: &StatusCache) -> Result<Vec<u8>> {
     encode(
         &SavedSlots {
             schema_version: VERSION,
             layout,
+            last_known: last_known
+                .iter()
+                .map(|(&key, &observation)| CachedRun { key, observation })
+                .collect(),
         },
         STATE_LIMIT,
     )

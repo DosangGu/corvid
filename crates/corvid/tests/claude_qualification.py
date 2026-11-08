@@ -350,7 +350,7 @@ def exercise(terminal, scenario, managed, fault):
         assert snapshot["agents"] == "1"
         assert snapshot["requests"] == snapshot["attention"] == "2"
     if managed:
-        managed.focus_question(terminal, question)
+        managed.focus_question(terminal, question, offline_restart=scenario == "offline-restart")
         if scenario == "forged-output":
             exercise_forged_output(terminal, managed, question)
         if child:
@@ -741,7 +741,7 @@ class CorvidFixture:
         assert view["header"]["remote_epoch"] == before_view["header"]["remote_epoch"]
         assert view["header"]["control_capture"] != before_view["header"]["control_capture"]
 
-    def focus_question(self, tty, question):
+    def focus_question(self, tty, question, *, offline_restart=False):
         self.companion = Companion(self.command, self.directory)
         self.companion.start()
         tty.screen = b""
@@ -767,7 +767,10 @@ class CorvidFixture:
         old_view, old_slot = self.presented_question(question)
         old_binding = old_view["bindings"][0]
         self.companion.close()
-        self.companion.start()
+        if offline_restart:
+            self.restart_with_control_unavailable(old_view, old_slot, old_binding)
+        else:
+            self.companion.start()
         view, slot = self.presented_question(question)
         binding = view["bindings"][0]
         assert slot["slot"] == old_slot["slot"] and slot["revision"] == old_slot["revision"]
@@ -785,6 +788,49 @@ class CorvidFixture:
         assert "local_activation=ManualRequired" in applied
         self.focus_capture = (slot, binding)
         tty.expect(prompt)
+
+    def restart_with_control_unavailable(self, before, slot, binding):
+        saved = (self.directory / "companion/slots.json").read_text(encoding="utf-8")
+        for live_value in (
+            binding["client_id"], before["header"]["control_capture"].split("/", 1)[1],
+            slot["latest_attention_id"], "Corvid hook schema fixture", "Which fixture option do you choose?",
+        ):
+            assert live_value not in saved
+
+        control = self.directory / "run/control.sock"
+        blocked = control.with_name("control-offline.sock")
+        control.rename(blocked)
+        try:
+            offline = self.companion.start("Offline")
+            epoch = offline["header"]["companion_epoch"]
+            assert epoch != before["header"]["companion_epoch"]
+            assert not offline["bindings"] and "control_capture" not in offline["header"]
+            run = slot["run"].rsplit("/", 1)[-1]
+            cached = assigned_slots(offline)[run]
+            assert cached["availability"] == "Offline"
+            assert cached["last_badge"] == "NeedsInput" and cached["pending"] == "1"
+            assert int(cached["last_observed_unix_ms"]) > 0
+            for name in (
+                "slot", "revision", "run", "last_badge", "collection", "evidence",
+                "pending", "unverified", "unseen", "last_observed_unix_ms",
+            ):
+                assert cached[name] == slot[name], name
+            assert "latest_attention_id" not in cached
+
+            binding_capture = f"{epoch}/{binding['capture'].split('/', 1)[1]}"
+            focus = self.companion.run(
+                "focus-slot", "--slot", cached["capture"], "--binding", binding_capture, check=False,
+            )
+            assert focus.returncode != 0 and "ConnectionRequired" in focus.stderr, focus.stderr
+            control_capture = f"{epoch}/{before['header']['control_capture'].split('/', 1)[1]}"
+            ack = self.companion.run(
+                "ack", "--control", control_capture, "--run", cached["run"],
+                "--attention-id", slot["latest_attention_id"], check=False,
+            )
+            assert ack.returncode != 0 and "ConnectionRequired" in ack.stderr, ack.stderr
+        finally:
+            blocked.rename(control)
+        self.companion.wait(lambda view: view["header"]["connection"] == "Ready")
 
     def expect_replacement(self, terminal, previous, **expected):
         self.expect(terminal, run=previous["run"], end="ContextReplaced", process="Running")
@@ -1029,7 +1075,8 @@ def verify(events, scenario):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=(
-        "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart", "offline-pair",
+        "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart",
+        "offline-pair", "offline-restart",
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
@@ -1038,7 +1085,9 @@ def main():
     args = parser.parse_args()
     if args.fault is not None and args.corvid is None:
         parser.error("--fault requires --corvid")
-    if args.scenario in {"forged-output", "restart", "offline-pair"} and (args.corvid is None or args.fault is not None):
+    if args.scenario in {"forged-output", "restart", "offline-pair", "offline-restart"} and (
+        args.corvid is None or args.fault is not None
+    ):
         parser.error("this scenario requires --corvid and a healthy collector")
     if args.fault == "collector-saturated" and args.scenario not in {"answer", "plan"}:
         parser.error("collector saturation requires --scenario answer or plan")

@@ -47,9 +47,9 @@ class Companion:
             **kwargs,
         )
 
-    def start(self):
+    def start(self, connection="Ready"):
         self.process = subprocess.Popen([*self.command, "run"], env=self.env)
-        return self.wait(lambda view: view["header"]["connection"] == "Ready")
+        return self.wait(lambda view: view["header"]["connection"] == connection)
 
     def slots(self):
         reply = self.run("slots", check=False)
