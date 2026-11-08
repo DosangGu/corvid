@@ -441,4 +441,21 @@ mod tests {
         assert!(parse_stat(b"32 (name) R 1 2 3 4 5", 31).is_none());
         assert!(parse_stat(b"31 (name) R 1 2 3 4 5", 31).is_none());
     }
+
+    #[test]
+    fn rejects_different_start_time_for_the_same_pid_and_executable() {
+        let current = incarnation(std::process::id(), boot_id().unwrap()).unwrap();
+        let image = ProcessImage::capture(current, None).unwrap();
+        assert!(image.is_current());
+
+        let stale = ProcessImage {
+            incarnation: Incarnation {
+                start_ticks: current.start_ticks + 1,
+                ..current
+            },
+            ..image
+        };
+        assert!(!stale.is_current());
+        assert!(ProcessImage::capture(stale.incarnation, Some(image.executable)).is_none());
+    }
 }
