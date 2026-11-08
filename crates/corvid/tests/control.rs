@@ -161,7 +161,10 @@ async fn relays_a_complete_watch_setup_and_heartbeat_over_stdio() {
         let session = check_hello_result(&greeting, &reply, PeerRole::Control).unwrap();
 
         let mut assembler = SnapshotAssembler::new(session.clone(), "watch".to_owned(), true);
-        let request = session.envelope(Some("watch".into()), Body::SnapshotWatch(SnapshotWatch {}));
+        let request = session.envelope(
+            Some("watch".into()),
+            Body::SnapshotWatch(SnapshotWatch::default()),
+        );
         writer.envelope(&request).await.unwrap();
         let snapshot = loop {
             let frame = reader.next_envelope().await.unwrap().unwrap();

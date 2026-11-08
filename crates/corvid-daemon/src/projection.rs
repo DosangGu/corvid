@@ -1,15 +1,15 @@
 use corvid_core::agent::{
-    Activity, AgentRun, AttentionCause, Confidence, Evidence, Lifecycle, RequestKind,
-    RequestStatus, ResponseOutcome, Source,
+    Activity, AgentRun, Attention, AttentionCause, Confidence, EndReason, Evidence, Lifecycle,
+    ProcessLiveness, Provider, RequestKind, RequestStatus, ResponseOutcome, Source,
 };
 use corvid_core::layout::{Axis, Layout, Location, Node};
 use corvid_protocol::wire::layout_node_state::Body as NodeBody;
 use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{
-    AgentActivity, AgentInfo, AgentLifecycle, AgentResponse, AgentState, AttentionReason,
-    AttentionState, EvidenceConfidence, EvidenceSource, EvidenceState, InputRequestKind,
-    InputRequestStatus, LayoutNodeState, RequestState, SnapshotEntity, SplitAxis, SplitState,
-    TabState, ViewSelection, WorkspaceState,
+    AgentActivity, AgentEndReason, AgentInfo, AgentLifecycle, AgentProcessState, AgentProvider,
+    AgentResponse, AgentState, AttentionReason, AttentionState, EvidenceConfidence, EvidenceSource,
+    EvidenceState, InputRequestKind, InputRequestStatus, LayoutNodeState, RequestState,
+    SnapshotEntity, SplitAxis, SplitState, TabState, ViewSelection, WorkspaceState,
 };
 
 use crate::publication::{Group, Projection};
@@ -79,60 +79,104 @@ pub(crate) fn agent(run: &AgentRun, summary: AgentInfo) -> Vec<SnapshotEntity> {
     let mut entries = Vec::with_capacity(1 + run.requests.len() + run.attention.len());
     let run_id = &summary.agent_run_id;
     for request in run.requests.values() {
-        let kind = match request.kind {
-            RequestKind::Question => InputRequestKind::Question,
-            RequestKind::PlanApproval => InputRequestKind::PlanApproval,
-            RequestKind::Permission => InputRequestKind::Permission,
-        };
-        let status = match request.state.value {
-            RequestStatus::Pending => InputRequestStatus::Pending,
-            RequestStatus::Resolved => InputRequestStatus::Resolved,
-            RequestStatus::Cancelled => InputRequestStatus::Cancelled,
-            RequestStatus::Unverified => InputRequestStatus::Unverified,
-        };
         entries.push(entry(Body::Request(RequestState {
             agent_run_id: run_id.clone(),
             request_id: request.id.to_string(),
-            kind: kind as i32,
-            status: status as i32,
+            kind: request_kind(request.kind) as i32,
+            status: request_status(request.state.value) as i32,
             evidence: Some(evidence(&request.state.evidence)),
         })));
     }
-    for attention in run.attention.values() {
-        let reason = match attention.cause {
-            AttentionCause::Input => AttentionReason::Input,
-            AttentionCause::Response => AttentionReason::Response,
-            AttentionCause::Failure => AttentionReason::Failure,
-        };
-        entries.push(entry(Body::Attention(AttentionState {
-            agent_run_id: run_id.clone(),
-            attention_id: attention.id.to_string(),
-            reason: reason as i32,
-            created_unix_ms: attention.created_unix_ms,
-            acknowledged_unix_ms: attention.acknowledged_unix_ms,
-            request_id: attention
-                .request_id
-                .filter(|id| run.requests.contains_key(id))
-                .map(|id| id.to_string()),
-        })));
+    for record in run.attention.values() {
+        let mut state = attention(record, run_id);
+        if record
+            .request_id
+            .is_some_and(|id| !run.requests.contains_key(&id))
+        {
+            state.request_id = None;
+        }
+        entries.push(entry(Body::Attention(state)));
     }
     entries.push(entry(Body::Agent(Box::new(agent_state(run, summary)))));
     entries
 }
 
-fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
-    let lifecycle = match run.lifecycle.value {
+pub(crate) fn lifecycle(value: Lifecycle) -> AgentLifecycle {
+    match value {
         Lifecycle::Unknown => AgentLifecycle::Unknown,
         Lifecycle::Live => AgentLifecycle::Live,
         Lifecycle::Ended(_) => AgentLifecycle::Ended,
-    };
-    let activity = match run.activity.value {
+    }
+}
+
+pub(crate) fn activity(value: Activity) -> AgentActivity {
+    match value {
         Activity::Unknown => AgentActivity::Unknown,
         Activity::Working => AgentActivity::Working,
         Activity::AwaitingPrompt => AgentActivity::AwaitingPrompt,
         Activity::Interrupted => AgentActivity::Interrupted,
         Activity::Error => AgentActivity::Error,
+    }
+}
+
+pub(crate) fn provider(value: Provider) -> AgentProvider {
+    match value {
+        Provider::Claude => AgentProvider::Claude,
+        Provider::Codex => AgentProvider::Codex,
+    }
+}
+
+pub(crate) fn process(value: ProcessLiveness) -> (AgentProcessState, Option<u32>) {
+    match value {
+        ProcessLiveness::Running => (AgentProcessState::Running, None),
+        ProcessLiveness::Exited { code } => (AgentProcessState::Exited, code),
+        ProcessLiveness::Unknown => (AgentProcessState::Unknown, None),
+    }
+}
+
+pub(crate) fn end_reason(value: Lifecycle) -> AgentEndReason {
+    match value {
+        Lifecycle::Ended(EndReason::ProcessExited) => AgentEndReason::ProcessExited,
+        Lifecycle::Ended(EndReason::ContextEnded) => AgentEndReason::ContextEnded,
+        Lifecycle::Ended(EndReason::ContextReplaced) => AgentEndReason::ContextReplaced,
+        _ => AgentEndReason::Unspecified,
+    }
+}
+
+pub(crate) fn request_kind(value: RequestKind) -> InputRequestKind {
+    match value {
+        RequestKind::Question => InputRequestKind::Question,
+        RequestKind::PlanApproval => InputRequestKind::PlanApproval,
+        RequestKind::Permission => InputRequestKind::Permission,
+    }
+}
+
+pub(crate) fn request_status(value: RequestStatus) -> InputRequestStatus {
+    match value {
+        RequestStatus::Pending => InputRequestStatus::Pending,
+        RequestStatus::Resolved => InputRequestStatus::Resolved,
+        RequestStatus::Cancelled => InputRequestStatus::Cancelled,
+        RequestStatus::Unverified => InputRequestStatus::Unverified,
+    }
+}
+
+pub(crate) fn attention(record: &Attention, run: &str) -> AttentionState {
+    let reason = match record.cause {
+        AttentionCause::Input => AttentionReason::Input,
+        AttentionCause::Response => AttentionReason::Response,
+        AttentionCause::Failure => AttentionReason::Failure,
     };
+    AttentionState {
+        agent_run_id: run.to_owned(),
+        attention_id: record.id.to_string(),
+        reason: reason as i32,
+        created_unix_ms: record.created_unix_ms,
+        acknowledged_unix_ms: record.acknowledged_unix_ms,
+        request_id: record.request_id.map(|id| id.to_string()),
+    }
+}
+
+fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
     let response = match run
         .recent_response
         .as_ref()
@@ -146,8 +190,8 @@ fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
     AgentState {
         created_sequence: None,
         summary: Some(summary),
-        lifecycle: lifecycle as i32,
-        activity: activity as i32,
+        lifecycle: lifecycle(run.lifecycle.value) as i32,
+        activity: activity(run.activity.value) as i32,
         lifecycle_evidence: Some(evidence(&run.lifecycle.evidence)),
         process_evidence: Some(evidence(&run.process.evidence)),
         activity_evidence: Some(evidence(&run.activity.evidence)),
@@ -163,7 +207,7 @@ fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
     }
 }
 
-fn evidence(value: &Evidence) -> EvidenceState {
+pub(crate) fn evidence(value: &Evidence) -> EvidenceState {
     let source = match value.source {
         Source::Launch => EvidenceSource::Launch,
         Source::ProviderHook => EvidenceSource::ProviderHook,

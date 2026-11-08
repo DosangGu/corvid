@@ -7,12 +7,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
 use corvid_client::{ControllerRequest, ControllerScope};
-use corvid_protocol::snapshot::SynchronizedSnapshot;
+use corvid_protocol::snapshot::{HISTORY_CAPABILITY, SynchronizedSnapshot};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
-    AttentionReason, InputRequestKind, LayoutRecovery, PersistenceState, ProviderExecutionMode,
+    AgentActivity, AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentLifecycle,
+    AgentProcessState, AgentProvider, AttentionReason, InputRequestKind, InputRequestStatus,
+    LayoutRecovery, PersistenceState, ProviderExecutionMode,
 };
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
@@ -116,6 +117,8 @@ pub(super) enum ControlRequest {
     Status,
     Workspaces,
     Agents,
+    /// Show recorded runs and requests from earlier daemon epochs.
+    History,
     Attention,
     Clients,
     Snapshot,
@@ -301,6 +304,10 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 }
                 Ok(0)
             }
+            ControlRequest::History => {
+                print_history(&corvid_client::snapshot(&runtime).await?)?;
+                Ok(0)
+            }
             ControlRequest::Attention => {
                 let cache = corvid_client::snapshot(&runtime).await?;
                 print_attention(&cache);
@@ -474,6 +481,52 @@ fn print_snapshot(cache: &SynchronizedSnapshot) {
         cache.session().server_epoch,
         cache.snapshot().sequence(),
     );
+}
+
+fn print_history(cache: &SynchronizedSnapshot) -> Result<()> {
+    ensure!(
+        cache
+            .snapshot()
+            .capabilities()
+            .iter()
+            .any(|item| item == HISTORY_CAPABILITY),
+        "daemon does not expose historical runs"
+    );
+    for run in cache.snapshot().history() {
+        let provider = AgentProvider::try_from(run.provider)?;
+        let lifecycle = AgentLifecycle::try_from(run.last_lifecycle)?;
+        let process = AgentProcessState::try_from(run.last_process)?;
+        let activity = AgentActivity::try_from(run.last_activity)?;
+        let evidence = run
+            .last_evidence
+            .as_ref()
+            .context("historical evidence is missing")?;
+        println!(
+            "{} epoch={} run={} terminal={} provider={provider:?} state=Historical process=Unknown last_lifecycle={lifecycle:?} last_process={process:?} last_activity={activity:?} observed_unix_ms={}",
+            cache.session().host_id,
+            run.server_epoch,
+            run.agent_run_id,
+            run.terminal_id,
+            evidence.observed_unix_ms,
+        );
+        for request in &run.requests {
+            let kind = InputRequestKind::try_from(request.kind)?;
+            let status = InputRequestStatus::try_from(request.status)?;
+            println!(
+                "  request={} kind={kind:?} status={status:?}",
+                request.request_id
+            );
+        }
+        for attention in &run.attention {
+            let reason = AttentionReason::try_from(attention.reason)?;
+            print!("  attention={} reason={reason:?}", attention.attention_id);
+            if let Some(time) = attention.acknowledged_unix_ms {
+                print!(" acknowledged_unix_ms={time}");
+            }
+            println!();
+        }
+    }
+    Ok(())
 }
 
 fn print_agent(agent: AgentInfo) {

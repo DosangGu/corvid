@@ -246,6 +246,24 @@ async fn layout_recovery_preserves_evidence_and_future_schema() {
     let mut first = daemon(&runtime, &state).await;
     let original = control(&runtime, "workspaces").await;
     first.kill().await.unwrap();
+
+    let current: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&primary).unwrap()).unwrap();
+    let legacy = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "layout": current["layout"],
+    }))
+    .unwrap();
+    std::fs::write(&primary, &legacy).unwrap();
+    let mut migrated = daemon(&runtime, &state).await;
+    assert_eq!(control(&runtime, "workspaces").await, original);
+    let updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&primary).unwrap()).unwrap();
+    assert_eq!(updated["schema_version"], 2);
+    assert_eq!(updated["history"], serde_json::json!([]));
+    assert_eq!(std::fs::read(&backup).unwrap(), legacy);
+    migrated.kill().await.unwrap();
+
     std::fs::copy(&primary, &backup).unwrap();
     std::fs::write(&primary, b"{damaged").unwrap();
 
@@ -1066,7 +1084,7 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
     timeout(WAIT, async {
         let mut watch = ControlWire::connect(&runtime, WATCH_CAPABILITY).await;
         watch
-            .request("watch", Body::SnapshotWatch(SnapshotWatch {}))
+            .request("watch", Body::SnapshotWatch(SnapshotWatch::default()))
             .await;
         let begin = watch.next().await;
         assert!(matches!(begin.body, Some(Body::SnapshotBegin(_))));
@@ -1165,7 +1183,7 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
 
         let mut one_shot = ControlWire::connect(&runtime, SNAPSHOT_CAPABILITY).await;
         one_shot
-            .request("snapshot", Body::GetSnapshot(GetSnapshot {}))
+            .request("snapshot", Body::GetSnapshot(GetSnapshot::default()))
             .await;
         let start = one_shot.next().await;
         let Some(Body::SnapshotBegin(base)) = start.body else {
@@ -1892,7 +1910,7 @@ async fn stall_watchers(runtime: &Path) -> Vec<ControlWire> {
     for _ in 0..PRESSURE_WATCHES {
         let mut watch = ControlWire::connect(runtime, WATCH_CAPABILITY).await;
         watch
-            .request("watch", Body::SnapshotWatch(SnapshotWatch {}))
+            .request("watch", Body::SnapshotWatch(SnapshotWatch::default()))
             .await;
         loop {
             match watch.next().await.body {
@@ -1905,7 +1923,7 @@ async fn stall_watchers(runtime: &Path) -> Vec<ControlWire> {
     }
     let mut excess = ControlWire::connect(runtime, WATCH_CAPABILITY).await;
     excess
-        .request("watch", Body::SnapshotWatch(SnapshotWatch {}))
+        .request("watch", Body::SnapshotWatch(SnapshotWatch::default()))
         .await;
     assert!(
         matches!(excess.next().await.body, Some(Body::Error(fault)) if fault.code == "LimitExceeded")

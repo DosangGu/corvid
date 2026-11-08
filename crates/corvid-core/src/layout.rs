@@ -63,7 +63,7 @@ pub enum CwdSource {
     LaunchDirectory,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
     pub workspace: Uuid,
     pub tab: Uuid,

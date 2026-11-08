@@ -17,13 +17,14 @@ use corvid_protocol::wire::{
     WriterLeaseState,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::agents::{Agents, Hook, HookBinding};
 use crate::collector::HookEnvironment;
+use crate::metadata::MetadataUpdates;
 use crate::process::{self, HookProducer, ProbeBudget, ProcessImage};
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
@@ -78,15 +79,16 @@ struct ReservedSwitch {
 
 pub(crate) struct Workspaces {
     registry: Arc<Mutex<Registry>>,
-    layouts: watch::Sender<Arc<Layout>>,
+    metadata: MetadataUpdates,
     boot_id: Option<Uuid>,
     probes: Arc<ProbeBudget>,
     hook_environment: Arc<HookEnvironment>,
 }
 
-#[derive(Default)]
 pub(crate) struct Registry {
     pub(crate) agents: Agents,
+    metadata: MetadataUpdates,
+    epoch: Uuid,
     publication: Publication,
     terminals: HashMap<Uuid, Location>,
     clients: HashMap<Uuid, Client>,
@@ -123,17 +125,24 @@ struct Slot {
 }
 
 impl Workspaces {
-    pub(crate) fn new(
-        layouts: watch::Sender<Arc<Layout>>,
-        hook_environment: Arc<HookEnvironment>,
-    ) -> Self {
-        let publication = Publication::seed(projection::layout(&layouts.borrow()));
+    pub(crate) fn new(metadata: MetadataUpdates, hook_environment: Arc<HookEnvironment>) -> Self {
+        let publication = Publication::seed(projection::layout(&metadata.layout()));
+        let epoch = Uuid::parse_str(&hook_environment.identity.epoch).expect("valid daemon epoch");
         Self {
             registry: Arc::new(Mutex::new(Registry {
+                agents: Agents::default(),
+                metadata: metadata.clone(),
+                epoch,
                 publication,
-                ..Registry::default()
+                terminals: HashMap::new(),
+                clients: HashMap::new(),
+                controllers: Controllers::default(),
+                generation: 0,
+                claims: HashMap::new(),
+                slots: HashMap::new(),
+                retired: Vec::new(),
             })),
-            layouts,
+            metadata,
             boot_id: process::boot_id(),
             probes: Arc::new(ProbeBudget::default()),
             hook_environment,
@@ -256,15 +265,14 @@ impl Workspaces {
     ) -> Reply<(Location, u64, TerminalHandle)> {
         let mut registry = self.lock_registry();
         registry.sweep();
-        let mut layout = Arc::clone(&self.layouts.borrow());
+        let mut layout = self.metadata.layout();
         let location = resolve(&registry, &mut layout, target)?;
         registry.check_available(location.workspace)?;
         prepare_cwd(&layout, location, target.launch.as_mut())?;
         let generation = registry.next_generation()?;
         let terminal = self.reserve_slot(&mut registry, location, target.launch.is_some())?;
         if target.new_workspace.is_some() || target.new_tab.is_some() {
-            registry.publish(vec![projection::layout(&layout)]);
-            self.layouts.send_replace(layout);
+            registry.publish_layout(layout, Vec::new());
         }
         registry
             .claims
@@ -273,7 +281,7 @@ impl Workspaces {
     }
 
     fn record_cwd(&self, location: Location, cwd: &Path) {
-        let mut layout = Arc::clone(&self.layouts.borrow());
+        let mut layout = self.metadata.layout();
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
@@ -286,7 +294,7 @@ impl Workspaces {
             .record_cwd(location, observation)
             .is_ok()
         {
-            self.layouts.send_replace(layout);
+            self.metadata.update(Some(layout), std::iter::empty());
         }
     }
 
@@ -301,8 +309,8 @@ impl Workspaces {
     pub(crate) fn claim(&self, client: Uuid, workspace: Uuid, viewport: Viewport) -> Reply<u64> {
         let mut registry = self.lock_registry();
         if self
-            .layouts
-            .borrow()
+            .metadata
+            .layout()
             .locate(Some(workspace), None)
             .is_none()
         {
@@ -339,7 +347,7 @@ impl Workspaces {
         registry.require_writer(client, source_workspace)?;
         registry.require_writer(client, destination)?;
 
-        let mut layout = Arc::clone(&self.layouts.borrow());
+        let mut layout = self.metadata.layout();
         let source = layout
             .locate(Some(source_workspace), Some(tab))
             .ok_or_else(target_gone)?;
@@ -360,11 +368,7 @@ impl Workspaces {
             .workspace = destination;
         registry.terminals.insert(terminal, location);
         registry.agents.relocate_terminal(terminal, location);
-        registry.publish(vec![
-            projection::layout(&layout),
-            terminal_projection(terminal, location),
-        ]);
-        self.layouts.send_replace(layout);
+        registry.publish_layout(layout, vec![terminal_projection(terminal, location)]);
         Ok(TabMoved {
             location: Some(projection::selection(location)),
             commit_sequence: registry.publication.sequence()?,
@@ -419,7 +423,7 @@ impl Workspaces {
     ) -> Reply<Option<ReservedSwitch>> {
         let mut registry = self.lock_registry();
         registry.sweep();
-        let mut layout = Arc::clone(&self.layouts.borrow());
+        let mut layout = self.metadata.layout();
         let Some((location, launch)) = resolve_switch(&registry, &mut layout, old, destination)?
         else {
             return Ok(None);
@@ -430,8 +434,7 @@ impl Workspaces {
         let lease_generation = registry.require_writer(old.route.client_id, location.workspace)?;
         let reserved = self.reserve_view(&mut registry, old, location, lease_generation, launch)?;
         if reserved.spec.launch.is_some() {
-            registry.publish(vec![projection::layout(&layout)]);
-            self.layouts.send_replace(layout);
+            registry.publish_layout(layout, Vec::new());
         }
         Ok(Some(reserved))
     }
@@ -528,7 +531,18 @@ impl Workspaces {
 }
 
 impl Registry {
-    pub(crate) fn publish(&mut self, mut projections: Vec<Projection>) {
+    pub(crate) fn publish(&mut self, projections: Vec<Projection>) {
+        self.commit(projections, None);
+    }
+
+    fn publish_layout(&mut self, layout: Arc<Layout>, mut projections: Vec<Projection>) {
+        projections.push(projection::layout(&layout));
+        self.commit(projections, Some(layout));
+    }
+
+    fn commit(&mut self, mut projections: Vec<Projection>, layout: Option<Arc<Layout>>) {
+        self.metadata
+            .update(layout, self.agents.changed_history(self.epoch));
         projections.extend(self.agents.take_projections());
         self.publication.commit(projections);
     }

@@ -25,7 +25,7 @@ const CACHE_QUEUE: usize = 16;
 #[cfg(target_os = "linux")]
 pub async fn snapshot(runtime: &Path) -> Result<SynchronizedSnapshot> {
     let endpoint = ControlEndpoint::Local(runtime.to_owned());
-    let (_, snapshot) = connect(&endpoint, false, None, None, || {}).await?;
+    let (_, snapshot) = connect(&endpoint, false, true, None, None, || {}).await?;
     Ok(snapshot)
 }
 
@@ -33,6 +33,7 @@ pub async fn snapshot(runtime: &Path) -> Result<SynchronizedSnapshot> {
 pub async fn watch_snapshot(runtime: &Path) -> Result<SnapshotWatch> {
     watch(
         &ControlEndpoint::Local(runtime.to_owned()),
+        true,
         None,
         None,
         || {},
@@ -47,17 +48,26 @@ impl ControlEndpoint {
         expected_host: &str,
         syncing: impl FnOnce(),
     ) -> Result<SnapshotWatch> {
-        watch(self, Some(controller), Some(expected_host), syncing).await
+        watch(self, false, Some(controller), Some(expected_host), syncing).await
     }
 }
 
 async fn watch(
     endpoint: &ControlEndpoint,
+    include_history: bool,
     controller: Option<&str>,
     expected_host: Option<&str>,
     syncing: impl FnOnce(),
 ) -> Result<SnapshotWatch> {
-    let (connection, cache) = connect(endpoint, true, controller, expected_host, syncing).await?;
+    let (connection, cache) = connect(
+        endpoint,
+        true,
+        include_history,
+        controller,
+        expected_host,
+        syncing,
+    )
+    .await?;
     let subscription = cache
         .subscription_id()
         .context("watch subscription missing")?
@@ -137,6 +147,7 @@ impl Drop for SnapshotWatch {
 async fn connect(
     endpoint: &ControlEndpoint,
     watch: bool,
+    include_history: bool,
     controller: Option<&str>,
     expected_host: Option<&str>,
     syncing: impl FnOnce(),
@@ -153,24 +164,28 @@ async fn connect(
         return Err(ProtocolFault::new("HostMismatch", "daemon host has changed").into());
     }
     syncing();
-    let cache = timeout(SETUP_TIMEOUT, receive_initial(&mut connection, watch))
-        .await
-        .context("snapshot setup timed out")??;
+    let cache = timeout(
+        SETUP_TIMEOUT,
+        receive_initial(&mut connection, watch, include_history),
+    )
+    .await
+    .context("snapshot setup timed out")??;
     Ok((connection, cache))
 }
 
 async fn receive_initial(
     connection: &mut ControlConnection,
     watch: bool,
+    include_history: bool,
 ) -> Result<SynchronizedSnapshot> {
     let connection = &mut connection.wire;
     let request_id = Uuid::new_v4().to_string();
     let mut assembler =
         SnapshotAssembler::new(connection.session.clone(), request_id.clone(), watch);
     let body = if watch {
-        Body::SnapshotWatch(WatchRequest {})
+        Body::SnapshotWatch(WatchRequest { include_history })
     } else {
-        Body::GetSnapshot(GetSnapshot {})
+        Body::GetSnapshot(GetSnapshot { include_history })
     };
     let request = connection.session.envelope(Some(request_id), body);
     timeout(COMMAND_TIMEOUT, connection.writer.envelope(&request)).await??;

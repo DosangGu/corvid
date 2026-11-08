@@ -2,10 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use prost::Message;
 
-use super::{EntityKey, MAX_CHUNK_ENTITIES, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNKS, validate};
+use super::{
+    EntityKey, HISTORY_CAPABILITY, MAX_CHUNK_ENTITIES, MAX_HISTORICAL_RUNS, MAX_SNAPSHOT_BYTES,
+    MAX_SNAPSHOT_CHUNKS, validate,
+};
 use crate::session::valid_id;
 use crate::wire::envelope::Body;
-use crate::wire::{EntityKind, Envelope, SnapshotChunk, SnapshotDelta, SnapshotEntity};
+use crate::wire::{
+    EntityKind, Envelope, HistoricalRun, SnapshotChunk, SnapshotDelta, SnapshotEntity,
+};
 use crate::{CONTROL_LIMIT, ProtocolFault, Session};
 
 type Result<T> = std::result::Result<T, ProtocolFault>;
@@ -13,6 +18,7 @@ pub(super) type Entries = BTreeMap<EntityKey, SnapshotEntity>;
 
 pub struct Snapshot {
     pub(super) entries: Entries,
+    history: Vec<HistoricalRun>,
     sequence: u64,
     bytes: usize,
     capabilities: Vec<String>,
@@ -31,7 +37,19 @@ impl Snapshot {
         self.entries.values()
     }
 
-    fn insert_chunk(&mut self, chunk: SnapshotChunk) -> Result<()> {
+    pub fn history(&self) -> &[HistoricalRun] {
+        &self.history
+    }
+
+    fn insert_chunk(&mut self, chunk: SnapshotChunk, current_epoch: &str) -> Result<()> {
+        if !chunk.history.is_empty()
+            && !self
+                .capabilities
+                .iter()
+                .any(|cap| cap == HISTORY_CAPABILITY)
+        {
+            return Err(resync("snapshot history capability is missing"));
+        }
         for entity in chunk.entities {
             let key = validate::key(&entity)?;
             self.bytes += entity_size(&entity);
@@ -40,6 +58,20 @@ impl Snapshot {
                     "snapshot has duplicate entries or exceeds its size bound",
                 ));
             }
+        }
+        for record in chunk.history {
+            validate::historical_run(&record, current_epoch)?;
+            self.bytes += record.encoded_len() + 6;
+            if self.bytes > MAX_SNAPSHOT_BYTES
+                || self.history.len() >= MAX_HISTORICAL_RUNS
+                || self.history.iter().any(|old| {
+                    old.server_epoch == record.server_epoch
+                        && old.agent_run_id == record.agent_run_id
+                })
+            {
+                return Err(resync("invalid snapshot history size or duplicate run"));
+            }
+            self.history.push(record);
         }
         Ok(())
     }
@@ -233,6 +265,7 @@ impl SnapshotAssembler {
         }
         let snapshot = Snapshot {
             entries: BTreeMap::new(),
+            history: Vec::new(),
             sequence: required_sequence(&frame.sequence)?,
             bytes: 0,
             capabilities: begin.capabilities,
@@ -260,7 +293,7 @@ impl SnapshotAssembler {
         }
         match frame.body {
             Some(Body::SnapshotChunk(chunk)) => {
-                base.push(chunk)?;
+                base.push(chunk, &self.session.server_epoch)?;
                 self.phase = Phase::Base(base);
                 Ok(None)
             }
@@ -316,17 +349,18 @@ impl SnapshotAssembler {
 }
 
 impl Base {
-    fn push(&mut self, chunk: SnapshotChunk) -> Result<()> {
+    fn push(&mut self, chunk: SnapshotChunk, current_epoch: &str) -> Result<()> {
         let size = chunk.encoded_len();
+        let count = chunk.entities.len() + chunk.history.len();
         if chunk.index != self.next_chunk
             || self.next_chunk >= self.chunks
-            || !(1..=MAX_CHUNK_ENTITIES).contains(&chunk.entities.len())
+            || !(1..=MAX_CHUNK_ENTITIES).contains(&count)
             || size >= CONTROL_LIMIT
             || self.received_bytes + size > MAX_SNAPSHOT_BYTES
         {
             return Err(resync("invalid snapshot chunk"));
         }
-        self.snapshot.insert_chunk(chunk)?;
+        self.snapshot.insert_chunk(chunk, current_epoch)?;
         self.next_chunk += 1;
         self.received_bytes += size;
         Ok(())

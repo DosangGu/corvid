@@ -392,8 +392,13 @@ message WriterLeaseState {
   uint64 generation = 2;
 }
 
-message GetSnapshot {}
-message SnapshotWatch {}
+message GetSnapshot {
+  bool include_history = 1;
+}
+
+message SnapshotWatch {
+  bool include_history = 1;
+}
 
 // Snapshot frames carry the base revision in Envelope.sequence.
 message SnapshotBegin {
@@ -404,6 +409,33 @@ message SnapshotBegin {
 message SnapshotChunk {
   uint32 index = 1;
   repeated SnapshotEntity entities = 2;
+  // Prior epochs are separate from the live entity graph and never receive deltas.
+  repeated HistoricalRun history = 3;
+}
+
+message HistoricalRun {
+  string server_epoch = 1;
+  string agent_run_id = 2;
+  string terminal_id = 3;
+  ViewSelection last_location = 4;
+  AgentProvider provider = 5;
+  optional string provider_session_id = 6;
+  optional string parent_run_id = 7;
+  AgentLifecycle last_lifecycle = 8;
+  AgentProcessState last_process = 9;
+  AgentActivity last_activity = 10;
+  AgentEndReason last_end_reason = 11;
+  EvidenceState last_evidence = 12;
+  repeated HistoricalRequest requests = 13;
+  repeated AttentionState attention = 14;
+  optional uint32 last_exit_code = 15;
+}
+
+message HistoricalRequest {
+  string request_id = 1;
+  InputRequestKind kind = 2;
+  // An unresolved prior-epoch request is Unverified.
+  InputRequestStatus status = 3;
 }
 
 message SnapshotEnd {}

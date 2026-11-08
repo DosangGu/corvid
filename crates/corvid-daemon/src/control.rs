@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
-use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
+use corvid_protocol::snapshot::{HISTORY_CAPABILITY, SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     ConnectionStatus, Envelope, HostInfo, LayoutRecovery, PersistenceState, Pong, TabInfo,
@@ -33,6 +33,7 @@ const CAPABILITIES: &[&str] = &[
     "list_clients.v1",
     SNAPSHOT_CAPABILITY,
     WATCH_CAPABILITY,
+    HISTORY_CAPABILITY,
     PAIR_CAPABILITY,
     ACK_CAPABILITY,
     FOCUS_CAPABILITY,
@@ -73,9 +74,9 @@ struct Control<'a> {
 impl Control<'_> {
     async fn run(mut self, mut reader: FrameReader<OwnedReadHalf>) -> Result<()> {
         while let Some(request) = timeout(IDLE_TIMEOUT, reader.next_envelope()).await?? {
-            let watch = match self.session.validate_request(&request) {
-                Ok(Body::GetSnapshot(_)) => false,
-                Ok(Body::SnapshotWatch(_)) => true,
+            let (watch, include_history) = match self.session.validate_request(&request) {
+                Ok(Body::GetSnapshot(options)) => (false, options.include_history),
+                Ok(Body::SnapshotWatch(options)) => (true, options.include_history),
                 _ => {
                     self.respond(request).await?;
                     continue;
@@ -83,8 +84,10 @@ impl Control<'_> {
             };
             match self.workspaces.snapshot(watch) {
                 Ok(capture) => {
+                    let history = include_history.then(|| self.metadata.history.clone());
                     let live = snapshot::transfer(
                         capture,
+                        history,
                         request.request_id,
                         &self.session,
                         &mut self.writer,

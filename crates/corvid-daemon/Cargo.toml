@@ -13,7 +13,7 @@ corvid-protocol.workspace = true
 nix = { workspace = true, features = ["fs", "user"] }
 portable-pty.workspace = true
 prost.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }

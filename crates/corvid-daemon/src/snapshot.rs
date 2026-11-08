@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use corvid_protocol::snapshot::{MAX_CHUNK_ENTITIES, MAX_SNAPSHOT_BYTES};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Envelope, SnapshotBegin, SnapshotChunk, SnapshotEnd, SnapshotEntity, WatchReady,
+    Envelope, HistoricalRun, SnapshotBegin, SnapshotChunk, SnapshotEnd, SnapshotEntity, WatchReady,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, FrameWriter, ProtocolFault, Session};
 use prost::Message;
@@ -25,6 +25,7 @@ pub(crate) struct LiveWatch {
 
 pub(crate) async fn transfer(
     capture: Capture,
+    history: Option<Arc<Vec<HistoricalRun>>>,
     request_id: Option<String>,
     session: &Session,
     writer: &mut FrameWriter<OwnedWriteHalf>,
@@ -44,7 +45,7 @@ pub(crate) async fn transfer(
     };
     let outcome = timeout(
         SNAPSHOT_TIMEOUT,
-        stream.start(sequence, entities, watch, workspaces),
+        stream.start(sequence, entities, history, watch, workspaces),
     )
     .await?;
     if let Err(error) = &outcome
@@ -67,10 +68,15 @@ impl Stream<'_> {
         &mut self,
         sequence: u64,
         entities: Vec<Arc<SnapshotEntity>>,
+        history: Option<Arc<Vec<HistoricalRun>>>,
         watch: Option<Watch>,
         workspaces: &Workspaces,
     ) -> Result<Option<LiveWatch>> {
-        let chunks = tokio::task::spawn_blocking(move || chunks(entities)).await??;
+        let chunks = tokio::task::spawn_blocking(move || {
+            let history = history.as_deref().map(Vec::as_slice).unwrap_or_default();
+            chunks(&entities, history)
+        })
+        .await??;
         self.base_frame(
             sequence,
             Body::SnapshotBegin(SnapshotBegin {
@@ -176,19 +182,50 @@ pub(crate) fn event(session: &Session, id: &str, sequence: Option<u64>, body: Bo
     frame
 }
 
-fn chunks(entities: Vec<Arc<SnapshotEntity>>) -> Result<Vec<SnapshotChunk>, ProtocolFault> {
+enum SnapshotItem<'a> {
+    Entity(&'a SnapshotEntity),
+    Historical(&'a HistoricalRun),
+}
+
+impl SnapshotItem<'_> {
+    fn encoded_len(&self) -> usize {
+        match self {
+            Self::Entity(entity) => entity.encoded_len(),
+            Self::Historical(run) => run.encoded_len(),
+        }
+    }
+
+    fn append(self, chunk: &mut SnapshotChunk) {
+        match self {
+            Self::Entity(entity) => chunk.entities.push(entity.clone()),
+            Self::Historical(run) => chunk.history.push(run.clone()),
+        }
+    }
+}
+
+fn chunks(
+    entities: &[Arc<SnapshotEntity>],
+    history: &[HistoricalRun],
+) -> Result<Vec<SnapshotChunk>, ProtocolFault> {
     let too_large = || ProtocolFault::new("LimitExceeded", "snapshot exceeds its transfer bound");
     let mut chunks = Vec::new();
-    let mut current = Vec::new();
+    let mut current = SnapshotChunk::default();
     let mut chunk_size = 8;
     let mut total = 0;
-    for entity in entities {
-        let size = entity.encoded_len() + 6;
+    let items = entities
+        .iter()
+        .map(|entity| SnapshotItem::Entity(entity))
+        .chain(history.iter().map(SnapshotItem::Historical));
+    for item in items {
+        let size = item.encoded_len() + 6;
         if size + 8 > BODY_BUDGET {
             return Err(too_large());
         }
-        if chunk_size + size > BODY_BUDGET || current.len() == MAX_CHUNK_ENTITIES {
-            append_chunk(&mut chunks, std::mem::take(&mut current));
+        if chunk_size + size > BODY_BUDGET
+            || current.entities.len() + current.history.len() == MAX_CHUNK_ENTITIES
+        {
+            current.index = chunks.len() as u32;
+            chunks.push(std::mem::take(&mut current));
             total += chunk_size;
             chunk_size = 8;
         }
@@ -196,19 +233,13 @@ fn chunks(entities: Vec<Arc<SnapshotEntity>>) -> Result<Vec<SnapshotChunk>, Prot
         if total + chunk_size > MAX_SNAPSHOT_BYTES {
             return Err(too_large());
         }
-        current.push((*entity).clone());
+        item.append(&mut current);
     }
-    if !current.is_empty() {
-        append_chunk(&mut chunks, current);
+    if !current.entities.is_empty() || !current.history.is_empty() {
+        current.index = chunks.len() as u32;
+        chunks.push(current);
     }
     Ok(chunks)
-}
-
-fn append_chunk(chunks: &mut Vec<SnapshotChunk>, entities: Vec<SnapshotEntity>) {
-    chunks.push(SnapshotChunk {
-        index: chunks.len() as u32,
-        entities,
-    });
 }
 
 #[cfg(test)]

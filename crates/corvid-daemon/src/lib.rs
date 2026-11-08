@@ -1,6 +1,7 @@
 mod agents;
 mod collector;
 mod control;
+mod history;
 mod identity;
 mod incoming;
 mod metadata;
@@ -42,7 +43,7 @@ pub async fn run(
     let instance = runtime.lock_instance()?;
     let state = RuntimeDir::create_all(state_path)?;
     let identity = Arc::new(Identity::load(&state)?);
-    let (metadata, layouts, saver) = metadata::start(state)?;
+    let (metadata, updates, saver) = metadata::start(state)?;
     let control_socket = instance.bind(SocketRole::Control).await?;
     let client_socket = instance.bind(SocketRole::Client).await?;
     let collector_socket = instance.bind(SocketRole::Collector).await?;
@@ -50,7 +51,7 @@ pub async fn run(
         runtime: runtime.path().to_owned(),
         identity: Arc::clone(&identity),
     });
-    let workspaces = Arc::new(Workspaces::new(layouts, hook_environment));
+    let workspaces = Arc::new(Workspaces::new(updates, hook_environment));
     let mut controls = JoinSet::new();
     let mut clients = JoinSet::new();
     let mut collectors = JoinSet::new();
@@ -102,6 +103,6 @@ pub async fn run(
     drop(workspaces);
     tokio::time::timeout(COMMAND_TIMEOUT, saver)
         .await
-        .context("layout save shutdown timed out")??;
+        .context("metadata save shutdown timed out")??;
     Ok(())
 }

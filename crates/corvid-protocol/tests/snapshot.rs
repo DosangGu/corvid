@@ -1,13 +1,15 @@
 use corvid_protocol::snapshot::{
-    EntityKey, SnapshotAssembler, SynchronizedSnapshot, WATCH_CAPABILITY,
+    EntityKey, HISTORY_CAPABILITY, SnapshotAssembler, SynchronizedSnapshot, WATCH_CAPABILITY,
 };
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::layout_node_state::Body as NodeBody;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    ClientState, Envelope, LayoutNodeState, SnapshotBegin, SnapshotChunk, SnapshotDelta,
-    SnapshotEnd, SnapshotEntity, TabState, TerminalState, ViewSelection, Viewport, WatchReady,
-    WorkspaceState, WriterLeaseState,
+    AgentActivity, AgentLifecycle, AgentProcessState, AgentProvider, ClientState, Envelope,
+    EvidenceConfidence, EvidenceSource, EvidenceState, HistoricalRequest, HistoricalRun,
+    InputRequestKind, InputRequestStatus, LayoutNodeState, SnapshotBegin, SnapshotChunk,
+    SnapshotDelta, SnapshotEnd, SnapshotEntity, TabState, TerminalState, ViewSelection, Viewport,
+    WatchReady, WorkspaceState, WriterLeaseState,
 };
 use corvid_protocol::{PeerRole, Session, accept_hello, hello};
 
@@ -24,7 +26,7 @@ fn session() -> Session {
         PeerRole::Control,
         "host",
         "epoch",
-        &[WATCH_CAPABILITY],
+        &[WATCH_CAPABILITY, HISTORY_CAPABILITY],
     )
     .unwrap()
     .0
@@ -104,6 +106,7 @@ fn staged(session: &Session) -> SnapshotAssembler {
     let chunk = SnapshotChunk {
         index: 0,
         entities: vec![workspace()],
+        ..Default::default()
     };
     for body in [
         Body::SnapshotBegin(begin),
@@ -113,6 +116,98 @@ fn staged(session: &Session) -> SnapshotAssembler {
         assert!(assembler.push(base(session, body)).unwrap().is_none());
     }
     assembler
+}
+
+fn historical_run() -> HistoricalRun {
+    HistoricalRun {
+        server_epoch: "previous-epoch".into(),
+        agent_run_id: "old-run".into(),
+        terminal_id: "old-terminal".into(),
+        last_location: Some(location()),
+        provider: AgentProvider::Claude as i32,
+        last_lifecycle: AgentLifecycle::Live as i32,
+        last_process: AgentProcessState::Running as i32,
+        last_activity: AgentActivity::Working as i32,
+        last_evidence: Some(EvidenceState {
+            source: EvidenceSource::ProviderHook as i32,
+            source_version: "fixture".into(),
+            confidence: EvidenceConfidence::Confirmed as i32,
+            ..Default::default()
+        }),
+        requests: vec![HistoricalRequest {
+            request_id: "old-question".into(),
+            kind: InputRequestKind::Question as i32,
+            status: InputRequestStatus::Unverified as i32,
+        }],
+        ..Default::default()
+    }
+}
+
+fn begin_history(session: &Session) -> SnapshotAssembler {
+    let mut assembler = SnapshotAssembler::new(session.clone(), "snapshot-request".into(), true);
+    let begin = Body::SnapshotBegin(SnapshotBegin {
+        chunks: 2,
+        capabilities: session.capabilities.clone(),
+    });
+    assert!(assembler.push(base(session, begin)).unwrap().is_none());
+    let chunk = Body::SnapshotChunk(SnapshotChunk {
+        entities: vec![workspace()],
+        ..Default::default()
+    });
+    assert!(assembler.push(base(session, chunk)).unwrap().is_none());
+    assembler
+}
+
+#[test]
+fn prior_epoch_runs_stay_outside_the_live_entity_graph() {
+    let session = session();
+    let run = historical_run();
+    let mut assembler = begin_history(&session);
+    let chunk = Body::SnapshotChunk(SnapshotChunk {
+        index: 1,
+        history: vec![run.clone()],
+        ..Default::default()
+    });
+    assert!(assembler.push(base(&session, chunk)).unwrap().is_none());
+    assert!(
+        assembler
+            .push(base(&session, Body::SnapshotEnd(SnapshotEnd {})))
+            .unwrap()
+            .is_none()
+    );
+    let mut watch = assembler
+        .push(event(&session, BASE, Body::WatchReady(WatchReady {})))
+        .unwrap()
+        .unwrap();
+    assert_eq!(watch.snapshot().entities().count(), 1);
+    assert!(watch.apply(attach(&session, BASE + 1)).unwrap());
+    assert_eq!(watch.snapshot().history(), &[run]);
+}
+
+#[test]
+fn a_snapshot_rejects_current_epoch_runs_and_pending_requests_in_history() {
+    let session = session();
+    let mut wrong_epoch = historical_run();
+    wrong_epoch.server_epoch.clone_from(&session.server_epoch);
+    let mut pending = historical_run();
+    pending.requests[0].status = InputRequestStatus::Pending as i32;
+    let duplicate = historical_run();
+    for history in [
+        vec![wrong_epoch],
+        vec![pending],
+        vec![duplicate.clone(), duplicate],
+    ] {
+        let mut assembler = begin_history(&session);
+        let chunk = Body::SnapshotChunk(SnapshotChunk {
+            index: 1,
+            history,
+            ..Default::default()
+        });
+        assert_eq!(
+            assembler.push(base(&session, chunk)).err().unwrap().code,
+            "ResyncRequired"
+        );
+    }
 }
 
 fn ready(session: &Session) -> SynchronizedSnapshot {

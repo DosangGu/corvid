@@ -5,22 +5,26 @@ use std::time::Duration;
 use anyhow::{Result, bail, ensure};
 use corvid_core::layout::Layout;
 use corvid_protocol::unix::RuntimeDir;
+use corvid_protocol::wire::HistoricalRun;
 use nix::fcntl::Flock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::history::{History, RunRecord};
+
 const STATE: &str = "state.json";
 const BACKUP: &str = "state.json.bak";
 const QUARANTINE: &str = "state.json.corrupt";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const DEBOUNCE: Duration = Duration::from_secs(1);
 
 #[derive(Serialize)]
 struct Save<'a> {
     schema_version: u32,
-    layout: &'a Layout,
+    #[serde(flatten)]
+    stored: &'a Stored,
 }
 
 #[derive(Deserialize)]
@@ -29,12 +33,31 @@ struct Version {
 }
 
 #[derive(Deserialize)]
-struct Stored {
+struct LegacyLayout {
     layout: Layout,
 }
 
-struct Saved {
+#[derive(Clone, Deserialize, Serialize)]
+struct Stored {
     layout: Arc<Layout>,
+    history: Arc<History>,
+}
+
+impl Stored {
+    fn from_layout(layout: Layout) -> Self {
+        Self {
+            layout: Arc::new(layout),
+            history: Arc::new(History::default()),
+        }
+    }
+
+    fn same_revision(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.layout, &other.layout) && Arc::ptr_eq(&self.history, &other.history)
+    }
+}
+
+struct Saved {
+    stored: Stored,
     succeeded: bool,
 }
 
@@ -54,20 +77,21 @@ pub(crate) enum SaveState {
 
 #[derive(Clone)]
 pub(crate) struct MetadataView {
-    layouts: watch::Receiver<Arc<Layout>>,
+    updates: watch::Receiver<Stored>,
     saved: watch::Receiver<Saved>,
+    pub(crate) history: Arc<Vec<HistoricalRun>>,
     pub(crate) recovery: Recovery,
 }
 
 impl MetadataView {
     pub(crate) fn layout(&self) -> Arc<Layout> {
-        Arc::clone(&self.layouts.borrow())
+        Arc::clone(&self.updates.borrow().layout)
     }
 
     pub(crate) fn save_state(&self) -> SaveState {
-        let current = self.layouts.borrow();
+        let current = self.updates.borrow();
         let saved = self.saved.borrow();
-        if !Arc::ptr_eq(&saved.layout, &current) {
+        if !current.same_revision(&saved.stored) {
             SaveState::Pending
         } else if saved.succeeded {
             SaveState::Saved
@@ -77,43 +101,95 @@ impl MetadataView {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct MetadataUpdates(watch::Sender<Stored>);
+
+impl MetadataUpdates {
+    #[cfg(test)]
+    pub(crate) fn in_memory(layout: Layout) -> Self {
+        let (updates, _) = watch::channel(Stored::from_layout(layout));
+        Self(updates)
+    }
+
+    pub(crate) fn layout(&self) -> Arc<Layout> {
+        Arc::clone(&self.0.borrow().layout)
+    }
+
+    pub(crate) fn update(
+        &self,
+        layout: Option<Arc<Layout>>,
+        history: impl Iterator<Item = RunRecord>,
+    ) {
+        let mut history = history.peekable();
+        if layout.is_none() && history.peek().is_none() {
+            return;
+        }
+        self.0.send_if_modified(|stored| {
+            let mut changed = false;
+            if let Some(layout) = layout {
+                changed = true;
+                stored.layout = layout;
+            }
+            if history.peek().is_some() {
+                // Retain the published revision when an observation only changes transient state.
+                let mut next = Arc::clone(&stored.history);
+                let records = Arc::make_mut(&mut next);
+                let mut updated = false;
+                for record in history {
+                    updated |= records.record(record);
+                }
+                if updated {
+                    stored.history = next;
+                    changed = true;
+                }
+            }
+            changed
+        });
+    }
+}
+
 pub(crate) fn start(
     directory: RuntimeDir,
-) -> Result<(MetadataView, watch::Sender<Arc<Layout>>, JoinHandle<()>)> {
+) -> Result<(MetadataView, MetadataUpdates, JoinHandle<()>)> {
     let lock = directory.lock_storage()?;
-    let (layout, bytes, recovery) = load(&directory)?;
-    let layout = Arc::new(layout);
-    let store = Store {
+    let (stored, bytes, recovery) = load(&directory)?;
+    let history = Arc::new(stored.history.wire());
+    let mut store = Store {
         directory,
         _lock: lock,
         last_good: bytes,
     };
-    let (updates, layouts) = watch::channel(Arc::clone(&layout));
+    // Convert validated schema 1 files through the normal backup and replace path.
+    if serde_json::from_slice::<Version>(&store.last_good)?.schema_version == 1 {
+        store.save(&stored)?;
+    }
+    let (updates, snapshots) = watch::channel(stored.clone());
     let (results, saved) = watch::channel(Saved {
-        layout,
+        stored,
         succeeded: true,
     });
-    let task = tokio::spawn(write_loop(store, layouts.clone(), results));
+    let task = tokio::spawn(write_loop(store, snapshots.clone(), results));
     Ok((
         MetadataView {
-            layouts,
+            updates: snapshots,
             saved,
+            history,
             recovery,
         },
-        updates,
+        MetadataUpdates(updates),
         task,
     ))
 }
 
 async fn write_loop(
     mut store: Store,
-    mut layouts: watch::Receiver<Arc<Layout>>,
+    mut updates: watch::Receiver<Stored>,
     saved: watch::Sender<Saved>,
 ) {
-    while layouts.changed().await.is_ok() {
+    while updates.changed().await.is_ok() {
         tokio::time::sleep(DEBOUNCE).await;
-        let layout = Arc::clone(&layouts.borrow_and_update());
-        let snapshot = Arc::clone(&layout);
+        let stored = updates.borrow_and_update().clone();
+        let snapshot = stored.clone();
         let result = tokio::task::spawn_blocking(move || {
             let result = store.save(&snapshot);
             (store, result)
@@ -123,16 +199,16 @@ async fn write_loop(
             Ok((next_store, result)) => {
                 store = next_store;
                 if let Err(error) = &result {
-                    eprintln!("corvid daemon: layout save failed: {error:#}");
+                    eprintln!("corvid daemon: metadata save failed: {error:#}");
                 }
                 saved.send_replace(Saved {
-                    layout,
+                    stored,
                     succeeded: result.is_ok(),
                 });
             }
             Err(_) => {
                 saved.send_replace(Saved {
-                    layout,
+                    stored,
                     succeeded: false,
                 });
                 return;
@@ -148,8 +224,8 @@ struct Store {
 }
 
 impl Store {
-    fn save(&mut self, layout: &Layout) -> Result<()> {
-        let bytes = encode(layout)?;
+    fn save(&mut self, stored: &Stored) -> Result<()> {
+        let bytes = encode(stored)?;
         if bytes != self.last_good {
             match read(&self.directory, STATE)? {
                 Candidate::Valid(_, current) if current == self.last_good => {}
@@ -166,11 +242,11 @@ impl Store {
 
 enum Candidate {
     Missing,
-    Valid(Layout, Vec<u8>),
+    Valid(Stored, Vec<u8>),
     Damaged(Vec<u8>),
 }
 
-fn load(directory: &RuntimeDir) -> Result<(Layout, Vec<u8>, Recovery)> {
+fn load(directory: &RuntimeDir) -> Result<(Stored, Vec<u8>, Recovery)> {
     let damaged = match read(directory, STATE)? {
         Candidate::Valid(layout, bytes) => return Ok((layout, bytes, Recovery::Normal)),
         Candidate::Damaged(bytes) => Some(bytes),
@@ -188,8 +264,8 @@ fn load(directory: &RuntimeDir) -> Result<(Layout, Vec<u8>, Recovery)> {
         return Ok((layout, bytes, Recovery::Backup));
     }
 
-    let layout = Layout::empty_terminal();
-    let bytes = encode(&layout)?;
+    let stored = Stored::from_layout(Layout::empty_terminal());
+    let bytes = encode(&stored)?;
     directory.replace_private_file(STATE, &bytes)?;
     let recovery = if damaged.is_some() || matches!(backup, Candidate::Damaged(_)) {
         eprintln!("corvid daemon: using a fresh empty layout");
@@ -197,7 +273,7 @@ fn load(directory: &RuntimeDir) -> Result<(Layout, Vec<u8>, Recovery)> {
     } else {
         Recovery::Normal
     };
-    Ok((layout, bytes, recovery))
+    Ok((stored, bytes, recovery))
 }
 
 fn read(directory: &RuntimeDir, name: &str) -> Result<Candidate> {
@@ -207,30 +283,33 @@ fn read(directory: &RuntimeDir, name: &str) -> Result<Candidate> {
     let Ok(version) = serde_json::from_slice::<Version>(&bytes) else {
         return Ok(Candidate::Damaged(bytes));
     };
-    if version.schema_version != SCHEMA_VERSION {
-        bail!(
+    let stored = match version.schema_version {
+        1 => serde_json::from_slice::<LegacyLayout>(&bytes)
+            .map(|old| Stored::from_layout(old.layout)),
+        SCHEMA_VERSION => serde_json::from_slice::<Stored>(&bytes),
+        version => bail!(
             "{name} uses unsupported layout schema {}; use a compatible Corvid version",
-            version.schema_version
-        );
-    }
-    match serde_json::from_slice::<Stored>(&bytes) {
-        Ok(stored) if stored.layout.validate().is_ok() => {
-            Ok(Candidate::Valid(stored.layout, bytes))
+            version
+        ),
+    };
+    match stored {
+        Ok(stored) if stored.layout.validate().is_ok() && stored.history.validate() => {
+            Ok(Candidate::Valid(stored, bytes))
         }
         _ => Ok(Candidate::Damaged(bytes)),
     }
 }
 
-fn encode(layout: &Layout) -> Result<Vec<u8>> {
-    layout.validate()?;
+fn encode(stored: &Stored) -> Result<Vec<u8>> {
+    stored.layout.validate()?;
     let mut bytes = serde_json::to_vec(&Save {
         schema_version: SCHEMA_VERSION,
-        layout,
+        stored,
     })?;
     bytes.push(b'\n');
     ensure!(
         bytes.len() as u64 <= MAX_BYTES,
-        "layout exceeds the size limit"
+        "metadata exceeds the size limit"
     );
     Ok(bytes)
 }

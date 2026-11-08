@@ -337,6 +337,9 @@ def exercise(terminal, scenario, managed, fault):
             assert not view["ended"]
         managed.acknowledge_question(question)
         managed.reject_foreign_hook(question)
+        if scenario == "restart":
+            managed.verify_crash_history(terminal, question)
+            return terminal.events()
         if fault == "malformed-result":
             before_view, before_slot = managed.presented_question(question)
             managed.companion.close()
@@ -536,9 +539,14 @@ class CorvidFixture:
         environment["TERMINFO"] = str(directory / "terminfo")
         profile = Path(__file__).resolve().parents[3] / "spikes/terminal/corvid.terminfo"
         subprocess.run(["tic", "-x", "-o", environment["TERMINFO"], profile], check=True, timeout=3)
+        self.environment = environment
+        self.project = project
+        self.start_daemon()
+
+    def start_daemon(self):
         self.process = subprocess.Popen(
-            [*self.command, "daemon", "--state-dir", directory / "state"],
-            cwd=project, env=environment,
+            [*self.command, "daemon", "--state-dir", self.directory / "state"],
+            cwd=self.project, env=self.environment,
         )
         try:
             wait_for_daemon(self.command, self.process)
@@ -559,6 +567,55 @@ class CorvidFixture:
     def snapshot(self):
         output = subprocess.check_output([*self.command, "control", "snapshot"], text=True, timeout=3)
         return dict(field.split("=", 1) for field in output.split())
+
+    def verify_crash_history(self, terminal, question):
+        def saved():
+            status = subprocess.check_output([*self.command, "control", "status"], text=True, timeout=3)
+            return fields(status).get("persistence") == "saved"
+
+        terminal.wait(saved, "the pending question and acknowledgment to be saved")
+        before = self.snapshot()
+        archived_file = self.directory / "state/state.json"
+        content = archived_file.read_text()
+        assert "Which fixture option do you choose?" not in content
+        assert "Corvid hook schema fixture" not in content
+        saved_run, = json.loads(content)["history"]
+        assert saved_run["run"] == question["run"] and saved_run["session"] == question["session"]
+        pending, = [item for item in saved_run["requests"] if item["status"] == "pending"]
+        ack, = [item for item in saved_run["attention"] if item["acknowledged_unix_ms"] is not None]
+        assert ack["request_id"] == pending["id"]
+
+        self.process.kill()
+        self.process.wait(timeout=5)
+        assert terminal.process.wait(timeout=5) != 0
+        self.start_daemon()
+        after = self.snapshot()
+        assert after["host_id"] == before["host_id"] and after["server_epoch"] != before["server_epoch"]
+        assert after["sequence"] == after["agents"] == after["requests"] == after["terminals"] == after["clients"] == "0"
+        assert self.agents() == [] and self.attention() == []
+
+        output = subprocess.check_output([*self.command, "control", "history"], text=True, timeout=3)
+        run, *items = map(fields, output.splitlines())
+        assert run["epoch"] == before["server_epoch"] and run["run"] == question["run"]
+        assert run["state"] == "Historical" and run["process"] == "Unknown"
+        assert run["last_process"] == "Running" and run["terminal"] == question["terminal"]
+        request, = [item for item in items if item.get("request") == pending["id"]]
+        assert request["kind"] == "Question" and request["status"] == "Unverified"
+        alert, = [item for item in items if item.get("attention") == ack["id"]]
+        assert int(alert["acknowledged_unix_ms"]) == ack["acknowledged_unix_ms"]
+
+        old_slot, old_binding = self.focus_capture
+        focus = subprocess.run(
+            [*self.command, "controller", "--controller-id", self.companion.controller,
+             "--host-id", before["host_id"], "--server-epoch", before["server_epoch"],
+             "focus", "--client-id", old_binding["client_id"], "--binding-revision", old_binding["revision"],
+             "--run-id", question["run"]],
+            capture_output=True, text=True, timeout=3,
+        )
+        assert focus.returncode != 0 and "EpochMismatch" in focus.stderr
+        view = self.companion.wait(lambda view: view["header"].get("remote_epoch") == after["server_epoch"])
+        slot, = [slot for slot in view["slots"] if slot.get("run") == old_slot["run"]]
+        assert slot["availability"] == "Historical" and not view["bindings"]
 
     def presented_question(self, question):
         def has_question(view):
@@ -803,6 +860,9 @@ def verify(events, scenario):
     assert "tool_use_id" not in permission
     outcomes = [event for event in events if event.get("tool_name") == tool
                 and event["hook_event_name"] in {"PostToolUse", "PostToolUseFailure", "PermissionDenied"}]
+    if scenario == "restart":
+        assert not outcomes and not any(event["hook_event_name"] == "Stop" for event in events)
+        return
     response = next(event for event in events if event["hook_event_name"] == "Stop")
     assert response["session_id"] == session
     if scenario == "cancel":
@@ -852,7 +912,7 @@ def verify(events, scenario):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=(
-        "answer", "clear", "resume", "cancel", "plan", "child", "forged-output",
+        "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart",
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
@@ -861,8 +921,8 @@ def main():
     args = parser.parse_args()
     if args.fault is not None and args.corvid is None:
         parser.error("--fault requires --corvid")
-    if args.scenario == "forged-output" and (args.corvid is None or args.fault is not None):
-        parser.error("forged output requires --corvid and a healthy collector")
+    if args.scenario in {"forged-output", "restart"} and (args.corvid is None or args.fault is not None):
+        parser.error("this scenario requires --corvid and a healthy collector")
     if args.fault == "collector-saturated" and args.scenario not in {"answer", "plan"}:
         parser.error("collector saturation requires --scenario answer or plan")
     if args.fault in {"timeout", "malformed-result"} and args.scenario != "answer":

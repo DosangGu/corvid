@@ -7,8 +7,10 @@ use crate::session::valid_id;
 use crate::wire::layout_node_state::Body as NodeBody;
 use crate::wire::snapshot_entity::Body;
 use crate::wire::{
-    AgentState, ClientState, EntityKind, EvidenceState, LayoutNodeState, SnapshotEntity, SplitAxis,
-    ViewSelection, WorkspaceState,
+    AgentActivity, AgentEndReason, AgentLifecycle, AgentProcessState, AgentProvider, AgentState,
+    AttentionReason, ClientState, EntityKind, EvidenceConfidence, EvidenceSource, EvidenceState,
+    HistoricalRun, InputRequestKind, InputRequestStatus, LayoutNodeState, SnapshotEntity,
+    SplitAxis, ViewSelection, WorkspaceState,
 };
 
 type Result<T> = std::result::Result<T, ProtocolFault>;
@@ -44,6 +46,74 @@ pub(super) fn all(entries: &Entries) -> Result<()> {
                 "pane has more than one live terminal",
             )?;
         }
+    }
+    Ok(())
+}
+
+pub(super) fn historical_run(record: &HistoricalRun, current_epoch: &str) -> Result<()> {
+    require(
+        record.server_epoch != current_epoch
+            && valid_id(&record.server_epoch)
+            && valid_id(&record.agent_run_id)
+            && valid_id(&record.terminal_id)
+            && record.last_location.as_ref().is_some_and(valid_location)
+            && record.provider_session_id.as_deref().is_none_or(valid_id)
+            && record
+                .parent_run_id
+                .as_deref()
+                .is_none_or(|id| id != record.agent_run_id && valid_id(id)),
+        "invalid historical run scope",
+    )?;
+    let ended = record.last_lifecycle == AgentLifecycle::Ended as i32;
+    require(
+        matches!(
+            AgentProvider::try_from(record.provider),
+            Ok(AgentProvider::Claude | AgentProvider::Codex)
+        ) && matches!(AgentLifecycle::try_from(record.last_lifecycle), Ok(value) if value != AgentLifecycle::Unspecified)
+            && matches!(AgentProcessState::try_from(record.last_process), Ok(value) if value != AgentProcessState::Unspecified)
+            && (record.last_exit_code.is_none()
+                || record.last_process == AgentProcessState::Exited as i32)
+            && matches!(AgentActivity::try_from(record.last_activity), Ok(value) if value != AgentActivity::Unspecified)
+            && matches!(AgentEndReason::try_from(record.last_end_reason), Ok(value) if ended == (value != AgentEndReason::Unspecified))
+            && record.last_evidence.as_ref().is_some_and(|value| {
+                evidence(Some(value))
+                    && EvidenceSource::try_from(value.source).is_ok()
+                    && EvidenceConfidence::try_from(value.confidence).is_ok()
+            }),
+        "invalid historical observation",
+    )?;
+    require(
+        record.requests.len() <= 256 && record.attention.len() <= 256,
+        "too many historical observations",
+    )?;
+    let mut requests = BTreeSet::new();
+    for request in &record.requests {
+        require(
+            valid_id(&request.request_id)
+                && requests.insert(&request.request_id)
+                && matches!(InputRequestKind::try_from(request.kind), Ok(value) if value != InputRequestKind::Unspecified)
+                && matches!(
+                    InputRequestStatus::try_from(request.status),
+                    Ok(InputRequestStatus::Resolved
+                        | InputRequestStatus::Cancelled
+                        | InputRequestStatus::Unverified)
+                ),
+            "invalid historical request",
+        )?;
+    }
+    let mut attention = BTreeSet::new();
+    for item in &record.attention {
+        require(
+            item.agent_run_id == record.agent_run_id
+                && valid_id(&item.attention_id)
+                && attention.insert(&item.attention_id)
+                && matches!(AttentionReason::try_from(item.reason), Ok(value) if value != AttentionReason::Unspecified)
+                && item
+                    .request_id
+                    .as_ref()
+                    .is_none_or(|id| requests.contains(id)),
+            "invalid historical attention",
+        )?;
     }
     Ok(())
 }

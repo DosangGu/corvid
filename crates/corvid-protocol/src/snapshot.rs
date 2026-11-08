@@ -6,9 +6,11 @@ use crate::wire::{EntityKind, EntityRef, SnapshotEntity};
 
 pub const SNAPSHOT_CAPABILITY: &str = "snapshot.v1";
 pub const WATCH_CAPABILITY: &str = "snapshot_watch.v1";
+pub const HISTORY_CAPABILITY: &str = "snapshot_history.v1";
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CHUNK_ENTITIES: usize = 256;
 pub const MAX_SNAPSHOT_CHUNKS: u32 = 4096;
+pub const MAX_HISTORICAL_RUNS: usize = 128;
 
 pub use cache::{Snapshot, SnapshotAssembler, SynchronizedSnapshot};
 

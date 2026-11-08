@@ -309,25 +309,26 @@ mod tests {
     use corvid_core::agent::{ProcessLiveness, Provider, Source};
     use corvid_core::layout::Layout;
     use corvid_protocol::COMMAND_TIMEOUT;
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::mpsc;
     use tokio::time::timeout;
 
     use super::*;
     use crate::agents::ManagedLaunch;
     use crate::collector::HookEnvironment;
     use crate::identity::Identity;
+    use crate::metadata::MetadataUpdates;
     use crate::process::{self, ProcessImage};
     use crate::terminal::{Action, Event, Launch};
     use crate::workspaces::{AttachTarget, ControllerCommand};
 
     fn workspaces() -> Workspaces {
-        let (layouts, _) = watch::channel(Arc::new(Layout::empty_terminal()));
+        let metadata = MetadataUpdates::in_memory(Layout::empty_terminal());
         let identity = Identity {
             host_id: Uuid::new_v4().to_string(),
             epoch: Uuid::new_v4().to_string(),
         };
         Workspaces::new(
-            layouts,
+            metadata,
             Arc::new(HookEnvironment {
                 runtime: PathBuf::from("/tmp"),
                 identity: Arc::new(identity),

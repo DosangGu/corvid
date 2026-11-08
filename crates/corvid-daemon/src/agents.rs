@@ -12,11 +12,11 @@ use corvid_core::agent::{
 };
 use corvid_core::layout::Location;
 use corvid_protocol::wire::{
-    AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentList, AgentProcessState,
-    AgentProvider, ProcessIdentity,
+    AgentBadge, AgentCollection, AgentInfo, AgentList, AgentProcessState, ProcessIdentity,
 };
 use uuid::Uuid;
 
+use crate::history::RunRecord;
 use crate::process::{HookProducer, Incarnation, ProcessImage};
 use crate::projection;
 use crate::provider::qualified_version;
@@ -165,6 +165,13 @@ impl Agents {
         })
     }
 
+    pub(crate) fn changed_history(&self, epoch: Uuid) -> impl Iterator<Item = RunRecord> + '_ {
+        self.dirty.iter().filter_map(move |id| {
+            let record = self.runs.get(id).filter(|record| record.published)?;
+            Some(RunRecord::capture(epoch, &record.run, record.location))
+        })
+    }
+
     pub(crate) fn inventory(&self) -> AgentList {
         let agents = self
             .runs
@@ -245,15 +252,7 @@ impl Agents {
 impl ManagedRun {
     fn info(&self) -> AgentInfo {
         let run = &self.run;
-        let (process, exit_code) = match run.process.value {
-            ProcessLiveness::Running => (AgentProcessState::Running, None),
-            ProcessLiveness::Exited { code } => (AgentProcessState::Exited, code),
-            ProcessLiveness::Unknown => (AgentProcessState::Unknown, None),
-        };
-        let provider = match run.identity.provider {
-            Provider::Claude => AgentProvider::Claude,
-            Provider::Codex => AgentProvider::Codex,
-        };
+        let (process, exit_code) = projection::process(run.process.value);
         let (badge, pending_requests) = wire_badge(run.badge());
         let collection = match run.collection.value {
             Collection::NotRegistered => AgentCollection::NotRegistered,
@@ -262,17 +261,11 @@ impl ManagedRun {
             Collection::GapDetected => AgentCollection::GapDetected,
             Collection::Unsupported => AgentCollection::Unsupported,
         };
-        let end_reason = match run.lifecycle.value {
-            Lifecycle::Ended(EndReason::ProcessExited) => AgentEndReason::ProcessExited,
-            Lifecycle::Ended(EndReason::ContextEnded) => AgentEndReason::ContextEnded,
-            Lifecycle::Ended(EndReason::ContextReplaced) => AgentEndReason::ContextReplaced,
-            _ => AgentEndReason::Unspecified,
-        };
         AgentInfo {
             agent_run_id: run.identity.id.to_string(),
             terminal_id: run.identity.terminal_id.to_string(),
             location: Some(projection::selection(self.location)),
-            provider: provider as i32,
+            provider: projection::provider(run.identity.provider) as i32,
             process: process as i32,
             process_identity: self.process.map(|identity| ProcessIdentity {
                 pid: identity.pid,
@@ -293,7 +286,7 @@ impl ManagedRun {
                 .recent_response
                 .as_ref()
                 .map(|response| response.evidence.observed_unix_ms),
-            end_reason: end_reason as i32,
+            end_reason: projection::end_reason(run.lifecycle.value) as i32,
             qualified_provider_version: self.qualified_version.map(str::to_owned),
             cancelled_requests: self.request_count(RequestStatus::Cancelled),
             adapter: Some(crate::provider::adapter(
