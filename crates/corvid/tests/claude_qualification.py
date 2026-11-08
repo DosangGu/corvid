@@ -1,6 +1,7 @@
 """Capture allowlisted hook fields from Claude 2.1.318 with a loopback API fixture."""
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 import json
@@ -20,7 +21,7 @@ import threading
 import time
 
 from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE
-from companion_fixture import Companion, fields
+from companion_fixture import Companion, assigned_slots, attention, fields, request_for
 from interactive import stop, wait_for_daemon
 
 VERSION = "2.1.318 (Claude Code)"
@@ -31,6 +32,7 @@ HOOKS = (
 )
 IDS = ("session_id", "prompt_id", "tool_use_id", "agent_id", "result_agent_id")
 FAULT_TRACE = "collector-faults"
+OFFLINE_PROMPTS = (b"Corvid offline question one", b"Corvid offline question two")
 CAPTURE = """
 import json
 from pathlib import Path
@@ -85,7 +87,9 @@ class ModelFixture(BaseHTTPRequestHandler):
             tool = "ToolSearch"
             arguments = {"query": "select:ExitPlanMode"}
             self.server.plan_search_sent = True
-        if self.server.child_fixture:
+        if self.server.offline_pair:
+            tool = self.parallel_question(request, offered_tools)
+        elif self.server.child_fixture:
             tool, arguments = self.child_response(request, offered_tools)
         else:
             self.server.tool_sent |= tool == requested
@@ -113,6 +117,17 @@ class ModelFixture(BaseHTTPRequestHandler):
         body = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
         self.reply(body.encode(), "text/event-stream")
 
+    def parallel_question(self, request, offered_tools):
+        if "AskUserQuestion" not in offered_tools:
+            return None
+        for prompt in OFFLINE_PROMPTS:
+            if prompt not in self.server.questions_sent and any(
+                prompt.decode() in text for text in user_texts(request)
+            ):
+                self.server.questions_sent.add(prompt)
+                return "AskUserQuestion"
+        return None
+
     def child_response(self, request, offered_tools):
         if not self.server.agent_sent:
             assert "Agent" in offered_tools
@@ -124,16 +139,7 @@ class ModelFixture(BaseHTTPRequestHandler):
             }
 
         child_prompt = "Corvid fixture child reads the test note."
-        texts = []
-        for message in request.get("messages", []):
-            if message.get("role") != "user":
-                continue
-            content = message.get("content", [])
-            if isinstance(content, str):
-                texts.append(content)
-            else:
-                texts.extend(block.get("text", "") for block in content if block.get("type") == "text")
-        from_child = any(child_prompt in text for text in texts)
+        from_child = any(child_prompt in text for text in user_texts(request))
         if from_child:
             if not self.server.child_read_sent.is_set():
                 assert "Read" in offered_tools
@@ -158,6 +164,17 @@ class ModelFixture(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def user_texts(request):
+    for message in request.get("messages", []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content", [])
+        if isinstance(content, str):
+            yield content
+        else:
+            yield from (block.get("text", "") for block in content if block.get("type") == "text")
 
 
 def response_content(tool, arguments):
@@ -288,7 +305,7 @@ class FixtureTerminal:
         return matching()
 
 
-def exercise(terminal, scenario, managed, fault):
+def initialize_terminal(terminal):
     for screen, answer in (
         (b"Select with numbers [1-7]", b"2\r"),
         (b"Enter y/n:", b"y\r"),
@@ -305,8 +322,11 @@ def exercise(terminal, scenario, managed, fault):
         terminal.send(b"\r")
     terminal.expect(trust)
     terminal.send(b"y\r")
-    start = terminal.event(hook_event_name="SessionStart", source="startup")
-    session = start["session_id"]
+    return terminal.event(hook_event_name="SessionStart", source="startup")["session_id"]
+
+
+def exercise(terminal, scenario, managed, fault):
+    session = initialize_terminal(terminal)
     initial = managed.expect(terminal, collection="Healthy", process="Running") if managed else None
     current = initial
     terminal.send(b"Corvid hook schema fixture\r")
@@ -529,6 +549,72 @@ def exercise_cancel(terminal, managed, initial):
     return terminal.events()
 
 
+def run_offline_pair(first_args, second_args, managed, trace):
+    with open_terminal(first_args, managed.environment, managed.project, trace) as first:
+        first_session = initialize_terminal(first)
+        offset = len(first.events())
+        with open_terminal(second_args, managed.environment, managed.project, trace) as second:
+            second_session = second.event(after=offset, hook_event_name="SessionStart", source="startup")["session_id"]
+            first_run = managed.expect(first, session=first_session, process="Running", collection="Healthy")
+            second_run = managed.expect(second, session=second_session, process="Running", collection="Healthy")
+            for field in ("session", "run", "terminal", "pid"):
+                assert first_run[field] != second_run[field]
+            collect_offline_questions(managed, ((first, first_run), (second, second_run)))
+            for terminal in (first, second):
+                terminal.send(b"/exit\r")
+                assert terminal.process.wait(timeout=5) == 0
+            return first.events()
+
+
+def collect_offline_questions(managed, agents):
+    managed.companion = companion = Companion(managed.command, managed.directory)
+    companion.start()
+    runs = {agent["run"] for _, agent in agents}
+    before = companion.wait(lambda view: runs == set(assigned_slots(view)))
+    assert all(slot["pending"] == "0" for slot in assigned_slots(before).values())
+    companion.close()
+    assert companion.slots() is None
+
+    questions = []
+    for (terminal, agent), prompt in zip(agents, OFFLINE_PROMPTS, strict=True):
+        terminal.send(prompt + b"\r")
+        terminal.expect(b"Enter to submit or Escape to cancel:")
+        managed.expect(terminal, run=agent["run"], pending="1", unverified="1", collection="Healthy")
+        question = request_for(managed.command, agent["run"])
+        assert question["request_status"] == "Pending"
+        questions.append(question)
+    first_question, second_question = questions
+    assert first_question["request_id"] != second_question["request_id"]
+    assert companion.slots() is None
+
+    trace = agents[0][0].events()
+    after = companion.start()
+    assert after["header"]["remote_epoch"] == before["header"]["remote_epoch"]
+    assert after["header"]["control_capture"] != before["header"]["control_capture"]
+    for run, slot in assigned_slots(before).items():
+        restored = assigned_slots(after)[run]
+        assert (restored["slot"], restored["revision"]) == (slot["slot"], slot["revision"])
+        assert restored["pending"] == "1" and restored["last_badge"] == "NeedsInput"
+    assert agents[0][0].events() == trace
+    assert [request_for(managed.command, question["run_id"]) for question in questions] == questions
+
+    (first, first_agent), (second, second_agent) = agents
+    answer_offline_question(first, first_agent, first_question, managed)
+    assert request_for(managed.command, second_agent["run"]) == second_question
+    second.expect(b"Enter to submit or Escape to cancel:")
+    answer_offline_question(second, second_agent, second_question, managed)
+
+
+def answer_offline_question(terminal, agent, question, managed):
+    terminal.send(b"1\r")
+    terminal.event(hook_event_name="PostToolUse", session_id=agent["session"], tool_name="AskUserQuestion")
+    managed.expect(terminal, run=agent["run"], pending="0", resolved="1", response="true", unverified="1")
+    resolved = request_for(managed.command, agent["run"])
+    assert resolved["request_id"] == question["request_id"] and resolved["request_status"] == "Resolved"
+    permission = request_for(managed.command, agent["run"], "Permission")
+    assert permission["request_status"] == "Unverified"
+
+
 class CorvidFixture:
     def __init__(self, binary, claude, directory, project, environment):
         self.command = [binary, "--runtime-dir", directory / "run"]
@@ -730,8 +816,7 @@ class CorvidFixture:
         assert output.count("acknowledged=true") == 1
 
     def attention(self):
-        output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
-        return [fields(line) for line in output.splitlines()]
+        return attention(self.command)
 
     def expect(self, tty, **fields):
         def matching():
@@ -787,6 +872,9 @@ def capture(binary, directory, port, scenario, corvid, fault):
         if fault == "missing-collector":
             (directory / "run/collector.sock").unlink()
         args = [*managed.command, "attach", "--agent", "claude", "--", *arguments]
+        if scenario == "offline-pair":
+            other = [*managed.command, "attach", "--new-workspace", "Other", "--agent", "claude", "--", *arguments]
+            return run_offline_pair(args, other, managed, trace)
         active_collector = managed if fault in (None, "malformed-result") else None
         events = run_terminal(args, environment, project, trace, scenario, active_collector, fault)
         if fault is not None:
@@ -810,6 +898,12 @@ def capture(binary, directory, port, scenario, corvid, fault):
 
 
 def run_terminal(args, environment, project, trace, scenario, managed, fault):
+    with open_terminal(args, environment, project, trace) as terminal:
+        return exercise(terminal, scenario, managed, fault)
+
+
+@contextmanager
+def open_terminal(args, environment, project, trace):
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
@@ -817,7 +911,7 @@ def run_terminal(args, environment, project, trace, scenario, managed, fault):
             args, env=environment, cwd=project, stdin=slave, stdout=slave, stderr=slave,
         )
         try:
-            return exercise(FixtureTerminal(process, master, trace), scenario, managed, fault)
+            yield FixtureTerminal(process, master, trace)
         finally:
             stop(process)
     finally:
@@ -842,6 +936,12 @@ def sanitize(events):
 
 
 def verify(events, scenario):
+    if scenario == "offline-pair":
+        questions = [event for event in events if event["hook_event_name"] == "PreToolUse"
+                     and event.get("tool_name") == "AskUserQuestion"]
+        assert len(questions) == 2 and questions[0]["session_id"] != questions[1]["session_id"]
+        assert questions[0]["tool_use_id"] == questions[1]["tool_use_id"]
+        return
     first = events[0]
     assert first["hook_event_name"] == "SessionStart"
     assert first["source"] == "startup"
@@ -912,7 +1012,7 @@ def verify(events, scenario):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=(
-        "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart",
+        "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart", "offline-pair",
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
@@ -921,7 +1021,7 @@ def main():
     args = parser.parse_args()
     if args.fault is not None and args.corvid is None:
         parser.error("--fault requires --corvid")
-    if args.scenario in {"forged-output", "restart"} and (args.corvid is None or args.fault is not None):
+    if args.scenario in {"forged-output", "restart", "offline-pair"} and (args.corvid is None or args.fault is not None):
         parser.error("this scenario requires --corvid and a healthy collector")
     if args.fault == "collector-saturated" and args.scenario not in {"answer", "plan"}:
         parser.error("collector saturation requires --scenario answer or plan")
@@ -944,6 +1044,8 @@ def main():
             server.plan_search_sent = False
             server.plan_directory = Path(directory) / "home/.claude/plans"
             server.child_fixture = args.scenario == "child"
+            server.offline_pair = args.scenario == "offline-pair"
+            server.questions_sent = set()
             server.agent_sent = False
             server.child_read_sent = threading.Event()
             server.parent_question_sent = False

@@ -10,6 +10,22 @@ def fields(line):
     return dict(field.split("=", 1) for field in line.split() if "=" in field)
 
 
+def attention(command):
+    output = subprocess.check_output([*command, "control", "attention"], text=True, timeout=3)
+    return [fields(line) for line in output.splitlines()]
+
+
+def request_for(command, run, kind="Question"):
+    request, = [item for item in attention(command)
+                if item["run_id"] == run and item["request_kind"] == kind]
+    return request
+
+
+def assigned_slots(view):
+    return {slot["run"].rsplit("/", 1)[-1]: slot for slot in view["slots"]
+            if "/" in slot.get("run", "")}
+
+
 class Companion:
     def __init__(self, daemon, directory, alias=None, env=None):
         host = fields(subprocess.check_output([*daemon, "control", "host"], text=True, timeout=3))
@@ -47,8 +63,8 @@ class Companion:
             "ended": [fields(line)["run"] for line in lines if line.startswith("ended ")],
         }
 
-    def wait(self, predicate):
-        deadline = time.monotonic() + 8
+    def wait(self, predicate, timeout=8):
+        deadline = time.monotonic() + timeout
         latest = None
         while time.monotonic() < deadline:
             assert self.process.poll() is None, "companion exited"

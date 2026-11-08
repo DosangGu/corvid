@@ -365,7 +365,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
 }
 
 fn print_attention(cache: &SynchronizedSnapshot) {
-    let kinds: BTreeMap<_, _> = cache
+    let requests: BTreeMap<_, _> = cache
         .snapshot()
         .entities()
         .filter_map(|entry| {
@@ -374,7 +374,7 @@ fn print_attention(cache: &SynchronizedSnapshot) {
             };
             Some((
                 (request.agent_run_id.as_str(), request.request_id.as_str()),
-                request.kind,
+                request,
             ))
         })
         .collect();
@@ -384,18 +384,28 @@ fn print_attention(cache: &SynchronizedSnapshot) {
         };
         let reason =
             AttentionReason::try_from(alert.reason).unwrap_or(AttentionReason::Unspecified);
-        let kind = alert
+        let request = alert
             .request_id
             .as_deref()
-            .and_then(|request| kinds.get(&(alert.agent_run_id.as_str(), request)))
-            .and_then(|kind| InputRequestKind::try_from(*kind).ok())
+            .and_then(|id| requests.get(&(alert.agent_run_id.as_str(), id)));
+        let kind = request
+            .and_then(|request| InputRequestKind::try_from(request.kind).ok())
             .unwrap_or(InputRequestKind::Unspecified);
-        println!(
+        print!(
             "run_id={} attention_id={} reason={reason:?} request_kind={kind:?} acknowledged={}",
             alert.agent_run_id,
             alert.attention_id,
             alert.acknowledged_unix_ms.is_some(),
         );
+        if let Some(request) = request {
+            print!(" request_id={}", request.request_id);
+            if let Ok(status) = InputRequestStatus::try_from(request.status) {
+                print!(" request_status={status:?}");
+            } else {
+                print!(" request_status=Unknown");
+            }
+        }
+        println!();
     }
 }
 

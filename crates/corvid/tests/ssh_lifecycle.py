@@ -122,13 +122,16 @@ def progress_during_disconnect(progress):
     assert len(progress.read_text().splitlines()) > before
 
 
-def check_companion_ssh(ssh, command, directory):
+def setup_companion_ssh(ssh, command, directory):
     # The test key accepts exactly the production relay command and maps it to
     # this fixture's isolated executable and runtime directory.
     gate = directory / "relay"
+    blocked = directory / "relay-offline"
+    relay = [*map(os.fspath, command), "control", "--stdio"]
     gate.write_text(
         '#!/bin/sh\n[ "$SSH_ORIGINAL_COMMAND" = "corvid control --stdio" ] || exit 1\n'
-        f"exec {shlex.join([*command, 'control', '--stdio'])}\n"
+        f'[ ! -e {shlex.quote(str(blocked))} ] || exit 1\n'
+        f"exec {shlex.join(relay)}\n"
     )
     gate.chmod(0o700)
     public = key(directory / "companion-key").read_text().strip()
@@ -156,6 +159,11 @@ def check_companion_ssh(ssh, command, directory):
     executable.chmod(0o700)
     environment = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}")
     companion = Companion(command, directory, alias, environment)
+    return companion, attempts, blocked
+
+
+def check_companion_ssh(ssh, command, directory):
+    companion, attempts, _ = setup_companion_ssh(ssh, command, directory)
     try:
         first = companion.start()["header"]
         assert first["host_id"] == companion.host

@@ -71,6 +71,7 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario forged-output
+python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario offline-pair
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault missing-helper
@@ -100,6 +101,15 @@ The plan fixture observed a typed pending approval and its exact resolution.
 The dismissal fixture observed the same run move from one pending question to
 an unverified question after the next submission. The approval completed with
 the observer absent, and dismissal completed with the collector socket absent.
+
+For A5 and A7, the offline pair fixture stopped the companion before submitting
+prompts to two Claude Code 2.1.318 sessions in the same directory. Both TTYs
+showed pending questions with the same provider tool-use ID and distinct
+Corvid RequestIds. A fresh companion snapshot restored both slot placements
+and displayed both pending questions under the same daemon epoch. The hook
+trace was unchanged across resync. Answering the first question resolved only
+its RequestId. The second stayed pending, and the uncorrelated permission
+records stayed Unverified.
 
 The A17 timeout fixture observed Claude terminate the stalled Stop helper and
 complete the interactive turn. The typed question result had already arrived.
@@ -206,11 +216,15 @@ done
 ```
 
 The [allowlisted traces](../crates/corvid/tests/fixtures/codex/0.167.0/) use
-fixture identifiers. The parallel test held two questions with the same tool
-ID in separate same-directory runs. The companion synchronized both, focused
-the exact registered TUI, and acknowledged its alert while the dialog stayed
-visible. Answering that question left the second request open until it was
-interrupted. The failure tests exercised a real approval and completed its
+fixture identifiers. For A5 and A7, the parallel fixture uses loopback OpenSSH
+10.6p1 and temporary keys. It kills only the companion's SSH process and
+holds the relay offline while two same-directory Codex runs display questions
+with the same tool-use ID. Reconnection keeps the companion and daemon epochs
+and the two slot placements. It recovers both Unverified question records
+without adding hook events. The companion focuses the exact registered TUI
+and acknowledges its alert while the question stays visible. Answering that
+question resolves only its RequestId. Interrupting the other TUI cancels the
+other RequestId. The failure tests exercised a real approval and completed its
 response despite the missing or timed-out observer, missing socket, and 32
 occupied collector connections. The saturation test also checked that the next
 connection was refused. The conversation fixture completed

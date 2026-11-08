@@ -17,8 +17,9 @@ import threading
 import time
 
 from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE
-from companion_fixture import Companion, fields
+from companion_fixture import assigned_slots, fields, request_for
 from interactive import stop, wait_for_daemon
+from ssh_lifecycle import check_ssh, setup_companion_ssh, start_ssh
 
 VERSION = "codex-cli 0.167.0"
 ROOT = Path(__file__).resolve().parents[3]
@@ -421,7 +422,7 @@ def exercise_question(terminal, command, session, action):
                 cancelled="0" if action == "answer" else "1")
 
 
-def parallel_questions(first, second, command, directory):
+def submit_parallel_questions(first, second, command):
     first.send_line("/plan")
     first.screen(b"Plan mode")
     first.send_line("fixture answer")
@@ -442,23 +443,71 @@ def parallel_questions(first, second, command, directory):
     two = agent_state(second, command, session=another["session_id"], unverified="1", resolved="0")
     for key in ("run", "terminal", "pid", "session"):
         assert one[key] != two[key]
+    return one, two
 
-    companion = Companion(command, directory)
+
+def parallel_questions(first, second, command, directory):
+    ssh_directory = directory / "control-ssh"
+    ssh_directory.mkdir(mode=0o700)
+    server, ssh = start_ssh(ssh_directory)
     try:
-        focus_and_ack_question(first, second, command, companion, one, two)
+        check_ssh(server, ssh)
+        companion, attempts, blocked = setup_companion_ssh(ssh, command, ssh_directory)
+        try:
+            exercise_control_outage(first, second, command, companion, attempts, blocked)
+        finally:
+            companion.close()
     finally:
-        companion.close()
+        stop(server)
+
+
+def exercise_control_outage(first, second, command, companion, attempts, blocked):
+    companion.start()
+    before = companion.wait(lambda view: len(assigned_slots(view)) == 2)
+    control_pid, = map(int, attempts.read_text().splitlines())
+    blocked.touch()
+    os.kill(control_pid, signal.SIGKILL)
+    companion.wait(lambda view: view["header"]["connection"] == "Offline")
+
+    one, two = submit_parallel_questions(first, second, command)
+    first_request = request_for(command, one["run"])
+    second_request = request_for(command, two["run"])
+    assert first_request["request_status"] == second_request["request_status"] == "Unverified"
+    assert first_request["request_id"] != second_request["request_id"]
+    companion.wait(lambda view: view["header"]["connection"] == "Offline")
+    events = first.events()
+
+    blocked.unlink()
+    restored = companion.wait(lambda view: view["header"]["connection"] == "Ready", timeout=32)
+    old_header, new_header = before["header"], restored["header"]
+    assert new_header["remote_epoch"] == old_header["remote_epoch"]
+    assert new_header["companion_epoch"] == old_header["companion_epoch"]
+    assert new_header["control_capture"] != old_header["control_capture"]
+    for run, slot in assigned_slots(before).items():
+        current = assigned_slots(restored)[run]
+        assert (current["slot"], current["revision"]) == (slot["slot"], slot["revision"])
+        assert current["unverified"] == "1" and current["pending"] == "0"
+    assert first.events() == events
+    assert request_for(command, one["run"]) == first_request
+    assert request_for(command, two["run"]) == second_request
+
+    focus_and_ack_question(first, second, command, companion, one, two)
+    assert request_for(command, one["run"])["request_status"] == "Unverified"
 
     first.send_key("Enter")
     agent_state(first, command, run=one["run"], unverified="0", resolved="1")
+    resolved = request_for(command, one["run"])
+    assert resolved["request_id"] == first_request["request_id"] and resolved["request_status"] == "Resolved"
+    assert request_for(command, two["run"]) == second_request
     agent_state(second, command, run=two["run"], unverified="1", resolved="0")
     second.screen(b"Which synthetic answer option?")
     second.send_key("Escape")
     agent_state(second, command, run=two["run"], unverified="0", resolved="0", cancelled="1")
+    cancelled = request_for(command, two["run"])
+    assert cancelled["request_id"] == second_request["request_id"] and cancelled["request_status"] == "Cancelled"
 
 
 def focus_and_ack_question(first, second, command, companion, one, two):
-    companion.start()
     first.send_key("C-]")
     first.send_key("r")
     first.screen(b"Controller pairing code")
