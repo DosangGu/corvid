@@ -13,7 +13,7 @@ use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentActivity, AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentLifecycle,
     AgentProcessState, AgentProvider, AttentionReason, InputRequestKind, InputRequestStatus,
-    LayoutRecovery, PersistenceState, ProviderExecutionMode,
+    LayoutRecovery, PersistenceState, ProviderExecutionMode, TuiInputMode,
 };
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
@@ -324,6 +324,16 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                     }
                     if let Some(revision) = client.view_revision {
                         print!(" view_revision={revision}");
+                    }
+                    if let Some(mode) = client.input_mode {
+                        let mode = TuiInputMode::try_from(mode)?;
+                        print!(" mode={mode:?}");
+                    }
+                    if let Some(keymap) = client.keymap {
+                        print!(
+                            " keymap_tabs={} keymap_pairing={}",
+                            keymap.tabs, keymap.pairing
+                        );
                     }
                     for lease in client.writer_leases {
                         print!(" writer={}/{}", lease.workspace_id, lease.generation);

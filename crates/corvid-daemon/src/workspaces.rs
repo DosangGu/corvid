@@ -13,8 +13,8 @@ use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentList, ClientList, ClientState, TabMoved, TerminalState, Viewport as WireViewport,
-    WriterLeaseState,
+    AgentList, ClientKeymap, ClientList, ClientState, TabMoved, TerminalState, TuiInputMode,
+    Viewport as WireViewport, WriterLeaseState,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::mpsc;
@@ -28,7 +28,9 @@ use crate::metadata::MetadataUpdates;
 use crate::process::{self, HookProducer, ProbeBudget, ProcessImage};
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
-use crate::terminal::{AttachSpec, Event, Launch, LaunchScope, TabCommand, TerminalHandle};
+use crate::terminal::{
+    AttachSpec, Event, InputMode, Keymap, Launch, LaunchScope, TabCommand, TerminalHandle,
+};
 
 pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
@@ -44,8 +46,7 @@ pub(crate) struct AttachTarget {
     pub(crate) tab: Option<Uuid>,
     pub(crate) new_workspace: Option<String>,
     pub(crate) new_tab: Option<String>,
-    pub(crate) tab_keys: bool,
-    pub(crate) pair_keys: bool,
+    pub(crate) keymap: Keymap,
     pub(crate) viewport: Viewport,
     pub(crate) launch: Option<Launch>,
 }
@@ -56,8 +57,6 @@ pub(crate) struct Active {
     pub(crate) route: InputRoute,
     pub(crate) terminal: TerminalHandle,
     pub(crate) events: mpsc::Receiver<Event>,
-    tab_keys: bool,
-    pair_keys: bool,
 }
 
 pub(crate) enum Destination {
@@ -101,6 +100,7 @@ pub(crate) struct Registry {
 
 struct Client {
     generation: u64,
+    keymap: Keymap,
     view: Option<ClientView>,
     focuses: mpsc::Sender<FocusDispatch>,
 }
@@ -109,6 +109,7 @@ struct ClientView {
     route: InputRoute,
     location: Location,
     viewport: Viewport,
+    input_mode: InputMode,
 }
 
 #[derive(Clone, Copy)]
@@ -222,8 +223,7 @@ impl Workspaces {
             lease_generation: generation,
             revision: 1,
             dormant: false,
-            tab_keys: target.tab_keys,
-            pair_keys: target.pair_keys,
+            keymap: target.keymap,
             viewport: target.viewport,
             launch: target.launch,
             events,
@@ -244,6 +244,7 @@ impl Workspaces {
                     client,
                     Client {
                         generation,
+                        keymap: target.keymap,
                         view: None,
                         focuses,
                     },
@@ -422,6 +423,7 @@ impl Workspaces {
         destination: Destination,
     ) -> Reply<Option<ReservedSwitch>> {
         let mut registry = self.lock_registry();
+        registry.require_route(old.route)?;
         registry.sweep();
         let mut layout = self.metadata.layout();
         let Some((location, launch)) = resolve_switch(&registry, &mut layout, old, destination)?
@@ -448,6 +450,7 @@ impl Workspaces {
         launch: Option<Launch>,
     ) -> Reply<ReservedSwitch> {
         let revision = old.route.view_revision.checked_add(1).ok_or_else(limit)?;
+        let keymap = registry.clients[&old.route.client_id].keymap;
         let terminal = self.reserve_slot(registry, location, launch.is_some())?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
@@ -456,8 +459,7 @@ impl Workspaces {
             lease_generation,
             revision,
             dormant: true,
-            tab_keys: old.tab_keys,
-            pair_keys: old.pair_keys,
+            keymap,
             viewport: old.viewport,
             launch,
             events,
@@ -586,11 +588,25 @@ impl Registry {
                 route,
                 location: active.location,
                 viewport: active.viewport,
+                input_mode: InputMode::Passthrough,
             });
         if let Some(client) = self.clients.get_mut(&route.client_id)
             && client.generation == route.connection_generation
         {
             client.view = view;
+            self.publish_client(route.client_id);
+        }
+    }
+
+    pub(crate) fn record_input_mode(&mut self, route: InputRoute, mode: InputMode) {
+        if let Some(view) = self
+            .clients
+            .get_mut(&route.client_id)
+            .and_then(|client| client.view.as_mut())
+            && view.route == route
+            && view.input_mode != mode
+        {
+            view.input_mode = mode;
             self.publish_client(route.client_id);
         }
     }
@@ -633,6 +649,14 @@ impl Registry {
             }),
             writer_leases,
             bindings: self.controllers.bindings(id),
+            input_mode: view.map(|view| match view.input_mode {
+                InputMode::Passthrough => TuiInputMode::Passthrough as i32,
+                InputMode::Command => TuiInputMode::Command as i32,
+            }),
+            keymap: Some(ClientKeymap {
+                tabs: client.keymap.tabs,
+                pairing: client.keymap.pairing,
+            }),
         })
     }
 
@@ -723,8 +747,6 @@ async fn open_pane(
     receiver: mpsc::Receiver<Event>,
 ) -> Reply<Active> {
     let viewport = spec.viewport;
-    let tab_keys = spec.tab_keys;
-    let pair_keys = spec.pair_keys;
     let route = timeout(COMMAND_TIMEOUT, terminal.attach(spec))
         .await
         .map_err(|_| ProtocolFault::new("Timeout", "terminal attach timed out"))??;
@@ -734,8 +756,6 @@ async fn open_pane(
         route,
         terminal,
         events: receiver,
-        tab_keys,
-        pair_keys,
     })
 }
 

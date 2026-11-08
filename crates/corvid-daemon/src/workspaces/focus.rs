@@ -11,6 +11,7 @@ use uuid::Uuid;
 use super::controllers::{Sender, no_client};
 use super::{Active, Registry, Reply, ReservedSwitch, Workspaces, open_pane, target_gone};
 use crate::projection::selection;
+use crate::terminal::InputMode;
 
 pub(super) struct FocusTarget {
     pub(super) controller: String,
@@ -193,6 +194,7 @@ impl Workspaces {
         };
         let recovery = if let Ok(route) = restored {
             view.route = route;
+            view.input_mode = InputMode::Passthrough;
             FocusRecovery::Restored(route)
         } else {
             registry
@@ -305,10 +307,11 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use corvid_core::Viewport;
     use corvid_core::agent::{ProcessLiveness, Provider, Source};
     use corvid_core::layout::Layout;
+    use corvid_core::{KEY_LEADER, Viewport};
     use corvid_protocol::COMMAND_TIMEOUT;
+    use corvid_protocol::wire::TuiInputMode;
     use tokio::sync::mpsc;
     use tokio::time::timeout;
 
@@ -318,7 +321,7 @@ mod tests {
     use crate::identity::Identity;
     use crate::metadata::MetadataUpdates;
     use crate::process::{self, ProcessImage};
-    use crate::terminal::{Action, Event, Launch};
+    use crate::terminal::{Action, Event, Keymap, Launch};
     use crate::workspaces::{AttachTarget, ControllerCommand};
 
     fn workspaces() -> Workspaces {
@@ -349,8 +352,7 @@ mod tests {
                     tab: None,
                     new_workspace: None,
                     new_tab: tab.map(str::to_owned),
-                    tab_keys: false,
-                    pair_keys: false,
+                    keymap: Keymap::default(),
                     viewport: Viewport::new(80, 24).unwrap(),
                     launch: Some(Launch {
                         argv: ["/bin/sleep", "30"].map(OsString::from).to_vec(),
@@ -423,7 +425,23 @@ mod tests {
         )
         .await
         .unwrap();
+        old.terminal
+            .action(
+                client,
+                None,
+                Action::Input {
+                    route: old.route,
+                    sequence: 1,
+                    bytes: vec![KEY_LEADER],
+                },
+            )
+            .await
+            .unwrap();
         old.terminal.freeze(old.route).await.unwrap();
+        assert_eq!(
+            workspaces.clients().clients[0].input_mode,
+            Some(TuiInputMode::Command as i32)
+        );
         next.terminal
             .activate(next.route, next.viewport)
             .await
@@ -453,6 +471,10 @@ mod tests {
         let client_state = workspaces.clients().clients.pop().unwrap();
         assert_eq!(client_state.view_revision, Some(restored.view_revision));
         assert_eq!(
+            client_state.input_mode,
+            Some(TuiInputMode::Passthrough as i32)
+        );
+        assert_eq!(
             client_state.terminal_id.as_deref(),
             Some(restored.terminal_id.to_string().as_str())
         );
@@ -463,7 +485,7 @@ mod tests {
                 None,
                 Action::Input {
                     route: old.route,
-                    sequence: 1,
+                    sequence: 2,
                     bytes: b"stale".to_vec(),
                 },
             )

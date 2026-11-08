@@ -8,18 +8,18 @@ use std::time::Duration;
 
 use corvid_client::{ControllerRequest, ControllerScope, controller};
 use corvid_companion::{HostEndpoint, PresentationClient, initialize};
-use corvid_protocol::controller::FOCUS_CAPABILITY;
+use corvid_protocol::controller::{FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
-    ClaimWorkspaceWriter, CompanionConnection, EntityKind, Envelope, FocusAgentRequest,
-    FocusApplied, FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk,
-    IssuePairingCode, LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin, PasteChunk,
-    PasteEnd, Ping, PresentationSlots, PresentedSlotToken, ResizeViewport, RouteToken, SelectView,
-    SnapshotWatch, ViewSelection, Viewport,
+    ClaimWorkspaceWriter, ClientKeymap, ClientState, CompanionConnection, EntityKind, Envelope,
+    FocusAgentRequest, FocusApplied, FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot,
+    InputChunk, IssuePairingCode, LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin,
+    PasteChunk, PasteEnd, Ping, PresentationSlots, PresentedSlotToken, ResizeViewport, RouteToken,
+    SelectView, SnapshotWatch, TuiInputMode, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
@@ -63,7 +63,7 @@ impl Tui {
         .await
     }
 
-    async fn attach_target(runtime: &Path, attach: Attach) -> Self {
+    async fn attach_target(runtime: &Path, mut attach: Attach) -> Self {
         let directory = RuntimeDir::open(runtime).unwrap();
         let (read, write) = directory
             .connect(SocketRole::Client)
@@ -80,9 +80,9 @@ impl Tui {
         writer.envelope(&greeting).await.unwrap();
         let reply = reader.next_envelope().await.unwrap().unwrap();
         let session = check_hello_result(&greeting, &reply, PeerRole::Tui).unwrap();
+        attach.terminal_capabilities.push("legacy_vt.v1".into());
         let attach = Attach {
             viewport: Some(Viewport { cols: 80, rows: 24 }),
-            terminal_capabilities: vec!["legacy_vt.v1".into()],
             requested_role: AttachRole::Writer as i32,
             ..attach
         };
@@ -137,6 +137,22 @@ impl Tui {
             data: bytes.to_vec(),
         }))
         .await;
+    }
+
+    async fn enter_command_mode(&mut self, sequence: u64, output: &mut Vec<u8>) {
+        self.input(self.route.clone(), sequence, b"\x1d").await;
+        self.send(Body::Ping(Ping {})).await;
+        assert!(matches!(self.next_body(output).await, Body::Pong(_)));
+    }
+
+    async fn client_state(&self, runtime: &Path) -> ClientState {
+        corvid_client::clients(runtime)
+            .await
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client_id == self.route.client_id)
+            .expect("attached client in inventory")
     }
 
     async fn next_body(&mut self, output: &mut Vec<u8>) -> Body {
@@ -704,6 +720,41 @@ async fn focus(
 }
 
 #[tokio::test]
+async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let argv = shell("stty raw -echo; printf 'READY'; head -c 4 | od -An -tx1; sleep 4");
+        let mut tui = Tui::attach(&runtime, Some(argv)).await;
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "READY").await;
+        tui.enter_command_mode(1, &mut output).await;
+        assert!(control(&runtime, "clients").await.contains("mode=Command"));
+
+        while tui.client_state(&runtime).await.input_mode == Some(TuiInputMode::Command as i32) {
+            sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            control(&runtime, "clients")
+                .await
+                .contains("mode=Passthrough")
+        );
+        tui.input(tui.route.clone(), 2, b"x").await;
+
+        tui.enter_command_mode(3, &mut output).await;
+        tui.input(tui.route.clone(), 4, b"r").await;
+        wait_for_text(&mut tui, &mut output, "1d 78 1d 72").await;
+        assert_eq!(
+            tui.client_state(&runtime).await.input_mode,
+            Some(TuiInputMode::Passthrough as i32)
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn registered_focus_fences_input_and_changes_only_the_named_client() {
     let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -741,10 +792,16 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         }
 
         let mut main = Tui::attach_target(&runtime, Attach {
-            create_tab: Some("Agent B".to_owned()), launch: Some(launch("B")), ..Default::default()
+            create_tab: Some("Agent B".to_owned()),
+            launch: Some(launch("B")),
+            terminal_capabilities: vec!["tabs.v1".into()],
+            ..Default::default()
         }).await;
         let mut other = Tui::attach_target(&runtime, Attach {
-            create_workspace: Some("Agent C".to_owned()), launch: Some(launch("C")), ..Default::default()
+            create_workspace: Some("Agent C".to_owned()),
+            launch: Some(launch("C")),
+            terminal_capabilities: vec![PAIR_CAPABILITY.into()],
+            ..Default::default()
         }).await;
         let mut output = Vec::new();
         wait_for_text(&mut main, &mut output, "B-READY").await;
@@ -778,20 +835,38 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         main.send(Body::PasteEnd(PasteEnd { paste_id })).await;
         wait_for_text(&mut main, &mut output, "B=kept-on-b").await;
 
+        main.enter_command_mode(2, &mut output).await;
+        let main_before = main.client_state(&runtime).await;
+        assert_eq!(main_before.input_mode, Some(TuiInputMode::Command as i32));
+        assert_eq!(main_before.keymap, Some(ClientKeymap { tabs: true, pairing: false }));
+
+        let mut other_output = Vec::new();
+        other.enter_command_mode(1, &mut other_output).await;
+        let other_before = other.client_state(&runtime).await;
+        assert_eq!(other_before.input_mode, Some(TuiInputMode::Command as i32));
+        assert_eq!(other_before.keymap, Some(ClientKeymap { tabs: false, pairing: true }));
+
         let applied = focus(&runtime, &scope, "focus-a", client, revision, &a).await.unwrap();
         assert_eq!(applied.agent_run_id, a.agent_run_id);
         assert_eq!(applied.terminal_id, a.terminal_id);
         assert_eq!(applied.view_revision, original.view_revision + 1);
-        main.input(original, 2, b"retired-route\n").await;
+        assert_eq!(other.client_state(&runtime).await, other_before);
+        other.input(other.route.clone(), 2, b"r").await;
+        assert!(matches!(other.next_body(&mut other_output).await, Body::PairingCode(_)));
+        main.input(original, 3, b"retired-route\n").await;
         main.moved(&mut output, a.location.as_ref().unwrap()).await;
+        let main_after = main.client_state(&runtime).await;
+        assert_eq!(main_after.input_mode, Some(TuiInputMode::Passthrough as i32));
+        assert_eq!(main_after.keymap, main_before.keymap);
         let Body::Error(fault) = main.next_body(&mut output).await else { panic!("missing stale route rejection") };
         assert_eq!(fault.code, "StaleRoute");
-        main.input(main.route.clone(), 3, b"fresh\n").await;
+        main.input(main.route.clone(), 4, b"fresh\n").await;
         wait_for_text(&mut main, &mut output, "A=fresh").await;
         assert!(!String::from_utf8_lossy(&output).contains("retired-route"));
 
-        other.input(other.route.clone(), 1, b"unchanged\n").await;
-        wait_for_text(&mut other, &mut Vec::new(), "C=unchanged").await;
+        other.input(other.route.clone(), 3, b"unchanged\n").await;
+        wait_for_text(&mut other, &mut other_output, "C=unchanged").await;
+        assert_eq!(other.client_state(&runtime).await.input_mode, Some(TuiInputMode::Passthrough as i32));
         focus(&runtime, &scope, "focus-b", client, revision, &b).await.unwrap();
         main.moved(&mut output, b.location.as_ref().unwrap()).await;
 

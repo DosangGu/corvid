@@ -169,6 +169,19 @@ message ClientState {
   Viewport viewport = 6;
   repeated WriterLeaseState writer_leases = 7;
   repeated ClientBindingState bindings = 8;
+  optional TuiInputMode input_mode = 9;
+  ClientKeymap keymap = 10;
+}
+
+enum TuiInputMode {
+  TUI_INPUT_MODE_UNSPECIFIED = 0;
+  TUI_INPUT_MODE_PASSTHROUGH = 1;
+  TUI_INPUT_MODE_COMMAND = 2;
+}
+
+message ClientKeymap {
+  bool tabs = 1;
+  bool pairing = 2;
 }
 
 message ClientBindingState {

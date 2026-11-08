@@ -23,6 +23,7 @@ use crate::provider::QualifiedProvider;
 use crate::workspaces::Registry;
 
 use super::input::{InputQueue, Kind, WriteFailure};
+use super::keys::{InputMode, KeyCommand, Keymap, TabCommand};
 use super::paste::Paste;
 use super::{TerminalPty, TerminalScreen};
 
@@ -55,8 +56,7 @@ pub(crate) struct AttachSpec {
     pub(crate) lease_generation: u64,
     pub(crate) revision: u64,
     pub(crate) dormant: bool,
-    pub(crate) tab_keys: bool,
-    pub(crate) pair_keys: bool,
+    pub(crate) keymap: Keymap,
     pub(crate) viewport: Viewport,
     pub(crate) launch: Option<Launch>,
     pub(crate) events: mpsc::Sender<Event>,
@@ -113,20 +113,6 @@ pub(crate) enum Event {
         request_id: Option<String>,
     },
     Detached,
-    Tab(TabCommand),
-    PairController,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum TabCommand {
-    Next,
-    Previous,
-    Create,
-}
-
-enum KeyEffect {
-    Forwarded,
-    Detach,
     Tab(TabCommand),
     PairController,
 }
@@ -304,7 +290,9 @@ impl Worker {
                     Err(mpsc::error::TryRecvError::Disconnected) => return,
                 }
             }
+            let mode = self.input_mode();
             self.advance();
+            self.publish_mode_change(mode);
             if self.terminal.is_some() {
                 std::thread::sleep(TICK);
             }
@@ -313,6 +301,7 @@ impl Worker {
 
     fn handle(&mut self, command: Command) {
         self.revoke_if_disconnected();
+        let mode = self.input_mode();
         match command {
             Command::Attach(spec, reply) if !reply.is_closed() => {
                 let _ = reply.send(self.attach(spec));
@@ -362,6 +351,28 @@ impl Worker {
                 }
             }
         }
+        self.publish_mode_change(mode);
+    }
+
+    fn input_mode(&self) -> Option<InputMode> {
+        self.lease.as_ref().map(Lease::input_mode)
+    }
+
+    fn publish_mode_change(&self, previous: Option<InputMode>) {
+        let Some(lease) = self
+            .lease
+            .as_ref()
+            .filter(|lease| lease.armed && !lease.frozen)
+        else {
+            return;
+        };
+        let mode = lease.input_mode();
+        if previous.is_some_and(|previous| previous != mode)
+            && let Some(registry) = self.scope.registry.upgrade()
+            && let Ok(mut registry) = registry.lock()
+        {
+            registry.record_input_mode(lease.route, mode);
+        }
     }
 
     fn attach(&mut self, spec: AttachSpec) -> Reply<InputRoute> {
@@ -410,13 +421,7 @@ impl Worker {
             view_revision: spec.revision,
             writer_lease_generation: spec.lease_generation,
         };
-        self.lease = Some(Lease::new(
-            route,
-            spec.events,
-            !spec.dormant,
-            spec.tab_keys,
-            spec.pair_keys,
-        ));
+        self.lease = Some(Lease::new(route, spec.events, !spec.dormant, spec.keymap));
         self.viewing.store(true, Ordering::Release);
         Ok(route)
     }
@@ -524,18 +529,18 @@ impl Worker {
             } => {
                 lease.check_input(route, sequence, terminal)?;
                 match lease.keys(sequence, bytes, &mut terminal.input)? {
-                    KeyEffect::Forwarded => {}
-                    KeyEffect::Detach => {
+                    None => {}
+                    Some(KeyCommand::Detach) => {
                         let _ = lease.events.try_send(Event::Detached);
                         self.revoke();
                     }
-                    KeyEffect::Tab(command) => {
+                    Some(KeyCommand::Tab(command)) => {
                         lease.switch_pending = true;
                         if lease.events.try_send(Event::Tab(command)).is_err() {
                             self.revoke();
                         }
                     }
-                    KeyEffect::PairController => {
+                    Some(KeyCommand::PairController) => {
                         if lease.events.try_send(Event::PairController).is_err() {
                             self.revoke();
                         }
@@ -1020,18 +1025,11 @@ struct Lease {
     armed: bool,
     frozen: bool,
     switch_pending: bool,
-    tab_keys: bool,
-    pair_keys: bool,
+    keymap: Keymap,
 }
 
 impl Lease {
-    fn new(
-        route: InputRoute,
-        events: mpsc::Sender<Event>,
-        armed: bool,
-        tab_keys: bool,
-        pair_keys: bool,
-    ) -> Self {
+    fn new(route: InputRoute, events: mpsc::Sender<Event>, armed: bool, keymap: Keymap) -> Self {
         Self {
             route,
             input_sequence: 0,
@@ -1046,8 +1044,15 @@ impl Lease {
             armed,
             frozen: false,
             switch_pending: false,
-            tab_keys,
-            pair_keys,
+            keymap,
+        }
+    }
+
+    fn input_mode(&self) -> InputMode {
+        if self.leader.is_some() {
+            InputMode::Command
+        } else {
+            InputMode::Passthrough
         }
     }
 
@@ -1066,7 +1071,7 @@ impl Lease {
         sequence: u64,
         mut bytes: Vec<u8>,
         queue: &mut InputQueue,
-    ) -> Reply<KeyEffect> {
+    ) -> Reply<Option<KeyCommand>> {
         if self
             .leader
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
@@ -1074,20 +1079,12 @@ impl Lease {
             self.flush_leader(queue)?;
         }
         if self.leader.take().is_some() {
-            let command = match bytes.as_slice() {
-                b"d" => Some(KeyEffect::Detach),
-                b"n" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Next)),
-                b"p" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Previous)),
-                b"t" if self.tab_keys => Some(KeyEffect::Tab(TabCommand::Create)),
-                b"r" if self.pair_keys => Some(KeyEffect::PairController),
-                _ => None,
-            };
-            if let Some(command) = command {
+            if let Some(command) = self.keymap.command(&bytes) {
                 if queue.paste_pending() {
                     return Err(input_busy());
                 }
                 self.input_sequence = sequence;
-                return Ok(command);
+                return Ok(Some(command));
             }
             if bytes != [KEY_LEADER] {
                 bytes.insert(0, KEY_LEADER);
@@ -1095,13 +1092,13 @@ impl Lease {
         } else if bytes == [KEY_LEADER] {
             self.leader = Some(Instant::now());
             self.input_sequence = sequence;
-            return Ok(KeyEffect::Forwarded);
+            return Ok(None);
         }
         if !queue.user(bytes) {
             return Err(overloaded());
         }
         self.input_sequence = sequence;
-        Ok(KeyEffect::Forwarded)
+        Ok(None)
     }
 
     fn flush_leader(&mut self, queue: &mut InputQueue) -> Reply<()> {

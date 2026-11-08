@@ -10,7 +10,7 @@ use crate::wire::{
     AgentActivity, AgentEndReason, AgentLifecycle, AgentProcessState, AgentProvider, AgentState,
     AttentionReason, ClientState, EntityKind, EvidenceConfidence, EvidenceSource, EvidenceState,
     HistoricalRun, InputRequestKind, InputRequestStatus, LayoutNodeState, SnapshotEntity,
-    SplitAxis, ViewSelection, WorkspaceState,
+    SplitAxis, TuiInputMode, ViewSelection, WorkspaceState,
 };
 
 type Result<T> = std::result::Result<T, ProtocolFault>;
@@ -177,6 +177,17 @@ fn client_state(entries: &Entries, client: &ClientState) -> Result<()> {
     )?;
     require(client.writer_leases.len() <= 32, "too many writer leases")?;
     require(client.bindings.len() <= 8, "too many client bindings")?;
+    if let Some(mode) = client.input_mode {
+        require(
+            client.terminal_id.is_some()
+                && client.keymap.is_some()
+                && matches!(
+                    TuiInputMode::try_from(mode),
+                    Ok(TuiInputMode::Passthrough | TuiInputMode::Command)
+                ),
+            "invalid client input mode",
+        )?;
+    }
     let mut controllers = BTreeSet::new();
     for binding in &client.bindings {
         require(

@@ -93,6 +93,7 @@ fn client() -> SnapshotEntity {
                 generation: 2,
             }],
             bindings: Vec::new(),
+            ..Default::default()
         })),
     }
 }

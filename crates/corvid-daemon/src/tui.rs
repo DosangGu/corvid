@@ -26,7 +26,7 @@ use crate::control::handshake;
 use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::projection::selection;
-use crate::terminal::{Action, Event, Launch, Render};
+use crate::terminal::{Action, Event, Keymap, Launch, Render};
 use crate::workspaces::{
     Active, AttachTarget, Destination, FocusDispatch, FocusRecovery, Workspaces,
 };
@@ -492,14 +492,16 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         tab: parse_optional_id(attach.tab_id.as_deref())?,
         new_workspace: attach.create_workspace.clone(),
         new_tab: attach.create_tab.clone(),
-        tab_keys: attach
-            .terminal_capabilities
-            .iter()
-            .any(|name| name == "tabs.v1"),
-        pair_keys: attach
-            .terminal_capabilities
-            .iter()
-            .any(|name| name == PAIR_CAPABILITY),
+        keymap: Keymap {
+            tabs: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == "tabs.v1"),
+            pairing: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == PAIR_CAPABILITY),
+        },
         viewport: viewport(attach.viewport.as_ref())?,
         launch: attach.launch.as_ref().map(launch).transpose()?,
     })
