@@ -23,6 +23,7 @@ import time
 from collector_fixture import SATURATION, SCRIPT as COLLECTOR_FIXTURE
 from companion_fixture import Companion, assigned_slots, attention, fields, request_for
 from interactive import stop, wait_for_daemon
+from snapshot_race import paused_watch, seed_history
 
 VERSION = "2.1.318 (Claude Code)"
 HOOKS = (
@@ -570,6 +571,68 @@ def run_offline_pair(first_args, second_args, managed, trace):
             return first.events()
 
 
+def run_snapshot_race(agent_args, managed, trace, layout):
+    agent_pane, shell_pane, destination = layout
+    attach = [*managed.command, "attach"]
+    shell_args = [*attach, "--workspace", shell_pane.workspace, "--tab", shell_pane.tab]
+    shell_command = 'stty -echo; printf "A8-MOVER-READY\\n"; IFS= read -r line; [ "$line" = q ]'
+    with open_terminal(
+        [*shell_args, "--", "/bin/sh", "-c", shell_command],
+        managed.environment, managed.project, trace,
+    ) as shell:
+        shell.expect(b"A8-MOVER-READY")
+        shell.send(b"\x1dd")
+        assert shell.process.wait(timeout=5) == 0
+
+    prompt = b"Enter to submit or Escape to cancel:"
+    with open_terminal(agent_args, managed.environment, managed.project, trace) as terminal:
+        session = initialize_terminal(terminal)
+        initial = managed.expect(terminal, session=session, collection="Healthy", process="Running")
+        with paused_watch(managed.command, managed.directory) as watch:
+            terminal.send(b"Corvid hook schema fixture\r")
+            terminal.expect(prompt)
+            managed.expect(terminal, run=initial["run"], pending="1", unverified="1")
+            question = request_for(managed.command, initial["run"])
+            assert question["request_status"] == "Pending"
+            terminal.send(b"\x1dd")
+            assert terminal.process.wait(timeout=5) == 0
+
+            move_args = [
+                *shell_args, "--claim-workspace", destination,
+                "--move-tab", agent_pane.tab, "--to-workspace", destination,
+            ]
+            with open_terminal(move_args, managed.environment, managed.project, trace) as mover:
+                mover.expect(b"A8-MOVER-READY")
+                mover.wait(
+                    lambda: tab_in_destination(managed.command, destination, agent_pane.tab),
+                    "the agent tab to move",
+                )
+                expected = managed.snapshot()
+                assert expected["requests"] == expected["attention"] == "2"
+                assert expected["terminals"] == "2" and expected["clients"] == expected["agents"] == "1"
+                watch.finish(agent_pane, destination, initial, question, expected)
+                mover.send(b"q\r")
+                assert mover.process.wait(timeout=5) == 0
+
+    reopen = [*attach, "--workspace", destination, "--tab", agent_pane.tab]
+    with open_terminal(reopen, managed.environment, managed.project, trace) as terminal:
+        terminal.expect(prompt)
+        managed.expect(
+            terminal, run=initial["run"], terminal=initial["terminal"], pid=initial["pid"], pending="1",
+        )
+        assert request_for(managed.command, initial["run"]) == question
+        answer_offline_question(terminal, initial, question, managed)
+        terminal.send(b"/exit\r")
+        assert terminal.process.wait(timeout=5) == 0
+        return terminal.events()
+
+
+def tab_in_destination(command, destination, tab):
+    layout = subprocess.check_output([*command, "control", "workspaces"], text=True, timeout=3)
+    tail = layout.partition(f"workspace {destination} Destination\n")[2]
+    return f"  tab {tab} Agent\n" in tail
+
+
 def collect_offline_questions(managed, agents):
     managed.companion = companion = Companion(managed.command, managed.directory)
     companion.start()
@@ -927,11 +990,14 @@ def capture(binary, directory, port, scenario, corvid, fault):
         args = ["setsid", "--ctty", "--wait", str(binary.resolve()), *arguments]
         return run_terminal(args, environment, project, trace, scenario, None, fault)
 
+    race_layout = seed_history(directory) if scenario == "snapshot-race" else None
     managed = CorvidFixture(corvid, binary, directory, project, environment)
     try:
         if fault == "missing-collector":
             (directory / "run/collector.sock").unlink()
         args = [*managed.command, "attach", "--agent", "claude", "--", *arguments]
+        if race_layout is not None:
+            return run_snapshot_race(args, managed, trace, race_layout)
         if scenario == "offline-pair":
             other = [*managed.command, "attach", "--new-workspace", "Other", "--agent", "claude", "--", *arguments]
             return run_offline_pair(args, other, managed, trace)
@@ -1076,7 +1142,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=(
         "answer", "clear", "resume", "cancel", "plan", "child", "forged-output", "restart",
-        "offline-pair", "offline-restart",
+        "offline-pair", "offline-restart", "snapshot-race",
     ), default="answer")
     parser.add_argument("--corvid", type=Path, help="also exercise the real Corvid daemon and collector")
     parser.add_argument("--fault", choices=(
@@ -1085,7 +1151,7 @@ def main():
     args = parser.parse_args()
     if args.fault is not None and args.corvid is None:
         parser.error("--fault requires --corvid")
-    if args.scenario in {"forged-output", "restart", "offline-pair", "offline-restart"} and (
+    if args.scenario in {"forged-output", "restart", "offline-pair", "offline-restart", "snapshot-race"} and (
         args.corvid is None or args.fault is not None
     ):
         parser.error("this scenario requires --corvid and a healthy collector")
