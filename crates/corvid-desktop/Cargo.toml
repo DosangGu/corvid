@@ -6,12 +6,21 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["board"]
+board = ["dep:clap", "dep:eframe"]
+
+[[bin]]
+name = "corvid-slot-board"
+path = "src/main.rs"
+required-features = ["board"]
+
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
+clap = { workspace = true, optional = true }
 corvid-companion.workspace = true
 corvid-protocol.workspace = true
-eframe = { version = "=0.33.3", default-features = false, features = [
+eframe = { version = "=0.33.3", optional = true, default-features = false, features = [
     "accesskit", "default_fonts", "glow", "wayland", "x11",
 ] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }

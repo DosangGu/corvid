@@ -9,8 +9,8 @@ use corvid_protocol::wire::{
 use eframe::egui::{self, Color32, FontId, Frame, Margin, RichText, TextStyle, Ui};
 use uuid::Uuid;
 
-use crate::ipc::{Command, Completion, DesktopClient, Display, Link};
-use crate::model::Snapshot;
+use corvid_desktop::ipc::{Command, Completion, DesktopClient, Display, Link};
+use corvid_desktop::model::Snapshot;
 
 pub(crate) fn configure(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
@@ -118,6 +118,7 @@ impl Desktop {
                 message: "The display changed during the gesture. Review the slots and try again."
                     .to_owned(),
                 failed: true,
+                paired: None,
             });
             return;
         }
@@ -130,6 +131,7 @@ impl Desktop {
                 message: "Could not send the action. Wait for the companion and try again."
                     .to_owned(),
                 failed: true,
+                paired: None,
             });
         }
     }

@@ -6,8 +6,7 @@ use anyhow::{Context, Result, bail, ensure};
 use corvid_companion::{PresentationAddress, PresentationClient};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{GetPresentationSlots, LocalActivation};
-use eframe::egui;
+use corvid_protocol::wire::{GetPresentationSlots, LocalActivation, PresentedBinding};
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
@@ -20,7 +19,7 @@ const RETRY: Duration = Duration::from_secs(1);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Link {
+pub enum Link {
     #[default]
     Connecting,
     Online,
@@ -29,15 +28,15 @@ pub(crate) enum Link {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Display {
-    pub(crate) link: Link,
-    pub(crate) snapshot: Option<Arc<Snapshot>>,
-    pub(crate) last_ready: Option<Instant>,
-    pub(crate) completion: Option<Completion>,
+pub struct Display {
+    pub link: Link,
+    pub snapshot: Option<Arc<Snapshot>>,
+    pub last_ready: Option<Instant>,
+    pub completion: Option<Completion>,
 }
 
 impl Display {
-    pub(crate) fn accepts(&self, command: &Command) -> bool {
+    pub fn accepts(&self, command: &Command) -> bool {
         self.link == Link::Online
             && self.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot.link == command.link
@@ -48,31 +47,40 @@ impl Display {
 }
 
 #[derive(Clone)]
-pub(crate) struct Completion {
-    pub(crate) id: Uuid,
-    pub(crate) message: String,
-    pub(crate) failed: bool,
+pub struct Completion {
+    pub id: Uuid,
+    pub message: String,
+    pub failed: bool,
+    pub paired: Option<PresentedBinding>,
 }
 
-pub(crate) struct Command {
-    pub(crate) id: Uuid,
-    pub(crate) link: Uuid,
-    pub(crate) page: u32,
-    pub(crate) generation: Uuid,
-    pub(crate) body: Body,
+pub struct Command {
+    pub id: Uuid,
+    pub link: Uuid,
+    pub page: u32,
+    pub generation: Uuid,
+    pub body: Body,
 }
 
-pub(crate) struct DesktopClient {
-    pub(crate) display: watch::Receiver<Display>,
-    pub(crate) commands: mpsc::Sender<Command>,
-    pub(crate) page: watch::Sender<u32>,
+pub struct DesktopClient {
+    pub display: watch::Receiver<Display>,
+    pub commands: mpsc::Sender<Command>,
+    pub page: watch::Sender<u32>,
     _shutdown: oneshot::Sender<()>,
 }
 
 impl DesktopClient {
-    pub(crate) fn start(
+    pub fn start(
         address: <PresentationAddress as ToOwned>::Owned,
-        ctx: &egui::Context,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<Self> {
+        Self::start_scoped(address, None, notify)
+    }
+
+    pub fn start_scoped(
+        address: <PresentationAddress as ToOwned>::Owned,
+        identity: Option<(Uuid, Uuid)>,
+        notify: impl Fn() + Send + 'static,
     ) -> Result<Self> {
         let (display, view) = watch::channel(Display::default());
         let (commands, receive) = mpsc::channel(1);
@@ -83,7 +91,8 @@ impl DesktopClient {
             display,
             commands: receive,
             page: pages,
-            ctx: ctx.clone(),
+            identity,
+            notify: Box::new(notify),
         };
 
         thread::Builder::new()
@@ -109,7 +118,8 @@ struct Worker {
     display: watch::Sender<Display>,
     commands: mpsc::Receiver<Command>,
     page: watch::Receiver<u32>,
-    ctx: egui::Context,
+    identity: Option<(Uuid, Uuid)>,
+    notify: Box<dyn Fn() + Send>,
 }
 
 impl Worker {
@@ -142,6 +152,7 @@ impl Worker {
                             id: command.id,
                             message: "Display changed. Review the updated slots and try again.".to_owned(),
                             failed: true,
+                            paired: None,
                         })
                     } else {
                         Some(self.execute(&mut client, command).await?)
@@ -176,6 +187,13 @@ impl Worker {
             bail!("unexpected slot response");
         };
         let snapshot = Arc::new(Snapshot::new(link, client.session(), page, slots)?);
+        if let Some((host, controller)) = self.identity {
+            ensure!(
+                snapshot.host == host
+                    && Uuid::parse_str(&snapshot.data.controller_id).ok() == Some(controller),
+                "unexpected companion identity"
+            );
+        }
         self.publish(|display| {
             display.link = Link::Online;
             if snapshot.generation().is_some() {
@@ -196,7 +214,19 @@ impl Worker {
     ) -> Result<Completion> {
         let expected = Expected::for_request(&command.body)?;
         let result = match client.request(command.body).await {
-            Ok(reply) => expected.summarize(reply).map(str::to_owned),
+            Ok(reply) => {
+                let paired = match &reply {
+                    Body::ClientBindingRegistered(binding) => Some(PresentedBinding {
+                        client_id: binding.client_id.clone(),
+                        revision: binding.binding_revision,
+                        wezterm: None,
+                    }),
+                    _ => None,
+                };
+                expected
+                    .summarize(reply)
+                    .map(|message| (message.to_owned(), paired))
+            }
             Err(error)
                 if error.is::<ProtocolFault>() && failed_link(&error) != Link::Incompatible =>
             {
@@ -205,15 +235,17 @@ impl Worker {
                     id: command.id,
                     message: expected.fault_message(&fault),
                     failed: true,
+                    paired: None,
                 });
             }
             Err(error) => Err(error),
         };
         match result {
-            Ok(message) => Ok(Completion {
+            Ok((message, paired)) => Ok(Completion {
                 id: command.id,
                 message,
                 failed: false,
+                paired,
             }),
             Err(error) => {
                 self.publish(|display| {
@@ -222,6 +254,7 @@ impl Worker {
                         id: command.id,
                         message: "Action result unavailable. Check the refreshed slots before trying again.".to_owned(),
                         failed: true,
+                        paired: None,
                     });
                 });
                 Err(error)
@@ -231,7 +264,7 @@ impl Worker {
 
     fn publish(&self, update: impl FnOnce(&mut Display)) {
         self.display.send_modify(update);
-        self.ctx.request_repaint();
+        (self.notify)();
     }
 }
 

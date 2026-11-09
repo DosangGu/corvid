@@ -35,10 +35,26 @@ Point subsequent commands at the same socket directory.
 
 ### Windows quick start
 
+Double-click `corvid-desktop.exe` to open a local session with one PowerShell
+tab and one pane. Use **New tab** to start another tab, and **Split right**
+or **Split down** to add a shell beside or below the focused pane. Each pane
+owns a separate Windows ConPTY and PowerShell process. Click a pane to focus
+it. The app retains the selected pane in each tab and keeps hidden tabs
+running while you work in another tab or open **Agents**.
+
+Use Ctrl+Shift+T for a new tab, Ctrl+Shift+D to split right, Ctrl+Shift+E
+to split down, and Ctrl+Shift+W to close the focused pane. Ctrl+Tab and
+Ctrl+Shift+Tab cycle shell tabs. Closing a tab closes its panes. Closing the
+app ends its local session. The local workspace starts without SSH setup.
+Open **Agents** for the remote agent buttons and WezTerm pairing. Launch
+`corvid-deck.exe` to open those buttons in a dedicated window.
+
+To connect the agent deck to a Linux host:
+
 1. Install `corvid` on the Linux account's remote command `PATH` and start
    its daemon. Enable the Windows OpenSSH Client feature and open WezTerm for
    the working terminal. Extract the Windows x64 package to a stable folder
-   and run the Windows commands below from that folder. See the
+   and open the desktop app from that folder. See the
    [Linux daemon setup](02_daemon_foundation.md#run-locally),
    [Windows OpenSSH setup](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?pivots=windows-11),
    and [package build](#windows-package-and-login-startup).
@@ -52,40 +68,26 @@ Point subsequent commands at the same socket directory.
        User corvid-user
    ```
 
-3. Open the board from the extracted folder in the same Windows logon as
-   WezTerm. On first use, `open` looks up the Linux daemon's HostId through
-   system OpenSSH and saves the companion configuration.
+3. Open **Agents** in the same Windows logon as WezTerm. On first use,
+   enter your SSH alias and click **Connect**. The app looks up
+   and saves the daemon's HostId, reuses a matching companion if one is
+   running, or starts one for the lifetime of the app. Later visits use
+   the saved host and slot layout. From PowerShell, `.\corvid.exe companion
+   open work-host` opens the same app and supplies the alias for **Agents**.
+
+4. Open the working Corvid TUI in WezTerm and run `claude` or `codex`
+   inside it. See [provider setup](03_provider_qualification.md) for
+   release qualification and hook coverage.
 
    ```powershell
-   .\corvid.exe companion open work-host
+   ssh -tt work-host corvid
    ```
 
-   On later launches, use `.\corvid.exe companion open`. It reuses the saved
-   host identity and layout. The command waits for the board to close.
-   It uses a matching companion if one is running and starts one for the
-   lifetime of the board otherwise.
-
-   To supply the expected HostId yourself, use `companion init --host-id`
-   with `--ssh-alias` before `open`. Use `companion run` to keep a companion
-   running independently of the board.
-
-4. In a WezTerm pane, attach to an existing remote Corvid terminal. If the
-   daemon is running and you want to start a managed agent explicitly, use
-   `corvid attach --agent codex` or `corvid attach --agent claude` as the
-   remote command in that same SSH invocation. The provider executable must
-   be available on the daemon's `PATH`. For agent status and pending-question
-   observations, see [provider setup](03_provider_qualification.md).
-
-   ```powershell
-   ssh -tt work-host corvid attach
-   ```
-
-5. In the attached TUI, press Ctrl-] then r to get a one-time code. On the
-   board, open **Pair WezTerm…**, choose that pane, and enter the code within
-   60 seconds. Dismiss the TUI prompt with Enter or Esc and keep the TUI open.
-   Choose the registered TUI under **Target terminal** and click **Focus**
-   on the desired slot. Answer agent questions and grant permissions in the
-   TUI. The board's **Acknowledge alert** action marks an alert seen.
+5. In the TUI, press Ctrl-] then r and copy the one-time code. In the deck,
+   click **Pair WezTerm…**, choose the pane if prompted, and paste the code
+   within 60 seconds. The deck selects the registered target when pairing
+   completes. Dismiss the TUI prompt with Esc and click a deck key to switch
+   agents. Answer questions and grant permissions in the TUI.
 
 ### Windows state and pipe settings
 
@@ -102,12 +104,22 @@ board. Both ends check the pipe owner and DACL before exchanging frames.
 
 ### Windows package and login startup
 
+Windows source builds require the pinned MSVC Rust toolchain and the Windows
+SDK for the GUI. Cargo builds the Protobuf schema using `protox`. Set
+`$env:GPUI_FXC_PATH` to the full path of the SDK's `fxc.exe` if GPUI
+cannot find it.
+
 From the repository root on Windows x64, run
-`powershell -File deploy/windows/Package-Corvid.ps1` with the pinned MSVC Rust
-toolchain and `protoc` 36.1 available. The script builds both release binaries
-and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
-directory (`target` by default). The archive includes `corvid.exe`,
-`corvid-desktop.exe`, the license, and `Set-CorvidStartup.ps1`.
+`powershell -File deploy/windows/Package-Corvid.ps1`. The script builds the
+release binaries and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
+directory (`target` by default). The archive includes `corvid.exe`, the Desktop
+terminal workspace `corvid-desktop.exe`, the standalone agent deck
+`corvid-deck.exe`, the administration app `corvid-slot-board.exe`, the license,
+and `Set-CorvidStartup.ps1`. To run Desktop from source, use
+`cargo run --locked --manifest-path crates/corvid-desktop/gui/Cargo.toml`.
+Root `cargo build --locked` builds the CLI. Use the package script for all
+Windows applications. The root `--workspace` command includes the Linux
+daemon and terminal qualification spike.
 
 Extract the archive to a stable directory and use `companion open` to check
 the connection. Run one of the following commands from the extracted
@@ -121,7 +133,7 @@ powershell -File .\Set-CorvidStartup.ps1 -Mode Disable
 
 At the next login, the enabled shortcut starts `corvid.exe companion run`
 with the default state directory and pipe instance in a minimized console.
-Use `companion open` to open the board and pair the newly attached TUI when
+Open the deck to pair the newly attached TUI when
 ready. Rerun `-Mode Enable` after moving the package.
 
 ## Windows process and state ownership
@@ -129,10 +141,16 @@ ready. Rerun `-Mode Enable` after moving the package.
 ```mermaid
 flowchart LR
     subgraph Windows
-        Board["corvid-desktop.exe"]
+        Desktop["corvid-desktop.exe"]
+        PowerShell["Local PowerShell panes"]
+        Deck["corvid-deck.exe"]
+        Board["corvid-slot-board.exe"]
         CLI["corvid.exe companion CLI"]
         Companion["corvid.exe companion run"]
         WezTerm["WezTerm pane"]
+        Desktop -->|"ConPTY"| PowerShell
+        Desktop -->|"Agents tab via private named pipe"| Companion
+        Deck -->|"private named pipe"| Companion
         Board -->|"private named pipe"| Companion
         CLI -->|"private named pipe"| Companion
         Companion -->|"verified pane selection"| WezTerm
@@ -155,8 +173,10 @@ flowchart LR
 | Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
 | SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
-| Desktop board | Displays snapshots and sends actions against the selected slot and TUI registration. Its pairing dialog lists verified local panes. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
-| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package both binaries and manage optional login startup. | [CLI](../crates/corvid/src/companion.rs) · [deployment](../deploy/windows/) |
+| Desktop app | Runs local PowerShell sessions in tabs and split panes. Its Agents tab embeds the same view as the standalone deck. | [corvid-desktop](../crates/corvid-desktop/gui/src/main.rs) |
+| Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
+| Slot board | Displays snapshots and manages slot assignments and alerts. Its pairing dialog lists verified local panes. | [corvid-slot-board](../crates/corvid-desktop/src/main.rs) |
+| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid/src/companion.rs) · [deployment](../deploy/windows/) |
 | Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
 
 The companion stores its host and controller identity in `config.json` and
@@ -195,9 +215,9 @@ an additional control connection. The presentation capability is `list_hosts.v1`
 
 ## Desktop Slot Board
 
-Build the separate native desktop binary with `cargo build --locked -p corvid-desktop`
+Build the administration app with `cargo build --locked -p corvid-desktop --bin corvid-slot-board`
 or use the Windows package. Start the configured companion and launch
-`corvid-desktop`. The desktop accepts the same `--socket-dir` on Linux or
+`corvid-slot-board`. The board accepts the same `--socket-dir` on Linux or
 `--pipe-instance` on Windows as the companion. The board uses eframe 0.33.3 with
 the Glow renderer and connects directly to the private Protobuf endpoint.
 [eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
@@ -215,6 +235,49 @@ actions. Reconnection loads a fresh snapshot and requires an explicit terminal
 choice. A gesture uses the slot and terminal revisions that were visible when
 it began. A stale action is rejected and can be retried as a new click after
 reviewing the refreshed board.
+
+### Live Stream Deck
+
+The standalone Windows GPUI deck and the Desktop app's Agents tab use the
+running companion's private presentation pipe.
+It displays assigned Claude Code and Codex slots, activity, pending requests,
+unseen alerts, and whether the companion and host are available. The 5 × 3
+layout shows 14 slots per page. The lower-right key advances the page, and the
+side panel shows unassigned runs separately. Use the slot board to edit slots
+and manage overflow.
+
+Run the deck from the repository root to use the same first-run flow during
+development. The default pipe instance is `main`.
+
+```powershell
+cargo run --locked --manifest-path spikes/deck/Cargo.toml
+```
+
+Use **Pair WezTerm…** to pair the working TUI directly in the deck. Choose a
+previously paired **Target terminal** if needed. Click a slot key or use its
+keyboard shortcut to select that agent in the existing TUI. The result panel
+reports remote selection and the separate local window activation result.
+Answer questions and approve requests in that terminal. A new connection or
+changed registration requires a fresh target selection. Pass
+`-- --state-dir DIR --pipe-instance NAME` to isolate another companion
+configuration. Use `-- --connect-only --pipe-instance NAME` to attach the
+deck to an independently managed pipe, or `-- --demo` for the isolated
+virtual button simulator.
+
+The USB adapter uses the same live key model and focus captures without a GPUI
+window. Quit Elgato's Stream Deck app before attaching a supported 15-key unit.
+Get the exact client ID from `corvid companion slots`, then pass it as the
+target. With no target the adapter displays live slots and accepts page
+navigation. Use `--list` to enumerate devices, `--serial SERIAL` to select
+one when several are connected, or `--demo` for local test keys.
+
+```powershell
+cargo run --locked --manifest-path spikes/deck/Cargo.toml --no-default-features --features stream-deck --bin corvid-streamdeck -- --target CLIENT_ID
+```
+
+The USB adapter reconnects to the same serial after USB loss. Its tests cover
+synthetic HID transitions, stale captures, and 72 × 72 LCD rendering.
+Physical image upload, button orientation, and reconnect remain to be qualified.
 
 ## Pair and Focus
 

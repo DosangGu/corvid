@@ -11,22 +11,18 @@ use corvid_protocol::wire::{
 use corvid_protocol::{ProtocolFault, Session};
 use uuid::Uuid;
 
-pub(crate) struct Snapshot {
-    pub(crate) link: Uuid,
-    pub(crate) host: Uuid,
-    pub(crate) page: u32,
-    pub(crate) data: PresentationSlots,
+#[derive(PartialEq)]
+pub struct Snapshot {
+    pub link: Uuid,
+    pub host: Uuid,
+    pub page: u32,
+    pub data: PresentationSlots,
     #[cfg(windows)]
-    pub(crate) can_pair_wezterm: bool,
+    pub can_pair_wezterm: bool,
 }
 
 impl Snapshot {
-    pub(crate) fn new(
-        link: Uuid,
-        session: &Session,
-        page: u32,
-        data: PresentationSlots,
-    ) -> Result<Self> {
+    pub fn new(link: Uuid, session: &Session, page: u32, data: PresentationSlots) -> Result<Self> {
         let host = Uuid::parse_str(&session.host_id)?;
         let page_size = PRESENTATION_PAGE_SIZE as usize;
         ensure!(
@@ -78,14 +74,14 @@ impl Snapshot {
         })
     }
 
-    pub(crate) fn generation(&self) -> Option<Uuid> {
+    pub fn generation(&self) -> Option<Uuid> {
         if self.data.connection != CompanionConnection::Ready as i32 {
             return None;
         }
         Uuid::parse_str(self.data.control_generation.as_deref()?).ok()
     }
 
-    pub(crate) fn page_count(&self) -> u32 {
+    pub fn page_count(&self) -> u32 {
         self.data
             .overflow_count
             .max(self.data.suppressed_count)
@@ -93,7 +89,7 @@ impl Snapshot {
             .max(1)
     }
 
-    pub(crate) fn focus(&self, slot: &PresentedSlot, binding: &PresentedBinding) -> Option<Body> {
+    pub fn focus(&self, slot: &PresentedSlot, binding: &PresentedBinding) -> Option<Body> {
         self.live_key(slot.run.as_ref()?)?;
         self.contains_binding(binding)
             .then_some(Body::FocusSlot(FocusSlot {
@@ -107,7 +103,7 @@ impl Snapshot {
             }))
     }
 
-    pub(crate) fn contains_binding(&self, binding: &PresentedBinding) -> bool {
+    pub fn contains_binding(&self, binding: &PresentedBinding) -> bool {
         binding.revision != 0
             && Uuid::parse_str(&binding.client_id).is_ok()
             && self.data.bindings.iter().any(|entry| {
@@ -115,7 +111,7 @@ impl Snapshot {
             })
     }
 
-    pub(crate) fn acknowledge(&self, run: &PresentedRun) -> Option<Body> {
+    pub fn acknowledge(&self, run: &PresentedRun) -> Option<Body> {
         let key = self.live_key(run)?;
         let attention = Uuid::parse_str(run.latest_unseen_attention_id.as_deref()?).ok()?;
         Some(Body::AckPresentedAttention(AckPresentedAttention {
@@ -125,19 +121,19 @@ impl Snapshot {
         }))
     }
 
-    pub(crate) fn pin(&self, slot: &PresentedSlot) -> Option<Body> {
+    pub fn pin(&self, slot: &PresentedSlot) -> Option<Body> {
         self.edit(Action::Pin(PinSlot {
             slot: Some(slot_token(slot)),
             pinned: Some(!slot.pinned),
         }))
     }
 
-    pub(crate) fn remove(&self, slot: &PresentedSlot) -> Option<Body> {
+    pub fn remove(&self, slot: &PresentedSlot) -> Option<Body> {
         self.check_key(slot.run.as_ref()?.key.as_ref()?)?;
         self.edit(Action::Remove(slot_token(slot)))
     }
 
-    pub(crate) fn place(&self, slot: &PresentedSlot, key: &PresentedRunKey) -> Option<Body> {
+    pub fn place(&self, slot: &PresentedSlot, key: &PresentedRunKey) -> Option<Body> {
         if slot.run.is_some() || !self.can_place(key) {
             return None;
         }
@@ -147,7 +143,7 @@ impl Snapshot {
         }))
     }
 
-    pub(crate) fn can_place(&self, key: &PresentedRunKey) -> bool {
+    pub fn can_place(&self, key: &PresentedRunKey) -> bool {
         self.generation().is_some()
             && self
                 .data
@@ -156,13 +152,13 @@ impl Snapshot {
                 .any(|run| self.live_key(run) == Some(key))
     }
 
-    pub(crate) fn remove_overflow(&self, run: &PresentedRun) -> Option<Body> {
+    pub fn remove_overflow(&self, run: &PresentedRun) -> Option<Body> {
         let key = run.key.as_ref()?;
         self.check_key(key)?;
         self.edit(Action::RemoveOverflow(key.clone()))
     }
 
-    pub(crate) fn readd(&self, key: &PresentedRunKey) -> Option<Body> {
+    pub fn readd(&self, key: &PresentedRunKey) -> Option<Body> {
         self.check_key(key)?;
         if self.data.remote_epoch.as_deref()? != key.remote_epoch {
             return None;
@@ -224,7 +220,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn ready_snapshot() -> Snapshot {
+    pub fn ready_snapshot() -> Snapshot {
         let host = Uuid::new_v4().to_string();
         let epoch = Uuid::new_v4().to_string();
         let session = presentation_session(&host);

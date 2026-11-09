@@ -3,6 +3,7 @@
 use std::future::pending;
 use std::time::Duration;
 
+use corvid_companion::launch::{DesktopStartup, prepare_desktop};
 use corvid_companion::{HostEndpoint, PresentationClient, Store, initialize, run};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationSlots, Ping};
@@ -20,12 +21,21 @@ async fn serves_current_user_clients_and_refuses_a_second_pipe_owner() {
         alias: "corvid-fixture.invalid".to_owned(),
     };
     let host = Uuid::new_v4();
+    assert!(matches!(
+        prepare_desktop(&instance, &state, None).await.unwrap(),
+        DesktopStartup::NeedsHost
+    ));
     let controller = initialize(&state, host, endpoint.clone(), 2).unwrap();
     initialize(&duplicate_state, host, endpoint, 2).unwrap();
+    assert!(matches!(
+        prepare_desktop(&instance, &state, None).await.unwrap(),
+        DesktopStartup::Start(config) if config.controller_id == controller
+    ));
     let (stop, shutdown) = oneshot::channel();
 
     let mut companion = tokio::spawn({
         let instance = instance.clone();
+        let state = state.clone();
         async move {
             run(&instance, &state, async {
                 let _ = shutdown.await;
@@ -57,6 +67,15 @@ async fn serves_current_user_clients_and_refuses_a_second_pipe_owner() {
     .unwrap();
     assert!(duplicate.is_err());
     assert_eq!(first.session().host_id, host.to_string());
+    assert!(matches!(
+        prepare_desktop(&instance, &state, None).await.unwrap(),
+        DesktopStartup::Reuse(config) if config.controller_id == controller
+    ));
+    assert!(
+        prepare_desktop(&instance, &duplicate_state, None)
+            .await
+            .is_err()
+    );
 
     let reply = first
         .request(Body::GetPresentationSlots(GetPresentationSlots::default()))

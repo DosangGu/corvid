@@ -1,17 +1,15 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
-mod ipc;
-mod model;
 #[cfg(windows)]
 mod pairing;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
+use corvid_desktop::ipc::DesktopClient;
 use eframe::egui;
 
 use app::Desktop;
-use ipc::DesktopClient;
 
 #[derive(Parser)]
 #[command(version, about = "Corvid desktop controller")]
@@ -51,7 +49,8 @@ fn main() -> Result<()> {
         native,
         Box::new(move |creation| {
             app::configure(&creation.egui_ctx);
-            let client = DesktopClient::start(address, &creation.egui_ctx)?;
+            let ctx = creation.egui_ctx.clone();
+            let client = DesktopClient::start(address, move || ctx.request_repaint())?;
             Ok(Box::new(Desktop::new(client)))
         }),
     )

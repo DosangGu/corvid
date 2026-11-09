@@ -1,0 +1,31 @@
+[package]
+name = "corvid-desktop-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[[bin]]
+name = "corvid-desktop"
+path = "src/main.rs"
+
+[dependencies]
+corvid-core = { path = "../../corvid-core" }
+uuid = { version = "1.29", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+corvid-companion = { path = "../../corvid-companion" }
+corvid-deck = { path = "../../../spikes/deck" }
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+portable-pty = "=0.9.0"
+tokio = { version = "=1.53.3", features = ["sync"] }
+vt100 = { version = "=0.18.1", default-features = false }
+
+[profile.dev]
+debug = 0

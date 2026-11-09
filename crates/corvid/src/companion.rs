@@ -63,10 +63,10 @@ enum Command {
     },
     /// Run the local companion and resynchronize the configured host on disconnect.
     Run,
-    /// Open the Windows board and start its companion when needed.
+    /// Open the Windows desktop app and start its companion when needed.
     #[cfg(windows)]
     Open {
-        /// OpenSSH alias for the Linux host. Required on first use.
+        /// OpenSSH alias for the Linux host. The Agents tab can prompt on first use.
         ssh_alias: Option<String>,
     },
     /// Check Windows companion prerequisites, connectivity and saved registrations.
@@ -232,12 +232,7 @@ fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
     #[cfg(target_os = "linux")]
     return Ok(state_path(None)?.join("companion"));
     #[cfg(windows)]
-    {
-        let base = env::var_os("LOCALAPPDATA")
-            .filter(|path| !path.is_empty())
-            .context("set LOCALAPPDATA or companion --state-dir")?;
-        Ok(PathBuf::from(base).join(r"Corvid\companion"))
-    }
+    return corvid_companion::launch::default_state_dir();
 }
 
 #[cfg(target_os = "linux")]

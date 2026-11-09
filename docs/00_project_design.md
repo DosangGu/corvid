@@ -28,9 +28,10 @@
 
 ## 1. Product and support boundary
 
-Corvid is a Rust TUI multiplexer for real interactive coding-agent CLIs, initially
-Claude Code and Codex. It runs inside an existing terminal emulator. A daemon on the
-execution host owns PTYs, their screen state, agent observations, and workspaces.
+Corvid is a Rust terminal multiplexer with integrations for Claude Code and Codex.
+The Windows GUI starts a local terminal session with tabs and split panes.
+The Linux TUI runs inside an existing terminal emulator. A daemon on the
+execution host owns its PTYs, screen state, agent observations, and workspaces.
 Losing an attached TUI, its working SSH connection, or a local controller must not
 stop remote work **while that daemon and the execution host remain alive**.
 
@@ -57,9 +58,10 @@ agents through the TUI; those actions are outside the external focus operation.
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
-| Desktop | Optional controller using the companion API | The core state model stays independent of the desktop framework |
+| Desktop | `corvid-desktop.exe` on Windows, with PowerShell tabs, split panes, and an Agents tab | The app owns local ConPTY sessions and reuses the layout tree. The Agents tab uses the companion API |
+| Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests focus through the companion |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
-| Native Windows server/ConPTY; macOS server | Deferred | Independent process, IPC, permission, service, input, and VT validation required |
+| Native Windows or macOS daemon | Deferred | Independent process, IPC, permission, service, input, and VT validation required |
 
 This is not a replacement for every terminal emulator feature. Zellij and tmux are
 design references, not execution dependencies. There is no public TCP daemon, TLS
@@ -72,7 +74,7 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 
 | Decision | Selected design | Reason / verification condition |
 |---|---|---|
-| Form and language | Rust TUI inside an existing emulator | Preserve interactive Claude/Codex and SSH workflows |
+| Form and language | Rust desktop workspace for local sessions and a TUI for Linux daemon sessions | Keep GUI layout independent of transport and preserve the existing interactive SSH path |
 | Process boundary | Real client/server foundation in Phase 1 | Detach survival precedes layout expansion |
 | Daemon scope | One daemon per OS user per host, managing all workspaces | One host registry/watch stream and direct cross-workspace focus; larger failure blast radius accepted |
 | Core IPC | Same-host Unix stream sockets (`SOCK_STREAM`) | SSH transports terminal/control channels; local IPC still needs authentication, versioning, bounds, and latency tests |
@@ -1232,10 +1234,22 @@ On Linux, run `corvid companion slots --count 8` to display slot assignments,
 state and evidence, unseen counts, connection status, and exact TUI registrations.
 `focus-slot` takes the displayed slot and binding captures. The captures include the
 slot revision and the current control connection generation. The CLI uses the same
-private Protobuf endpoint as `corvid-desktop`. The desktop board shows live and
+private Protobuf endpoint as `corvid-slot-board`. The slot board shows live and
 cached slot state and sends actions for the displayed slot and explicitly selected
 terminal. The user can bring the selected terminal forward manually.
 See [companion and desktop setup](04_companion.md).
+
+The standalone Windows GPUI deck and the Desktop app's Agents tab share
+the deck view. The view and direct USB prototype use the same device-independent
+slot projection, focus capture, and presentation worker through the private
+pipe. A capture holds the displayed run, slot revision,
+control generation, and selected binding revision from press through release.
+Page or target changes invalidate a capture locally, and the companion validates
+the request against its authoritative snapshot. Key activation requests focus.
+The GPUI deck view can initialize or reuse a companion and pair a verified
+WezTerm pane. A successful pairing selects only its newly registered target.
+Alert acknowledgment and slot editing remain explicit actions in the slot
+board and CLI. See [Live Stream Deck](04_companion.md#live-stream-deck).
 
 ### 11.2 Deterministic slot policy
 

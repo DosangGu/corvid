@@ -2,6 +2,8 @@
 mod doctor;
 mod ipc;
 mod last_known;
+#[cfg(windows)]
+pub mod launch;
 mod platform;
 mod remote;
 mod service;
