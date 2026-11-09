@@ -70,6 +70,7 @@ impl FixtureGui {
         WezTermPane::capture(WezTermTarget {
             gui_socket: socket.to_owned(),
             pane_id: Some(pane_id),
+            selection: None,
         })
         .await
     }
@@ -175,7 +176,23 @@ async fn native_wezterm_activation_keeps_exact_gui_and_pane() -> Result<()> {
     assert_ne!(first.gui.identity.pid, second.gui.identity.pid);
     assert_eq!(initial.pane_id, other.pane_id);
 
+    assert!(discovery::socket_paths()?.contains(&first.gui.identity.socket));
+    let discovered = discovery::discover_at([
+        first.gui.identity.socket.clone(),
+        second.gui.identity.socket.clone(),
+    ])
+    .await?;
+    assert_eq!(discovered.len(), 2);
+    let target = discovered
+        .iter()
+        .find(|pane| pane.location().gui_pid == first.gui.identity.pid)
+        .context("missing selected GUI in the pane inventory")?
+        .target();
     let saved = first.capture(initial.pane_id).await?;
+    assert_eq!(WezTermPane::capture(target.clone()).await?, saved);
+    let mut wrong_instance = target.clone();
+    wrong_instance.gui_socket = second.gui.identity.socket.to_str().unwrap().to_owned();
+    assert!(WezTermPane::capture(wrong_instance).await.is_err());
     let first_split = first
         .add_pane(&["split-pane", "--pane-id", &initial.pane_id.to_string()])
         .await?;
@@ -207,6 +224,7 @@ async fn native_wezterm_activation_keeps_exact_gui_and_pane() -> Result<()> {
         .await?;
     let moved = find_pane(&first.gui.panes().await?, initial.pane_id)?;
     assert_ne!(moved.tab_id, initial.tab_id);
+    assert!(WezTermPane::capture(target).await.is_err());
     assert!(WezTermPane::restore(&saved).await.is_err());
     assert_eq!(registered.activate().await, LocalActivation::Unavailable);
     second.assert_selected(second_split).await?;

@@ -27,6 +27,11 @@ use super::read_pairing_code;
 #[cfg(target_os = "linux")]
 use crate::{linux::state_path, runtime_path};
 
+#[cfg(windows)]
+mod desktop;
+
+const DEFAULT_SLOTS: u32 = 8;
+
 #[derive(Args)]
 pub(super) struct Options {
     /// Override the private local companion socket directory.
@@ -53,11 +58,20 @@ enum Command {
         /// Use an OpenSSH alias for the execution host.
         #[arg(long, required = cfg!(windows))]
         ssh_alias: Option<String>,
-        #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_SLOTS)))]
+        #[arg(long, default_value_t = DEFAULT_SLOTS, value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_SLOTS)))]
         count: u32,
     },
     /// Run the local companion and resynchronize the configured host on disconnect.
     Run,
+    /// Open the Windows board and start its companion when needed.
+    #[cfg(windows)]
+    Open {
+        /// OpenSSH alias for the Linux host. Required on first use.
+        ssh_alias: Option<String>,
+    },
+    /// Check Windows companion prerequisites, connectivity and saved registrations.
+    #[cfg(windows)]
+    Doctor,
     /// Show the configured execution host and its control connection status.
     Hosts,
     /// Show slots, captured slot revisions, and available TUI registrations.
@@ -157,6 +171,23 @@ pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -
     let address = companion_socket(options.socket_dir)?;
     #[cfg(windows)]
     let address = options.pipe_instance;
+    #[cfg(windows)]
+    if let Command::Open { ssh_alias } = options.command {
+        let state = companion_state(options.state_dir)?;
+        return desktop::open(&address, &state, ssh_alias).await;
+    }
+    #[cfg(windows)]
+    if matches!(options.command, Command::Doctor) {
+        let checks =
+            corvid_companion::diagnose(&address, &companion_state(options.state_dir)?).await;
+        let mut failed = false;
+        for check in checks {
+            println!("[{:?}] {} — {}", check.status, check.name, check.detail);
+            failed |= check.status == corvid_companion::CheckStatus::Fail;
+        }
+        ensure!(!failed, "companion doctor found failed checks");
+        return Ok(());
+    }
     if matches!(options.command, Command::Run) {
         return corvid_companion::run(&address, &companion_state(options.state_dir)?, shutdown()?)
             .await;
@@ -250,6 +281,8 @@ impl Command {
     fn request(self, epoch: &str) -> Result<Body> {
         let body = match self {
             Self::Init { .. } | Self::Run => unreachable!("handled by companion execute"),
+            #[cfg(windows)]
+            Self::Doctor | Self::Open { .. } => unreachable!("handled by companion execute"),
             Self::Hosts => Body::ListHosts(ListHosts {}),
             Self::Slots {
                 count,
@@ -271,6 +304,7 @@ impl Command {
                             .or_else(|| env::var("WEZTERM_UNIX_SOCKET").ok())
                             .context("set WEZTERM_UNIX_SOCKET or pass --wezterm-socket")?,
                         pane_id: Some(pane_id),
+                        selection: None,
                     }),
                     None => None,
                 };
@@ -279,6 +313,7 @@ impl Command {
                 Body::PairTerminal(PairTerminal {
                     code: read_pairing_code()?.to_string(),
                     wezterm,
+                    control_generation: None,
                 })
             }
             Self::Unpair { binding } => {

@@ -20,6 +20,8 @@ pub use collector::submit_hook;
 pub use control::{ControllerRequest, ControllerScope};
 #[cfg(target_os = "linux")]
 pub use control::{agents, clients, controller, host, ping, status, workspaces};
+#[cfg(windows)]
+pub use endpoint::check_system_openssh;
 pub use endpoint::{ControlEndpoint, SshAlias};
 #[cfg(target_os = "linux")]
 pub use relay::relay;

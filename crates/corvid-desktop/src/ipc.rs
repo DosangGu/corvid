@@ -203,7 +203,7 @@ impl Worker {
                 let fault = error.downcast::<ProtocolFault>()?;
                 return Ok(Completion {
                     id: command.id,
-                    message: fault_message(&fault),
+                    message: expected.fault_message(&fault),
                     failed: true,
                 });
             }
@@ -246,12 +246,29 @@ fn failed_link(error: &anyhow::Error) -> Link {
 }
 
 enum Expected {
-    Focus { client: String, run: String },
-    Acknowledge { run: String, attention: String },
+    Focus {
+        client: String,
+        run: String,
+    },
+    Acknowledge {
+        run: String,
+        attention: String,
+    },
     Edit,
+    #[cfg(windows)]
+    Pair,
 }
 
 impl Expected {
+    fn fault_message(&self, fault: &ProtocolFault) -> String {
+        #[cfg(windows)]
+        if matches!(self, Self::Pair) && fault.code == "Unauthorized" {
+            return "The pairing code is unavailable. Open a new code in the intended TUI."
+                .to_owned();
+        }
+        fault_message(fault)
+    }
+
     fn for_request(body: &Body) -> Result<Self> {
         Ok(match body {
             Body::FocusSlot(focus) => Self::Focus {
@@ -279,6 +296,8 @@ impl Expected {
                 attention: ack.attention_id.clone(),
             },
             Body::EditSlotLayout(_) => Self::Edit,
+            #[cfg(windows)]
+            Body::PairTerminal(_) => Self::Pair,
             _ => bail!("unsupported desktop action"),
         })
     }
@@ -328,6 +347,16 @@ impl Expected {
                 "Alert acknowledged. Handle any pending request in the terminal."
             }
             (Self::Edit, Body::SlotLayoutEdited(_)) => "Slot layout saved.",
+            #[cfg(windows)]
+            (Self::Pair, Body::ClientBindingRegistered(binding)) => {
+                ensure!(
+                    binding.binding_revision != 0
+                        && binding.commit_sequence != 0
+                        && Uuid::parse_str(&binding.client_id).is_ok_and(|id| !id.is_nil()),
+                    "invalid terminal registration result"
+                );
+                "Terminal paired. Choose it under Target terminal."
+            }
             _ => bail!("unexpected desktop action result"),
         })
     }

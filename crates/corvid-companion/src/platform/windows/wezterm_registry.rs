@@ -30,6 +30,12 @@ pub(crate) struct TerminalRecord {
     pub(crate) pane: Option<WezTermRegistration>,
 }
 
+impl TerminalRecord {
+    pub(crate) fn matches(&self, epoch: Uuid, revision: u64, sequence: u64) -> bool {
+        self.epoch == epoch && self.revision == revision && sequence >= self.commit_sequence
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct SavedTerminals<T> {
     schema_version: u32,

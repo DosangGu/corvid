@@ -1170,18 +1170,19 @@ Choose one local integration first: **WezTerm on Windows, ordinary SSH, explicit
 No remote WezTerm mux/SSH-domain service is required. Official commands list existing
 panes as JSON and activate a named pane; see [list](https://wezterm.org/cli/cli/list.html)
 and [activate-pane](https://wezterm.org/cli/cli/activate-pane.html), checked 2026-11-07.
-Their existence is verified; exact deployed version behavior and OS foreground activation
-are untested. Record the tested WezTerm/Windows versions in Phase 3.
+See the [companion verification record](04_companion.md#verification) for the
+tested WezTerm and Windows versions.
 
-Proposed pairing flow:
+The Windows desktop pairing flow works as follows.
 
 1. In the already attached remote TUI, the user invokes a Corvid “register controller”
    command. Daemon issues a random one-time code valid for 60 seconds, bound to that
    ClientId/connection generation/epoch. Rate-limit guesses and do not expose the code
    through the ordinary inventory/watch API.
-2. Locally, the companion lists existing WezTerm panes and lets the user choose the one
-   containing that SSH TUI, choose the configured host, and enter the displayed code.
-   The user confirms the association; no remote ClientId can discover a local pane alone.
+2. The desktop lists verified local WezTerm panes. The user chooses the pane
+   containing that SSH TUI and enters the displayed code for the configured host.
+   The companion rechecks the selected process, socket file, and pane location
+   before submitting the code.
 3. Companion sends RegisterClientBinding over the authenticated control link. The daemon
    consumes the code and returns ClientId plus a binding revision. Store the association
    `(local terminal instance, window/tab/pane, host, epoch, client, binding revision)`.

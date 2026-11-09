@@ -374,11 +374,20 @@ message PresentationSlots {
 message PairTerminal {
   string code = 1;
   WezTermTarget wezterm = 2;
+  optional string control_generation = 3;
 }
 
 message WezTermTarget {
   string gui_socket = 1;
   optional uint32 pane_id = 2;
+  WezTermSelection selection = 3;
+}
+
+message WezTermSelection {
+  WezTermLocation location = 1;
+  uint64 process_created = 2;
+  uint64 volume_id = 3;
+  bytes file_id = 4;
 }
 
 message WezTermLocation {

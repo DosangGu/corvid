@@ -121,11 +121,9 @@ impl Service {
         client: Uuid,
         revision: u64,
     ) -> Option<&TerminalRecord> {
-        self.terminals.get(&client).filter(|terminal| {
-            terminal.epoch == remote.epoch
-                && terminal.revision == revision
-                && remote.sequence >= terminal.commit_sequence
-        })
+        self.terminals
+            .get(&client)
+            .filter(|terminal| terminal.matches(remote.epoch, revision, remote.sequence))
     }
 
     #[cfg(windows)]

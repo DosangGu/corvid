@@ -16,6 +16,8 @@ pub(crate) struct Snapshot {
     pub(crate) host: Uuid,
     pub(crate) page: u32,
     pub(crate) data: PresentationSlots,
+    #[cfg(windows)]
+    pub(crate) can_pair_wezterm: bool,
 }
 
 impl Snapshot {
@@ -68,6 +70,11 @@ impl Snapshot {
             host,
             page,
             data,
+            #[cfg(windows)]
+            can_pair_wezterm: session
+                .capabilities
+                .iter()
+                .any(|capability| capability == corvid_companion::WEZTERM_SELECTION_CAPABILITY),
         })
     }
 

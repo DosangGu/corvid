@@ -8,7 +8,7 @@ use std::ptr::{null, null_mut};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::wire::{LocalActivation, WezTermLocation, WezTermTarget};
+use corvid_protocol::wire::{LocalActivation, WezTermLocation, WezTermSelection, WezTermTarget};
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, SockAddr, Socket, Type};
 use tokio::io::AsyncReadExt;
@@ -33,7 +33,10 @@ use windows_sys::Win32::System::Threading::{
 use super::security::{checked, current_logon, current_user, process_logon, process_user};
 use super::storage::{check_component, require_local_acl_volume};
 
+mod discovery;
 mod foreground;
+
+pub use discovery::{WezTermCandidate, discover_wezterm_panes};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const CLI_TIMEOUT: Duration = Duration::from_secs(2);
@@ -51,6 +54,15 @@ pub(crate) struct WezTermRegistration {
 }
 
 impl WezTermRegistration {
+    fn selection(&self) -> WezTermSelection {
+        WezTermSelection {
+            location: Some(self.location()),
+            process_created: self.gui.created,
+            volume_id: self.gui.file.volume,
+            file_id: self.gui.file.id.to_vec(),
+        }
+    }
+
     pub(crate) fn location(&self) -> WezTermLocation {
         self.location.wire(self.gui.pid)
     }
@@ -77,10 +89,17 @@ impl WezTermPane {
         );
         let gui = Gui::open(Path::new(&target.gui_socket))?;
         let location = find_pane(&gui.panes().await?, pane)?;
-        Ok(WezTermRegistration {
+        let registration = WezTermRegistration {
             gui: gui.identity,
             location,
-        })
+        };
+        if let Some(selection) = target.selection {
+            ensure!(
+                selection == registration.selection(),
+                "the selected WezTerm GUI or pane changed"
+            );
+        }
+        Ok(registration)
     }
 
     pub(crate) async fn restore(saved: &WezTermRegistration) -> Result<Self> {
@@ -349,6 +368,16 @@ fn socket_identity(guards: &[File]) -> Result<SocketIdentity> {
 }
 
 fn socket_path(path: &Path) -> Result<PathBuf> {
+    let socket = local_path(path)?;
+    ensure!(
+        socket.to_str().is_some(),
+        "WezTerm socket path is not UTF-8"
+    );
+    SockAddr::unix(&socket)?;
+    Ok(socket)
+}
+
+fn local_path(path: &Path) -> Result<PathBuf> {
     let mut parts = path.components();
     let Some(Component::Prefix(prefix)) = parts.next() else {
         anyhow::bail!("WezTerm GUI socket requires an absolute local path");
@@ -360,17 +389,16 @@ fn socket_path(path: &Path) -> Result<PathBuf> {
         parts.next() == Some(Component::RootDir),
         "relative WezTerm GUI socket"
     );
-    let mut socket = PathBuf::from(format!("{}:\\", char::from(drive)));
+    let mut local = PathBuf::from(format!("{}:\\", char::from(drive)));
     for component in parts {
         let Component::Normal(name) = component else {
             anyhow::bail!("WezTerm socket path contains traversal");
         };
         check_component(name)?;
-        socket.push(name);
+        local.push(name);
     }
-    SockAddr::unix(&socket)?;
     require_local_acl_volume(drive)?;
-    Ok(socket)
+    Ok(local)
 }
 
 fn socket_pid(path: &Path) -> Result<u32> {
@@ -388,15 +416,19 @@ fn socket_pid(path: &Path) -> Result<u32> {
 }
 
 fn pin_socket(socket: &Path) -> Result<Vec<File>> {
+    pin_path(socket, false)
+}
+
+fn pin_path(target: &Path, directory_leaf: bool) -> Result<Vec<File>> {
     let mut guards = Vec::new();
-    let mut components = socket.components().peekable();
+    let mut components = target.components().peekable();
     let mut path = PathBuf::new();
     while let Some(component) = components.next() {
         path.push(component.as_os_str());
         if !matches!(component, Component::Normal(_)) {
             continue;
         }
-        let directory = components.peek().is_some();
+        let directory = directory_leaf || components.peek().is_some();
         // The handles deny delete sharing, so the checked socket or its
         // ancestors cannot be replaced while the CLI opens its connection.
         let file = OpenOptions::new()

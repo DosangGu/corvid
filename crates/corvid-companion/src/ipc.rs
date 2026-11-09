@@ -7,6 +7,8 @@ use anyhow::{Context, Result, ensure};
 use corvid_protocol::unix::{BoundSocket, RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, Pong};
+#[cfg(windows)]
+use corvid_protocol::wire::{GetPresentationSlots, PresentationSlots};
 use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole,
     ProtocolFault, Session, accept_hello, check_hello_result, hello,
@@ -31,11 +33,15 @@ pub const PRESENTATION_PAGE_SIZE: u32 = 32;
 const LIST_HOSTS_CAPABILITY: &str = "list_hosts.v1";
 #[cfg(windows)]
 pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
+#[cfg(windows)]
+pub const WEZTERM_SELECTION_CAPABILITY: &str = "wezterm_selection.v1";
 const CAPABILITIES: &[&str] = &[
     PRESENTATION_CAPABILITY,
     LIST_HOSTS_CAPABILITY,
     #[cfg(windows)]
     WEZTERM_CAPABILITY,
+    #[cfg(windows)]
+    WEZTERM_SELECTION_CAPABILITY,
 ];
 const ROLE: FrameRole = FrameRole::StructuredOnly;
 const MAX_PEERS: usize = 8;
@@ -250,6 +256,24 @@ impl PresentationClient {
 
     pub fn session(&self) -> &Session {
         &self.0.session
+    }
+
+    #[cfg(windows)]
+    pub async fn slots(&mut self, config: Option<&crate::Config>) -> Result<PresentationSlots> {
+        let reply = self
+            .request(Body::GetPresentationSlots(GetPresentationSlots::default()))
+            .await?;
+        let Body::PresentationSlots(slots) = reply else {
+            anyhow::bail!("unexpected slot response");
+        };
+        if let Some(config) = config {
+            ensure!(
+                self.session().host_id == config.host_id.to_string()
+                    && slots.controller_id == config.controller_id.to_string(),
+                "companion identity mismatch"
+            );
+        }
+        Ok(slots)
     }
 
     /// A cancelled request leaves this connection unusable. Reconnect before requesting again.

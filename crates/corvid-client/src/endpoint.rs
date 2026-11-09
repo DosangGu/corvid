@@ -1,4 +1,4 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -86,12 +86,26 @@ fn ssh_command() -> Result<Command> {
 
 #[cfg(windows)]
 fn ssh_command() -> Result<Command> {
+    let mut command = Command::new(system_openssh()?);
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    Ok(command)
+}
+
+#[cfg(windows)]
+pub fn check_system_openssh() -> Result<()> {
+    ensure!(
+        system_openssh()?.metadata()?.is_file(),
+        "system OpenSSH is unavailable"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+fn system_openssh() -> Result<PathBuf> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
-    use std::path::PathBuf;
 
     use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     let mut directory = [0; 1024];
     // The buffer is writable for the supplied number of UTF-16 code units.
@@ -101,10 +115,7 @@ fn ssh_command() -> Result<Command> {
         (1..directory.len()).contains(&len),
         "Windows system directory is unavailable"
     );
-    let path = PathBuf::from(OsString::from_wide(&directory[..len])).join(r"OpenSSH\ssh.exe");
-    let mut command = Command::new(path);
-    command.creation_flags(CREATE_NO_WINDOW);
-    Ok(command)
+    Ok(PathBuf::from(OsString::from_wide(&directory[..len])).join(r"OpenSSH\ssh.exe"))
 }
 
 type Input = Box<dyn AsyncRead + Send + Unpin>;

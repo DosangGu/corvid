@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+#[cfg(windows)]
+use std::io;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -45,6 +47,38 @@ pub struct Config {
 }
 
 impl Config {
+    #[cfg(windows)]
+    pub(crate) fn read(path: &Path) -> Result<Self> {
+        Self::read_if_present(path)?.context("companion config is missing")
+    }
+
+    #[cfg(windows)]
+    pub fn read_if_present(path: &Path) -> Result<Option<Self>> {
+        match StateDirectory::open(path) {
+            Ok(directory) => Self::read_from(&directory),
+            Err(error)
+                if error
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read_from(directory: &StateDirectory) -> Result<Option<Self>> {
+        let Some(bytes) = directory.read_private_file(CONFIG, CONFIG_LIMIT)? else {
+            return Ok(None);
+        };
+        let version: Version = serde_json::from_slice(&bytes)
+            .context("damaged companion config; repair it before starting")?;
+        check_version(CONFIG, version)?;
+        let config: Self = serde_json::from_slice(&bytes).context("invalid companion config")?;
+        config.validate()?;
+        Ok(Some(config))
+    }
+
     pub fn control_endpoint(&self) -> Result<ControlEndpoint> {
         Ok(match &self.endpoint {
             #[cfg(target_os = "linux")]
@@ -145,14 +179,7 @@ impl Store {
         let directory =
             StateDirectory::open(path).context("open companion state created by companion init")?;
         let lock = directory.lock_storage()?;
-        let bytes = directory
-            .read_private_file(CONFIG, CONFIG_LIMIT)?
-            .context("companion config is missing")?;
-        let version: Version = serde_json::from_slice(&bytes)
-            .context("damaged companion config; repair it before starting")?;
-        check_version(CONFIG, version)?;
-        let config: Config = serde_json::from_slice(&bytes).context("invalid companion config")?;
-        config.validate()?;
+        let config = Config::read_from(&directory)?.context("companion config is missing")?;
         let (slots, recovery) = load_slots(&directory, &config)?;
         Ok(Self {
             directory,

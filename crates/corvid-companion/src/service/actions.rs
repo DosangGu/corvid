@@ -49,7 +49,10 @@ impl Service {
     }
 
     async fn pair(&mut self, pair: PairTerminal) -> Outcome {
-        let remote = self.require_ready()?;
+        let remote = match &pair.control_generation {
+            Some(generation) => self.require_generation(generation)?,
+            None => self.require_ready()?,
+        };
         let code = parse_id(&pair.code)?;
         #[cfg(not(windows))]
         if pair.wezterm.is_some() {

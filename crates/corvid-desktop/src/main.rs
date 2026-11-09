@@ -3,6 +3,8 @@
 mod app;
 mod ipc;
 mod model;
+#[cfg(windows)]
+mod pairing;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;

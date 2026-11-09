@@ -39,6 +39,8 @@ pub(crate) struct Desktop {
     page: u32,
     pending: Option<Uuid>,
     notice: Option<Completion>,
+    #[cfg(windows)]
+    pairing: crate::pairing::Pairing,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -60,6 +62,8 @@ impl Desktop {
             page: 0,
             pending: None,
             notice: None,
+            #[cfg(windows)]
+            pairing: crate::pairing::Pairing::default(),
         }
     }
 
@@ -84,6 +88,8 @@ impl Desktop {
             _ => {
                 self.binding = None;
                 self.placement = None;
+                #[cfg(windows)]
+                self.pairing.close();
             }
         }
         self.view = next;
@@ -177,6 +183,14 @@ impl Desktop {
                 _ => {}
             }
             self.binding_picker(ui, &snapshot);
+            #[cfg(windows)]
+            if snapshot.can_pair_wezterm
+                && ui
+                    .add_enabled(self.ready(&snapshot), egui::Button::new("Pair WezTerm…"))
+                    .clicked()
+            {
+                self.pairing.open(ui.ctx());
+            }
         }
     }
 
@@ -419,6 +433,14 @@ impl eframe::App for Desktop {
                     Section::History => ended(ui, &snapshot),
                 });
             });
+        #[cfg(windows)]
+        if let Some(snapshot) = self.view.snapshot.clone()
+            && let Some(generation) = snapshot.generation()
+            && self.ready(&snapshot)
+            && let Some(body) = self.pairing.show(ctx, snapshot.host, generation)
+        {
+            self.submit(&snapshot, body);
+        }
     }
 }
 

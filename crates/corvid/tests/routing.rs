@@ -1008,6 +1008,7 @@ async fn verify_focus_rejections(
             .request(Body::PairTerminal(PairTerminal {
                 code,
                 wezterm: None,
+                control_generation: None,
             }))
             .await
             .unwrap();
@@ -1102,6 +1103,7 @@ async fn verify_tab_move(
         .request(Body::PairTerminal(PairTerminal {
             code: code.to_string(),
             wezterm: None,
+            control_generation: None,
         }))
         .await
         .unwrap();

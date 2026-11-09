@@ -5,17 +5,14 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentList, ClientList, ConnectionStatus, GetHost, HostInfo, ListAgents, ListClients,
-    ListWorkspaces, Ping, WorkspaceList,
+    AgentList, ClientList, ConnectionStatus, HostInfo, ListAgents, ListClients, ListWorkspaces,
+    Ping, WorkspaceList,
 };
 
 use super::{ControlEndpoint, ControllerRequest, ControllerScope};
 
 pub async fn host(runtime: &Path) -> Result<HostInfo> {
-    match request(runtime, Body::GetHost(GetHost {}), "host.v1").await? {
-        Body::HostInfo(host) => Ok(host),
-        _ => bail!("unexpected response to GetHost"),
-    }
+    ControlEndpoint::Local(runtime.to_owned()).host().await
 }
 
 pub async fn ping(runtime: &Path) -> Result<()> {

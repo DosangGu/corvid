@@ -3,7 +3,8 @@ use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABIL
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AcknowledgeAttention, ConnectionStatus, FocusAgentRequest, GetCapabilities,
-    GetConnectionStatus, HelloResult, RegisterClientBinding, UnregisterClientBinding,
+    GetConnectionStatus, GetHost, HelloResult, HostInfo, RegisterClientBinding,
+    UnregisterClientBinding,
 };
 use corvid_protocol::{CAPABILITY_QUERY, COMMAND_TIMEOUT, ProtocolFault};
 use tokio::time::timeout;
@@ -42,6 +43,13 @@ pub enum ControllerRequest {
 }
 
 impl ControlEndpoint {
+    pub async fn host(&self) -> Result<HostInfo> {
+        match self.request(Body::GetHost(GetHost {}), "host.v1").await? {
+            Body::HostInfo(host) => Ok(host),
+            _ => bail!("unexpected response to GetHost"),
+        }
+    }
+
     pub async fn status(&self) -> Result<ConnectionStatus> {
         match self
             .request(

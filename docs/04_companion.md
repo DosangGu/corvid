@@ -1,15 +1,18 @@
 # Local Companion
 
 The companion connects to one configured Linux Corvid daemon and maintains
-virtual slots. It serves framed Protobuf to the local CLI over a private Unix
-socket on Linux or a current-user named pipe on Windows.
+virtual slots. It serves framed Protobuf to the local CLI and desktop board
+over a private Unix socket on Linux or a current-user named pipe on Windows.
+
+- [Windows quick start](#windows-quick-start)
+- [Windows process and state ownership](#windows-process-and-state-ownership)
+- [Windows diagnostics](#windows-diagnostics)
 
 ## Configure and Run
 
-Read the daemon's `host_id` with `corvid control host` on the execution host.
-
 ### Linux
 
+Read the daemon's `host_id` with `corvid control host` on the execution host.
 For a local daemon, initialize the companion with that ID. The global
 `--runtime-dir` flag selects a local daemon's socket directory when needed.
 
@@ -30,29 +33,156 @@ Defaults are `$XDG_RUNTIME_DIR/corvid-companion` for the presentation socket and
 state base fallback. Override with `companion --socket-dir` and `--state-dir`.
 Point subsequent commands at the same socket directory.
 
-### Windows
+### Windows quick start
 
-Build with `cargo build --locked -p corvid`. Enable the Windows OpenSSH Client
-feature and configure `work-host` for noninteractive authentication. The
-companion uses the OpenSSH executable in the Windows system directory.
-[Windows OpenSSH setup](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?pivots=windows-11)
+1. Install `corvid` on the Linux account's remote command `PATH` and start
+   its daemon. Enable the Windows OpenSSH Client feature and open WezTerm for
+   the working terminal. Extract the Windows x64 package to a stable folder
+   and run the Windows commands below from that folder. See the
+   [Linux daemon setup](02_daemon_foundation.md#run-locally),
+   [Windows OpenSSH setup](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?pivots=windows-11),
+   and [package build](#windows-package-and-login-startup).
+2. Add an alias such as `work-host` to `%USERPROFILE%\.ssh\config` and set up
+   host-key trust and noninteractive authentication. Replace the example
+   hostname and account with your Linux host and user.
+
+   ```sshconfig
+   Host work-host
+       HostName linux.example.com
+       User corvid-user
+   ```
+
+3. Open the board from the extracted folder in the same Windows logon as
+   WezTerm. On first use, `open` looks up the Linux daemon's HostId through
+   system OpenSSH and saves the companion configuration.
+
+   ```powershell
+   .\corvid.exe companion open work-host
+   ```
+
+   On later launches, use `.\corvid.exe companion open`. It reuses the saved
+   host identity and layout. The command waits for the board to close.
+   It uses a matching companion if one is running and starts one for the
+   lifetime of the board otherwise.
+
+   To supply the expected HostId yourself, use `companion init --host-id`
+   with `--ssh-alias` before `open`. Use `companion run` to keep a companion
+   running independently of the board.
+
+4. In a WezTerm pane, attach to an existing remote Corvid terminal. If the
+   daemon is running and you want to start a managed agent explicitly, use
+   `corvid attach --agent codex` or `corvid attach --agent claude` as the
+   remote command in that same SSH invocation. The provider executable must
+   be available on the daemon's `PATH`. For agent status and pending-question
+   observations, see [provider setup](03_provider_qualification.md).
+
+   ```powershell
+   ssh -tt work-host corvid attach
+   ```
+
+5. In the attached TUI, press Ctrl-] then r to get a one-time code. On the
+   board, open **Pair WezTerm…**, choose that pane, and enter the code within
+   60 seconds. Dismiss the TUI prompt with Enter or Esc and keep the TUI open.
+   Choose the registered TUI under **Target terminal** and click **Focus**
+   on the desired slot. Answer agent questions and grant permissions in the
+   TUI. The board's **Acknowledge alert** action marks an alert seen.
+
+### Windows state and pipe settings
+
+State defaults to `%LOCALAPPDATA%\Corvid\companion` and the pipe instance to
+`main`. With a custom `--state-dir`, give `open` or `init` a new absolute
+directory on a local fixed drive with persistent ACLs. Use the same path
+with `open`, `run`, and `doctor`. The state directory and files require a
+protected DACL granting access only to the current user.
+
+For a second instance, use a different state directory and `--pipe-instance`
+value. Pass that pipe instance to the companion, its CLI clients, and the
+board. Both ends check the pipe owner and DACL before exchanging frames.
+[Named pipe access controls](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+
+### Windows package and login startup
+
+From the repository root on Windows x64, run
+`powershell -File deploy/windows/Package-Corvid.ps1` with the pinned MSVC Rust
+toolchain and `protoc` 36.1 available. The script builds both release binaries
+and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
+directory (`target` by default). The archive includes `corvid.exe`,
+`corvid-desktop.exe`, the license, and `Set-CorvidStartup.ps1`.
+
+Extract the archive to a stable directory and use `companion open` to check
+the connection. Run one of the following commands from the extracted
+directory to manage the current user's startup shortcut.
 
 ```powershell
-corvid.exe companion init --host-id $HostId --ssh-alias work-host --count 8
-corvid.exe companion run
-# In a second PowerShell window
-corvid.exe companion hosts
-corvid.exe companion slots
+powershell -File .\Set-CorvidStartup.ps1 -Mode Enable
+powershell -File .\Set-CorvidStartup.ps1 -Mode Status
+powershell -File .\Set-CorvidStartup.ps1 -Mode Disable
 ```
 
-State defaults to `%LOCALAPPDATA%\Corvid\companion`. For `--state-dir`, give
-`init` a new absolute directory on a local fixed drive with persistent ACLs.
-Use the same override for `run`. The companion requires a protected DACL
-granting access only to the current user on its state directory and files.
-Set `--pipe-instance` on `run` and client commands if using a pipe instance
-other than `main`. Separate companion instances also need separate state
-directories. Both ends check the pipe owner and DACL before exchanging
-frames. [Named pipe access controls](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+At the next login, the enabled shortcut starts `corvid.exe companion run`
+with the default state directory and pipe instance in a minimized console.
+Use `companion open` to open the board and pair the newly attached TUI when
+ready. Rerun `-Mode Enable` after moving the package.
+
+## Windows process and state ownership
+
+```mermaid
+flowchart LR
+    subgraph Windows
+        Board["corvid-desktop.exe"]
+        CLI["corvid.exe companion CLI"]
+        Companion["corvid.exe companion run"]
+        WezTerm["WezTerm pane"]
+        Board -->|"private named pipe"| Companion
+        CLI -->|"private named pipe"| Companion
+        Companion -->|"verified pane selection"| WezTerm
+    end
+    subgraph Linux
+        Relay["corvid control --stdio"]
+        TUI["corvid attach"]
+        Daemon["corvid daemon"]
+        Agent["Coding agent CLI"]
+        Relay -->|"Unix control socket"| Daemon
+        TUI -->|"Unix client socket"| Daemon
+        Daemon -->|"PTY"| Agent
+    end
+    Companion -->|"noninteractive SSH -T"| Relay
+    WezTerm -->|"working SSH -tt"| TUI
+```
+
+| Component | Responsibility | Source |
+| --- | --- | --- |
+| Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
+| SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
+| Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
+| Desktop board | Displays snapshots and sends actions against the selected slot and TUI registration. Its pairing dialog lists verified local panes. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
+| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package both binaries and manage optional login startup. | [CLI](../crates/corvid/src/companion.rs) · [deployment](../deploy/windows/) |
+| Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
+
+The companion stores its host and controller identity in `config.json` and
+its slot layout, pins, and last-known observations in `slots.json`. Local
+terminal registrations live in a private volatile registry key scoped to the
+Windows logon. A companion restart in the same logon can restore a binding
+when the TUI and pane are still live. A Windows logoff or reboot keeps the
+saved slot layout and requires a fresh TUI pairing. The Linux PTYs and
+agents survive the loss of either Windows connection while the daemon and
+its host remain alive.
+
+## Windows diagnostics
+
+Run `corvid.exe companion doctor` to check system OpenSSH, private state, the
+named pipe, the configured remote host, and saved local registrations. Use
+the same `--state-dir` and `--pipe-instance` as `run`. The command exits with
+an error if a check fails. When the companion is unavailable or syncing, the
+command can open a read-only SSH snapshot watch to test the configured host.
+
+| Symptom | What to check |
+| --- | --- |
+| Named pipe missing | Start `companion run` and use the same pipe instance in the CLI and board. |
+| Remote host unavailable | Run `ssh -T -oBatchMode=yes -oStrictHostKeyChecking=yes work-host corvid control host` and compare the returned `host_id` with the configured host. |
+| Empty slots while the host is ready | Start a managed agent and use `corvid control agents` on Linux to check its run state. |
+| Local registration unavailable | Refresh the WezTerm pane list, generate a new code in the attached TUI, and pair that pane again. |
+| Pane selected with foreground unknown | Bring the registered WezTerm window forward manually. The remote TUI and pane were selected. |
 
 ## Inspect the Configured Host
 
@@ -65,9 +195,9 @@ an additional control connection. The presentation capability is `list_hosts.v1`
 
 ## Desktop Slot Board
 
-Build the separate native desktop binary with `cargo build --locked -p corvid-desktop`.
-Start the configured companion, pair the intended TUI, and run `corvid-desktop`
-from the build output. The desktop accepts the same `--socket-dir` on Linux or
+Build the separate native desktop binary with `cargo build --locked -p corvid-desktop`
+or use the Windows package. Start the configured companion and launch
+`corvid-desktop`. The desktop accepts the same `--socket-dir` on Linux or
 `--pipe-instance` on Windows as the companion. The board uses eframe 0.33.3 with
 the Glow renderer and connects directly to the private Protobuf endpoint.
 [eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
@@ -111,10 +241,18 @@ one registration.
 
 ### WezTerm on Windows
 
+Keep the SSH TUI attached in WezTerm. In the desktop board, open **Pair
+WezTerm…**, choose the pane by its GUI, window, tab and pane IDs, and enter the
+one-time code from Ctrl-] then r in that TUI. The pane title helps identify the
+pane. The companion checks the exact process, socket file, and pane location
+shown in the chooser before sending the code to the configured host. After a
+pane moves, refresh the list and pair it again. Choose the new binding under
+**Target terminal** before focusing a slot.
+
 Keep the ordinary SSH session and its Corvid TUI open. In a separate local
-shell in the same WezTerm GUI, list panes and choose the numeric ID for the
-pane containing the TUI. Read its pairing code as above. Run the following
-locally, with the chosen ID in `$PaneId`.
+shell in the same WezTerm GUI, the CLI can also list panes and pair the
+selected numeric ID. Read its pairing code as above and use the chosen ID in
+`$PaneId`.
 
 ```powershell
 wezterm --skip-config cli --no-auto-start list --format json
@@ -287,6 +425,16 @@ original terminal. The old captures were rejected. After the WezTerm pane
 moved, focus returned `LocalTerminalUnavailable` before changing the remote
 selection. The desktop board opened against the same named pipe. Desktop
 button interactions and the Windows reboot case remain open.
+
+The desktop pairing request also passed against the loopback SSH fixture
+using a test client and a live WezTerm pane. `companion doctor` verified the
+original registration, reported it unavailable after the pane moved, and
+verified the new revision after re-pairing. The packaged startup script
+created and removed the expected shortcut in an isolated Startup directory.
+The packaged `companion open` command also pinned the loopback daemon's
+HostId on first use, reused the saved configuration, and opened the board
+against a separately running companion. A mismatched pipe and state
+identity was rejected.
 
 ### Local PC reboot reproduction
 

@@ -12,3 +12,6 @@ pub(crate) use windows::{
 };
 #[cfg(windows)]
 pub(crate) type StateLock = std::fs::File;
+
+#[cfg(windows)]
+pub use windows::{WezTermCandidate, discover_wezterm_panes};
