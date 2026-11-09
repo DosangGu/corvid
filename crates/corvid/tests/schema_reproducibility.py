@@ -1,4 +1,4 @@
-"""Compare clean Rust schema builds and run the compiler-free fixtures."""
+"""Compare clean protox and reference protoc builds and run the framing fixtures."""
 
 import argparse
 from hashlib import file_digest, sha256
@@ -15,6 +15,7 @@ from zipfile import ZipFile
 
 
 PROTOC_SHA256 = "c4bc672d9d49214dc8cafdceadf4df92182d6ca8e3ec65a56b2d7de5602669b4"
+REFERENCE_PROTOC = "CORVID_SCHEMA_REFERENCE_PROTOC"
 RUST_OUTPUTS = ("corvid.protocol.v1.rs", "wire_preflight.rs")
 
 
@@ -46,10 +47,13 @@ def copy_tracked_sources(root, destination, paths):
             shutil.copy2(source, target)
 
 
-def build(source, compiler):
+def build(source, reference_compiler=None):
     target = source / "target"
-    env = os.environ | {"PROTOC": str(compiler), "CARGO_TARGET_DIR": str(target)}
+    env = os.environ | {"PROTOC": str(source / "missing-protoc"), "CARGO_TARGET_DIR": str(target)}
     env.pop("CARGO_BUILD_TARGET", None)
+    env.pop(REFERENCE_PROTOC, None)
+    if reference_compiler is not None:
+        env[REFERENCE_PROTOC] = str(reference_compiler)
     subprocess.run(["cargo", "build", "--locked", "-p", "corvid"], cwd=source, env=env, check=True)
     result = subprocess.run(
         [
@@ -99,13 +103,13 @@ def verify(root, archive):
         first, second = directory / "first", directory / "second"
         for source in (first, second):
             copy_tracked_sources(root, source, paths)
-        fixture = build(first, compiler)
+        fixture = build(first)
         build(second, compiler)
 
         first_output, second_output = generated(first), generated(second)
         for name, contents in first_output.items():
             if contents != second_output[name]:
-                raise RuntimeError(f"Clean builds disagree on generated {name}")
+                raise RuntimeError(f"protox and reference protoc builds disagree on generated {name}")
             print(f"{sha256(contents).hexdigest()}  {name}")
 
         empty_path = directory / "runtime-path"

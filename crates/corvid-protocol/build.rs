@@ -5,26 +5,24 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use prost_types::FileDescriptorSet;
 use prost_types::field_descriptor_proto::{Label, Type};
 
 const PROTO: &str = "proto/corvid.proto";
 const PACKAGE: &str = "corvid.protocol.v1";
+const REFERENCE_PROTOC: &str = "CORVID_SCHEMA_REFERENCE_PROTOC";
 const PROTOC_VERSION: &str = "libprotoc 36.1";
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed={PROTO}");
-    println!("cargo:rerun-if-env-changed=PROTOC");
-
-    let protoc = prost_build::protoc_from_env();
-    let version = Command::new(&protoc).arg("--version").output()?;
-    if !version.status.success() || std::str::from_utf8(&version.stdout)?.trim() != PROTOC_VERSION {
-        return Err(format!("Corvid requires {PROTOC_VERSION} to build the wire schema").into());
-    }
+    println!("cargo:rerun-if-env-changed={REFERENCE_PROTOC}");
 
     let mut config = prost_build::Config::new();
     config.boxed(format!(".{PACKAGE}.SnapshotEntity.body.agent"));
-    config.protoc_executable(protoc);
-    let descriptors = config.load_fds(&[PROTO], &["proto"])?;
+    let descriptors = match env::var_os(REFERENCE_PROTOC) {
+        Some(protoc) => reference_descriptors(&mut config, protoc.into())?,
+        None => protox::compile([PROTO], ["proto"])?,
+    };
     let preflight = preflight_tables(&descriptors)?;
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").ok_or("missing OUT_DIR")?);
     fs::write(out_dir.join("wire_preflight.rs"), preflight)?;
@@ -32,9 +30,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn preflight_tables(
-    descriptors: &prost_types::FileDescriptorSet,
-) -> Result<String, Box<dyn Error>> {
+fn reference_descriptors(
+    config: &mut prost_build::Config,
+    protoc: PathBuf,
+) -> Result<FileDescriptorSet, Box<dyn Error>> {
+    let version = Command::new(&protoc)
+        .arg("--version")
+        .output()
+        .map_err(|error| {
+            format!(
+                "could not run reference compiler {} ({error})",
+                protoc.display()
+            )
+        })?;
+    let version_output = String::from_utf8_lossy(&version.stdout);
+    if !version.status.success() || version_output.trim() != PROTOC_VERSION {
+        return Err(format!(
+            "{} --version returned {} with stdout {:?}. Corvid requires {PROTOC_VERSION} to build the wire schema.",
+            protoc.display(),
+            version.status,
+            version_output.trim()
+        )
+        .into());
+    }
+
+    config.protoc_executable(protoc);
+    Ok(config.load_fds(&[PROTO], &["proto"])?)
+}
+
+fn preflight_tables(descriptors: &FileDescriptorSet) -> Result<String, Box<dyn Error>> {
     let file = descriptors
         .file
         .iter()

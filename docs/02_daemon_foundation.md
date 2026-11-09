@@ -11,7 +11,8 @@ cargo build --locked -p corvid
 target/debug/corvid
 ```
 
-Linux builds use `protoc` 36.1 and the ncurses `tic` compiler. Running `corvid`
+Linux builds use the ncurses `tic` compiler. Cargo builds the Protobuf schema
+using `protox`. Running `corvid`
 without a subcommand starts a background daemon if needed and joins a live
 terminal in the default workspace. For an empty workspace, it looks for `claude`
 and `codex` on the daemon's PATH. It starts the only detected agent, asks which
@@ -315,8 +316,8 @@ python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid
 A11 ran on QEMU 11.1.3 with Debian 13, Linux 6.12.111, systemd 257.13, and
 OpenSSH 10.0p2. Use the dedicated `operator` and `observer` accounts and
 pinned SSH setup described for A21. The user unit must start at boot, and the
-daemon's live inventory must be empty when the fixture starts. Install `protoc`
-36.1 on the client. In the disposable guest, install this test executable as
+daemon's live inventory must be empty when the fixture starts. In the
+disposable guest, install this test executable as
 `/usr/local/bin/claude` on the daemon's PATH.
 
 ```python
@@ -345,8 +346,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/remote_reboot.py \
 
 ### Snapshot catch-up race reproduction
 
-The A8 fixture uses Claude Code 2.1.318, the loopback model server, and
-`protoc` 36.1. It seeds 80 synthetic historical runs with 256 requests each
+The A8 fixture uses Claude Code 2.1.318 and the loopback model server.
+It seeds 80 synthetic historical runs with 256 requests each
 so the base spans multiple frames. A private Unix socket proxy forwards
 `SnapshotBegin` to the normal `control watch` client, then pauses reads while
 the real CLI asks a question and an explicit TUI action moves the agent tab.
@@ -495,8 +496,9 @@ headers, and complete render delivery. [Protocol Buffers encoding rules](https:/
 
 ### Reproducible Protobuf Builds
 
-The Rust build uses Rust 1.93.1 and Prost 0.14.4. Use the official `protoc` 36.1 archive for
-the host that runs the compiler and verify its SHA-256 before extracting it.
+Normal builds generate schema descriptors with `protox` 0.10.0 and Rust code
+with Prost 0.14.4. The comparison fixture uses the official `protoc` 36.1
+archive as a reference. Verify its SHA-256 before extracting it.
 [Protobuf 36.1 release assets](https://github.com/protocolbuffers/protobuf/releases/expanded_assets/v36.1)
 
 | Archive | SHA-256 |
@@ -506,9 +508,11 @@ the host that runs the compiler and verify its SHA-256 before extracting it.
 
 From a checkout under a trusted directory such as your home directory, run
 the A31 fixture on Linux x86-64 with Python 3.11 or newer, `tic`, and the
-pinned Rust toolchain. The fixture verifies the compiler archive, builds
-two copies of the tracked sources with the lockfile, compares the generated
-files byte for byte, and runs the compiled tests with the compiler unavailable.
+pinned Rust toolchain. The fixture verifies the compiler archive and builds two
+copies of the tracked sources with the lockfile. The first uses the standard
+`protox` path with an invalid `PROTOC` setting. The second uses the archived
+compiler through `CORVID_SCHEMA_REFERENCE_PROTOC`. It compares the generated
+files byte for byte and runs the compiled tests with the compiler unavailable.
 
 ```sh
 python3 crates/corvid/tests/schema_reproducibility.py /path/to/protoc-36.1-linux-x86_64.zip

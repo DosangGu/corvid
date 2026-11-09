@@ -1008,15 +1008,15 @@ above are Corvid decisions and require version-skew fixtures, not just successfu
 
 For implementation, keep `.proto` definitions in one shared protocol package; daemon,
 TUI, and Rust companion consume generated wire types and explicit domain conversions.
-The protocol crate uses `prost` and build-time `prost-build` 0.14.4. The build checks
-for `libprotoc 36.1` and uses the same schema descriptor to generate wire types and
-field tables for bounded decode preflight. Use the pinned compiler in CI. The preflight
+The protocol crate uses `protox` 0.10.0 and `prost-build` 0.14.4. Cargo uses
+the same schema descriptor to generate wire types and field tables for bounded
+decode preflight. The reproducibility fixture compares both outputs against
+the pinned `protoc` 36.1 reference. The preflight
 rejects legacy groups, limits known message depth to 32, and bounds repeated fields
 before decoding. Apply method-specific semantic limits before executing requests.
-Generate into the build output directory; do not hand-edit generated Rust. End users of
-packaged binaries do not need `protoc`.
-The [prost-build documentation](https://docs.rs/prost-build/0.14.4/prost_build/#sourcing-protoc),
-checked 2026-11-07, documents the compiler requirement.
+Generate into the build output directory and leave generated Rust untouched.
+The [protox documentation](https://docs.rs/protox/0.10.0/protox/) describes
+descriptor generation for Prost.
 
 JSON remains for schema-versioned persistence/configuration, provider-defined payloads,
 and optional human-readable CLI/debug output. A proposed `--json` diagnostic mode decodes
@@ -1410,7 +1410,7 @@ status again when creating the first implementation manifest.
 | UI composition/diff | `ratatui` **0.30.2**, MIT | [Release](https://docs.rs/crate/ratatui/0.30.2) dated 2026-06-19 and documented frame buffers | Selected; qualify a server-side byte-output backend and per-client recovery; no global renderer |
 | Outer terminal handling | `crossterm` **0.29.0**, MIT | [Release/API](https://docs.rs/crate/crossterm/0.29.0), dated 2025-04-05, documented cross-platform controls | Use for TTY setup/output as appropriate; do not depend on lossy key decoding for byte passthrough; Windows portability is not whole-product validation |
 | Runtime/local IPC | `tokio` **1.53.3**, MIT | [Release](https://docs.rs/crate/tokio/1.53.3) dated 2026-10-13; [current maintenance policy](https://docs.rs/crate/tokio/latest) lists 1.53.x LTS through September 2027 | Selected evaluation baseline; bounded channels and dedicated blocking PTY workers |
-| Control / structured IPC | `prost` + `prost-build` **0.14.4**, Apache-2.0 | [Prost API](https://docs.rs/prost/0.14.4/prost/), [build tool release](https://docs.rs/crate/prost-build/0.14.4) dated 2026-06-07, and [compiler requirement](https://docs.rs/prost-build/0.14.4/prost_build/#sourcing-protoc); shared proto3 schema and build-time Rust generation | Selected for explicit wire contracts and schema evolution. Qualify and pin `protoc`, generator, and Rust toolchain; test version skew and bounded decoding; A29–A31 |
+| Control / structured IPC | `prost` + `prost-build` **0.14.4**, `protox` **0.10.0** | Shared proto3 schema and Cargo-managed Rust generation. [Prost API](https://docs.rs/prost/0.14.4/prost/) · [protox](https://docs.rs/protox/0.10.0/protox/) | Selected for explicit wire contracts and schema evolution. Pin the generator and Rust toolchain, compare outputs with the `protoc` reference, and test version skew and bounded decoding. A29–A31 |
 | Persistence / provider JSON / diagnostics | `serde` **1.0.229** + `serde_json` **1.0.154**, MIT OR Apache-2.0 | [Serde manifest](https://github.com/serde-rs/serde/blob/master/serde/Cargo.toml), [JSON manifest](https://github.com/serde-rs/json/blob/master/Cargo.toml), [JSON release](https://docs.rs/crate/serde_json/1.0.154) dated 2026-10-11 | Selected for schema-versioned metadata, existing provider payloads, and optional readable exports; independent of generated wire types |
 | Former codec | `bincode` **3.0.0** notice; **2.0.1** last functional release listed | [Publisher notice](https://docs.rs/crate/bincode/3.0.0) says maintenance ceased; 3.0.0 intentionally emits a compile error | Rejected for this new project; do not pin 2.0.1 merely to avoid version design |
 | Configuration | Same JSON/schema infrastructure initially | Corvid choice, no extra format dependency | TOML/KDL ergonomics may be reconsidered later, not a prerequisite |

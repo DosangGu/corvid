@@ -12,7 +12,8 @@ qualification.
 
 ## Build, Test, and Development Commands
 
-Install `protoc` 36.1 and `tic` for Linux builds. Run `git diff --check` for whitespace.
+Install `tic` for Linux builds. The schema reproducibility fixture uses a
+pinned `protoc` archive for comparison. Run `git diff --check` for whitespace.
 From the workspace root:
 
 - `cargo build --workspace`: compile workspace packages.

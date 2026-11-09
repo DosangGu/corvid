@@ -14,6 +14,7 @@ tokio = { workspace = true, features = ["io-util", "time"] }
 [build-dependencies]
 prost-build.workspace = true
 prost-types.workspace = true
+protox = "=0.10.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
