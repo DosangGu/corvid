@@ -240,6 +240,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             .then_some(argv);
             let options = corvid_client::AttachOptions {
                 launch,
+                launch_if_empty: false,
                 agent: agent.map(|agent| match agent {
                     ManagedAgent::Claude => AgentProvider::Claude,
                     ManagedAgent::Codex => AgentProvider::Codex,

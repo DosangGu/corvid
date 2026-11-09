@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use corvid_core::agent::Provider;
 use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
@@ -104,6 +105,7 @@ struct Client {
     keymap: Keymap,
     view: Option<ClientView>,
     focuses: mpsc::Sender<FocusDispatch>,
+    notices: Option<mpsc::Sender<Provider>>,
 }
 
 struct ClientView {
@@ -198,8 +200,16 @@ impl Workspaces {
         producer: HookProducer,
     ) -> Reply<()> {
         let mut registry = self.lock_registry();
-        registry.agents.apply_hook(hook, owner, producer)?;
+        let notice = registry.agents.apply_hook(hook, owner, producer)?;
         registry.publish(Vec::new());
+        if let Some((location, provider)) = notice
+            && let Some(claim) = registry.claims.get(&location.workspace)
+            && let Some(client) = registry.clients.get(&claim.client)
+            && client.view.is_some()
+            && let Some(notices) = &client.notices
+        {
+            let _ = notices.try_send(provider);
+        }
         Ok(())
     }
 
@@ -219,6 +229,7 @@ impl Workspaces {
         client: Uuid,
         mut target: AttachTarget,
         focuses: mpsc::Sender<FocusDispatch>,
+        notices: Option<mpsc::Sender<Provider>>,
     ) -> Reply<Active> {
         let (location, generation, terminal) = self.reserve(client, &mut target)?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
@@ -249,6 +260,7 @@ impl Workspaces {
                         keymap: target.keymap,
                         view: None,
                         focuses,
+                        notices,
                     },
                 );
                 registry.record_view(&active);
@@ -271,7 +283,11 @@ impl Workspaces {
         let mut layout = self.metadata.layout();
         let location = resolve(&registry, &mut layout, target)?;
         registry.check_available(location.workspace)?;
-        prepare_cwd(&layout, location, target.launch.as_mut())?;
+        if let Some(launch) = &mut target.launch
+            && (!launch.if_empty || !registry.has_live_at(location))
+        {
+            prepare_cwd(&layout, location, Some(launch))?;
+        }
         let generation = registry.next_generation()?;
         let terminal = self.reserve_slot(&mut registry, location, target.launch.is_some())?;
         if target.new_workspace.is_some() || target.new_tab.is_some() {
@@ -511,6 +527,12 @@ impl Workspaces {
 }
 
 impl Registry {
+    fn has_live_at(&self, location: Location) -> bool {
+        self.slots
+            .get(&location.pane)
+            .is_some_and(|slot| slot.terminal.has_live_terminal())
+    }
+
     pub(crate) fn publish(&mut self, projections: Vec<Projection>) {
         self.commit(projections, None);
     }
@@ -809,6 +831,7 @@ fn resolve_switch(
                 argv: Vec::new(),
                 cwd: None,
                 provider: None,
+                if_empty: false,
             };
             prepare_cwd(layout, old.location, Some(&mut launch))?;
             let location = Arc::make_mut(layout)
@@ -878,7 +901,7 @@ fn resolve(
             .add_tab(location.workspace, label.clone())
             .map_err(|_| invalid_layout());
     }
-    if target.tab.is_none() && target.launch.is_none() {
+    if target.tab.is_none() && target.launch.as_ref().is_none_or(|launch| launch.if_empty) {
         let workspace = layout
             .workspaces
             .iter()
@@ -887,12 +910,7 @@ fn resolve(
             .into_iter()
             .flat_map(|item| &item.tabs)
             .filter_map(|tab| layout.locate(Some(location.workspace), Some(tab.id)))
-            .find(|location| {
-                registry
-                    .slots
-                    .get(&location.pane)
-                    .is_some_and(|slot| slot.terminal.has_live_terminal())
-            })
+            .find(|location| registry.has_live_at(*location))
         {
             return Ok(live);
         }

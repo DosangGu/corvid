@@ -17,9 +17,9 @@ use corvid_protocol::wire::{
     ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
 };
 use corvid_protocol::{
-    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, Frame, FrameReader,
-    FrameWriter, MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RenderFrame, Session,
-    decode_envelope,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
+    DEFAULT_LAUNCH_CAPABILITY, Frame, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY, PeerRole,
+    ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, Session, decode_envelope,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::signal::unix::{SignalKind, signal};
@@ -38,6 +38,8 @@ const LEGACY_MAX_ROWS: u16 = 120;
 
 pub struct AttachOptions {
     pub launch: Option<Vec<OsString>>,
+    /// Open a default terminal only when there is no live terminal to join.
+    pub launch_if_empty: bool,
     pub agent: Option<AgentProvider>,
     pub escape_delay: Duration,
     pub restore_cwd: bool,
@@ -54,6 +56,7 @@ impl Default for AttachOptions {
     fn default() -> Self {
         Self {
             launch: None,
+            launch_if_empty: false,
             agent: None,
             escape_delay: Duration::from_millis(100),
             restore_cwd: false,
@@ -90,10 +93,11 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         required.push(MOVE_TAB_CAPABILITY.into());
     }
     let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
+    let notification = ResponseNotification::negotiate(&connection.session);
     let escape_delay = options.escape_delay;
     let (connection, route) = timeout(
         COMMAND_TIMEOUT,
-        request_attach(connection, viewport, options),
+        request_attach(connection, viewport, options, notification.is_some()),
     )
     .await??;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -102,7 +106,7 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
 
     let tty = Tty::enter()?;
     timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
-    let mut client = Interactive::new(connection, viewport, route, escape_delay);
+    let mut client = Interactive::new(connection, viewport, route, escape_delay, notification);
     tokio::select! {
         result = async {
             client.configure_layout(&tty, claims, move_tab).await?;
@@ -120,6 +124,7 @@ async fn request_attach(
     mut connection: Connection,
     viewport: Viewport,
     options: AttachOptions,
+    notifications: bool,
 ) -> Result<(Connection, RouteToken)> {
     check_viewport_support(&connection.session, viewport)?;
     let mut terminal_capabilities = vec!["legacy_vt.v1".into(), "tabs.v1".into()];
@@ -131,14 +136,31 @@ async fn request_attach(
     {
         terminal_capabilities.push(PAIR_CAPABILITY.into());
     }
+    if notifications {
+        terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
+    }
+    let launch_if_empty = options.launch_if_empty
+        && connection
+            .session
+            .capabilities
+            .iter()
+            .any(|name| name == DEFAULT_LAUNCH_CAPABILITY);
+    if launch_if_empty {
+        terminal_capabilities.push(DEFAULT_LAUNCH_CAPABILITY.into());
+    }
     let launch = options
         .launch
+        .or_else(|| launch_if_empty.then(Vec::new))
         .map(|argv| -> Result<LaunchCommand> {
             Ok(LaunchCommand {
                 argv: argv.into_iter().map(OsString::into_encoded_bytes).collect(),
                 agent_provider: options.agent.map(|provider| provider as i32),
                 cwd: if options.restore_cwd {
                     None
+                } else if launch_if_empty {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|path| path.as_os_str().as_bytes().to_vec())
                 } else {
                     Some(std::env::current_dir()?.as_os_str().as_bytes().to_vec())
                 },
@@ -237,6 +259,47 @@ struct Interactive {
     applied: Option<(u64, u64)>,
     pairing: Option<PairingDisplay>,
     restoring: bool,
+    notification: Option<ResponseNotification>,
+}
+
+#[derive(Clone, Copy)]
+enum ResponseNotification {
+    Bell,
+    Osc9,
+}
+
+impl ResponseNotification {
+    fn negotiate(session: &Session) -> Option<Self> {
+        if !session
+            .capabilities
+            .iter()
+            .any(|name| name == RESPONSE_NOTIFICATION_CAPABILITY)
+        {
+            return None;
+        }
+        match std::env::var("CORVID_NOTIFY").as_deref() {
+            Ok("osc9") => Some(Self::Osc9),
+            Ok("bell") => Some(Self::Bell),
+            Err(std::env::VarError::NotPresent) if std::env::var_os("SSH_TTY").is_some() => {
+                Some(Self::Bell)
+            }
+            _ => None,
+        }
+    }
+
+    fn signal(self, provider: i32) -> Option<&'static [u8]> {
+        let provider = AgentProvider::try_from(provider).ok()?;
+        match (self, provider) {
+            (Self::Bell, AgentProvider::Claude | AgentProvider::Codex) => Some(b"\x07"),
+            (Self::Osc9, AgentProvider::Claude) => {
+                Some(b"\x1b]9;Corvid: Claude response observed\x1b\\")
+            }
+            (Self::Osc9, AgentProvider::Codex) => {
+                Some(b"\x1b]9;Corvid: Codex response observed\x1b\\")
+            }
+            (_, AgentProvider::Unspecified) => None,
+        }
+    }
 }
 
 struct PendingResize {
@@ -256,6 +319,7 @@ impl Interactive {
         viewport: Viewport,
         route: RouteToken,
         escape_delay: Duration,
+        notification: Option<ResponseNotification>,
     ) -> Self {
         Self {
             session: connection.session,
@@ -270,6 +334,7 @@ impl Interactive {
             applied: None,
             pairing: None,
             restoring: false,
+            notification,
         }
     }
 
@@ -418,6 +483,14 @@ impl Interactive {
                 }
             }
             Some(Body::PairingCode(code)) => self.show_pairing(tty, code).await?,
+            Some(Body::AgentResponded(response)) => {
+                if let Some(bytes) = self
+                    .notification
+                    .and_then(|notification| notification.signal(response.provider))
+                {
+                    timeout(COMMAND_TIMEOUT, tty.write_all(bytes)).await??;
+                }
+            }
             Some(Body::TerminalExited(exited)) => {
                 ensure!(
                     exited.terminal_id == self.route.terminal_id,

@@ -147,7 +147,7 @@ def configure(directory, project, port, binary, corvid, fault):
     handler = {"type": "command", "command": "exec " + shlex.join(observer), "timeout": 1}
     hooks = {event: [{"hooks": [handler]}] for event in EVENTS}
     crash_hooks = set()
-    if corvid is not None:
+    if corvid is not None and fault is not None:
         generated = json.loads(subprocess.check_output([corvid, "hooks", "codex"], timeout=3))
         for event, groups in generated["hooks"].items():
             if fault == "helper-crash":
@@ -659,6 +659,10 @@ def capture(binary, corvid, directory, port, fault, auto_start, parallel, conver
             if command is not None:
                 launch.append("--")
             launch.extend(["--enable" if auto_start else "--disable", "daemon_auto_start"])
+        if fault is not None:
+            if "--" not in launch:
+                launch.append("--")
+            launch.extend(["-c", "hooks={}"])
         terminal.start(launch, project, env)
         if second is None:
             try:

@@ -12,9 +12,12 @@ target/debug/corvid
 ```
 
 Linux builds use `protoc` 36.1 and the ncurses `tic` compiler. Running `corvid`
-without a subcommand starts a background daemon if needed. It joins a live
-terminal in the default workspace or opens a shell if that workspace is
-empty. The automatically started daemon uses the bundled terminfo entry.
+without a subcommand starts a background daemon if needed and joins a live
+terminal in the default workspace. For an empty workspace, it looks for `claude`
+and `codex` on the daemon's PATH. It starts the only detected agent, asks which
+one to start if both are present, or opens a shell if neither is found. To start
+a shell explicitly, use `corvid attach --new`. The automatically started daemon
+uses the bundled terminfo entry.
 For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
 
@@ -59,13 +62,12 @@ current daemon epoch. Process probing is staggered at roughly two seconds per
 managed terminal and limited to 20 procfs samples per second across the daemon.
 The retained child handle supplies exit evidence, including the normal exit code.
 
-Run `corvid hooks claude` and merge its entries into the hook arrays in your
-Claude settings. The command prints an exec-form configuration for the current
-Corvid executable. Start a fresh managed Claude session to load the settings.
-Claude Code 2.1.318 can supply context, question, permission, and response
-observations. `corvid control agents` shows collection health, pending and
-unverified requests, and whether a response was observed. The installation and
-coverage details are in [provider qualification](03_provider_qualification.md).
+A managed launch detects the provider release and adds observation hooks to
+the new session when the release is qualified. Codex asks you to review and
+trust new hooks through its own UI. `corvid control agents` shows collection
+health, pending and unverified requests, and whether a response was observed.
+See [provider qualification](03_provider_qualification.md) for coverage and
+manual hook configuration.
 
 The TUI recognizes split legacy VT keys, UTF-8, and bracketed paste. The
 `--escape-delay-ms` option defaults to 100 ms. Network delays above this setting
@@ -173,6 +175,29 @@ observed path names the same directory in the daemon's namespace. A valid change
 is stored with its observation time on the pane's current tab. If a sample is
 unavailable, Corvid keeps the last valid directory.
 [Linux `/proc/<pid>/cwd` reference](https://man7.org/linux/man-pages/man5/proc_pid_cwd.5.html)
+
+## Response Notifications over SSH
+
+Run `corvid` in an interactive SSH session, or start it with
+`ssh -tt work-host corvid`. When Corvid detects an SSH TTY, it uses that
+connection to send a terminal bell for the first verified response to the
+current prompt of a managed Claude or Codex run. The terminal controls how
+the bell is presented. For WezTerm, see its
+[bell settings](https://wezterm.org/config/lua/config/audible_bell.html).
+
+When `corvid` starts a qualified provider, it loads the observers for that
+managed session. Use `corvid attach --agent claude` or `corvid attach --agent codex`
+to select a provider explicitly. A provider `Stop`
+observation means a response was observed. Other hooks or background
+work can continue afterward. Corvid sends the signal to the live TUI holding
+the workspace writer lease, including for agents in background tabs. Only
+events observed while attached are eligible for delivery.
+
+Set `CORVID_NOTIFY=osc9` on the remote `corvid` command to request a toast
+through a terminal that supports OSC 9. The desktop and terminal notification
+settings determine whether it is shown. Use `CORVID_NOTIFY=off` to disable
+the signal or `CORVID_NOTIFY=bell` to enable it outside SSH. Both the Linux
+daemon and the attach client must support the response notification capability.
 
 ## Run Under systemd
 

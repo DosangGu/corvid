@@ -358,9 +358,11 @@ mod tests {
                         argv: ["/bin/sleep", "30"].map(OsString::from).to_vec(),
                         cwd: None,
                         provider: None,
+                        if_empty: false,
                     }),
                 },
                 sender,
+                None,
             )
             .await
             .unwrap();

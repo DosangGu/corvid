@@ -9,12 +9,14 @@ use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, Attach, Attached, Envelope, LaunchCommand, MoveTab, Pong, RenderHeader,
-    RouteToken, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport, WriterClaimed,
+    AgentProvider, AgentResponded, Attach, Attached, Envelope, LaunchCommand, MoveTab, Pong,
+    RenderHeader, RouteToken, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
+    WriterClaimed,
 };
 use corvid_protocol::{
-    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, FrameReader,
-    FrameWriter, MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RenderFrame, Session,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
+    DEFAULT_LAUNCH_CAPABILITY, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY, PeerRole,
+    ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -42,6 +44,8 @@ const CAPABILITIES: &[&str] = &[
     MOVE_TAB_CAPABILITY,
     PAIR_CAPABILITY,
     ADAPTIVE_VIEWPORT_CAPABILITY,
+    RESPONSE_NOTIFICATION_CAPABILITY,
+    DEFAULT_LAUNCH_CAPABILITY,
     "agent_launch.v1",
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
@@ -65,13 +69,24 @@ pub(crate) async fn serve(
         .context("missing Attach request")?;
     let client = Uuid::new_v4();
     let (focus_tx, focuses) = mpsc::channel(1);
+    let (notice_tx, notices) = mpsc::channel(8);
     let target = match session.validate_request(&request) {
-        Ok(Body::Attach(attach)) => attach_target(attach),
+        Ok(Body::Attach(attach)) => attach_target(attach).map(|target| {
+            let enabled = attach
+                .terminal_capabilities
+                .iter()
+                .any(|capability| capability == RESPONSE_NOTIFICATION_CAPABILITY);
+            (target, enabled)
+        }),
         Ok(_) => Err(invalid("expected Attach request")),
         Err(error) => Err(error),
     };
     let active = match target {
-        Ok(target) => workspaces.attach(client, target, focus_tx).await,
+        Ok((target, enabled)) => {
+            workspaces
+                .attach(client, target, focus_tx, enabled.then_some(notice_tx))
+                .await
+        }
         Err(error) => Err(error),
     };
     let active = match active {
@@ -94,7 +109,7 @@ pub(crate) async fn serve(
         request.request_id,
         active,
         workspaces,
-        focuses,
+        ClientEvents { focuses, notices },
     )
     .await;
     workspaces.release(client);
@@ -108,7 +123,7 @@ async fn serve_active(
     request_id: Option<String>,
     active: Active,
     workspaces: &Workspaces,
-    focuses: mpsc::Receiver<FocusDispatch>,
+    client_events: ClientEvents,
 ) -> Result<()> {
     let route = active.route;
     let attached = Attached {
@@ -124,7 +139,7 @@ async fn serve_active(
         writer,
         active,
         workspaces,
-        focuses,
+        client_events,
     }
     .run(reader)
     .await
@@ -135,7 +150,12 @@ struct TuiConnection<'a> {
     writer: FrameWriter<OwnedWriteHalf>,
     active: Active,
     workspaces: &'a Workspaces,
+    client_events: ClientEvents,
+}
+
+struct ClientEvents {
     focuses: mpsc::Receiver<FocusDispatch>,
+    notices: mpsc::Receiver<Provider>,
 }
 
 impl TuiConnection<'_> {
@@ -151,9 +171,14 @@ impl TuiConnection<'_> {
                     let Some(event) = event else { return Ok(()) };
                     if self.event(event).await? { return Ok(()) }
                 }
-                command = self.focuses.recv() => {
+                command = self.client_events.focuses.recv() => {
                     let Some(command) = command else { return Ok(()) };
                     if self.focus(command).await? { return Ok(()) }
+                }
+                Some(provider) = self.client_events.notices.recv() => {
+                    self.send(None, Body::AgentResponded(AgentResponded {
+                        provider: crate::projection::provider(provider) as i32,
+                    })).await?;
                 }
             }
         }
@@ -488,6 +513,24 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         ));
     }
 
+    let launch_if_empty = attach
+        .terminal_capabilities
+        .iter()
+        .any(|capability| capability == DEFAULT_LAUNCH_CAPABILITY);
+    if launch_if_empty
+        && (attach.workspace_id.is_some()
+            || attach.tab_id.is_some()
+            || attach.create_workspace.is_some()
+            || attach.create_tab.is_some()
+            || attach
+                .launch
+                .as_ref()
+                .is_none_or(|launch| !launch.argv.is_empty()))
+    {
+        return Err(invalid(
+            "default launch requires the default workspace and no arguments",
+        ));
+    }
     Ok(AttachTarget {
         workspace: parse_optional_id(attach.workspace_id.as_deref())?,
         tab: parse_optional_id(attach.tab_id.as_deref())?,
@@ -504,7 +547,11 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
                 .any(|name| name == PAIR_CAPABILITY),
         },
         viewport: viewport(attach.viewport.as_ref())?,
-        launch: attach.launch.as_ref().map(launch).transpose()?,
+        launch: attach
+            .launch
+            .as_ref()
+            .map(|command| launch(command, launch_if_empty))
+            .transpose()?,
     })
 }
 
@@ -527,7 +574,7 @@ fn viewport(value: Option<&WireViewport>) -> Result<Viewport, ProtocolFault> {
     Viewport::new(cols, rows).map_err(|_| error())
 }
 
-fn launch(command: &LaunchCommand) -> Result<Launch, ProtocolFault> {
+fn launch(command: &LaunchCommand, if_empty: bool) -> Result<Launch, ProtocolFault> {
     let provider = match command.agent_provider.map(AgentProvider::try_from) {
         None => None,
         Some(Ok(AgentProvider::Claude)) => Some(Provider::Claude),
@@ -564,6 +611,7 @@ fn launch(command: &LaunchCommand) -> Result<Launch, ProtocolFault> {
             .collect(),
         cwd,
         provider,
+        if_empty,
     })
 }
 

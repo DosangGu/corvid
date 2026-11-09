@@ -48,18 +48,20 @@ hook exits successfully with empty stdout.
 
 ## Corvid Collector
 
-Generate the exec-form hook settings with `corvid hooks claude` and merge the
-generated entries into the existing arrays. A fresh `corvid attach --agent claude`
-uses the daemon's PATH. The daemon probes the release before launch and verifies the
-provider's executable and process incarnation on submission. The hook must run
-as a direct child of the managed CLI.
+A fresh `corvid attach --agent claude` uses the daemon's PATH, probes the release,
+and supplies exec-form observers through Claude's session settings. Matching
+groups in the user settings file are reused. Corvid leaves configuration files
+untouched. When you pass your own `--settings` to Claude, manage the observers in
+your settings. `corvid hooks claude` prints the groups for manual use. The daemon
+verifies the provider's executable and process incarnation on submission. The
+hook must run as a direct child of the managed CLI.
 
 The current adapter records submitted prompts with inferred confidence and
 `Stop` as response evidence. It correlates questions and plan approvals by
 session, prompt, and tool IDs. Permission observations without a tool ID remain
-unverified. Install the generated `PostToolBatch` handler to mark matching open
-questions or plan approvals Unverified when their batch finishes without a
-matching result. The optional observer sends only the session, prompt, and input
+unverified. The `PostToolBatch` handler marks matching open questions or plan
+approvals Unverified when their batch finishes without a matching result. It
+sends only the session, prompt, and input
 tool-use IDs. It skips batches that exceed the observer's input or ID limits.
 A new prompt also makes unresolved requests from the previous prompt unverified.
 An exact result can still settle those requests.
@@ -220,11 +222,13 @@ ownership remain outside this release qualification.
 [Codex Hook contract](https://learn.chatgpt.com/docs/hooks)
 [Codex notification payload](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications)
 
-### Install the observer
+### Load the observer
 
-Run `corvid hooks codex` on the execution host. Merge the generated groups into
-the corresponding arrays in `~/.codex/hooks.json`. Review the exact generated
-commands in the CLI and trust them through the normal prompt or `/hooks`.
+Corvid adds the observation groups through Codex's session settings. Matching
+groups in the user `hooks.json` are reused. Review new commands through Codex's
+normal trust prompt or `/hooks`. `corvid hooks codex` still prints the groups for
+manual configuration. To manage all Corvid observers yourself for a launch, pass
+`-- -c 'hooks={}'` after the Corvid options to omit the session groups.
 
 ```sh
 corvid attach --agent codex

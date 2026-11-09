@@ -1,6 +1,5 @@
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
 
 use super::{delivery_gap, optional_id, valid_id};
 
@@ -77,32 +76,4 @@ impl Input {
             ..Default::default()
         })
     }
-}
-
-pub(super) fn settings(executable: &str) -> Value {
-    let path = executable.replace('\'', "'\"'\"'");
-    let command = format!("exec '{path}' observe --provider codex");
-    let mut hooks = Map::new();
-    for (event, matcher) in [
-        ("SessionStart", Some("startup|resume|compact")),
-        ("UserPromptSubmit", None),
-        ("PreToolUse", Some("Bash|request_user_input")),
-        ("PostToolUse", Some("Bash|request_user_input")),
-        ("PermissionRequest", Some("Bash")),
-        ("Stop", None),
-        ("Interrupt", None),
-    ] {
-        let command = if event == "Stop" {
-            format!("{command} --neutral-json")
-        } else {
-            command.clone()
-        };
-        let mut group =
-            json!({ "hooks": [{ "type": "command", "command": command, "timeout": 1 }] });
-        if let Some(matcher) = matcher {
-            group["matcher"] = json!(matcher);
-        }
-        hooks.insert(event.to_owned(), json!([group]));
-    }
-    json!({ "hooks": hooks })
 }

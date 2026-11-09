@@ -76,6 +76,7 @@ message Envelope {
     AckPresentedAttention ack_presented_attention = 108;
     ListHosts list_hosts = 109;
     HostList host_list = 110;
+    AgentResponded agent_responded = 111;
   }
 }
 
@@ -219,6 +220,10 @@ message IssuePairingCode {}
 message PairingCode {
   string code = 1;
   uint32 expires_in_seconds = 2;
+}
+
+message AgentResponded {
+  AgentProvider provider = 1;
 }
 
 message RedrawView {

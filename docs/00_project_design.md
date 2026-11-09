@@ -493,9 +493,11 @@ See [provider qualification](03_provider_qualification.md) for the enabled scope
 6. Use explicit nonblocking/fail-open provider settings where supported; never configure
    monitoring with `onFailure: block`. Missing executable, timeout, malformed data,
    collector crash, and queue-full behavior must all preserve provider decisions.
-7. Hook installation is additive and user initiated. Do not replace existing hooks or
-   permission settings, inject prompts, or change execution policy. If neutrality cannot
-   be established for a version/event, disable that observation capability.
+7. An explicit managed launch requests observation for that session. For qualified
+   releases, pass the observation hooks as additive session settings. Leave provider
+   configuration files, trust, permissions, and execution policy under provider and user
+   control. If neutrality cannot be established for a version/event, disable that
+   observation capability.
 
 Collector failures/gaps degrade state. A dropped hook cannot always report its own
 failure; absent durable delivery, exact completeness is not promised. The architecture
@@ -1290,9 +1292,12 @@ stable HostId under `$XDG_STATE_HOME/corvid` or `$HOME/.local/state/corvid`, and
 `daemon --state-dir` for an explicit private state path.
 
 On Linux, `corvid` discovers the user daemon and starts it in the background when
-needed. It joins a live terminal in the default workspace or starts a shell in an
-empty workspace. The background process uses the bundled terminal profile. A control
-relay alone cannot start the daemon. Saved layout metadata does not start programs.
+needed. It joins a live terminal in the default workspace. When the workspace is
+empty, the daemon checks its PATH for the supported agent executables. It starts a
+single detected agent, asks the TUI to get an explicit choice when both are present,
+or opens a shell when neither is present. The background process uses the bundled
+terminal profile. A control relay alone cannot start the daemon. Saved layout metadata
+does not start programs.
 
 Detach or working SSH loss retires that ClientId and its binding, releases its leases,
 discards queued input, and keeps last PTY sizes. The daemon continues parsing output and

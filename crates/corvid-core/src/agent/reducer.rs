@@ -74,6 +74,15 @@ impl<T: Clone + Ord> Recent<T> {
 }
 
 impl AgentRun {
+    pub fn is_current_open_turn(&self, turn: &str) -> bool {
+        self.correlation
+            .current_turn
+            .as_ref()
+            .is_some_and(|current| {
+                current == turn && !self.correlation.completed_turns.contains(current)
+            })
+    }
+
     /// Apply a normalized observation to this run. The caller authenticates its owner
     /// and supplies daemon receipt times. The return value signals a visible change.
     pub fn apply(&mut self, observation: Observation, monotonic_ms: u64) -> bool {

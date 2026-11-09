@@ -1,3 +1,4 @@
+pub(crate) mod hooks;
 mod profile;
 
 use std::env;
@@ -10,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::Provider;
+use corvid_protocol::ProtocolFault;
 use corvid_protocol::collector::{CLAUDE_VERSION, CODEX_VERSION};
 use corvid_protocol::wire::ProviderProfile;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
@@ -21,25 +23,51 @@ pub(crate) use profile::adapter;
 
 const VERSION_TIMEOUT: Duration = Duration::from_millis(350);
 
-pub(crate) struct QualifiedProvider {
-    pub(crate) path: PathBuf,
-    pub(crate) executable: Executable,
+pub(crate) fn qualify(provider: Provider, path: &Path) -> Option<Executable> {
+    let expected = match provider {
+        Provider::Claude => format!("{CLAUDE_VERSION} (Claude Code)"),
+        Provider::Codex => format!("codex-cli {CODEX_VERSION}"),
+    };
+    let executable = Executable::read(path)?;
+    let version = version_output(path)?;
+    if version.trim() != expected || Executable::read(path) != Some(executable) {
+        return None;
+    }
+    Some(executable)
 }
 
-impl QualifiedProvider {
-    pub(crate) fn detect(provider: Provider) -> Option<Self> {
-        let (program, expected) = match provider {
-            Provider::Claude => ("claude", format!("{CLAUDE_VERSION} (Claude Code)")),
-            Provider::Codex => ("codex", format!("codex-cli {CODEX_VERSION}")),
-        };
-        let path = find_on_path(program)?;
-        let executable = Executable::read(&path)?;
-        let version = version_output(&path)?;
-        if version.trim() != expected || Executable::read(&path) != Some(executable) {
-            return None;
-        }
-        Some(Self { path, executable })
+pub(crate) fn program(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "claude",
+        Provider::Codex => "codex",
     }
+}
+
+pub(crate) fn installed_program(provider: Provider) -> Option<PathBuf> {
+    find_on_path(program(provider))
+}
+
+pub(crate) fn default_provider(
+    requested: Option<Provider>,
+) -> Result<Option<(Provider, PathBuf)>, ProtocolFault> {
+    if let Some(provider) = requested {
+        return installed_program(provider)
+            .map(|path| Some((provider, path)))
+            .ok_or_else(|| {
+                ProtocolFault::new("AgentUnavailable", "selected agent is no longer on PATH")
+            });
+    }
+    let mut installed = [Provider::Claude, Provider::Codex]
+        .into_iter()
+        .filter_map(|provider| installed_program(provider).map(|path| (provider, path)));
+    let first = installed.next();
+    if installed.next().is_some() {
+        return Err(ProtocolFault::new(
+            "AgentChoiceRequired",
+            "Claude Code and Codex are both installed",
+        ));
+    }
+    Ok(first)
 }
 
 pub(crate) fn qualified_version(provider: Provider) -> &'static str {

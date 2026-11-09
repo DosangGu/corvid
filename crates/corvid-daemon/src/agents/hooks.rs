@@ -5,6 +5,7 @@ use corvid_core::agent::{
     ProcessLiveness, Provider, RequestKey, RequestKind, Resolution, Response, ResponseOutcome,
     Source, WorkKey,
 };
+use corvid_core::layout::Location;
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::collector::MAX_BATCH_INPUTS;
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
@@ -285,7 +286,7 @@ impl Agents {
         hook: Hook,
         owner: ProcessImage,
         producer: HookProducer,
-    ) -> Result<(), ProtocolFault> {
+    ) -> Result<Option<(Location, Provider)>, ProtocolFault> {
         let unauthorized = || ProtocolFault::new("Unauthorized", "hook owner is unavailable");
         let launch = self
             .launches
@@ -300,7 +301,7 @@ impl Agents {
             return Err(unauthorized());
         }
         if matches!(current.run.process.value, ProcessLiveness::Exited { .. }) {
-            return Ok(());
+            return Ok(None);
         }
         if let Some(actor) = hook.actor.as_ref() {
             if launch.producer == Some(producer)
@@ -317,19 +318,19 @@ impl Agents {
                 };
                 self.observe_child(current_id, key, event, hook.evidence(Confidence::Confirmed));
             }
-            return Ok(());
+            return Ok(None);
         }
         self.dirty.insert(current_id);
         if launch.producer.is_some_and(|previous| previous != producer) {
             launch.ambiguous = true;
             current.terminal_available = false;
             launch.record_gap(current, "managed hook producer changed incarnation");
-            return Ok(());
+            return Ok(None);
         }
         launch.producer = Some(producer);
         let Some(session) = hook.session.as_deref() else {
             launch.record_gap(current, "hook input was malformed or exceeded its deadline");
-            return Ok(());
+            return Ok(None);
         };
         if matches!(
             hook.event,
@@ -337,11 +338,12 @@ impl Agents {
         ) {
             if let Some(next) = launch.start_context(current, &hook, session) {
                 launch.current = next.run.identity.id;
+                launch.notified_turn = None;
                 self.dirty.insert(launch.current);
                 self.runs.insert(launch.current, next);
                 self.retire(current_id);
             }
-            return Ok(());
+            return Ok(None);
         }
         if current.run.identity.provider_session.as_deref() != Some(session) {
             if !launch.sessions.contains(session) {
@@ -356,20 +358,29 @@ impl Agents {
                     "event arrived before its context could be associated",
                 );
             }
-            return Ok(());
+            return Ok(None);
         }
         if hook.event == HookEvent::ResumeContextEnded {
             launch.stage_resume(current, hook.turn);
-            return Ok(());
+            return Ok(None);
         }
         if launch.ambiguous || launch.resume.is_some() {
-            return Ok(());
+            return Ok(None);
         }
         if let Some((kind, confidence)) = hook.observation() {
             let evidence = hook.evidence(confidence);
             let ends_context = matches!(kind, ObservationKind::ContextEnded(_));
-            if current.apply(hook.delivery, kind, evidence) && ends_context {
-                self.end_children(current_id);
+            let notify_turn = response_notification_turn(&current.run, &kind, confidence)
+                .filter(|turn| launch.notified_turn.as_ref() != Some(turn));
+            if current.apply(hook.delivery, kind, evidence) {
+                if ends_context {
+                    self.end_children(current_id);
+                } else if let Some(turn) = notify_turn
+                    && current.run.collection.value == Collection::Healthy
+                {
+                    launch.notified_turn = Some(turn);
+                    return Ok(Some((current.location, hook.provider)));
+                }
             }
         } else if matches!(
             hook.event,
@@ -377,8 +388,25 @@ impl Agents {
         ) {
             launch.record_gap(current, "correlation fields are missing");
         }
-        Ok(())
+        Ok(None)
     }
+}
+
+fn response_notification_turn(
+    run: &AgentRun,
+    kind: &ObservationKind,
+    confidence: Confidence,
+) -> Option<String> {
+    let ObservationKind::Response { response, .. } = kind else {
+        return None;
+    };
+    let turn = response.turn.as_deref()?;
+    (confidence == Confidence::Confirmed
+        && response.outcome == ResponseOutcome::Observed
+        && run.lifecycle.value == Lifecycle::Live
+        && run.collection.value == Collection::Healthy
+        && run.is_current_open_turn(turn))
+    .then(|| turn.to_owned())
 }
 
 impl Launch {
@@ -661,6 +689,13 @@ mod tests {
         }
 
         fn submit(&mut self, hook: Hook) -> Result<(), ProtocolFault> {
+            self.submit_notice(hook).map(drop)
+        }
+
+        fn submit_notice(
+            &mut self,
+            hook: Hook,
+        ) -> Result<Option<(Location, Provider)>, ProtocolFault> {
             let producer = HookProducer {
                 pid: self.owner.incarnation.pid,
                 start_ticks: self.owner.incarnation.start_ticks,
@@ -671,6 +706,51 @@ mod tests {
 
         fn current(&self) -> &ManagedRun {
             &self.agents.runs[&self.agents.launches[&self.association].current]
+        }
+    }
+
+    #[test]
+    fn notifies_only_the_first_verified_response_for_the_current_prompt() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut fixture = Fixture::new(provider);
+            fixture.apply("session", HookEvent::Startup);
+
+            let without_prompt = fixture.hook("session", HookEvent::ResponseObserved);
+            assert_eq!(fixture.submit_notice(without_prompt).unwrap(), None);
+
+            let mut prompt = fixture.hook("session", HookEvent::PromptSubmitted);
+            prompt.turn = Some("current".to_owned());
+            fixture.submit(prompt).unwrap();
+            let late = fixture.hook("session", HookEvent::ResponseObserved);
+            assert_eq!(fixture.submit_notice(late).unwrap(), None);
+
+            let mut first = fixture.hook("session", HookEvent::ResponseObserved);
+            first.turn = Some("current".to_owned());
+            assert_eq!(
+                fixture.submit_notice(first).unwrap(),
+                Some((fixture.current().location, provider))
+            );
+            let mut unscoped = fixture.hook("session", HookEvent::ResponseObserved);
+            unscoped.turn = None;
+            assert_eq!(fixture.submit_notice(unscoped).unwrap(), None);
+            let mut repeated = fixture.hook("session", HookEvent::ResponseObserved);
+            repeated.turn = Some("current".to_owned());
+            assert_eq!(fixture.submit_notice(repeated).unwrap(), None);
+
+            let mut next = fixture.hook("session", HookEvent::PromptSubmitted);
+            next.turn = Some("next".to_owned());
+            fixture.submit(next).unwrap();
+            let mut response = fixture.hook("session", HookEvent::ResponseObserved);
+            response.turn = Some("next".to_owned());
+            let expected = if provider == Provider::Codex {
+                let mut interrupted = fixture.hook("session", HookEvent::TurnInterrupted);
+                interrupted.turn = Some("next".to_owned());
+                fixture.submit(interrupted).unwrap();
+                None
+            } else {
+                Some((fixture.current().location, provider))
+            };
+            assert_eq!(fixture.submit_notice(response).unwrap(), expected);
         }
     }
 

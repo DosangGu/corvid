@@ -272,7 +272,7 @@ def configure(directory, port, corvid, fault):
     handler = {"type": "command", "command": hook, "timeout": 1}
     settings = {"hooks": {event: [{"hooks": [handler]}] for event in HOOKS}}
     crash_hooks = set()
-    if corvid is not None:
+    if corvid is not None and fault is not None:
         generated = json.loads(subprocess.check_output([corvid, "hooks", "claude"], timeout=3))
         for event, handlers in generated["hooks"].items():
             if fault == "helper-crash":
@@ -1171,6 +1171,8 @@ def capture(binary, directory, port, scenario, corvid, fault):
     if corvid is None:
         args = ["setsid", "--ctty", "--wait", str(binary.resolve()), *arguments]
         return run_terminal(args, environment, project, trace, scenario, None, fault)
+    if fault is not None:
+        arguments.extend(["--settings", "{}"])
 
     race_layout = seed_history(directory) if scenario == "snapshot-race" else None
     managed = CorvidFixture(corvid, binary, directory, project, environment)

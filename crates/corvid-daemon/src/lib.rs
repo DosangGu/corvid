@@ -29,6 +29,8 @@ use crate::identity::Identity;
 use crate::publication::MAX_WATCHES;
 use crate::workspaces::Workspaces;
 
+pub use provider::hooks::observer_settings;
+
 // Keep room for ordinary requests when the snapshot watch limit is full.
 const MAX_CONTROL_CONNECTIONS: usize = MAX_WATCHES + 8;
 const MAX_TUI_CONNECTIONS: usize = 8;

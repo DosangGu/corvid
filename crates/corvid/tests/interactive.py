@@ -6,6 +6,7 @@ from pathlib import Path
 import pty
 import re
 import select
+import shutil
 import signal
 import socket
 import struct
@@ -318,10 +319,18 @@ def verify_default_start(binary, directory):
     runtime = directory / "auto"
     home = directory / "home"
     home.mkdir()
+    programs = directory / "shell-bin"
+    programs.mkdir()
+    for name in ("infocmp", "stty"):
+        (programs / name).symlink_to(shutil.which(name))
+    shell = programs / "fixture-shell"
+    shell.write_text("#!/bin/sh\nexec /bin/sh -i\n")
+    shell.chmod(0o700)
     env = os.environ | {
-        "HOME": str(home), "SHELL": "/bin/sh", "PS1": "CORVID-PROMPT> ",
-        "XDG_STATE_HOME": str(home),
+        "HOME": str(home), "SHELL": str(shell), "PS1": "CORVID-PROMPT> ",
+        "XDG_STATE_HOME": str(home), "PATH": str(programs),
     }
+    env.pop("ENV", None)
     env.pop("TERMINFO", None)
     env.pop("TERMINFO_DIRS", None)
     command = [binary, "--runtime-dir", runtime]
@@ -377,6 +386,50 @@ def verify_default_start(binary, directory):
                 os.close(handle)
 
 
+def verify_default_agent(binary, directory, terminfo, providers):
+    root = directory / "-".join(providers)
+    root.mkdir()
+    programs = root / "bin"
+    programs.mkdir()
+    for provider in providers:
+        script = programs / provider
+        script.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = --version ]; then echo 'fixture version'; exit; fi\n"
+            f"printf 'AGENT-{provider}=%s\\n' \"$$\"\n"
+            "read -r line\n"
+        )
+        script.chmod(0o700)
+
+    command = [binary, "--runtime-dir", root / "runtime"]
+    client_programs = root / "client-bin"
+    client_programs.mkdir()
+    daemon_env = os.environ | {"PATH": programs.name, "TERMINFO": str(terminfo)}
+    client_env = os.environ | {"PATH": str(client_programs)}
+    daemon = subprocess.Popen(
+        [*command, "daemon", "--state-dir", root / "state"], cwd=root, env=daemon_env,
+    )
+    try:
+        wait_for_daemon(command, daemon)
+        marker = rf"AGENT-{providers[-1]}=(\d+)".encode()
+        with OuterTerminal(command, env=client_env) as terminal:
+            if len(providers) == 2:
+                terminal.expect(b"Choose an agent for the empty workspace")
+                assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
+                terminal.send(b"2\n")
+            pid = terminal.expect(marker)[1]
+            terminal.send(b"\x1dd")
+            terminal.wait(0)
+
+        with OuterTerminal(command, env=client_env) as reattached:
+            assert reattached.expect(marker)[1] == pid
+            assert b"Choose an agent" not in reattached.output
+            reattached.send(b"\n")
+            reattached.wait(0)
+    finally:
+        stop(daemon)
+
+
 def run(binary):
     root = Path(__file__).resolve().parents[3]
     profile = root / "spikes/terminal/corvid.terminfo"
@@ -397,6 +450,8 @@ def run(binary):
         finally:
             stop(daemon)
         verify_default_start(binary, directory)
+        for providers in [("claude",), ("codex",), ("claude", "codex")]:
+            verify_default_agent(binary, directory, database, providers)
     print("Live TTYs verified wide-window startup, resize, redraw, input, detach, and tab moves.")
 
 

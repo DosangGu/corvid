@@ -16,6 +16,7 @@ tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", 
 uuid.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+corvid-core.workspace = true
 corvid-daemon.workspace = true
 nix = { workspace = true, features = ["poll"] }
 serde.workspace = true

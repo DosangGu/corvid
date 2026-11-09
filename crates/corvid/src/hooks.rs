@@ -7,15 +7,16 @@ use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use clap::ValueEnum;
+use corvid_core::agent::Provider;
 use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, MAX_BATCH_INPUTS, SERVER_EPOCH};
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::unistd::read;
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 const SOURCE_LIMIT: usize = 64 * 1024;
@@ -322,50 +323,11 @@ fn optional_id(value: Option<String>) -> Option<Option<String>> {
 }
 
 pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
-    let executable = env::current_exe()?.canonicalize()?;
-    let executable = executable
-        .to_str()
-        .context("hook executable path must be UTF-8")?;
-    match provider {
-        HookProvider::Claude => {
-            let handler = json!({
-                "type": "command",
-                "command": executable,
-                "args": ["observe", "--provider", "claude"],
-                "timeout": 1,
-                "onFailure": "continue",
-            });
-            let mut hooks = Map::new();
-            for event in [
-                "SessionStart",
-                "UserPromptSubmit",
-                "PermissionRequest",
-                "Stop",
-                "SessionEnd",
-                "SubagentStart",
-                "SubagentStop",
-            ] {
-                hooks.insert(event.to_owned(), json!([{ "hooks": [handler.clone()] }]));
-            }
-            for (event, matcher) in [
-                ("PreToolUse", "^(AskUserQuestion|ExitPlanMode)$"),
-                ("PostToolUse", "^(AskUserQuestion|ExitPlanMode|Agent)$"),
-            ] {
-                hooks.insert(
-                    event.to_owned(),
-                    json!([{
-                        "matcher": matcher,
-                        "hooks": [handler.clone()],
-                    }]),
-                );
-            }
-            let mut batch = handler;
-            batch["args"] = json!(["observe", "--provider", "claude", "--claude-input-batch"]);
-            hooks.insert("PostToolBatch".to_owned(), json!([{ "hooks": [batch] }]));
-            Ok(json!({ "hooks": hooks }))
-        }
-        HookProvider::Codex => Ok(codex::settings(executable)),
-    }
+    let provider = match provider {
+        HookProvider::Claude => Provider::Claude,
+        HookProvider::Codex => Provider::Codex,
+    };
+    corvid_daemon::observer_settings(provider)
 }
 
 #[cfg(test)]

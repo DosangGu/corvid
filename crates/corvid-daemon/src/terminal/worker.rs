@@ -19,7 +19,7 @@ use vt100::Screen;
 use crate::agents::ManagedLaunch;
 use crate::collector::HookEnvironment;
 use crate::process::{self, Executable, Probe, ProbeBudget, ProbeResult, ProcessImage};
-use crate::provider::QualifiedProvider;
+use crate::provider;
 use crate::workspaces::Registry;
 
 use super::input::{InputQueue, Kind, WriteFailure};
@@ -40,6 +40,7 @@ pub(crate) struct Launch {
     pub(crate) argv: Vec<OsString>,
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) provider: Option<Provider>,
+    pub(crate) if_empty: bool,
 }
 
 pub(crate) struct LaunchScope {
@@ -382,7 +383,10 @@ impl Worker {
                 "workspace already has a writer",
             ));
         }
-        match (&mut self.terminal, spec.launch) {
+        let launch = spec
+            .launch
+            .filter(|launch| !launch.if_empty || self.terminal.is_none());
+        match (&mut self.terminal, launch) {
             (Some(terminal), None) if terminal.exit.is_some() => return Err(terminal_fault()),
             (Some(_), None) if spec.dormant => {}
             (Some(terminal), None) => terminal
@@ -394,15 +398,22 @@ impl Worker {
                     "attach to the existing terminal",
                 ));
             }
-            (None, Some(launch)) => {
-                self.terminal = Some(Running::spawn(launch, spec.viewport, &self.scope).map_err(
-                    |_| {
+            (None, Some(mut launch)) => {
+                let mut program = None;
+                if launch.if_empty
+                    && let Some((provider, path)) = provider::default_provider(launch.provider)?
+                {
+                    launch.provider = Some(provider);
+                    program = Some(path);
+                }
+                self.terminal = Some(
+                    Running::spawn(launch, program, spec.viewport, &self.scope).map_err(|_| {
                         ProtocolFault::new(
                             "TerminalStartFailed",
                             "unable to start the requested terminal",
                         )
-                    },
-                )?);
+                    })?,
+                );
                 self.live.store(true, Ordering::Release);
             }
             (None, None) => {
@@ -810,28 +821,32 @@ enum ReadState {
 }
 
 impl Running {
-    fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
+    fn spawn(
+        launch: Launch,
+        program: Option<PathBuf>,
+        viewport: Viewport,
+        scope: &LaunchScope,
+    ) -> Result<Self> {
         let id = Uuid::new_v4();
         let cwd = launch.cwd.clone();
-        let qualified = launch.provider.and_then(QualifiedProvider::detect);
+        let program = program.or_else(|| launch.provider.and_then(provider::installed_program));
+        let executable = launch
+            .provider
+            .zip(program.as_deref())
+            .and_then(|(provider, path)| provider::qualify(provider, path));
+        let qualified = executable.is_some();
         let reservation = launch
             .provider
             .map(|provider| {
-                ManagedLaunch::reserve(
-                    &scope.registry,
-                    scope.location,
-                    id,
-                    provider,
-                    qualified.is_some(),
-                )
+                ManagedLaunch::reserve(&scope.registry, scope.location, id, provider, qualified)
             })
             .transpose()?;
-        let association = qualified
+        let association = executable
             .as_ref()
             .and(reservation.as_ref())
             .map(|launch| launch.association);
-        let executable = qualified.as_ref().map(|qualified| qualified.executable);
-        let mut command = launch.into_command(qualified.map(|qualified| qualified.path));
+        let program = program.filter(|_| launch.if_empty || qualified);
+        let mut command = launch.into_command(program, qualified);
         scope.hook_environment.configure(&mut command, association);
 
         let viewport = viewport.fit_screen();
@@ -993,21 +1008,24 @@ impl TerminalProcess {
 }
 
 impl Launch {
-    fn into_command(self, qualified: Option<PathBuf>) -> CommandBuilder {
-        let isolated_codex = qualified.is_some() && self.provider == Some(Provider::Codex);
+    fn into_command(self, program: Option<PathBuf>, qualified: bool) -> CommandBuilder {
+        let qualified_provider = self.provider.filter(|_| qualified);
         let mut argv = self.argv.into_iter();
-        let program = qualified
+        let program = program
             .map(PathBuf::into_os_string)
-            .or_else(|| match self.provider {
-                Some(Provider::Claude) => Some(OsString::from("claude")),
-                Some(Provider::Codex) => Some(OsString::from("codex")),
-                None => argv.next(),
-            });
+            .or_else(|| {
+                self.provider
+                    .map(|provider| OsString::from(provider::program(provider)))
+            })
+            .or_else(|| argv.next());
         let mut command = if let Some(program) = program {
             let mut command = CommandBuilder::new(program);
-            if isolated_codex {
+            if qualified_provider == Some(Provider::Codex) {
                 // A shared Codex app server can outlive the managed launcher.
                 command.args(["-c", "features.daemon_auto_start=false"]);
+            }
+            if let Some(provider) = qualified_provider {
+                crate::provider::hooks::configure(&mut command, provider, argv.as_slice());
             }
             command.args(argv);
             command
