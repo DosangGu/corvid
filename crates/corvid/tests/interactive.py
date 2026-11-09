@@ -415,7 +415,8 @@ def verify_default_start(binary, directory):
     for name in ("infocmp", "stty"):
         (programs / name).symlink_to(shutil.which(name))
     shell = programs / "fixture-shell"
-    shell.write_text("#!/bin/sh\nexec /bin/sh -i\n")
+    # Bash used as /bin/sh clears inherited PS1 in the noninteractive wrapper.
+    shell.write_text("#!/bin/sh\nPS1='CORVID-PROMPT> ' exec /bin/sh -i\n")
     shell.chmod(0o700)
     env = os.environ | {
         "HOME": str(home), "SHELL": str(shell), "PS1": "CORVID-PROMPT> ",
@@ -514,7 +515,7 @@ def verify_shell_with_agents(binary, directory, terminfo, providers):
     programs.mkdir()
     agent_log = root / "agent-invocations"
     shell = programs / "fixture-shell"
-    shell.write_text("#!/bin/sh\nexec /bin/sh -i\n")
+    shell.write_text("#!/bin/sh\nPS1='CORVID-SHELL> ' exec /bin/sh -i\n")
     shell.chmod(0o700)
     for provider in providers:
         script = programs / provider
@@ -571,7 +572,7 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
     home.mkdir()
     if shell_name == "sh":
         shell = root / "shell"
-        shell.write_text("#!/bin/sh\nexec /bin/sh -i\n")
+        shell.write_text("#!/bin/sh\nPS1='NOTIFY-SHELL> ' exec /bin/sh -i\n")
         shell.chmod(0o700)
     else:
         shell = shutil.which(shell_name)
