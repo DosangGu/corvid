@@ -1,8 +1,8 @@
 # Corvid — AI Coding-Agent Multiplexer: Implementation Design
 
-> Rust · TUI inside an existing terminal · remote Linux daemon · ordinary SSH
+> Rust · shared TUI/GUI workspace behavior · remote Linux daemon · ordinary SSH
 >
-> Design revision: 2026-11-07. This document specifies the intended product.
+> Design revision: 2026-11-09. This document specifies the intended product.
 > See [terminal qualification](01_terminal_qualification.md) and
 > [daemon foundation](02_daemon_foundation.md) for implemented paths and runtime evidence.
 > Commands and interfaces described here define the target.
@@ -29,11 +29,19 @@
 ## 1. Product and support boundary
 
 Corvid is a Rust terminal multiplexer with integrations for Claude Code and Codex.
-The Windows GUI starts a local terminal session with tabs and split panes.
-The Linux TUI runs inside an existing terminal emulator. A daemon on the
-execution host owns its PTYs, screen state, agent observations, and workspaces.
+The Windows GUI is a graphical presentation of the same workspace behavior as
+the TUI. Both follow the same tab, pane, focus, and session rules; visual controls
+and platform key bindings may differ. The Linux TUI runs inside an existing
+terminal emulator. A daemon on the execution host owns its PTYs, screen state,
+agent observations, and workspaces.
 Losing an attached TUI, its working SSH connection, or a local controller must not
 stop remote work **while that daemon and the execution host remain alive**.
+
+The current Windows GUI starts app-owned local ConPTY sessions. That is an
+implementation gap against the shared behavior and daemon ownership target,
+not a separate permanent workspace model. See §7.7 for the parity contract.
+The desktop distribution will later include a Stream Deck integration daemon;
+its packaging and lifecycle integration are planned work (§11.4).
 
 The primary experience is:
 
@@ -46,11 +54,12 @@ The primary experience is:
 6. After a local restart, the controller restores slots, synchronizes with the daemon,
    and validates or re-registers the working terminal association.
 
-A click never creates a terminal window/tab, opens an interactive SSH session, launches
-an agent, injects Enter or another answer, or substitutes an arbitrary client. A separate
+A controller focus click never creates a terminal window/tab, opens an interactive
+SSH session, launches an agent, injects Enter or another answer, or substitutes an
+arbitrary client. A separate
 background SSH control channel is allowed; it carries state and navigation, not a new
 interactive work terminal. Explicit user actions may create workspaces, terminals, and
-agents through the TUI; those actions are outside the external focus operation.
+agents through the TUI or GUI; those actions are outside the external focus operation.
 
 | Surface | Initial target | Boundary |
 |---|---|---|
@@ -58,8 +67,8 @@ agents through the TUI; those actions are outside the external focus operation.
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
-| Desktop | `corvid-desktop.exe` on Windows, with PowerShell tabs, split panes, and an Agents tab | The app owns local ConPTY sessions and reuses the layout tree. The Agents tab uses the companion API |
-| Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests focus through the companion |
+| Desktop | Windows graphical presentation of the shared TUI workspace behavior, with an Agents view | Current app-owned ConPTY sessions need to converge on the daemon ownership and lifecycle contract. The Agents view uses the companion API |
+| Deck | Virtual deck and, later, a Stream Deck integration daemon included with the desktop app | Uses companion slots and exact focus. The current USB adapter is experimental; bundled daemon integration is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows or macOS daemon | Deferred | Independent process, IPC, permission, service, input, and VT validation required |
 
@@ -74,7 +83,7 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 
 | Decision | Selected design | Reason / verification condition |
 |---|---|---|
-| Form and language | Rust desktop workspace for local sessions and a TUI for Linux daemon sessions | Keep GUI layout independent of transport and preserve the existing interactive SSH path |
+| Form and language | Rust TUI and GUI presentations of the same workspace operations | Share tab, pane, focus, and session behavior; preserve the existing interactive SSH path |
 | Process boundary | Real client/server foundation in Phase 1 | Detach survival precedes layout expansion |
 | Daemon scope | One daemon per OS user per host, managing all workspaces | One host registry/watch stream and direct cross-workspace focus; larger failure blast radius accepted |
 | Core IPC | Same-host Unix stream sockets (`SOCK_STREAM`) | SSH transports terminal/control channels; local IPC still needs authentication, versioning, bounds, and latency tests |
@@ -93,6 +102,7 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 | External actions | Read, subscribe, explicit pairing, exact focus, attention acknowledgment | No keystrokes, approvals, spawning, or writer transfer |
 | Crash recovery | Layout/metadata restoration only | PTY-owner crash is not detach; supervisor excluded from MVP |
 | Controller slots | Bound to AgentRunId with revisions | Names, pane numbers, and PID reuse cannot redirect clicks |
+| Desktop hardware integration | Bundle a Stream Deck integration daemon with the desktop app in a later phase | Reuse companion state and actions; packaging and process lifecycle remain to be implemented |
 
 The former workspace-name socket design is replaced, not retained as an equal option.
 Workspace names become labels. Per-workspace daemons would require another host-wide
@@ -132,8 +142,9 @@ outer-terminal input latency, or controller synchronization concerns.
 | B. Agent registry / reducer | IDs, provider normalization, run/turn/request observations, attention records, collector health | Rendering behavior |
 | C. Workspace / view management | Layout IDs/mapping, client selection, input leases, view revisions, canonical dimensions | Provider semantics |
 | D. Control interface | Handshake, validation, DTOs, queries, snapshots, watches, navigation | Process execution or keystroke injection |
-| E. Presentation | TUI composition and desktop cards derived from state | Domain transitions based on focus or color |
+| E. Presentation | TUI/GUI workspace views and desktop cards derived from state; user gestures mapped to shared operations | Independent workspace semantics or authoritative PTY/agent state |
 | Local companion | Host connections/caches, synchronization, terminal registrations, slots/pins | Remote authority or a second agent reducer |
+| Stream Deck integration daemon (planned) | Device connection, key images, and button gestures through the companion | PTY ownership, agent state authority, answers, or approvals |
 
 ### 3.2 Mutation and ordering
 
@@ -696,6 +707,33 @@ because common colors render. The outer client's TERM and the inner PTY's TERM a
 separate. IME composition belongs to the outer terminal; Corvid still must preserve its
 committed UTF-8. Images, arbitrary clipboard passthrough, and full emulator parity are
 outside the initial profile.
+
+### 7.7 Shared TUI and GUI behavior
+
+This is the target contract; complete parity is not yet implemented. The GUI
+presents the TUI's workspace concepts with graphical controls. Presentation code
+maps gestures to shared domain operations, and the execution daemon remains the
+authority for accepted state changes and terminal lifetimes.
+
+| Area | Shared behavior |
+|---|---|
+| Hierarchy and identity | Workspace → Tab → split tree → Pane → optional Terminal; switching or moving a view preserves the existing terminal/run identity |
+| Tabs | Creation, ordering, selection, cycling, and closure have the same meaning; graphical tab controls and the TUI tab picker address the same operations |
+| Panes | Split direction, pane selection, resize, and closure use common layout rules, including the next selection after a close and handling of the last pane/tab |
+| Focus and input | Selection targets an exact pane in one client; writer ownership, route fencing, and literal terminal input follow the same contract |
+| Session lifetime | Hiding a tab, closing a presentation window, or detaching is distinct from explicitly closing a terminal; daemon-owned sessions survive client loss |
+| Capabilities and limits | Unsupported operations and resource limits are explicit; temporary platform gaps do not define a second set of workspace semantics |
+
+Share layout transitions and their validation through `corvid-core` and the
+daemon; keep rendering, mouse interaction, and key bindings in the presentations.
+Equivalent action sequences must produce equivalent domain state and lifecycle
+outcomes. This does not require identical pixels or keyboard shortcuts.
+
+Current gaps: the Linux TUI has one pane per tab, while the Windows GUI implements
+local split and close operations in `session_layout.rs`. The GUI reuses the core
+layout types but has its own limits and owns its ConPTY jobs; closing the app ends
+those jobs. Consolidating these operations and moving Windows execution behind
+the daemon boundary require further implementation and platform qualification.
 
 ## 8. IPC and external control contract
 
@@ -1317,6 +1355,22 @@ resolves A's new location. Page switching increments displayed binding revisions
 cancels held gestures. The desktop reconnects with a fresh presentation snapshot
 and requires a new terminal choice before accepting actions.
 
+### 11.4 Bundled Stream Deck integration daemon — planned
+
+The desktop app will include a background daemon for physical Stream Deck
+integration. It handles device discovery, connection loss/reconnect, key images,
+and button gestures using the companion's existing slot and exact-focus contract.
+The GUI deck and physical keys must show the same slot identities and reject the
+same stale captures. The companion owns controller state; the execution daemon
+owns terminals and agent observations. Hardware integration grants no additional
+input, spawning, or approval authority.
+
+The current `corvid-streamdeck` executable is an experimental standalone USB
+adapter. Bundling it as a desktop-managed integration daemon is not implemented.
+Process placement, startup/shutdown ownership, behavior when the last window
+closes, and login startup are still to be specified. Bundling does not require
+the hardware loop to run on the GUI thread or inside the terminal daemon.
+
 ## 12. Connection lifecycle and persistence
 
 ### 12.1 Live attach and detach
@@ -1546,6 +1600,8 @@ Qualify macOS when its separately gated execution work is scheduled.
   drag/move and vertical tab-bar UX; automatic keymap profiles/remapping; native Windows
   and macOS execution; opt-in conversation resume; scrollback persistence/search. Consider
   a PTY supervisor only if daemon-crash survival is actually required.
+  Converge TUI/GUI workspace operations and session lifetimes (§7.7), and include
+  the Stream Deck integration daemon in the desktop distribution (§11.4).
 - **Exit:** Extension-specific tests plus regression of existing contracts. Observers must
   crop/pad without resizing, handoff must fence stale input/paste, multi-host clicks need
   existing host-specific registrations, and resume must allocate new run IDs.
@@ -1593,6 +1649,8 @@ negative assertions (including no unexpected process/window/input creation).
 | A29 | Old/new schema peers; unknown optional fields, bodies, enum numbers; missing binding revision; differently encoded retries | Additive fields interoperate; reserved field/enum identifiers cannot be reused; unsupported semantics never become default actions/state; unknown state events invalidate cache; required presence is enforced; dedup uses semantic command identity | P1 foundation, P2 control methods, P3 presentation |
 | A30 | Split/coalesced stream reads; bad preamble/kind/role; zero, overflowing, oversized, or truncated lengths; inconsistent render header; excessive nesting/collections | Exact framing survives arbitrary read boundaries; limits apply before allocation/mutation; invalid frames emit no partial ANSI; only offending connection fails and unrelated work continues | P1 |
 | A31 | Regenerate schema on a clean pinned toolchain and round-trip uint64 above 2^53 and arbitrary bytes | Reproducible generated contract. IDs, revisions, and bytes round-trip exactly. Packaged binaries need no compiler | P1 build |
+| A32 | Run equivalent tab/pane create, select, split, resize, close, detach, and reattach actions through TUI and GUI | Equivalent domain transitions, focus, terminal identity, and lifecycle outcomes; unsupported capabilities are explicit. Current local GUI lifetime and TUI split gaps remain open | Later |
+| A33 | Use the bundled Stream Deck daemon alongside the GUI; disconnect/reconnect hardware or the companion and change a slot during a press | Shared slot identities and exact focus; stale gestures are rejected without replay; hardware loss leaves terminal sessions running. Packaging, process lifecycle, and physical-device evidence remain open | Later |
 
 ## 16. Risks, remaining questions, and next work
 

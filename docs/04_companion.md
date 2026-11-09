@@ -4,6 +4,12 @@ The companion connects to one configured Linux Corvid daemon and maintains
 virtual slots. It serves framed Protobuf to the local CLI and desktop board
 over a private Unix socket on Linux or a current-user named pipe on Windows.
 
+The intended desktop GUI presents the same tab, pane, focus, and session behavior
+as the TUI. A Stream Deck integration daemon will also be included with the
+desktop app in a later phase. The commands and ownership diagram below describe
+the current implementation; [convergence work](#planned-desktop-convergence)
+is tracked separately.
+
 - [Windows quick start](#windows-quick-start)
 - [Windows process and state ownership](#windows-process-and-state-ownership)
 - [Windows diagnostics](#windows-diagnostics)
@@ -138,6 +144,10 @@ ready. Rerun `-Mode Enable` after moving the package.
 
 ## Windows process and state ownership
 
+This diagram describes the current implementation, including app-owned local
+ConPTY sessions. The target daemon boundary and shared workspace behavior are
+described under [planned desktop convergence](#planned-desktop-convergence).
+
 ```mermaid
 flowchart LR
     subgraph Windows
@@ -187,6 +197,28 @@ when the TUI and pane are still live. A Windows logoff or reboot keeps the
 saved slot layout and requires a fresh TUI pairing. The Linux PTYs and
 agents survive the loss of either Windows connection while the daemon and
 its host remain alive.
+
+### Planned desktop convergence
+
+The GUI is the graphical presentation of the same multiplexer behavior as the
+TUI. Tabs and panes must share creation, selection, split, resize, and close
+semantics, even when their controls or shortcuts differ. Closing a presentation
+window and explicitly ending a terminal must remain distinct operations under
+the daemon ownership contract.
+
+Current gaps remain: the TUI supports one pane per tab; the GUI implements its
+own split/close transitions and limits around the shared core layout types, and
+closing the GUI ends its local ConPTY jobs. These are implementation differences
+to resolve, not the target behavior. See the [shared behavior contract](00_project_design.md#77-shared-tui-and-gui-behavior)
+and acceptance case A32 before claiming parity.
+
+The future desktop distribution will include a Stream Deck integration daemon
+that uses companion slots and focus captures, with no authority to own PTYs or
+answer provider requests. The current standalone USB adapter is the prototype
+for this integration. Bundling, startup/shutdown ownership, last-window behavior,
+and login startup remain planned work; the current package does not include
+`corvid-streamdeck`. Physical-device qualification and acceptance case A33 are
+also pending. See the [integration plan](00_project_design.md#114-bundled-stream-deck-integration-daemon--planned).
 
 ## Windows diagnostics
 
