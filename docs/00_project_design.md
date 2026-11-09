@@ -523,8 +523,13 @@ worst-case detection delay when the terminal count consumes that budget. Probe p
 incarnation and foreground group; debounce burst triggers. Failed probes produce Unknown,
 not exit. Absence of output is never a completion timeout.
 
-Shell integration defaults off and is installed explicitly. No automatic `.bashrc`,
-`.zshrc`, PROMPT_COMMAND, or precmd mutation. Raw command lines are not persisted.
+Corvid-created shells get a private PATH directory for the `claude` and `codex`
+commands. A wrapper resolves the real program on the shell's current PATH and
+adds session-scoped observers for qualified releases. The daemon binds the launch
+to the shell's live PTY using the peer PID, the foreground group, and the executable
+image. It accepts observations only after the expected provider takes over that
+process. Shell startup files and prompt hooks are left intact. Raw command lines
+are not persisted.
 
 ## 7. Terminal runtime, rendering, and input
 
@@ -1292,12 +1297,11 @@ stable HostId under `$XDG_STATE_HOME/corvid` or `$HOME/.local/state/corvid`, and
 `daemon --state-dir` for an explicit private state path.
 
 On Linux, `corvid` discovers the user daemon and starts it in the background when
-needed. It joins a live terminal in the default workspace. When the workspace is
-empty, the daemon checks its PATH for the supported agent executables. It starts a
-single detected agent, asks the TUI to get an explicit choice when both are present,
-or opens a shell when neither is present. The background process uses the bundled
-terminal profile. A control relay alone cannot start the daemon. Saved layout metadata
-does not start programs.
+needed. It joins a live terminal in the default workspace or opens the user's
+shell when the workspace has no live terminal. The user starts agents by running
+their commands in a Corvid shell or by requesting a managed launch in a separate tab.
+The background process uses the bundled terminal profile. A control relay alone cannot start the
+daemon. Saved layout metadata does not start programs.
 
 Detach or working SSH loss retires that ClientId and its binding, releases its leases,
 discards queued input, and keeps last PTY sizes. The daemon continues parsing output and

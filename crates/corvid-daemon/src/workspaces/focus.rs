@@ -333,6 +333,7 @@ mod tests {
         Workspaces::new(
             metadata,
             Arc::new(HookEnvironment {
+                shell_commands: None,
                 runtime: PathBuf::from("/tmp"),
                 identity: Arc::new(identity),
             }),

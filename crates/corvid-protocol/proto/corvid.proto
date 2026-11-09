@@ -57,6 +57,8 @@ message Envelope {
     HelloResult capabilities = 54;
     CollectHook collect_hook = 60;
     HookCollected hook_collected = 61;
+    RegisterShellAgent register_shell_agent = 62;
+    ShellAgentRegistered shell_agent_registered = 63;
     GetSnapshot get_snapshot = 70;
     SnapshotWatch snapshot_watch = 71;
     SnapshotBegin snapshot_begin = 72;
@@ -863,6 +865,16 @@ message CollectHook {
 }
 
 message HookCollected {}
+
+message RegisterShellAgent {
+  string terminal_id = 1;
+  AgentProvider provider = 2;
+  bytes executable_path = 3;
+}
+
+message ShellAgentRegistered {
+  string launch_association = 1;
+}
 
 enum AttachRole {
   ATTACH_ROLE_UNSPECIFIED = 0;

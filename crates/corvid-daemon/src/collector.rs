@@ -6,10 +6,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use corvid_protocol::collector::{
     CAPABILITY, HOST_ID, INPUT_BATCH_CAPABILITY, LAUNCH_ASSOCIATION, NESTED_SUBAGENT_CAPABILITY,
-    RUNTIME_DIR, SERVER_EPOCH,
+    RUNTIME_DIR, SERVER_EPOCH, SHELL_AGENT_CAPABILITY, SHELL_TERMINAL,
 };
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{CollectorTraffic, HookCollected};
+use corvid_protocol::wire::{CollectorTraffic, HookCollected, ShellAgentRegistered};
 use corvid_protocol::{PeerRole, ProtocolFault};
 use portable_pty::CommandBuilder;
 use tokio::net::UnixStream;
@@ -20,6 +20,7 @@ use crate::agents::{Hook, HookBinding};
 use crate::control::handshake;
 use crate::identity::Identity;
 use crate::process::ProcessImage;
+use crate::provider::shell::Commands;
 use crate::workspaces::Workspaces;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_millis(75);
@@ -68,15 +69,31 @@ fn increment(counter: &AtomicU64) {
 pub(crate) struct HookEnvironment {
     pub(crate) runtime: PathBuf,
     pub(crate) identity: Arc<Identity>,
+    pub(crate) shell_commands: Option<Commands>,
 }
 
 impl HookEnvironment {
-    pub(crate) fn configure(&self, command: &mut CommandBuilder, association: Option<Uuid>) {
-        for key in [LAUNCH_ASSOCIATION, HOST_ID, SERVER_EPOCH] {
+    pub(crate) fn configure(
+        &self,
+        command: &mut CommandBuilder,
+        association: Option<Uuid>,
+        shell_terminal: Option<Uuid>,
+    ) {
+        for key in [LAUNCH_ASSOCIATION, HOST_ID, SERVER_EPOCH, SHELL_TERMINAL] {
             command.env_remove(key);
+        }
+        let shell_terminal = shell_terminal.filter(|_| {
+            self.shell_commands
+                .as_ref()
+                .is_some_and(|commands| commands.configure(command))
+        });
+        if let Some(terminal) = shell_terminal {
+            command.env(SHELL_TERMINAL, terminal.to_string());
         }
         if let Some(association) = association {
             command.env(LAUNCH_ASSOCIATION, association.to_string());
+        }
+        if association.is_some() || shell_terminal.is_some() {
             command.env(HOST_ID, &self.identity.host_id);
             command.env(SERVER_EPOCH, &self.identity.epoch);
             command.env(RUNTIME_DIR, &self.runtime);
@@ -110,6 +127,7 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
             CAPABILITY,
             INPUT_BATCH_CAPABILITY,
             NESTED_SUBAGENT_CAPABILITY,
+            SHELL_AGENT_CAPABILITY,
         ],
     )
     .await?
@@ -122,16 +140,27 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
         .await?
         .context("missing hook submission")?;
     let result = match session.validate_request(&request) {
-        Ok(Body::CollectHook(hook)) => match Hook::decode(hook, request.request_id.as_deref()) {
-            Ok(hook) => ingest(workspaces, hook, pid).await,
-            Err(fault) => Err(fault),
-        },
+        Ok(Body::CollectHook(hook)) => {
+            let result = match Hook::decode(hook, request.request_id.as_deref()) {
+                Ok(hook) => ingest(workspaces, hook, pid).await,
+                Err(fault) => Err(fault),
+            };
+            workspaces.collector.submission(result.is_ok());
+            result.map(|()| Body::HookCollected(HookCollected {}))
+        }
+        Ok(Body::RegisterShellAgent(registration)) => workspaces
+            .register_shell_agent(registration, pid)
+            .await
+            .map(|association| {
+                Body::ShellAgentRegistered(ShellAgentRegistered {
+                    launch_association: association.to_string(),
+                })
+            }),
         Err(fault) => Err(fault),
         Ok(_) => unreachable!("collector accepts only hook submissions"),
     };
-    workspaces.collector.submission(result.is_ok());
     let body = match result {
-        Ok(()) => Body::HookCollected(HookCollected {}),
+        Ok(body) => body,
         Err(fault) => Body::Error(fault.into_wire()),
     };
     writer

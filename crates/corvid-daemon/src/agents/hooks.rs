@@ -303,6 +303,20 @@ impl Agents {
         if matches!(current.run.process.value, ProcessLiveness::Exited { .. }) {
             return Ok(None);
         }
+        if !current.published {
+            if hook.actor.is_some() || !matches!(hook.event, HookEvent::Startup | HookEvent::Resume)
+            {
+                return Err(unauthorized());
+            }
+            // Shell launches become visible only after the real provider proves ownership.
+            current.observe_process(
+                ProcessLiveness::Running,
+                Some(owner.incarnation),
+                Source::ProcessProbe,
+            );
+            current.published = true;
+            current.terminal_available = true;
+        }
         if let Some(actor) = hook.actor.as_ref() {
             if launch.producer == Some(producer)
                 && !launch.ambiguous

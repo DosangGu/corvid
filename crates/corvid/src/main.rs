@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub(crate) use linux::runtime_path;
 
 #[derive(Parser)]
-#[command(version, about = "Terminal multiplexer for interactive coding agents")]
+#[command(version, about = "Terminal multiplexer with coding-agent integrations")]
 #[cfg_attr(
     target_os = "linux",
     command(after_help = "Run without a command to open the default workspace.")
@@ -45,6 +45,17 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    {
+        let mut args = std::env::args_os();
+        if let Some(provider) = args
+            .next()
+            .as_deref()
+            .and_then(corvid_daemon::shell_agent::invoked_provider)
+        {
+            return ExitCode::from(linux::shell_agent::execute(provider, args.collect()));
+        }
+    }
     #[cfg(target_os = "linux")]
     let started = Instant::now();
     let options = Options::parse();

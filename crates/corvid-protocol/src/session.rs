@@ -159,7 +159,7 @@ impl Session {
         let body = known_body(request)?;
         match (self.role, body) {
             (PeerRole::Tui | PeerRole::Control | PeerRole::Presentation, Body::Ping(_))
-            | (PeerRole::Collector, Body::CollectHook(_))
+            | (PeerRole::Collector, Body::CollectHook(_) | Body::RegisterShellAgent(_))
             | (
                 PeerRole::Presentation,
                 Body::GetPresentationSlots(_)

@@ -1,7 +1,9 @@
 pub(crate) mod hooks;
 mod profile;
+pub mod shell;
 
 use std::env;
+use std::ffi::OsString;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -11,7 +13,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::Provider;
-use corvid_protocol::ProtocolFault;
 use corvid_protocol::collector::{CLAUDE_VERSION, CODEX_VERSION};
 use corvid_protocol::wire::ProviderProfile;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
@@ -44,30 +45,20 @@ pub(crate) fn program(provider: Provider) -> &'static str {
 }
 
 pub(crate) fn installed_program(provider: Provider) -> Option<PathBuf> {
-    find_on_path(program(provider))
+    find_on_path(program(provider), None)?.canonicalize().ok()
 }
 
-pub(crate) fn default_provider(
-    requested: Option<Provider>,
-) -> Result<Option<(Provider, PathBuf)>, ProtocolFault> {
-    if let Some(provider) = requested {
-        return installed_program(provider)
-            .map(|path| Some((provider, path)))
-            .ok_or_else(|| {
-                ProtocolFault::new("AgentUnavailable", "selected agent is no longer on PATH")
-            });
+pub(crate) fn observer_arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> {
+    let mut arguments = Vec::new();
+    if provider == Provider::Codex {
+        // A shared Codex app server can outlive the managed launcher.
+        arguments.extend([
+            "-c".into(),
+            OsString::from("features.daemon_auto_start=false"),
+        ]);
     }
-    let mut installed = [Provider::Claude, Provider::Codex]
-        .into_iter()
-        .filter_map(|provider| installed_program(provider).map(|path| (provider, path)));
-    let first = installed.next();
-    if installed.next().is_some() {
-        return Err(ProtocolFault::new(
-            "AgentChoiceRequired",
-            "Claude Code and Codex are both installed",
-        ));
-    }
-    Ok(first)
+    arguments.extend(hooks::arguments(provider, argv));
+    arguments
 }
 
 pub(crate) fn qualified_version(provider: Provider) -> &'static str {
@@ -88,15 +79,18 @@ pub(crate) fn qualified_profiles() -> &'static [ProviderProfile] {
     })
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_on_path(name: &str, skip: Option<Executable>) -> Option<PathBuf> {
     let paths = env::var_os("PATH")?;
     env::split_paths(&paths).find_map(|directory| {
         let path = directory.join(name);
         let metadata = path.metadata().ok()?;
-        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        if !metadata.is_file()
+            || metadata.permissions().mode() & 0o111 == 0
+            || skip.is_some_and(|skip| Executable::read(&path) == Some(skip))
+        {
             return None;
         }
-        path.canonicalize().ok()
+        std::path::absolute(path).ok()
     })
 }
 

@@ -14,11 +14,9 @@ target/debug/corvid
 Linux builds use the ncurses `tic` compiler. Cargo builds the Protobuf schema
 using `protox`. Running `corvid`
 without a subcommand starts a background daemon if needed and joins a live
-terminal in the default workspace. For an empty workspace, it looks for `claude`
-and `codex` on the daemon's PATH. It starts the only detected agent, asks which
-one to start if both are present, or opens a shell if neither is found. To start
-a shell explicitly, use `corvid attach --new`. The automatically started daemon
-uses the bundled terminfo entry.
+terminal in the default workspace. It opens the user's shell when the workspace
+has no live terminal. To start a shell explicitly, use `corvid attach --new`.
+The automatically started daemon uses the bundled terminfo entry.
 For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
 
@@ -67,6 +65,14 @@ A managed launch detects the provider release and adds observation hooks to
 the new session when the release is qualified. Codex asks you to review and
 trust new hooks through its own UI. `corvid control agents` shows collection
 health, pending and unverified requests, and whether a response was observed.
+Claude Code and Codex can run in separate tabs of the same workspace. Detach
+between the following commands, then use Ctrl-] followed by n or p to switch tabs.
+
+```sh
+corvid attach --new-tab Claude --agent claude
+corvid attach --new-tab Codex --agent codex
+```
+
 See [provider qualification](03_provider_qualification.md) for coverage and
 manual hook configuration.
 
@@ -186,13 +192,24 @@ current prompt of a managed Claude or Codex run. The terminal controls how
 the bell is presented. For WezTerm, see its
 [bell settings](https://wezterm.org/config/lua/config/audible_bell.html).
 
-When `corvid` starts a qualified provider, it loads the observers for that
-managed session. Use `corvid attach --agent claude` or `corvid attach --agent codex`
-to select a provider explicitly. A provider `Stop`
-observation means a response was observed. Other hooks or background
-work can continue afterward. Corvid sends the signal to the live TUI holding
-the workspace writer lease, including for agents in background tabs. Only
-events observed while attached are eligible for delivery.
+Inside a newly opened Corvid shell, run `claude` or `codex` normally. Corvid
+resolves the executable on that shell's PATH, verifies that the foreground
+process belongs to the Corvid PTY, and enables session-scoped observers for
+qualified releases. Codex may ask you to trust the hooks in its own UI.
+This works with `ssh -tt work-host corvid` on the updated Linux host. Use a new
+shell after updating the daemon so the shell receives the command wrappers.
+
+Bash and Zsh keep the two command names connected when a login profile
+prepends another directory to PATH. Other shells use the private PATH
+directory directly. An absolute path or an alias that runs the executable
+directly bypasses the wrappers. The explicit `corvid attach --agent claude`
+and `corvid attach --agent codex` commands also load the observers for
+qualified releases.
+
+A provider `Stop` observation means a response was observed. Other hooks or
+background work can continue afterward. Corvid sends the signal to the live
+TUI holding the workspace writer lease, including for agents in background
+tabs. Only events observed while attached are eligible for delivery.
 
 Set `CORVID_NOTIFY=osc9` on the remote `corvid` command to request a toast
 through a terminal that supports OSC 9. The desktop and terminal notification

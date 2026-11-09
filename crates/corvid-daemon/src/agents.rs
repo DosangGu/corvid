@@ -74,6 +74,33 @@ struct ManagedRun {
 }
 
 impl Agents {
+    pub(crate) fn reserve_shell(
+        &mut self,
+        location: Location,
+        terminal: Uuid,
+        provider: Provider,
+        owner: ProcessImage,
+    ) -> Uuid {
+        let association = self.reserve(location, terminal, provider, true);
+        self.launches
+            .get_mut(&association)
+            .expect("reserved launch")
+            .owner = Some(owner);
+        association
+    }
+
+    pub(crate) fn retire_shell(&mut self, association: Uuid, liveness: ProcessLiveness) {
+        for record in self.runs.values_mut().filter(|record| {
+            record.run.identity.launch_association == association
+                && record.run.identity.parent_run_id.is_none()
+                && record.published
+        }) {
+            record.observe_process(liveness, None, Source::ProcessProbe);
+            self.dirty.insert(record.run.identity.id);
+        }
+        self.retire_launch(association);
+    }
+
     fn reserve(
         &mut self,
         location: Location,

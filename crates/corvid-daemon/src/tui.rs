@@ -15,8 +15,9 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
-    DEFAULT_LAUNCH_CAPABILITY, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY, PeerRole,
-    ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, Session,
+    DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter, LEGACY_DEFAULT_LAUNCH_CAPABILITY,
+    MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame,
+    Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -45,7 +46,8 @@ const CAPABILITIES: &[&str] = &[
     PAIR_CAPABILITY,
     ADAPTIVE_VIEWPORT_CAPABILITY,
     RESPONSE_NOTIFICATION_CAPABILITY,
-    DEFAULT_LAUNCH_CAPABILITY,
+    DEFAULT_SHELL_CAPABILITY,
+    LEGACY_DEFAULT_LAUNCH_CAPABILITY,
     "agent_launch.v1",
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
@@ -513,10 +515,13 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         ));
     }
 
-    let launch_if_empty = attach
-        .terminal_capabilities
-        .iter()
-        .any(|capability| capability == DEFAULT_LAUNCH_CAPABILITY);
+    // Older clients can request the same conditional shell with the old flag.
+    let launch_if_empty = attach.terminal_capabilities.iter().any(|capability| {
+        matches!(
+            capability.as_str(),
+            DEFAULT_SHELL_CAPABILITY | LEGACY_DEFAULT_LAUNCH_CAPABILITY
+        )
+    });
     if launch_if_empty
         && (attach.workspace_id.is_some()
             || attach.tab_id.is_some()
@@ -525,10 +530,10 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
             || attach
                 .launch
                 .as_ref()
-                .is_none_or(|launch| !launch.argv.is_empty()))
+                .is_none_or(|launch| !launch.argv.is_empty() || launch.agent_provider.is_some()))
     {
         return Err(invalid(
-            "default launch requires the default workspace and no arguments",
+            "default shell requires the default workspace and no program",
         ));
     }
     Ok(AttachTarget {

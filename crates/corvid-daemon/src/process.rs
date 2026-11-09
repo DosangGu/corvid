@@ -58,6 +58,8 @@ pub(crate) struct Incarnation {
 
 struct Stat {
     parent_pid: u32,
+    process_group: i32,
+    tty: i32,
     start_ticks: u64,
     foreground_group: Option<i32>,
     exited: bool,
@@ -113,6 +115,26 @@ impl ProcessImage {
         self.current_stat().is_some()
     }
 
+    pub(crate) fn shell_exit(self, pending: bool) -> Option<ProcessLiveness> {
+        let pid = self.incarnation.pid;
+        let directory = match File::open(format!("/proc/{pid}")) {
+            Ok(directory) => ProcessDirectory { pid, directory },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Some(ProcessLiveness::Exited { code: None });
+            }
+            Err(_) => return Some(ProcessLiveness::Unknown),
+        };
+        let Some(stat) = directory.stat() else {
+            return Some(ProcessLiveness::Unknown);
+        };
+        if stat.exited || stat.start_ticks != self.incarnation.start_ticks {
+            return Some(ProcessLiveness::Exited { code: None });
+        }
+        let image = directory.executable();
+        let starting = pending && image.is_some() && image == helper_image();
+        (image != Some(self.executable) && !starting).then_some(ProcessLiveness::Unknown)
+    }
+
     fn current_stat(self) -> Option<Stat> {
         let process = ProcessDirectory::open(self.incarnation.pid)?;
         let stat = process.stat()?;
@@ -143,6 +165,29 @@ impl ProcessImage {
         }
         codex_broker(observer.parent_pid, pid)
     }
+}
+
+pub(crate) fn verify_shell_launcher(shell: Incarnation, peer: u32) -> Option<Incarnation> {
+    let root = read_stat(shell.pid)?;
+    if root.exited || root.start_ticks != shell.start_ticks || root.tty == 0 {
+        return None;
+    }
+    let process = ProcessDirectory::open(peer)?;
+    let stat = process.stat()?;
+    if stat.exited
+        || (peer != shell.pid && stat.parent_pid != shell.pid)
+        || (peer == shell.pid && stat.start_ticks != shell.start_ticks)
+        || stat.tty != root.tty
+        || stat.foreground_group != Some(stat.process_group)
+        || process.executable()? != helper_image()?
+    {
+        return None;
+    }
+    Some(stat.incarnation(peer, shell.boot_id))
+}
+
+fn helper_image() -> Option<Executable> {
+    Executable::read(Path::new("/proc/self/exe"))
 }
 
 fn codex_broker(pid: u32, launcher: u32) -> Option<HookProducer> {
@@ -414,14 +459,19 @@ fn parse_stat(bytes: &[u8], pid: u32) -> Option<Stat> {
     let mut fields = fields.split_ascii_whitespace();
     let state = fields.next()?;
     let parent_pid = fields.next()?.parse().ok()?;
+    let process_group = fields.next()?.parse().ok()?;
+    let _session = fields.next()?;
+    let tty = fields.next()?.parse().ok()?;
     let foreground_group = fields
-        .nth(3)?
+        .next()?
         .parse::<i32>()
         .ok()
         .filter(|group| *group > 0);
     let start_ticks = fields.nth(13)?.parse().ok()?;
     Some(Stat {
         parent_pid,
+        process_group,
+        tty,
         start_ticks,
         foreground_group,
         exited: matches!(state, "Z" | "X" | "x"),

@@ -1,5 +1,6 @@
 mod controllers;
 mod focus;
+mod shell;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use corvid_core::agent::Provider;
+use corvid_core::agent::{ProcessLiveness, Provider};
 use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
@@ -26,7 +27,7 @@ use uuid::Uuid;
 use crate::agents::{Agents, Hook, HookBinding};
 use crate::collector::{CollectorDiagnostics, HookEnvironment};
 use crate::metadata::MetadataUpdates;
-use crate::process::{self, HookProducer, ProbeBudget, ProcessImage};
+use crate::process::{self, HookProducer, Incarnation, ProbeBudget, ProcessImage};
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
 use crate::terminal::{
@@ -36,6 +37,7 @@ use crate::terminal::{
 pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
 pub(crate) use focus::{FocusDispatch, FocusRecovery};
+use shell::Shells;
 
 pub(crate) const MAX_PTY_WORKERS: usize = 32;
 const EVENT_CAPACITY: usize = 4;
@@ -92,6 +94,7 @@ pub(crate) struct Registry {
     epoch: Uuid,
     publication: Publication,
     terminals: HashMap<Uuid, Location>,
+    shells: Shells,
     clients: HashMap<Uuid, Client>,
     controllers: Controllers,
     generation: u64,
@@ -140,6 +143,7 @@ impl Workspaces {
                 epoch,
                 publication,
                 terminals: HashMap::new(),
+                shells: Shells::default(),
                 clients: HashMap::new(),
                 controllers: Controllers::default(),
                 generation: 0,
@@ -184,6 +188,7 @@ impl Workspaces {
     }
 
     pub(crate) fn tick_agents(&self) {
+        self.poll_shell_agents();
         let mut registry = self.lock_registry();
         registry.agents.tick();
         registry.publish(Vec::new());
@@ -554,6 +559,10 @@ impl Registry {
         self.publish(vec![terminal_projection(id, location)]);
     }
 
+    pub(crate) fn shell_started(&mut self, id: Uuid, root: Incarnation) {
+        self.shells.add(id, root);
+    }
+
     pub(crate) fn record_cwd(&self, terminal: Uuid, cwd: &Path, source: CwdSource) {
         let Some(&location) = self.terminals.get(&terminal) else {
             return;
@@ -586,6 +595,9 @@ impl Registry {
     pub(crate) fn terminal_closed(&mut self, id: Uuid, association: Option<Uuid>) {
         if let Some(association) = association {
             self.agents.retire_launch(association);
+        }
+        if let Some(agent) = self.shells.remove(id) {
+            self.agents.retire_shell(agent, ProcessLiveness::Unknown);
         }
         self.terminals.remove(&id);
         let mut projections = vec![(Group::Terminal(id), Vec::new())];

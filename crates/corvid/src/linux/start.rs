@@ -1,6 +1,6 @@
 use std::env;
 use std::fs::File;
-use std::io::{self, BufRead, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -9,7 +9,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use corvid_client::AttachOptions;
 use corvid_protocol::unix::RuntimeDir;
-use corvid_protocol::wire::AgentProvider;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use nix::errno::Errno;
 use tokio::process::{Child, Command};
@@ -37,46 +36,15 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
         .as_ref()
         .err()
         .and_then(|error| error.downcast_ref::<ProtocolFault>());
-    match fault.map(|fault| fault.code.as_str()) {
-        Some("AgentChoiceRequired") => {
-            let Some(agent) = choose_agent()? else {
-                return Ok(0);
-            };
-            let options = AttachOptions {
-                agent: Some(agent),
-                launch_if_empty: true,
-                ..AttachOptions::default()
-            };
-            corvid_client::attach(&path, options).await
-        }
-        Some("NoTerminal") => {
-            let options = AttachOptions {
-                launch: Some(Vec::new()),
-                ..AttachOptions::default()
-            };
-            corvid_client::attach(&path, options).await
-        }
-        _ => result,
+    if fault.is_some_and(|fault| fault.code == "NoTerminal") {
+        // Older daemons only support a separate, explicit shell launch.
+        let options = AttachOptions {
+            launch: Some(Vec::new()),
+            ..AttachOptions::default()
+        };
+        return corvid_client::attach(&path, options).await;
     }
-}
-
-fn choose_agent() -> Result<Option<AgentProvider>> {
-    let mut output = io::stderr().lock();
-    writeln!(output, "Choose an agent for the empty workspace")?;
-    writeln!(output, "  1. Claude Code")?;
-    writeln!(output, "  2. Codex")?;
-    write!(output, "Enter 1 or 2, or press Enter to cancel: ")?;
-    output.flush()?;
-    drop(output);
-
-    let mut choice = String::new();
-    io::stdin().lock().take(32).read_line(&mut choice)?;
-    match choice.trim() {
-        "1" => Ok(Some(AgentProvider::Claude)),
-        "2" => Ok(Some(AgentProvider::Codex)),
-        "" => Ok(None),
-        _ => bail!("choose 1 for Claude Code or 2 for Codex"),
-    }
+    result
 }
 
 async fn ensure_daemon(runtime: &RuntimeDir) -> Result<()> {

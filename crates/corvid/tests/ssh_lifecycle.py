@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import pwd
 import shlex
+import shutil
 import signal
 import socket
 import struct
@@ -16,7 +17,7 @@ import uuid
 
 from companion_fixture import Companion, fields
 from input_latency import measure_input
-from interactive import OuterTerminal, stop
+from interactive import OuterTerminal, stop, verify_shell_agent_notifications
 
 
 def key(path):
@@ -56,7 +57,7 @@ LogLevel ERROR
     known_hosts = directory / "known_hosts"
     public = host_pub.read_text().strip()
     known_hosts.write_text(f"[127.0.0.1]:{listen} {public}\n")
-    server = subprocess.Popen(["/usr/bin/sshd", "-D", "-e", "-f", config])
+    server = subprocess.Popen([shutil.which("sshd") or "/usr/sbin/sshd", "-D", "-e", "-f", config])
     ssh = [
         "ssh", "-F", "/dev/null", "-p", str(listen), "-i", str(client_key),
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-o", "IdentitiesOnly=yes",
@@ -291,6 +292,7 @@ def run(binary, *, measure_keys=False):
                 check_ssh(server, ssh)
                 check_control(ssh, command, schema)
                 check_working_ssh(ssh, command, directory)
+                verify_shell_agent_notifications(command[0], directory, database, ssh)
                 if measure_keys:
                     measure_input(ssh, command, directory)
                 assert unit_pid(unit) == pid
@@ -298,7 +300,7 @@ def run(binary, *, measure_keys=False):
                 stop(server)
         finally:
             subprocess.run(["systemctl", "--user", "stop", unit], check=True, timeout=12)
-    print("OpenSSH host listing, companion resync, stale captures, working-channel loss, and same-PTY reattach verified.")
+    print("OpenSSH lifecycle, companion resync, same-PTY reattach, and agent response bells verified.")
 
 
 if __name__ == "__main__":

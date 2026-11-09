@@ -30,6 +30,7 @@ use crate::publication::MAX_WATCHES;
 use crate::workspaces::Workspaces;
 
 pub use provider::hooks::observer_settings;
+pub use provider::shell as shell_agent;
 
 // Keep room for ordinary requests when the snapshot watch limit is full.
 const MAX_CONTROL_CONNECTIONS: usize = MAX_WATCHES + 8;
@@ -52,6 +53,7 @@ pub async fn run(
     let hook_environment = Arc::new(HookEnvironment {
         runtime: runtime.path().to_owned(),
         identity: Arc::clone(&identity),
+        shell_commands: shell_agent::Commands::install(runtime.path()).ok(),
     });
     let workspaces = Arc::new(Workspaces::new(updates, hook_environment));
     let mut controls = JoinSet::new();

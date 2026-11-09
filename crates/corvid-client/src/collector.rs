@@ -2,10 +2,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY, NESTED_SUBAGENT_CAPABILITY};
+use corvid_protocol::collector::{
+    CAPABILITY, INPUT_BATCH_CAPABILITY, NESTED_SUBAGENT_CAPABILITY, SHELL_AGENT_CAPABILITY,
+};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{CollectHook, HookEvent};
+use corvid_protocol::wire::{CollectHook, HookEvent, RegisterShellAgent};
 use corvid_protocol::{PeerRole, ProtocolFault};
 use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
@@ -48,6 +50,51 @@ async fn send_hook(
         }
         _ => {}
     }
+    match exchange(
+        stream,
+        host_id,
+        epoch,
+        capabilities,
+        Body::CollectHook(observation),
+    )
+    .await?
+    {
+        Body::HookCollected(_) => Ok(()),
+        _ => anyhow::bail!("unexpected collector response"),
+    }
+}
+
+pub async fn register_shell_agent(
+    runtime: &Path,
+    host_id: &str,
+    epoch: &str,
+    registration: RegisterShellAgent,
+) -> Result<Uuid> {
+    let stream = timeout(CONNECT_TIMEOUT, open(runtime, SocketRole::Collector)).await??;
+    let reply = timeout(
+        SUBMIT_TIMEOUT,
+        exchange(
+            stream,
+            host_id,
+            epoch,
+            vec![SHELL_AGENT_CAPABILITY.to_owned()],
+            Body::RegisterShellAgent(registration),
+        ),
+    )
+    .await??;
+    match reply {
+        Body::ShellAgentRegistered(reply) => Ok(Uuid::parse_str(&reply.launch_association)?),
+        _ => anyhow::bail!("unexpected shell registration response"),
+    }
+}
+
+async fn exchange(
+    stream: tokio::net::UnixStream,
+    host_id: &str,
+    epoch: &str,
+    capabilities: Vec<String>,
+    body: Body,
+) -> Result<Body> {
     let mut connection =
         UnixConnection::establish(stream, PeerRole::Collector, capabilities).await?;
     let session = &connection.session;
@@ -56,10 +103,7 @@ async fn send_hook(
         "stale collector scope"
     );
 
-    let request = session.envelope(
-        Some(Uuid::new_v4().to_string()),
-        Body::CollectHook(observation),
-    );
+    let request = session.envelope(Some(Uuid::new_v4().to_string()), body);
     connection.writer.envelope(&request).await?;
     let reply = connection
         .reader
@@ -72,8 +116,8 @@ async fn send_hook(
         "collector response ID mismatch"
     );
     match reply.body {
-        Some(Body::HookCollected(_)) => Ok(()),
         Some(Body::Error(fault)) => Err(ProtocolFault::from_wire(&fault).into()),
-        _ => anyhow::bail!("unexpected collector response"),
+        Some(body) => Ok(body),
+        None => anyhow::bail!("missing collector response"),
     }
 }

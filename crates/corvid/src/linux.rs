@@ -1,3 +1,4 @@
+pub(crate) mod shell_agent;
 mod start;
 
 use std::collections::BTreeMap;

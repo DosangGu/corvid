@@ -6,6 +6,7 @@ from pathlib import Path
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -386,15 +387,20 @@ def verify_default_start(binary, directory):
                 os.close(handle)
 
 
-def verify_default_agent(binary, directory, terminfo, providers):
+def verify_shell_with_agents(binary, directory, terminfo, providers):
     root = directory / "-".join(providers)
     root.mkdir()
     programs = root / "bin"
     programs.mkdir()
+    agent_log = root / "agent-invocations"
+    shell = programs / "fixture-shell"
+    shell.write_text("#!/bin/sh\nexec /bin/sh -i\n")
+    shell.chmod(0o700)
     for provider in providers:
         script = programs / provider
         script.write_text(
             "#!/bin/sh\n"
+            "printf '%s\\n' \"$0\" >> \"$CORVID_AGENT_LOG\"\n"
             "if [ \"$1\" = --version ]; then echo 'fixture version'; exit; fi\n"
             f"printf 'AGENT-{provider}=%s\\n' \"$$\"\n"
             "read -r line\n"
@@ -404,28 +410,107 @@ def verify_default_agent(binary, directory, terminfo, providers):
     command = [binary, "--runtime-dir", root / "runtime"]
     client_programs = root / "client-bin"
     client_programs.mkdir()
-    daemon_env = os.environ | {"PATH": programs.name, "TERMINFO": str(terminfo)}
+    daemon_env = os.environ | {
+        "PATH": str(programs), "TERMINFO": str(terminfo),
+        "SHELL": str(shell), "PS1": "CORVID-SHELL> ", "CORVID_AGENT_LOG": str(agent_log),
+    }
+    daemon_env.pop("ENV", None)
     client_env = os.environ | {"PATH": str(client_programs)}
     daemon = subprocess.Popen(
         [*command, "daemon", "--state-dir", root / "state"], cwd=root, env=daemon_env,
     )
     try:
         wait_for_daemon(command, daemon)
-        marker = rf"AGENT-{providers[-1]}=(\d+)".encode()
         with OuterTerminal(command, env=client_env) as terminal:
-            if len(providers) == 2:
-                terminal.expect(b"Choose an agent for the empty workspace")
-                assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
-                terminal.send(b"2\n")
-            pid = terminal.expect(marker)[1]
+            terminal.expect(b"CORVID-SHELL>")
+            assert not agent_log.exists(), "startup ran a provider"
+            assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
             terminal.send(b"\x1dd")
             terminal.wait(0)
 
-        with OuterTerminal(command, env=client_env) as reattached:
-            assert reattached.expect(marker)[1] == pid
-            assert b"Choose an agent" not in reattached.output
-            reattached.send(b"\n")
-            reattached.wait(0)
+        for provider in providers:
+            start = [*command, "attach", "--new-tab", provider, "--agent", provider]
+            with OuterTerminal(start, env=client_env) as terminal:
+                terminal.expect(rf"AGENT-{provider}=\d+".encode())
+                terminal.send(b"\x1dd")
+                terminal.wait(0)
+
+        agents = subprocess.check_output([*command, "control", "agents"], timeout=3)
+        for provider in providers:
+            assert f"provider={provider.title()} process=Running".encode() in agents, agents
+    finally:
+        stop(daemon)
+
+
+def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shell_name="sh"):
+    root = directory / f"notify-{shell_name}"
+    root.mkdir()
+    programs = root / "bin"
+    programs.mkdir()
+    home = root / "home"
+    home.mkdir()
+    if shell_name == "sh":
+        shell = root / "shell"
+        shell.write_text("#!/bin/sh\nexec /bin/sh -i\n")
+        shell.chmod(0o700)
+    else:
+        shell = shutil.which(shell_name)
+        profile = ".bash_profile" if shell_name == "bash" else ".zshrc"
+        (home / profile).write_text(
+            f'export PATH={shlex.quote(str(programs))}:"$PATH"\n'
+            "PS1='NOTIFY-SHELL> '\n"
+        )
+    fixture = Path(__file__).with_name("fixtures") / "shell_agent.rs"
+    versions = fixture.parents[3] / "corvid-protocol/src/collector.rs"
+    build_env = os.environ.copy()
+    for name in ("CLAUDE", "CODEX"):
+        build_env[f"CORVID_FIXTURE_{name}"] = re.search(
+            rf'{name}_VERSION: &str = "([^"]+)"', versions.read_text(),
+        )[1]
+    subprocess.run(["rustc", fixture, "-o", programs / "claude"], env=build_env, check=True)
+    (programs / "codex").hardlink_to(programs / "claude")
+
+    env = os.environ | {
+        "TERMINFO": str(terminfo), "SHELL": str(shell), "HOME": str(home), "PS1": "NOTIFY-SHELL> ",
+        "PATH": str(programs), "CORVID_FIXTURE_BINARY": str(Path(binary).resolve()),
+        "CLAUDE_CONFIG_DIR": str(root / "claude-config"), "CODEX_HOME": str(root / "codex-home"),
+    }
+    for key in ("ENV", "BASH_ENV", "ZDOTDIR"):
+        env.pop(key, None)
+    client_env = os.environ.copy()
+    client_env.pop("CORVID_NOTIFY", None)
+    command = [binary, "--runtime-dir", root / "run"]
+    if ssh is None:
+        client_env["SSH_TTY"] = "/dev/pts/fixture"
+        attach = command
+    else:
+        attach = [*ssh, "-tt", shlex.join(map(os.fspath, command))]
+    daemon = subprocess.Popen([*command, "daemon", "--state-dir", root / "state"], env=env)
+    try:
+        wait_for_daemon(command, daemon)
+        with OuterTerminal(attach, env=client_env) as terminal:
+            terminal.expect(b"NOTIFY-SHELL>")
+            assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
+            terminal.send(b"claude --version\n")
+            terminal.expect(build_env["CORVID_FIXTURE_CLAUDE"].encode() + rb" \(Claude Code\)")
+
+            # A nested process cannot register its own run in the shell's PTY.
+            terminal.send(b"/bin/sh -c 'claude; :'\n")
+            terminal.expect(b"NO-OBSERVERS-claude")
+            assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
+            for provider in ("claude", "codex"):
+                terminal.output.clear()
+                terminal.send(f"{provider}\n".encode())
+                terminal.expect(f"READY-{provider}".encode())
+                agents = subprocess.check_output([*command, "control", "agents"], timeout=3)
+                assert f"provider={provider.title()} process=Running".encode() in agents, agents
+                terminal.send(b"respond\n")
+                terminal.expect(b"\x07")
+                terminal.expect(f"DONE-{provider}".encode())
+                terminal.expect(rb"DONE-" + provider.encode() + rb"[\s\S]*NOTIFY-SHELL>")
+                assert terminal.output.count(b"\x07") == 1, terminal.output
+            terminal.send(b"exit\n")
+            terminal.wait(0)
     finally:
         stop(daemon)
 
@@ -451,8 +536,12 @@ def run(binary):
             stop(daemon)
         verify_default_start(binary, directory)
         for providers in [("claude",), ("codex",), ("claude", "codex")]:
-            verify_default_agent(binary, directory, database, providers)
-    print("Live TTYs verified wide-window startup, resize, redraw, input, detach, and tab moves.")
+            verify_shell_with_agents(binary, directory, database, providers)
+        verify_shell_agent_notifications(binary, directory, database)
+        for shell in ("bash", "zsh"):
+            if shutil.which(shell):
+                verify_shell_agent_notifications(binary, directory, database, shell_name=shell)
+    print("Live TTYs verified shell-first startup, agent notifications, resize, input, detach, and tab moves.")
 
 
 if __name__ == "__main__":

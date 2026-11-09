@@ -18,7 +18,7 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
-    DEFAULT_LAUNCH_CAPABILITY, Frame, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY, PeerRole,
+    DEFAULT_SHELL_CAPABILITY, Frame, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, Session, decode_envelope,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -38,7 +38,7 @@ const LEGACY_MAX_ROWS: u16 = 120;
 
 pub struct AttachOptions {
     pub launch: Option<Vec<OsString>>,
-    /// Open a default terminal only when there is no live terminal to join.
+    /// Open a shell only when there is no live terminal to join.
     pub launch_if_empty: bool,
     pub agent: Option<AgentProvider>,
     pub escape_delay: Duration,
@@ -144,9 +144,9 @@ async fn request_attach(
             .session
             .capabilities
             .iter()
-            .any(|name| name == DEFAULT_LAUNCH_CAPABILITY);
+            .any(|name| name == DEFAULT_SHELL_CAPABILITY);
     if launch_if_empty {
-        terminal_capabilities.push(DEFAULT_LAUNCH_CAPABILITY.into());
+        terminal_capabilities.push(DEFAULT_SHELL_CAPABILITY.into());
     }
     let launch = options
         .launch

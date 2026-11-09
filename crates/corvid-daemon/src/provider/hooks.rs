@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use nix::fcntl::OFlag;
-use portable_pty::CommandBuilder;
 use serde_json::{Map, Value, json};
 
 use corvid_core::agent::Provider;
@@ -28,34 +27,31 @@ pub fn observer_settings(provider: Provider) -> Result<Value> {
     Ok(json!({ "hooks": observer_hooks(provider, &executable) }))
 }
 
-pub(crate) fn configure(command: &mut CommandBuilder, provider: Provider, argv: &[OsString]) {
+pub(super) fn arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> {
     if provider == Provider::Claude
         && argv
             .iter()
             .take_while(|arg| *arg != "--")
             .any(|arg| arg == "--settings" || arg.to_string_lossy().starts_with("--settings="))
     {
-        return;
+        return Vec::new();
     }
     let Ok(executable) = observer_executable() else {
-        return;
+        return Vec::new();
     };
     let mut hooks = observer_hooks(provider, &executable);
     if let Some(settings) = installed_settings(provider) {
         retain_missing_hooks(&mut hooks, &settings);
     }
     if hooks.is_empty() {
-        return;
+        return Vec::new();
     }
     match provider {
-        Provider::Claude => {
-            command.arg("--settings");
-            command.arg(json!({ "hooks": hooks }).to_string());
-        }
-        Provider::Codex => {
-            command.arg("-c");
-            command.arg(codex_override(&executable, &hooks));
-        }
+        Provider::Claude => vec![
+            "--settings".into(),
+            json!({ "hooks": hooks }).to_string().into(),
+        ],
+        Provider::Codex => vec!["-c".into(), codex_override(&executable, &hooks).into()],
     }
 }
 
