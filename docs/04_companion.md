@@ -241,21 +241,22 @@ update. A new process restored both explicit manual and WezTerm records.
 The tests checked legacy WezTerm records, exact revisions, and rejection of
 missing pane fields and unsupported versions.
 
-Run `cargo test --locked -p corvid-companion` on an installed Windows system.
+Wine read a protected registry key prepared by the test and cleared it on
+session restart. Wine discarded the security descriptor when creating a new
+key, so the companion rejected the key.
+
+On 2026-11-09, Windows x64 build `26300.9711` (26H2) ran 66 tests across the
+CLI, client, companion, core, desktop, and protocol packages using MSVC Rust
+1.93.1 and `protoc` 36.1. A non-elevated account used an NTFS temporary
+directory. Named-pipe ownership and client access, private state ACLs, slot
+replacement and recovery, and same-logon registry restore across processes
+passed. The AF_UNIX test also passed after accounting for Winsock reporting
+zero output bytes while writing the peer PID.
+
 The WezTerm adapter follows the per-process socket layout and CLI options in
-WezTerm `20240203-110809-5046fc22`. The Windows-target binary and adapter
-tests cross-link. Wine ran the pane matching tests and CLI help, but failed
-to create a Windows AF_UNIX socket with error 10047. Run the peer PID and
-socket pinning test on native Windows before qualifying the adapter.
+WezTerm `20240203-110809-5046fc22`.
 [WezTerm GUI socket source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm-gui/src/main.rs)
 [WezTerm CLI option source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm/src/cli/mod.rs)
-
-Wine verified Windows process creation queries, distinct file IDs, and
-registration metadata decoding. A separate process read a protected test key
-that had been prepared explicitly. Restarting the isolated Wine session
-cleared the key. Wine's registry creation discarded the supplied security
-descriptor, so the companion rejected a newly created key. The full
-registration save and restore path still needs an interactive Windows run.
 
 On an interactive Windows desktop, point the native WezTerm fixture at the
 installed GUI executable and record the Windows and WezTerm versions. Use its
@@ -271,14 +272,21 @@ cargo test --locked -p corvid-companion --lib native_wezterm_activation_keeps_ex
 The fixture starts separate WezTerm instances with its own test panes and
 checks that a colliding pane ID in another GUI keeps its selection. It checks
 rejection after a pane move, closure, or GUI replacement and the foreground
-fallback when the registered GUI owns multiple windows. WezTerm
-`20240203-110809-5046fc22` under Linux Xvfb exercised the CLI sequence with
-two real GUI instances. The Windows fixture cross-links. Its native execution
-remains pending.
+fallback when the registered GUI owns multiple windows. On Windows build
+`26300.9711` the fixture passed with WezTerm `20240203-110809-5046fc22`. It
+reported `Activated` for the single-window case and
+`PaneSelectedForegroundUnknown` for the multiple-window case.
 [WezTerm new-process option](https://wezterm.org/cli/start.html)
 
-For the full SSH path, keep the paired TUI open and restart the companion.
-Refresh the captures and verify the original pane still focuses.
+Windows system OpenSSH `9.5p2` reached the expected host and epoch on an
+Ubuntu 26.04.1 WSL daemon over loopback SSH. A WezTerm SSH TUI with a
+synthetic agent paired successfully. `focus-slot` selected the original
+Corvid tab and reported `Activated`. Restarting the companion restored the
+pin and exact WezTerm registration, and fresh captures still focused the
+original terminal. The old captures were rejected. After the WezTerm pane
+moved, focus returned `LocalTerminalUnavailable` before changing the remote
+selection. The desktop board opened against the same named pipe. Desktop
+button interactions and the Windows reboot case remain open.
 
 ### Local PC reboot reproduction
 
@@ -325,22 +333,12 @@ the answer was entered in that TUI.
 
 ### Installed Windows
 
-Record the Windows build, architecture, and WezTerm and system OpenSSH versions. Run the desktop
-and companion test suites from a normal user account with an NTFS state
-directory. Check private named-pipe access, registry restoration in the same
-logon, and the [native WezTerm fixture](#verification).
-
-Use an existing SSH TUI to a Linux daemon. Connect the companion through the
-system OpenSSH client, confirm the configured host and epoch, and focus the
-paired run from the desktop. Close or move the registered pane and verify that
-focus reports a local registration error while the remote selection stays put.
-Restart the companion with the working TUI still open, then follow the
-[local reboot procedure](#local-pc-reboot-reproduction) to confirm that a new
-logon restores slots and requires a new pairing.
-
-Use the desktop board to verify held-gesture fencing, overflow, and restart
-recovery. Capture the activation outcome and confirm that focus preserves
-the open terminal inventory and any pending remote question.
+Use the desktop board with a paired SSH TUI to verify focus, held-gesture
+fencing, overflow, and restart recovery. Capture the activation outcome and
+confirm that focus preserves the open terminal inventory and a pending remote
+provider question. Follow the [local reboot procedure](#local-pc-reboot-reproduction)
+with a separate Linux execution host to confirm that a new Windows logon
+restores slots and requires a new pairing.
 
 ### macOS
 

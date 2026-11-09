@@ -463,8 +463,9 @@ fn peer_pid(path: &Path) -> Result<u32> {
         return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }))
             .context("querying socket peer PID");
     }
+    // Winsock can write the peer PID without reporting bytes returned.
     ensure!(
-        len as usize == size_of::<u32>() && pid != 0,
+        (len == 0 || len as usize == size_of::<u32>()) && pid != 0,
         "unverified socket peer PID"
     );
     Ok(pid)

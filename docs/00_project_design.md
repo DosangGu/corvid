@@ -1362,7 +1362,8 @@ Unix rename/fsync behavior. Persisted sequence is a historical marker, never the
 epoch's starting sequence.
 
 The current Windows implementation uses protected per-user ACLs and a flushed
-same-directory replacement. Native Windows qualification is pending.
+same-directory replacement. The state ACL, replacement, and recovery tests
+passed on Windows build `26300.9711` with NTFS.
 [Companion setup and verification](04_companion.md#verification)
 
 Debounce routine metadata writes up to 1 second; explicit layout save and clean shutdown
@@ -1425,8 +1426,8 @@ not a single `cfg` substitution at the PTY layer.
 Acceptance IDs refer to §15. The phase descriptions define scope and exit criteria.
 See [terminal qualification](01_terminal_qualification.md) for the Phase 0 test results.
 
-Implementation and Linux verification proceed independently of the deferred native
-qualification. Run the installed Windows checks on the target system.
+The companion and WezTerm adapter have native Windows test results. The
+desktop interaction and Windows reboot checks remain open.
 Qualify macOS when its separately gated execution work is scheduled.
 [Deferred platform verification](04_companion.md#deferred-platform-verification)
 
