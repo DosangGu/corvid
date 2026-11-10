@@ -20,11 +20,12 @@ use corvid_protocol::{
     Frame, PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame, decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 use vt100::{Parser, Screen};
 
-use crate::ssh_bootstrap;
+use crate::{slot_board, ssh_bootstrap};
 
 pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
@@ -180,6 +181,7 @@ enum Action {
     },
     Select(ViewSelection, bool, Option<String>),
     Create(Target),
+    OpenSlotBoard(slot_board::Settings),
 }
 
 impl Session {
@@ -309,6 +311,12 @@ impl Session {
         self.change(Action::Create(target));
     }
 
+    pub fn open_slot_board(&self, settings: slot_board::Settings) {
+        if self.shared.buffer().ui.connected {
+            let _ = self.actions.try_send(Action::OpenSlotBoard(settings));
+        }
+    }
+
     fn change(&self, action: Action) {
         let mut buffer = self.shared.buffer();
         if !buffer.ui.connected || buffer.ui.changing {
@@ -329,6 +337,8 @@ fn in_pane(ui: &Ui, pane: &str) -> bool {
 
 struct Client<'a> {
     link: InteractiveConnection,
+    alias: SshAlias,
+    slot_board: JoinSet<Result<()>>,
     shared: &'a Shared,
     selected: ViewSelection,
     route: RouteToken,
@@ -437,6 +447,8 @@ async fn run(
     let epoch = link.session().server_epoch.clone();
     let mut client = Client {
         link,
+        alias: alias.clone(),
+        slot_board: JoinSet::new(),
         shared,
         selected,
         route,
@@ -463,6 +475,13 @@ async fn run(
                 Some(action) => client.action(action).await?,
                 None => return Ok("Detached from Corvid.".into()),
             },
+            result = client.slot_board.join_next(), if !client.slot_board.is_empty() => {
+                match result {
+                    Some(Ok(Err(error))) => shared.update_ui(|ui| ui.message = format!("{error:#}")),
+                    Some(Err(_)) => shared.update_ui(|ui| ui.message = "Slot Board stopped unexpectedly.".into()),
+                    _ => {}
+                }
+            }
             _ = tick.tick() => {
                 let size = *sizes.borrow();
                 client.tick(size).await?;
@@ -626,6 +645,16 @@ impl Client<'_> {
 
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
+            Action::OpenSlotBoard(settings) if self.slot_board.is_empty() => {
+                let alias = self.alias.clone();
+                let host = self.link.session().host_id.clone();
+                self.slot_board.spawn(async move {
+                    slot_board::open(settings, alias, Uuid::parse_str(&host)?).await
+                });
+            }
+            Action::OpenSlotBoard(_) => self.shared.update_ui(|ui| {
+                ui.message = "Slot Board is already open or starting.".into();
+            }),
             Action::Input {
                 revision,
                 bytes,

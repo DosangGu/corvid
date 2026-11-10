@@ -1,8 +1,8 @@
 use std::thread;
 
 use corvid_companion::{WezTermCandidate, discover_wezterm_panes};
+use corvid_presentation::ipc::Command;
 use corvid_protocol::wire::{PairTerminal, envelope::Body};
-use corvid_slot_board::ipc::Command;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 

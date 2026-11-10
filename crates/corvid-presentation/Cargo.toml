@@ -1,0 +1,17 @@
+[package]
+name = "corvid-presentation"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+corvid-companion.workspace = true
+corvid-protocol.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

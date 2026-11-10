@@ -810,6 +810,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "corvid-presentation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "corvid-companion",
+ "corvid-protocol",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "corvid-protocol"
 version = "0.1.0"
 dependencies = [
@@ -833,6 +844,7 @@ dependencies = [
  "anyhow",
  "clap",
  "corvid-companion",
+ "corvid-presentation",
  "corvid-protocol",
  "eframe",
  "tokio",

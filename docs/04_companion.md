@@ -155,8 +155,9 @@ From the repository root on Windows x64, run
 release binaries and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
 directory (`target` by default). The archive includes `corvid.exe`, the Desktop
 terminal workspace `corvid-desktop.exe`, the standalone agent deck
-`corvid-deck.exe`, the administration app `corvid-slot-board.exe`, the license,
-and `Set-CorvidStartup.ps1`. It also includes the Windows SSH bundle under
+`corvid-deck.exe`, the license, and `Set-CorvidStartup.ps1`. The optional Slot Board
+is installed under `plugins/slot-board/`. Pass `-WithoutSlotBoard` to the packager
+to omit it. The archive also includes the Windows SSH bundle under
 `daemon/x86_64-pc-windows-msvc/` with the executable and its SHA-256 manifest.
 To run Desktop from source, use
 `cargo run --locked --manifest-path crates/corvid-desktop/Cargo.toml`.
@@ -267,7 +268,7 @@ flowchart LR
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
 | Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
-| Slot board | Displays snapshots and manages slot assignments and alerts. Its pairing dialog lists verified local panes. | [corvid-slot-board](../crates/corvid-slot-board/src/main.rs) |
+| Slot board | Displays snapshots and manages slot assignments and alerts in a separate plugin window. Its pairing dialog lists verified local panes. | [corvid-slot-board](../plugins/slot-board/src/main.rs) |
 | Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../deploy/windows/) |
 | Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
 
@@ -327,11 +328,20 @@ an additional control connection. The presentation capability is `list_hosts.v1`
 
 ## Desktop Slot Board
 
-Build the administration app with `cargo build --locked -p corvid-slot-board`
-or use the Windows package. Start the configured companion and launch
-`corvid-slot-board`. The board accepts the same `--socket-dir` on Linux or
-`--pipe-instance` on Windows as the companion. The board uses eframe 0.33.3 with
-the Glow renderer and connects directly to the private Protobuf endpoint.
+Connect to an SSH host in Desktop and choose **Plugins → Slot Board**. The
+board opens in a separate process and closes when Desktop detaches or switches
+hosts. Desktop checks the companion host and controller IDs before opening the
+window. A matching configured companion keeps its existing state. Other hosts
+get their own companion state below `slot-board/` in Desktop's state directory.
+When Desktop starts a companion for the board, it uses the same remote Corvid
+installation as the attached terminal. On Linux the plugin requires `XDG_RUNTIME_DIR`.
+
+The Windows archive includes the plugin by default. For source builds, run
+`cargo build --locked -p corvid-slot-board` and place the resulting executable
+under `plugins/slot-board/` next to the Desktop executable. You can also launch
+the board directly against a running companion using `--socket-dir` on Linux
+or `--pipe-instance` on Windows. The board uses eframe 0.33.3 with the Glow
+renderer and connects directly to the private Protobuf endpoint.
 [eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
 
 Choose a paired terminal in **Target terminal**, then click **Focus** on the
@@ -527,7 +537,7 @@ The A29 version-skew fixture sent an unknown focus activation result and
 then an unknown run availability. The desktop kept the last valid snapshot
 as a cache and disabled actions. A compatible snapshot restored the link,
 and the user had to select the terminal again before focusing.
-`cargo test --locked -p corvid-slot-board` checks capture, connection fencing,
+`cargo test --locked -p corvid-slot-board -p corvid-presentation` checks capture, connection fencing,
 and input-frame behavior without a display. The Windows desktop binary
 cross-linked for `x86_64-pc-windows-gnu`. Wine 11.21 ran its four tests and
 rendered the offline window.

@@ -46,7 +46,7 @@ pub(crate) struct Service {
 }
 
 impl Service {
-    pub(crate) fn new(store: Store) -> Result<Self> {
+    pub(crate) fn new(store: Store, endpoint: ControlEndpoint) -> Self {
         let config = store.config();
         #[cfg(windows)]
         let (terminal_registry, terminals) =
@@ -59,8 +59,8 @@ impl Service {
                     (None, BTreeMap::new())
                 }
             };
-        Ok(Self {
-            endpoint: config.control_endpoint()?,
+        Self {
+            endpoint,
             controller: config.controller_id.to_string(),
             host: config.host_id.to_string(),
             store,
@@ -73,7 +73,7 @@ impl Service {
             terminals,
             #[cfg(windows)]
             terminal_registry,
-        })
+        }
     }
 
     pub(crate) async fn run(&mut self, mut calls: mpsc::Receiver<Call>) -> Result<()> {

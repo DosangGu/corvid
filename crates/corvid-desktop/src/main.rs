@@ -5,6 +5,8 @@ mod icons;
 #[cfg(any(windows, target_os = "linux"))]
 mod platform;
 #[cfg(any(windows, target_os = "linux"))]
+mod slot_board;
+#[cfg(any(windows, target_os = "linux"))]
 mod ssh_bootstrap;
 #[cfg(any(windows, target_os = "linux"))]
 mod ssh_hosts;
@@ -39,9 +41,9 @@ fn main() -> anyhow::Result<()> {
     #[derive(Parser)]
     #[command(about = "Attach to a Corvid multiplexer daemon")]
     struct Options {
-        // Accepted for the existing companion launch command.
-        #[arg(long = "pipe-instance", hide = true)]
-        _pipe_instance: Option<String>,
+        #[cfg(windows)]
+        #[arg(long, hide = true, default_value = "main")]
+        pipe_instance: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
         #[arg(long)]
@@ -67,6 +69,11 @@ fn main() -> anyhow::Result<()> {
         }) => Some((alias, host_id.to_string())),
         _ => None,
     };
+    let slot_board = slot_board::Settings {
+        state,
+        #[cfg(windows)]
+        pipe_instance: options.pipe_instance,
+    };
     let lifetime = Lifetime::default();
     let app_lifetime = lifetime.clone();
 
@@ -91,7 +98,9 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {
-                cx.new(|cx| WorkspaceView::new(alias, configured, app_lifetime, window, cx))
+                cx.new(|cx| {
+                    WorkspaceView::new(alias, configured, app_lifetime, slot_board, window, cx)
+                })
             })
             .expect("could not open Corvid Desktop");
             cx.activate(true);

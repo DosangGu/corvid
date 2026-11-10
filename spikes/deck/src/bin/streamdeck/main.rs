@@ -13,7 +13,7 @@ use corvid_deck::live::{Capture, Face, LiveDeck};
 #[cfg(windows)]
 use corvid_deck::{COLUMNS, Deck, KEY_COUNT, PAGES};
 #[cfg(windows)]
-use corvid_slot_board::ipc::DesktopClient;
+use corvid_presentation::ipc::DesktopClient;
 #[cfg(windows)]
 use elgato_streamdeck::{StreamDeck, StreamDeckError, StreamDeckInput, info::Kind, list_devices};
 #[cfg(windows)]

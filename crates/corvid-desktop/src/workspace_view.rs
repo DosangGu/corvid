@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use crate::icons::icon;
+use crate::slot_board;
 use crate::ssh_hosts;
 use crate::terminal_session::{Inventory, Job, Session, Ui};
 use crate::terminal_view::{TerminalView, preview};
@@ -73,6 +74,8 @@ pub struct WorkspaceView {
     updates: Option<Task<()>>,
     error: Option<String>,
     surface: Surface,
+    slot_board: slot_board::Settings,
+    plugins_open: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,6 +90,7 @@ impl WorkspaceView {
         alias: Option<String>,
         configured: Option<(String, String)>,
         lifetime: Lifetime,
+        slot_board: slot_board::Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -113,6 +117,8 @@ impl WorkspaceView {
             updates: None,
             error: None,
             surface: Surface::Hosts,
+            slot_board,
+            plugins_open: false,
         };
         view.refresh_hosts(cx);
         if !view.alias.is_empty() {
@@ -298,14 +304,14 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(session) = &self.session {
-            if session.ui().connected {
-                session.select(target, open, run);
-                self.surface = Surface::Terminal;
-                self.focus_terminal(window, cx);
-                cx.notify();
-                return;
-            }
+        if let Some(session) = &self.session
+            && session.ui().connected
+        {
+            session.select(target, open, run);
+            self.surface = Surface::Terminal;
+            self.focus_terminal(window, cx);
+            cx.notify();
+            return;
         }
         if run.is_none()
             && let Some(alias) = self.session_alias.clone()
@@ -478,6 +484,19 @@ impl WorkspaceView {
                     }),
                 ),
             )
+            .child(
+                button("plugins", "Plugins", self.plugins_open).on_click(cx.listener(
+                    |view, _, window, cx| {
+                        view.plugins_open = !view.plugins_open;
+                        if !view.plugins_open && view.surface == Surface::Terminal {
+                            view.focus_terminal(window, cx);
+                        } else {
+                            window.focus(&view.setup_focus);
+                        }
+                        cx.notify();
+                    },
+                )),
+            )
             .when(connected, |bar| {
                 bar.child(button("detach", "Detach", false).on_click(cx.listener(
                     |view, _, window, cx| {
@@ -486,6 +505,41 @@ impl WorkspaceView {
                         cx.notify();
                     },
                 )))
+            })
+    }
+
+    fn plugins_menu(&self, connected: bool, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .justify_end()
+            .items_center()
+            .gap(px(8.))
+            .px(px(10.))
+            .pb(px(6.))
+            .bg(rgb(PANEL))
+            .when(connected, |menu| {
+                menu.child(
+                    button("slot-board", "Slot Board", false).on_click(cx.listener(
+                        |view, _, window, cx| {
+                            if let Some(session) = &view.session {
+                                session.open_slot_board(view.slot_board.clone());
+                            }
+                            view.plugins_open = false;
+                            if view.surface == Surface::Terminal {
+                                view.focus_terminal(window, cx);
+                            }
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .when(!connected, |menu| {
+                menu.child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(rgb(MUTED))
+                        .child("Connect to an SSH host to open Slot Board."),
+                )
             })
     }
 
@@ -1056,6 +1110,9 @@ impl Render for WorkspaceView {
             .size_full()
             .bg(rgb(BACKGROUND))
             .child(self.toolbar(connected, showing_hosts, cx))
+            .when(self.plugins_open, |region| {
+                region.child(self.plugins_menu(connected, cx))
+            })
             .child(content)
             .when_some(ui, |region, ui| {
                 region.child(

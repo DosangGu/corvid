@@ -6,8 +6,9 @@ mod pairing;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use corvid_slot_board::ipc::DesktopClient;
+use corvid_presentation::ipc::DesktopClient;
 use eframe::egui;
+use uuid::Uuid;
 
 use app::Desktop;
 
@@ -22,6 +23,10 @@ struct Options {
     #[cfg(windows)]
     #[arg(long, default_value = "main")]
     pipe_instance: String,
+    #[arg(long, requires = "controller_id")]
+    host_id: Option<Uuid>,
+    #[arg(long, requires = "host_id")]
+    controller_id: Option<Uuid>,
 }
 
 fn main() -> Result<()> {
@@ -37,6 +42,7 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("set XDG_RUNTIME_DIR or pass --socket-dir"))?;
     #[cfg(windows)]
     let address = options.pipe_instance;
+    let identity = options.host_id.zip(options.controller_id);
 
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -50,7 +56,9 @@ fn main() -> Result<()> {
         Box::new(move |creation| {
             app::configure(&creation.egui_ctx);
             let ctx = creation.egui_ctx.clone();
-            let client = DesktopClient::start(address, move || ctx.request_repaint())?;
+            let client = DesktopClient::start_scoped(address, identity, move || {
+                ctx.request_repaint();
+            })?;
             Ok(Box::new(Desktop::new(client)))
         }),
     )

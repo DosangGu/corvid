@@ -1,6 +1,6 @@
 use crate::live::{Capture, LiveDeck};
+use corvid_presentation::ipc::{DesktopClient, Display};
 use corvid_protocol::wire::PresentedBinding;
-use corvid_slot_board::ipc::{DesktopClient, Display};
 use gpui::{KeyUpEvent, MouseButton, Subscription, Task};
 
 use super::*;

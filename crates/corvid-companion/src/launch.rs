@@ -1,5 +1,4 @@
 use std::env;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -90,17 +89,9 @@ async fn initialize(state: &Path, alias: &str) -> Result<Config> {
 }
 
 async fn connect(instance: &str) -> Result<Option<PresentationClient>> {
-    match PresentationClient::connect(instance).await {
-        Ok(client) => Ok(Some(client)),
-        Err(error)
-            if error
-                .downcast_ref::<io::Error>()
-                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(error).context("checking the companion pipe"),
-    }
+    PresentationClient::connect_if_present(instance)
+        .await
+        .context("checking the companion pipe")
 }
 
 async fn verify(client: &mut PresentationClient, config: &Config) -> Result<()> {

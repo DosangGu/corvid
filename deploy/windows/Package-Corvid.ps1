@@ -4,7 +4,8 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$LinuxDaemonDirectory,
     [ValidateNotNullOrEmpty()]
-    [string]$WslDistribution
+    [string]$WslDistribution,
+    [switch]$WithoutSlotBoard
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +32,7 @@ function Invoke-WslDaemonBuild([string]$distribution, [string]$buildDirectory) {
 function Read-LinuxDaemonAssets([string]$directory) {
     $revision = git rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the Windows source revision' }
-    $buildInputs = @('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates', 'spikes')
+    $buildInputs = @('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates', 'plugins', 'spikes')
     $changes = git -c core.safecrlf=false status --porcelain --untracked-files=normal -- @buildInputs
     if ($LASTEXITCODE -ne 0) { throw 'Could not check the Windows build inputs' }
     if ($changes) { throw 'Commit the build inputs before packaging with the Linux daemon' }
@@ -118,8 +119,13 @@ try {
         $linuxAssets = Read-LinuxDaemonAssets $LinuxDaemonDirectory
         $archiveName = 'corvid-windows-x64-with-daemon.zip'
     }
+    if ($WithoutSlotBoard) {
+        $archiveName = [IO.Path]::GetFileNameWithoutExtension($archiveName) + '-without-slot-board.zip'
+    }
 
-    cargo build --locked --release --target $target -p corvid-tui -p corvid-slot-board
+    $packages = @('-p', 'corvid-tui')
+    if (!$WithoutSlotBoard) { $packages += @('-p', 'corvid-slot-board') }
+    cargo build --locked --release --target $target @packages
     if ($LASTEXITCODE -ne 0) { throw 'Corvid release build failed' }
     cargo build --locked --release --target $target --target-dir $metadata.target_directory --manifest-path 'crates/corvid-desktop/Cargo.toml' --bin corvid-desktop
     if ($LASTEXITCODE -ne 0) { throw 'Corvid Desktop release build failed' }
@@ -127,11 +133,15 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Corvid Deck release build failed' }
 
     $release = Join-Path $metadata.target_directory "$target\release"
-    $daemonAssets = Read-WindowsDaemonAssets (Join-Path $release 'corvid.exe')
+    $assets = Read-WindowsDaemonAssets (Join-Path $release 'corvid.exe')
     if ($linuxAssets) {
         foreach ($asset in $linuxAssets.GetEnumerator()) {
-            $daemonAssets.Add($asset.Key, $asset.Value)
+            $assets.Add($asset.Key, $asset.Value)
         }
+    }
+    if (!$WithoutSlotBoard) {
+        $plugin = Join-Path $release 'corvid-slot-board.exe'
+        $assets.Add('plugins/slot-board/corvid-slot-board.exe', [IO.File]::ReadAllBytes($plugin))
     }
     $output = Join-Path $metadata.target_directory 'windows-dist'
     New-Item -ItemType Directory -Path $output -Force | Out-Null
@@ -141,7 +151,6 @@ try {
         (Join-Path $release 'corvid.exe')
         (Join-Path $release 'corvid-desktop.exe')
         (Join-Path $release 'corvid-deck.exe')
-        (Join-Path $release 'corvid-slot-board.exe')
         (Join-Path $PSScriptRoot 'Set-CorvidStartup.ps1')
         (Join-Path $repo 'LICENSE')
     )
@@ -150,7 +159,7 @@ try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $zip = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Update)
         try {
-            foreach ($asset in $daemonAssets.GetEnumerator()) {
+            foreach ($asset in $assets.GetEnumerator()) {
                 $entry = $zip.CreateEntry($asset.Key).Open()
                 try {
                     $entry.Write($asset.Value, 0, $asset.Value.Length)

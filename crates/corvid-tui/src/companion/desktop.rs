@@ -18,7 +18,14 @@ pub(super) async fn open(instance: &str, state: &Path, alias: Option<String>) ->
         }
         command
     } else {
-        let board = cli.with_file_name("corvid-slot-board.exe");
+        let plugin = cli
+            .with_file_name("plugins")
+            .join("slot-board/corvid-slot-board.exe");
+        let board = if plugin.is_file() {
+            plugin
+        } else {
+            cli.with_file_name("corvid-slot-board.exe")
+        };
         ensure!(
             board.is_file(),
             "place corvid-desktop.exe beside corvid.exe, or use the Windows package"

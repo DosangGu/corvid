@@ -3,12 +3,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_client::{ControlEndpoint, SshAlias};
 #[cfg(target_os = "linux")]
 use corvid_protocol::unix::{BoundSocket, RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{Envelope, Pong};
-#[cfg(windows)]
-use corvid_protocol::wire::{GetPresentationSlots, PresentationSlots};
+use corvid_protocol::wire::{Envelope, GetPresentationSlots, Pong, PresentationSlots};
 use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole,
     ProtocolFault, Session, accept_hello, check_hello_result, hello,
@@ -23,10 +22,10 @@ use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-use crate::Store;
 #[cfg(windows)]
 use crate::platform::{PipeListener, open_pipe};
 use crate::service::{Call, Service};
+use crate::{HostEndpoint, Store};
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
 pub const PRESENTATION_PAGE_SIZE: u32 = 32;
@@ -65,9 +64,36 @@ pub async fn run(
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
     let store = Store::open(state)?;
+    let endpoint = store.config().control_endpoint()?;
+    run_service(runtime, store, endpoint, shutdown).await
+}
+
+/// Serve a Desktop plugin using the SSH route that Desktop resolved.
+pub async fn run_for_ssh(
+    runtime: &PresentationAddress,
+    state: &Path,
+    alias: SshAlias,
+    host: Uuid,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
+    let store = Store::open(state)?;
+    let config = store.config();
+    ensure!(
+        config.host_id == host && matches!(config.endpoint, HostEndpoint::Ssh { .. }),
+        "companion state belongs to a different host"
+    );
+    run_service(runtime, store, ControlEndpoint::Ssh(alias), shutdown).await
+}
+
+async fn run_service(
+    runtime: &PresentationAddress,
+    store: Store,
+    endpoint: ControlEndpoint,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
     let host = store.config().host_id.to_string();
     let epoch = Uuid::new_v4().to_string();
-    let mut service = Service::new(store)?;
+    let mut service = Service::new(store, endpoint);
 
     #[cfg(target_os = "linux")]
     let (directory, instance);
@@ -233,6 +259,14 @@ impl PresentationClient {
             .context("companion Hello timed out")?
     }
 
+    pub async fn connect_if_present(runtime: &PresentationAddress) -> Result<Option<Self>> {
+        match Self::connect(runtime).await {
+            Ok(client) => Ok(Some(client)),
+            Err(error) if presentation_absent(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn negotiate(runtime: &PresentationAddress) -> Result<Self> {
         let stream = open_local(runtime).await.context("CompanionUnavailable")?;
         let (mut reader, mut writer) = open_frames(stream).await?;
@@ -258,7 +292,6 @@ impl PresentationClient {
         &self.0.session
     }
 
-    #[cfg(windows)]
     pub async fn slots(&mut self, config: Option<&crate::Config>) -> Result<PresentationSlots> {
         let reply = self
             .request(Body::GetPresentationSlots(GetPresentationSlots::default()))
@@ -295,6 +328,19 @@ impl PresentationClient {
             .await
             .context("companion result timed out")?
     }
+}
+
+fn presentation_absent(error: &anyhow::Error) -> bool {
+    use std::io::{Error, ErrorKind};
+
+    #[cfg(target_os = "linux")]
+    if error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) {
+        return true;
+    }
+    error.downcast_ref::<Error>().is_some_and(|error| {
+        error.kind() == ErrorKind::NotFound
+            || (cfg!(target_os = "linux") && error.kind() == ErrorKind::ConnectionRefused)
+    })
 }
 
 #[cfg(target_os = "linux")]

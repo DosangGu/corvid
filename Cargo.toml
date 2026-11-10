@@ -5,8 +5,9 @@ members = [
     "crates/corvid-companion",
     "crates/corvid-core",
     "crates/corvid-daemon",
-    "crates/corvid-slot-board",
+    "crates/corvid-presentation",
     "crates/corvid-protocol",
+    "plugins/slot-board",
     "spikes/terminal",
 ]
 exclude = ["crates/corvid-desktop"]
@@ -25,6 +26,7 @@ corvid-client = { path = "crates/corvid-client" }
 corvid-companion = { path = "crates/corvid-companion" }
 corvid-core = { path = "crates/corvid-core" }
 corvid-daemon = { path = "crates/corvid-daemon" }
+corvid-presentation = { path = "crates/corvid-presentation" }
 corvid-protocol = { path = "crates/corvid-protocol" }
 crossterm = { version = "=0.29.0", default-features = false }
 nix = { version = "0.31.3", default-features = false }
