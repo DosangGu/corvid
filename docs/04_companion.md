@@ -96,16 +96,58 @@ SDK for the GUI. Cargo builds the Protobuf schema using `protox`. Set
 cannot find it.
 
 From the repository root on Windows x64, run
-`powershell -File deploy/windows/Package-Corvid.ps1`. The script builds the
+`powershell -File desktop/packaging/windows/Package-Corvid.ps1`. The script builds the
 release binaries and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
 directory (`target` by default). The archive includes `corvid.exe`, the Desktop
 terminal workspace `corvid-desktop.exe`, the standalone agent deck
 `corvid-deck.exe`, the administration app `corvid-slot-board.exe`, the license,
 and `Set-CorvidStartup.ps1`. To run Desktop from source, use
-`cargo run --locked --manifest-path crates/corvid-desktop/gui/Cargo.toml`.
+`cargo run --locked --manifest-path desktop/Cargo.toml`.
+The `desktop/` workspace contains the app and its Windows packaging files.
 Root `cargo build --locked` builds the CLI. Use the package script for all
 Windows applications. The root `--workspace` command includes the Linux
 daemon and terminal qualification spike.
+
+The **Package Corvid** GitHub Actions workflow runs on demand and for `v*`
+tags. It builds a static Linux x86_64 `corvid` binary, checks that its daemon
+answers a control ping, and passes it to the Windows packager from the same
+source revision. Download the `corvid-windows-x64-with-daemon` workflow
+artifact for the combined ZIP. It adds `daemon/x86_64-unknown-linux-musl/`
+with the Linux executable and a manifest containing its target, version,
+source revision, byte size, and SHA-256. The daemon files are staged for
+future SSH provisioning. Today the Linux host still needs a running daemon
+before Desktop connects.
+
+To build the combined archive on Windows x64, use a Windows checkout with
+clean Cargo, Desktop, crate, and spike sources. In an x86_64 WSL distribution, install
+Rust with `rustup` and the native build tools. On Ubuntu, install the system
+packages and add the musl target from the repository root in WSL.
+
+```sh
+sudo apt-get update
+sudo apt-get install build-essential git ncurses-bin binutils
+rustup target add x86_64-unknown-linux-musl
+```
+
+Run the Cargo packaging command from the Windows checkout root.
+
+```powershell
+cargo build-desktop
+```
+
+This uses the `Ubuntu` WSL distribution by default. Pass another installed
+distribution as an argument, for example `cargo build-desktop Ubuntu-24.04`.
+Use `wsl --list --quiet` to find the installed names. The command builds the
+daemon in WSL from the same checkout, verifies the manifest and daemon bytes,
+builds the Windows apps, and writes
+`target/windows-dist/corvid-windows-x64-with-daemon.zip`. If you set
+`CARGO_TARGET_DIR`, it places both the ZIP and the separate `wsl-linux`
+build directory under that location.
+
+For a separate Linux build host, run `bash deploy/linux/package-corvid.sh`
+on the same Git commit. Pass its `target/linux-dist/x86_64-unknown-linux-musl/`
+directory, containing `corvid` and `manifest.json`, to the Windows packager
+with `-LinuxDaemonDirectory`.
 
 Extract the archive to a stable directory and use `companion open` to check
 the connection. Run one of the following commands from the extracted
@@ -160,10 +202,10 @@ flowchart LR
 | Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
 | SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
-| Desktop app | Attaches as a writer to the Linux daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../crates/corvid-desktop/gui/src/main.rs) |
+| Desktop app | Attaches as a writer to the Linux daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../desktop/app/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
 | Slot board | Displays snapshots and manages slot assignments and alerts. Its pairing dialog lists verified local panes. | [corvid-slot-board](../crates/corvid-desktop/src/main.rs) |
-| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid/src/companion.rs) · [deployment](../deploy/windows/) |
+| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid/src/companion.rs) · [deployment](../desktop/packaging/windows/) |
 | Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
 
 The companion stores its host and controller identity in `config.json` and

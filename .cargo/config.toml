@@ -1,0 +1,2 @@
+[alias]
+build-desktop = ["run", "--locked", "--quiet", "--manifest-path", "deploy/cargo-desktop/Cargo.toml", "--"]
