@@ -1,13 +1,13 @@
 mod daemon_process;
 
 use std::ffi::OsString;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
-use corvid_client::{AttachOptions, attach, check_tty, host, ping};
+use corvid_client::{AttachOptions, attach, check_tty, daemon_missing, host, ping, runtime_path};
 use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::windows::StateDirectory;
 use tokio::time::sleep;
@@ -89,7 +89,7 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
             .await?;
         }
         Command::EnsureDaemon { state_dir, ssh } => {
-            ensure_daemon(&runtime, &state_path(state_dir)?, ssh).await?;
+            ensure_daemon(&runtime, &state_path(state_dir)?, ssh, None).await?;
         }
         Command::Attach {
             new,
@@ -133,15 +133,6 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
     Ok(0)
 }
 
-fn runtime_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) =
-        override_path.or_else(|| std::env::var_os("CORVID_RUNTIME_DIR").map(PathBuf::from))
-    {
-        return Ok(path);
-    }
-    Ok(local_app_data()?.join("Corvid/runtime"))
-}
-
 fn state_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = override_path {
         return Ok(path);
@@ -159,26 +150,35 @@ fn local_app_data() -> Result<PathBuf> {
 async fn start_attach(runtime: PathBuf, options: AttachOptions) -> Result<u32> {
     check_tty()?;
     if !daemon_running(&runtime).await? {
-        ensure_daemon(&runtime, &state_path(None)?, false).await?;
+        ensure_daemon(&runtime, &state_path(None)?, false, None).await?;
     }
     attach(&runtime, options).await
+}
+
+pub(super) async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
+    ensure_daemon(
+        runtime,
+        &state_path(None)?,
+        false,
+        Some("desktop-daemon.exe"),
+    )
+    .await
 }
 
 async fn daemon_running(runtime: &Path) -> Result<bool> {
     match ping(runtime).await {
         Ok(()) => Ok(true),
-        Err(error)
-            if error
-                .downcast_ref::<io::Error>()
-                .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
-        {
-            Ok(false)
-        }
+        Err(error) if daemon_missing(&error) => Ok(false),
         Err(error) => Err(error),
     }
 }
 
-async fn ensure_daemon(runtime: &Path, state: &Path, ssh: bool) -> Result<()> {
+async fn ensure_daemon(
+    runtime: &Path,
+    state: &Path,
+    ssh: bool,
+    desktop_image: Option<&str>,
+) -> Result<()> {
     let directory = StateDirectory::create_all(runtime)?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     let _startup = loop {
@@ -201,8 +201,15 @@ async fn ensure_daemon(runtime: &Path, state: &Path, ssh: bool) -> Result<()> {
     if daemon_running(runtime).await? {
         return Ok(());
     }
-    let child =
-        DaemonProcess::spawn(runtime, state, ssh).context("starting the Windows Corvid daemon")?;
+    let mut executable = std::env::current_exe()?;
+    if let Some(name) = desktop_image {
+        // Keep the detached daemon from locking the GUI binary across rebuilds.
+        let image = std::fs::read(&executable).context("reading the Desktop daemon image")?;
+        directory.replace_private_file(name, &image)?;
+        executable = runtime.join(name);
+    }
+    let child = DaemonProcess::spawn(&executable, runtime, state, ssh)
+        .context("starting the Windows Corvid daemon")?;
     let result = wait_for_daemon(runtime, &child).await;
     if result.is_err() {
         child.terminate();

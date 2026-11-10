@@ -9,6 +9,8 @@ mod endpoint;
 mod keys;
 #[cfg(any(target_os = "linux", windows))]
 mod relay;
+#[cfg(any(target_os = "linux", windows))]
+mod runtime;
 mod snapshot;
 #[cfg(target_os = "linux")]
 mod tty;
@@ -30,6 +32,8 @@ pub use endpoint::check_system_openssh;
 pub use endpoint::{ControlEndpoint, InteractiveConnection, SshAlias, SshDaemon, SshPlatform};
 #[cfg(any(target_os = "linux", windows))]
 pub use relay::{relay, relay_tui};
+#[cfg(any(target_os = "linux", windows))]
+pub use runtime::{daemon_missing, runtime_path};
 pub use snapshot::SnapshotWatch;
 #[cfg(any(target_os = "linux", windows))]
 pub use snapshot::{snapshot, watch_snapshot};

@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_client::SshAlias;
+use corvid_client::ControlEndpoint;
 use corvid_companion::{Config, HostEndpoint, PresentationAddress, PresentationClient};
 use corvid_protocol::COMMAND_TIMEOUT;
 use tokio::process::Command;
@@ -22,11 +22,11 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    pub fn spawn(&mut self, settings: Settings, alias: SshAlias, host: String) {
+    pub fn spawn(&mut self, settings: Settings, endpoint: ControlEndpoint, host: String) {
         let (close, closing) = oneshot::channel();
         self.close = Some(close);
         self.tasks
-            .spawn(async move { open(settings, alias, Uuid::parse_str(&host)?, closing).await });
+            .spawn(async move { open(settings, endpoint, Uuid::parse_str(&host)?, closing).await });
     }
 
     pub async fn close(&mut self) {
@@ -56,7 +56,7 @@ struct Scope {
 
 async fn open(
     settings: Settings,
-    alias: SshAlias,
+    endpoint: ControlEndpoint,
     host: Uuid,
     closing: oneshot::Receiver<()>,
 ) -> Result<()> {
@@ -70,7 +70,15 @@ async fn open(
         "Slot Board is unavailable. Install its plugin beside Corvid Desktop."
     );
 
-    let (scope, config) = settings.scope(alias.as_str(), host)?;
+    let saved = match &endpoint {
+        ControlEndpoint::Local(runtime) => HostEndpoint::Local {
+            runtime_dir: runtime.clone(),
+        },
+        ControlEndpoint::Ssh(alias) => HostEndpoint::Ssh {
+            alias: alias.as_str().to_owned(),
+        },
+    };
+    let (scope, config) = settings.scope(saved, host)?;
     if let Some(client) = PresentationClient::connect_if_present(&scope.address).await? {
         verify(client, &config).await?;
         return show(&executable, &scope, &config, closing).await;
@@ -78,7 +86,7 @@ async fn open(
 
     let (stop, stopped) = oneshot::channel();
     let companion =
-        corvid_companion::run_for_ssh(&scope.address, &scope.state, alias, host, async {
+        corvid_companion::run_for_endpoint(&scope.address, &scope.state, endpoint, host, async {
             let _ = stopped.await;
         });
     let window = async {
@@ -97,11 +105,9 @@ async fn open(
 }
 
 impl Settings {
-    fn scope(&self, alias: &str, host: Uuid) -> Result<(Scope, Config)> {
-        let shared = Config::read_if_present(&self.state)?.is_some_and(|config| {
-            config.host_id == host
-                && matches!(config.endpoint, HostEndpoint::Ssh { alias: configured } if configured == alias)
-        });
+    fn scope(&self, endpoint: HostEndpoint, host: Uuid) -> Result<(Scope, Config)> {
+        let shared = Config::read_if_present(&self.state)?
+            .is_some_and(|config| config.host_id == host && config.endpoint == endpoint);
         let state = if shared {
             self.state.clone()
         } else {
@@ -109,7 +115,7 @@ impl Settings {
                 .join("slot-board")
                 .join(host.simple().to_string())
         };
-        let config = prepare_state(&state, alias, host)?;
+        let config = prepare_state(&state, endpoint, host)?;
         #[cfg(windows)]
         let address = if shared {
             self.pipe_instance.clone()
@@ -132,18 +138,11 @@ impl Settings {
     }
 }
 
-fn prepare_state(state: &Path, alias: &str, host: Uuid) -> Result<Config> {
+fn prepare_state(state: &Path, endpoint: HostEndpoint, host: Uuid) -> Result<Config> {
     let config = match Config::read_if_present(state)? {
         Some(config) => config,
         None => {
-            let created = corvid_companion::initialize(
-                state,
-                host,
-                HostEndpoint::Ssh {
-                    alias: alias.into(),
-                },
-                DEFAULT_SLOT_COUNT,
-            );
+            let created = corvid_companion::initialize(state, host, endpoint, DEFAULT_SLOT_COUNT);
             match Config::read_if_present(state)? {
                 Some(config) => config,
                 None => {
@@ -154,7 +153,7 @@ fn prepare_state(state: &Path, alias: &str, host: Uuid) -> Result<Config> {
         }
     };
     ensure!(
-        config.host_id == host && matches!(config.endpoint, HostEndpoint::Ssh { .. }),
+        config.host_id == host,
         "Slot Board companion configuration belongs to a different host"
     );
     Ok(config)
@@ -233,10 +232,13 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let state = directory.path().join("slot-board");
         let host = Uuid::new_v4();
-        let first = prepare_state(&state, "work-host", host)?;
-        let reopened = prepare_state(&state, "work-host", host)?;
+        let endpoint = HostEndpoint::Ssh {
+            alias: "work-host".into(),
+        };
+        let first = prepare_state(&state, endpoint.clone(), host)?;
+        let reopened = prepare_state(&state, endpoint.clone(), host)?;
         assert_eq!(first.controller_id, reopened.controller_id);
-        assert!(prepare_state(&state, "other-host", Uuid::new_v4()).is_err());
+        assert!(prepare_state(&state, endpoint, Uuid::new_v4()).is_err());
         assert_eq!(Config::read_if_present(&state)?.unwrap().host_id, host);
         Ok(())
     }

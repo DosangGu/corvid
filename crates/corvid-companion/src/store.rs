@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::io;
-use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::{ControlEndpoint, SshAlias};
@@ -25,16 +23,11 @@ const MAX_CACHED_RUNS: usize = 512;
 
 type StatusCache = BTreeMap<RunKey, LastKnown>;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HostEndpoint {
-    #[cfg(target_os = "linux")]
-    Local {
-        runtime_dir: PathBuf,
-    },
-    Ssh {
-        alias: String,
-    },
+    Local { runtime_dir: PathBuf },
+    Ssh { alias: String },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -85,7 +78,6 @@ impl Config {
 
     pub fn control_endpoint(&self) -> Result<ControlEndpoint> {
         Ok(match &self.endpoint {
-            #[cfg(target_os = "linux")]
             HostEndpoint::Local { runtime_dir } => {
                 ensure!(
                     runtime_dir.is_absolute(),

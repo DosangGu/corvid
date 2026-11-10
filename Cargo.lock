@@ -1568,6 +1568,7 @@ dependencies = [
  "corvid-companion",
  "corvid-deck",
  "corvid-protocol",
+ "corvid-tui",
  "glob",
  "gpui",
  "libc",

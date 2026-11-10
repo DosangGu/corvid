@@ -14,14 +14,13 @@ use windows_sys::Win32::System::Threading::{
 pub(super) struct DaemonProcess(OwnedHandle);
 
 impl DaemonProcess {
-    pub(super) fn spawn(runtime: &Path, state: &Path, ssh: bool) -> Result<Self> {
-        let exe = std::env::current_exe()?;
+    pub(super) fn spawn(exe: &Path, runtime: &Path, state: &Path, ssh: bool) -> Result<Self> {
         let application: Vec<_> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut command = Vec::new();
-        append_path(&mut command, &exe)?;
-        command.extend(" --runtime-dir ".encode_utf16());
+        append_path(&mut command, exe)?;
+        command.extend(" daemon --runtime-dir ".encode_utf16());
         append_path(&mut command, runtime)?;
-        command.extend(" daemon --state-dir ".encode_utf16());
+        command.extend(" --state-dir ".encode_utf16());
         append_path(&mut command, state)?;
         command.push(0);
 

@@ -14,7 +14,7 @@ mod store;
 pub use doctor::{Check, CheckStatus, diagnose};
 pub use ipc::{
     PRESENTATION_CAPABILITY, PRESENTATION_PAGE_SIZE, PresentationAddress, PresentationClient, run,
-    run_for_ssh,
+    run_for_endpoint,
 };
 #[cfg(windows)]
 pub use ipc::{WEZTERM_CAPABILITY, WEZTERM_SELECTION_CAPABILITY};

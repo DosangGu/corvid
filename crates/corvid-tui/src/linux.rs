@@ -24,10 +24,11 @@ use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
 
 use crate::hooks::HookProvider;
+use crate::runtime_path;
 
 use crate::{hooks, read_pairing_code};
 
-pub(super) use start::start;
+pub(super) use start::{ensure, start};
 
 #[derive(Subcommand)]
 pub(super) enum Command {
@@ -712,17 +713,6 @@ fn print_agent(agent: AgentInfo) {
         );
     }
     println!();
-}
-
-pub(crate) fn runtime_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) =
-        override_path.or_else(|| env::var_os("CORVID_RUNTIME_DIR").map(PathBuf::from))
-    {
-        return Ok(path);
-    }
-    let base = env::var_os("XDG_RUNTIME_DIR").context("set XDG_RUNTIME_DIR or --runtime-dir")?;
-    ensure!(!base.is_empty(), "set XDG_RUNTIME_DIR or --runtime-dir");
-    Ok(PathBuf::from(base).join("corvid"))
 }
 
 pub(super) fn state_path(override_path: Option<PathBuf>) -> Result<PathBuf> {

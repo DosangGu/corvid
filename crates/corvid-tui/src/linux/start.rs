@@ -1,13 +1,13 @@
 use std::env;
 use std::fs::File;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use corvid_client::{AttachOptions, UpgradeTarget};
+use corvid_client::{AttachOptions, UpgradeTarget, daemon_missing};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use nix::errno::Errno;
@@ -46,7 +46,7 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
     result
 }
 
-pub(super) async fn ensure(path: &Path) -> Result<()> {
+pub(crate) async fn ensure(path: &Path) -> Result<()> {
     ensure_daemon(&RuntimeDir::create_all(path)?).await
 }
 
@@ -151,17 +151,7 @@ fn try_lock<T>(lock: Result<T>) -> Result<Option<T>> {
 async fn daemon_ready(runtime: &Path) -> Result<bool> {
     match corvid_client::ping(runtime).await {
         Ok(()) => Ok(true),
-        Err(error)
-            if error.downcast_ref::<Errno>() == Some(&Errno::ENOENT)
-                || error.downcast_ref::<io::Error>().is_some_and(|error| {
-                    matches!(
-                        error.kind(),
-                        ErrorKind::NotFound | ErrorKind::ConnectionRefused
-                    )
-                }) =>
-        {
-            Ok(false)
-        }
+        Err(error) if daemon_missing(&error) => Ok(false),
         Err(error) => Err(error),
     }
 }
@@ -180,9 +170,9 @@ impl StartingDaemon {
         let diagnostics = tempfile::tempfile()?;
         let mut command = Command::new(env::current_exe()?);
         command
+            .arg("daemon")
             .arg("--runtime-dir")
             .arg(runtime.path())
-            .arg("daemon")
             .arg("--autostarted")
             .env("TERMINFO", &terminfo)
             .current_dir("/")

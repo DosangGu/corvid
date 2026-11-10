@@ -3,6 +3,8 @@
 #[cfg(any(windows, target_os = "linux"))]
 mod icons;
 #[cfg(any(windows, target_os = "linux"))]
+mod local_bootstrap;
+#[cfg(any(windows, target_os = "linux"))]
 mod platform;
 #[cfg(any(windows, target_os = "linux"))]
 mod slot_board;
@@ -26,11 +28,14 @@ fn main() {
 }
 
 #[cfg(any(windows, target_os = "linux"))]
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    if let Some(code) = corvid_tui::run_daemon_helper() {
+        return Ok(code);
+    }
+
     use std::path::PathBuf;
 
     use clap::Parser;
-    use corvid_companion::{Config, HostEndpoint};
     use gpui::{
         App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px,
         size,
@@ -61,14 +66,6 @@ fn main() -> anyhow::Result<()> {
     let state = options
         .state_dir
         .map_or_else(platform::default_state_dir, Ok)?;
-    let configured = match Config::read_if_present(&state)? {
-        Some(Config {
-            endpoint: HostEndpoint::Ssh { alias },
-            host_id,
-            ..
-        }) => Some((alias, host_id.to_string())),
-        _ => None,
-    };
     let slot_board = slot_board::Settings {
         state,
         #[cfg(windows)]
@@ -100,14 +97,12 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {
-                cx.new(|cx| {
-                    WorkspaceView::new(alias, configured, app_lifetime, slot_board, window, cx)
-                })
+                cx.new(|cx| WorkspaceView::new(alias, app_lifetime, slot_board, window, cx))
             })
             .expect("could not open Corvid Desktop");
             cx.activate(true);
         });
 
     lifetime.shutdown();
-    Ok(())
+    Ok(std::process::ExitCode::SUCCESS)
 }

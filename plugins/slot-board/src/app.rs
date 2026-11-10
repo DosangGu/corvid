@@ -582,14 +582,14 @@ fn connection_text(display: &Display) -> &'static str {
                         .and_then(|snapshot| snapshot.generation())
                         .is_some() =>
                 {
-                    "Remote ready"
+                    "Daemon ready"
                 }
-                Ok(CompanionConnection::Connecting) => "Connecting to remote",
-                Ok(CompanionConnection::Syncing) => "Synchronizing remote",
-                Ok(CompanionConnection::Offline) => "Remote offline",
-                Ok(CompanionConnection::Incompatible) => "Incompatible remote",
-                Ok(CompanionConnection::Error) => "Remote connection error",
-                _ => "Remote state unknown",
+                Ok(CompanionConnection::Connecting) => "Connecting to daemon",
+                Ok(CompanionConnection::Syncing) => "Synchronizing daemon",
+                Ok(CompanionConnection::Offline) => "Daemon offline",
+                Ok(CompanionConnection::Incompatible) => "Incompatible daemon",
+                Ok(CompanionConnection::Error) => "Daemon connection error",
+                _ => "Daemon state unknown",
             },
             None => "Waiting for slots",
         },

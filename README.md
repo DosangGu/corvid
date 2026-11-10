@@ -2,8 +2,8 @@
 
 Corvid is a terminal multiplexer for coding agents. A daemon manages
 workspaces, tabs, and split panes and keeps shells running when clients detach.
-Corvid Desktop connects over SSH and shows observed Codex and Claude Code
-activity in its Agent Deck.
+Corvid Desktop opens a local terminal and connects to remote hosts over SSH.
+Its Agent Deck shows observed Codex and Claude Code activity.
 
 | Component | Supported platform |
 | --- | --- |
@@ -42,19 +42,21 @@ Corvid starts its local daemon and opens PowerShell. See the
 [Windows daemon guide](docs/02_daemon_foundation.md#run-locally-on-windows)
 for local state paths and validation.
 
-## Connect with Corvid Desktop
+## Run Corvid Desktop
 
-Configure an OpenSSH alias for a Linux or Windows host and establish host-key trust and
-noninteractive authentication. Follow the [Windows quick start](docs/04_companion.md#windows-quick-start)
+Follow the [Windows quick start](docs/04_companion.md#windows-quick-start)
 or [Linux Desktop quick start](docs/04_companion.md#linux-desktop-quick-start)
-for build requirements. Run the app from the repository root.
+for build requirements. Run this command from the repository root.
 
 ```sh
-cargo run --locked -p corvid-desktop -- --ssh-alias work-host
+cargo run --locked -p corvid-desktop
 ```
 
-Replace `work-host` with your SSH alias. To select a host from `~/.ssh/config`
-in the app, omit `-- --ssh-alias work-host` and open **SSH Hosts**. The
+Desktop starts or reuses the local Corvid daemon and opens a terminal. Open
+**Sessions** to open a session under **Local Terminal** or an SSH host.
+Choose a host from `~/.ssh/config` or enter an alias. Remote hosts require
+host-key trust and noninteractive authentication. Pass `-- --ssh-alias work-host`
+to launch directly into SSH. The
 [Windows packaging guide](docs/04_companion.md#windows-package-and-login-startup)
 shows how to build a ZIP with daemon bundles for first-time installation over SSH.
 

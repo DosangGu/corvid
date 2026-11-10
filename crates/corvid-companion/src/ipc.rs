@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_client::{ControlEndpoint, SshAlias};
+use corvid_client::ControlEndpoint;
 #[cfg(target_os = "linux")]
 use corvid_protocol::unix::{BoundSocket, RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
@@ -22,10 +22,10 @@ use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
+use crate::Store;
 #[cfg(windows)]
 use crate::platform::{PipeListener, open_pipe};
 use crate::service::{Call, Service};
-use crate::{HostEndpoint, Store};
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
 pub const PRESENTATION_PAGE_SIZE: u32 = 32;
@@ -68,21 +68,20 @@ pub async fn run(
     run_service(runtime, store, endpoint, shutdown).await
 }
 
-/// Serve a Desktop plugin using the SSH route that Desktop resolved.
-pub async fn run_for_ssh(
+/// Serve a Desktop plugin using the endpoint that Desktop verified.
+pub async fn run_for_endpoint(
     runtime: &PresentationAddress,
     state: &Path,
-    alias: SshAlias,
+    endpoint: ControlEndpoint,
     host: Uuid,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
     let store = Store::open(state)?;
-    let config = store.config();
     ensure!(
-        config.host_id == host && matches!(config.endpoint, HostEndpoint::Ssh { .. }),
+        store.config().host_id == host,
         "companion state belongs to a different host"
     );
-    run_service(runtime, store, ControlEndpoint::Ssh(alias), shutdown).await
+    run_service(runtime, store, endpoint, shutdown).await
 }
 
 async fn run_service(

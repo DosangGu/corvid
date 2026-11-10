@@ -44,6 +44,7 @@ corvid-daemon = { path = "crates/corvid-daemon" }
 corvid-deck = { path = "spikes/deck", default-features = false }
 corvid-presentation = { path = "crates/corvid-presentation" }
 corvid-protocol = { path = "crates/corvid-protocol" }
+corvid-tui = { path = "crates/corvid-tui" }
 crossterm = { version = "=0.29.0", default-features = false }
 eframe = { version = "=0.33.3", default-features = false }
 elgato-streamdeck = { version = "=0.13.1", default-features = false }

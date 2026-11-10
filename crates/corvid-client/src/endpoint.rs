@@ -1,5 +1,5 @@
 #[cfg(any(target_os = "linux", windows))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -33,7 +33,7 @@ pub enum ControlEndpoint {
     Ssh(SshAlias),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SshAlias {
     name: String,
     desktop_daemon: Option<(SshPlatform, SshDaemon)>,
@@ -107,34 +107,7 @@ impl SshAlias {
         let wire = ssh
             .negotiate(read, write, PeerRole::Tui, capabilities, None)
             .await?;
-        let Connection {
-            session,
-            mut reader,
-            writer,
-        } = wire;
-        let (sender, incoming) = mpsc::channel(1);
-        let reader = tokio::spawn(async move {
-            loop {
-                let result = match reader.next_frame().await {
-                    Ok(Some(frame)) => Ok(frame),
-                    Ok(None) => return,
-                    Err(error) => {
-                        let _ = sender.send(Err(error.into())).await;
-                        return;
-                    }
-                };
-                if sender.send(result).await.is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(InteractiveConnection {
-            session,
-            writer,
-            incoming,
-            reader,
-            _ssh: ssh,
-        })
+        Ok(InteractiveConnection::new(wire, Some(ssh)))
     }
 }
 
@@ -180,6 +153,16 @@ fn system_openssh() -> Result<PathBuf> {
 type Input = Box<dyn AsyncRead + Send + Unpin>;
 type Output = Box<dyn AsyncWrite + Send + Unpin>;
 
+#[cfg(any(target_os = "linux", windows))]
+async fn local_halves(path: &Path, role: SocketRole) -> Result<(Input, Output)> {
+    let stream = open(path, role).await?;
+    #[cfg(target_os = "linux")]
+    let (read, write) = stream.into_split();
+    #[cfg(windows)]
+    let (read, write) = tokio::io::split(stream);
+    Ok((Box::new(read), Box::new(write)))
+}
+
 pub(crate) struct ControlConnection {
     pub(crate) wire: Connection<Input, Output>,
     _ssh: Option<SshProcess>,
@@ -190,10 +173,41 @@ pub struct InteractiveConnection {
     writer: FrameWriter<Output>,
     incoming: mpsc::Receiver<Result<Frame>>,
     reader: JoinHandle<()>,
-    _ssh: SshProcess,
+    _ssh: Option<SshProcess>,
 }
 
 impl InteractiveConnection {
+    fn new(wire: Connection<Input, Output>, ssh: Option<SshProcess>) -> Self {
+        let Connection {
+            session,
+            mut reader,
+            writer,
+        } = wire;
+        let (sender, incoming) = mpsc::channel(1);
+        let reader = tokio::spawn(async move {
+            loop {
+                let result = match reader.next_frame().await {
+                    Ok(Some(frame)) => Ok(frame),
+                    Ok(None) => return,
+                    Err(error) => {
+                        let _ = sender.send(Err(error.into())).await;
+                        return;
+                    }
+                };
+                if sender.send(result).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Self {
+            session,
+            writer,
+            incoming,
+            reader,
+            _ssh: ssh,
+        }
+    }
+
     pub fn session(&self) -> &Session {
         &self.session
     }
@@ -220,6 +234,23 @@ impl Drop for InteractiveConnection {
 }
 
 impl ControlEndpoint {
+    pub async fn interactive(&self, capabilities: Vec<String>) -> Result<InteractiveConnection> {
+        match self {
+            #[cfg(any(target_os = "linux", windows))]
+            Self::Local(path) => {
+                let (read, write) = local_halves(path, SocketRole::Client).await?;
+                let wire = timeout(
+                    COMMAND_TIMEOUT,
+                    Connection::negotiate(read, write, PeerRole::Tui, capabilities, None),
+                )
+                .await
+                .context("daemon handshake timed out")??;
+                Ok(InteractiveConnection::new(wire, None))
+            }
+            Self::Ssh(alias) => alias.interactive(capabilities).await,
+        }
+    }
+
     pub(crate) async fn connect(
         &self,
         capability: &str,
@@ -228,12 +259,8 @@ impl ControlEndpoint {
         let (read, write, mut ssh): (Input, Output, _) = match self {
             #[cfg(any(target_os = "linux", windows))]
             Self::Local(path) => {
-                let stream = open(path, SocketRole::Control).await?;
-                #[cfg(target_os = "linux")]
-                let (read, write) = stream.into_split();
-                #[cfg(windows)]
-                let (read, write) = tokio::io::split(stream);
-                (Box::new(read), Box::new(write), None)
+                let (read, write) = local_halves(path, SocketRole::Control).await?;
+                (read, write, None)
             }
             Self::Ssh(alias) => {
                 let (read, write, process) = SshProcess::start(alias, PeerRole::Control)?;

@@ -25,13 +25,13 @@ const MAX_RESPONSE: usize = 64;
 const MAX_BINARY: usize = 32 * 1024 * 1024;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(45);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SshDaemon {
     Path,
     Managed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SshPlatform {
     Linux,
     Windows,

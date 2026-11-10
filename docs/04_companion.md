@@ -42,7 +42,7 @@ Point subsequent commands at the same socket directory.
 ### Linux Desktop quick start
 
 Build the Desktop app with the repository's pinned Rust toolchain and a C/C++
-toolchain. On Debian or Ubuntu, install `build-essential`, `libxcb1-dev`,
+toolchain. On Debian or Ubuntu, install `build-essential`, `ncurses-bin`, `libxcb1-dev`,
 `libxkbcommon-dev`, `libxkbcommon-x11-dev`, and `openssh-client`. Run it in an
 X11 or XWayland session with Fontconfig and a working Vulkan driver.
 
@@ -50,11 +50,12 @@ X11 or XWayland session with Fontconfig and a working Vulkan driver.
 cargo run --locked -p corvid-desktop
 ```
 
-Select a configured alias from `~/.ssh/config` in **SSH Hosts**, or pass
-`-- --ssh-alias work-host` to the Cargo command. Desktop reads the companion's
-SSH alias and expected host ID from the same Linux state directory described
-above. It connects to the target Corvid daemon over SSH, including when the
-daemon runs on the same machine.
+Desktop opens a local shell through the local daemon. It reuses a running daemon
+or starts its own daemon process from the Desktop executable. It uses the same
+runtime directory as the TUI. Open **Sessions** to select an SSH alias
+from `~/.ssh/config` or enter one. Pass `-- --ssh-alias work-host` to the Cargo
+command to open SSH directly. When an alias matches the companion configuration,
+Desktop checks its expected Corvid host ID.
 
 An explicit connection starts an installed daemon if needed. For first-time
 installation, put the target bundle in `daemon/` alongside the built
@@ -78,19 +79,21 @@ Host work-host
     User corvid-user
 ```
 
-Open `corvid-desktop.exe` and click an alias in **SSH Hosts** to connect.
-The list shows concrete `Host` aliases from `%USERPROFILE%\.ssh\config`
-and static, unconditional `Include` files. Use **Refresh** after editing the
-config, or enter an alias manually. While attached, open **SSH Hosts** in the
-toolbar and select another machine to switch the Desktop connection.
+Open `corvid-desktop.exe` to attach to the local Corvid daemon and open its shell.
+Open **Sessions** in the toolbar to browse sessions under **Local Terminal**
+and each connected SSH host. The list shows concrete
+`Host` aliases from `%USERPROFILE%\.ssh\config` and static, unconditional
+`Include` files. Use **Refresh** after editing the config, or enter an alias
+manually. Desktop keeps the last session list for visited connections while
+the app is open. Select a session to open it directly. Switching connections
+detaches the current view and keeps its daemon's terminals running.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
 An explicit Desktop connection detects the host OS and starts an installed
 Corvid daemon if needed. With the matching bundle, Desktop can also install
 on a fresh Linux x86_64 or Windows x64 host. The transfer uses SSH stdin,
 verifies size and SHA-256 on both sides, and publishes the binary without
-overwriting an existing installation. Desktop can reuse a running daemon
-when it opens a saved alias automatically. Installation and startup require
-an explicit connection request.
+overwriting an existing installation. Remote installation and startup require
+an explicit SSH connection request.
 
 Linux provisioning uses a POSIX shell and Linux core utilities. The binary
 is installed at `~/.corvid/corvid`. Windows provisioning uses Windows PowerShell
@@ -110,9 +113,10 @@ Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
 The initial attach joins a live pane in the default session or opens its shell.
 
-**New session**, **New tab**, **Split right**, and **Split down** create shells
-on the remote daemon. Click a pane to focus it. Other live panes in the same
-tab show read-only previews. Each workspace has one writer, so detach the TUI
+Use **New session** under the active connection. **New tab**, **Split right**,
+and **Split down** create shells within the selected session. Click a pane to
+focus it. Other live panes in the same tab show read-only previews. Each
+workspace has one writer, so detach the TUI
 before using Desktop as the writer for that workspace. **Detach** and window
 close release the writer and keep PTYs running while the daemon survives.
 Use `exit` in a shell to end that PTY.
@@ -161,9 +165,8 @@ to omit it. The archive also includes the Windows SSH bundle under
 `daemon/x86_64-pc-windows-msvc/` with the executable and its SHA-256 manifest.
 To run Desktop from source, use
 `cargo run --locked -p corvid-desktop`.
+The Desktop executable starts the local daemon when needed.
 The root workspace manages the Desktop app's dependencies and lockfile.
-Build the `corvid` command with `cargo build --locked -p corvid-tui` from the
-repository root.
 A root build without a package selector builds the default workspace members.
 Use `--workspace` to include Desktop, Deck, and the packaging tool.
 The terminal qualification spike runs on Linux. Use the package script to
@@ -329,13 +332,13 @@ an additional control connection. The presentation capability is `list_hosts.v1`
 
 ## Desktop Slot Board
 
-Connect to an SSH host in Desktop and choose **Plugins → Slot Board**. The
+Open a local or SSH terminal in Desktop and choose **Plugins → Slot Board**. The
 board opens in a separate process and closes when Desktop detaches or switches
 hosts. Desktop checks the companion host and controller IDs before opening the
 window. A matching configured companion keeps its existing state. Other hosts
 get their own companion state below `slot-board/` in Desktop's state directory.
-When Desktop starts a companion for the board, it uses the same remote Corvid
-installation as the attached terminal. On Linux the plugin requires `XDG_RUNTIME_DIR`.
+When Desktop starts a companion for the board, it uses the same Corvid daemon
+as the attached terminal. On Linux the plugin requires `XDG_RUNTIME_DIR`.
 
 The Windows archive includes the plugin by default. For source builds, run
 `cargo build --locked -p corvid-slot-board` and place the resulting executable

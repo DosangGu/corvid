@@ -11,7 +11,7 @@ pub(super) async fn open(instance: &str, state: &Path, alias: Option<String>) ->
     let desktop = cli.with_file_name("corvid-desktop.exe");
     let mut command = if desktop.is_file() {
         let mut command = Command::new(desktop);
-        // The GPUI app manages startup itself, including its first-run form.
+        // Desktop opens a local terminal by default and accepts an explicit SSH alias.
         command.arg("--state-dir").arg(state);
         if let Some(alias) = alias {
             command.arg("--ssh-alias").arg(alias);

@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 use std::num::NonZeroU16;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use corvid_client::{ControlEndpoint, InteractiveConnection, SshAlias};
+use corvid_companion::{Config, HostEndpoint};
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentInfo, Attach, AttachRole, ClaimWorkspaceWriter, CreateView, FocusViewAgent, FrameApplied,
-    InputChunk, LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview, ResizeViewport,
-    RouteToken, SelectView, TerminalState, ViewSelection, Viewport, WorkspaceState,
+    AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, CreateView, FocusViewAgent,
+    FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview,
+    ResizeViewport, RouteToken, SelectView, TerminalState, ViewSelection, Viewport, WorkspaceState,
 };
 use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY,
@@ -24,11 +26,33 @@ use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 use vt100::{Parser, Screen};
 
-use crate::{slot_board, ssh_bootstrap};
+use crate::{local_bootstrap, slot_board, ssh_bootstrap};
 
 pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Destination {
+    Local,
+    Ssh(SshAlias),
+}
+
+#[derive(Clone)]
+pub enum AttachTarget {
+    Default,
+    Pane(ViewSelection, bool),
+    Workspace { id: String, host_id: String },
+}
+
+impl Destination {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Local => "Local",
+            Self::Ssh(alias) => alias.as_str(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Grid {
@@ -109,6 +133,7 @@ impl Inventory {
 
 #[derive(Clone)]
 pub struct Ui {
+    pub host_id: Option<String>,
     pub selected: Option<ViewSelection>,
     pub inventory: Option<Arc<Inventory>>,
     pub inventory_ready: bool,
@@ -190,9 +215,9 @@ struct Requests {
 
 impl Session {
     pub fn start(
-        alias: SshAlias,
-        expected_host: Option<String>,
-        selection: Option<(ViewSelection, bool)>,
+        destination: Destination,
+        state_dir: PathBuf,
+        target: AttachTarget,
         explicit: bool,
     ) -> Result<(Self, Job)> {
         let grid = Grid::new(26, 112);
@@ -201,10 +226,14 @@ impl Session {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(Buffer {
                 ui: Ui {
+                    host_id: None,
                     selected: None,
                     inventory: None,
                     inventory_ready: false,
-                    message: "Connecting to Corvid…".into(),
+                    message: match destination {
+                        Destination::Local => "Opening the local terminal…".into(),
+                        Destination::Ssh(_) => "Connecting to Corvid…".into(),
+                    },
                     connected: false,
                     changing: true,
                 },
@@ -230,7 +259,7 @@ impl Session {
                 .and_then(|runtime| runtime.block_on(async {
                     let mut slot_board = slot_board::Job::default();
                     let result = tokio::select! {
-                        result = run(alias, expected_host, selection, explicit, requests, &state, &mut slot_board) => result,
+                        result = run(destination, state_dir, target, explicit, requests, &state, &mut slot_board) => result,
                         _ = &mut stopped => Ok("Detached from Corvid.".into()),
                     };
                     slot_board.close().await;
@@ -348,7 +377,7 @@ fn in_pane(ui: &Ui, pane: &str) -> bool {
 
 struct Client<'a> {
     link: InteractiveConnection,
-    alias: SshAlias,
+    endpoint: ControlEndpoint,
     slot_board: &'a mut slot_board::Job,
     shared: &'a Shared,
     selected: ViewSelection,
@@ -376,15 +405,15 @@ enum Operation {
 }
 
 async fn run(
-    alias: SshAlias,
-    expected_host: Option<String>,
-    selection: Option<(ViewSelection, bool)>,
+    destination: Destination,
+    state_dir: PathBuf,
+    target: AttachTarget,
     explicit: bool,
     Requests { mut actions, sizes }: Requests,
     shared: &Shared,
     slot_board: &mut slot_board::Job,
 ) -> Result<String> {
-    let capabilities = [
+    let capabilities: Vec<_> = [
         "attach.v1",
         "render.v1",
         "paste.v1",
@@ -397,49 +426,89 @@ async fn run(
     .into_iter()
     .map(str::to_owned)
     .collect();
-    let (alias, mut link) = ssh_bootstrap::connect(
-        alias,
-        capabilities,
-        explicit,
-        expected_host.as_deref(),
-        |message| shared.update_ui(|ui| ui.message = message.into()),
-    )
-    .await?;
-    ensure!(
-        expected_host
-            .as_ref()
-            .is_none_or(|host| *host == link.session().host_id),
-        "SSH alias points to a different Corvid host"
-    );
+    let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
+    let (endpoint, mut link) = match destination {
+        Destination::Local => local_bootstrap::connect(capabilities.clone(), progress).await?,
+        Destination::Ssh(alias) => {
+            let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
+                matches!(config.endpoint, HostEndpoint::Ssh { alias: saved } if saved == alias.as_str())
+                    .then(|| config.host_id.to_string())
+            });
+            let known_host = match &target {
+                AttachTarget::Workspace { host_id, .. } => Some(host_id.as_str()),
+                _ => None,
+            };
+            let expected_host = configured_host.as_deref().or(known_host);
+            let (alias, link) = ssh_bootstrap::connect(
+                alias,
+                capabilities.clone(),
+                explicit,
+                expected_host,
+                progress,
+            )
+            .await?;
+            ensure!(
+                expected_host.is_none_or(|host| host == link.session().host_id),
+                "SSH alias points to a different Corvid host"
+            );
+            (ControlEndpoint::Ssh(alias), link)
+        }
+    };
     let grid = sizes.borrow().1;
-    let target = selection.as_ref().map(|(selection, _)| selection);
-    let mut terminal_capabilities = vec!["legacy_vt.v1".into()];
-    if target.is_none() {
-        terminal_capabilities.push(DEFAULT_SHELL_CAPABILITY.into());
-    }
-    let open_shell = selection.as_ref().is_none_or(|(_, open)| *open);
-    let id = link
-        .send(Body::Attach(Attach {
-            workspace_id: target.map(|view| view.workspace_id.clone()),
-            tab_id: target.map(|view| view.tab_id.clone()),
-            pane_id: target.map(|view| view.pane_id.clone()),
-            viewport: Some(grid.wire()),
-            terminal_capabilities,
-            requested_role: AttachRole::Writer as i32,
-            launch: open_shell.then(LaunchCommand::default),
-            ..Default::default()
-        }))
-        .await?;
-    let reply = timeout(COMMAND_TIMEOUT, link.receive()).await??;
-    let (reply_id, reply) = envelope(&link, reply)?;
-    ensure!(
-        reply_id.as_deref() == Some(&id),
-        "unexpected attach response ID"
-    );
-    let attached = match reply {
-        Body::Attached(attached) => attached,
-        Body::Error(error) => return Err(ProtocolFault::from_wire(&error).into()),
-        _ => bail!("unexpected attach response"),
+    let attached = match &target {
+        AttachTarget::Workspace { id, host_id } => {
+            ensure!(
+                link.session().host_id == *host_id,
+                "The connection points to a different Corvid host"
+            );
+            let mut request = Attach {
+                workspace_id: Some(id.clone()),
+                ..Default::default()
+            };
+            match attach(&mut link, grid, request.clone()).await {
+                Err(error)
+                    if error
+                        .downcast_ref::<ProtocolFault>()
+                        .is_some_and(|fault| fault.code == "NoTerminal") =>
+                {
+                    drop(link);
+                    link = endpoint.interactive(capabilities).await?;
+                    ensure!(
+                        link.session().host_id == *host_id,
+                        "The connection points to a different Corvid host"
+                    );
+                    request.launch = Some(LaunchCommand::default());
+                    attach(&mut link, grid, request).await?
+                }
+                result => result?,
+            }
+        }
+        AttachTarget::Pane(view, open) => {
+            attach(
+                &mut link,
+                grid,
+                Attach {
+                    workspace_id: Some(view.workspace_id.clone()),
+                    tab_id: Some(view.tab_id.clone()),
+                    pane_id: Some(view.pane_id.clone()),
+                    launch: open.then(LaunchCommand::default),
+                    ..Default::default()
+                },
+            )
+            .await?
+        }
+        AttachTarget::Default => {
+            attach(
+                &mut link,
+                grid,
+                Attach {
+                    terminal_capabilities: vec![DEFAULT_SHELL_CAPABILITY.into()],
+                    launch: Some(LaunchCommand::default()),
+                    ..Default::default()
+                },
+            )
+            .await?
+        }
     };
     let route = attached.route_token.context("missing input route")?;
     let selected = attached.selection.context("missing attached view")?;
@@ -450,15 +519,20 @@ async fn run(
             && route.connection_generation == attached.connection_generation
             && route.client_id == attached.client_id
             && valid_route(&route)
-            && target.is_none_or(|target| target == &selected),
+            && match &target {
+                AttachTarget::Default => true,
+                AttachTarget::Pane(view, _) => *view == selected,
+                AttachTarget::Workspace { id, .. } => *id == selected.workspace_id,
+            },
         "invalid initial daemon route"
     );
 
     let host = link.session().host_id.clone();
     let epoch = link.session().server_epoch.clone();
+    shared.update_ui(|ui| ui.host_id = Some(host.clone()));
     let mut client = Client {
         link,
-        alias: alias.clone(),
+        endpoint: endpoint.clone(),
         slot_board,
         shared,
         selected,
@@ -472,7 +546,7 @@ async fn run(
         next_preview: Instant::now(),
     };
     client.publish_view();
-    let inventory = watch_inventory(alias, host, epoch, shared);
+    let inventory = watch_inventory(endpoint, host, epoch, shared);
     tokio::pin!(inventory);
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     loop {
@@ -502,8 +576,29 @@ async fn run(
     }
 }
 
-async fn watch_inventory(alias: SshAlias, host: String, epoch: String, shared: &Shared) {
-    let endpoint = ControlEndpoint::Ssh(alias);
+async fn attach(
+    link: &mut InteractiveConnection,
+    grid: Grid,
+    mut request: Attach,
+) -> Result<Attached> {
+    request.viewport = Some(grid.wire());
+    request.terminal_capabilities.push("legacy_vt.v1".into());
+    request.requested_role = AttachRole::Writer as i32;
+    let id = link.send(Body::Attach(request)).await?;
+    let reply = timeout(COMMAND_TIMEOUT, link.receive()).await??;
+    let (reply_id, reply) = envelope(link, reply)?;
+    ensure!(
+        reply_id.as_deref() == Some(&id),
+        "unexpected attach response ID"
+    );
+    match reply {
+        Body::Attached(attached) => Ok(attached),
+        Body::Error(error) => Err(ProtocolFault::from_wire(&error).into()),
+        _ => bail!("unexpected attach response"),
+    }
+}
+
+async fn watch_inventory(endpoint: ControlEndpoint, host: String, epoch: String, shared: &Shared) {
     let controller = Uuid::new_v4().to_string();
     loop {
         let _ = watch_inventory_once(&endpoint, &controller, &host, &epoch, shared).await;
@@ -657,9 +752,8 @@ impl Client<'_> {
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
             Action::OpenSlotBoard(settings) if self.slot_board.tasks.is_empty() => {
-                let alias = self.alias.clone();
                 let host = self.link.session().host_id.clone();
-                self.slot_board.spawn(settings, alias, host);
+                self.slot_board.spawn(settings, self.endpoint.clone(), host);
             }
             Action::OpenSlotBoard(_) => self.shared.update_ui(|ui| {
                 ui.message = "Slot Board is already open or starting.".into();

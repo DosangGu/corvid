@@ -45,11 +45,15 @@ pub async fn prepare_desktop(
             initialize(state, alias).await?
         }
     };
-    let HostEndpoint::Ssh { alias: configured } = &config.endpoint;
-    ensure!(
-        alias.is_none_or(|requested| requested == configured),
-        "this state directory is configured for SSH alias {configured}"
-    );
+    if let Some(requested) = alias {
+        let HostEndpoint::Ssh { alias: configured } = &config.endpoint else {
+            anyhow::bail!("this state directory is configured for a local daemon");
+        };
+        ensure!(
+            requested == configured,
+            "this state directory is configured for SSH alias {configured}"
+        );
+    }
     if let Some(mut existing) = existing {
         verify(&mut existing, &config).await?;
         return Ok(DesktopStartup::Reuse(config));
