@@ -9,6 +9,7 @@ leases. A Stream Deck integration daemon is planned for the desktop
 distribution. See [planned desktop convergence](#planned-desktop-convergence)
 for the remaining parity and hardware work.
 
+- [Linux Desktop quick start](#linux-desktop-quick-start)
 - [Windows quick start](#windows-quick-start)
 - [Windows process and state ownership](#windows-process-and-state-ownership)
 - [Windows diagnostics](#windows-diagnostics)
@@ -37,6 +38,33 @@ Defaults are `$XDG_RUNTIME_DIR/corvid-companion` for the presentation socket and
 `$XDG_STATE_HOME/corvid/companion` for state, with `$HOME/.local/state` as the
 state base fallback. Override with `companion --socket-dir` and `--state-dir`.
 Point subsequent commands at the same socket directory.
+
+### Linux Desktop quick start
+
+Build the Desktop app with the repository's pinned Rust toolchain and a C/C++
+toolchain. On Debian or Ubuntu, install `build-essential`, `libxcb1-dev`,
+`libxkbcommon-dev`, `libxkbcommon-x11-dev`, and `openssh-client`. Run it in an
+X11 or XWayland session with Fontconfig and a working Vulkan driver.
+
+```sh
+cargo run --locked --manifest-path desktop/Cargo.toml
+```
+
+Select a configured alias from `~/.ssh/config` in **SSH Hosts**, or pass
+`-- --ssh-alias work-host` to the Cargo command. Desktop reads the companion's
+SSH alias and expected host ID from the same Linux state directory described
+above. It connects to the Linux Corvid daemon over SSH, including when the
+daemon runs on the same machine.
+
+An explicit connection starts an installed daemon if needed. For first-time
+installation on a Linux x86_64 host, build the bundle with
+`bash deploy/linux/package-corvid.sh` from a clean checkout. Copy the generated
+`x86_64-unknown-linux-musl/` directory into `daemon/` alongside the built
+`corvid-desktop` binary. Desktop uses the sessions, tabs, split panes, and
+Agent Deck described in the Windows quick start.
+
+Keep the Desktop lockfile on `libc` 0.2.189 while GPUI's HTTP client transitively
+uses `xattr` 0.2.3, which refers to the removed Linux `ENOATTR` constant.
 
 ### Windows quick start
 

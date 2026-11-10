@@ -29,8 +29,8 @@
 ## 1. Product and support boundary
 
 Corvid is a Rust terminal multiplexer with integrations for Claude Code and Codex.
-The Windows GUI and Linux TUI attach to the same Corvid multiplexer and share
-workspace, tab, pane, and focus rules. Their controls and key bindings may
+The desktop GUI on Windows and Linux and the Linux TUI attach to the same Corvid
+multiplexer and share workspace, tab, pane, and focus rules. Their controls and key bindings may
 differ. The Linux TUI runs inside an existing terminal emulator. The daemon on
 the Linux execution host owns the workspaces, PTYs, screen state, and agent
 observations.
@@ -65,7 +65,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
-| Desktop | `corvid-desktop.exe` on Windows, with daemon sessions, tabs, split panes, and an Agent Deck | An interactive writer uses `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
+| Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and an Agent Deck | An interactive writer uses `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
 | Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows or macOS daemon | Deferred | Independent process, IPC, permission, service, input, and VT validation required |

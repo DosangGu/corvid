@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use corvid_client::SshAlias;
-use corvid_deck::icons::icon;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::{
@@ -16,6 +15,7 @@ use gpui::{
     Stateful, Task, Window, div, prelude::*, px, rgb,
 };
 
+use crate::icons::icon;
 use crate::ssh_hosts;
 use crate::terminal_session::{Inventory, Job, Session, Ui};
 use crate::terminal_view::{TerminalView, preview};

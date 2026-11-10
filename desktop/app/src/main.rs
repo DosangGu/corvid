@@ -1,35 +1,39 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
+mod icons;
+#[cfg(any(windows, target_os = "linux"))]
+mod platform;
+#[cfg(any(windows, target_os = "linux"))]
 mod ssh_bootstrap;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod ssh_hosts;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod terminal_paint;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod terminal_session;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod terminal_view;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod workspace_view;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn main() {
-    eprintln!("The Corvid Desktop terminal workspace requires Windows.");
+    eprintln!("The Corvid Desktop terminal workspace requires Windows or Linux.");
     std::process::exit(1);
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn main() -> anyhow::Result<()> {
     use std::path::PathBuf;
 
     use clap::Parser;
     use corvid_companion::{Config, HostEndpoint};
-    use corvid_deck::icons::Icons;
     use gpui::{
         App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px,
         size,
     };
+    use icons::Icons;
     use workspace_view::{Lifetime, WorkspaceView};
 
     #[derive(Parser)]
@@ -45,14 +49,24 @@ fn main() -> anyhow::Result<()> {
     }
 
     let options = Options::parse();
+    #[cfg(target_os = "linux")]
+    anyhow::ensure!(
+        gpui::guess_compositor() == "X11",
+        "Corvid Desktop requires an X11 or XWayland display"
+    );
+
     let alias = options.ssh_alias;
     let state = options
         .state_dir
-        .map_or_else(corvid_companion::launch::default_state_dir, Ok)?;
-    let configured = Config::read_if_present(&state)?.map(|config| {
-        let HostEndpoint::Ssh { alias } = config.endpoint;
-        (alias, config.host_id.to_string())
-    });
+        .map_or_else(platform::default_state_dir, Ok)?;
+    let configured = match Config::read_if_present(&state)? {
+        Some(Config {
+            endpoint: HostEndpoint::Ssh { alias },
+            host_id,
+            ..
+        }) => Some((alias, host_id.to_string())),
+        _ => None,
+    };
     let lifetime = Lifetime::default();
     let app_lifetime = lifetime.clone();
 

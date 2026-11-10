@@ -52,3 +52,10 @@ pub fn outline(glyph: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+pub fn outline_svg(glyph: &str) -> Option<String> {
+    let outline = outline(glyph)?;
+    Some(format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="{outline}" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>"#
+    ))
+}

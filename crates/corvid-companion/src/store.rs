@@ -52,19 +52,23 @@ impl Config {
         Self::read_if_present(path)?.context("companion config is missing")
     }
 
-    #[cfg(windows)]
     pub fn read_if_present(path: &Path) -> Result<Option<Self>> {
-        match StateDirectory::open(path) {
-            Ok(directory) => Self::read_from(&directory),
-            Err(error)
-                if error
-                    .downcast_ref::<io::Error>()
-                    .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
-            {
-                Ok(None)
-            }
-            Err(error) => Err(error),
+        let error = match StateDirectory::open(path) {
+            Ok(directory) => return Self::read_from(&directory),
+            Err(error) => error,
+        };
+
+        #[cfg(target_os = "linux")]
+        let missing = error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT);
+        #[cfg(windows)]
+        let missing = error
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::NotFound);
+
+        if missing {
+            return Ok(None);
         }
+        Err(error)
     }
 
     fn read_from(directory: &StateDirectory) -> Result<Option<Self>> {
