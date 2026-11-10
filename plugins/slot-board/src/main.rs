@@ -4,6 +4,9 @@ mod app;
 #[cfg(windows)]
 mod pairing;
 
+use std::io::{self, Read};
+use std::thread;
+
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use corvid_presentation::ipc::DesktopClient;
@@ -43,6 +46,8 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     let address = options.pipe_instance;
     let identity = options.host_id.zip(options.controller_id);
+    let close_with_parent =
+        std::env::var_os("CORVID_SLOT_BOARD_CLOSE_WITH_PARENT").is_some_and(|value| value == "1");
 
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -56,6 +61,9 @@ fn main() -> Result<()> {
         Box::new(move |creation| {
             app::configure(&creation.egui_ctx);
             let ctx = creation.egui_ctx.clone();
+            if close_with_parent {
+                watch_parent(ctx.clone())?;
+            }
             let client = DesktopClient::start_scoped(address, identity, move || {
                 ctx.request_repaint();
             })?;
@@ -63,4 +71,15 @@ fn main() -> Result<()> {
         }),
     )
     .map_err(|error| anyhow!("could not open Corvid Slot Board: {error}"))
+}
+
+fn watch_parent(ctx: egui::Context) -> io::Result<()> {
+    thread::Builder::new()
+        .name("corvid-slot-board-parent".into())
+        .spawn(move || {
+            // Desktop holds stdin open without writing. EOF is its close signal.
+            let _ = io::stdin().lock().read(&mut [0_u8]);
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        })?;
+    Ok(())
 }

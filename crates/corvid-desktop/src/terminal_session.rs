@@ -20,7 +20,6 @@ use corvid_protocol::{
     Frame, PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame, decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 use vt100::{Parser, Screen};
@@ -184,6 +183,11 @@ enum Action {
     OpenSlotBoard(slot_board::Settings),
 }
 
+struct Requests {
+    actions: mpsc::Receiver<Action>,
+    sizes: watch::Receiver<(u64, Grid)>,
+}
+
 impl Session {
     pub fn start(
         alias: SshAlias,
@@ -212,18 +216,25 @@ impl Session {
             screen_changed,
             ui_changed,
         });
-        let (actions, receive) = mpsc::channel(32);
+        let (actions, incoming) = mpsc::channel(32);
         let (size, sizes) = watch::channel((0, grid));
+        let requests = Requests {
+            actions: incoming,
+            sizes,
+        };
         let (stop, mut stopped) = oneshot::channel();
         let state = Arc::clone(&shared);
         let thread = thread::Builder::new().name("corvid-desktop-client".into()).spawn(move || {
             let result = tokio::runtime::Builder::new_current_thread().enable_all().build()
                 .map_err(anyhow::Error::from)
                 .and_then(|runtime| runtime.block_on(async {
-                    tokio::select! {
-                        result = run(alias, expected_host, selection, explicit, receive, sizes, &state) => result,
+                    let mut slot_board = slot_board::Job::default();
+                    let result = tokio::select! {
+                        result = run(alias, expected_host, selection, explicit, requests, &state, &mut slot_board) => result,
                         _ = &mut stopped => Ok("Detached from Corvid.".into()),
-                    }
+                    };
+                    slot_board.close().await;
+                    result
                 }));
             state.update_ui(|ui| {
                 ui.connected = false;
@@ -338,7 +349,7 @@ fn in_pane(ui: &Ui, pane: &str) -> bool {
 struct Client<'a> {
     link: InteractiveConnection,
     alias: SshAlias,
-    slot_board: JoinSet<Result<()>>,
+    slot_board: &'a mut slot_board::Job,
     shared: &'a Shared,
     selected: ViewSelection,
     route: RouteToken,
@@ -369,9 +380,9 @@ async fn run(
     expected_host: Option<String>,
     selection: Option<(ViewSelection, bool)>,
     explicit: bool,
-    mut actions: mpsc::Receiver<Action>,
-    sizes: watch::Receiver<(u64, Grid)>,
+    Requests { mut actions, sizes }: Requests,
     shared: &Shared,
+    slot_board: &mut slot_board::Job,
 ) -> Result<String> {
     let capabilities = [
         "attach.v1",
@@ -448,7 +459,7 @@ async fn run(
     let mut client = Client {
         link,
         alias: alias.clone(),
-        slot_board: JoinSet::new(),
+        slot_board,
         shared,
         selected,
         route,
@@ -475,7 +486,7 @@ async fn run(
                 Some(action) => client.action(action).await?,
                 None => return Ok("Detached from Corvid.".into()),
             },
-            result = client.slot_board.join_next(), if !client.slot_board.is_empty() => {
+            result = client.slot_board.tasks.join_next(), if !client.slot_board.tasks.is_empty() => {
                 match result {
                     Some(Ok(Err(error))) => shared.update_ui(|ui| ui.message = format!("{error:#}")),
                     Some(Err(_)) => shared.update_ui(|ui| ui.message = "Slot Board stopped unexpectedly.".into()),
@@ -645,12 +656,10 @@ impl Client<'_> {
 
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
-            Action::OpenSlotBoard(settings) if self.slot_board.is_empty() => {
+            Action::OpenSlotBoard(settings) if self.slot_board.tasks.is_empty() => {
                 let alias = self.alias.clone();
                 let host = self.link.session().host_id.clone();
-                self.slot_board.spawn(async move {
-                    slot_board::open(settings, alias, Uuid::parse_str(&host)?).await
-                });
+                self.slot_board.spawn(settings, alias, host);
             }
             Action::OpenSlotBoard(_) => self.shared.update_ui(|ui| {
                 ui.message = "Slot Board is already open or starting.".into();

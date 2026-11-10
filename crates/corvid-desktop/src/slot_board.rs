@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
@@ -7,10 +8,39 @@ use corvid_companion::{Config, HostEndpoint, PresentationAddress, PresentationCl
 use corvid_protocol::COMMAND_TIMEOUT;
 use tokio::process::Command;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 const DEFAULT_SLOT_COUNT: u32 = 8;
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Default)]
+pub(crate) struct Job {
+    pub tasks: JoinSet<Result<()>>,
+    close: Option<oneshot::Sender<()>>,
+}
+
+impl Job {
+    pub fn spawn(&mut self, settings: Settings, alias: SshAlias, host: String) {
+        let (close, closing) = oneshot::channel();
+        self.close = Some(close);
+        self.tasks
+            .spawn(async move { open(settings, alias, Uuid::parse_str(&host)?, closing).await });
+    }
+
+    pub async fn close(&mut self) {
+        if let Some(close) = self.close.take() {
+            let _ = close.send(());
+        }
+        if timeout(CLOSE_TIMEOUT, self.tasks.join_next())
+            .await
+            .is_err()
+        {
+            self.tasks.shutdown().await;
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct Settings {
@@ -24,7 +54,12 @@ struct Scope {
     state: PathBuf,
 }
 
-pub(crate) async fn open(settings: Settings, alias: SshAlias, host: Uuid) -> Result<()> {
+async fn open(
+    settings: Settings,
+    alias: SshAlias,
+    host: Uuid,
+    closing: oneshot::Receiver<()>,
+) -> Result<()> {
     let executable = std::env::current_exe()?
         .parent()
         .context("locating the Corvid Desktop installation")?
@@ -38,7 +73,7 @@ pub(crate) async fn open(settings: Settings, alias: SshAlias, host: Uuid) -> Res
     let (scope, config) = settings.scope(alias.as_str(), host)?;
     if let Some(client) = PresentationClient::connect_if_present(&scope.address).await? {
         verify(client, &config).await?;
-        return show(&executable, &scope, &config).await;
+        return show(&executable, &scope, &config, closing).await;
     }
 
     let (stop, stopped) = oneshot::channel();
@@ -49,7 +84,7 @@ pub(crate) async fn open(settings: Settings, alias: SshAlias, host: Uuid) -> Res
     let window = async {
         let client = wait_for_companion(&scope.address).await?;
         verify(client, &config).await?;
-        show(&executable, &scope, &config).await
+        show(&executable, &scope, &config, closing).await
     };
     tokio::pin!(companion, window);
     let result = tokio::select! {
@@ -145,9 +180,18 @@ async fn verify(mut client: PresentationClient, config: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn show(executable: &Path, scope: &Scope, config: &Config) -> Result<()> {
+async fn show(
+    executable: &Path,
+    scope: &Scope,
+    config: &Config,
+    mut closing: oneshot::Receiver<()>,
+) -> Result<()> {
+    if !matches!(closing.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
+        return Ok(());
+    }
     let mut command = Command::new(executable);
     command
+        .env("CORVID_SLOT_BOARD_CLOSE_WITH_PARENT", "1")
         .arg("--host-id")
         .arg(config.host_id.to_string())
         .arg("--controller-id")
@@ -156,13 +200,23 @@ async fn show(executable: &Path, scope: &Scope, config: &Config) -> Result<()> {
     command.arg("--pipe-instance").arg(&scope.address);
     #[cfg(target_os = "linux")]
     command.arg("--socket-dir").arg(&scope.address);
-    let status = command
+    let mut child = command
+        .stdin(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .context("opening Slot Board")?
-        .wait()
-        .await
-        .context("waiting for Slot Board")?;
+        .context("opening Slot Board")?;
+    let lifetime = child
+        .stdin
+        .take()
+        .context("missing Slot Board lifetime pipe")?;
+    let status = tokio::select! {
+        status = child.wait() => status,
+        _ = &mut closing => {
+            drop(lifetime);
+            child.wait().await
+        }
+    }
+    .context("waiting for Slot Board")?;
     ensure!(status.success(), "Slot Board exited with {status}");
     Ok(())
 }
