@@ -50,7 +50,7 @@ or [Linux Desktop quick start](docs/04_companion.md#linux-desktop-quick-start)
 for build requirements. Run the app from the repository root.
 
 ```sh
-cargo run --locked --manifest-path crates/corvid-desktop/Cargo.toml -- --ssh-alias work-host
+cargo run --locked -p corvid-desktop -- --ssh-alias work-host
 ```
 
 Replace `work-host` with your SSH alias. To select a host from `~/.ssh/config`
@@ -60,9 +60,10 @@ shows how to build a ZIP with daemon bundles for first-time installation over SS
 
 ## Development
 
-The root Cargo workspace contains the TUI, daemon, and shared crates. On Linux,
-run `cargo test --locked --workspace` to test it. Corvid Desktop has its own
-workspace under `crates/corvid-desktop/`.
+The root Cargo workspace shares package and dependency versions in `Cargo.toml`
+and a single `Cargo.lock`. Run `cargo test --locked` for the default packages.
+Use `--workspace` to include Desktop, Deck, and the packaging tool. Full Linux
+workspace builds require the [Desktop system packages](docs/04_companion.md#linux-desktop-quick-start).
 
 - [Architecture and roadmap](docs/00_project_design.md)
 - [Agent hook coverage and setup](docs/03_provider_qualification.md)

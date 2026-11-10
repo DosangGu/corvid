@@ -9,12 +9,16 @@ and daemon services, `corvid-client` for IPC and TTY,
 `corvid-core` for domain types, `corvid-companion` for controller state,
 `corvid-presentation` for shared presentation clients,
 `corvid-protocol` for Protobuf and local transport, and `spikes/terminal/` for terminal
-qualification. The `corvid-desktop` app has its own workspace at `crates/corvid-desktop/`.
-The separately launched Slot Board plugin lives in `plugins/slot-board/`.
+qualification. The Desktop app is in `crates/corvid-desktop/`, Deck in
+`spikes/deck/`, and the separately launched Slot Board in `plugins/slot-board/`.
+The root `Cargo.toml` defines the workspace package version and direct dependency
+versions. Workspace members inherit those entries and share the root `Cargo.lock`.
 
 ## Build, Test, and Development Commands
 
-Install `tic` for Linux builds. The schema reproducibility fixture uses a
+Install `tic` for Linux builds. Full workspace builds on Linux also need the
+[Desktop system packages](docs/04_companion.md#linux-desktop-quick-start).
+The schema reproducibility fixture uses a
 pinned `protoc` archive for comparison. Run `git diff --check` for whitespace.
 From the workspace root:
 

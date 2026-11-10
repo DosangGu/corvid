@@ -1,6 +1,6 @@
 [package]
 name = "corvid-slot-board"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ clap.workspace = true
 corvid-companion.workspace = true
 corvid-presentation.workspace = true
 corvid-protocol.workspace = true
-eframe = { version = "=0.33.3", default-features = false, features = [
+eframe = { workspace = true, features = [
     "accesskit", "default_fonts", "glow", "wayland", "x11",
 ] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }

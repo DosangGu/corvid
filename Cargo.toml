@@ -1,5 +1,19 @@
 [workspace]
 members = [
+    "crates/corvid-client",
+    "crates/corvid-companion",
+    "crates/corvid-core",
+    "crates/corvid-daemon",
+    "crates/corvid-desktop",
+    "crates/corvid-presentation",
+    "crates/corvid-protocol",
+    "crates/corvid-tui",
+    "deploy/cargo-desktop",
+    "plugins/slot-board",
+    "spikes/deck",
+    "spikes/terminal",
+]
+default-members = [
     "crates/corvid-tui",
     "crates/corvid-client",
     "crates/corvid-companion",
@@ -10,10 +24,10 @@ members = [
     "plugins/slot-board",
     "spikes/terminal",
 ]
-exclude = ["crates/corvid-desktop"]
 resolver = "3"
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
 license = "Apache-2.0"
@@ -21,27 +35,53 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1.0"
+base64 = "=0.22.1"
 clap = { version = "4.6", features = ["derive"] }
 corvid-client = { path = "crates/corvid-client" }
 corvid-companion = { path = "crates/corvid-companion" }
 corvid-core = { path = "crates/corvid-core" }
 corvid-daemon = { path = "crates/corvid-daemon" }
+corvid-deck = { path = "spikes/deck", default-features = false }
 corvid-presentation = { path = "crates/corvid-presentation" }
 corvid-protocol = { path = "crates/corvid-protocol" }
 crossterm = { version = "=0.29.0", default-features = false }
+eframe = { version = "=0.33.3", default-features = false }
+elgato-streamdeck = { version = "=0.13.1", default-features = false }
+glob = "0.3"
+gpui = { version = "=0.2.2", default-features = false }
+hidapi = "2.6"
+image = { version = "0.25", default-features = false }
+# GPUI's Linux HTTP stack uses xattr 0.2.3, which still needs libc::ENOATTR.
+libc = "=0.2.189"
 nix = { version = "0.31.3", default-features = false }
 portable-pty = "=0.9.0"
 prost = "=0.14.4"
 prost-build = "=0.14.4"
 prost-types = "=0.14.4"
+protox = "=0.10.0"
+resvg = { version = "=0.45.1", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+sha2 = "=0.10.9"
 signal-hook = "0.3.18"
-thiserror = "2.0"
+socket2 = "=0.6.5"
+tar = { version = "=0.4.46", default-features = false }
 tempfile = "3.27"
+thiserror = "2.0"
 tokio = "=1.53.3"
+unicode-width = "0.2"
 uuid = { version = "1.29", features = ["v4", "serde"] }
 vt100 = { version = "=0.18.1", default-features = false }
+windows-sys = "=0.61.2"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[profile.dev.package.corvid-desktop]
+debug = 0
+
+[profile.dev.package.corvid-deck]
+debug = 0
+
+[profile.dev.package.gpui]
+debug = 0

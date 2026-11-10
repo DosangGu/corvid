@@ -1,14 +1,11 @@
 [package]
 name = "corvid-deck"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.93"
-license = "Apache-2.0"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
 default-run = "corvid-deck"
-
-[workspace]
-resolver = "3"
 
 [features]
 default = ["desktop"]
@@ -27,19 +24,16 @@ path = "src/bin/streamdeck/main.rs"
 required-features = ["stream-deck"]
 
 [dependencies]
-anyhow = { version = "1", optional = true }
-corvid-presentation = { path = "../../crates/corvid-presentation", optional = true }
-corvid-protocol = { path = "../../crates/corvid-protocol", optional = true }
-uuid = { version = "1.29", features = ["v4"], optional = true }
+anyhow = { workspace = true, optional = true }
+corvid-presentation = { workspace = true, optional = true }
+corvid-protocol = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-corvid-companion = { path = "../../crates/corvid-companion", optional = true }
-elgato-streamdeck = { version = "=0.13.1", default-features = false, optional = true }
-gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"], optional = true }
-hidapi = { version = "2.6", optional = true }
-image = { version = "0.25", default-features = false, optional = true }
-resvg = { version = "=0.45.1", default-features = false, features = ["system-fonts", "text"], optional = true }
-tokio = { version = "=1.53.3", features = ["macros", "rt", "sync"], optional = true }
-
-[profile.dev]
-debug = 0
+corvid-companion = { workspace = true, optional = true }
+elgato-streamdeck = { workspace = true, optional = true }
+gpui = { workspace = true, features = ["windows-manifest"], optional = true }
+hidapi = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+resvg = { workspace = true, features = ["system-fonts", "text"], optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync"], optional = true }

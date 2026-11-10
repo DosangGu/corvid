@@ -8,8 +8,8 @@ terminal behavior across their process boundary.
 ## Reproduce
 
 ```sh
-cargo build --locked --workspace
-cargo test --locked --workspace
+cargo build --locked
+cargo test --locked
 python3 spikes/terminal/tests/interactive.py target/debug/corvid-terminal-spike
 
 mkdir -p target/terminfo

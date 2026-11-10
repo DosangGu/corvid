@@ -123,14 +123,10 @@ try {
         $archiveName = [IO.Path]::GetFileNameWithoutExtension($archiveName) + '-without-slot-board.zip'
     }
 
-    $packages = @('-p', 'corvid-tui')
+    $packages = @('-p', 'corvid-tui', '-p', 'corvid-desktop', '-p', 'corvid-deck')
     if (!$WithoutSlotBoard) { $packages += @('-p', 'corvid-slot-board') }
     cargo build --locked --release --target $target @packages
     if ($LASTEXITCODE -ne 0) { throw 'Corvid release build failed' }
-    cargo build --locked --release --target $target --target-dir $metadata.target_directory --manifest-path 'crates/corvid-desktop/Cargo.toml' --bin corvid-desktop
-    if ($LASTEXITCODE -ne 0) { throw 'Corvid Desktop release build failed' }
-    cargo build --locked --release --target $target --target-dir $metadata.target_directory --manifest-path 'spikes/deck/Cargo.toml' --bin corvid-deck
-    if ($LASTEXITCODE -ne 0) { throw 'Corvid Deck release build failed' }
 
     $release = Join-Path $metadata.target_directory "$target\release"
     $assets = Read-WindowsDaemonAssets (Join-Path $release 'corvid.exe')

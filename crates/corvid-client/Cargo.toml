@@ -1,6 +1,6 @@
 [package]
 name = "corvid-client"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -8,10 +8,10 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-base64 = "=0.22.1"
+base64.workspace = true
 corvid-core.workspace = true
 corvid-protocol.workspace = true
-tar = { version = "=0.4.46", default-features = false }
+tar.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 uuid.workspace = true
 
@@ -21,7 +21,7 @@ nix = { workspace = true, features = ["term"] }
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["events", "windows"] }
-windows-sys = { version = "=0.61.2", features = [
+windows-sys = { workspace = true, features = [
     "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_Threading",
 ] }
 

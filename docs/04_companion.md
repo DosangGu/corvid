@@ -47,7 +47,7 @@ toolchain. On Debian or Ubuntu, install `build-essential`, `libxcb1-dev`,
 X11 or XWayland session with Fontconfig and a working Vulkan driver.
 
 ```sh
-cargo run --locked --manifest-path crates/corvid-desktop/Cargo.toml
+cargo run --locked -p corvid-desktop
 ```
 
 Select a configured alias from `~/.ssh/config` in **SSH Hosts**, or pass
@@ -64,8 +64,8 @@ generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
 from the Windows Desktop ZIP. Desktop uses the sessions, tabs, split panes,
 and Agent Deck described in the Windows quick start.
 
-Keep the Desktop lockfile on `libc` 0.2.189 while GPUI's HTTP client transitively
-uses `xattr` 0.2.3, which refers to the removed Linux `ENOATTR` constant.
+The workspace pins `libc` to 0.2.189 while GPUI's HTTP client transitively uses
+`xattr` 0.2.3, which needs the Linux `ENOATTR` constant.
 
 ### Windows quick start
 
@@ -160,11 +160,12 @@ is installed under `plugins/slot-board/`. Pass `-WithoutSlotBoard` to the packag
 to omit it. The archive also includes the Windows SSH bundle under
 `daemon/x86_64-pc-windows-msvc/` with the executable and its SHA-256 manifest.
 To run Desktop from source, use
-`cargo run --locked --manifest-path crates/corvid-desktop/Cargo.toml`.
-The `crates/corvid-desktop/` workspace contains the app and its lockfile.
+`cargo run --locked -p corvid-desktop`.
+The root workspace manages the Desktop app's dependencies and lockfile.
 Build the `corvid` command with `cargo build --locked -p corvid-tui` from the
 repository root.
-A root build without a package selector builds all root workspace members.
+A root build without a package selector builds the default workspace members.
+Use `--workspace` to include Desktop, Deck, and the packaging tool.
 The terminal qualification spike runs on Linux. Use the package script to
 build and bundle the Windows applications, or see [Windows local use](02_daemon_foundation.md#run-locally-on-windows)
 for the native TUI and daemon.
@@ -372,7 +373,7 @@ Run the deck from the repository root to use the same first-run flow during
 development. The default pipe instance is `main`.
 
 ```powershell
-cargo run --locked --manifest-path spikes/deck/Cargo.toml
+cargo run --locked -p corvid-deck
 ```
 
 Use **Pair WezTerm…** to pair the working TUI directly in the deck. Choose a
@@ -394,7 +395,7 @@ navigation. Use `--list` to enumerate devices, `--serial SERIAL` to select
 one when several are connected, or `--demo` for local test keys.
 
 ```powershell
-cargo run --locked --manifest-path spikes/deck/Cargo.toml --no-default-features --features stream-deck --bin corvid-streamdeck -- --target CLIENT_ID
+cargo run --locked -p corvid-deck --no-default-features --features stream-deck --bin corvid-streamdeck -- --target CLIENT_ID
 ```
 
 The USB adapter reconnects to the same serial after USB loss. Its tests cover
