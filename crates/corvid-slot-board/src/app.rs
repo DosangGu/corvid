@@ -9,8 +9,8 @@ use corvid_protocol::wire::{
 use eframe::egui::{self, Color32, FontId, Frame, Margin, RichText, TextStyle, Ui};
 use uuid::Uuid;
 
-use corvid_desktop::ipc::{Command, Completion, DesktopClient, Display, Link};
-use corvid_desktop::model::Snapshot;
+use corvid_slot_board::ipc::{Command, Completion, DesktopClient, Display, Link};
+use corvid_slot_board::model::Snapshot;
 
 pub(crate) fn configure(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {

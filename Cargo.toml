@@ -5,10 +5,11 @@ members = [
     "crates/corvid-companion",
     "crates/corvid-core",
     "crates/corvid-daemon",
-    "crates/corvid-desktop",
+    "crates/corvid-slot-board",
     "crates/corvid-protocol",
     "spikes/terminal",
 ]
+exclude = ["crates/corvid-desktop"]
 resolver = "3"
 
 [workspace.package]

@@ -938,24 +938,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "corvid-companion",
- "corvid-desktop",
  "corvid-protocol",
+ "corvid-slot-board",
  "elgato-streamdeck",
  "gpui",
  "hidapi",
  "image",
  "resvg",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "corvid-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "corvid-companion",
- "corvid-protocol",
  "tokio",
  "uuid",
 ]
@@ -975,6 +964,17 @@ dependencies = [
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "corvid-slot-board"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "corvid-companion",
+ "corvid-protocol",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

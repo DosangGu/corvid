@@ -1,9 +1,9 @@
-use corvid_desktop::ipc::{Command, DesktopClient, Display, Link};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentBadge, AgentProvider, CompanionConnection, FocusSlot, PresentedBinding, PresentedSlot,
     RunAvailability,
 };
+use corvid_slot_board::ipc::{Command, DesktopClient, Display, Link};
 use uuid::Uuid;
 
 use crate::{KEY_COUNT, Tone};
@@ -336,8 +336,8 @@ impl LiveDeck {
 mod tests {
     use std::sync::Arc;
 
-    use corvid_desktop::model::Snapshot;
     use corvid_protocol::wire::{PresentationSlots, PresentedRun, PresentedRunKey};
+    use corvid_slot_board::model::Snapshot;
 
     use super::*;
 

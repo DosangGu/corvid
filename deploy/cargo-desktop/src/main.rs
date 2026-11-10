@@ -19,8 +19,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         return Err("Build the Desktop distribution on Windows with WSL installed".into());
     }
 
-    let packager = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../desktop/packaging/windows/Package-Corvid.ps1");
+    let packager = Path::new(env!("CARGO_MANIFEST_DIR")).join("../windows/Package-Corvid.ps1");
     let status = Command::new("powershell.exe")
         // Use Windows PowerShell's modules even when Cargo was launched from PowerShell 7.
         .env_remove("PSModulePath")

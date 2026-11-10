@@ -7,9 +7,9 @@ before architectural changes. The `crates/corvid-tui/` package builds the
 `corvid` command and TUI. The workspace also has `corvid-daemon` for PTYs
 and daemon services, `corvid-client` for IPC and TTY,
 `corvid-core` for domain types, `corvid-companion` for controller state,
-`corvid-desktop` for the native slot board,
+`corvid-slot-board` for the native slot board,
 `corvid-protocol` for Protobuf and local transport, and `spikes/terminal/` for terminal
-qualification.
+qualification. The `corvid-desktop` app has its own workspace at `crates/corvid-desktop/`.
 
 ## Build, Test, and Development Commands
 

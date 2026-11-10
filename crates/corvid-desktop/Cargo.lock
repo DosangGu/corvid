@@ -1253,7 +1253,7 @@ name = "corvid-deck"
 version = "0.1.0"
 
 [[package]]
-name = "corvid-desktop-app"
+name = "corvid-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",

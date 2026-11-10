@@ -12,7 +12,7 @@ fi
 
 revision=$(git rev-parse HEAD)
 changes=$(git -c core.safecrlf=false status --porcelain --untracked-files=normal -- \
-    Cargo.lock Cargo.toml rust-toolchain.toml crates spikes desktop/Cargo.lock desktop/Cargo.toml desktop/app)
+    Cargo.lock Cargo.toml rust-toolchain.toml crates spikes)
 if [[ -n $changes ]]; then
     echo 'Commit the build inputs before packaging the Linux daemon.' >&2
     exit 1

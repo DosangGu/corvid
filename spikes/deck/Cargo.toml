@@ -13,7 +13,7 @@ resolver = "3"
 [features]
 default = ["desktop"]
 desktop = ["live", "dep:corvid-companion", "dep:gpui", "dep:tokio"]
-live = ["dep:anyhow", "dep:corvid-desktop", "dep:corvid-protocol", "dep:uuid"]
+live = ["dep:anyhow", "dep:corvid-slot-board", "dep:corvid-protocol", "dep:uuid"]
 stream-deck = ["live", "dep:elgato-streamdeck", "dep:hidapi", "dep:image", "dep:resvg"]
 
 [[bin]]
@@ -28,7 +28,7 @@ required-features = ["stream-deck"]
 
 [dependencies]
 anyhow = { version = "1", optional = true }
-corvid-desktop = { path = "../../crates/corvid-desktop", default-features = false, optional = true }
+corvid-slot-board = { path = "../../crates/corvid-slot-board", default-features = false, optional = true }
 corvid-protocol = { path = "../../crates/corvid-protocol", optional = true }
 uuid = { version = "1.29", features = ["v4"], optional = true }
 

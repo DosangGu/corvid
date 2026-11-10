@@ -5,7 +5,7 @@ use std::thread;
 
 use anyhow::{Context as _, Result};
 use corvid_companion::launch::{DesktopStartup, prepare_desktop, wait_for_desktop};
-use corvid_desktop::ipc::DesktopClient;
+use corvid_slot_board::ipc::DesktopClient;
 use gpui::{Entity, Task};
 use tokio::sync::oneshot;
 use uuid::Uuid;

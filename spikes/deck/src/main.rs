@@ -11,7 +11,7 @@ fn main() -> anyhow::Result<()> {
     use std::path::PathBuf;
 
     use corvid_deck::{deck, icons};
-    use corvid_desktop::ipc::DesktopClient;
+    use corvid_slot_board::ipc::DesktopClient;
     use gpui::{
         App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px,
         size,

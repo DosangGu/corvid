@@ -810,19 +810,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "corvid-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "corvid-companion",
- "corvid-protocol",
- "eframe",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "corvid-protocol"
 version = "0.1.0"
 dependencies = [
@@ -837,6 +824,19 @@ dependencies = [
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "corvid-slot-board"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "corvid-companion",
+ "corvid-protocol",
+ "eframe",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

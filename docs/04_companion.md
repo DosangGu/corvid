@@ -47,7 +47,7 @@ toolchain. On Debian or Ubuntu, install `build-essential`, `libxcb1-dev`,
 X11 or XWayland session with Fontconfig and a working Vulkan driver.
 
 ```sh
-cargo run --locked --manifest-path desktop/Cargo.toml
+cargo run --locked --manifest-path crates/corvid-desktop/Cargo.toml
 ```
 
 Select a configured alias from `~/.ssh/config` in **SSH Hosts**, or pass
@@ -151,7 +151,7 @@ SDK for the GUI. Cargo builds the Protobuf schema using `protox`. Set
 cannot find it.
 
 From the repository root on Windows x64, run
-`powershell -File desktop/packaging/windows/Package-Corvid.ps1`. The script builds the
+`powershell -File deploy/windows/Package-Corvid.ps1`. The script builds the
 release binaries and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
 directory (`target` by default). The archive includes `corvid.exe`, the Desktop
 terminal workspace `corvid-desktop.exe`, the standalone agent deck
@@ -159,8 +159,8 @@ terminal workspace `corvid-desktop.exe`, the standalone agent deck
 and `Set-CorvidStartup.ps1`. It also includes the Windows SSH bundle under
 `daemon/x86_64-pc-windows-msvc/` with the executable and its SHA-256 manifest.
 To run Desktop from source, use
-`cargo run --locked --manifest-path desktop/Cargo.toml`.
-The `desktop/` workspace contains the app and its Windows packaging files.
+`cargo run --locked --manifest-path crates/corvid-desktop/Cargo.toml`.
+The `crates/corvid-desktop/` workspace contains the app and its lockfile.
 Build the `corvid` command with `cargo build --locked -p corvid-tui` from the
 repository root.
 A root build without a package selector builds all root workspace members.
@@ -265,10 +265,10 @@ flowchart LR
 | Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
 | SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
-| Desktop app | Attaches as a writer to the Linux daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../desktop/app/src/main.rs) |
+| Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
-| Slot board | Displays snapshots and manages slot assignments and alerts. Its pairing dialog lists verified local panes. | [corvid-slot-board](../crates/corvid-desktop/src/main.rs) |
-| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../desktop/packaging/windows/) |
+| Slot board | Displays snapshots and manages slot assignments and alerts. Its pairing dialog lists verified local panes. | [corvid-slot-board](../crates/corvid-slot-board/src/main.rs) |
+| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../deploy/windows/) |
 | Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
 
 The companion stores its host and controller identity in `config.json` and
@@ -327,7 +327,7 @@ an additional control connection. The presentation capability is `list_hosts.v1`
 
 ## Desktop Slot Board
 
-Build the administration app with `cargo build --locked -p corvid-desktop --bin corvid-slot-board`
+Build the administration app with `cargo build --locked -p corvid-slot-board`
 or use the Windows package. Start the configured companion and launch
 `corvid-slot-board`. The board accepts the same `--socket-dir` on Linux or
 `--pipe-instance` on Windows as the companion. The board uses eframe 0.33.3 with
@@ -527,7 +527,7 @@ The A29 version-skew fixture sent an unknown focus activation result and
 then an unknown run availability. The desktop kept the last valid snapshot
 as a cache and disabled actions. A compatible snapshot restored the link,
 and the user had to select the terminal again before focusing.
-`cargo test --locked -p corvid-desktop` checks capture, connection fencing,
+`cargo test --locked -p corvid-slot-board` checks capture, connection fencing,
 and input-frame behavior without a display. The Windows desktop binary
 cross-linked for `x86_64-pc-windows-gnu`. Wine 11.21 ran its four tests and
 rendered the offline window.

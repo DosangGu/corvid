@@ -1,58 +1,102 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod app;
-#[cfg(windows)]
-mod pairing;
+#[cfg(any(windows, target_os = "linux"))]
+mod icons;
+#[cfg(any(windows, target_os = "linux"))]
+mod platform;
+#[cfg(any(windows, target_os = "linux"))]
+mod ssh_bootstrap;
+#[cfg(any(windows, target_os = "linux"))]
+mod ssh_hosts;
+#[cfg(any(windows, target_os = "linux"))]
+mod terminal_paint;
+#[cfg(any(windows, target_os = "linux"))]
+mod terminal_session;
+#[cfg(any(windows, target_os = "linux"))]
+mod terminal_view;
+#[cfg(any(windows, target_os = "linux"))]
+mod workspace_view;
 
-use anyhow::{Result, anyhow};
-use clap::Parser;
-use corvid_desktop::ipc::DesktopClient;
-use eframe::egui;
-
-use app::Desktop;
-
-#[derive(Parser)]
-#[command(version, about = "Corvid desktop controller")]
-struct Options {
-    /// Override the directory containing the local companion socket.
-    #[cfg(target_os = "linux")]
-    #[arg(long)]
-    socket_dir: Option<std::path::PathBuf>,
-    /// Choose the same pipe instance used by the local companion.
-    #[cfg(windows)]
-    #[arg(long, default_value = "main")]
-    pipe_instance: String,
+#[cfg(not(any(windows, target_os = "linux")))]
+fn main() {
+    eprintln!("The Corvid Desktop terminal workspace requires Windows or Linux.");
+    std::process::exit(1);
 }
 
-fn main() -> Result<()> {
+#[cfg(any(windows, target_os = "linux"))]
+fn main() -> anyhow::Result<()> {
+    use std::path::PathBuf;
+
+    use clap::Parser;
+    use corvid_companion::{Config, HostEndpoint};
+    use gpui::{
+        App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px,
+        size,
+    };
+    use icons::Icons;
+    use workspace_view::{Lifetime, WorkspaceView};
+
+    #[derive(Parser)]
+    #[command(about = "Attach to a Corvid multiplexer daemon")]
+    struct Options {
+        // Accepted for the existing companion launch command.
+        #[arg(long = "pipe-instance", hide = true)]
+        _pipe_instance: Option<String>,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        #[arg(long)]
+        ssh_alias: Option<String>,
+    }
+
     let options = Options::parse();
     #[cfg(target_os = "linux")]
-    let address = options
-        .socket_dir
-        .or_else(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .filter(|path| !path.is_empty())
-                .map(|base| std::path::PathBuf::from(base).join("corvid-companion"))
-        })
-        .ok_or_else(|| anyhow!("set XDG_RUNTIME_DIR or pass --socket-dir"))?;
-    #[cfg(windows)]
-    let address = options.pipe_instance;
+    anyhow::ensure!(
+        gpui::guess_compositor() == "X11",
+        "Corvid Desktop requires an X11 or XWayland display"
+    );
 
-    let native = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([920.0, 650.0])
-            .with_min_inner_size([400.0, 320.0]),
-        ..Default::default()
+    let alias = options.ssh_alias;
+    let state = options
+        .state_dir
+        .map_or_else(platform::default_state_dir, Ok)?;
+    let configured = match Config::read_if_present(&state)? {
+        Some(Config {
+            endpoint: HostEndpoint::Ssh { alias },
+            host_id,
+            ..
+        }) => Some((alias, host_id.to_string())),
+        _ => None,
     };
-    eframe::run_native(
-        "Corvid Desktop",
-        native,
-        Box::new(move |creation| {
-            app::configure(&creation.egui_ctx);
-            let ctx = creation.egui_ctx.clone();
-            let client = DesktopClient::start(address, move || ctx.request_repaint())?;
-            Ok(Box::new(Desktop::new(client)))
-        }),
-    )
-    .map_err(|error| anyhow!("could not open Corvid Desktop: {error}"))
+    let lifetime = Lifetime::default();
+    let app_lifetime = lifetime.clone();
+
+    Application::new()
+        .with_assets(Icons)
+        .run(move |cx: &mut App| {
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+
+            let bounds = Bounds::centered(None, size(px(1080.), px(680.)), cx);
+            let options = WindowOptions {
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Corvid Desktop".into()),
+                    ..Default::default()
+                }),
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(900.), px(620.))),
+                ..Default::default()
+            };
+            cx.open_window(options, move |window, cx| {
+                cx.new(|cx| WorkspaceView::new(alias, configured, app_lifetime, window, cx))
+            })
+            .expect("could not open Corvid Desktop");
+            cx.activate(true);
+        });
+
+    lifetime.shutdown();
+    Ok(())
 }
