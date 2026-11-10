@@ -80,6 +80,8 @@ fn main() -> anyhow::Result<()> {
     Application::new()
         .with_assets(Icons)
         .run(move |cx: &mut App| {
+            // GPUI's X11 backend stops its event loop after dropping the last window.
+            #[cfg(windows)]
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();
