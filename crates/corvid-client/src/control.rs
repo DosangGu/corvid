@@ -12,9 +12,9 @@ use uuid::Uuid;
 
 use crate::endpoint::{ControlConnection, ControlEndpoint};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod local;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use local::{agents, clients, controller, host, ping, status, workspaces};
 
 pub struct ControllerScope {

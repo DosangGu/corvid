@@ -1,5 +1,4 @@
 use corvid_client::ControlEndpoint;
-#[cfg(target_os = "linux")]
 use corvid_protocol::wire::LocalHostEndpoint;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::presented_host::Endpoint;
@@ -15,7 +14,6 @@ use crate::{MAX_SLOTS, PRESENTATION_PAGE_SIZE, Recovery, RunKey};
 impl Service {
     pub(super) fn list_hosts(&self) -> Body {
         let endpoint = match &self.endpoint {
-            #[cfg(target_os = "linux")]
             ControlEndpoint::Local(_) => Endpoint::Local(LocalHostEndpoint {}),
             ControlEndpoint::Ssh(alias) => Endpoint::SshAlias(alias.as_str().to_owned()),
         };

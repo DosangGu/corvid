@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use corvid_core::agent::{ProcessLiveness, Provider, Source};
+use corvid_core::agent::Provider;
+#[cfg(target_os = "linux")]
+use corvid_core::agent::{ProcessLiveness, Source};
 use corvid_core::layout::{CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
@@ -16,12 +18,15 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
 
+#[cfg(target_os = "linux")]
 use crate::agents::ManagedLaunch;
 use crate::collector::HookEnvironment;
 use crate::metadata::MetadataUpdates;
+#[cfg(target_os = "linux")]
 use crate::process::{
     self, Executable, Incarnation, Probe, ProbeBudget, ProbeResult, ProcessImage,
 };
+#[cfg(target_os = "linux")]
 use crate::provider;
 use crate::workspaces::Registry;
 
@@ -52,7 +57,9 @@ pub(crate) struct LaunchScope {
     pub(crate) location: Location,
     pub(crate) metadata: MetadataUpdates,
     pub(crate) registry: Weak<Mutex<Registry>>,
+    #[cfg(target_os = "linux")]
     pub(crate) boot_id: Option<Uuid>,
+    #[cfg(target_os = "linux")]
     pub(crate) probes: Arc<ProbeBudget>,
     pub(crate) hook_environment: Arc<HookEnvironment>,
 }
@@ -518,10 +525,10 @@ impl Worker {
         if lease.switch_pending || lease.paste.is_some() || terminal.input.paste_pending() {
             return Err(input_busy());
         }
+        terminal.fence_input().map_err(|_| input_busy())?;
         lease.frozen = true;
         lease.leader = None;
         lease.picker = None;
-        terminal.input.fence();
         Ok(())
     }
 
@@ -673,6 +680,8 @@ impl Worker {
                     outer: viewport,
                     ..lease.viewport
                 };
+                #[cfg(windows)]
+                terminal.complete_input_write().map_err(|_| input_busy())?;
                 terminal
                     .resize(next_viewport.content())
                     .map_err(|_| terminal_fault())?;
@@ -854,8 +863,11 @@ impl Worker {
     fn revoke(&mut self) {
         self.lease = None;
         self.viewing.store(false, Ordering::Release);
-        if let Some(terminal) = &mut self.terminal {
-            terminal.input.fence();
+        if let Some(terminal) = &mut self.terminal
+            && terminal.fence_input().is_err()
+        {
+            self.terminal = None;
+            self.live.store(false, Ordering::Release);
         }
     }
 }
@@ -868,9 +880,11 @@ struct Running {
     input: InputQueue,
     dirty: bool,
     exit: Option<ExitStatus>,
+    #[cfg(target_os = "linux")]
     process: TerminalProcess,
 }
 
+#[cfg(target_os = "linux")]
 struct TerminalProcess {
     managed: Option<ManagedLaunch>,
     probe: Option<Probe>,
@@ -883,40 +897,40 @@ enum ReadState {
 }
 
 impl Running {
+    fn fence_input(&mut self) -> Result<()> {
+        #[cfg(windows)]
+        self.complete_input_write()?;
+        self.input.fence();
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn complete_input_write(&mut self) -> Result<()> {
+        if let Some(written) = self.pty.complete_write()? {
+            self.input.record_written(written);
+        }
+        Ok(())
+    }
+
     fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
         let id = Uuid::new_v4();
         let cwd = launch.cwd.clone();
-        let shell = launch.provider.is_none() && launch.argv.is_empty();
-        let program = launch.provider.and_then(provider::installed_program);
-        let executable = launch
-            .provider
-            .zip(program.as_deref())
-            .and_then(|(provider, path)| provider::qualify(provider, path));
-        let qualified = executable.is_some();
-        let reservation = launch
-            .provider
-            .map(|provider| {
-                ManagedLaunch::reserve(&scope.registry, scope.location, id, provider, qualified)
-            })
-            .transpose()?;
-        let association = executable
-            .as_ref()
-            .and(reservation.as_ref())
-            .map(|launch| launch.association);
-        let program = program.filter(|_| qualified);
-        let mut command = launch.into_command(program, qualified);
-        scope
-            .hook_environment
-            .configure(&mut command, association, shell.then_some(id));
-
-        let mut pty = TerminalPty::spawn(command, viewport)?;
-        let (process, identity) =
-            TerminalProcess::started(reservation, &mut pty, scope, id, executable);
-        if (process.managed.is_none() || cwd.is_some())
+        #[cfg(target_os = "linux")]
+        let (pty, process, shell, identity) = TerminalProcess::spawn(launch, viewport, scope, id)?;
+        #[cfg(target_os = "linux")]
+        let unmanaged = process.managed.is_none();
+        #[cfg(windows)]
+        let (pty, unmanaged) = {
+            let mut command = launch.into_command()?;
+            scope.hook_environment.configure(&mut command, None, None);
+            (TerminalPty::spawn(command, viewport)?, true)
+        };
+        if (unmanaged || cwd.is_some())
             && let Some(registry) = scope.registry.upgrade()
         {
             let mut registry = registry.lock().expect("workspace registry lock poisoned");
-            if process.managed.is_none() {
+            if unmanaged {
+                #[cfg(target_os = "linux")]
                 if shell && let Some(root) = identity {
                     registry.shell_started(id, root);
                 }
@@ -934,6 +948,7 @@ impl Running {
             input: InputQueue::default(),
             dirty: true,
             exit: None,
+            #[cfg(target_os = "linux")]
             process,
         })
     }
@@ -949,21 +964,29 @@ impl Running {
             return Ok(ReadState::Eof);
         }
         let (state, output) = self.read_output()?;
+        #[cfg(windows)]
+        let _ = output;
         if !matches!(state, ReadState::BudgetUsed)
             && let Some(status) = self.pty.try_wait()?
         {
-            self.process.probe = None;
-            if let Some(managed) = &self.process.managed {
-                managed.observe(exited(&status), None, Source::ChildExit);
+            #[cfg(target_os = "linux")]
+            {
+                self.process.probe = None;
+                if let Some(managed) = &self.process.managed {
+                    managed.observe(exited(&status), None, Source::ChildExit);
+                }
             }
             self.exit = Some(status);
-        } else if let Some(cwd) = self.process.sample(output)
-            && let Some(registry) = self.registry.upgrade()
-        {
-            registry
-                .lock()
-                .expect("workspace registry lock poisoned")
-                .record_cwd(self.id, &cwd, CwdSource::ProcessDirectory);
+        } else {
+            #[cfg(target_os = "linux")]
+            if let Some(cwd) = self.process.sample(output)
+                && let Some(registry) = self.registry.upgrade()
+            {
+                registry
+                    .lock()
+                    .expect("workspace registry lock poisoned")
+                    .record_cwd(self.id, &cwd, CwdSource::ProcessDirectory);
+            }
         }
         Ok(state)
     }
@@ -992,6 +1015,7 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
         if self.exit.is_none()
             && let Some(managed) = &self.process.managed
         {
@@ -1003,11 +1027,14 @@ impl Drop for Running {
             managed.observe(liveness, None, source);
         }
         if let Some(registry) = self.registry.upgrade() {
+            #[cfg(target_os = "linux")]
             let association = self
                 .process
                 .managed
                 .as_ref()
                 .map(|managed| managed.association);
+            #[cfg(windows)]
+            let association = None;
             registry
                 .lock()
                 .expect("workspace registry lock poisoned")
@@ -1016,7 +1043,41 @@ impl Drop for Running {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl TerminalProcess {
+    fn spawn(
+        launch: Launch,
+        viewport: Viewport,
+        scope: &LaunchScope,
+        id: Uuid,
+    ) -> Result<(TerminalPty, Self, bool, Option<Incarnation>)> {
+        let shell = launch.provider.is_none() && launch.argv.is_empty();
+        let program = launch.provider.and_then(provider::installed_program);
+        let executable = launch
+            .provider
+            .zip(program.as_deref())
+            .and_then(|(provider, path)| provider::qualify(provider, path));
+        let qualified = executable.is_some();
+        let reservation = launch
+            .provider
+            .map(|provider| {
+                ManagedLaunch::reserve(&scope.registry, scope.location, id, provider, qualified)
+            })
+            .transpose()?;
+        let association = executable
+            .as_ref()
+            .and(reservation.as_ref())
+            .map(|launch| launch.association);
+        let mut command = launch.into_command(program.filter(|_| qualified), qualified);
+        scope
+            .hook_environment
+            .configure(&mut command, association, shell.then_some(id));
+
+        let mut pty = TerminalPty::spawn(command, viewport)?;
+        let (process, identity) = Self::started(reservation, &mut pty, scope, id, executable);
+        Ok((pty, process, shell, identity))
+    }
+
     fn started(
         managed: Option<ManagedLaunch>,
         pty: &mut TerminalPty,
@@ -1070,6 +1131,7 @@ impl TerminalProcess {
 }
 
 impl Launch {
+    #[cfg(target_os = "linux")]
     fn into_command(self, program: Option<PathBuf>, qualified: bool) -> CommandBuilder {
         let qualified_provider = self.provider.filter(|_| qualified);
         let mut argv = self.argv.into_iter();
@@ -1097,8 +1159,36 @@ impl Launch {
         command.env("COLORTERM", "truecolor");
         command
     }
+
+    #[cfg(windows)]
+    fn into_command(self) -> Result<CommandBuilder> {
+        anyhow::ensure!(
+            self.provider.is_none(),
+            "managed agent launch is unavailable"
+        );
+        let mut argv = self.argv.into_iter();
+        let program = match argv.next() {
+            Some(program) => program,
+            None => {
+                let root = std::env::var_os("SystemRoot")
+                    .ok_or_else(|| anyhow::anyhow!("SystemRoot is unavailable"))?;
+                PathBuf::from(root)
+                    .join("System32/WindowsPowerShell/v1.0/powershell.exe")
+                    .into_os_string()
+            }
+        };
+        let mut command = CommandBuilder::new(program);
+        command.args(argv);
+        if let Some(cwd) = self.cwd {
+            command.cwd(cwd);
+        }
+        command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
+        Ok(command)
+    }
 }
 
+#[cfg(target_os = "linux")]
 fn exited(status: &ExitStatus) -> ProcessLiveness {
     ProcessLiveness::Exited {
         code: status.signal().is_none().then(|| status.exit_code()),

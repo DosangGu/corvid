@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+#[cfg(any(target_os = "linux", windows))]
+use crate::connection::SocketRole;
 use anyhow::{Context, Result, ensure};
-#[cfg(target_os = "linux")]
-use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, Frame, FrameWriter, PeerRole, ProtocolFault, Session};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
@@ -16,7 +16,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::connection::Connection;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use crate::connection::open;
 
 mod bootstrap;
@@ -28,7 +28,7 @@ const MAX_DIAGNOSTIC: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub enum ControlEndpoint {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     Local(PathBuf),
     Ssh(SshAlias),
 }
@@ -226,9 +226,13 @@ impl ControlEndpoint {
         controller: Option<String>,
     ) -> Result<ControlConnection> {
         let (read, write, mut ssh): (Input, Output, _) = match self {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             Self::Local(path) => {
-                let (read, write) = open(path, SocketRole::Control).await?.into_split();
+                let stream = open(path, SocketRole::Control).await?;
+                #[cfg(target_os = "linux")]
+                let (read, write) = stream.into_split();
+                #[cfg(windows)]
+                let (read, write) = tokio::io::split(stream);
                 (Box::new(read), Box::new(write), None)
             }
             Self::Ssh(alias) => {

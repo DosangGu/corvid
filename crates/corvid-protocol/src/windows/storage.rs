@@ -23,18 +23,18 @@ use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use super::security::{PrivateDescriptor, checked, current_user, verify_private};
 
-pub(crate) struct StateDirectory {
+pub struct StateDirectory {
     path: PathBuf,
     user: String,
-    _ancestors: Vec<File>,
+    ancestors: Vec<File>,
 }
 
 impl StateDirectory {
-    pub(crate) fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path) -> Result<Self> {
         Self::open_path(path, false)
     }
 
-    pub(crate) fn create_all(path: &Path) -> Result<Self> {
+    pub fn create_all(path: &Path) -> Result<Self> {
         Self::open_path(path, true)
     }
 
@@ -83,12 +83,33 @@ impl StateDirectory {
         Ok(Self {
             path,
             user,
-            _ancestors: ancestors,
+            ancestors,
         })
     }
 
-    pub(crate) fn lock_storage(&self) -> Result<File> {
-        let path = self.file_path("state.lock")?;
+    pub fn lock_storage(&self) -> Result<File> {
+        self.lock("state.lock")
+    }
+
+    pub fn lock_startup(&self) -> Result<File> {
+        self.lock("startup.lock")
+    }
+
+    pub fn lock_instance(&self) -> Result<File> {
+        self.lock("daemon.lock")
+    }
+
+    pub(super) fn file_id(&self) -> Result<String> {
+        let directory = self.ancestors.last().context("missing state directory")?;
+        let info = file_information(directory)?;
+        Ok(format!(
+            "{:08x}-{:08x}{:08x}",
+            info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow,
+        ))
+    }
+
+    fn lock(&self, name: &str) -> Result<File> {
+        let path = self.file_path(name)?;
         let descriptor = PrivateDescriptor::new(&self.user, false)?;
         let lock = open_file(
             &path,
@@ -102,7 +123,7 @@ impl StateDirectory {
         Ok(lock)
     }
 
-    pub(crate) fn read_private_file(&self, name: &str, max_bytes: u64) -> Result<Option<Vec<u8>>> {
+    pub fn read_private_file(&self, name: &str, max_bytes: u64) -> Result<Option<Vec<u8>>> {
         let path = self.file_path(name)?;
         let Some(file) = self.open_existing(&path, GENERIC_READ)? else {
             return Ok(None);
@@ -121,7 +142,7 @@ impl StateDirectory {
         Ok(Some(bytes))
     }
 
-    pub(crate) fn replace_private_file(&self, name: &str, bytes: &[u8]) -> Result<()> {
+    pub fn replace_private_file(&self, name: &str, bytes: &[u8]) -> Result<()> {
         let destination = self.file_path(name)?;
         drop(self.open_existing(&destination, FILE_READ_ATTRIBUTES | READ_CONTROL)?);
         let temporary = self.path.join(format!(".corvid-{}.tmp", Uuid::new_v4()));
@@ -185,7 +206,7 @@ impl StateDirectory {
     }
 }
 
-pub(super) fn require_local_acl_volume(drive: u8) -> Result<()> {
+pub fn require_local_acl_volume(drive: u8) -> Result<()> {
     let root: Vec<_> = format!(r"{}:\", char::from(drive))
         .encode_utf16()
         .chain(Some(0))
@@ -216,7 +237,7 @@ pub(super) fn require_local_acl_volume(drive: u8) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn check_component(name: &OsStr) -> Result<()> {
+pub fn check_component(name: &OsStr) -> Result<()> {
     let mut last = None;
     for unit in name.encode_wide() {
         ensure!(
@@ -291,9 +312,7 @@ fn check_type(file: &File, directory: bool) -> Result<()> {
         unsafe { GetFileType(handle) } == FILE_TYPE_DISK,
         "Windows state path is not a disk file"
     );
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    // Windows fills the writable information structure for the live handle.
-    checked(unsafe { GetFileInformationByHandle(handle, &mut info) })?;
+    let info = file_information(file)?;
     ensure!(
         info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0,
         "Windows state path contains a reparse point"
@@ -307,4 +326,11 @@ fn check_type(file: &File, directory: bool) -> Result<()> {
         "Windows state file has hard links"
     );
     Ok(())
+}
+
+fn file_information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // Windows fills the writable information structure for the live handle.
+    checked(unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) })?;
+    Ok(info)
 }

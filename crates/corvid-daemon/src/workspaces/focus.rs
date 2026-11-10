@@ -284,13 +284,18 @@ impl Registry {
                 .verify(target.client, controller, *revision)?;
         }
 
-        let (terminal, owner) = self
+        #[cfg(target_os = "linux")]
+        let terminal = self
             .agents
             .focus_terminal(target.run)
-            .ok_or_else(target_gone)?;
-        if !owner.is_current() {
-            return Err(target_gone());
-        }
+            .filter(|(_, owner)| owner.is_current())
+            .map(|(terminal, _)| terminal);
+        #[cfg(windows)]
+        let terminal = {
+            let _ = target.run;
+            None
+        };
+        let terminal = terminal.ok_or_else(target_gone)?;
         let location = *self.terminals.get(&terminal).ok_or_else(target_gone)?;
         if matches!(target.authorization, FocusAuthorization::Writer { location: expected } if location != expected)
         {
@@ -337,7 +342,7 @@ impl Registry {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;

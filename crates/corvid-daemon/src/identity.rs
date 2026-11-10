@@ -1,17 +1,27 @@
+#[cfg(target_os = "linux")]
 use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::{ErrorKind, Read, Write};
+#[cfg(target_os = "linux")]
 use std::os::fd::AsFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::unix::RuntimeDir;
+#[cfg(target_os = "linux")]
 use nix::errno::Errno;
+#[cfg(target_os = "linux")]
 use nix::fcntl::{OFlag, openat};
+#[cfg(target_os = "linux")]
 use nix::sys::stat::Mode;
+#[cfg(target_os = "linux")]
 use nix::unistd::geteuid;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
 use tempfile::NamedTempFile;
 use uuid::Uuid;
+
+use crate::platform::StateDirectory;
 
 const FILE_NAME: &str = "identity.json";
 const SCHEMA_VERSION: u32 = 1;
@@ -29,7 +39,7 @@ pub(crate) struct Identity {
 }
 
 impl Identity {
-    pub(crate) fn load(state: &RuntimeDir) -> Result<Self> {
+    pub(crate) fn load(state: &StateDirectory) -> Result<Self> {
         let host_id = match read(state)? {
             Some(host_id) => host_id,
             None => create(state)?,
@@ -41,7 +51,8 @@ impl Identity {
     }
 }
 
-fn read(state: &RuntimeDir) -> Result<Option<Uuid>> {
+#[cfg(target_os = "linux")]
+fn read(state: &StateDirectory) -> Result<Option<Uuid>> {
     let fd = match openat(
         state,
         FILE_NAME,
@@ -71,7 +82,11 @@ fn read(state: &RuntimeDir) -> Result<Option<Uuid>> {
         bytes.len() as u64 <= MAX_BYTES,
         "host identity exceeds size limit"
     );
-    let stored: StoredIdentity = serde_json::from_slice(&bytes)
+    decode(&bytes).map(Some)
+}
+
+fn decode(bytes: &[u8]) -> Result<Uuid> {
+    let stored: StoredIdentity = serde_json::from_slice(bytes)
         .context("invalid host identity; repair identity.json before starting Corvid")?;
     ensure!(
         stored.schema_version == SCHEMA_VERSION,
@@ -79,10 +94,11 @@ fn read(state: &RuntimeDir) -> Result<Option<Uuid>> {
         stored.schema_version
     );
     ensure!(!stored.host_id.is_nil(), "invalid nil host identity");
-    Ok(Some(stored.host_id))
+    Ok(stored.host_id)
 }
 
-fn create(state: &RuntimeDir) -> Result<Uuid> {
+#[cfg(target_os = "linux")]
+fn create(state: &StateDirectory) -> Result<Uuid> {
     let host_id = Uuid::new_v4();
     let stored = StoredIdentity {
         schema_version: SCHEMA_VERSION,
@@ -103,4 +119,25 @@ fn create(state: &RuntimeDir) -> Result<Uuid> {
         }
         Err(error) => Err(error.error).context("publishing host identity"),
     }
+}
+
+#[cfg(windows)]
+fn read(state: &StateDirectory) -> Result<Option<Uuid>> {
+    state
+        .read_private_file(FILE_NAME, MAX_BYTES)?
+        .as_deref()
+        .map(decode)
+        .transpose()
+}
+
+#[cfg(windows)]
+fn create(state: &StateDirectory) -> Result<Uuid> {
+    let host_id = Uuid::new_v4();
+    let stored = StoredIdentity {
+        schema_version: SCHEMA_VERSION,
+        host_id,
+    };
+    // The daemon holds the state lock throughout identity creation.
+    state.replace_private_file(FILE_NAME, &serde_json::to_vec(&stored)?)?;
+    Ok(host_id)
 }

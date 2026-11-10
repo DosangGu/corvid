@@ -1,17 +1,15 @@
-use std::fs::File;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, bail, ensure};
 use corvid_core::layout::Layout;
-use corvid_protocol::unix::RuntimeDir;
 use corvid_protocol::wire::HistoricalRun;
-use nix::fcntl::Flock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::history::{History, RunRecord};
+use crate::platform::{StateDirectory, StateLock};
 
 const STATE: &str = "state.json";
 const BACKUP: &str = "state.json.bak";
@@ -100,6 +98,7 @@ impl MetadataView {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) async fn wait_saved(&mut self) -> bool {
         loop {
             match self.save_state() {
@@ -118,7 +117,7 @@ impl MetadataView {
 pub(crate) struct MetadataUpdates(watch::Sender<Stored>);
 
 impl MetadataUpdates {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn in_memory(layout: Layout) -> Self {
         let (updates, _) = watch::channel(Stored::from_layout(layout));
         Self(updates)
@@ -162,9 +161,9 @@ impl MetadataUpdates {
 }
 
 pub(crate) fn start(
-    directory: RuntimeDir,
+    directory: StateDirectory,
+    lock: StateLock,
 ) -> Result<(MetadataView, MetadataUpdates, JoinHandle<()>)> {
-    let lock = directory.lock_storage()?;
     let (stored, bytes, recovery) = load(&directory)?;
     let history = Arc::new(stored.history.wire());
     let mut store = Store {
@@ -231,8 +230,8 @@ async fn write_loop(
 }
 
 struct Store {
-    directory: RuntimeDir,
-    _lock: Flock<File>,
+    directory: StateDirectory,
+    _lock: StateLock,
     last_good: Vec<u8>,
 }
 
@@ -259,7 +258,7 @@ enum Candidate {
     Damaged(Vec<u8>),
 }
 
-fn load(directory: &RuntimeDir) -> Result<(Stored, Vec<u8>, Recovery)> {
+fn load(directory: &StateDirectory) -> Result<(Stored, Vec<u8>, Recovery)> {
     let damaged = match read(directory, STATE)? {
         Candidate::Valid(layout, bytes) => return Ok((layout, bytes, Recovery::Normal)),
         Candidate::Damaged(bytes) => Some(bytes),
@@ -289,7 +288,7 @@ fn load(directory: &RuntimeDir) -> Result<(Stored, Vec<u8>, Recovery)> {
     Ok((stored, bytes, recovery))
 }
 
-fn read(directory: &RuntimeDir, name: &str) -> Result<Candidate> {
+fn read(directory: &StateDirectory, name: &str) -> Result<Candidate> {
     let Some(bytes) = directory.read_private_file(name, MAX_BYTES)? else {
         return Ok(Candidate::Missing);
     };

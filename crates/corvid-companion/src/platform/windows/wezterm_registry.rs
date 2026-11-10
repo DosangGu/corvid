@@ -13,8 +13,10 @@ use windows_sys::Win32::System::Registry::{
     RegGetValueW, RegOpenKeyExW, RegSetValueExW,
 };
 
-use super::security::{PrivateDescriptor, current_logon, current_user, verify_private_registry};
 use super::wezterm::WezTermRegistration;
+use corvid_protocol::windows::security::{
+    PrivateDescriptor, current_logon, current_user, verify_private_registry,
+};
 
 const VERSION: u32 = 2;
 const MAX_RECORDS: usize = 256;

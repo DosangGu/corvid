@@ -24,12 +24,12 @@ use windows_sys::core::BOOL;
 
 const SID_LIMIT: usize = 256;
 
-pub(super) fn current_user() -> Result<String> {
+pub fn current_user() -> Result<String> {
     // GetCurrentProcess returns a valid pseudo-handle to this process.
     process_user(unsafe { GetCurrentProcess() })
 }
 
-pub(super) fn process_user(process: HANDLE) -> Result<String> {
+pub fn process_user(process: HANDLE) -> Result<String> {
     let token = process_token(process)?;
     let mut size = 0;
     // A zero-sized call reports the required storage size.
@@ -54,12 +54,12 @@ pub(super) fn process_user(process: HANDLE) -> Result<String> {
     sid_text(user.User.Sid)
 }
 
-pub(super) fn current_logon() -> Result<u64> {
+pub fn current_logon() -> Result<u64> {
     // GetCurrentProcess returns a valid pseudo-handle to this process.
     process_logon(unsafe { GetCurrentProcess() })
 }
 
-pub(super) fn process_logon(process: HANDLE) -> Result<u64> {
+pub fn process_logon(process: HANDLE) -> Result<u64> {
     let token = process_token(process)?;
     let mut statistics = TOKEN_STATISTICS::default();
     let mut size = 0;
@@ -90,15 +90,15 @@ fn process_token(process: HANDLE) -> Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(token) })
 }
 
-pub(super) struct PrivateDescriptor(LocalAllocation);
+pub struct PrivateDescriptor(LocalAllocation);
 
 impl PrivateDescriptor {
-    pub(super) fn new(user: &str, directory: bool) -> Result<Self> {
+    pub fn new(user: &str, directory: bool) -> Result<Self> {
         let inheritance = if directory { "OICI" } else { "" };
         Self::from_sddl(&format!("O:{user}D:P(A;{inheritance};FA;;;{user})"))
     }
 
-    pub(super) fn registry(user: &str) -> Result<Self> {
+    pub fn registry(user: &str) -> Result<Self> {
         Self::from_sddl(&format!("O:{user}D:P(A;;KA;;;{user})"))
     }
 
@@ -118,7 +118,7 @@ impl PrivateDescriptor {
         Ok(Self(LocalAllocation(descriptor)))
     }
 
-    pub(super) fn attributes(&self) -> SECURITY_ATTRIBUTES {
+    pub fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: self.0.0,
@@ -127,7 +127,7 @@ impl PrivateDescriptor {
     }
 }
 
-pub(super) fn verify_private(handle: HANDLE, user: &str, require_protected: bool) -> Result<()> {
+pub fn verify_private(handle: HANDLE, user: &str, require_protected: bool) -> Result<()> {
     verify_acl(
         handle,
         user,
@@ -137,7 +137,7 @@ pub(super) fn verify_private(handle: HANDLE, user: &str, require_protected: bool
     )
 }
 
-pub(super) fn verify_private_registry(handle: HANDLE, user: &str) -> Result<()> {
+pub fn verify_private_registry(handle: HANDLE, user: &str) -> Result<()> {
     verify_acl(handle, user, SE_REGISTRY_KEY, KEY_ALL_ACCESS, true)
 }
 
@@ -242,7 +242,7 @@ fn sid_text(sid: PSID) -> Result<String> {
     Ok(String::from_utf16(slice)?)
 }
 
-pub(super) fn checked(result: BOOL) -> io::Result<()> {
+pub fn checked(result: BOOL) -> io::Result<()> {
     if result == 0 {
         Err(io::Error::last_os_error())
     } else {

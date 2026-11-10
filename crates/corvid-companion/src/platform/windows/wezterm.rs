@@ -30,8 +30,10 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW, WaitForSingleObject,
 };
 
-use super::security::{checked, current_logon, current_user, process_logon, process_user};
-use super::storage::{check_component, require_local_acl_volume};
+use corvid_protocol::windows::security::{
+    checked, current_logon, current_user, process_logon, process_user,
+};
+use corvid_protocol::windows::{check_component, require_local_acl_volume};
 
 mod discovery;
 mod foreground;

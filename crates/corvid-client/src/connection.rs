@@ -9,7 +9,20 @@ use uuid::Uuid;
 #[cfg(target_os = "linux")]
 mod local;
 #[cfg(target_os = "linux")]
+pub(crate) use corvid_protocol::unix::SocketRole;
+#[cfg(target_os = "linux")]
 pub(crate) use local::{UnixConnection, open};
+#[cfg(target_os = "linux")]
+pub(crate) use tokio::net::unix::{OwnedReadHalf as LocalRead, OwnedWriteHalf as LocalWrite};
+#[cfg(target_os = "linux")]
+pub(crate) type LocalConnection = UnixConnection;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub(crate) use corvid_protocol::windows::DaemonPipe as SocketRole;
+#[cfg(windows)]
+pub(crate) use windows::{LocalConnection, LocalRead, LocalWrite, open};
 
 pub(crate) struct Connection<R, W> {
     pub(crate) session: Session,

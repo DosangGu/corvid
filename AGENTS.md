@@ -4,11 +4,11 @@
 
 Corvid is a Rust coding-agent multiplexer. Read `docs/00_project_design.md`
 before architectural changes. The `crates/corvid-tui/` package builds the
-`corvid` command and Linux TUI. The workspace also has `corvid-daemon` for PTYs
+`corvid` command and TUI. The workspace also has `corvid-daemon` for PTYs
 and daemon services, `corvid-client` for IPC and TTY,
 `corvid-core` for domain types, `corvid-companion` for controller state,
 `corvid-desktop` for the native slot board,
-`corvid-protocol` for Protobuf and Unix transport, and `spikes/terminal/` for terminal
+`corvid-protocol` for Protobuf and local transport, and `spikes/terminal/` for terminal
 qualification.
 
 ## Build, Test, and Development Commands
@@ -57,6 +57,6 @@ acceptance IDs; include screenshots for visible UI changes.
 ## Architecture & Security Constraints
 
 Preserve the daemon/client boundary: the daemon owns PTYs and authoritative state.
-Use bounded Protobuf messages over Unix stream sockets or SSH stdio, raw ANSI render
+Use bounded Protobuf messages over Unix sockets, private Windows named pipes, or SSH stdio, raw ANSI render
 payloads, and JSON persistence. External controllers must not inject answers or approvals.
 Keep credentials and terminal content out of committed fixtures and routine logs.

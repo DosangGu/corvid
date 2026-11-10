@@ -2,14 +2,12 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::future::pending;
 use std::io::ErrorKind;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use corvid_core::Viewport;
 use corvid_protocol::controller::{PAIR_CAPABILITY, PAIRING_SECONDS};
-use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentProvider, Attach, AttachRole, ClaimWorkspaceWriter, Detach, Envelope, FrameApplied,
@@ -22,14 +20,14 @@ use corvid_protocol::{
     MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame,
     STATUS_BAR_CAPABILITY, Session, decode_envelope,
 };
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+#[cfg(target_os = "linux")]
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until, timeout};
 use uuid::Uuid;
 
-use crate::connection::{UnixConnection as Connection, open};
+use crate::connection::{LocalConnection as Connection, LocalRead, LocalWrite, SocketRole, open};
 use crate::keys::{Decoder, Input};
 use crate::tty::Tty;
 
@@ -106,9 +104,14 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         request_attach(connection, viewport, options, notification.is_some()),
     )
     .await??;
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut hangup = signal(SignalKind::hangup())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
+    #[cfg(target_os = "linux")]
+    let (mut terminate, mut hangup, mut interrupt) = (
+        signal(SignalKind::terminate())?,
+        signal(SignalKind::hangup())?,
+        signal(SignalKind::interrupt())?,
+    );
+    #[cfg(windows)]
+    let mut interrupt = tokio::signal::windows::ctrl_break()?;
 
     let tty = Tty::enter()?;
     timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
@@ -120,9 +123,16 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         } => result,
         // A signal can interrupt a partially written frame. Drop the stream so
         // the daemon fences the route on EOF.
-        _ = terminate.recv() => Ok(0),
-        _ = hangup.recv() => Ok(0),
-        _ = interrupt.recv() => Ok(0),
+        _ = async {
+            #[cfg(target_os = "linux")]
+            tokio::select! {
+                _ = terminate.recv() => {},
+                _ = hangup.recv() => {},
+                _ = interrupt.recv() => {},
+            }
+            #[cfg(windows)]
+            interrupt.recv().await;
+        } => Ok(0),
     }
 }
 
@@ -176,9 +186,14 @@ async fn request_attach(
                 } else if launch_if_empty {
                     std::env::current_dir()
                         .ok()
-                        .map(|path| path.as_os_str().as_bytes().to_vec())
+                        .map(|path| path.as_os_str().as_encoded_bytes().to_vec())
                 } else {
-                    Some(std::env::current_dir()?.as_os_str().as_bytes().to_vec())
+                    Some(
+                        std::env::current_dir()?
+                            .as_os_str()
+                            .as_encoded_bytes()
+                            .to_vec(),
+                    )
                 },
             })
         })
@@ -236,7 +251,7 @@ struct Incoming {
 }
 
 impl Incoming {
-    fn start(mut reader: FrameReader<OwnedReadHalf>) -> Self {
+    fn start(mut reader: FrameReader<LocalRead>) -> Self {
         let (sender, frames) = mpsc::channel(1);
         let task = tokio::spawn(async move {
             loop {
@@ -265,7 +280,7 @@ impl Drop for Incoming {
 
 struct Interactive {
     session: Session,
-    writer: FrameWriter<OwnedWriteHalf>,
+    writer: FrameWriter<LocalWrite>,
     incoming: Incoming,
     route: RouteToken,
     viewport: Viewport,

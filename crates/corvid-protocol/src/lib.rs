@@ -6,6 +6,8 @@ pub mod snapshot;
 
 #[cfg(target_os = "linux")]
 pub mod unix;
+#[cfg(windows)]
+pub mod windows;
 
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/corvid.protocol.v1.rs"));

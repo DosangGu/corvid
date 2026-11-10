@@ -153,9 +153,10 @@ and `Set-CorvidStartup.ps1`. To run Desktop from source, use
 The `desktop/` workspace contains the app and its Windows packaging files.
 Build the `corvid` command with `cargo build --locked -p corvid-tui` from the
 repository root.
-A root build without a package selector builds all root workspace members and
-requires Linux for the daemon and terminal qualification spike. Use the
-package script to build and bundle the Windows applications.
+A root build without a package selector builds all root workspace members.
+The terminal qualification spike runs on Linux. Use the package script to
+build and bundle the Windows applications, or see [Windows local use](02_daemon_foundation.md#run-locally-on-windows)
+for the native TUI and daemon.
 
 The **Package Corvid** GitHub Actions workflow runs on demand and for `v*`
 tags. It builds a static Linux x86_64 `corvid` binary, checks that its daemon

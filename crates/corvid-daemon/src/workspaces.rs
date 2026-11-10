@@ -1,16 +1,18 @@
 mod controllers;
 mod focus;
+#[cfg(target_os = "linux")]
 mod shell;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use corvid_core::agent::{ProcessLiveness, Provider};
+#[cfg(target_os = "linux")]
+use corvid_core::agent::ProcessLiveness;
+#[cfg(target_os = "linux")]
+use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
@@ -24,9 +26,11 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+#[cfg(target_os = "linux")]
 use crate::agents::{Agents, Hook, HookBinding};
 use crate::collector::{CollectorDiagnostics, HookEnvironment};
 use crate::metadata::MetadataUpdates;
+#[cfg(target_os = "linux")]
 use crate::process::{self, HookProducer, Incarnation, ProbeBudget, ProcessImage};
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
@@ -38,6 +42,7 @@ use crate::terminal::{
 pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
 pub(crate) use focus::{FocusDispatch, FocusRecovery};
+#[cfg(target_os = "linux")]
 use shell::Shells;
 
 pub(crate) const MAX_PTY_WORKERS: usize = 32;
@@ -89,17 +94,22 @@ pub(crate) struct Workspaces {
     pub(crate) collector: CollectorDiagnostics,
     registry: Arc<Mutex<Registry>>,
     metadata: MetadataUpdates,
+    #[cfg(target_os = "linux")]
     boot_id: Option<Uuid>,
+    #[cfg(target_os = "linux")]
     probes: Arc<ProbeBudget>,
     hook_environment: Arc<HookEnvironment>,
 }
 
 pub(crate) struct Registry {
+    #[cfg(target_os = "linux")]
     pub(crate) agents: Agents,
     metadata: MetadataUpdates,
+    #[cfg(target_os = "linux")]
     epoch: Uuid,
     publication: Publication,
     terminals: HashMap<Uuid, Location>,
+    #[cfg(target_os = "linux")]
     shells: Shells,
     clients: HashMap<Uuid, Client>,
     controllers: Controllers,
@@ -114,6 +124,7 @@ struct Client {
     keymap: Keymap,
     view: Option<ClientView>,
     focuses: mpsc::Sender<FocusDispatch>,
+    #[cfg(target_os = "linux")]
     notices: Option<mpsc::Sender<Provider>>,
 }
 
@@ -140,15 +151,19 @@ struct Slot {
 impl Workspaces {
     pub(crate) fn new(metadata: MetadataUpdates, hook_environment: Arc<HookEnvironment>) -> Self {
         let publication = Publication::seed(projection::layout(&metadata.layout()));
+        #[cfg(target_os = "linux")]
         let epoch = Uuid::parse_str(&hook_environment.identity.epoch).expect("valid daemon epoch");
         Self {
             collector: CollectorDiagnostics::default(),
             registry: Arc::new(Mutex::new(Registry {
+                #[cfg(target_os = "linux")]
                 agents: Agents::default(),
                 metadata: metadata.clone(),
+                #[cfg(target_os = "linux")]
                 epoch,
                 publication,
                 terminals: HashMap::new(),
+                #[cfg(target_os = "linux")]
                 shells: Shells::default(),
                 clients: HashMap::new(),
                 controllers: Controllers::default(),
@@ -158,7 +173,9 @@ impl Workspaces {
                 retired: Vec::new(),
             })),
             metadata,
+            #[cfg(target_os = "linux")]
             boot_id: process::boot_id(),
+            #[cfg(target_os = "linux")]
             probes: Arc::new(ProbeBudget::default()),
             hook_environment,
         }
@@ -171,7 +188,10 @@ impl Workspaces {
     }
 
     pub(crate) fn agents(&self) -> AgentList {
-        self.lock_registry().agents.inventory()
+        #[cfg(target_os = "linux")]
+        return self.lock_registry().agents.inventory();
+        #[cfg(windows)]
+        AgentList::default()
     }
 
     pub(crate) fn clients(&self) -> ClientList {
@@ -193,6 +213,7 @@ impl Workspaces {
         self.lock_registry().publication.sequence()
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn tick_agents(&self) {
         self.poll_shell_agents();
         let mut registry = self.lock_registry();
@@ -200,10 +221,12 @@ impl Workspaces {
         registry.publish(Vec::new());
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn hook_binding(&self, association: Uuid) -> HookBinding {
         self.lock_registry().agents.binding(association)
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn apply_hook(
         &self,
         hook: Hook,
@@ -230,11 +253,15 @@ impl Workspaces {
             .slots
             .values()
             .any(|slot| slot.terminal.has_live_terminal());
+        #[cfg(target_os = "linux")]
         let mut collector = registry.agents.collector_status();
+        #[cfg(windows)]
+        let mut collector = CollectorStatus::default();
         collector.traffic = Some(self.collector.traffic());
         (terminal_live, collector)
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn is_idle(&self) -> bool {
         let mut registry = self.lock_registry();
         registry.sweep();
@@ -249,7 +276,7 @@ impl Workspaces {
         client: Uuid,
         mut target: AttachTarget,
         focuses: mpsc::Sender<FocusDispatch>,
-        notices: Option<mpsc::Sender<Provider>>,
+        #[cfg(target_os = "linux")] notices: Option<mpsc::Sender<Provider>>,
     ) -> Reply<Active> {
         let (location, generation, terminal) = self.reserve(client, &mut target)?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
@@ -285,6 +312,7 @@ impl Workspaces {
                         keymap: target.keymap,
                         view: None,
                         focuses,
+                        #[cfg(target_os = "linux")]
                         notices,
                     },
                 );
@@ -393,6 +421,7 @@ impl Workspaces {
             .expect("validated terminal slot")
             .workspace = destination;
         registry.terminals.insert(terminal, location);
+        #[cfg(target_os = "linux")]
         registry.agents.relocate_terminal(terminal, location);
         registry.publish_layout(layout, vec![terminal_projection(terminal, location)]);
         Ok(TabMoved {
@@ -575,7 +604,9 @@ impl Workspaces {
             location,
             metadata: self.metadata.clone(),
             registry: Arc::downgrade(&self.registry),
+            #[cfg(target_os = "linux")]
             boot_id: self.boot_id,
+            #[cfg(target_os = "linux")]
             probes: Arc::clone(&self.probes),
             hook_environment: Arc::clone(&self.hook_environment),
         };
@@ -609,10 +640,17 @@ impl Registry {
         self.commit(projections, Some(layout));
     }
 
-    fn commit(&mut self, mut projections: Vec<Projection>, layout: Option<Arc<Layout>>) {
-        self.metadata
-            .update(layout, self.agents.changed_history(self.epoch));
-        projections.extend(self.agents.take_projections());
+    fn commit(&mut self, projections: Vec<Projection>, layout: Option<Arc<Layout>>) {
+        #[cfg(target_os = "linux")]
+        let projections = {
+            self.metadata
+                .update(layout, self.agents.changed_history(self.epoch));
+            let mut projections = projections;
+            projections.extend(self.agents.take_projections());
+            projections
+        };
+        #[cfg(windows)]
+        self.metadata.update(layout, std::iter::empty());
         self.publication.commit(projections);
     }
 
@@ -621,6 +659,7 @@ impl Registry {
         self.publish(vec![terminal_projection(id, location)]);
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn shell_started(&mut self, id: Uuid, root: Incarnation) {
         self.shells.add(id, root);
     }
@@ -655,9 +694,13 @@ impl Registry {
     }
 
     pub(crate) fn terminal_closed(&mut self, id: Uuid, association: Option<Uuid>) {
+        #[cfg(windows)]
+        let _ = association;
+        #[cfg(target_os = "linux")]
         if let Some(association) = association {
             self.agents.retire_launch(association);
         }
+        #[cfg(target_os = "linux")]
         if let Some(agent) = self.shells.remove(id) {
             self.agents.retire_shell(agent, ProcessLiveness::Unknown);
         }
@@ -1051,7 +1094,8 @@ fn prepare_cwd(layout: &Layout, location: Location, launch: Option<&mut Launch>)
     if launch.cwd.is_none() {
         launch.cwd = layout
             .last_cwd(location)
-            .map(|cwd| PathBuf::from(OsString::from_vec(cwd.path.clone())))
+            .and_then(|cwd| crate::platform::decode_os_string(&cwd.path))
+            .map(PathBuf::from)
             .filter(|path| path.is_dir());
     }
     if launch.cwd.as_ref().is_some_and(|path| !path.is_dir()) {

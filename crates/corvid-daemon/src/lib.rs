@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 mod agents;
 mod collector;
 mod control;
@@ -5,39 +6,62 @@ mod history;
 mod identity;
 mod incoming;
 mod metadata;
+mod platform;
+#[cfg(target_os = "linux")]
 mod process;
 mod projection;
+#[cfg(target_os = "linux")]
 mod provider;
 mod publication;
 mod snapshot;
 pub mod terminal;
 mod tui;
+#[cfg(target_os = "linux")]
 mod upgrade;
+#[cfg(windows)]
+mod windows;
 mod workspaces;
 
+#[cfg(target_os = "linux")]
 use std::future::Future;
+#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
+#[cfg(target_os = "linux")]
 use corvid_protocol::COMMAND_TIMEOUT;
+#[cfg(target_os = "linux")]
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
+#[cfg(target_os = "linux")]
 use tokio::task::JoinSet;
 
+#[cfg(target_os = "linux")]
 use crate::collector::HookEnvironment;
+#[cfg(target_os = "linux")]
 use crate::identity::Identity;
 use crate::publication::MAX_WATCHES;
+#[cfg(target_os = "linux")]
 use crate::workspaces::Workspaces;
 
+#[cfg(target_os = "linux")]
 pub use provider::hooks::observer_settings;
+#[cfg(target_os = "linux")]
 pub use provider::shell as shell_agent;
+#[cfg(windows)]
+pub use windows::run;
 
 // Keep room for ordinary requests when the snapshot watch limit is full.
 const MAX_CONTROL_CONNECTIONS: usize = MAX_WATCHES + 8;
 const MAX_TUI_CONNECTIONS: usize = 8;
+#[cfg(target_os = "linux")]
 const MAX_COLLECTOR_CONNECTIONS: usize = 32;
 
+#[cfg(target_os = "linux")]
 pub async fn run(
     runtime_path: &Path,
     state_path: &Path,
@@ -48,7 +72,8 @@ pub async fn run(
     let instance = runtime.lock_instance()?;
     let state = RuntimeDir::create_all(state_path)?;
     let identity = Arc::new(Identity::load(&state)?);
-    let (metadata, updates, saver) = metadata::start(state)?;
+    let lock = state.lock_storage()?;
+    let (metadata, updates, saver) = metadata::start(state, lock)?;
     let control_socket = instance.bind(SocketRole::Control).await?;
     let client_socket = instance.bind(SocketRole::Client).await?;
     let collector_socket = instance.bind(SocketRole::Collector).await?;

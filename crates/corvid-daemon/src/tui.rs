@@ -1,8 +1,7 @@
-use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::platform::{ReadHalf, Stream, WriteHalf, decode_os_string};
 use anyhow::{Context, Result};
 use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, Location};
@@ -20,8 +19,6 @@ use corvid_protocol::{
     LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
 };
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -46,19 +43,23 @@ const CAPABILITIES: &[&str] = &[
     CREATE_VIEW_CAPABILITY,
     PANE_PREVIEW_CAPABILITY,
     MOVE_TAB_CAPABILITY,
+    #[cfg(target_os = "linux")]
     PAIR_CAPABILITY,
     STATUS_BAR_CAPABILITY,
     ADAPTIVE_VIEWPORT_CAPABILITY,
+    #[cfg(target_os = "linux")]
     RESPONSE_NOTIFICATION_CAPABILITY,
     DEFAULT_SHELL_CAPABILITY,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY,
+    #[cfg(target_os = "linux")]
     "agent_launch.v1",
+    #[cfg(target_os = "linux")]
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
 
 pub(crate) async fn serve(
-    stream: UnixStream,
+    stream: Stream,
     identity: &Identity,
     workspaces: &Workspaces,
 ) -> Result<()> {
@@ -89,8 +90,16 @@ pub(crate) async fn serve(
     };
     let active = match target {
         Ok((target, enabled)) => {
+            #[cfg(windows)]
+            let _ = (enabled, notice_tx);
             workspaces
-                .attach(client, target, focus_tx, enabled.then_some(notice_tx))
+                .attach(
+                    client,
+                    target,
+                    focus_tx,
+                    #[cfg(target_os = "linux")]
+                    enabled.then_some(notice_tx),
+                )
                 .await
         }
         Err(error) => Err(error),
@@ -124,8 +133,8 @@ pub(crate) async fn serve(
 
 async fn serve_active(
     session: Session,
-    reader: FrameReader<OwnedReadHalf>,
-    mut writer: FrameWriter<OwnedWriteHalf>,
+    reader: FrameReader<ReadHalf>,
+    mut writer: FrameWriter<WriteHalf>,
     request_id: Option<String>,
     active: Active,
     workspaces: &Workspaces,
@@ -154,7 +163,7 @@ async fn serve_active(
 
 struct TuiConnection<'a> {
     session: Session,
-    writer: FrameWriter<OwnedWriteHalf>,
+    writer: FrameWriter<WriteHalf>,
     active: Active,
     workspaces: &'a Workspaces,
     client_events: ClientEvents,
@@ -167,7 +176,7 @@ struct ClientEvents {
 }
 
 impl TuiConnection<'_> {
-    async fn run(mut self, reader: FrameReader<OwnedReadHalf>) -> Result<()> {
+    async fn run(mut self, reader: FrameReader<ReadHalf>) -> Result<()> {
         let mut incoming = Incoming::start(reader);
         loop {
             tokio::select! {
@@ -646,7 +655,7 @@ fn command(client: Uuid, body: &Body) -> Result<Action, ProtocolFault> {
 
 async fn send(
     session: &Session,
-    writer: &mut FrameWriter<OwnedWriteHalf>,
+    writer: &mut FrameWriter<WriteHalf>,
     request_id: Option<String>,
     body: Body,
 ) -> Result<()> {
@@ -751,6 +760,13 @@ fn launch(command: &LaunchCommand, if_empty: bool) -> Result<Launch, ProtocolFau
         Some(Ok(AgentProvider::Codex)) => Some(Provider::Codex),
         _ => return Err(invalid("unsupported managed agent provider")),
     };
+    #[cfg(windows)]
+    if provider.is_some() {
+        return Err(ProtocolFault::new(
+            "UnsupportedCapability",
+            "managed agent launch is unavailable",
+        ));
+    }
     let total: usize = command.argv.iter().map(Vec::len).sum();
     if command.argv.len() > 128
         || total > 64 * 1024
@@ -762,7 +778,12 @@ fn launch(command: &LaunchCommand, if_empty: bool) -> Result<Launch, ProtocolFau
     let cwd = command
         .cwd
         .as_ref()
-        .map(|bytes| PathBuf::from(OsString::from_vec(bytes.clone())));
+        .map(|bytes| {
+            decode_os_string(bytes)
+                .map(PathBuf::from)
+                .ok_or_else(|| invalid("invalid launch working directory encoding"))
+        })
+        .transpose()?;
     if let Some(path) = &cwd
         && (!path.is_absolute()
             || command
@@ -776,9 +797,10 @@ fn launch(command: &LaunchCommand, if_empty: bool) -> Result<Launch, ProtocolFau
         argv: command
             .argv
             .iter()
-            .cloned()
-            .map(OsString::from_vec)
-            .collect(),
+            .map(|bytes| {
+                decode_os_string(bytes).ok_or_else(|| invalid("invalid launch argument encoding"))
+            })
+            .collect::<Result<_, _>>()?,
         cwd,
         provider,
         if_empty,

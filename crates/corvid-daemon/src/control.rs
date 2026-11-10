@@ -1,6 +1,8 @@
 use std::time::Duration;
 
+use crate::platform::{ReadHalf, Stream, WriteHalf};
 use anyhow::{Context, Result};
+#[cfg(target_os = "linux")]
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::snapshot::{HISTORY_CAPABILITY, SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
@@ -13,13 +15,12 @@ use corvid_protocol::{
     PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault, Session, accept_hello_with_profiles,
 };
 use prost::Message;
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{Instant, sleep_until, timeout};
 
 use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::metadata::{MetadataView, Recovery, SaveState};
+#[cfg(target_os = "linux")]
 use crate::provider::qualified_profiles;
 use crate::snapshot::{self, LiveWatch};
 use crate::workspaces::{ControllerCommand, Workspaces};
@@ -36,13 +37,16 @@ const CAPABILITIES: &[&str] = &[
     SNAPSHOT_CAPABILITY,
     WATCH_CAPABILITY,
     HISTORY_CAPABILITY,
+    #[cfg(target_os = "linux")]
     PAIR_CAPABILITY,
+    #[cfg(target_os = "linux")]
     ACK_CAPABILITY,
+    #[cfg(target_os = "linux")]
     FOCUS_CAPABILITY,
 ];
 
 pub(crate) async fn serve(
-    stream: UnixStream,
+    stream: Stream,
     identity: &Identity,
     metadata: &MetadataView,
     workspaces: &Workspaces,
@@ -68,13 +72,13 @@ pub(crate) async fn serve(
 
 struct Control<'a> {
     session: Session,
-    writer: FrameWriter<OwnedWriteHalf>,
+    writer: FrameWriter<WriteHalf>,
     metadata: &'a MetadataView,
     workspaces: &'a Workspaces,
 }
 
 impl Control<'_> {
-    async fn run(mut self, mut reader: FrameReader<OwnedReadHalf>) -> Result<()> {
+    async fn run(mut self, mut reader: FrameReader<ReadHalf>) -> Result<()> {
         while let Some(request) = timeout(IDLE_TIMEOUT, reader.next_envelope()).await?? {
             let (watch, include_history) = match self.session.validate_request(&request) {
                 Ok(Body::GetSnapshot(options)) => (false, options.include_history),
@@ -170,11 +174,7 @@ impl Control<'_> {
             .await
     }
 
-    async fn watch(
-        mut self,
-        reader: FrameReader<OwnedReadHalf>,
-        mut live: LiveWatch,
-    ) -> Result<()> {
+    async fn watch(mut self, reader: FrameReader<ReadHalf>, mut live: LiveWatch) -> Result<()> {
         let mut incoming = Incoming::start(reader);
         let mut idle = Instant::now() + IDLE_TIMEOUT;
         loop {
@@ -255,19 +255,15 @@ fn inventory(metadata: &MetadataView) -> WorkspaceList {
     WorkspaceList { workspaces }
 }
 
-type Connection = (
-    Session,
-    FrameReader<OwnedReadHalf>,
-    FrameWriter<OwnedWriteHalf>,
-);
+type Connection = (Session, FrameReader<ReadHalf>, FrameWriter<WriteHalf>);
 
 pub(crate) async fn handshake(
-    stream: UnixStream,
+    stream: Stream,
     identity: &Identity,
     role: PeerRole,
     capabilities: &[&str],
 ) -> Result<Option<Connection>> {
-    let (read, write) = stream.into_split();
+    let (read, write) = crate::platform::split(stream);
     let (input, output) = match role {
         PeerRole::Control | PeerRole::Presentation | PeerRole::Upgrade => {
             (FrameRole::StructuredOnly, FrameRole::StructuredOnly)
@@ -281,10 +277,13 @@ pub(crate) async fn handshake(
         .next_envelope()
         .await?
         .context("missing control Hello")?;
+    #[cfg(target_os = "linux")]
     let profiles = match role {
         PeerRole::Control | PeerRole::Tui => qualified_profiles(),
         PeerRole::Collector | PeerRole::Presentation | PeerRole::Upgrade => &[],
     };
+    #[cfg(windows)]
+    let profiles = &[];
     match accept_hello_with_profiles(
         &request,
         role,

@@ -826,6 +826,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -853,11 +855,14 @@ dependencies = [
  "corvid-daemon",
  "corvid-protocol",
  "nix 0.31.3",
+ "portable-pty",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "uuid",
+ "vt100",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -882,9 +887,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
 dependencies = [
  "bitflags 2.13.2",
+ "crossterm_winapi",
  "document-features",
+ "mio",
  "parking_lot",
  "rustix 1.1.6",
+ "signal-hook",
+ "signal-hook-mio",
+ "winapi",
+]
+
+[[package]]
+name = "crossterm_winapi"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acdd7c62a3665c7f6830a51635d9ac9b23ed385797f70a83bb8bafe9c572ab2b"
+dependencies = [
+ "winapi",
 ]
 
 [[package]]
@@ -1950,6 +1969,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]
@@ -2975,6 +2995,17 @@ checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
 dependencies = [
  "libc",
  "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-mio"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
+dependencies = [
+ "libc",
+ "mio",
+ "signal-hook",
 ]
 
 [[package]]

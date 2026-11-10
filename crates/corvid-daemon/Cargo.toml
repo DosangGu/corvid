@@ -10,7 +10,6 @@ publish.workspace = true
 anyhow.workspace = true
 corvid-core.workspace = true
 corvid-protocol.workspace = true
-nix = { workspace = true, features = ["fs", "user"] }
 portable-pty.workspace = true
 prost.workspace = true
 serde = { workspace = true, features = ["rc"] }
@@ -20,6 +19,9 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 unicode-width = "0.2"
 uuid.workspace = true
 vt100.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["fs", "user"] }
 
 [lints]
 workspace = true

@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::path::Path;
 use std::time::Duration;
 
@@ -22,14 +22,14 @@ const PING_INTERVAL: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CACHE_QUEUE: usize = 16;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub async fn snapshot(runtime: &Path) -> Result<SynchronizedSnapshot> {
     let endpoint = ControlEndpoint::Local(runtime.to_owned());
     let (_, snapshot) = connect(&endpoint, false, true, None, None, || {}).await?;
     Ok(snapshot)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub async fn watch_snapshot(runtime: &Path) -> Result<SnapshotWatch> {
     watch(
         &ControlEndpoint::Local(runtime.to_owned()),

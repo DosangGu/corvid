@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::platform::WriteHalf;
 use anyhow::{Result, bail};
 use corvid_protocol::snapshot::{MAX_CHUNK_ENTITIES, MAX_SNAPSHOT_BYTES};
 use corvid_protocol::wire::envelope::Body;
@@ -10,7 +11,6 @@ use corvid_protocol::wire::{
 use corvid_protocol::{COMMAND_TIMEOUT, FrameWriter, ProtocolFault, Session};
 use prost::Message;
 use tokio::io::AsyncWrite;
-use tokio::net::unix::OwnedWriteHalf;
 use tokio::time::timeout;
 
 use crate::publication::{BODY_BUDGET, Capture, Delta, Watch, resync};
@@ -28,7 +28,7 @@ pub(crate) async fn transfer(
     history: Option<Arc<Vec<HistoricalRun>>>,
     request_id: Option<String>,
     session: &Session,
-    writer: &mut FrameWriter<OwnedWriteHalf>,
+    writer: &mut FrameWriter<WriteHalf>,
     workspaces: &Workspaces,
 ) -> Result<Option<LiveWatch>> {
     let Capture {
@@ -58,7 +58,7 @@ pub(crate) async fn transfer(
 
 struct Stream<'a> {
     session: &'a Session,
-    writer: &'a mut FrameWriter<OwnedWriteHalf>,
+    writer: &'a mut FrameWriter<WriteHalf>,
     request_id: Option<String>,
     subscription: Option<String>,
 }
@@ -135,7 +135,7 @@ impl Stream<'_> {
 
 pub(crate) async fn send_delta(
     session: &Session,
-    writer: &mut FrameWriter<OwnedWriteHalf>,
+    writer: &mut FrameWriter<WriteHalf>,
     watch: &Watch,
     sequence: &mut u64,
     delta: &Delta,

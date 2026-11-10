@@ -1,16 +1,20 @@
 use corvid_core::agent::{
-    Activity, AgentRun, Attention, AttentionCause, Confidence, EndReason, Evidence, Lifecycle,
-    ProcessLiveness, Provider, RequestKind, RequestStatus, ResponseOutcome, Source,
+    Activity, Attention, AttentionCause, Confidence, EndReason, Evidence, Lifecycle,
+    ProcessLiveness, Provider, RequestKind, RequestStatus, Source,
 };
+#[cfg(target_os = "linux")]
+use corvid_core::agent::{AgentRun, ResponseOutcome};
 use corvid_core::layout::{Axis, Layout, Location, Node};
 use corvid_protocol::wire::layout_node_state::Body as NodeBody;
 use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{
-    AgentActivity, AgentEndReason, AgentInfo, AgentLifecycle, AgentProcessState, AgentProvider,
-    AgentResponse, AgentState, AttentionReason, AttentionState, EvidenceConfidence, EvidenceSource,
-    EvidenceState, InputRequestKind, InputRequestStatus, LayoutNodeState, RequestState,
-    SnapshotEntity, SplitAxis, SplitState, TabState, ViewSelection, WorkspaceState,
+    AgentActivity, AgentEndReason, AgentLifecycle, AgentProcessState, AgentProvider,
+    AttentionReason, AttentionState, EvidenceConfidence, EvidenceSource, EvidenceState,
+    InputRequestKind, InputRequestStatus, LayoutNodeState, SnapshotEntity, SplitAxis, SplitState,
+    TabState, ViewSelection, WorkspaceState,
 };
+#[cfg(target_os = "linux")]
+use corvid_protocol::wire::{AgentInfo, AgentResponse, AgentState, RequestState};
 
 use crate::publication::{Group, Projection};
 
@@ -75,6 +79,7 @@ pub(crate) fn selection(location: Location) -> ViewSelection {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn agent(run: &AgentRun, summary: AgentInfo) -> Vec<SnapshotEntity> {
     let mut entries = Vec::with_capacity(1 + run.requests.len() + run.attention.len());
     let run_id = &summary.agent_run_id;
@@ -176,6 +181,7 @@ pub(crate) fn attention(record: &Attention, run: &str) -> AttentionState {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
     let response = match run
         .recent_response

@@ -15,21 +15,29 @@ anyhow.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
+corvid-daemon.workspace = true
 corvid-protocol.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "time"] }
 uuid.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 corvid-core.workspace = true
-corvid-daemon.workspace = true
 nix = { workspace = true, features = ["fs", "poll"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+portable-pty.workspace = true
+vt100.workspace = true
+windows-sys = { version = "=0.61.2", features = ["Win32_System_Pipes"] }
 
 [lints]
 workspace = true

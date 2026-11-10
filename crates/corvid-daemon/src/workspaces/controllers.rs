@@ -346,10 +346,11 @@ impl Registry {
                 }))
             }
             ControllerCommand::Acknowledge { run, attention } => {
-                let acknowledged = self
-                    .agents
-                    .acknowledge(run, attention)
-                    .ok_or_else(super::target_gone)?;
+                #[cfg(target_os = "linux")]
+                let acknowledged = self.agents.acknowledge(run, attention);
+                #[cfg(windows)]
+                let acknowledged = None;
+                let acknowledged = acknowledged.ok_or_else(super::target_gone)?;
                 self.publish(Vec::new());
                 Ok(Body::AttentionAcknowledged(AttentionAcknowledged {
                     agent_run_id: run.to_string(),

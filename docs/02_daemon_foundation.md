@@ -1,4 +1,4 @@
-# Linux Daemon Foundation
+# Daemon Foundation
 
 The daemon owns PTYs and their screens. The attach process owns the outer TTY.
 The control socket supports host identity, health, workspace inventory, and ping
@@ -282,6 +282,44 @@ The observer checks that each disconnect closes the only SSH login and that the
 user manager remains lingering. It compares the daemon epoch, daemon and child
 process incarnations, and PTY device while the child counter advances. The next
 attach must show the same child and retained screen.
+
+## Run Locally on Windows
+
+Build the Windows x64 TUI and daemon together with the pinned MSVC Rust
+toolchain. Open a VT-capable console such as Windows Terminal.
+
+```powershell
+cargo build --locked -p corvid-tui
+.\target\debug\corvid.exe
+```
+
+`corvid` starts a detached per-user daemon as needed and attaches to its
+default workspace. The daemon owns the PowerShell ConPTY and applies the same
+writer lease, layout, and render protocol as on Linux. Press Ctrl-] then d to
+detach, and run `corvid` again to reattach. Ctrl-] then t opens a tab, and
+Ctrl-] then % or " splits the current tab.
+
+The local client and control pipes are limited to the current Windows user
+and reject remote clients. Runtime coordination files are under
+`%LOCALAPPDATA%\Corvid\runtime`. The daemon persists its host identity and
+workspace metadata in `%LOCALAPPDATA%\Corvid\daemon`. Use
+`corvid control ping` to check the daemon and `corvid control host` to inspect
+its identity. For an isolated foreground instance, use
+`corvid --runtime-dir PATH daemon --state-dir PATH` with separate paths on a
+local drive with ACL support. Corvid creates the private directories if
+needed. Pass the same runtime directory to the TUI. Ctrl+C stops that
+foreground daemon.
+
+Windows support covers local terminal sessions. Managed agent observations and
+Windows OpenSSH daemon provisioning are planned separately. The combined
+Desktop package continues to provision a Linux daemon on an SSH host.
+
+The `windows_daemon` integration tests run the Windows binary inside ConPTY
+and exercise startup, input, rendering, resize, and detach and reattach.
+
+```powershell
+cargo test --locked -p corvid-tui --test windows_daemon
+```
 
 ## Verification
 

@@ -1,6 +1,10 @@
 mod input;
 mod keys;
 mod paste;
+#[cfg(target_os = "linux")]
+mod pty;
+#[cfg(windows)]
+#[path = "pty/windows.rs"]
 mod pty;
 mod screen;
 mod status;

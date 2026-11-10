@@ -3,6 +3,8 @@ mod companion;
 mod hooks;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(windows)]
+mod windows;
 
 use std::future::Future;
 use std::io::{self, BufRead, Read};
@@ -25,14 +27,9 @@ pub(crate) use linux::runtime_path;
     version,
     about = "Terminal multiplexer with coding-agent integrations"
 )]
-#[cfg_attr(
-    target_os = "linux",
-    command(after_help = "Run without a command to open the default workspace.")
-)]
-#[cfg_attr(windows, command(subcommand_required = true))]
+#[command(after_help = "Run without a command to open the default workspace.")]
 struct Options {
     /// Override the private directory containing daemon sockets.
-    #[cfg(target_os = "linux")]
     #[arg(long, global = true)]
     runtime_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -46,6 +43,9 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(flatten)]
     Linux(linux::Command),
+    #[cfg(windows)]
+    #[command(flatten)]
+    Windows(windows::Command),
 }
 
 fn main() -> ExitCode {
@@ -63,10 +63,7 @@ fn main() -> ExitCode {
     #[cfg(target_os = "linux")]
     let started = Instant::now();
     let options = Options::parse();
-    #[cfg(target_os = "linux")]
     let daemon_runtime = options.runtime_dir;
-    #[cfg(windows)]
-    let daemon_runtime: Option<PathBuf> = None;
 
     let result = match options.command {
         Some(Command::Companion(companion)) => execute(async move {
@@ -78,7 +75,9 @@ fn main() -> ExitCode {
         #[cfg(target_os = "linux")]
         None => execute(linux::start(daemon_runtime)),
         #[cfg(windows)]
-        None => unreachable!("Clap requires a Windows subcommand"),
+        Some(Command::Windows(command)) => execute(windows::execute(command, daemon_runtime)),
+        #[cfg(windows)]
+        None => execute(windows::start(daemon_runtime)),
     };
     match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),

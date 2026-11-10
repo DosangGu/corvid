@@ -120,16 +120,7 @@ impl InputQueue {
             match writer.write(&batch.bytes[batch.sent..]) {
                 Ok(0) => return Err(batch.failure()),
                 Ok(written) => {
-                    batch.sent += written;
-                    batch.progress = Instant::now();
-                    if batch.sent == batch.bytes.len() {
-                        match batch.kind {
-                            Kind::Keys => self.user_bytes -= batch.bytes.len(),
-                            Kind::Reply => self.reply_bytes -= batch.bytes.len(),
-                            Kind::Paste => self.paste_pending = false,
-                        }
-                        self.active = None;
-                    }
+                    self.record_written(written);
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error)
@@ -142,6 +133,20 @@ impl InputQueue {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn record_written(&mut self, written: usize) {
+        let batch = self.active.as_mut().expect("PTY write has an active batch");
+        batch.sent += written;
+        batch.progress = Instant::now();
+        if batch.sent == batch.bytes.len() {
+            match batch.kind {
+                Kind::Keys => self.user_bytes -= batch.bytes.len(),
+                Kind::Reply => self.reply_bytes -= batch.bytes.len(),
+                Kind::Paste => self.paste_pending = false,
+            }
+            self.active = None;
+        }
     }
 
     fn next_batch(&mut self) -> Option<Batch> {
