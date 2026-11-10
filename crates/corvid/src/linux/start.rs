@@ -24,9 +24,7 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
     corvid_client::check_tty()?;
     let path = runtime_path(override_path)?;
     let runtime = RuntimeDir::create(&path)?;
-    timeout(COMMAND_TIMEOUT, ensure_daemon(&runtime))
-        .await
-        .context("waiting for the Corvid daemon to start")??;
+    ensure_daemon(&runtime).await?;
 
     let options = AttachOptions {
         launch_if_empty: true,
@@ -48,10 +46,17 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
     result
 }
 
+pub(super) async fn ensure(path: &Path) -> Result<()> {
+    ensure_daemon(&RuntimeDir::create_all(path)?).await
+}
+
 async fn ensure_daemon(runtime: &RuntimeDir) -> Result<()> {
-    let _startup = lock_startup(runtime).await?;
-    ensure_daemon_locked(runtime, None).await?;
-    Ok(())
+    timeout(COMMAND_TIMEOUT, async {
+        let _startup = lock_startup(runtime).await?;
+        ensure_daemon_locked(runtime, None).await.map(|_| ())
+    })
+    .await
+    .context("waiting for the Corvid daemon to start")?
 }
 
 pub(super) async fn upgrade(path: &Path) -> Result<()> {

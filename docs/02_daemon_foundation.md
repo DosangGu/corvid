@@ -17,6 +17,8 @@ without a subcommand starts a background daemon if needed and joins a live
 terminal in the default workspace. It opens the user's shell when the workspace
 has no live terminal. To start a shell explicitly, use `corvid attach --new`.
 The automatically started daemon uses the bundled terminfo entry.
+Use `corvid ensure-daemon` to start or reuse the same background daemon
+without attaching a TTY. It shares the startup lock with the ordinary CLI.
 For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
 

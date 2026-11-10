@@ -24,6 +24,8 @@ use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 use vt100::{Parser, Screen};
 
+use crate::ssh_bootstrap;
+
 pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
@@ -185,6 +187,7 @@ impl Session {
         alias: SshAlias,
         expected_host: Option<String>,
         selection: Option<(ViewSelection, bool)>,
+        explicit: bool,
     ) -> Result<(Self, Job)> {
         let grid = Grid::new(26, 112);
         let (screen_changed, _) = watch::channel(());
@@ -216,7 +219,7 @@ impl Session {
                 .map_err(anyhow::Error::from)
                 .and_then(|runtime| runtime.block_on(async {
                     tokio::select! {
-                        result = run(alias, expected_host, selection, receive, sizes, &state) => result,
+                        result = run(alias, expected_host, selection, explicit, receive, sizes, &state) => result,
                         _ = &mut stopped => Ok("Detached from Corvid.".into()),
                     }
                 }));
@@ -355,27 +358,32 @@ async fn run(
     alias: SshAlias,
     expected_host: Option<String>,
     selection: Option<(ViewSelection, bool)>,
+    explicit: bool,
     mut actions: mpsc::Receiver<Action>,
     sizes: watch::Receiver<(u64, Grid)>,
     shared: &Shared,
 ) -> Result<String> {
-    let mut link = alias
-        .interactive(
-            [
-                "attach.v1",
-                "render.v1",
-                "paste.v1",
-                "select_view.v1",
-                CREATE_VIEW_CAPABILITY,
-                CLAIM_WORKSPACE_CAPABILITY,
-                PANE_PREVIEW_CAPABILITY,
-                DEFAULT_SHELL_CAPABILITY,
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-        )
-        .await?;
+    let capabilities = [
+        "attach.v1",
+        "render.v1",
+        "paste.v1",
+        "select_view.v1",
+        CREATE_VIEW_CAPABILITY,
+        CLAIM_WORKSPACE_CAPABILITY,
+        PANE_PREVIEW_CAPABILITY,
+        DEFAULT_SHELL_CAPABILITY,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let (alias, mut link) = ssh_bootstrap::connect(
+        alias,
+        capabilities,
+        explicit,
+        expected_host.as_deref(),
+        |message| shared.update_ui(|ui| ui.message = message.into()),
+    )
+    .await?;
     ensure!(
         expected_host
             .as_ref()

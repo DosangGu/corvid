@@ -19,6 +19,9 @@ use crate::connection::Connection;
 #[cfg(target_os = "linux")]
 use crate::connection::open;
 
+mod bootstrap;
+pub use bootstrap::SshDaemon;
+
 const SSH_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_DIAGNOSTIC: usize = 4096;
@@ -31,7 +34,10 @@ pub enum ControlEndpoint {
 }
 
 #[derive(Clone, Debug)]
-pub struct SshAlias(String);
+pub struct SshAlias {
+    name: String,
+    desktop_daemon: Option<SshDaemon>,
+}
 
 impl SshAlias {
     pub fn new(value: String) -> Result<Self> {
@@ -44,20 +50,31 @@ impl SshAlias {
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
             "invalid SSH alias"
         );
-        Ok(Self(value))
+        Ok(Self {
+            name: value,
+            desktop_daemon: None,
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.name
     }
 
     fn command(&self, role: PeerRole) -> Result<Command> {
-        let mut command = ssh_command()?;
-        let relay = match role {
-            PeerRole::Control => "corvid control --stdio",
-            PeerRole::Tui => "corvid terminal-relay",
+        let arguments = match role {
+            PeerRole::Control => "control --stdio",
+            PeerRole::Tui => "terminal-relay",
             _ => unreachable!("SSH only exposes the two daemon client roles"),
         };
+        let remote = match self.desktop_daemon {
+            Some(daemon) => bootstrap::daemon_command(daemon, arguments),
+            None => format!("corvid {arguments}"),
+        };
+        self.remote_command(&remote)
+    }
+
+    fn remote_command(&self, remote: &str) -> Result<Command> {
+        let mut command = ssh_command()?;
         command.args([
             "-T",
             "-oBatchMode=yes",
@@ -74,7 +91,7 @@ impl SshAlias {
             "-oPermitLocalCommand=no",
             "-oRemoteCommand=none",
             self.as_str(),
-            relay,
+            remote,
         ]);
         command
             .env("LC_ALL", "C")

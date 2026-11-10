@@ -39,6 +39,8 @@ pub(super) enum Command {
         #[arg(long, hide = true)]
         autostarted: bool,
     },
+    /// Start the background daemon if needed without attaching a terminal.
+    EnsureDaemon,
     /// Replace an idle background daemon with this build.
     Upgrade,
     /// Attach to the live terminal, or start one explicitly.
@@ -231,6 +233,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             .await
             .map(|()| 0)
         }
+        Command::EnsureDaemon => start::ensure(&runtime).await.map(|()| 0),
         Command::Upgrade => start::upgrade(&runtime).await.map(|()| 0),
         Command::Attach {
             new,

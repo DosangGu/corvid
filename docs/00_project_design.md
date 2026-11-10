@@ -766,6 +766,13 @@ invocation: ssh -T <configured-host-alias> corvid control --stdio
 nor opens an agent/terminal; return `DaemonUnavailable` until the user starts/attaches.
 The control SSH channel can reconnect independently of the working SSH terminal.
 
+An explicit Desktop connection may prepare the daemon before opening its
+writer and control relays. It probes through SSH, starts an installed binary
+when needed, and can transfer a packaged Linux x86_64 binary to the SSH user's
+private installation directory. The client verifies the bundle locally and
+the remote installer verifies size and SHA-256 before publishing the file
+without replacement. The startup lock serializes daemon startup.
+
 Use the user's SSH configuration, known_hosts, keys, and authentication agent. Preserve
 host-key checking; changed or unknown keys require the normal user trust workflow.
 Background reconnection uses noninteractive authentication and reports `AuthenticationRequired`

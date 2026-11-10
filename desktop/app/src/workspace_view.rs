@@ -90,6 +90,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let explicit = alias.is_some();
         let alias = alias
             .or_else(|| configured.as_ref().map(|(alias, _)| alias.clone()))
             .unwrap_or_default();
@@ -115,7 +116,7 @@ impl WorkspaceView {
         };
         view.refresh_hosts(cx);
         if !view.alias.is_empty() {
-            view.connect_host(view.alias.clone(), window, cx);
+            view.connect_host(view.alias.clone(), explicit, window, cx);
         }
         view
     }
@@ -146,7 +147,13 @@ impl WorkspaceView {
                 && ui.is_none_or(|ui| !ui.connected && ui.inventory.is_none()))
     }
 
-    fn connect_host(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn connect_host(
+        &mut self,
+        name: String,
+        explicit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let ui = self.session.as_ref().map(Session::ui);
         if self.connecting(ui.as_ref()) {
             return;
@@ -171,7 +178,7 @@ impl WorkspaceView {
             self.focus_terminal(window, cx);
             cx.notify();
         } else if self.lifetime.available() {
-            self.connect(alias, None, window, cx);
+            self.connect(alias, None, explicit, window, cx);
         } else {
             self.lifetime.stop();
             self.host_switch = Some(cx.spawn_in(window, async move |view, cx| {
@@ -182,7 +189,7 @@ impl WorkspaceView {
                                 return false;
                             }
                             view.host_switch = None;
-                            view.connect(alias.clone(), None, window, cx);
+                            view.connect(alias.clone(), None, explicit, window, cx);
                             true
                         })
                         .unwrap_or(true);
@@ -202,6 +209,7 @@ impl WorkspaceView {
         &mut self,
         alias: SshAlias,
         selection: Option<(ViewSelection, bool)>,
+        explicit: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -213,7 +221,7 @@ impl WorkspaceView {
             .as_ref()
             .filter(|(name, _)| name == alias.as_str())
             .map(|(_, host)| host.clone());
-        let result = Session::start(alias.clone(), expected_host, selection);
+        let result = Session::start(alias.clone(), expected_host, selection, explicit);
         let (session, job) = match result {
             Ok(connection) => connection,
             Err(error) => {
@@ -302,7 +310,7 @@ impl WorkspaceView {
         if run.is_none()
             && let Some(alias) = self.session_alias.clone()
         {
-            self.connect(alias, Some((target, open)), window, cx);
+            self.connect(alias, Some((target, open)), false, window, cx);
         }
     }
 
@@ -357,7 +365,7 @@ impl WorkspaceView {
                 return;
             }
             if key.key == "enter" {
-                self.connect_host(self.alias.clone(), window, cx);
+                self.connect_host(self.alias.clone(), true, window, cx);
             } else if key.key == "backspace" {
                 self.alias.pop();
             } else if key.modifiers.control && key.key == "v" {
@@ -491,7 +499,13 @@ impl WorkspaceView {
                     .as_ref()
                     .map_or(self.alias.as_str(), SshAlias::as_str)
             };
-            format!("Connecting to {name}…")
+            if let Some(ui) =
+                ui.filter(|ui| !ui.connected && ui.changing && self.host_switch.is_none())
+            {
+                format!("{name} · {}", ui.message)
+            } else {
+                format!("Connecting to {name}…")
+            }
         } else {
             self.error
                 .as_deref()
@@ -552,7 +566,7 @@ impl WorkspaceView {
                             true,
                         )
                         .on_click(cx.listener(|view, _, window, cx| {
-                            view.connect_host(view.alias.clone(), window, cx)
+                            view.connect_host(view.alias.clone(), true, window, cx)
                         })),
                     ),
             )
@@ -641,7 +655,7 @@ impl WorkspaceView {
                                     row.cursor_pointer()
                                         .hover(|style| style.bg(rgb(ACTIVE_FILL)))
                                         .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.connect_host(name.clone(), window, cx)
+                                            view.connect_host(name.clone(), true, window, cx)
                                         }))
                                 })
                         })),

@@ -40,9 +40,8 @@ Point subsequent commands at the same socket directory.
 
 ### Windows quick start
 
-Install the current Corvid build on the Linux execution host and start its
-daemon. Install the Windows OpenSSH Client and configure an SSH alias with
-host-key trust and noninteractive authentication. For example:
+Install the Windows OpenSSH Client and configure an SSH alias with host-key
+trust and noninteractive authentication. For example:
 
 ```sshconfig
 Host work-host
@@ -56,6 +55,21 @@ and static, unconditional `Include` files. Use **Refresh** after editing the
 config, or enter an alias manually. While attached, open **SSH Hosts** in the
 toolbar and select another machine to switch the Desktop connection.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
+An explicit Desktop connection starts an installed Corvid daemon if needed.
+On a fresh Linux x86_64 host, Desktop can transfer the Linux daemon from the
+combined Windows ZIP. It verifies the size and SHA-256 on both sides and
+installs the binary in `~/.corvid/corvid` under the SSH user's account. The
+transfer uses SSH stdin and requires a POSIX shell and Linux core utilities on
+the host. Desktop can reuse a running daemon when it opens a saved alias
+automatically. Installation and startup require an explicit connection request.
+
+The SSH launch commands use `CORVID_RUNTIME_DIR` or `XDG_RUNTIME_DIR` when
+configured. Otherwise Desktop uses a private directory under
+`~/.corvid/` scoped to the current Linux boot. An existing installation
+is reused. If its version cannot start over SSH, update it or start it manually.
+For deployments that need the daemon to survive the host's last-login policy,
+see [systemd deployment](02_daemon_foundation.md#run-under-systemd).
+
 Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
 The initial attach joins a live pane in the default session or opens its shell.
@@ -119,9 +133,8 @@ answers a control ping, and passes it to the Windows packager from the same
 source revision. Download the `corvid-windows-x64-with-daemon` workflow
 artifact for the combined ZIP. It adds `daemon/x86_64-unknown-linux-musl/`
 with the Linux executable and a manifest containing its target, version,
-source revision, byte size, and SHA-256. The daemon files are staged for
-future SSH provisioning. Today the Linux host still needs a running daemon
-before Desktop connects.
+source revision, byte size, and SHA-256. Keep the daemon directory next to
+`corvid-desktop.exe` to make first-time SSH installation available.
 
 To build the combined archive on Windows x64, use a Windows checkout with
 clean Cargo, Desktop, crate, and spike sources. In an x86_64 WSL distribution, install
