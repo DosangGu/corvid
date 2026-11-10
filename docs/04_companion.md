@@ -63,7 +63,7 @@ installation, put the target bundle in `daemon/` alongside the built
 `bash deploy/linux/package-corvid.sh` from a clean checkout and copy the
 generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
 from the Windows Desktop ZIP. Desktop uses the sessions, tabs, split panes,
-and Agent Deck described in the Windows quick start.
+and Agent Board described in the Windows quick start.
 
 The workspace pins `libc` to 0.2.189 while GPUI's HTTP client transitively uses
 `xattr` 0.2.3, which needs the Linux `ENOATTR` constant.
@@ -125,9 +125,9 @@ Ctrl+Shift+N creates a session, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected session.
 
-**Agent Deck** shows the daemon's observed Codex and Claude Code activity,
-including **Working**, **Input needed**, and **Response observed**. Click a
-live key to focus the corresponding run in the attached Desktop. See the
+Open **Plugins → Agent Board** to see the daemon's observed Codex and Claude
+Code activity, including **Working**, **Input needed**, and **Response observed**.
+Click a live agent's name to open its pane in Desktop. See the
 [provider setup](03_provider_qualification.md) for hook coverage.
 
 Use `corvid-deck.exe` for the standalone companion deck and WezTerm pairing.
@@ -159,7 +159,7 @@ From the repository root on Windows x64, run
 release binaries and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
 directory (`target` by default). The archive includes `corvid.exe`, the Desktop
 terminal workspace `corvid-desktop.exe`, the standalone agent deck
-`corvid-deck.exe`, the license, and `Set-CorvidStartup.ps1`. The optional Slot Board
+`corvid-deck.exe`, the license, and `Set-CorvidStartup.ps1`. The optional Agent Board
 is installed under `plugins/slot-board/`. Pass `-WithoutSlotBoard` to the packager
 to omit it. The archive also includes the Windows SSH bundle under
 `daemon/x86_64-pc-windows-msvc/` with the executable and its SHA-256 manifest.
@@ -270,7 +270,7 @@ flowchart LR
 | Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
 | SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
-| Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
+| Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and opens agent panes requested by Agent Board. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
 | Slot board | Displays snapshots and manages slot assignments and alerts in a separate plugin window. Its pairing dialog lists verified local panes. | [corvid-slot-board](../plugins/slot-board/src/main.rs) |
 | Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../deploy/windows/) |
@@ -330,9 +330,9 @@ When the watch is ready, the row also includes the verified remote epoch and
 snapshot sequence. The query reads the companion's current state without opening
 an additional control connection. The presentation capability is `list_hosts.v1`.
 
-## Desktop Slot Board
+## Desktop Agent Board
 
-Open a local or SSH terminal in Desktop and choose **Plugins → Slot Board**. The
+Open a local or SSH terminal in Desktop and choose **Plugins → Agent Board**. The
 board opens in a separate process and closes when Desktop detaches or switches
 hosts. Desktop checks the companion host and controller IDs before opening the
 window. A matching configured companion keeps its existing state. Other hosts
@@ -348,8 +348,11 @@ or `--pipe-instance` on Windows. The board uses eframe 0.33.3 with the Glow
 renderer and connects directly to the private Protobuf endpoint.
 [eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
 
-Choose a paired terminal in **Target terminal**, then click **Focus** on the
-intended slot. The result bar reports remote selection and local activation.
+When launched from Desktop, click an agent in **Slots** or **Overflow** to
+focus its pane and bring Desktop forward. On Linux, the board minimizes after
+a successful focus. When running the plugin directly,
+choose a paired TUI in **Target terminal**, then click **Focus** on a slot.
+The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant
 permissions in the terminal. Slot cards support pin and remove. Use **Overflow**
 to page through unassigned or removed runs, re-add a removed run, or choose an
@@ -357,8 +360,8 @@ overflow run and place it into an empty slot. **Recent ended** shows recent run
 IDs released from the layout.
 
 On disconnection the board keeps the last snapshot visible and disables its
-actions. Reconnection loads a fresh snapshot and requires an explicit terminal
-choice. A gesture uses the slot and terminal revisions that were visible when
+actions. Reconnection loads a fresh snapshot. Standalone mode requires another
+terminal choice. A gesture uses the slot and terminal revisions that were visible when
 it began. A stale action is rejected and can be retried as a new click after
 reviewing the refreshed board.
 
@@ -369,7 +372,7 @@ running companion's private presentation pipe.
 It displays assigned Claude Code and Codex slots, activity, pending requests,
 unseen alerts, and whether the companion and host are available. The 5 × 3
 layout shows 14 slots per page. The lower-right key advances the page, and the
-side panel shows unassigned runs separately. Use the slot board to edit slots
+side panel shows unassigned runs separately. Use Agent Board to edit slots
 and manage overflow.
 
 Run the deck from the repository root to use the same first-run flow during

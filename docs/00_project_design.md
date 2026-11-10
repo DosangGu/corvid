@@ -65,7 +65,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
-| Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and an Agent Deck | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
+| Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and the Agent Board plugin | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
 | Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows daemon and TUI | Windows x64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
@@ -1291,14 +1291,16 @@ On Linux, run `corvid companion slots --count 8` to display slot assignments,
 state and evidence, unseen counts, connection status, and exact TUI registrations.
 `focus-slot` takes the displayed slot and binding captures. The captures include the
 slot revision and the current control connection generation. The CLI uses the same
-private Protobuf endpoint as `corvid-slot-board`. The slot board shows live and
+private Protobuf endpoint as the Agent Board. The board shows live and
 cached slot state and sends actions for the displayed slot and explicitly selected
 terminal. The user can bring the selected terminal forward manually.
 See [companion and desktop setup](04_companion.md).
 
-The Desktop app reads the daemon snapshot for its Agent Deck. It focuses a run
-through its own attached writer connection. The daemon checks the run ID, the
-displayed location, and the writer lease at focus commit.
+The Desktop-launched Agent Board sends focus requests over the private pipes
+it inherits from Desktop. Desktop resolves the displayed host, epoch, and run
+against its current daemon snapshot. It focuses the pane through its attached
+writer connection. The daemon checks the run ID, pane location, and writer
+lease at focus commit.
 
 The standalone Windows GPUI deck and direct USB prototype use the same device-independent
 slot projection, focus capture, and presentation worker through the private

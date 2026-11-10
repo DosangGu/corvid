@@ -15,8 +15,11 @@ corvid-protocol.workspace = true
 eframe = { workspace = true, features = [
     "accesskit", "default_fonts", "glow", "wayland", "x11",
 ] }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync", "time"] }
 uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
 
 [lints]
 workspace = true

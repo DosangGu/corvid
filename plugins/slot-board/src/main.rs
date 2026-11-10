@@ -3,6 +3,7 @@
 mod app;
 #[cfg(windows)]
 mod pairing;
+mod parent;
 
 use std::io::{self, Read};
 use std::thread;
@@ -16,7 +17,7 @@ use uuid::Uuid;
 use app::Desktop;
 
 #[derive(Parser)]
-#[command(version, about = "Corvid Slot Board")]
+#[command(version, about = "Corvid Agent Board")]
 struct Options {
     /// Override the directory containing the local companion socket.
     #[cfg(target_os = "linux")]
@@ -30,6 +31,8 @@ struct Options {
     host_id: Option<Uuid>,
     #[arg(long, requires = "host_id")]
     controller_id: Option<Uuid>,
+    #[arg(long, hide = true, requires = "host_id")]
+    desktop_pid: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -56,21 +59,25 @@ fn main() -> Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Corvid Slot Board",
+        "Corvid Agent Board",
         native,
         Box::new(move |creation| {
             app::configure(&creation.egui_ctx);
             let ctx = creation.egui_ctx.clone();
-            if close_with_parent {
+            let parent = options
+                .desktop_pid
+                .map(|pid| parent::DesktopLink::start(pid, ctx.clone()))
+                .transpose()?;
+            if close_with_parent && parent.is_none() {
                 watch_parent(ctx.clone())?;
             }
             let client = DesktopClient::start_scoped(address, identity, move || {
                 ctx.request_repaint();
             })?;
-            Ok(Box::new(Desktop::new(client)))
+            Ok(Box::new(Desktop::new(client, parent)))
         }),
     )
-    .map_err(|error| anyhow!("could not open Corvid Slot Board: {error}"))
+    .map_err(|error| anyhow!("could not open Corvid Agent Board: {error}"))
 }
 
 fn watch_parent(ctx: egui::Context) -> io::Result<()> {

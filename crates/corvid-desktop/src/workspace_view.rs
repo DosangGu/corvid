@@ -7,16 +7,12 @@ use std::time::Duration;
 use corvid_client::SshAlias;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::layout_node_state::Body as Node;
-use corvid_protocol::wire::{
-    AgentBadge, AgentInfo, AgentProvider, CloseView, SplitAxis, TabState, ViewSelection,
-    WorkspaceState,
-};
+use corvid_protocol::wire::{CloseView, SplitAxis, TabState, ViewSelection, WorkspaceState};
 use gpui::{
     AppContext, Context, Div, Entity, FocusHandle, IntoElement, KeyDownEvent, PromptLevel,
     SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
 };
 
-use crate::icons::icon;
 use crate::slot_board;
 use crate::ssh_hosts;
 use crate::terminal_session::{AttachTarget, Destination, Inventory, Job, Session, Ui};
@@ -75,7 +71,7 @@ pub struct WorkspaceView {
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
     error: Option<String>,
-    surface: Surface,
+    board_focus: u64,
     slot_board: slot_board::Settings,
     connections_open: bool,
     plugins_open: bool,
@@ -84,12 +80,6 @@ pub struct WorkspaceView {
 struct KnownSessions {
     host_id: String,
     inventory: Arc<Inventory>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Surface {
-    Terminal,
-    Deck,
 }
 
 impl WorkspaceView {
@@ -119,7 +109,7 @@ impl WorkspaceView {
             preferred_panes: HashMap::new(),
             updates: None,
             error: None,
-            surface: Surface::Terminal,
+            board_focus: 0,
             slot_board,
             connections_open: false,
             plugins_open: false,
@@ -177,7 +167,6 @@ impl WorkspaceView {
             return;
         }
         self.error = None;
-        self.surface = Surface::Terminal;
         self.plugins_open = false;
         if matches!(target, AttachTarget::Default)
             && ui.is_some_and(|ui| ui.connected)
@@ -244,7 +233,7 @@ impl WorkspaceView {
         self.error = None;
         self.terminal = None;
         self.selected = None;
-        self.surface = Surface::Terminal;
+        self.board_focus = 0;
         if self.destination.as_ref() != Some(&destination) {
             self.preferred_tabs.clear();
             self.preferred_panes.clear();
@@ -306,9 +295,14 @@ impl WorkspaceView {
             let session = session.clone();
             self.selected = Some(selected);
             self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, cx)));
-            if self.surface == Surface::Terminal && !self.alias_focus.is_focused(window) {
+            if !self.alias_focus.is_focused(window) {
                 self.focus_terminal(window, cx);
             }
+        }
+        if self.board_focus != ui.board_focus {
+            self.board_focus = ui.board_focus;
+            window.activate_window();
+            self.focus_terminal(window, cx);
         }
         cx.notify();
     }
@@ -323,22 +317,18 @@ impl WorkspaceView {
         &mut self,
         target: ViewSelection,
         open: bool,
-        run: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(session) = &self.session
             && session.ui().connected
         {
-            session.select(target, open, run);
-            self.surface = Surface::Terminal;
+            session.select(target, open);
             self.focus_terminal(window, cx);
             cx.notify();
             return;
         }
-        if run.is_none()
-            && let Some(destination) = self.destination.clone()
-        {
+        if let Some(destination) = self.destination.clone() {
             self.connect(
                 destination,
                 AttachTarget::Pane(target, open),
@@ -376,7 +366,7 @@ impl WorkspaceView {
                     .or_else(|| workspace.tabs.first())
                 && let Some((target, open)) = self.choose(workspace, tab, &inventory)
             {
-                self.select(target, open, None, window, cx);
+                self.select(target, open, window, cx);
             }
             return;
         }
@@ -484,9 +474,7 @@ impl WorkspaceView {
             && (editing_alias || self.setup_focus.is_focused(window))
         {
             self.connections_open = false;
-            if self.surface == Surface::Terminal {
-                self.focus_terminal(window, cx);
-            }
+            self.focus_terminal(window, cx);
             cx.notify();
             cx.stop_propagation();
             return;
@@ -561,7 +549,7 @@ impl WorkspaceView {
                 let len = workspace.tabs.len();
                 let tab = &workspace.tabs[(index + if reverse { len - 1 } else { 1 }) % len];
                 if let Some((target, open)) = self.choose(workspace, tab, &inventory) {
-                    self.select(target, open, None, window, cx);
+                    self.select(target, open, window, cx);
                 }
             }
             _ => return,
@@ -620,34 +608,12 @@ impl WorkspaceView {
                             view.plugins_open = false;
                             window.focus(&view.setup_focus);
                             view.refresh_hosts(cx);
-                        } else if view.surface == Surface::Terminal {
+                        } else {
                             view.focus_terminal(window, cx);
                         }
                         cx.notify();
                     },
                 )),
-            )
-            .child(
-                button(
-                    "terminal-mode",
-                    "Terminal",
-                    self.surface == Surface::Terminal,
-                )
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.surface = Surface::Terminal;
-                    view.focus_terminal(window, cx);
-                    cx.notify();
-                })),
-            )
-            .child(
-                button("agent-deck", "Agent Deck", self.surface == Surface::Deck).on_click(
-                    cx.listener(|view, _, window, cx| {
-                        view.surface = Surface::Deck;
-                        view.connections_open = false;
-                        window.focus(&view.setup_focus);
-                        cx.notify();
-                    }),
-                ),
             )
             .child(
                 button("plugins", "Plugins", self.plugins_open).on_click(cx.listener(
@@ -656,7 +622,7 @@ impl WorkspaceView {
                         if view.plugins_open {
                             view.connections_open = false;
                         }
-                        if !view.plugins_open && view.surface == Surface::Terminal {
+                        if !view.plugins_open {
                             view.focus_terminal(window, cx);
                         } else {
                             window.focus(&view.setup_focus);
@@ -687,15 +653,13 @@ impl WorkspaceView {
             .bg(rgb(PANEL))
             .when(connected, |menu| {
                 menu.child(
-                    button("slot-board", "Slot Board", false).on_click(cx.listener(
+                    button("agent-board", "Agent Board", false).on_click(cx.listener(
                         |view, _, window, cx| {
                             if let Some(session) = &view.session {
                                 session.open_slot_board(view.slot_board.clone());
                             }
                             view.plugins_open = false;
-                            if view.surface == Surface::Terminal {
-                                view.focus_terminal(window, cx);
-                            }
+                            view.focus_terminal(window, cx);
                             cx.notify();
                         },
                     )),
@@ -706,7 +670,7 @@ impl WorkspaceView {
                     div()
                         .text_size(px(13.))
                         .text_color(rgb(MUTED))
-                        .child("Open a Corvid terminal to use Slot Board."),
+                        .child("Open a Corvid terminal to use Agent Board."),
                 )
             })
     }
@@ -1103,7 +1067,7 @@ impl WorkspaceView {
                                     )
                                     .on_click(cx.listener(
                                         move |view, _, window, cx| {
-                                            view.select(target.clone(), open, None, window, cx)
+                                            view.select(target.clone(), open, window, cx)
                                         },
                                     )),
                                 )
@@ -1247,7 +1211,7 @@ impl WorkspaceView {
                                 .cursor_pointer()
                                 .child(preview(session, pane.clone()))
                                 .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.select(target.clone(), false, None, window, cx)
+                                    view.select(target.clone(), false, window, cx)
                                 })),
                         )
                     })
@@ -1261,7 +1225,7 @@ impl WorkspaceView {
                                 )
                                 .on_click(cx.listener(
                                     move |view, _, window, cx| {
-                                        view.select(target.clone(), !live, None, window, cx)
+                                        view.select(target.clone(), !live, window, cx)
                                     },
                                 )),
                             ),
@@ -1302,102 +1266,6 @@ impl WorkspaceView {
             .when(ui.connected, |region| region.child(self.controls(cx)))
             .child(div().flex().flex_1().min_h_0().p(px(5.)).child(body))
     }
-
-    fn agent_deck(
-        &self,
-        inventory: Option<&Inventory>,
-        connected: bool,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let mut agents: Vec<_> = inventory
-            .into_iter()
-            .flat_map(|inventory| &inventory.agents)
-            .collect();
-        agents.sort_by_key(|agent| {
-            (
-                agent.badge == AgentBadge::Ended as i32,
-                agent.agent_run_id.as_str(),
-            )
-        });
-        let mut slots: Vec<_> = agents
-            .into_iter()
-            .map(|agent| self.agent_key(agent, connected, cx))
-            .collect();
-        let capacity = slots.len().max(1).div_ceil(5) * 5;
-        slots.extend((slots.len()..capacity).map(|index| {
-            key_tile(SharedString::from(format!("empty-{index}")), BORDER, PANEL)
-                .child(icon("grid", 22., MUTED))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(MUTED))
-                        .child("Empty"),
-                )
-        }));
-        let mut slots = slots.into_iter();
-        div()
-            .id("agent-grid")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .p(px(18.))
-            .gap(px(12.))
-            .child(
-                div()
-                    .text_size(px(21.))
-                    .text_color(rgb(TEXT))
-                    .child("Agent Deck"),
-            )
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .text_color(rgb(MUTED))
-                    .child(if connected {
-                        "Daemon-observed agent activity. Select a key to focus its existing pane."
-                    } else {
-                        "Offline. Connect a Corvid daemon to see live agent activity."
-                    }),
-            )
-            .children((0..capacity / 5).map(|_| {
-                div()
-                    .flex()
-                    .flex_none()
-                    .gap(px(9.))
-                    .children(slots.by_ref().take(5))
-            }))
-    }
-
-    fn agent_key(
-        &self,
-        agent: &AgentInfo,
-        connected: bool,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let (name, glyph) = match AgentProvider::try_from(agent.provider) {
-            Ok(AgentProvider::Claude) => ("Claude Code", "brand"),
-            Ok(AgentProvider::Codex) => ("Codex", "focus"),
-            _ => ("Agent", "grid"),
-        };
-        let (status, ink, fill) = badge(agent.badge);
-        let run = agent.agent_run_id.clone();
-        let target = agent
-            .location
-            .clone()
-            .filter(|_| connected && agent.terminal_available);
-        key_tile(SharedString::from(run.clone()), ink, fill)
-            .child(icon(glyph, 26., ink))
-            .child(div().text_color(rgb(TEXT)).child(name))
-            .child(div().text_color(rgb(ink)).text_size(px(12.)).child(status))
-            .when_some(target, |key, target| {
-                key.cursor_pointer()
-                    .hover(move |style| style.border_color(rgb(TEXT)))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        view.select(target.clone(), false, Some(run.clone()), window, cx)
-                    }))
-            })
-    }
 }
 
 impl Render for WorkspaceView {
@@ -1415,10 +1283,7 @@ impl Render for WorkspaceView {
                     .iter()
                     .find(|workspace| workspace.workspace_id == view.workspace_id)
             });
-        let content = if self.surface == Surface::Deck {
-            self.agent_deck(inventory.map(AsRef::as_ref), inventory_ready, cx)
-                .into_any_element()
-        } else if let Some((ui, inventory)) = ui.as_ref().zip(inventory) {
+        let content = if let Some((ui, inventory)) = ui.as_ref().zip(inventory) {
             self.terminal_layout(ui, inventory, cx).into_any_element()
         } else if connected {
             div()
@@ -1511,34 +1376,4 @@ fn button(
 
 fn alias_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"._-".contains(&byte)
-}
-
-fn key_tile(id: SharedString, ink: u32, fill: u32) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_col()
-        .flex_none()
-        .size(px(133.))
-        .items_center()
-        .justify_center()
-        .gap(px(5.))
-        .rounded_lg()
-        .border_1()
-        .border_color(rgb(ink))
-        .bg(rgb(fill))
-        .shadow_md()
-}
-
-fn badge(value: i32) -> (&'static str, u32, u32) {
-    match AgentBadge::try_from(value) {
-        Ok(AgentBadge::Working) => ("Working", 0xf3cc82, 0x392d21),
-        Ok(AgentBadge::NeedsInput) => ("Input needed", 0xf3cc82, 0x392d21),
-        Ok(AgentBadge::ResponseObserved) => ("Response observed", ACTIVE, ACTIVE_FILL),
-        Ok(AgentBadge::Ready) => ("Ready", 0x9bc5f8, 0x213047),
-        Ok(AgentBadge::Ended) => ("Ended", MUTED, PANEL),
-        Ok(AgentBadge::Interrupted) => ("Interrupted", 0xf3cc82, 0x392d21),
-        Ok(AgentBadge::Error) => ("Error", 0xf4a3bb, 0x3b2530),
-        _ => ("Unknown", MUTED, PANEL),
-    }
 }

@@ -144,6 +144,7 @@ pub struct Ui {
     pub changing: bool,
     pub close_supported: bool,
     pub closed_view: bool,
+    pub board_focus: u64,
 }
 
 impl Ui {
@@ -213,7 +214,7 @@ enum Action {
         bytes: Vec<u8>,
         paste: bool,
     },
-    Select(ViewSelection, bool, Option<String>),
+    Select(ViewSelection, bool),
     Create(Target),
     Close(CloseView),
     OpenSlotBoard(slot_board::Settings),
@@ -249,6 +250,7 @@ impl Session {
                     changing: true,
                     close_supported: false,
                     closed_view: false,
+                    board_focus: 0,
                 },
                 parser: Parser::new(grid.rows, grid.cols, 0),
                 revision: 0,
@@ -356,8 +358,8 @@ impl Session {
             .is_ok()
     }
 
-    pub fn select(&self, selection: ViewSelection, open: bool, run: Option<String>) {
-        self.change(Action::Select(selection, open, run));
+    pub fn select(&self, selection: ViewSelection, open: bool) {
+        self.change(Action::Select(selection, open));
     }
 
     pub fn create(&self, target: Target) {
@@ -400,6 +402,8 @@ struct Client<'a> {
     link: InteractiveConnection,
     endpoint: ControlEndpoint,
     slot_board: &'a mut slot_board::Job,
+    board_requests: mpsc::Sender<slot_board::FocusRequest>,
+    board_result: Option<oneshot::Sender<Result<(), String>>>,
     shared: &'a Shared,
     selected: ViewSelection,
     route: RouteToken,
@@ -561,10 +565,13 @@ async fn run(
         ui.host_id = Some(host.clone());
         ui.close_supported = close_supported;
     });
+    let (board_requests, mut board_focus) = mpsc::channel(1);
     let mut client = Client {
         link,
         endpoint: endpoint.clone(),
         slot_board,
+        board_requests,
+        board_result: None,
         shared,
         selected,
         route,
@@ -591,10 +598,11 @@ async fn run(
                 Some(action) => client.action(action).await?,
                 None => return Ok("Detached from Corvid.".into()),
             },
+            Some(request) = board_focus.recv() => client.focus_from_board(request).await?,
             result = client.slot_board.tasks.join_next(), if !client.slot_board.tasks.is_empty() => {
                 match result {
                     Some(Ok(Err(error))) => shared.update_ui(|ui| ui.message = format!("{error:#}")),
-                    Some(Err(_)) => shared.update_ui(|ui| ui.message = "Slot Board stopped unexpectedly.".into()),
+                    Some(Err(_)) => shared.update_ui(|ui| ui.message = "Agent Board stopped unexpectedly.".into()),
                     _ => {}
                 }
             }
@@ -784,10 +792,15 @@ impl Client<'_> {
         match action {
             Action::OpenSlotBoard(settings) if self.slot_board.tasks.is_empty() => {
                 let host = self.link.session().host_id.clone();
-                self.slot_board.spawn(settings, self.endpoint.clone(), host);
+                self.slot_board.spawn(
+                    settings,
+                    self.endpoint.clone(),
+                    host,
+                    self.board_requests.clone(),
+                );
             }
             Action::OpenSlotBoard(_) => self.shared.update_ui(|ui| {
-                ui.message = "Slot Board is already open or starting.".into();
+                ui.message = "Agent Board is already open or starting.".into();
             }),
             Action::Input {
                 revision,
@@ -800,27 +813,7 @@ impl Client<'_> {
                 self.input(bytes, paste).await?;
             }
             Action::Input { .. } => {}
-            Action::Select(selection, open, run) => {
-                if let Some(run) = &run {
-                    let current = self.has_run(run, &selection);
-                    if !current {
-                        self.shared.update_ui(|ui| {
-                            ui.changing = false;
-                            ui.message = "The selected agent has moved or ended.".into();
-                        });
-                        return Ok(());
-                    }
-                }
-                if selection.workspace_id != self.selected.workspace_id {
-                    let body = Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
-                        workspace_id: selection.workspace_id.clone(),
-                    });
-                    self.request(body, Operation::Claim(selection, open, run))
-                        .await?;
-                } else {
-                    self.select(selection, open, run).await?;
-                }
-            }
+            Action::Select(selection, open) => self.begin_select(selection, open, None).await?,
             Action::Create(target) => self.create(target).await?,
             Action::Close(target) if target.workspace_id != self.selected.workspace_id => {
                 self.request(
@@ -837,6 +830,76 @@ impl Client<'_> {
             }
         }
         Ok(())
+    }
+
+    async fn focus_from_board(&mut self, request: slot_board::FocusRequest) -> Result<()> {
+        let run = request.run;
+        let session = self.link.session();
+        if run.host_id != session.host_id || run.remote_epoch != session.server_epoch {
+            let _ = request.result.send(Err(
+                "The agent belongs to a different daemon session.".into()
+            ));
+            return Ok(());
+        }
+        let selection = {
+            let mut buffer = self.shared.buffer();
+            if buffer.ui.changing || self.pending.is_some() {
+                let _ = request
+                    .result
+                    .send(Err("Desktop is changing views. Try again.".into()));
+                return Ok(());
+            }
+            let selection = buffer
+                .ui
+                .inventory
+                .as_ref()
+                .filter(|_| buffer.ui.inventory_ready)
+                .and_then(|inventory| {
+                    inventory.agents.iter().find(|agent| {
+                        agent.agent_run_id == run.agent_run_id && agent.terminal_available
+                    })
+                })
+                .and_then(|agent| agent.location.clone());
+            let Some(selection) = selection else {
+                let _ = request
+                    .result
+                    .send(Err("The agent pane is no longer available.".into()));
+                return Ok(());
+            };
+            buffer.ui.changing = true;
+            selection
+        };
+        self.shared.ui_changed.send_replace(());
+        self.board_result = Some(request.result);
+        self.begin_select(selection, false, Some(run.agent_run_id))
+            .await
+    }
+
+    fn finish_board_focus(&mut self, result: Result<(), String>) {
+        if let Some(reply) = self.board_result.take() {
+            if result.is_ok() {
+                self.shared
+                    .update_ui(|ui| ui.board_focus = ui.board_focus.wrapping_add(1));
+            }
+            let _ = reply.send(result);
+        }
+    }
+
+    async fn begin_select(
+        &mut self,
+        selection: ViewSelection,
+        open: bool,
+        run: Option<String>,
+    ) -> Result<()> {
+        if selection.workspace_id != self.selected.workspace_id {
+            let body = Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
+                workspace_id: selection.workspace_id.clone(),
+            });
+            self.request(body, Operation::Claim(selection, open, run))
+                .await
+        } else {
+            self.select(selection, open, run).await
+        }
     }
 
     fn has_run(&self, run: &str, selection: &ViewSelection) -> bool {
@@ -1006,6 +1069,9 @@ impl Client<'_> {
                 } else if pending {
                     self.shared.update_ui(|ui| ui.changing = false);
                 }
+                if pending {
+                    self.finish_board_focus(Ok(()));
+                }
             }
             Body::WriterClaimed(claim) => {
                 let pending = self.pending.take().context("unsolicited writer claim")?;
@@ -1036,6 +1102,7 @@ impl Client<'_> {
                         ui.changing = false;
                         ui.message = "The selected agent has moved or ended.".into();
                     });
+                    self.finish_board_focus(Err("The selected agent has moved or ended.".into()));
                 }
             }
             Body::Error(error) => {
@@ -1054,11 +1121,15 @@ impl Client<'_> {
                 if matched {
                     self.pending = None;
                 }
+                let message = ProtocolFault::from_wire(&error).to_string();
+                if matched {
+                    self.finish_board_focus(Err(message.clone()));
+                }
                 self.shared.update_ui(|ui| {
                     if matched {
                         ui.changing = false;
                     }
-                    ui.message = ProtocolFault::from_wire(&error).to_string();
+                    ui.message = message;
                 });
             }
             Body::TerminalExited(exit) if exit.terminal_id == self.route.terminal_id => {

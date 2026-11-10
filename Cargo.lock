@@ -1566,7 +1566,6 @@ dependencies = [
  "clap",
  "corvid-client",
  "corvid-companion",
- "corvid-deck",
  "corvid-protocol",
  "corvid-tui",
  "glob",
@@ -1625,6 +1624,7 @@ dependencies = [
  "eframe",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

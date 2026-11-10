@@ -85,6 +85,8 @@ message Envelope {
     FocusViewAgent focus_view_agent = 113;
     ReadPanePreview read_pane_preview = 114;
     CloseView close_view = 115;
+    FocusDesktopAgent focus_desktop_agent = 116;
+    DesktopAgentFocused desktop_agent_focused = 117;
   }
 }
 
@@ -335,6 +337,13 @@ message PresentedRunKey {
   string remote_epoch = 2;
   string agent_run_id = 3;
 }
+
+// Used only over the anonymous pipes inherited by the Desktop-launched board.
+message FocusDesktopAgent {
+  PresentedRunKey run = 1;
+}
+
+message DesktopAgentFocused {}
 
 enum RunAvailability {
   RUN_AVAILABILITY_UNSPECIFIED = 0;

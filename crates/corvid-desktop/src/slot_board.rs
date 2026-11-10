@@ -5,15 +5,24 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use corvid_client::ControlEndpoint;
 use corvid_companion::{Config, HostEndpoint, PresentationAddress, PresentationClient};
-use corvid_protocol::COMMAND_TIMEOUT;
+use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{DesktopAgentFocused, Envelope, PresentedRunKey};
+use corvid_protocol::{
+    COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, ProtocolFault,
+};
 use tokio::process::Command;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 const DEFAULT_SLOT_COUNT: u32 = 8;
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
+
+pub(crate) struct FocusRequest {
+    pub run: PresentedRunKey,
+    pub result: oneshot::Sender<Result<(), String>>,
+}
 
 #[derive(Default)]
 pub(crate) struct Job {
@@ -22,11 +31,18 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    pub fn spawn(&mut self, settings: Settings, endpoint: ControlEndpoint, host: String) {
+    pub fn spawn(
+        &mut self,
+        settings: Settings,
+        endpoint: ControlEndpoint,
+        host: String,
+        focus: mpsc::Sender<FocusRequest>,
+    ) {
         let (close, closing) = oneshot::channel();
         self.close = Some(close);
-        self.tasks
-            .spawn(async move { open(settings, endpoint, Uuid::parse_str(&host)?, closing).await });
+        self.tasks.spawn(async move {
+            open(settings, endpoint, Uuid::parse_str(&host)?, closing, focus).await
+        });
     }
 
     pub async fn close(&mut self) {
@@ -59,6 +75,7 @@ async fn open(
     endpoint: ControlEndpoint,
     host: Uuid,
     closing: oneshot::Receiver<()>,
+    focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
     let executable = std::env::current_exe()?
         .parent()
@@ -67,7 +84,7 @@ async fn open(
         .join(format!("corvid-slot-board{}", std::env::consts::EXE_SUFFIX));
     ensure!(
         executable.is_file(),
-        "Slot Board is unavailable. Install its plugin beside Corvid Desktop."
+        "Agent Board is unavailable. Install its plugin beside Corvid Desktop."
     );
 
     let saved = match &endpoint {
@@ -81,7 +98,7 @@ async fn open(
     let (scope, config) = settings.scope(saved, host)?;
     if let Some(client) = PresentationClient::connect_if_present(&scope.address).await? {
         verify(client, &config).await?;
-        return show(&executable, &scope, &config, closing).await;
+        return show(&executable, &scope, &config, closing, focus).await;
     }
 
     let (stop, stopped) = oneshot::channel();
@@ -92,7 +109,7 @@ async fn open(
     let window = async {
         let client = wait_for_companion(&scope.address).await?;
         verify(client, &config).await?;
-        show(&executable, &scope, &config, closing).await
+        show(&executable, &scope, &config, closing, focus).await
     };
     tokio::pin!(companion, window);
     let result = tokio::select! {
@@ -126,7 +143,7 @@ impl Settings {
         let address = {
             let runtime = std::env::var_os("XDG_RUNTIME_DIR")
                 .filter(|path| !path.is_empty())
-                .context("set XDG_RUNTIME_DIR to open Slot Board")?;
+                .context("set XDG_RUNTIME_DIR to open Agent Board")?;
             let directory = if shared {
                 "corvid-companion".to_owned()
             } else {
@@ -147,14 +164,14 @@ fn prepare_state(state: &Path, endpoint: HostEndpoint, host: Uuid) -> Result<Con
                 Some(config) => config,
                 None => {
                     created?;
-                    anyhow::bail!("Slot Board companion configuration is missing");
+                    anyhow::bail!("Agent Board companion configuration is missing");
                 }
             }
         }
     };
     ensure!(
         config.host_id == host,
-        "Slot Board companion configuration belongs to a different host"
+        "Agent Board companion configuration belongs to a different host"
     );
     Ok(config)
 }
@@ -169,13 +186,13 @@ async fn wait_for_companion(address: &PresentationAddress) -> Result<Presentatio
         }
     })
     .await
-    .context("Slot Board companion did not start")?
+    .context("Agent Board companion did not start")?
 }
 
 async fn verify(mut client: PresentationClient, config: &Config) -> Result<()> {
     timeout(COMMAND_TIMEOUT, client.slots(Some(config)))
         .await
-        .context("Slot Board companion identity query timed out")??;
+        .context("Agent Board companion identity query timed out")??;
     Ok(())
 }
 
@@ -184,13 +201,15 @@ async fn show(
     scope: &Scope,
     config: &Config,
     mut closing: oneshot::Receiver<()>,
+    focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
     if !matches!(closing.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
         return Ok(());
     }
     let mut command = Command::new(executable);
     command
-        .env("CORVID_SLOT_BOARD_CLOSE_WITH_PARENT", "1")
+        .arg("--desktop-pid")
+        .arg(std::process::id().to_string())
         .arg("--host-id")
         .arg(config.host_id.to_string())
         .arg("--controller-id")
@@ -201,22 +220,73 @@ async fn show(
     command.arg("--socket-dir").arg(&scope.address);
     let mut child = command
         .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .context("opening Slot Board")?;
-    let lifetime = child
+        .context("opening Agent Board")?;
+    let mut input = child
         .stdin
         .take()
-        .context("missing Slot Board lifetime pipe")?;
+        .context("missing Agent Board reply pipe")?;
+    let output = child
+        .stdout
+        .take()
+        .context("missing Agent Board request pipe")?;
     let status = tokio::select! {
         status = child.wait() => status,
-        _ = &mut closing => {
-            drop(lifetime);
+        result = forward_focus(&mut input, output, focus) => {
+            result?;
+            drop(input);
             child.wait().await
-        }
+        },
+        _ = &mut closing => { drop(input); child.wait().await }
     }
-    .context("waiting for Slot Board")?;
-    ensure!(status.success(), "Slot Board exited with {status}");
+    .context("waiting for Agent Board")?;
+    ensure!(status.success(), "Agent Board exited with {status}");
+    Ok(())
+}
+
+async fn forward_focus(
+    input: &mut tokio::process::ChildStdin,
+    output: tokio::process::ChildStdout,
+    focus: mpsc::Sender<FocusRequest>,
+) -> Result<()> {
+    let mut writer = FrameWriter::start(input, FrameRole::StructuredOnly).await?;
+    let mut reader = FrameReader::start(output, FrameRole::StructuredOnly).await?;
+    while let Some(request) = reader.next_envelope().await? {
+        let id = request
+            .request_id
+            .context("Agent Board request has no ID")?;
+        ensure!(
+            request.protocol_major == PROTOCOL_MAJOR && Uuid::parse_str(&id).is_ok(),
+            "invalid Agent Board request header"
+        );
+        let Some(Body::FocusDesktopAgent(request)) = request.body else {
+            anyhow::bail!("unsupported Agent Board request");
+        };
+        let run = request.run.context("Agent Board request has no run")?;
+        let (result, done) = oneshot::channel();
+        if focus.send(FocusRequest { run, result }).await.is_err() {
+            return Ok(());
+        }
+        let Ok(outcome) = done.await else {
+            return Ok(());
+        };
+        let body = match outcome {
+            Ok(()) => Body::DesktopAgentFocused(DesktopAgentFocused {}),
+            Err(message) => {
+                Body::Error(ProtocolFault::new("FocusUnavailable", &message).into_wire())
+            }
+        };
+        writer
+            .envelope(&Envelope {
+                protocol_major: PROTOCOL_MAJOR,
+                request_id: Some(id),
+                body: Some(body),
+                ..Default::default()
+            })
+            .await?;
+    }
     Ok(())
 }
 

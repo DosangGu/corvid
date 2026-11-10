@@ -41,7 +41,6 @@ corvid-client = { path = "crates/corvid-client" }
 corvid-companion = { path = "crates/corvid-companion" }
 corvid-core = { path = "crates/corvid-core" }
 corvid-daemon = { path = "crates/corvid-daemon" }
-corvid-deck = { path = "spikes/deck", default-features = false }
 corvid-presentation = { path = "crates/corvid-presentation" }
 corvid-protocol = { path = "crates/corvid-protocol" }
 corvid-tui = { path = "crates/corvid-tui" }

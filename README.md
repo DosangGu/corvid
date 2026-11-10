@@ -3,7 +3,8 @@
 Corvid is a terminal multiplexer for coding agents. A daemon manages
 workspaces, tabs, and split panes and keeps shells running when clients detach.
 Corvid Desktop opens a local terminal and connects to remote hosts over SSH.
-Its Agent Deck shows observed Codex and Claude Code activity.
+Its Agent Board plugin shows observed Codex and Claude Code activity and opens
+the corresponding pane in Desktop.
 
 | Component | Supported platform |
 | --- | --- |

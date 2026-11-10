@@ -173,7 +173,7 @@ impl Snapshot {
         }))
     }
 
-    fn live_key<'a>(&self, run: &'a PresentedRun) -> Option<&'a PresentedRunKey> {
+    pub fn live_key<'a>(&self, run: &'a PresentedRun) -> Option<&'a PresentedRunKey> {
         let key = run.key.as_ref()?;
         self.check_key(key)?;
         if run.availability != RunAvailability::Available as i32

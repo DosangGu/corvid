@@ -15,7 +15,6 @@ anyhow.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
-corvid-deck.workspace = true
 corvid-protocol.workspace = true
 corvid-tui.workspace = true
 glob.workspace = true

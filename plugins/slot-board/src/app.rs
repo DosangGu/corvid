@@ -12,6 +12,8 @@ use uuid::Uuid;
 use corvid_presentation::ipc::{Command, Completion, DesktopClient, Display, Link};
 use corvid_presentation::model::Snapshot;
 
+use crate::parent::DesktopLink;
+
 pub(crate) fn configure(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
@@ -32,6 +34,7 @@ pub(crate) fn configure(ctx: &egui::Context) {
 
 pub(crate) struct Desktop {
     client: DesktopClient,
+    parent: Option<DesktopLink>,
     view: Display,
     binding: Option<PresentedBinding>,
     placement: Option<PresentedRunKey>,
@@ -52,9 +55,10 @@ enum Section {
 }
 
 impl Desktop {
-    pub(crate) fn new(client: DesktopClient) -> Self {
+    pub(crate) fn new(client: DesktopClient, parent: Option<DesktopLink>) -> Self {
         Self {
             client,
+            parent,
             view: Display::default(),
             binding: None,
             placement: None,
@@ -74,6 +78,13 @@ impl Desktop {
         {
             self.pending = None;
             self.notice = Some(completion.clone());
+        }
+        if let Some(parent) = &mut self.parent
+            && let Ok(completion) = parent.results.try_recv()
+            && self.pending == Some(completion.id)
+        {
+            self.pending = None;
+            self.notice = Some(completion);
         }
         match (&self.view.snapshot, &next.snapshot) {
             (Some(previous), Some(current))
@@ -151,7 +162,7 @@ impl Desktop {
 
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Corvid");
+            ui.heading("Agent Board");
             let text = connection_text(&self.view);
             ui.label(RichText::new(text).strong());
         });
@@ -184,9 +195,12 @@ impl Desktop {
                 }
                 _ => {}
             }
-            self.binding_picker(ui, &snapshot);
+            if self.parent.is_none() {
+                self.binding_picker(ui, &snapshot);
+            }
             #[cfg(windows)]
-            if snapshot.can_pair_wezterm
+            if self.parent.is_none()
+                && snapshot.can_pair_wezterm
                 && ui
                     .add_enabled(self.ready(&snapshot), egui::Button::new("Pair WezTerm…"))
                     .clicked()
@@ -270,17 +284,15 @@ impl Desktop {
             });
 
             if let Some(run) = &slot.run {
-                describe_run(
-                    ui,
-                    run,
-                    self.view.link != Link::Online || snapshot.generation().is_none(),
-                );
+                self.run(ui, snapshot, run);
                 ui.horizontal_wrapped(|ui| {
-                    let focus = self
-                        .binding
-                        .as_ref()
-                        .and_then(|binding| snapshot.focus(slot, binding));
-                    self.action(ui, snapshot, "Focus", focus);
+                    if self.parent.is_none() {
+                        let focus = self
+                            .binding
+                            .as_ref()
+                            .and_then(|binding| snapshot.focus(slot, binding));
+                        self.action(ui, snapshot, "Focus", focus);
+                    }
                     if run.latest_unseen_attention_id.is_some() {
                         self.action(ui, snapshot, "Acknowledge alert", snapshot.acknowledge(run));
                     }
@@ -342,11 +354,7 @@ impl Desktop {
         for (index, run) in snapshot.data.overflow.iter().enumerate() {
             ui.push_id(("overflow", index), |ui| {
                 ui.separator();
-                describe_run(
-                    ui,
-                    run,
-                    self.view.link != Link::Online || snapshot.generation().is_none(),
-                );
+                self.run(ui, snapshot, run);
                 ui.horizontal_wrapped(|ui| {
                     if let Some(key) = run.key.as_ref().filter(|key| snapshot.can_place(key))
                         && ui
@@ -390,6 +398,31 @@ impl Desktop {
             self.submit(snapshot, body);
         }
     }
+
+    fn run(&mut self, ui: &mut Ui, snapshot: &Snapshot, run: &PresentedRun) {
+        let key = snapshot.live_key(run);
+        let focus = self
+            .parent
+            .as_ref()
+            .map(|_| key.is_some() && self.ready(snapshot));
+        let cached = self.view.link != Link::Online || snapshot.generation().is_none();
+        if describe_run(ui, run, cached, focus)
+            && let (Some(parent), Some(key)) = (&self.parent, key)
+        {
+            let id = Uuid::new_v4();
+            if parent.focus(id, key.clone()) {
+                self.pending = Some(id);
+                self.notice = None;
+            } else {
+                self.notice = Some(Completion {
+                    id,
+                    message: "Could not send the action to Desktop.".into(),
+                    failed: true,
+                    paired: None,
+                });
+            }
+        }
+    }
 }
 
 impl eframe::App for Desktop {
@@ -409,13 +442,15 @@ impl eframe::App for Desktop {
             .frame(panel)
             .show(ctx, |ui| {
                 if self.pending.is_some() {
-                    ui.label("Waiting for the companion…");
+                    ui.label("Waiting for the action…");
                 } else if let Some(notice) = &self.notice {
                     let mut text = RichText::new(&notice.message);
                     if notice.failed {
                         text = text.color(ui.visuals().error_fg_color);
                     }
                     ui.label(text);
+                } else if self.parent.is_some() {
+                    ui.weak("Click an agent to open its pane in Desktop.");
                 } else {
                     ui.weak("Select a paired terminal to focus a slot.");
                 }
@@ -472,18 +507,28 @@ fn ended(ui: &mut Ui, snapshot: &Snapshot) {
     }
 }
 
-fn describe_run(ui: &mut Ui, run: &PresentedRun, cached: bool) {
+fn describe_run(ui: &mut Ui, run: &PresentedRun, cached: bool, focus: Option<bool>) -> bool {
     let provider = match AgentProvider::try_from(run.provider) {
         Ok(AgentProvider::Claude) => "Claude Code",
         Ok(AgentProvider::Codex) => "Codex CLI",
         _ => "Unknown provider",
     };
-    ui.horizontal_wrapped(|ui| {
-        ui.strong(provider);
-        if let Some(key) = &run.key {
-            ui.monospace(short_id(&key.agent_run_id));
-        }
-    });
+    let clicked = ui
+        .horizontal_wrapped(|ui| {
+            let clicked = if let Some(enabled) = focus {
+                ui.add_enabled(enabled, egui::Button::new(RichText::new(provider).strong()))
+                    .on_hover_text("Open pane in Corvid Desktop")
+                    .clicked()
+            } else {
+                ui.strong(provider);
+                false
+            };
+            if let Some(key) = &run.key {
+                ui.monospace(short_id(&key.agent_run_id));
+            }
+            clicked
+        })
+        .inner;
 
     let availability = RunAvailability::try_from(run.availability).ok();
     let last_known = cached || availability != Some(RunAvailability::Available);
@@ -513,6 +558,7 @@ fn describe_run(ui: &mut Ui, run: &PresentedRun, cached: bool) {
             ui.label(format!("{} unseen", run.unseen_attention));
         }
     });
+    clicked
 }
 
 fn observation_age(observed_unix_ms: u64) -> Option<String> {
