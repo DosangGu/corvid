@@ -45,8 +45,12 @@ Host work-host
     User corvid-user
 ```
 
-Open `corvid-desktop.exe`, enter the alias, and click **Connect**. You can also
-launch it with `--ssh-alias work-host` or use `corvid companion open work-host`.
+Open `corvid-desktop.exe` and click an alias in **SSH Hosts** to connect.
+The list shows concrete `Host` aliases from `%USERPROFILE%\.ssh\config`
+and static, unconditional `Include` files. Use **Refresh** after editing the
+config, or enter an alias manually. While attached, open **SSH Hosts** in the
+toolbar and select another machine to switch the Desktop connection.
+You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
 Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
 The initial attach joins a live pane in the default session or opens its shell.

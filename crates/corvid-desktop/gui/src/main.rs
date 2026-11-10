@@ -1,6 +1,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod ssh_hosts;
+#[cfg(windows)]
 mod terminal_paint;
 #[cfg(windows)]
 mod terminal_session;

@@ -20,10 +20,14 @@ corvid-client = { path = "../../corvid-client" }
 corvid-companion = { path = "../../corvid-companion" }
 corvid-deck = { path = "../../../spikes/deck" }
 corvid-protocol = { path = "../../corvid-protocol" }
+glob = "0.3"
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
 tokio = { version = "=1.53.3", features = ["rt", "sync", "time"] }
 uuid = { version = "1.29", features = ["v4"] }
 vt100 = { version = "=0.18.1", default-features = false }
+
+[target.'cfg(windows)'.dev-dependencies]
+tempfile = "3.27"
 
 [profile.dev]
 debug = 0

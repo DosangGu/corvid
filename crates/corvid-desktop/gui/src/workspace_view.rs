@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use corvid_client::SshAlias;
 use corvid_deck::icons::icon;
@@ -15,6 +16,7 @@ use gpui::{
     Stateful, Task, Window, div, prelude::*, px, rgb,
 };
 
+use crate::ssh_hosts;
 use crate::terminal_session::{Inventory, Job, Session, Ui};
 use crate::terminal_view::{TerminalView, preview};
 
@@ -59,14 +61,25 @@ pub struct WorkspaceView {
     alias: String,
     configured: Option<(String, String)>,
     setup_focus: FocusHandle,
+    hosts: std::io::Result<Vec<SshAlias>>,
+    host_scan: Option<Task<()>>,
+    host_switch: Option<Task<()>>,
     session: Option<Session>,
+    session_alias: Option<SshAlias>,
     terminal: Option<Entity<TerminalView>>,
     selected: Option<ViewSelection>,
     preferred_tabs: HashMap<String, String>,
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
     error: Option<String>,
-    show_deck: bool,
+    surface: Surface,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    Hosts,
+    Terminal,
+    Deck,
 }
 
 impl WorkspaceView {
@@ -87,23 +100,107 @@ impl WorkspaceView {
             alias,
             configured,
             setup_focus,
+            hosts: Ok(Vec::new()),
+            host_scan: None,
+            host_switch: None,
             session: None,
+            session_alias: None,
             terminal: None,
             selected: None,
             preferred_tabs: HashMap::new(),
             preferred_panes: HashMap::new(),
             updates: None,
             error: None,
-            show_deck: false,
+            surface: Surface::Hosts,
         };
+        view.refresh_hosts(cx);
         if !view.alias.is_empty() {
-            view.connect(None, window, cx);
+            view.connect_host(view.alias.clone(), window, cx);
         }
         view
     }
 
+    fn refresh_hosts(&mut self, cx: &mut Context<Self>) {
+        if self.host_scan.is_some() {
+            return;
+        }
+        let scan = cx.background_executor().spawn(async { ssh_hosts::load() });
+        self.host_scan = Some(cx.spawn(async move |view, cx| {
+            let hosts = scan.await;
+            let _ = view.update(cx, |view, cx| {
+                view.hosts = hosts;
+                view.host_scan = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn connecting(&self, ui: Option<&Ui>) -> bool {
+        self.host_switch.is_some() || ui.is_some_and(|ui| !ui.connected && ui.changing)
+    }
+
+    fn showing_hosts(&self, ui: Option<&Ui>) -> bool {
+        self.surface == Surface::Hosts
+            || (self.surface == Surface::Terminal
+                && ui.is_none_or(|ui| !ui.connected && ui.inventory.is_none()))
+    }
+
+    fn connect_host(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let ui = self.session.as_ref().map(Session::ui);
+        if self.connecting(ui.as_ref()) {
+            return;
+        }
+        let alias = match SshAlias::new(name) {
+            Ok(alias) => alias,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        self.alias = alias.as_str().to_owned();
+        self.error = None;
+        if ui.is_some_and(|ui| ui.connected)
+            && self
+                .session_alias
+                .as_ref()
+                .is_some_and(|current| current.as_str() == alias.as_str())
+        {
+            self.surface = Surface::Terminal;
+            self.focus_terminal(window, cx);
+            cx.notify();
+        } else if self.lifetime.available() {
+            self.connect(alias, None, window, cx);
+        } else {
+            self.lifetime.stop();
+            self.host_switch = Some(cx.spawn_in(window, async move |view, cx| {
+                loop {
+                    let finished = view
+                        .update_in(cx, |view, window, cx| {
+                            if !view.lifetime.available() {
+                                return false;
+                            }
+                            view.host_switch = None;
+                            view.connect(alias.clone(), None, window, cx);
+                            true
+                        })
+                        .unwrap_or(true);
+                    if finished {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(25))
+                        .await;
+                }
+            }));
+            cx.notify();
+        }
+    }
+
     fn connect(
         &mut self,
+        alias: SshAlias,
         selection: Option<(ViewSelection, bool)>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -114,10 +211,9 @@ impl WorkspaceView {
         let expected_host = self
             .configured
             .as_ref()
-            .filter(|(alias, _)| alias == &self.alias)
+            .filter(|(name, _)| name == alias.as_str())
             .map(|(_, host)| host.clone());
-        let result = SshAlias::new(self.alias.clone())
-            .and_then(|alias| Session::start(alias, expected_host, selection));
+        let result = Session::start(alias.clone(), expected_host, selection);
         let (session, job) = match result {
             Ok(connection) => connection,
             Err(error) => {
@@ -130,7 +226,16 @@ impl WorkspaceView {
         self.error = None;
         self.terminal = None;
         self.selected = None;
-        self.show_deck = false;
+        self.surface = Surface::Terminal;
+        if self
+            .session_alias
+            .as_ref()
+            .is_some_and(|current| current.as_str() != alias.as_str())
+        {
+            self.preferred_tabs.clear();
+            self.preferred_panes.clear();
+        }
+        self.session_alias = Some(alias);
         let mut changes = session.changes();
         self.session = Some(session);
         self.updates = Some(cx.spawn_in(window, async move |view, cx| {
@@ -164,7 +269,7 @@ impl WorkspaceView {
             let session = session.clone();
             self.selected = Some(selected);
             self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, cx)));
-            if !self.show_deck {
+            if self.surface == Surface::Terminal {
                 self.focus_terminal(window, cx);
             }
         }
@@ -188,14 +293,16 @@ impl WorkspaceView {
         if let Some(session) = &self.session {
             if session.ui().connected {
                 session.select(target, open, run);
-                self.show_deck = false;
+                self.surface = Surface::Terminal;
                 self.focus_terminal(window, cx);
                 cx.notify();
                 return;
             }
         }
-        if run.is_none() {
-            self.connect(Some((target, open)), window, cx);
+        if run.is_none()
+            && let Some(alias) = self.session_alias.clone()
+        {
+            self.connect(alias, Some((target, open)), window, cx);
         }
     }
 
@@ -245,12 +352,12 @@ impl WorkspaceView {
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;
         let ui = self.session.as_ref().map(Session::ui);
-        if !ui.as_ref().is_some_and(|ui| ui.connected) {
-            if ui.as_ref().is_some_and(|ui| ui.changing) {
+        if self.showing_hosts(ui.as_ref()) {
+            if self.connecting(ui.as_ref()) {
                 return;
             }
             if key.key == "enter" {
-                self.connect(None, window, cx);
+                self.connect_host(self.alias.clone(), window, cx);
             } else if key.key == "backspace" {
                 self.alias.pop();
             } else if key.modifiers.control && key.key == "v" {
@@ -270,6 +377,9 @@ impl WorkspaceView {
             }
             cx.notify();
             cx.stop_propagation();
+            return;
+        }
+        if !ui.as_ref().is_some_and(|ui| ui.connected) {
             return;
         }
         let modifiers = key.modifiers;
@@ -321,7 +431,7 @@ impl WorkspaceView {
         cx.stop_propagation();
     }
 
-    fn toolbar(&self, connected: bool, cx: &mut Context<Self>) -> Div {
+    fn toolbar(&self, connected: bool, showing_hosts: bool, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .items_center()
@@ -330,41 +440,35 @@ impl WorkspaceView {
             .bg(rgb(PANEL))
             .child(div().flex_1().text_color(rgb(TEXT)).child("Corvid Desktop"))
             .child(
-                button("terminal-mode", "Terminal", !self.show_deck).on_click(cx.listener(
+                button("ssh-hosts", "SSH Hosts", showing_hosts).on_click(cx.listener(
                     |view, _, window, cx| {
-                        view.show_deck = false;
-                        view.focus_terminal(window, cx);
+                        view.surface = Surface::Hosts;
+                        window.focus(&view.setup_focus);
+                        view.refresh_hosts(cx);
                         cx.notify();
                     },
                 )),
             )
             .child(
-                button("agent-deck", "Agent Deck", self.show_deck).on_click(cx.listener(
-                    |view, _, window, cx| {
-                        view.show_deck = true;
+                button(
+                    "terminal-mode",
+                    "Terminal",
+                    self.surface == Surface::Terminal && !showing_hosts,
+                )
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.surface = Surface::Terminal;
+                    view.focus_terminal(window, cx);
+                    cx.notify();
+                })),
+            )
+            .child(
+                button("agent-deck", "Agent Deck", self.surface == Surface::Deck).on_click(
+                    cx.listener(|view, _, window, cx| {
+                        view.surface = Surface::Deck;
                         window.focus(&view.setup_focus);
                         cx.notify();
-                    },
-                )),
-            )
-            .when(
-                !connected
-                    && self
-                        .session
-                        .as_ref()
-                        .is_some_and(|session| !session.ui().changing),
-                |bar| {
-                    bar.child(button("connection-settings", "Connect…", false).on_click(
-                        cx.listener(|view, _, window, cx| {
-                            view.session = None;
-                            view.terminal = None;
-                            view.updates = None;
-                            view.show_deck = false;
-                            window.focus(&view.setup_focus);
-                            cx.notify();
-                        }),
-                    ))
-                },
+                    }),
+                ),
             )
             .when(connected, |bar| {
                 bar.child(button("detach", "Detach", false).on_click(cx.listener(
@@ -378,32 +482,45 @@ impl WorkspaceView {
     }
 
     fn setup(&self, ui: Option<&Ui>, cx: &mut Context<Self>) -> Div {
-        let changing = ui.is_some_and(|ui| ui.changing);
-        let message = self
-            .error
-            .as_deref()
-            .or_else(|| ui.map(|ui| ui.message.as_str()))
-            .unwrap_or("Connect to a running Corvid daemon on a Linux host.");
+        let changing = self.connecting(ui);
+        let message = if changing {
+            let name = if self.host_switch.is_some() {
+                self.alias.as_str()
+            } else {
+                self.session_alias
+                    .as_ref()
+                    .map_or(self.alias.as_str(), SshAlias::as_str)
+            };
+            format!("Connecting to {name}…")
+        } else {
+            self.error
+                .as_deref()
+                .or_else(|| ui.filter(|ui| !ui.connected).map(|ui| ui.message.as_str()))
+                .unwrap_or("Choose a host to attach to its Corvid daemon.")
+                .to_owned()
+        };
         div()
             .flex()
             .flex_col()
             .flex_1()
             .items_center()
             .justify_center()
+            .min_h_0()
             .gap(px(14.))
             .child(
                 div()
                     .text_color(rgb(TEXT))
                     .text_size(px(22.))
-                    .child("Corvid daemon"),
+                    .child("SSH Hosts"),
             )
             .child(
                 div()
                     .max_w(px(650.))
                     .text_center()
                     .text_color(rgb(MUTED))
-                    .child(message.to_owned()),
+                    .child(message),
             )
+            .child(self.host_list(ui, changing, cx))
             .child(
                 div()
                     .flex()
@@ -434,11 +551,102 @@ impl WorkspaceView {
                             if changing { "Connecting…" } else { "Connect" },
                             true,
                         )
-                        .on_click(
-                            cx.listener(|view, _, window, cx| view.connect(None, window, cx)),
-                        ),
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.connect_host(view.alias.clone(), window, cx)
+                        })),
                     ),
             )
+    }
+
+    fn host_list(&self, ui: Option<&Ui>, changing: bool, cx: &mut Context<Self>) -> Div {
+        let connected = self
+            .session_alias
+            .as_ref()
+            .filter(|_| ui.is_some_and(|ui| ui.connected));
+        let note = if self.host_scan.is_some() {
+            Some("Reading SSH configuration…")
+        } else {
+            match &self.hosts {
+                Err(_) => Some("Could not read the SSH configuration. Enter an alias below."),
+                Ok(hosts) if hosts.is_empty() => Some("No SSH hosts found. Enter an alias below."),
+                Ok(_) => None,
+            }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(5.))
+            .w(px(535.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(MUTED))
+                            .child("~/.ssh/config"),
+                    )
+                    .child(
+                        button("refresh-ssh-hosts", "Refresh", false)
+                            .on_click(cx.listener(|view, _, _, cx| view.refresh_hosts(cx))),
+                    ),
+            )
+            .when_some(note, |list, message| {
+                list.child(
+                    div()
+                        .p(px(10.))
+                        .rounded_md()
+                        .bg(rgb(PANEL))
+                        .text_size(px(13.))
+                        .text_color(rgb(MUTED))
+                        .child(message),
+                )
+            })
+            .when(note.is_none(), |list| {
+                list.child(
+                    div()
+                        .id("ssh-host-list")
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .max_h(px(246.))
+                        .overflow_y_scroll()
+                        .children(self.hosts.as_ref().into_iter().flatten().map(|alias| {
+                            let name = alias.as_str().to_owned();
+                            let current =
+                                connected.is_some_and(|connected| connected.as_str() == name);
+                            div()
+                                .id(SharedString::from(format!("ssh-host-{name}")))
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(8.))
+                                .px(px(12.))
+                                .py(px(8.))
+                                .rounded_md()
+                                .bg(rgb(if current { ACTIVE_FILL } else { PANEL }))
+                                .text_color(rgb(TEXT))
+                                .text_size(px(13.))
+                                .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(12.))
+                                        .text_color(rgb(if current { ACTIVE } else { MUTED }))
+                                        .child(if current { "Connected" } else { "Connect ›" }),
+                                )
+                                .when(!changing, |row| {
+                                    row.cursor_pointer()
+                                        .hover(|style| style.bg(rgb(ACTIVE_FILL)))
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.connect_host(name.clone(), window, cx)
+                                        }))
+                                })
+                        })),
+                )
+            })
     }
 
     fn sessions(&self, inventory: &Inventory, ui: &Ui, cx: &mut Context<Self>) -> Div {
@@ -808,7 +1016,10 @@ impl Render for WorkspaceView {
         let connected = ui.as_ref().is_some_and(|ui| ui.connected);
         let inventory_ready = ui.as_ref().is_some_and(|ui| ui.inventory_ready);
         let inventory: Option<&Arc<Inventory>> = ui.as_ref().and_then(|ui| ui.inventory.as_ref());
-        let content = if self.show_deck {
+        let showing_hosts = self.showing_hosts(ui.as_ref());
+        let content = if showing_hosts {
+            self.setup(ui.as_ref(), cx).into_any_element()
+        } else if self.surface == Surface::Deck {
             self.agent_deck(inventory.map(AsRef::as_ref), inventory_ready, cx)
                 .into_any_element()
         } else if let Some((ui, inventory)) = ui.as_ref().zip(inventory) {
@@ -820,7 +1031,7 @@ impl Render for WorkspaceView {
                 .children(self.terminal.iter().cloned())
                 .into_any_element()
         } else {
-            self.setup(ui.as_ref(), cx).into_any_element()
+            div().flex_1().into_any_element()
         };
         div()
             .id("corvid-workspace")
@@ -830,7 +1041,7 @@ impl Render for WorkspaceView {
             .flex_col()
             .size_full()
             .bg(rgb(BACKGROUND))
-            .child(self.toolbar(connected, cx))
+            .child(self.toolbar(connected, showing_hosts, cx))
             .child(content)
             .when_some(ui, |region, ui| {
                 region.child(
