@@ -3,9 +3,12 @@ mod keys;
 mod paste;
 mod pty;
 mod screen;
+mod status;
+mod tabs;
 mod worker;
 
 pub(crate) use keys::{InputMode, Keymap, TabCommand};
 pub use pty::TerminalPty;
 pub use screen::TerminalScreen;
+pub(crate) use status::TuiViewport;
 pub(crate) use worker::{Action, AttachSpec, Event, Launch, LaunchScope, Render, TerminalHandle};

@@ -99,6 +99,19 @@ impl MetadataView {
             SaveState::Failed
         }
     }
+
+    pub(crate) async fn wait_saved(&mut self) -> bool {
+        loop {
+            match self.save_state() {
+                SaveState::Saved => return true,
+                SaveState::Failed => return false,
+                SaveState::Pending => {}
+            }
+            if self.saved.changed().await.is_err() {
+                return false;
+            }
+        }
+    }
 }
 
 #[derive(Clone)]

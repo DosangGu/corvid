@@ -26,6 +26,7 @@ pub enum SocketRole {
     Control,
     Collector,
     Presentation,
+    Upgrade,
 }
 
 impl SocketRole {
@@ -35,6 +36,7 @@ impl SocketRole {
             Self::Control => "control.sock",
             Self::Collector => "collector.sock",
             Self::Presentation => "companion.sock",
+            Self::Upgrade => "upgrade.sock",
         }
     }
 }

@@ -224,7 +224,7 @@ def check_working_ssh(ssh, command, directory):
     attach = [*command, "attach"]
     start = [*attach, "--", sys.executable, str(fixture), "--child", str(progress)]
     with OuterTerminal([*ssh, "-tt", shlex.join(start)]) as first:
-        ready = first.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x24")
+        ready = first.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x23")
         pid = ready[1]
         first.send(b"a")
         first.expect("한글 e\u0301".encode())
@@ -237,13 +237,13 @@ def check_working_ssh(ssh, command, directory):
 
     remote = [*ssh, "-tt", shlex.join(attach)]
     with OuterTerminal(remote) as second:
-        assert second.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x24")[1] == pid
+        assert second.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x23")[1] == pid
         second.process.kill()
         second.process.wait(timeout=3)
     progress_during_disconnect(progress)
 
     with OuterTerminal(remote) as third:
-        assert third.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x24")[1] == pid
+        assert third.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x23")[1] == pid
         third.expect("한글 e\u0301".encode())
         third.send(b"q")
         third.expect(b"TERMINAL-EXIT")

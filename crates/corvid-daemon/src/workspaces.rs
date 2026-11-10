@@ -32,6 +32,7 @@ use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
 use crate::terminal::{
     AttachSpec, Event, InputMode, Keymap, Launch, LaunchScope, TabCommand, TerminalHandle,
+    TuiViewport,
 };
 
 pub(crate) use controllers::ControllerCommand;
@@ -51,13 +52,13 @@ pub(crate) struct AttachTarget {
     pub(crate) new_workspace: Option<String>,
     pub(crate) new_tab: Option<String>,
     pub(crate) keymap: Keymap,
-    pub(crate) viewport: Viewport,
+    pub(crate) viewport: TuiViewport,
     pub(crate) launch: Option<Launch>,
 }
 
 pub(crate) struct Active {
     pub(crate) location: Location,
-    pub(crate) viewport: Viewport,
+    pub(crate) viewport: TuiViewport,
     pub(crate) route: InputRoute,
     pub(crate) terminal: TerminalHandle,
     pub(crate) events: mpsc::Receiver<Event>,
@@ -234,6 +235,15 @@ impl Workspaces {
         (terminal_live, collector)
     }
 
+    pub(crate) fn is_idle(&self) -> bool {
+        let mut registry = self.lock_registry();
+        registry.sweep();
+        registry.clients.is_empty()
+            && registry.claims.is_empty()
+            && registry.slots.is_empty()
+            && registry.retired.is_empty()
+    }
+
     pub(crate) async fn attach(
         &self,
         client: Uuid,
@@ -244,6 +254,7 @@ impl Workspaces {
         let (location, generation, terminal) = self.reserve(client, &mut target)?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
+            location,
             client_id: client,
             generation,
             lease_generation: generation,
@@ -262,7 +273,11 @@ impl Workspaces {
         }
         match opened {
             Ok(active) => {
-                registry.resize_hidden(client, active.viewport, Some(active.location.pane));
+                registry.resize_hidden(
+                    client,
+                    active.viewport.content(),
+                    Some(active.location.pane),
+                );
                 registry.clients.insert(
                     client,
                     Client {
@@ -390,7 +405,7 @@ impl Workspaces {
         let mut registry = self.lock_registry();
         registry.resize_hidden(
             active.route.client_id,
-            active.viewport,
+            active.viewport.content(),
             Some(active.location.pane),
         );
         registry.record_view(active);
@@ -498,6 +513,7 @@ impl Workspaces {
         let terminal = self.reserve_slot(registry, location, launch.is_some())?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
+            location,
             client_id: old.route.client_id,
             generation: old.route.connection_generation,
             lease_generation,
@@ -557,6 +573,7 @@ impl Workspaces {
         }
         let scope = LaunchScope {
             location,
+            metadata: self.metadata.clone(),
             registry: Arc::downgrade(&self.registry),
             boot_id: self.boot_id,
             probes: Arc::clone(&self.probes),
@@ -673,7 +690,7 @@ impl Registry {
             .then_some(ClientView {
                 route,
                 location: active.location,
-                viewport: active.viewport,
+                viewport: active.viewport.outer,
                 input_mode: InputMode::Passthrough,
             });
         if let Some(client) = self.clients.get_mut(&route.client_id)
@@ -783,6 +800,13 @@ impl Registry {
             return Err(busy());
         }
         Ok(())
+    }
+
+    pub(crate) fn live_tab(&self, layout: &Layout, workspace: Uuid, tab: Uuid) -> Option<Location> {
+        layout
+            .panes(workspace, tab)
+            .into_iter()
+            .find(|pane| self.has_live_at(*pane))
     }
 
     fn require_writer(&self, client: Uuid, workspace: Uuid) -> Reply<u64> {
@@ -908,9 +932,9 @@ fn resolve_switch(
                 .find(|pane| registry.has_live_at(*pane))
                 .map(|pane| (pane, None)))
         }
-        Destination::Tab(command) => {
-            Ok(cycle(registry, layout, old.location, command).map(|location| (location, None)))
-        }
+        Destination::Tab(command) => Ok(
+            select_tab(registry, layout, old.location, command).map(|location| (location, None))
+        ),
         creation => {
             let mut launch = new_shell();
             prepare_cwd(layout, old.location, Some(&mut launch))?;
@@ -936,7 +960,7 @@ fn new_shell() -> Launch {
     }
 }
 
-fn cycle(
+fn select_tab(
     registry: &Registry,
     layout: &Layout,
     old: Location,
@@ -946,18 +970,24 @@ fn cycle(
         .workspaces
         .iter()
         .find(|item| item.id == old.workspace)?;
+    match command {
+        TabCommand::Index(index) => {
+            return registry.live_tab(layout, old.workspace, workspace.tabs.get(index)?.id);
+        }
+        TabCommand::Select(tab) => return registry.live_tab(layout, old.workspace, tab),
+        TabCommand::Next | TabCommand::Previous => {}
+        TabCommand::Create | TabCommand::Split(_) | TabCommand::NextPane => return None,
+    }
+
     let index = workspace.tabs.iter().position(|tab| tab.id == old.tab)?;
     let len = workspace.tabs.len();
     (1..len).find_map(|offset| {
-        let index = match command {
-            TabCommand::Next => (index + offset) % len,
-            TabCommand::Previous => (index + len - offset) % len,
-            TabCommand::Create | TabCommand::Split(_) | TabCommand::NextPane => return None,
+        let index = if matches!(command, TabCommand::Next) {
+            (index + offset) % len
+        } else {
+            (index + len - offset) % len
         };
-        layout
-            .panes(old.workspace, workspace.tabs[index].id)
-            .into_iter()
-            .find(|pane| registry.has_live_at(*pane))
+        registry.live_tab(layout, old.workspace, workspace.tabs[index].id)
     })
 }
 

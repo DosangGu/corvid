@@ -357,7 +357,7 @@ mod tests {
     use crate::identity::Identity;
     use crate::metadata::MetadataUpdates;
     use crate::process::{self, ProcessImage};
-    use crate::terminal::{Action, Event, Keymap, Launch};
+    use crate::terminal::{Action, Event, Keymap, Launch, TuiViewport};
     use crate::workspaces::{AttachTarget, ControllerCommand};
 
     fn workspaces() -> Workspaces {
@@ -391,7 +391,10 @@ mod tests {
                     new_workspace: None,
                     new_tab: tab.map(str::to_owned),
                     keymap: Keymap::default(),
-                    viewport: Viewport::new(80, 24).unwrap(),
+                    viewport: TuiViewport {
+                        outer: Viewport::new(80, 24).unwrap(),
+                        status_bar: false,
+                    },
                     launch: Some(Launch {
                         argv: ["/bin/sleep", "30"].map(OsString::from).to_vec(),
                         cwd: None,

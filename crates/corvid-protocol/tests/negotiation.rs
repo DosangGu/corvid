@@ -2,7 +2,7 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     Attach, AttachRole, CollectHook, FocusAgentRequest, FocusSlot, GetCapabilities,
     GetPresentationSlots, InputChunk, ListHosts, Ping, ProviderAdapter, ProviderExecutionMode,
-    ProviderProfile,
+    ProviderProfile, UpgradeDaemon,
 };
 use corvid_protocol::{
     PeerRole, accept_hello, accept_hello_with_profiles, check_hello_result, decode_envelope, hello,
@@ -185,6 +185,28 @@ fn control_session_cannot_attach_or_submit_input() {
         session.validate_request(&input).unwrap_err().code,
         "UnsupportedCapability"
     );
+}
+
+#[test]
+fn only_the_local_upgrade_role_accepts_daemon_upgrade() {
+    let request = hello("hello".into(), Some("controller".into()), vec![]);
+    for role in [
+        PeerRole::Upgrade,
+        PeerRole::Control,
+        PeerRole::Tui,
+        PeerRole::Collector,
+        PeerRole::Presentation,
+    ] {
+        let (session, _) = accept_hello(&request, role, "host", "epoch", &[]).unwrap();
+        let request = session.envelope(
+            Some("upgrade".into()),
+            Body::UpgradeDaemon(UpgradeDaemon {}),
+        );
+        assert_eq!(
+            session.validate_request(&request).is_ok(),
+            role == PeerRole::Upgrade
+        );
+    }
 }
 
 #[test]

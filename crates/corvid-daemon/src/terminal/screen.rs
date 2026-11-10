@@ -100,7 +100,7 @@ impl TerminalScreen {
     }
 
     pub fn redraw(&self, outer: Viewport) -> Result<String> {
-        self.render_frame(None, self.bracketed_paste(), outer)
+        self.render_frame(None, self.bracketed_paste(), outer, None)
     }
 
     pub(crate) fn viewport(&self) -> Viewport {
@@ -116,8 +116,13 @@ impl TerminalScreen {
         self.parser.screen().clone()
     }
 
-    pub(crate) fn render(&self, previous: Option<&Screen>, outer: Viewport) -> Result<String> {
-        self.render_frame(previous, true, outer)
+    pub(crate) fn render(
+        &self,
+        previous: Option<&Screen>,
+        outer: Viewport,
+        footer: Option<(u16, &str)>,
+    ) -> Result<String> {
+        self.render_frame(previous, true, outer, footer)
     }
 
     fn render_frame(
@@ -125,6 +130,7 @@ impl TerminalScreen {
         previous: Option<&Screen>,
         outer_paste: bool,
         outer: Viewport,
+        footer: Option<(u16, &str)>,
     ) -> Result<String> {
         let screen = self.parser.screen();
         let (rows, cols) = screen.size();
@@ -145,11 +151,19 @@ impl TerminalScreen {
             frame.push_str(&screen.contents_formatted());
         }
 
+        if let Some((row, ansi)) = footer {
+            write!(frame, "\x1b[?7l\x1b[{row};1H{ansi}\x1b[0m\x1b[?7h")?;
+        }
         if clipped_width {
             let (row, col) = screen.cursor_position();
             let col = (col + 1).min(cols.get());
             let visibility = if screen.hide_cursor() { 'l' } else { 'h' };
             write!(frame, "\x1b[{};{col}H\x1b[?25{visibility}", row + 1)?;
+        } else if footer.is_some() {
+            // Redrawing the rightmost cell also restores a pending wrap.
+            frame.push_str(&screen.cursor_state_formatted());
+        }
+        if clipped_width || footer.is_some() {
             frame.push_str(&screen.attributes_formatted());
         }
 
@@ -261,15 +275,53 @@ mod tests {
     }
 
     #[test]
+    fn status_row_preserves_pending_wrap_and_drawing_attributes() {
+        let mut inner = terminal(12, 4);
+        inner
+            .process(b"\x1b[?1049h\x1b[31m\x1b[4;1Habcdefghijkl")
+            .unwrap();
+        let mut outer = terminal(12, 5);
+        let viewport = Viewport::new(12, 5).unwrap();
+        let footer = (5, "\x1b[0;30;46m\x1b[2KCORVID");
+        let full = inner.render(None, viewport, Some(footer)).unwrap();
+        outer.process(full.as_bytes()).unwrap();
+        assert_eq!(
+            outer.snapshot().cursor_position(),
+            inner.snapshot().cursor_position()
+        );
+        assert_eq!(outer.snapshot().fgcolor(), Color::Idx(1));
+
+        let previous = inner.snapshot();
+        inner.process(b"Z").unwrap();
+        let diff = inner.render(Some(&previous), viewport, None).unwrap();
+        outer.process(diff.as_bytes()).unwrap();
+        let content = inner.snapshot();
+        let composed = outer.snapshot();
+        for row in 0..4 {
+            for col in 0..12 {
+                assert_eq!(
+                    composed.cell(row, col),
+                    content.cell(row, col),
+                    "cell {row},{col}"
+                );
+            }
+        }
+        assert_eq!(composed.cell(4, 0).unwrap().contents(), "C");
+        assert_eq!(composed.cell(4, 11).unwrap().bgcolor(), Color::Idx(6));
+        assert_eq!(composed.cursor_position(), content.cursor_position());
+    }
+
+    #[test]
     fn renders_wrapped_rows_and_diffs_inside_a_larger_outer_tty() {
         let viewport = Viewport::new(12, 8).unwrap();
         let mut inner = terminal(8, 4);
         let mut outer = terminal(12, 8);
+        let footer = (8, "\x1b[0;30;46m\x1b[2KCORVID");
         outer.process(b"\x1b[6;1Hstale\x1b[1;9Hstale").unwrap();
         inner
             .process(b"\x1b[31mabcdefghW\x1b[4;6H\x1b[46m\x1b[K")
             .unwrap();
-        let frame = inner.render(None, viewport).unwrap();
+        let frame = inner.render(None, viewport, Some(footer)).unwrap();
         outer.process(frame.as_bytes()).unwrap();
 
         let previous = inner.snapshot();
@@ -280,7 +332,7 @@ mod tests {
         );
 
         inner.process(b"\x1b[0m\x1b[4;1HijklmnopZ").unwrap();
-        let frame = inner.render(Some(&previous), viewport).unwrap();
+        let frame = inner.render(Some(&previous), viewport, None).unwrap();
         outer.process(frame.as_bytes()).unwrap();
 
         let expected = inner.parser.screen();
@@ -293,6 +345,7 @@ mod tests {
             assert_eq!(composed.cell(row, 8).unwrap().bgcolor(), Color::Default);
         }
         assert!(!composed.cell(5, 0).unwrap().has_contents());
+        assert_eq!(composed.cell(7, 0).unwrap().contents(), "C");
         assert_eq!(composed.cursor_position(), expected.cursor_position());
     }
 
@@ -380,7 +433,7 @@ mod tests {
         inner
             .process("\x1b[2;1Hvisible\u{202e} update".as_bytes())
             .unwrap();
-        let diff = inner.render(Some(&previous), viewport).unwrap();
+        let diff = inner.render(Some(&previous), viewport, None).unwrap();
         assert!(!diff.contains('\u{202e}'));
         outer.process(diff.as_bytes()).unwrap();
         assert_eq!(

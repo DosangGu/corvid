@@ -269,7 +269,7 @@ pub(crate) async fn handshake(
 ) -> Result<Option<Connection>> {
     let (read, write) = stream.into_split();
     let (input, output) = match role {
-        PeerRole::Control | PeerRole::Presentation => {
+        PeerRole::Control | PeerRole::Presentation | PeerRole::Upgrade => {
             (FrameRole::StructuredOnly, FrameRole::StructuredOnly)
         }
         PeerRole::Tui => (FrameRole::StructuredOnly, FrameRole::TuiOutput),
@@ -283,7 +283,7 @@ pub(crate) async fn handshake(
         .context("missing control Hello")?;
     let profiles = match role {
         PeerRole::Control | PeerRole::Tui => qualified_profiles(),
-        PeerRole::Collector | PeerRole::Presentation => &[],
+        PeerRole::Collector | PeerRole::Presentation | PeerRole::Upgrade => &[],
     };
     match accept_hello_with_profiles(
         &request,

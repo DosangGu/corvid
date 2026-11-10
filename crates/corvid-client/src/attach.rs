@@ -20,7 +20,7 @@ use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
     CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameReader, FrameWriter,
     MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame,
-    Session, decode_envelope,
+    STATUS_BAR_CAPABILITY, Session, decode_envelope,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::signal::unix::{SignalKind, signal};
@@ -134,13 +134,15 @@ async fn request_attach(
 ) -> Result<(Connection, RouteToken)> {
     check_viewport_support(&connection.session, viewport)?;
     let mut terminal_capabilities = vec!["legacy_vt.v1".into(), "tabs.v1".into()];
-    if connection
-        .session
-        .capabilities
-        .iter()
-        .any(|name| name == PAIR_CAPABILITY)
-    {
-        terminal_capabilities.push(PAIR_CAPABILITY.into());
+    for capability in [PAIR_CAPABILITY, STATUS_BAR_CAPABILITY] {
+        if connection
+            .session
+            .capabilities
+            .iter()
+            .any(|name| name == capability)
+        {
+            terminal_capabilities.push(capability.into());
+        }
     }
     if notifications {
         terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
