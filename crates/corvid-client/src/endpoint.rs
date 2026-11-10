@@ -20,7 +20,7 @@ use crate::connection::Connection;
 use crate::connection::open;
 
 mod bootstrap;
-pub use bootstrap::SshDaemon;
+pub use bootstrap::{SshDaemon, SshPlatform};
 
 const SSH_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_millis(250);
@@ -36,7 +36,7 @@ pub enum ControlEndpoint {
 #[derive(Clone, Debug)]
 pub struct SshAlias {
     name: String,
-    desktop_daemon: Option<SshDaemon>,
+    desktop_daemon: Option<(SshPlatform, SshDaemon)>,
 }
 
 impl SshAlias {
@@ -67,7 +67,7 @@ impl SshAlias {
             _ => unreachable!("SSH only exposes the two daemon client roles"),
         };
         let remote = match self.desktop_daemon {
-            Some(daemon) => bootstrap::daemon_command(daemon, arguments),
+            Some((platform, daemon)) => bootstrap::daemon_command(platform, daemon, arguments),
             None => format!("corvid {arguments}"),
         };
         self.remote_command(&remote)
@@ -364,7 +364,7 @@ fn ssh_failure(diagnostic: &[u8]) -> ProtocolFault {
     } else if message.contains("unrecognized subcommand 'terminal-relay'") {
         ProtocolFault::new(
             "RelayUnavailable",
-            "update Corvid on the Linux execution host",
+            "update Corvid on the SSH execution host",
         )
     } else {
         ProtocolFault::new("Offline", "Corvid SSH connection failed")

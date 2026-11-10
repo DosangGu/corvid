@@ -2,7 +2,6 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::Envelope;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{
@@ -12,7 +11,7 @@ use corvid_protocol::{
 use tokio::io::{AsyncRead, AsyncWrite, stdin, stdout};
 use tokio::time::timeout;
 
-use crate::connection::{open, read_preamble};
+use crate::connection::{SocketRole, open, read_preamble};
 
 pub async fn relay(runtime: &Path) -> Result<()> {
     relay_role(runtime, SocketRole::Control, FrameRole::StructuredOnly).await
@@ -45,7 +44,10 @@ async fn relay_role(runtime: &Path, socket: SocketRole, output: FrameRole) -> Re
             return Err(error);
         }
     };
+    #[cfg(target_os = "linux")]
     let (read, write) = stream.into_split();
+    #[cfg(windows)]
+    let (read, write) = tokio::io::split(stream);
     let mut to_daemon = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
     let mut from_daemon = match timeout(COMMAND_TIMEOUT, read_preamble(read, output)).await? {
         Ok(reader) => reader,

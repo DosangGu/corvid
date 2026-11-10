@@ -65,6 +65,35 @@ function Read-LinuxDaemonAssets([string]$directory) {
     return $assets
 }
 
+function Read-WindowsDaemonAssets([string]$path) {
+    $version = & $path --version
+    if ($LASTEXITCODE -ne 0 -or $version -cnotmatch '^corvid ([0-9A-Za-z.+-]+)$') {
+        throw 'Could not read the Windows daemon version'
+    }
+    $releaseVersion = $Matches[1]
+    $binary = [IO.File]::ReadAllBytes($path)
+    if ($binary.Length -eq 0 -or $binary.Length -gt 32MB) {
+        throw 'The Windows daemon must fit within the SSH transfer limit'
+    }
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = [BitConverter]::ToString($hasher.ComputeHash($binary)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $hasher.Dispose()
+    }
+    $manifest = @{
+        schema_version = 1
+        target = $target
+        version = $releaseVersion
+        size = $binary.Length
+        sha256 = $digest
+    } | ConvertTo-Json
+    return @{
+        "daemon/$target/manifest.json" = [Text.Encoding]::UTF8.GetBytes($manifest)
+        "daemon/$target/corvid.exe" = $binary
+    }
+}
+
 if ($LinuxDaemonDirectory -and $WslDistribution) {
     throw 'Choose either -LinuxDaemonDirectory or -WslDistribution'
 }
@@ -85,9 +114,9 @@ try {
     }
 
     $archiveName = 'corvid-windows-x64.zip'
-    $daemonAssets = $null
+    $linuxAssets = $null
     if ($LinuxDaemonDirectory) {
-        $daemonAssets = Read-LinuxDaemonAssets $LinuxDaemonDirectory
+        $linuxAssets = Read-LinuxDaemonAssets $LinuxDaemonDirectory
         $archiveName = 'corvid-windows-x64-with-daemon.zip'
     }
 
@@ -99,6 +128,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Corvid Deck release build failed' }
 
     $release = Join-Path $metadata.target_directory "$target\release"
+    $daemonAssets = Read-WindowsDaemonAssets (Join-Path $release 'corvid.exe')
+    if ($linuxAssets) {
+        foreach ($asset in $linuxAssets.GetEnumerator()) {
+            $daemonAssets.Add($asset.Key, $asset.Value)
+        }
+    }
     $output = Join-Path $metadata.target_directory 'windows-dist'
     New-Item -ItemType Directory -Path $output -Force | Out-Null
     $archive = Join-Path $output $archiveName
@@ -113,21 +148,19 @@ try {
     )
     try {
         Compress-Archive -LiteralPath $files -DestinationPath $temporary
-        if ($daemonAssets) {
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            $zip = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Update)
-            try {
-                foreach ($asset in $daemonAssets.GetEnumerator()) {
-                    $entry = $zip.CreateEntry($asset.Key).Open()
-                    try {
-                        $entry.Write($asset.Value, 0, $asset.Value.Length)
-                    } finally {
-                        $entry.Dispose()
-                    }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Update)
+        try {
+            foreach ($asset in $daemonAssets.GetEnumerator()) {
+                $entry = $zip.CreateEntry($asset.Key).Open()
+                try {
+                    $entry.Write($asset.Value, 0, $asset.Value.Length)
+                } finally {
+                    $entry.Dispose()
                 }
-            } finally {
-                $zip.Dispose()
             }
+        } finally {
+            $zip.Dispose()
         }
         Move-Item -LiteralPath $temporary -Destination $archive -Force
     } finally {

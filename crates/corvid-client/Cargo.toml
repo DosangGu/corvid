@@ -8,8 +8,10 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64 = "=0.22.1"
 corvid-core.workspace = true
 corvid-protocol.workspace = true
+tar = { version = "=0.4.46", default-features = false }
 tokio = { workspace = true, features = ["io-std", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 uuid.workspace = true
 
@@ -22,6 +24,9 @@ crossterm = { workspace = true, features = ["events", "windows"] }
 windows-sys = { version = "=0.61.2", features = [
     "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_Threading",
 ] }
+
+[target.'cfg(windows)'.dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

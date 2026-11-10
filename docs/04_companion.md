@@ -53,15 +53,16 @@ cargo run --locked --manifest-path desktop/Cargo.toml
 Select a configured alias from `~/.ssh/config` in **SSH Hosts**, or pass
 `-- --ssh-alias work-host` to the Cargo command. Desktop reads the companion's
 SSH alias and expected host ID from the same Linux state directory described
-above. It connects to the Linux Corvid daemon over SSH, including when the
+above. It connects to the target Corvid daemon over SSH, including when the
 daemon runs on the same machine.
 
 An explicit connection starts an installed daemon if needed. For first-time
-installation on a Linux x86_64 host, build the bundle with
-`bash deploy/linux/package-corvid.sh` from a clean checkout. Copy the generated
-`x86_64-unknown-linux-musl/` directory into `daemon/` alongside the built
-`corvid-desktop` binary. Desktop uses the sessions, tabs, split panes, and
-Agent Deck described in the Windows quick start.
+installation, put the target bundle in `daemon/` alongside the built
+`corvid-desktop` binary. Build the Linux x86_64 bundle with
+`bash deploy/linux/package-corvid.sh` from a clean checkout and copy the
+generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
+from the Windows Desktop ZIP. Desktop uses the sessions, tabs, split panes,
+and Agent Deck described in the Windows quick start.
 
 Keep the Desktop lockfile on `libc` 0.2.189 while GPUI's HTTP client transitively
 uses `xattr` 0.2.3, which refers to the removed Linux `ENOATTR` constant.
@@ -83,15 +84,22 @@ and static, unconditional `Include` files. Use **Refresh** after editing the
 config, or enter an alias manually. While attached, open **SSH Hosts** in the
 toolbar and select another machine to switch the Desktop connection.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
-An explicit Desktop connection starts an installed Corvid daemon if needed.
-On a fresh Linux x86_64 host, Desktop can transfer the Linux daemon from the
-combined Windows ZIP. It verifies the size and SHA-256 on both sides and
-installs the binary in `~/.corvid/corvid` under the SSH user's account. The
-transfer uses SSH stdin and requires a POSIX shell and Linux core utilities on
-the host. Desktop can reuse a running daemon when it opens a saved alias
-automatically. Installation and startup require an explicit connection request.
+An explicit Desktop connection detects the host OS and starts an installed
+Corvid daemon if needed. With the matching bundle, Desktop can also install
+on a fresh Linux x86_64 or Windows x64 host. The transfer uses SSH stdin,
+verifies size and SHA-256 on both sides, and publishes the binary without
+overwriting an existing installation. Desktop can reuse a running daemon
+when it opens a saved alias automatically. Installation and startup require
+an explicit connection request.
 
-The SSH launch commands use `CORVID_RUNTIME_DIR` or `XDG_RUNTIME_DIR` when
+Linux provisioning uses a POSIX shell and Linux core utilities. The binary
+is installed at `~/.corvid/corvid`. Windows provisioning uses Windows PowerShell
+5.1 and the system `tar.exe` through OpenSSH. It installs at
+`%LOCALAPPDATA%\Corvid-SSH\corvid.exe` with an ACL for the SSH user. The Windows
+daemon runs outside the SSH session job and uses the same runtime and state
+paths as the local Windows TUI.
+
+On Linux, the SSH launch commands use `CORVID_RUNTIME_DIR` or `XDG_RUNTIME_DIR` when
 configured. Otherwise Desktop uses a private directory under
 `~/.corvid/` scoped to the current Linux boot. An existing installation
 is reused. If its version cannot start over SSH, update it or start it manually.
@@ -103,7 +111,7 @@ Desktop connects to the daemon through `corvid terminal-relay` and uses
 The initial attach joins a live pane in the default session or opens its shell.
 
 **New session**, **New tab**, **Split right**, and **Split down** create shells
-on the Linux daemon. Click a pane to focus it. Other live panes in the same
+on the remote daemon. Click a pane to focus it. Other live panes in the same
 tab show read-only previews. Each workspace has one writer, so detach the TUI
 before using Desktop as the writer for that workspace. **Detach** and window
 close release the writer and keep PTYs running while the daemon survives.
@@ -148,7 +156,9 @@ release binaries and writes `windows-dist/corvid-windows-x64.zip` under the Carg
 directory (`target` by default). The archive includes `corvid.exe`, the Desktop
 terminal workspace `corvid-desktop.exe`, the standalone agent deck
 `corvid-deck.exe`, the administration app `corvid-slot-board.exe`, the license,
-and `Set-CorvidStartup.ps1`. To run Desktop from source, use
+and `Set-CorvidStartup.ps1`. It also includes the Windows SSH bundle under
+`daemon/x86_64-pc-windows-msvc/` with the executable and its SHA-256 manifest.
+To run Desktop from source, use
 `cargo run --locked --manifest-path desktop/Cargo.toml`.
 The `desktop/` workspace contains the app and its Windows packaging files.
 Build the `corvid` command with `cargo build --locked -p corvid-tui` from the
@@ -165,7 +175,8 @@ source revision. Download the `corvid-windows-x64-with-daemon` workflow
 artifact for the combined ZIP. It adds `daemon/x86_64-unknown-linux-musl/`
 with the Linux executable and a manifest containing its target, version,
 source revision, byte size, and SHA-256. Keep the daemon directory next to
-`corvid-desktop.exe` to make first-time SSH installation available.
+`corvid-desktop.exe` to make first-time SSH installation available for both
+targets.
 
 To build the combined archive on Windows x64, use a Windows checkout with
 clean Cargo, Desktop, crate, and spike sources. In an x86_64 WSL distribution, install

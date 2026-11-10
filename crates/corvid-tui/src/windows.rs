@@ -1,8 +1,8 @@
+mod daemon_process;
+
 use std::ffi::OsString;
 use std::io::{self, ErrorKind};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{self, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -12,7 +12,8 @@ use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::windows::StateDirectory;
 use tokio::time::sleep;
 use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
-use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+
+use daemon_process::DaemonProcess;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const STARTUP_POLL: Duration = Duration::from_millis(50);
@@ -28,6 +29,8 @@ pub(super) enum Command {
     EnsureDaemon {
         #[arg(long)]
         state_dir: Option<PathBuf>,
+        #[arg(long, hide = true)]
+        ssh: bool,
     },
     /// Attach to a terminal workspace.
     Attach {
@@ -48,9 +51,13 @@ pub(super) enum Command {
     },
     /// Query the local daemon.
     Control {
-        #[arg(value_enum)]
-        request: ControlRequest,
+        #[arg(long, conflicts_with = "request")]
+        stdio: bool,
+        #[arg(value_enum, required_unless_present = "stdio")]
+        request: Option<ControlRequest>,
     },
+    /// Relay the interactive protocol over SSH stdio.
+    TerminalRelay,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -81,8 +88,8 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
             })
             .await?;
         }
-        Command::EnsureDaemon { state_dir } => {
-            ensure_daemon(&runtime, &state_path(state_dir)?).await?;
+        Command::EnsureDaemon { state_dir, ssh } => {
+            ensure_daemon(&runtime, &state_path(state_dir)?, ssh).await?;
         }
         Command::Attach {
             new,
@@ -106,19 +113,22 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
             };
             return start_attach(runtime, options).await;
         }
-        Command::Control { request } => match request {
-            ControlRequest::Host => {
+        Command::Control { stdio, request } => match (stdio, request) {
+            (true, _) => corvid_client::relay(&runtime).await?,
+            (_, Some(ControlRequest::Host)) => {
                 let host = host(&runtime).await?;
                 println!(
                     "host_id={} server_epoch={}",
                     host.host_id, host.server_epoch
                 );
             }
-            ControlRequest::Ping => {
+            (_, Some(ControlRequest::Ping)) => {
                 ping(&runtime).await?;
                 println!("pong");
             }
+            _ => unreachable!("Clap requires a control request or --stdio"),
         },
+        Command::TerminalRelay => corvid_client::relay_tui(&runtime).await?,
     }
     Ok(0)
 }
@@ -149,7 +159,7 @@ fn local_app_data() -> Result<PathBuf> {
 async fn start_attach(runtime: PathBuf, options: AttachOptions) -> Result<u32> {
     check_tty()?;
     if !daemon_running(&runtime).await? {
-        ensure_daemon(&runtime, &state_path(None)?).await?;
+        ensure_daemon(&runtime, &state_path(None)?, false).await?;
     }
     attach(&runtime, options).await
 }
@@ -168,7 +178,7 @@ async fn daemon_running(runtime: &Path) -> Result<bool> {
     }
 }
 
-async fn ensure_daemon(runtime: &Path, state: &Path) -> Result<()> {
+async fn ensure_daemon(runtime: &Path, state: &Path, ssh: bool) -> Result<()> {
     let directory = StateDirectory::create_all(runtime)?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     let _startup = loop {
@@ -191,29 +201,19 @@ async fn ensure_daemon(runtime: &Path, state: &Path) -> Result<()> {
     if daemon_running(runtime).await? {
         return Ok(());
     }
-    let mut child = process::Command::new(std::env::current_exe()?)
-        .arg("--runtime-dir")
-        .arg(runtime)
-        .args(["daemon", "--state-dir"])
-        .arg(state)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-        .spawn()
-        .context("starting the Windows Corvid daemon")?;
-    let result = wait_for_daemon(runtime, &mut child).await;
+    let child =
+        DaemonProcess::spawn(runtime, state, ssh).context("starting the Windows Corvid daemon")?;
+    let result = wait_for_daemon(runtime, &child).await;
     if result.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
+        child.terminate();
     }
     result
 }
 
-async fn wait_for_daemon(runtime: &Path, child: &mut process::Child) -> Result<()> {
+async fn wait_for_daemon(runtime: &Path, child: &DaemonProcess) -> Result<()> {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = child.exit_code()? {
             bail!(
                 "Corvid daemon exited during startup ({status}); run corvid daemon in the foreground for details"
             );

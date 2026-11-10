@@ -2,12 +2,11 @@ use std::fs::File;
 use std::io::Read;
 
 use anyhow::{Context, Result, ensure};
-use corvid_client::{InteractiveConnection, SshAlias, SshDaemon};
+use corvid_client::{InteractiveConnection, SshAlias, SshDaemon, SshPlatform};
 use corvid_protocol::ProtocolFault;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const LINUX_TARGET: &str = "x86_64-unknown-linux-musl";
 const MAX_BINARY: u64 = 32 * 1024 * 1024;
 const MAX_MANIFEST: u64 = 4096;
 
@@ -18,7 +17,9 @@ pub async fn connect(
     expected_host: Option<&str>,
     progress: impl Fn(&str),
 ) -> Result<(SshAlias, InteractiveConnection)> {
-    let mut alias = alias.with_daemon(SshDaemon::Path);
+    progress("Checking the SSH host…");
+    let platform = alias.probe_platform().await?;
+    let mut alias = alias.with_daemon(platform, SshDaemon::Path);
     let initial = match alias.interactive(capabilities.clone()).await {
         Ok(link) => return Ok((alias, link)),
         Err(error) => error,
@@ -28,9 +29,9 @@ pub async fn connect(
     }
 
     progress("Checking the remote Corvid installation…");
-    let daemon = match alias.probe_daemon().await? {
+    let daemon = match alias.probe_daemon(platform).await? {
         Some(SshDaemon::Managed) => {
-            alias = alias.with_daemon(SshDaemon::Managed);
+            alias = alias.with_daemon(platform, SshDaemon::Managed);
             match alias.interactive(capabilities.clone()).await {
                 Ok(link) => return Ok((alias, link)),
                 Err(error) if !explicit || !has_fault(&error, "DaemonUnavailable") => {
@@ -45,17 +46,17 @@ pub async fn connect(
                 expected_host.is_none(),
                 "Corvid is missing on a previously configured host. Verify the SSH alias before reinstalling"
             );
-            let (binary, sha256) = read_bundle()?;
+            let (binary, sha256) = read_bundle(platform)?;
             progress("Installing Corvid on the SSH host…");
-            alias.install_daemon(&binary, &sha256).await?;
-            alias = alias.with_daemon(SshDaemon::Managed);
+            alias.install_daemon(platform, &binary, &sha256).await?;
+            alias = alias.with_daemon(platform, SshDaemon::Managed);
             SshDaemon::Managed
         }
         _ => return Err(initial),
     };
 
     progress("Starting the Corvid daemon…");
-    alias.ensure_daemon(daemon).await?;
+    alias.ensure_daemon(platform, daemon).await?;
     progress("Connecting to Corvid…");
     let link = alias.interactive(capabilities).await?;
     Ok((alias, link))
@@ -75,16 +76,20 @@ struct Manifest {
     sha256: String,
 }
 
-fn read_bundle() -> Result<(Vec<u8>, String)> {
+fn read_bundle(platform: SshPlatform) -> Result<(Vec<u8>, String)> {
+    let (target, binary_name) = match platform {
+        SshPlatform::Linux => ("x86_64-unknown-linux-musl", "corvid"),
+        SshPlatform::Windows => ("x86_64-pc-windows-msvc", "corvid.exe"),
+    };
     let exe = std::env::current_exe()?;
     let directory = exe
         .parent()
         .context("locating the Desktop installation")?
         .join("daemon")
-        .join(LINUX_TARGET);
-    let file = File::open(directory.join("manifest.json")).context(
-        "Linux daemon bundle is unavailable. Extract Corvid Desktop from the package with the daemon",
-    )?;
+        .join(target);
+    let file = File::open(directory.join("manifest.json")).with_context(|| {
+        format!("The {target} daemon bundle is unavailable. Extract the matching daemon bundle beside Corvid Desktop")
+    })?;
     let mut manifest_bytes = Vec::new();
     file.take(MAX_MANIFEST + 1)
         .read_to_end(&mut manifest_bytes)?;
@@ -96,12 +101,12 @@ fn read_bundle() -> Result<(Vec<u8>, String)> {
         serde_json::from_slice(&manifest_bytes).context("reading the daemon manifest")?;
     ensure!(
         manifest.schema_version == 1
-            && manifest.target == LINUX_TARGET
+            && manifest.target == target
             && (1..=MAX_BINARY).contains(&manifest.size),
-        "invalid Linux daemon bundle manifest"
+        "invalid daemon bundle manifest"
     );
 
-    let file = File::open(directory.join("corvid")).context("opening the bundled Linux daemon")?;
+    let file = File::open(directory.join(binary_name)).context("opening the bundled daemon")?;
     let mut binary = Vec::new();
     file.take(manifest.size + 1).read_to_end(&mut binary)?;
     ensure!(

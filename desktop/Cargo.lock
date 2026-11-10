@@ -1212,10 +1212,12 @@ name = "corvid-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "corvid-core",
  "corvid-protocol",
  "crossterm",
  "nix 0.31.3",
+ "tar",
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
@@ -5673,6 +5675,16 @@ dependencies = [
  "core-foundation-sys",
  "libc",
  "objc",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
 ]
 
 [[package]]

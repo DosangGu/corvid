@@ -310,9 +310,10 @@ local drive with ACL support. Corvid creates the private directories if
 needed. Pass the same runtime directory to the TUI. Ctrl+C stops that
 foreground daemon.
 
-Windows support covers local terminal sessions. Managed agent observations and
-Windows OpenSSH daemon provisioning are planned separately. The combined
-Desktop package continues to provision a Linux daemon on an SSH host.
+Windows support covers local terminal sessions and Windows x64 OpenSSH
+connections through Desktop. The Desktop bundle can install and start the
+Windows daemon for the SSH user. See [Desktop SSH setup](04_companion.md#windows-quick-start).
+Managed agent observations on Windows are planned separately.
 
 The `windows_daemon` integration tests run the Windows binary inside ConPTY
 and exercise startup, input, rendering, resize, and detach and reattach.

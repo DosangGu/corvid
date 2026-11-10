@@ -53,7 +53,7 @@ jobs:
         with:
           name: corvid-linux-x64-daemon
           path: target/linux-daemon
-      - name: Bundle the Windows apps and Linux daemon
+      - name: Bundle the Windows apps and daemon payloads
         shell: powershell
         run: ./desktop/packaging/windows/Package-Corvid.ps1 -LinuxDaemonDirectory target/linux-daemon
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
