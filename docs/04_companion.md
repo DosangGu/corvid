@@ -151,9 +151,10 @@ terminal workspace `corvid-desktop.exe`, the standalone agent deck
 and `Set-CorvidStartup.ps1`. To run Desktop from source, use
 `cargo run --locked --manifest-path desktop/Cargo.toml`.
 The `desktop/` workspace contains the app and its Windows packaging files.
-Root `cargo build --locked` builds the CLI. Use the package script for all
-Windows applications. The root `--workspace` command includes the Linux
-daemon and terminal qualification spike.
+Build the CLI with `cargo build --locked -p corvid` from the repository root.
+A root build without a package selector builds all root workspace members and
+requires Linux for the daemon and terminal qualification spike. Use the
+package script to build and bundle the Windows applications.
 
 The **Package Corvid** GitHub Actions workflow runs on demand and for `v*`
 tags. It builds a static Linux x86_64 `corvid` binary, checks that its daemon

@@ -75,7 +75,7 @@ lack a context generation, so Corvid quarantines their activity and request
 updates for the reused session.
 
 ```sh
-cargo build --locked
+cargo build --locked -p corvid
 export PYTHONDONTWRITEBYTECODE=1
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario clear
 python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario resume
@@ -249,7 +249,7 @@ release reports process-only coverage.
 ### Reproduce
 
 ```sh
-cargo build --locked
+cargo build --locked -p corvid
 export PYTHONDONTWRITEBYTECODE=1
 python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid
 python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation

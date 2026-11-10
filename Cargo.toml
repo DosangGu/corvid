@@ -9,7 +9,6 @@ members = [
     "crates/corvid-protocol",
     "spikes/terminal",
 ]
-default-members = ["crates/corvid"]
 resolver = "3"
 
 [workspace.package]
