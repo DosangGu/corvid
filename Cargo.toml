@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/corvid",
+    "crates/corvid-tui",
     "crates/corvid-client",
     "crates/corvid-companion",
     "crates/corvid-core",

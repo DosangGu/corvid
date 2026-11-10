@@ -742,25 +742,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "corvid"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "corvid-client",
- "corvid-companion",
- "corvid-core",
- "corvid-daemon",
- "corvid-protocol",
- "nix 0.31.3",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "corvid-client"
 version = "0.1.0"
 dependencies = [
@@ -858,6 +839,25 @@ dependencies = [
  "nix 0.31.3",
  "portable-pty",
  "signal-hook",
+]
+
+[[package]]
+name = "corvid-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "corvid-client",
+ "corvid-companion",
+ "corvid-core",
+ "corvid-daemon",
+ "corvid-protocol",
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

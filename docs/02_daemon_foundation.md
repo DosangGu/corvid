@@ -7,7 +7,7 @@ independently of the attached TUI.
 ## Run Locally
 
 ```sh
-cargo build --locked -p corvid
+cargo build --locked -p corvid-tui
 target/debug/corvid
 ```
 
@@ -255,7 +255,7 @@ service manager and provisions the private socket directory. Install the binary,
 terminal profile, and unit on the execution host.
 
 ```sh
-cargo install --locked --path crates/corvid --root "$HOME/.local"
+cargo install --locked --path crates/corvid-tui --root "$HOME/.local"
 tic -x -o "$HOME/.terminfo" spikes/terminal/corvid.terminfo
 install -Dm644 deploy/systemd/corvid.service "$HOME/.config/systemd/user/corvid.service"
 systemctl --user daemon-reload
@@ -275,7 +275,7 @@ with noninteractive sudo and pin the host key for both SSH aliases. Run from the
 repository root on the client machine.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/last_login.py ssh_config operator observer
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/last_login.py ssh_config operator observer
 ```
 
 The observer checks that each disconnect closes the only SSH login and that the
@@ -287,8 +287,8 @@ attach must show the same child and retained screen.
 
 ```sh
 cargo test --locked --workspace
-python3 crates/corvid/tests/interactive.py target/debug/corvid
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/ssh_lifecycle.py target/debug/corvid
+python3 crates/corvid-tui/tests/interactive.py target/debug/corvid
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/ssh_lifecycle.py target/debug/corvid
 ```
 
 The tests use real Linux Unix sockets and PTYs. The interactive driver uses an
@@ -357,7 +357,7 @@ provider fixture. It also checks that the synthetic prompt and question are
 absent from the stored metadata.
 
 ```sh
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario restart
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario restart
 ```
 
 ### Remote reboot reproduction
@@ -389,7 +389,7 @@ the observer account to reboot it. The saved focus request travels over a
 fresh relay connection after reboot, so the rejection comes from the daemon.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/remote_reboot.py \
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/remote_reboot.py \
   ssh_config operator observer --reboot-disposable-vm
 ```
 
@@ -402,8 +402,8 @@ so the base spans multiple frames. A private Unix socket proxy forwards
 the real CLI asks a question and an explicit TUI action moves the agent tab.
 
 ```sh
-cargo build --locked -p corvid
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py \
+cargo build --locked -p corvid-tui
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py \
   --corvid target/debug/corvid --scenario snapshot-race
 ```
 
@@ -417,7 +417,7 @@ overflow tests separately verify invalidation and fresh snapshot recovery.
 ### Backpressure measurements
 
 ```sh
-cargo test --locked -p corvid --test routing \
+cargo test --locked -p corvid-tui --test routing \
   stalled_render_and_snapshot_consumers_release_their_connections -- --exact --nocapture
 ```
 
@@ -434,7 +434,7 @@ local workload on the recorded host.
 ### Interactive key latency
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/ssh_lifecycle.py \
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/ssh_lifecycle.py \
   --measure-input target/debug/corvid
 ```
 
@@ -475,7 +475,7 @@ and use separate Cargo target directories for the historical and current
 schemas.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/version_skew.py \
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/version_skew.py \
   /path/to/corvid-old /path/to/corvid-1.1 /path/to/corvid-2.0
 ```
 
@@ -502,12 +502,12 @@ On Arch Linux with user namespaces, `unshare`, `bwrap`, Python, and `tic`,
 run from the repository root.
 
 ```sh
-cargo build --locked -p corvid
+cargo build --locked -p corvid-tui
 unshare --user --map-root-user bwrap --unshare-pid --as-pid-1 \
   --cap-add CAP_CHECKPOINT_RESTORE --proc /proc --dev /dev --ro-bind /usr /usr \
   --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 --dir /run \
   --ro-bind "$PWD/target/debug/corvid" /corvid \
-  --ro-bind "$PWD/crates/corvid/tests" /fixtures \
+  --ro-bind "$PWD/crates/corvid-tui/tests" /fixtures \
   --ro-bind "$PWD/spikes/terminal/corvid.terminfo" /corvid.terminfo \
   --clearenv --setenv PATH /usr/bin --setenv PYTHONDONTWRITEBYTECODE 1 --chdir / \
   -- /usr/bin/python3 /fixtures/pid_reuse.py /corvid /corvid.terminfo
@@ -530,10 +530,10 @@ unshare --user --map-root-user --map-users="1:$SUB_UID:1" --map-groups="1:$SUB_G
   bwrap --unshare-pid --proc /proc --dev /dev --ro-bind /usr /usr \
   --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 --dir /run \
   --ro-bind "$PWD/target/debug/corvid" /corvid \
-  --ro-bind "$PWD/crates/corvid/tests" /fixtures --setenv PYTHONDONTWRITEBYTECODE 1 \
+  --ro-bind "$PWD/crates/corvid-tui/tests" /fixtures --setenv PYTHONDONTWRITEBYTECODE 1 \
   --chdir / -- /usr/bin/python3 /fixtures/socket_peers.py /corvid
 
-cargo test --locked -p corvid --test routing \
+cargo test --locked -p corvid-tui --test routing \
   malformed_and_stalled_frames_leave_the_existing_pty_usable -- --exact
 cargo test --locked -p corvid-protocol --test framing
 ```
@@ -564,7 +564,7 @@ compiler through `CORVID_SCHEMA_REFERENCE_PROTOC`. It compares the generated
 files byte for byte and runs the compiled tests with the compiler unavailable.
 
 ```sh
-python3 crates/corvid/tests/schema_reproducibility.py /path/to/protoc-36.1-linux-x86_64.zip
+python3 crates/corvid-tui/tests/schema_reproducibility.py /path/to/protoc-36.1-linux-x86_64.zip
 ```
 
 The official Linux compiler and the Windows compiler running under Wine

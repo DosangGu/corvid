@@ -31,18 +31,18 @@ for the fixture server's response format.
 ## Reproduce
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario answer
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario clear
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario resume
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario cancel
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario plan
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario plan-rejected
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child-sync
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py --scenario child-nested
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario answer
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario clear
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario resume
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario cancel
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario plan
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario plan-rejected
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario child
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario child-sync
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py --scenario child-nested
 ```
 
-The [fixtures](../crates/corvid/tests/fixtures/claude/2.1.318/) keep allowlisted
+The [fixtures](../crates/corvid-tui/tests/fixtures/claude/2.1.318/) keep allowlisted
 fields and replace captured IDs with deterministic placeholders. The capture
 hook exits successfully with empty stdout.
 
@@ -75,28 +75,28 @@ lack a context generation, so Corvid quarantines their activity and request
 updates for the reused session.
 
 ```sh
-cargo build --locked -p corvid
+cargo build --locked -p corvid-tui
 export PYTHONDONTWRITEBYTECODE=1
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario clear
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario resume
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan-rejected
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child-sync
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario child-nested
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario forged-output
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario offline-pair
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault missing-helper
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel --fault missing-collector
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario clear
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario resume
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan-rejected
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario child
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario child-sync
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario child-nested
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario forged-output
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario offline-pair
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-helper
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --fault missing-collector
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault missing-helper
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario cancel --fault missing-collector
 for fault in timeout collector-saturated malformed-result; do
-  python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --fault "$fault"
+  python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --fault "$fault"
 done
-python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault collector-saturated
+python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario plan --fault collector-saturated
 for scenario in answer plan plan-rejected child-nested resume cancel; do
-  python3 crates/corvid/tests/claude_qualification.py --corvid target/debug/corvid --scenario "$scenario" --fault helper-crash
+  python3 crates/corvid-tui/tests/claude_qualification.py --corvid target/debug/corvid --scenario "$scenario" --fault helper-crash
 done
 ```
 
@@ -249,24 +249,24 @@ release reports process-only coverage.
 ### Reproduce
 
 ```sh
-cargo build --locked -p corvid
+cargo build --locked -p corvid-tui
 export PYTHONDONTWRITEBYTECODE=1
-python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid
-python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation
-python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --parallel
-python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --enable-auto-start
+python3 crates/corvid-tui/tests/codex_qualification.py --corvid target/debug/corvid
+python3 crates/corvid-tui/tests/codex_qualification.py --corvid target/debug/corvid --conversation
+python3 crates/corvid-tui/tests/codex_qualification.py --corvid target/debug/corvid --parallel
+python3 crates/corvid-tui/tests/codex_qualification.py --corvid target/debug/corvid --enable-auto-start
 for fault in missing-helper missing-collector timeout collector-saturated; do
-  python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --fault "$fault"
+  python3 crates/corvid-tui/tests/codex_qualification.py --corvid target/debug/corvid --fault "$fault"
 done
 for fault in missing-helper missing-collector; do
-  python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation --fault "$fault"
+  python3 crates/corvid-tui/tests/codex_qualification.py --corvid target/debug/corvid --conversation --fault "$fault"
 done
 for mode in disable enable; do
-  python3 crates/corvid/tests/codex_qualification.py --corvid target/debug/corvid --conversation "--$mode-auto-start" --fault helper-crash
+  python3 crates/corvid-tui/tests/codex_qualification.py --corvid target/debug/corvid --conversation "--$mode-auto-start" --fault helper-crash
 done
 ```
 
-The [allowlisted traces](../crates/corvid/tests/fixtures/codex/0.167.0/) use
+The [allowlisted traces](../crates/corvid-tui/tests/fixtures/codex/0.167.0/) use
 fixture identifiers. For A5 and A7, the parallel fixture uses loopback OpenSSH
 10.6p1 and temporary keys. It kills only the companion's SSH process and
 holds the relay offline while two same-directory Codex runs display questions

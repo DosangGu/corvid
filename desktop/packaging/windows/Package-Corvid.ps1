@@ -91,7 +91,7 @@ try {
         $archiveName = 'corvid-windows-x64-with-daemon.zip'
     }
 
-    cargo build --locked --release --target $target -p corvid -p corvid-desktop
+    cargo build --locked --release --target $target -p corvid-tui -p corvid-desktop
     if ($LASTEXITCODE -ne 0) { throw 'Corvid release build failed' }
     cargo build --locked --release --target $target --target-dir $metadata.target_directory --manifest-path 'desktop/Cargo.toml' --bin corvid-desktop
     if ($LASTEXITCODE -ne 0) { throw 'Corvid Desktop release build failed' }

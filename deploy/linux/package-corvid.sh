@@ -19,7 +19,7 @@ if [[ -n $changes ]]; then
 fi
 
 build_dir=${CARGO_TARGET_DIR:-target}
-cargo build --locked --release --target "$target" --target-dir "$build_dir" -p corvid
+cargo build --locked --release --target "$target" --target-dir "$build_dir" -p corvid-tui
 binary="$build_dir/$target/release/corvid"
 
 headers=$(readelf --wide --program-headers "$binary")

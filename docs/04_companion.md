@@ -151,7 +151,8 @@ terminal workspace `corvid-desktop.exe`, the standalone agent deck
 and `Set-CorvidStartup.ps1`. To run Desktop from source, use
 `cargo run --locked --manifest-path desktop/Cargo.toml`.
 The `desktop/` workspace contains the app and its Windows packaging files.
-Build the CLI with `cargo build --locked -p corvid` from the repository root.
+Build the `corvid` command with `cargo build --locked -p corvid-tui` from the
+repository root.
 A root build without a package selector builds all root workspace members and
 requires Linux for the daemon and terminal qualification spike. Use the
 package script to build and bundle the Windows applications.
@@ -255,7 +256,7 @@ flowchart LR
 | Desktop app | Attaches as a writer to the Linux daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../desktop/app/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
 | Slot board | Displays snapshots and manages slot assignments and alerts. Its pairing dialog lists verified local panes. | [corvid-slot-board](../crates/corvid-desktop/src/main.rs) |
-| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid/src/companion.rs) · [deployment](../desktop/packaging/windows/) |
+| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../desktop/packaging/windows/) |
 | Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
 
 The companion stores its host and controller identity in `config.json` and
@@ -501,7 +502,7 @@ badge, counts, and observation time. Attempts to focus or acknowledge return
 After the control socket returns, a fresh capture focuses the same question.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid/tests/claude_qualification.py \
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py \
   --corvid target/debug/corvid --scenario offline-restart
 ```
 
@@ -612,7 +613,7 @@ the actual slot number and put the checkpoint outside the repository.
 $checkpoint = Join-Path $env:LOCALAPPDATA 'corvid-a25-reboot.json'
 wezterm --version
 & "$env:SystemRoot\System32\OpenSSH\ssh.exe" -V
-py -3 crates/corvid/tests/local_reboot.py before $checkpoint --ssh-alias work-host --pipe-instance a25 --slot 1
+py -3 crates/corvid-tui/tests/local_reboot.py before $checkpoint --ssh-alias work-host --pipe-instance a25 --slot 1
 ```
 
 Restart Windows manually. From PowerShell, start the same companion with

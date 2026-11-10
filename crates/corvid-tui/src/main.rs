@@ -20,7 +20,11 @@ use uuid::Uuid;
 pub(crate) use linux::runtime_path;
 
 #[derive(Parser)]
-#[command(version, about = "Terminal multiplexer with coding-agent integrations")]
+#[command(
+    name = "corvid",
+    version,
+    about = "Terminal multiplexer with coding-agent integrations"
+)]
 #[cfg_attr(
     target_os = "linux",
     command(after_help = "Run without a command to open the default workspace.")
