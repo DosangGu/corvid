@@ -71,6 +71,30 @@ pub struct Location {
     pub pane: Uuid,
 }
 
+#[derive(Clone, Copy)]
+pub enum CloseTarget {
+    Workspace(Uuid),
+    Tab { workspace: Uuid, tab: Uuid },
+    Pane(Location),
+}
+
+impl CloseTarget {
+    pub fn workspace(self) -> Uuid {
+        match self {
+            Self::Workspace(workspace) | Self::Tab { workspace, .. } => workspace,
+            Self::Pane(location) => location.workspace,
+        }
+    }
+
+    pub fn contains(self, location: Location) -> bool {
+        match self {
+            Self::Workspace(workspace) => workspace == location.workspace,
+            Self::Tab { workspace, tab } => workspace == location.workspace && tab == location.tab,
+            Self::Pane(pane) => pane == location,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Error)]
 #[error("layout has invalid IDs, labels, paths, or tree bounds")]
 pub struct InvalidLayout;
@@ -174,6 +198,44 @@ impl Layout {
             .find(|workspace| workspace.id == location.workspace)
             .and_then(|workspace| workspace.tabs.iter().find(|tab| tab.id == location.tab))
             .is_some_and(|tab| tab.root.contains(location.pane))
+    }
+
+    pub fn close(&mut self, target: CloseTarget) -> Result<Vec<Location>, InvalidLayout> {
+        let workspace = self
+            .workspaces
+            .iter()
+            .position(|item| item.id == target.workspace())
+            .ok_or(InvalidLayout)?;
+        let removed: Vec<_> = self.workspaces[workspace]
+            .tabs
+            .iter()
+            .flat_map(|tab| self.panes(target.workspace(), tab.id))
+            .filter(|location| target.contains(*location))
+            .collect();
+        let first = removed.first().ok_or(InvalidLayout)?;
+
+        if !matches!(target, CloseTarget::Workspace(_)) {
+            let tabs = &mut self.workspaces[workspace].tabs;
+            let index = tabs
+                .iter()
+                .position(|tab| tab.id == first.tab)
+                .ok_or(InvalidLayout)?;
+            if let CloseTarget::Pane(location) = target
+                && tabs[index].root.remove_child_pane(location.pane)
+            {
+                return Ok(removed);
+            }
+            tabs.remove(index);
+            if !tabs.is_empty() {
+                return Ok(removed);
+            }
+        }
+
+        self.workspaces.remove(workspace);
+        if self.workspaces.is_empty() {
+            *self = Self::empty_terminal();
+        }
+        Ok(removed)
     }
 
     pub fn panes(&self, workspace: Uuid, tab: Uuid) -> Vec<Location> {
@@ -332,6 +394,27 @@ impl Layout {
 }
 
 impl Node {
+    fn remove_child_pane(&mut self, pane: Uuid) -> bool {
+        let Self::Split { children, .. } = self else {
+            return false;
+        };
+        if let Some(index) = children
+            .iter()
+            .position(|child| matches!(child, Self::Pane { id, .. } if *id == pane))
+        {
+            children.remove(index);
+        } else if !children
+            .iter_mut()
+            .any(|child| child.remove_child_pane(pane))
+        {
+            return false;
+        }
+        if children.len() == 1 {
+            *self = children.pop().expect("one surviving child");
+        }
+        true
+    }
+
     fn visit_panes(&self, visit: &mut impl FnMut(Uuid)) {
         match self {
             Self::Pane { id, .. } => visit(*id),

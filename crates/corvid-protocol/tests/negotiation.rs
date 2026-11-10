@@ -159,7 +159,7 @@ fn unknown_body_and_attach_enum_cannot_select_a_default_action() {
 }
 
 #[test]
-fn control_session_cannot_attach_or_submit_input() {
+fn control_session_cannot_attach_submit_input_or_close_views() {
     let request = hello("hello".into(), Some("controller".into()), vec![]);
     let (session, _) = accept_hello(&request, PeerRole::Control, "host", "epoch", &[]).unwrap();
     let attach = session.envelope(
@@ -183,6 +183,14 @@ fn control_session_cannot_attach_or_submit_input() {
     );
     assert_eq!(
         session.validate_request(&input).unwrap_err().code,
+        "UnsupportedCapability"
+    );
+    let close = session.envelope(
+        Some("close".into()),
+        Body::CloseView(corvid_protocol::wire::CloseView::default()),
+    );
+    assert_eq!(
+        session.validate_request(&close).unwrap_err().code,
         "UnsupportedCapability"
     );
 }

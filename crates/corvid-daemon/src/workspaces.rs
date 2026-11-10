@@ -1,3 +1,4 @@
+mod close;
 mod controllers;
 mod focus;
 #[cfg(target_os = "linux")]
@@ -39,6 +40,7 @@ use crate::terminal::{
     TuiViewport,
 };
 
+pub(crate) use close::Closed;
 pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
 pub(crate) use focus::{FocusDispatch, FocusRecovery};
@@ -726,6 +728,12 @@ impl Registry {
     }
 
     fn record_view(&mut self, active: &Active) {
+        if self.set_view(active) {
+            self.publish_client(active.route.client_id);
+        }
+    }
+
+    fn set_view(&mut self, active: &Active) -> bool {
         let route = active.route;
         let view = self
             .terminals
@@ -740,8 +748,9 @@ impl Registry {
             && client.generation == route.connection_generation
         {
             client.view = view;
-            self.publish_client(route.client_id);
+            return true;
         }
+        false
     }
 
     pub(crate) fn record_input_mode(&mut self, route: InputRoute, mode: InputMode) {

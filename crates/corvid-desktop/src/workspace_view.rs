@@ -8,11 +8,12 @@ use corvid_client::SshAlias;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::{
-    AgentBadge, AgentInfo, AgentProvider, SplitAxis, TabState, ViewSelection, WorkspaceState,
+    AgentBadge, AgentInfo, AgentProvider, CloseView, SplitAxis, TabState, ViewSelection,
+    WorkspaceState,
 };
 use gpui::{
-    AppContext, Context, Div, Entity, FocusHandle, IntoElement, KeyDownEvent, SharedString,
-    Stateful, Task, Window, div, prelude::*, px, rgb,
+    AppContext, Context, Div, Entity, FocusHandle, IntoElement, KeyDownEvent, PromptLevel,
+    SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
 };
 
 use crate::icons::icon;
@@ -270,6 +271,13 @@ impl WorkspaceView {
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = &self.session else { return };
         let ui = session.ui();
+        if ui.closed_view
+            && let Some(destination) = &self.destination
+        {
+            self.known_sessions.remove(destination);
+            self.selected = None;
+            self.terminal = None;
+        }
         if ui.inventory_ready
             && let (Some(destination), Some(host_id), Some(inventory)) =
                 (&self.destination, &ui.host_id, &ui.inventory)
@@ -385,6 +393,49 @@ impl WorkspaceView {
         if let Some(session) = &self.session {
             session.create(target);
         }
+    }
+
+    fn close_button(
+        id: &'static str,
+        title: &'static str,
+        target: CloseView,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex_none()
+            .px(px(6.))
+            .rounded_md()
+            .text_size(px(15.))
+            .text_color(rgb(MUTED))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(BORDER)).text_color(rgb(TEXT)))
+            .child("×")
+            .on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                let Some(session) = view
+                    .session
+                    .clone()
+                    .filter(|session| session.ui().can_close())
+                else {
+                    return;
+                };
+                let mut target = target.clone();
+                target.expected_view_revision = Some(session.view_revision());
+                let reply = window.prompt(
+                    PromptLevel::Warning,
+                    title,
+                    Some("The affected shells and their attached jobs will stop."),
+                    &["Cancel", "Close"],
+                    cx,
+                );
+                cx.spawn(async move |_, _| {
+                    if reply.await == Ok(1) {
+                        session.close(target);
+                    }
+                })
+                .detach();
+            }))
     }
 
     fn new_workspace(&self, count: usize) {
@@ -942,13 +993,34 @@ impl WorkspaceView {
                     .id(SharedString::from(id.clone()))
                     .flex()
                     .flex_none()
+                    .items_center()
                     .px(px(9.))
                     .py(px(5.))
                     .rounded_md()
                     .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                     .text_size(px(13.))
                     .text_color(rgb(if active { ACTIVE } else { MUTED }))
-                    .child(div().min_w_0().truncate().child(workspace.label.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(workspace.label.clone()),
+                    )
+                    .when(
+                        ui.is_some_and(|ui| ui.connected && ui.close_supported),
+                        |row| {
+                            row.child(Self::close_button(
+                                "close-session",
+                                "Close this session?",
+                                CloseView {
+                                    workspace_id: workspace.workspace_id.clone(),
+                                    ..Default::default()
+                                },
+                                cx,
+                            ))
+                        },
+                    )
                     .when(
                         !changing
                             && (!connected
@@ -1012,16 +1084,41 @@ impl WorkspaceView {
                     .children(workspace.tabs.iter().filter_map(|tab| {
                         let (target, open) = self.choose(workspace, tab, inventory)?;
                         Some(
-                            button(
-                                SharedString::from(tab.tab_id.clone()),
-                                tab.label.clone(),
-                                selected == Some(&tab.tab_id),
-                            )
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    view.select(target.clone(), open, None, window, cx)
-                                },
-                            )),
+                            div()
+                                .id(SharedString::from(tab.tab_id.clone()))
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .rounded_md()
+                                .bg(rgb(if selected == Some(&tab.tab_id) {
+                                    ACTIVE_FILL
+                                } else {
+                                    PANEL
+                                }))
+                                .child(
+                                    button(
+                                        "select-tab",
+                                        tab.label.clone(),
+                                        selected == Some(&tab.tab_id),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |view, _, window, cx| {
+                                            view.select(target.clone(), open, None, window, cx)
+                                        },
+                                    )),
+                                )
+                                .when(ui.connected && ui.close_supported, |row| {
+                                    row.child(Self::close_button(
+                                        "close-tab",
+                                        "Close this tab?",
+                                        CloseView {
+                                            workspace_id: workspace.workspace_id.clone(),
+                                            tab_id: Some(tab.tab_id.clone()),
+                                            ..Default::default()
+                                        },
+                                        cx,
+                                    ))
+                                }),
                         )
                     })),
             )
@@ -1104,12 +1201,31 @@ impl WorkspaceView {
                     .child(
                         div()
                             .flex_none()
+                            .flex()
+                            .items_center()
                             .px(px(9.))
                             .py(px(4.))
                             .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                             .text_color(rgb(if active { ACTIVE } else { MUTED }))
                             .text_size(px(12.))
-                            .child(title),
+                            .child(div().flex_1().child(title))
+                            .when(ui.connected && ui.close_supported, |header| {
+                                header.child(
+                                    div()
+                                        .id(SharedString::from(format!("pane-header-{pane}")))
+                                        .child(Self::close_button(
+                                            "close-pane",
+                                            "Close this pane?",
+                                            CloseView {
+                                                workspace_id: target.workspace_id.clone(),
+                                                tab_id: Some(target.tab_id.clone()),
+                                                pane_id: Some(target.pane_id.clone()),
+                                                ..Default::default()
+                                            },
+                                            cx,
+                                        )),
+                                )
+                            }),
                     )
                     .when(active, |region| {
                         region.child(

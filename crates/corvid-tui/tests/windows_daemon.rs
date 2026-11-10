@@ -52,17 +52,15 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
         .map(std::path::PathBuf::from)
         .context("SystemRoot is unavailable")?
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut first = Tui::open(
-        &runtime,
-        [
-            OsString::from("attach"),
-            "--new".into(),
-            "--".into(),
-            powershell.into_os_string(),
-            "-NoLogo".into(),
-            "-NoProfile".into(),
-        ],
-    )?;
+    let shell = [
+        OsString::from("attach"),
+        "--new".into(),
+        "--".into(),
+        powershell.into_os_string(),
+        "-NoLogo".into(),
+        "-NoProfile".into(),
+    ];
+    let mut first = Tui::open(&runtime, shell.clone())?;
     first.wait_for("PS ")?;
     first.send(
         b"$env:CORVID_TEST_VALUE='retained'; [Console]::WriteLine(('CORVID_' + [char]0xD55C))\r",
@@ -120,8 +118,28 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     second.send(b"\x1d1")?;
     wait_for_layout(&runtime, 3, &original, true).await?;
 
+    second.send(b"\x1d2")?;
+    wait_for_layout(&runtime, 3, &original, false).await?;
+    second.send(b"\x1dX")?;
+    wait_for_layout(&runtime, 2, &original, false).await?;
+    second.send(b"\x1dT")?;
+    wait_for_layout(&runtime, 1, &original, true).await?;
+
     second.send(b"exit 7\r")?;
     second.expect_exit(7)?;
+
+    let mut third = Tui::open(&runtime, shell)?;
+    third.wait_for("PS ")?;
+    third.send(b"\x1dS")?;
+    third.expect_exit(0)?;
+    let snapshot = corvid_client::snapshot(&runtime).await?;
+    ensure!(
+        !snapshot
+            .snapshot()
+            .entities()
+            .any(|entity| matches!(entity.body, Some(Body::Terminal(_)))),
+        "closing the session left a live terminal"
+    );
     Ok(())
 }
 

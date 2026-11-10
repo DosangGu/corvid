@@ -17,12 +17,12 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
-    ClaimWorkspaceWriter, ClientKeymap, ClientState, CompanionConnection, CreateView, EntityKind,
-    Envelope, FocusAgentRequest, FocusApplied, FocusSlot, FrameApplied, GetPresentationSlots,
-    GetSnapshot, InputChunk, IssuePairingCode, LaunchCommand, ListClients, MoveTab, PairTerminal,
-    PasteBegin, PasteChunk, PasteEnd, Ping, PresentationSlots, PresentedSlot, PresentedSlotToken,
-    ReadPanePreview, ResizeViewport, RouteToken, SelectView, SnapshotWatch, SplitAxis,
-    TuiInputMode, ViewSelection, Viewport,
+    ClaimWorkspaceWriter, ClientKeymap, ClientState, CloseView, CompanionConnection, CreateView,
+    EntityKind, Envelope, FocusAgentRequest, FocusApplied, FocusSlot, FrameApplied,
+    GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode, LaunchCommand, ListClients,
+    MoveTab, PairTerminal, PasteBegin, PasteChunk, PasteEnd, Ping, PresentationSlots,
+    PresentedSlot, PresentedSlotToken, ReadPanePreview, ResizeViewport, RouteToken, SelectView,
+    SnapshotWatch, SplitAxis, TuiInputMode, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
@@ -303,6 +303,108 @@ async fn daemon_owns_split_panes_previews_and_exact_reattach() {
     })
     .await
     .unwrap();
+    daemon.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn closes_views_and_preserves_other_writers() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let mut daemon = daemon(&runtime, &state).await;
+
+    timeout(WAIT, async {
+        let mut tui = Tui::attach_command(&runtime, Some(echo_fixture("SOURCE"))).await;
+        let original = tui.selection.clone();
+        let original_terminal = tui.route.terminal_id.clone();
+        let original_revision = tui.route.view_revision;
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "SOURCE-READY").await;
+
+        tui.send(Body::CreateView(CreateView {
+            expected_view_revision: Some(original_revision),
+            target: Some(Target::SplitAxis(SplitAxis::Horizontal as i32)),
+        })).await;
+        let Body::ViewChanged(split) = tui.next_body(&mut output).await else {
+            panic!("expected split");
+        };
+        let split_location = split.selection.unwrap();
+        tui.selection = split_location.clone();
+        tui.route = split.route_token.unwrap();
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(original_revision),
+            workspace_id: split_location.workspace_id.clone(),
+            tab_id: Some(split_location.tab_id.clone()),
+            pane_id: Some(split_location.pane_id.clone()),
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "StaleRoute"));
+
+        let retired = tui.route.clone();
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(retired.view_revision),
+            workspace_id: split_location.workspace_id,
+            tab_id: Some(split_location.tab_id),
+            pane_id: Some(split_location.pane_id),
+        })).await;
+        tui.moved(&mut output, &original).await;
+        assert_eq!(tui.route.terminal_id, original_terminal);
+        tui.input(retired, 1, b"stale\n").await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "StaleRoute"));
+
+        tui.send(Body::CreateView(CreateView {
+            expected_view_revision: Some(tui.route.view_revision),
+            target: Some(Target::TabLabel("Background".into())),
+        })).await;
+        let Body::ViewChanged(tab) = tui.next_body(&mut output).await else {
+            panic!("expected a new tab");
+        };
+        let hidden = tab.selection.unwrap();
+        tui.selection = hidden.clone();
+        tui.route = tab.route_token.unwrap();
+        tui.select(&original).await;
+        tui.moved(&mut output, &original).await;
+        let unchanged = tui.route.clone();
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(unchanged.view_revision),
+            workspace_id: hidden.workspace_id,
+            tab_id: Some(hidden.tab_id),
+            ..Default::default()
+        })).await;
+        tui.moved(&mut output, &original).await;
+        assert_eq!(tui.route, unchanged);
+
+        let other = Tui::attach_target(&runtime, Attach {
+            create_workspace: Some("Other writer".into()),
+            launch: Some(echo_fixture("OTHER")),
+            ..Default::default()
+        }).await;
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(tui.route.view_revision),
+            workspace_id: other.selection.workspace_id.clone(),
+            ..Default::default()
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "WorkspaceBusy"));
+
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(tui.route.view_revision),
+            workspace_id: original.workspace_id.clone(),
+            tab_id: Some(original.tab_id),
+            ..Default::default()
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Detach(_)));
+
+        let snapshot = corvid_client::snapshot(&runtime).await.unwrap();
+        let workspaces: Vec<_> = snapshot.snapshot().entities().filter_map(|entity| match &entity.body {
+            Some(EntityBody::Workspace(workspace)) => Some(workspace.workspace_id.as_str()),
+            _ => None,
+        }).collect();
+        let terminals: Vec<_> = snapshot.snapshot().entities().filter_map(|entity| match &entity.body {
+            Some(EntityBody::Terminal(terminal)) => Some(terminal.terminal_id.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(workspaces, [other.selection.workspace_id.as_str()]);
+        assert_eq!(terminals, [other.route.terminal_id.as_str()]);
+    }).await.unwrap();
     daemon.kill().await.unwrap();
 }
 

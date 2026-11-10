@@ -26,6 +26,7 @@ pub mod controller;
 
 pub const CLAIM_WORKSPACE_CAPABILITY: &str = "claim_workspace.v1";
 pub const CREATE_VIEW_CAPABILITY: &str = "create_view.v1";
+pub const CLOSE_VIEW_CAPABILITY: &str = "close_view.v1";
 pub const PANE_PREVIEW_CAPABILITY: &str = "pane_preview.v1";
 pub const MOVE_TAB_CAPABILITY: &str = "move_tab.v1";
 pub const STATUS_BAR_CAPABILITY: &str = "status_bar.v1";

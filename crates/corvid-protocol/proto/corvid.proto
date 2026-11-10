@@ -84,6 +84,7 @@ message Envelope {
     CreateView create_view = 112;
     FocusViewAgent focus_view_agent = 113;
     ReadPanePreview read_pane_preview = 114;
+    CloseView close_view = 115;
   }
 }
 
@@ -994,6 +995,13 @@ message FocusViewAgent {
   optional uint64 expected_view_revision = 1;
   string agent_run_id = 2;
   ViewSelection expected_location = 3;
+}
+
+message CloseView {
+  optional uint64 expected_view_revision = 1;
+  string workspace_id = 2;
+  optional string tab_id = 3;
+  optional string pane_id = 4;
 }
 
 message ReadPanePreview {

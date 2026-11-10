@@ -26,6 +26,9 @@ cargo build --locked -p corvid-tui
 Corvid starts the daemon and opens or reattaches to a shell. Press
 <kbd>Ctrl</kbd>+<kbd>]</kbd> to see the available commands. To detach, press
 <kbd>Ctrl</kbd>+<kbd>]</kbd>, then <kbd>d</kbd>. Run Corvid again to return to the workspace.
+To close the current pane, tab, or session and stop its shells, press
+<kbd>Ctrl</kbd>+<kbd>]</kbd> followed by uppercase <kbd>X</kbd>, <kbd>T</kbd>,
+or <kbd>S</kbd>, respectively.
 See the [daemon guide](docs/02_daemon_foundation.md) for session controls and
 systemd setup.
 
@@ -54,6 +57,7 @@ cargo run --locked -p corvid-desktop
 
 Desktop starts or reuses the local Corvid daemon and opens a terminal. Open
 **Sessions** to open a session under **Local Terminal** or an SSH host.
+Use **×** on a session, tab, or pane to close it and stop its shells.
 Choose a host from `~/.ssh/config` or enter an alias. Remote hosts require
 host-key trust and noninteractive authentication. Pass `-- --ssh-alias work-host`
 to launch directly into SSH. The

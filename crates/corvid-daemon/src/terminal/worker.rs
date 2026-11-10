@@ -144,6 +144,7 @@ pub(crate) enum Event {
     },
     Detached,
     Tab(TabCommand),
+    Close(corvid_core::layout::CloseTarget),
     PairController,
 }
 
@@ -611,6 +612,13 @@ impl Worker {
                     Some(KeyCommand::Tab(command)) => {
                         lease.switch_pending = true;
                         if lease.events.try_send(Event::Tab(command)).is_err() {
+                            self.revoke();
+                        }
+                    }
+                    Some(KeyCommand::Close(kind)) => {
+                        lease.switch_pending = true;
+                        let target = kind.target(lease.location);
+                        if lease.events.try_send(Event::Close(target)).is_err() {
                             self.revoke();
                         }
                     }

@@ -719,10 +719,15 @@ daemon; keep rendering, mouse interaction, and key bindings in the presentations
 Equivalent action sequences must produce equivalent domain state and lifecycle
 outcomes. This does not require identical pixels or keyboard shortcuts.
 
-Both clients can create tabs and split or select panes on the daemon. Closing
-the GUI releases its writer lease while the daemon keeps its PTYs alive.
-Operation-by-operation parity, including pane resizing and closure, remains
-subject to A32.
+Both clients can create tabs and split or select panes on the daemon. Explicit
+close requires the target workspace's writer lease. The daemon removes the
+target and stops its PTYs. Removing the last pane removes its tab, and removing
+the last tab removes its workspace. When the active pane closes, the daemon
+prefers a surviving live pane in the same tab, then the same workspace, then
+another workspace owned by the client. If none is available, the client detaches.
+Closing the final workspace leaves a fresh layout without a running shell.
+Closing the GUI window releases its writer lease while the daemon keeps its PTYs
+alive. Operation-by-operation parity remains subject to A32.
 
 ## 8. IPC and external control contract
 

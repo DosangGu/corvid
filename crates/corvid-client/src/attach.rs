@@ -15,10 +15,10 @@ use corvid_protocol::wire::{
     ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
 };
 use corvid_protocol::{
-    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
-    CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameReader, FrameWriter,
-    MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame,
-    STATUS_BAR_CAPABILITY, Session, decode_envelope,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
+    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameReader,
+    FrameWriter, MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY,
+    RenderFrame, STATUS_BAR_CAPABILITY, Session, decode_envelope,
 };
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{SignalKind, signal};
@@ -144,7 +144,11 @@ async fn request_attach(
 ) -> Result<(Connection, RouteToken)> {
     check_viewport_support(&connection.session, viewport)?;
     let mut terminal_capabilities = vec!["legacy_vt.v1".into(), "tabs.v1".into()];
-    for capability in [PAIR_CAPABILITY, STATUS_BAR_CAPABILITY] {
+    for capability in [
+        PAIR_CAPABILITY,
+        STATUS_BAR_CAPABILITY,
+        CLOSE_VIEW_CAPABILITY,
+    ] {
         if connection
             .session
             .capabilities

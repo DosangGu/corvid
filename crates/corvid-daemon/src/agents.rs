@@ -74,6 +74,15 @@ struct ManagedRun {
 }
 
 impl Agents {
+    pub(crate) fn terminal_unavailable(&mut self, terminal: Uuid) {
+        for (id, record) in &mut self.runs {
+            if record.run.identity.terminal_id == terminal && record.terminal_available {
+                record.terminal_available = false;
+                self.dirty.insert(*id);
+            }
+        }
+    }
+
     pub(crate) fn reserve_shell(
         &mut self,
         location: Location,

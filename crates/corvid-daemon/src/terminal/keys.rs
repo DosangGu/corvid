@@ -1,4 +1,4 @@
-use corvid_core::layout::Axis;
+use corvid_core::layout::{Axis, CloseTarget, Location};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Default)]
@@ -6,6 +6,7 @@ pub(crate) struct Keymap {
     pub(crate) tabs: bool,
     pub(crate) pairing: bool,
     pub(crate) panes: bool,
+    pub(crate) close: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,8 +29,28 @@ pub(crate) enum TabCommand {
 pub(super) enum KeyCommand {
     Detach,
     Tab(TabCommand),
+    Close(CloseKind),
     PickTab,
     PairController,
+}
+
+pub(super) enum CloseKind {
+    Pane,
+    Tab,
+    Workspace,
+}
+
+impl CloseKind {
+    pub(super) fn target(self, location: Location) -> CloseTarget {
+        match self {
+            Self::Pane => CloseTarget::Pane(location),
+            Self::Tab => CloseTarget::Tab {
+                workspace: location.workspace,
+                tab: location.tab,
+            },
+            Self::Workspace => CloseTarget::Workspace(location.workspace),
+        }
+    }
 }
 
 impl Keymap {
@@ -42,6 +63,9 @@ impl Keymap {
             b"%" if self.panes => Some(KeyCommand::Tab(TabCommand::Split(Axis::Horizontal))),
             b"\"" if self.panes => Some(KeyCommand::Tab(TabCommand::Split(Axis::Vertical))),
             b"o" if self.panes => Some(KeyCommand::Tab(TabCommand::NextPane)),
+            b"X" if self.close => Some(KeyCommand::Close(CloseKind::Pane)),
+            b"T" if self.close => Some(KeyCommand::Close(CloseKind::Tab)),
+            b"S" if self.close => Some(KeyCommand::Close(CloseKind::Workspace)),
             [digit @ b'1'..=b'9'] if self.tabs => Some(KeyCommand::Tab(TabCommand::Index(
                 usize::from(digit - b'1'),
             ))),

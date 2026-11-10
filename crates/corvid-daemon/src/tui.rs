@@ -4,18 +4,19 @@ use std::time::{Duration, Instant};
 use crate::platform::{ReadHalf, Stream, WriteHalf, decode_os_string};
 use anyhow::{Context, Result};
 use corvid_core::agent::Provider;
-use corvid_core::layout::{Axis, Location};
+use corvid_core::layout::{Axis, CloseTarget, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, AgentResponded, Attach, Attached, CreateView, Envelope, FocusViewAgent,
-    LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader, RouteToken,
-    SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport, WriterClaimed,
+    AgentProvider, AgentResponded, Attach, Attached, CloseView, CreateView, Envelope,
+    FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader,
+    RouteToken, SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
+    WriterClaimed,
 };
 use corvid_protocol::{
-    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
-    CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
+    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
 };
@@ -29,7 +30,7 @@ use crate::incoming::Incoming;
 use crate::projection::selection;
 use crate::terminal::{Action, Event, Keymap, Launch, Render, TuiViewport};
 use crate::workspaces::{
-    Active, AttachTarget, Destination, FocusDispatch, FocusRecovery, Workspaces,
+    Active, AttachTarget, Closed, Destination, FocusDispatch, FocusRecovery, Workspaces,
 };
 
 const CAPABILITIES: &[&str] = &[
@@ -41,6 +42,7 @@ const CAPABILITIES: &[&str] = &[
     "select_view.v1",
     CLAIM_WORKSPACE_CAPABILITY,
     CREATE_VIEW_CAPABILITY,
+    CLOSE_VIEW_CAPABILITY,
     PANE_PREVIEW_CAPABILITY,
     MOVE_TAB_CAPABILITY,
     #[cfg(target_os = "linux")]
@@ -226,6 +228,10 @@ impl TuiConnection<'_> {
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
             }
+            Body::CloseView(view) => match close_target(view, self.active.route.view_revision) {
+                Ok(target) => return self.close(target, request.request_id, false).await,
+                Err(fault) => self.fault(request.request_id, fault).await?,
+            },
             Body::FocusViewAgent(agent) => {
                 return self
                     .focus_own_agent(agent, request.request_id.clone())
@@ -311,6 +317,7 @@ impl TuiConnection<'_> {
                 return Ok(true);
             }
             Event::Tab(command) => self.switch(Destination::Tab(command), None, true).await?,
+            Event::Close(target) => return self.close(target, None, true).await,
             Event::PairController => self.pair(None).await?,
         }
         Ok(false)
@@ -430,6 +437,39 @@ impl TuiConnection<'_> {
             }
         }
         Ok(())
+    }
+
+    async fn close(
+        &mut self,
+        target: CloseTarget,
+        request_id: Option<String>,
+        modal: bool,
+    ) -> Result<bool> {
+        match self.workspaces.close(&self.active, target).await {
+            Ok(Closed::Switched(switched)) => {
+                self.active = switched.active;
+                self.view_changed(request_id, switched.paste_discarded)
+                    .await?;
+            }
+            Ok(Closed::Unchanged) => {
+                if modal {
+                    self.active.terminal.resume(self.active.route).await?;
+                }
+                self.view_changed(request_id, false).await?;
+            }
+            Ok(Closed::Detached) => {
+                self.send(request_id, Body::Detach(corvid_protocol::wire::Detach {}))
+                    .await?;
+                return Ok(true);
+            }
+            Err(fault) => {
+                if modal {
+                    self.active.terminal.resume(self.active.route).await?;
+                }
+                self.fault(request_id, fault).await?;
+            }
+        }
+        Ok(false)
     }
 
     async fn view_changed(
@@ -575,6 +615,24 @@ fn parse_selection(view: &corvid_protocol::wire::ViewSelection) -> Result<Locati
     })
 }
 
+fn close_target(view: &CloseView, revision: u64) -> Result<CloseTarget, ProtocolFault> {
+    require_view(view.expected_view_revision, revision)?;
+    let workspace = parse_id(&view.workspace_id)?;
+    match (&view.tab_id, &view.pane_id) {
+        (None, None) => Ok(CloseTarget::Workspace(workspace)),
+        (Some(tab), None) => Ok(CloseTarget::Tab {
+            workspace,
+            tab: parse_id(tab)?,
+        }),
+        (Some(tab), Some(pane)) => Ok(CloseTarget::Pane(Location {
+            workspace,
+            tab: parse_id(tab)?,
+            pane: parse_id(pane)?,
+        })),
+        (None, Some(_)) => Err(invalid("closing a pane requires its tab ID")),
+    }
+}
+
 fn require_view(expected: Option<u64>, current: u64) -> Result<(), ProtocolFault> {
     if expected != Some(current) {
         return Err(ProtocolFault::new(
@@ -718,6 +776,10 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
                 .terminal_capabilities
                 .iter()
                 .any(|name| name == CREATE_VIEW_CAPABILITY),
+            close: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == CLOSE_VIEW_CAPABILITY),
         },
         viewport: TuiViewport {
             outer: viewport(attach.viewport.as_ref())?,

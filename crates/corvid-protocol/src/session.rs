@@ -208,6 +208,7 @@ impl Session {
                 | Body::ResizeViewport(_)
                 | Body::SelectView(_)
                 | Body::CreateView(_)
+                | Body::CloseView(_)
                 | Body::FocusViewAgent(_)
                 | Body::ReadPanePreview(_)
                 | Body::ClaimWorkspaceWriter(_)

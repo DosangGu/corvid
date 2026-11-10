@@ -13,13 +13,15 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, CreateView, FocusViewAgent,
-    FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview,
-    ResizeViewport, RouteToken, SelectView, TerminalState, ViewSelection, Viewport, WorkspaceState,
+    AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, CloseView, CreateView,
+    FocusViewAgent, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk, PasteEnd,
+    ReadPanePreview, ResizeViewport, RouteToken, SelectView, TerminalState, ViewSelection,
+    Viewport, WorkspaceState,
 };
 use corvid_protocol::{
-    CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY,
-    Frame, PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame, decode_envelope,
+    CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
+    DEFAULT_SHELL_CAPABILITY, Frame, PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame,
+    decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout};
@@ -140,6 +142,14 @@ pub struct Ui {
     pub message: String,
     pub connected: bool,
     pub changing: bool,
+    pub close_supported: bool,
+    pub closed_view: bool,
+}
+
+impl Ui {
+    pub fn can_close(&self) -> bool {
+        self.connected && self.close_supported && !self.changing
+    }
 }
 
 struct Buffer {
@@ -205,6 +215,7 @@ enum Action {
     },
     Select(ViewSelection, bool, Option<String>),
     Create(Target),
+    Close(CloseView),
     OpenSlotBoard(slot_board::Settings),
 }
 
@@ -236,6 +247,8 @@ impl Session {
                     },
                     connected: false,
                     changing: true,
+                    close_supported: false,
+                    closed_view: false,
                 },
                 parser: Parser::new(grid.rows, grid.cols, 0),
                 revision: 0,
@@ -351,6 +364,14 @@ impl Session {
         self.change(Action::Create(target));
     }
 
+    pub fn view_revision(&self) -> u64 {
+        self.shared.buffer().revision
+    }
+
+    pub fn close(&self, target: CloseView) {
+        self.change(Action::Close(target));
+    }
+
     pub fn open_slot_board(&self, settings: slot_board::Settings) {
         if self.shared.buffer().ui.connected {
             let _ = self.actions.try_send(Action::OpenSlotBoard(settings));
@@ -399,7 +420,9 @@ struct Pending {
 
 enum Operation {
     Claim(ViewSelection, bool, Option<String>),
+    ClaimClose(CloseView),
     View,
+    Close,
     Resize,
     Preview,
 }
@@ -529,7 +552,15 @@ async fn run(
 
     let host = link.session().host_id.clone();
     let epoch = link.session().server_epoch.clone();
-    shared.update_ui(|ui| ui.host_id = Some(host.clone()));
+    let close_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == CLOSE_VIEW_CAPABILITY);
+    shared.update_ui(|ui| {
+        ui.host_id = Some(host.clone());
+        ui.close_supported = close_supported;
+    });
     let mut client = Client {
         link,
         endpoint: endpoint.clone(),
@@ -791,6 +822,19 @@ impl Client<'_> {
                 }
             }
             Action::Create(target) => self.create(target).await?,
+            Action::Close(target) if target.workspace_id != self.selected.workspace_id => {
+                self.request(
+                    Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
+                        workspace_id: target.workspace_id.clone(),
+                    }),
+                    Operation::ClaimClose(target),
+                )
+                .await?;
+            }
+            Action::Close(target) => {
+                self.request(Body::CloseView(target), Operation::Close)
+                    .await?
+            }
         }
         Ok(())
     }
@@ -965,6 +1009,17 @@ impl Client<'_> {
             }
             Body::WriterClaimed(claim) => {
                 let pending = self.pending.take().context("unsolicited writer claim")?;
+                if let Operation::ClaimClose(target) = pending.kind {
+                    ensure!(
+                        id.as_deref() == Some(&pending.id)
+                            && claim.workspace_id == target.workspace_id
+                            && claim.generation > 0,
+                        "invalid writer claim"
+                    );
+                    self.request(Body::CloseView(target), Operation::Close)
+                        .await?;
+                    return Ok(None);
+                }
                 let Operation::Claim(selection, open, run) = pending.kind else {
                     bail!("unexpected writer claim");
                 };
@@ -1016,7 +1071,20 @@ impl Client<'_> {
                 });
                 return Ok(Some(format!("Shell exited ({}).", exit.exit_code)));
             }
-            Body::Detach(_) => return Ok(Some("Detached from Corvid.".into())),
+            Body::Detach(_) => {
+                if self.pending.as_ref().is_some_and(|pending| {
+                    id.as_deref() == Some(&pending.id) && matches!(pending.kind, Operation::Close)
+                }) {
+                    self.shared.update_ui(|ui| {
+                        ui.closed_view = true;
+                        ui.inventory = None;
+                        ui.inventory_ready = false;
+                        ui.selected = None;
+                    });
+                    return Ok(Some("View closed.".into()));
+                }
+                return Ok(Some("Detached from Corvid.".into()));
+            }
             _ => bail!("unexpected interactive daemon reply"),
         }
         Ok(None)
