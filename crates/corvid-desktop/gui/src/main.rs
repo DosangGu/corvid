@@ -1,7 +1,5 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(any(windows, test))]
-mod session_layout;
 #[cfg(windows)]
 mod terminal_paint;
 #[cfg(windows)]
@@ -22,18 +20,20 @@ fn main() -> anyhow::Result<()> {
     use std::path::PathBuf;
 
     use clap::Parser;
-    use corvid_deck::{deck::setup::DesktopLifetime, icons::Icons};
+    use corvid_companion::{Config, HostEndpoint};
+    use corvid_deck::icons::Icons;
     use gpui::{
         App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px,
         size,
     };
-    use workspace_view::{AgentSetup, WorkspaceView};
+    use workspace_view::{Lifetime, WorkspaceView};
 
     #[derive(Parser)]
-    #[command(about = "Open a local Corvid terminal workspace")]
+    #[command(about = "Attach to a Corvid multiplexer daemon")]
     struct Options {
-        #[arg(long, default_value = "main")]
-        pipe_instance: String,
+        // Accepted for the existing companion launch command.
+        #[arg(long = "pipe-instance", hide = true)]
+        _pipe_instance: Option<String>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
         #[arg(long)]
@@ -41,18 +41,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     let options = Options::parse();
+    let alias = options.ssh_alias;
     let state = options
         .state_dir
         .map_or_else(corvid_companion::launch::default_state_dir, Ok)?;
-    let setup = AgentSetup {
-        instance: options.pipe_instance,
-        state,
-        alias: options.ssh_alias,
-    };
-    let companion_lifetime = DesktopLifetime::default();
-    let app_companion_lifetime = companion_lifetime.clone();
-    let terminal_lifetime = terminal_view::Lifetime::default();
-    let app_terminal_lifetime = terminal_lifetime.clone();
+    let configured = Config::read_if_present(&state)?.map(|config| {
+        let HostEndpoint::Ssh { alias } = config.endpoint;
+        (alias, config.host_id.to_string())
+    });
+    let lifetime = Lifetime::default();
+    let app_lifetime = lifetime.clone();
 
     Application::new()
         .with_assets(Icons)
@@ -75,21 +73,12 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {
-                cx.new(|cx| {
-                    WorkspaceView::new(
-                        setup,
-                        app_companion_lifetime,
-                        app_terminal_lifetime,
-                        window,
-                        cx,
-                    )
-                })
+                cx.new(|cx| WorkspaceView::new(alias, configured, app_lifetime, window, cx))
             })
             .expect("could not open Corvid Desktop");
             cx.activate(true);
         });
 
-    companion_lifetime.shutdown();
-    terminal_lifetime.shutdown();
+    lifetime.shutdown();
     Ok(())
 }

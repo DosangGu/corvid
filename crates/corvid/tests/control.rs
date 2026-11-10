@@ -16,12 +16,12 @@ use corvid_protocol::snapshot::{SnapshotAssembler, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, CollectHook, CollectorStatus, CollectorTraffic, GetCapabilities, GetHost,
-    HookEvent, HostInfo, Ping, ProviderCapabilityKind, ProviderExecutionMode,
-    ProviderQualification, SnapshotWatch,
+    AgentProvider, Attach, AttachRole, CollectHook, CollectorStatus, CollectorTraffic, Detach,
+    GetCapabilities, GetHost, HookEvent, HostInfo, LaunchCommand, Ping, ProviderCapabilityKind,
+    ProviderExecutionMode, ProviderQualification, SnapshotWatch, Viewport,
 };
 use corvid_protocol::{
-    CAPABILITY_QUERY, FRAME_PREAMBLE, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
+    CAPABILITY_QUERY, FRAME_PREAMBLE, Frame, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
     PeerRole, check_hello_result, hello,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,6 +29,87 @@ use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon};
+
+#[tokio::test]
+async fn relays_daemon_terminal_frames_without_an_outer_tty() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+
+    timeout(WAIT, async {
+        let mut relay = command(&runtime)
+            .arg("terminal-relay")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut writer = FrameWriter::start(relay.stdin.take().unwrap(), FrameRole::StructuredOnly)
+            .await
+            .unwrap();
+        let mut reader = FrameReader::start(relay.stdout.take().unwrap(), FrameRole::TuiOutput)
+            .await
+            .unwrap();
+        let greeting = hello(
+            "greeting".into(),
+            None,
+            vec!["attach.v1".into(), "render.v1".into()],
+        );
+        writer.envelope(&greeting).await.unwrap();
+        let session = check_hello_result(
+            &greeting,
+            &reader.next_envelope().await.unwrap().unwrap(),
+            PeerRole::Tui,
+        )
+        .unwrap();
+        let request = session.envelope(
+            Some("attach".into()),
+            Body::Attach(Attach {
+                viewport: Some(Viewport { rows: 24, cols: 80 }),
+                terminal_capabilities: vec!["legacy_vt.v1".into()],
+                requested_role: AttachRole::Writer as i32,
+                launch: Some(LaunchCommand {
+                    argv: vec![
+                        b"/bin/sh".to_vec(),
+                        b"-c".to_vec(),
+                        b"printf 'DAEMON-RELAY-READY\\n'; read answer".to_vec(),
+                    ],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        );
+        writer.envelope(&request).await.unwrap();
+        let reply = reader.next_envelope().await.unwrap().unwrap();
+        assert!(matches!(reply.body, Some(Body::Attached(_))));
+        loop {
+            let Frame::Render(frame) = reader.next_frame().await.unwrap().unwrap() else {
+                panic!("expected ANSI render")
+            };
+            if String::from_utf8_lossy(&frame.ansi).contains("DAEMON-RELAY-READY") {
+                break;
+            }
+            let applied = corvid_protocol::wire::FrameApplied {
+                render_generation: frame.header.render_generation,
+                frame_id: frame.header.frame_id,
+            };
+            writer
+                .envelope(&session.envelope(Some("applied".into()), Body::FrameApplied(applied)))
+                .await
+                .unwrap();
+        }
+        writer
+            .envelope(&session.envelope(Some("detach".into()), Body::Detach(Detach {})))
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+        drop(writer);
+        assert!(relay.wait().await.unwrap().success());
+        let status = corvid_client::status(&runtime).await.unwrap();
+        assert!(status.terminal_live);
+    })
+    .await
+    .unwrap();
+}
 
 async fn local_host(runtime: &Path) -> String {
     let output = timeout(WAIT, command(runtime).args(["control", "host"]).output())

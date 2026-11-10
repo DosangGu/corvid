@@ -13,18 +13,16 @@ resolver = "3"
 name = "corvid-desktop"
 path = "src/main.rs"
 
-[dependencies]
-corvid-core = { path = "../../corvid-core" }
-uuid = { version = "1.29", features = ["v4"] }
-
 [target.'cfg(windows)'.dependencies]
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
+corvid-client = { path = "../../corvid-client" }
 corvid-companion = { path = "../../corvid-companion" }
 corvid-deck = { path = "../../../spikes/deck" }
+corvid-protocol = { path = "../../corvid-protocol" }
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
-portable-pty = "=0.9.0"
-tokio = { version = "=1.53.3", features = ["sync"] }
+tokio = { version = "=1.53.3", features = ["rt", "sync", "time"] }
+uuid = { version = "1.29", features = ["v4"] }
 vt100 = { version = "=0.18.1", default-features = false }
 
 [profile.dev]

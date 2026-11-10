@@ -11,15 +11,18 @@ use corvid_companion::{HostEndpoint, PresentationClient, initialize};
 use corvid_protocol::controller::{FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::snapshot::{SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
+use corvid_protocol::wire::FocusViewAgent;
+use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
-    ClaimWorkspaceWriter, ClientKeymap, ClientState, CompanionConnection, EntityKind, Envelope,
-    FocusAgentRequest, FocusApplied, FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot,
-    InputChunk, IssuePairingCode, LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin,
-    PasteChunk, PasteEnd, Ping, PresentationSlots, PresentedSlot, PresentedSlotToken,
-    ResizeViewport, RouteToken, SelectView, SnapshotWatch, TuiInputMode, ViewSelection, Viewport,
+    ClaimWorkspaceWriter, ClientKeymap, ClientState, CompanionConnection, CreateView, EntityKind,
+    Envelope, FocusAgentRequest, FocusApplied, FocusSlot, FrameApplied, GetPresentationSlots,
+    GetSnapshot, InputChunk, IssuePairingCode, LaunchCommand, ListClients, MoveTab, PairTerminal,
+    PasteBegin, PasteChunk, PasteEnd, Ping, PresentationSlots, PresentedSlot, PresentedSlotToken,
+    ReadPanePreview, ResizeViewport, RouteToken, SelectView, SnapshotWatch, SplitAxis,
+    TuiInputMode, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
@@ -201,6 +204,106 @@ async fn control(runtime: &Path, request: &str) -> String {
         String::from_utf8_lossy(&result.stderr)
     );
     String::from_utf8(result.stdout).unwrap()
+}
+
+#[tokio::test]
+async fn daemon_owns_split_panes_previews_and_exact_reattach() {
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let mut daemon = daemon(&runtime, &state).await;
+
+    timeout(WAIT, async {
+        let mut tui = Tui::attach_command(&runtime, Some(echo_fixture("SOURCE"))).await;
+        let original = tui.selection.clone();
+        let retired = tui.route.clone();
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "SOURCE-READY").await;
+
+        tui.send(Body::CreateView(CreateView {
+            expected_view_revision: Some(retired.view_revision),
+            target: Some(Target::SplitAxis(SplitAxis::Horizontal as i32)),
+        }))
+        .await;
+        let Body::ViewChanged(view) = tui.next_body(&mut output).await else {
+            panic!("expected split")
+        };
+        tui.selection = view.selection.unwrap();
+        tui.route = view.route_token.unwrap();
+        let split = tui.selection.clone();
+        let split_terminal = tui.route.terminal_id.clone();
+        assert_eq!(split.workspace_id, original.workspace_id);
+        assert_eq!(split.tab_id, original.tab_id);
+        assert_ne!(split.pane_id, original.pane_id);
+
+        tui.input(retired.clone(), 1, b"stale\n").await;
+        let Body::Error(error) = tui.next_body(&mut output).await else {
+            panic!("expected a fenced route")
+        };
+        assert_eq!(error.code, "StaleRoute");
+
+        tui.send(Body::ReadPanePreview(ReadPanePreview {
+            expected_view_revision: Some(tui.route.view_revision),
+            pane_id: original.pane_id.clone(),
+        }))
+        .await;
+        loop {
+            let Frame::Render(frame) = tui.reader.next_frame().await.unwrap().unwrap() else {
+                panic!("expected a render frame")
+            };
+            if let Some(preview) = frame.header.preview {
+                assert_eq!(preview.pane_id, original.pane_id);
+                assert!(frame.header.base_frame_id.is_none());
+                assert!(String::from_utf8_lossy(&frame.ansi).contains("SOURCE-READY"));
+                break;
+            }
+            tui.send(Body::FrameApplied(FrameApplied {
+                render_generation: frame.header.render_generation,
+                frame_id: frame.header.frame_id,
+            }))
+            .await;
+        }
+
+        tui.send(Body::CreateView(CreateView {
+            expected_view_revision: Some(tui.route.view_revision),
+            target: Some(Target::WorkspaceLabel("Desktop workspace".into())),
+        }))
+        .await;
+        let Body::ViewChanged(workspace) = tui.next_body(&mut output).await else {
+            panic!("expected a new workspace")
+        };
+        assert_ne!(
+            workspace.selection.unwrap().workspace_id,
+            original.workspace_id
+        );
+        drop(tui);
+        loop {
+            if corvid_client::clients(&runtime)
+                .await
+                .unwrap()
+                .clients
+                .is_empty()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        let tui = Tui::attach_target(
+            &runtime,
+            Attach {
+                workspace_id: Some(split.workspace_id.clone()),
+                tab_id: Some(split.tab_id.clone()),
+                pane_id: Some(split.pane_id.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(tui.selection, split);
+        assert_eq!(tui.route.terminal_id, split_terminal);
+    })
+    .await
+    .unwrap();
+    daemon.kill().await.unwrap();
 }
 
 #[tokio::test]
@@ -881,6 +984,21 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         wait_for_text(&mut other, &mut Vec::new(), "C-READY").await;
         let b = wait_for_agent(&runtime, &main.route.terminal_id, |agent| agent.terminal_available).await;
         let c = wait_for_agent(&runtime, &other.route.terminal_id, |agent| agent.terminal_available).await;
+        main.send(Body::FocusViewAgent(FocusViewAgent {
+            expected_view_revision: Some(main.route.view_revision),
+            agent_run_id: a.agent_run_id.clone(),
+            expected_location: b.location.clone(),
+        })).await;
+        assert!(matches!(main.next_body(&mut output).await, Body::Error(fault) if fault.code == "TargetGone"));
+        for agent in [&a, &b] {
+            main.send(Body::FocusViewAgent(FocusViewAgent {
+                expected_view_revision: Some(main.route.view_revision),
+                agent_run_id: agent.agent_run_id.clone(),
+                expected_location: agent.location.clone(),
+            })).await;
+            main.moved(&mut output, agent.location.as_ref().unwrap()).await;
+            assert_eq!(main.route.terminal_id, agent.terminal_id);
+        }
         let scope = controller_scope(&main, "test");
         let client = Uuid::parse_str(&main.route.client_id).unwrap();
         let code = issue_pairing(&mut main).await;
@@ -911,13 +1029,13 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         main.enter_command_mode(2, &mut output).await;
         let main_before = main.client_state(&runtime).await;
         assert_eq!(main_before.input_mode, Some(TuiInputMode::Command as i32));
-        assert_eq!(main_before.keymap, Some(ClientKeymap { tabs: true, pairing: false }));
+        assert_eq!(main_before.keymap, Some(ClientKeymap { tabs: true, pairing: false, panes: false }));
 
         let mut other_output = Vec::new();
         other.enter_command_mode(1, &mut other_output).await;
         let other_before = other.client_state(&runtime).await;
         assert_eq!(other_before.input_mode, Some(TuiInputMode::Command as i32));
-        assert_eq!(other_before.keymap, Some(ClientKeymap { tabs: false, pairing: true }));
+        assert_eq!(other_before.keymap, Some(ClientKeymap { tabs: false, pairing: true, panes: false }));
 
         let applied = focus(&runtime, &scope, "focus-a", client, revision, &a).await.unwrap();
         assert_eq!(applied.agent_run_id, a.agent_run_id);

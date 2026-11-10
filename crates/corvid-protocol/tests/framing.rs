@@ -28,6 +28,7 @@ fn render() -> RenderFrame {
             frame_id: 1,
             base_frame_id: None,
             ansi_bytes: ansi.len() as u32,
+            preview: None,
         },
         ansi,
     }

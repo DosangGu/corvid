@@ -1,7 +1,7 @@
 use std::io::{self, IsTerminal};
 use std::path::Path;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use corvid_protocol::unix::SocketRole;
 use corvid_protocol::wire::Envelope;
 use corvid_protocol::wire::envelope::Body;
@@ -15,11 +15,19 @@ use tokio::time::timeout;
 use crate::connection::{open, read_preamble};
 
 pub async fn relay(runtime: &Path) -> Result<()> {
+    relay_role(runtime, SocketRole::Control, FrameRole::StructuredOnly).await
+}
+
+pub async fn relay_tui(runtime: &Path) -> Result<()> {
+    relay_role(runtime, SocketRole::Client, FrameRole::TuiOutput).await
+}
+
+async fn relay_role(runtime: &Path, socket: SocketRole, output: FrameRole) -> Result<()> {
     ensure!(
         !io::stdin().is_terminal() && !io::stdout().is_terminal(),
-        "control --stdio requires a connection without a TTY"
+        "a stdio relay requires a connection without a TTY"
     );
-    let mut outgoing = FrameWriter::start(stdout(), FrameRole::StructuredOnly).await?;
+    let mut outgoing = FrameWriter::start(stdout(), output).await?;
     let mut incoming = timeout(
         COMMAND_TIMEOUT,
         FrameReader::start(stdin(), FrameRole::StructuredOnly),
@@ -27,7 +35,7 @@ pub async fn relay(runtime: &Path) -> Result<()> {
     .await
     .context("relay preamble timed out")??;
 
-    let stream = match open(runtime, SocketRole::Control).await {
+    let stream = match open(runtime, socket).await {
         Ok(stream) => stream,
         Err(error) => {
             let mut fault =
@@ -39,12 +47,7 @@ pub async fn relay(runtime: &Path) -> Result<()> {
     };
     let (read, write) = stream.into_split();
     let mut to_daemon = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
-    let mut from_daemon = match timeout(
-        COMMAND_TIMEOUT,
-        read_preamble(read, FrameRole::StructuredOnly),
-    )
-    .await?
-    {
+    let mut from_daemon = match timeout(COMMAND_TIMEOUT, read_preamble(read, output)).await? {
         Ok(reader) => reader,
         Err(error) => {
             if let Some(fault) = error.downcast_ref::<ProtocolFault>() {
@@ -71,10 +74,13 @@ async fn forward(
     writer: &mut FrameWriter<impl AsyncWrite + Unpin>,
 ) -> Result<()> {
     while let Some(frame) = reader.next_frame().await? {
-        let Frame::Structured(payload) = frame else {
-            bail!("unexpected render frame on control relay");
-        };
-        timeout(COMMAND_TIMEOUT, writer.opaque_envelope(&payload)).await??;
+        timeout(COMMAND_TIMEOUT, async {
+            match frame {
+                Frame::Structured(payload) => writer.opaque_envelope(&payload).await,
+                Frame::Render(render) => writer.render(&render).await,
+            }
+        })
+        .await??;
     }
     writer.shutdown().await?;
     Ok(())

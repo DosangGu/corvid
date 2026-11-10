@@ -79,6 +79,9 @@ message Envelope {
     ListHosts list_hosts = 109;
     HostList host_list = 110;
     AgentResponded agent_responded = 111;
+    CreateView create_view = 112;
+    FocusViewAgent focus_view_agent = 113;
+    ReadPanePreview read_pane_preview = 114;
   }
 }
 
@@ -210,6 +213,7 @@ enum TuiInputMode {
 message ClientKeymap {
   bool tabs = 1;
   bool pairing = 2;
+  bool panes = 3;
 }
 
 message ClientBindingState {
@@ -896,6 +900,7 @@ message Attach {
   optional string tab_id = 6;
   optional string create_workspace = 7;
   optional string create_tab = 8;
+  optional string pane_id = 9;
 }
 
 message LaunchCommand {
@@ -968,6 +973,27 @@ message SelectView {
   string pane_id = 4;
 }
 
+message CreateView {
+  optional uint64 expected_view_revision = 1;
+  oneof target {
+    string workspace_label = 2;
+    string tab_label = 3;
+    SplitAxis split_axis = 4;
+    ViewSelection open_pane = 5;
+  }
+}
+
+message FocusViewAgent {
+  optional uint64 expected_view_revision = 1;
+  string agent_run_id = 2;
+  ViewSelection expected_location = 3;
+}
+
+message ReadPanePreview {
+  optional uint64 expected_view_revision = 1;
+  string pane_id = 2;
+}
+
 message ClaimWorkspaceWriter {
   string workspace_id = 1;
 }
@@ -1010,4 +1036,10 @@ message RenderHeader {
   uint64 frame_id = 6;
   optional uint64 base_frame_id = 7;
   uint32 ansi_bytes = 8;
+  PanePreviewFrame preview = 9;
+}
+
+message PanePreviewFrame {
+  string pane_id = 1;
+  Viewport viewport = 2;
 }

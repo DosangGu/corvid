@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use corvid_core::InputRoute;
 use corvid_core::layout::Location;
-use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::FocusApplied;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::mpsc::error::TrySendError;
 use uuid::Uuid;
 
@@ -14,11 +14,15 @@ use crate::projection::selection;
 use crate::terminal::InputMode;
 
 pub(super) struct FocusTarget {
-    pub(super) controller: String,
     pub(super) client: Uuid,
     pub(super) run: Uuid,
-    pub(super) revision: u64,
+    pub(super) authorization: FocusAuthorization,
     pub(super) expires: Instant,
+}
+
+pub(super) enum FocusAuthorization {
+    Binding { controller: String, revision: u64 },
+    Writer { location: Location },
 }
 
 pub(crate) struct FocusDispatch {
@@ -80,7 +84,29 @@ impl Workspaces {
         old: &Active,
         dispatch: &FocusDispatch,
     ) -> Result<Focused, FocusRejected> {
-        let target = &dispatch.target;
+        self.focus_target(old, &dispatch.target).await
+    }
+
+    pub(crate) async fn focus_own_agent(
+        &self,
+        old: &Active,
+        run: Uuid,
+        location: Location,
+    ) -> Result<Focused, FocusRejected> {
+        let target = FocusTarget {
+            client: old.route.client_id,
+            run,
+            authorization: FocusAuthorization::Writer { location },
+            expires: Instant::now() + COMMAND_TIMEOUT,
+        };
+        self.focus_target(old, &target).await
+    }
+
+    async fn focus_target(
+        &self,
+        old: &Active,
+        target: &FocusTarget,
+    ) -> Result<Focused, FocusRejected> {
         let (destination, reserved) = match self.prepare_focus(old, target)? {
             Prepared::Current(reply) => {
                 return Ok(Focused {
@@ -249,8 +275,14 @@ impl Registry {
             .get(&target.client)
             .filter(|client| client.view.is_some() && !client.focuses.is_closed())
             .ok_or_else(no_client)?;
-        self.controllers
-            .verify(target.client, &target.controller, target.revision)?;
+        if let FocusAuthorization::Binding {
+            controller,
+            revision,
+        } = &target.authorization
+        {
+            self.controllers
+                .verify(target.client, controller, *revision)?;
+        }
 
         let (terminal, owner) = self
             .agents
@@ -260,6 +292,10 @@ impl Registry {
             return Err(target_gone());
         }
         let location = *self.terminals.get(&terminal).ok_or_else(target_gone)?;
+        if matches!(target.authorization, FocusAuthorization::Writer { location: expected } if location != expected)
+        {
+            return Err(target_gone());
+        }
         if !self
             .slots
             .get(&location.pane)
@@ -349,6 +385,7 @@ mod tests {
             .attach(
                 Uuid::new_v4(),
                 AttachTarget {
+                    pane: None,
                     workspace: None,
                     tab: None,
                     new_workspace: None,
@@ -408,10 +445,12 @@ mod tests {
             panic!("missing binding")
         };
         let target = FocusTarget {
-            controller: "controller".to_owned(),
             client,
             run,
-            revision: binding.binding_revision,
+            authorization: FocusAuthorization::Binding {
+                controller: "controller".to_owned(),
+                revision: binding.binding_revision,
+            },
             expires: Instant::now() + COMMAND_TIMEOUT,
         };
 

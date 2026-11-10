@@ -1,23 +1,24 @@
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use corvid_core::agent::Provider;
-use corvid_core::layout::Location;
+use corvid_core::layout::{Axis, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, AgentResponded, Attach, Attached, Envelope, LaunchCommand, MoveTab, Pong,
-    RenderHeader, RouteToken, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
-    WriterClaimed,
+    AgentProvider, AgentResponded, Attach, Attached, CreateView, Envelope, FocusViewAgent,
+    LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader, RouteToken,
+    SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport, WriterClaimed,
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
-    DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter, LEGACY_DEFAULT_LAUNCH_CAPABILITY,
-    MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame,
-    Session,
+    CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter,
+    LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
+    ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, Session,
 };
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -42,6 +43,8 @@ const CAPABILITIES: &[&str] = &[
     "tabs.v1",
     "select_view.v1",
     CLAIM_WORKSPACE_CAPABILITY,
+    CREATE_VIEW_CAPABILITY,
+    PANE_PREVIEW_CAPABILITY,
     MOVE_TAB_CAPABILITY,
     PAIR_CAPABILITY,
     ADAPTIVE_VIEWPORT_CAPABILITY,
@@ -142,6 +145,7 @@ async fn serve_active(
         active,
         workspaces,
         client_events,
+        last_preview: None,
     }
     .run(reader)
     .await
@@ -153,6 +157,7 @@ struct TuiConnection<'a> {
     active: Active,
     workspaces: &'a Workspaces,
     client_events: ClientEvents,
+    last_preview: Option<Instant>,
 }
 
 struct ClientEvents {
@@ -204,6 +209,20 @@ impl TuiConnection<'_> {
                     Ok(destination) => self.switch(destination, request.request_id, false).await?,
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
+            }
+            Body::CreateView(view) => {
+                match create_destination(view, self.active.route.view_revision) {
+                    Ok(destination) => self.switch(destination, request.request_id, false).await?,
+                    Err(fault) => self.fault(request.request_id, fault).await?,
+                }
+            }
+            Body::FocusViewAgent(agent) => {
+                return self
+                    .focus_own_agent(agent, request.request_id.clone())
+                    .await;
+            }
+            Body::ReadPanePreview(preview) => {
+                self.preview(preview, request.request_id.clone()).await?
             }
             Body::ClaimWorkspaceWriter(claim) => {
                 let workspace = parse_id(&claim.workspace_id);
@@ -324,6 +343,54 @@ impl TuiConnection<'_> {
         Ok(false)
     }
 
+    async fn focus_own_agent(
+        &mut self,
+        agent: &FocusViewAgent,
+        request_id: Option<String>,
+    ) -> Result<bool> {
+        let target = (|| {
+            require_view(
+                agent.expected_view_revision,
+                self.active.route.view_revision,
+            )?;
+            let run = parse_id(&agent.agent_run_id)?;
+            let view = agent
+                .expected_location
+                .as_ref()
+                .ok_or_else(|| invalid("missing agent location"))?;
+            let location = parse_selection(view)?;
+            Ok((run, location))
+        })();
+        let (run, location) = match target {
+            Ok(target) => target,
+            Err(fault) => {
+                self.fault(request_id, fault).await?;
+                return Ok(false);
+            }
+        };
+        match self
+            .workspaces
+            .focus_own_agent(&self.active, run, location)
+            .await
+        {
+            Ok(focused) => {
+                if let Some(active) = focused.active {
+                    self.active = active;
+                }
+                self.view_changed(request_id, false).await?;
+            }
+            Err(rejected) => {
+                if let FocusRecovery::Restored(route) = rejected.recovery {
+                    self.active.route = route;
+                    self.view_changed(None, false).await?;
+                }
+                self.fault(request_id, rejected.fault).await?;
+                return Ok(matches!(rejected.recovery, FocusRecovery::Lost));
+            }
+        }
+        Ok(false)
+    }
+
     async fn switch(
         &mut self,
         destination: Destination,
@@ -383,12 +450,68 @@ impl TuiConnection<'_> {
             frame_id: render.frame_id,
             base_frame_id: render.base_frame_id,
             ansi_bytes: render.ansi.len() as u32,
+            preview: None,
         };
         let frame = RenderFrame {
             header,
             ansi: render.ansi,
         };
         timeout(COMMAND_TIMEOUT, self.writer.render(&frame)).await??;
+        Ok(())
+    }
+
+    async fn preview(&mut self, preview: &ReadPanePreview, id: Option<String>) -> Result<()> {
+        let outcome = async {
+            require_view(
+                preview.expected_view_revision,
+                self.active.route.view_revision,
+            )?;
+            let pane = parse_id(&preview.pane_id)?;
+            let now = Instant::now();
+            if self
+                .last_preview
+                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(180))
+            {
+                return Err(ProtocolFault::new(
+                    "LimitExceeded",
+                    "pane previews are rate limited",
+                ));
+            }
+            self.last_preview = Some(now);
+            timeout(
+                Duration::from_millis(150),
+                self.workspaces.preview(&self.active, pane),
+            )
+            .await
+            .map_err(|_| ProtocolFault::new("Timeout", "pane preview timed out"))?
+        }
+        .await;
+        let (viewport, ansi) = match outcome {
+            Ok(preview) => preview,
+            Err(fault) => return self.fault(id, fault).await,
+        };
+        let header = RenderHeader {
+            host_id: self.session.host_id.clone(),
+            server_epoch: self.session.server_epoch.clone(),
+            client_id: self.active.route.client_id.to_string(),
+            view_revision: self.active.route.view_revision,
+            render_generation: 1,
+            frame_id: 1,
+            base_frame_id: None,
+            ansi_bytes: ansi.len() as u32,
+            preview: Some(PanePreviewFrame {
+                pane_id: preview.pane_id.clone(),
+                viewport: Some(WireViewport {
+                    rows: viewport.rows.get().into(),
+                    cols: viewport.cols.get().into(),
+                }),
+            }),
+        };
+        timeout(
+            COMMAND_TIMEOUT,
+            self.writer.render(&RenderFrame { header, ansi }),
+        )
+        .await??;
         Ok(())
     }
 
@@ -411,6 +534,34 @@ fn exact_destination(
         tab: parse_id(&view.tab_id)?,
         pane: parse_id(&view.pane_id)?,
     }))
+}
+
+fn create_destination(view: &CreateView, revision: u64) -> Result<Destination, ProtocolFault> {
+    use corvid_protocol::wire::create_view::Target;
+
+    require_view(view.expected_view_revision, revision)?;
+    match view
+        .target
+        .as_ref()
+        .ok_or_else(|| invalid("missing view target"))?
+    {
+        Target::WorkspaceLabel(label) => Ok(Destination::CreateWorkspace(label.clone())),
+        Target::TabLabel(label) => Ok(Destination::CreateTab(label.clone())),
+        Target::SplitAxis(axis) => match SplitAxis::try_from(*axis) {
+            Ok(SplitAxis::Horizontal) => Ok(Destination::Split(Axis::Horizontal)),
+            Ok(SplitAxis::Vertical) => Ok(Destination::Split(Axis::Vertical)),
+            _ => Err(invalid("invalid split axis")),
+        },
+        Target::OpenPane(view) => Ok(Destination::Open(parse_selection(view)?)),
+    }
+}
+
+fn parse_selection(view: &corvid_protocol::wire::ViewSelection) -> Result<Location, ProtocolFault> {
+    Ok(Location {
+        workspace: parse_id(&view.workspace_id)?,
+        tab: parse_id(&view.tab_id)?,
+        pane: parse_id(&view.pane_id)?,
+    })
 }
 
 fn require_view(expected: Option<u64>, current: u64) -> Result<(), ProtocolFault> {
@@ -525,6 +676,7 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
     if launch_if_empty
         && (attach.workspace_id.is_some()
             || attach.tab_id.is_some()
+            || attach.pane_id.is_some()
             || attach.create_workspace.is_some()
             || attach.create_tab.is_some()
             || attach
@@ -539,6 +691,7 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
     Ok(AttachTarget {
         workspace: parse_optional_id(attach.workspace_id.as_deref())?,
         tab: parse_optional_id(attach.tab_id.as_deref())?,
+        pane: parse_optional_id(attach.pane_id.as_deref())?,
         new_workspace: attach.create_workspace.clone(),
         new_tab: attach.create_tab.clone(),
         keymap: Keymap {
@@ -550,6 +703,10 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
                 .terminal_capabilities
                 .iter()
                 .any(|name| name == PAIR_CAPABILITY),
+            panes: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == CREATE_VIEW_CAPABILITY),
         },
         viewport: viewport(attach.viewport.as_ref())?,
         launch: attach

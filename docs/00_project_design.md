@@ -29,9 +29,9 @@
 ## 1. Product and support boundary
 
 Corvid is a Rust terminal multiplexer with integrations for Claude Code and Codex.
-The Windows GUI starts a local terminal session with tabs and split panes.
-The Linux TUI runs inside an existing terminal emulator. A daemon on the
-execution host owns its PTYs, screen state, agent observations, and workspaces.
+The Windows GUI and Linux TUI attach to the same Corvid multiplexer. A daemon
+on the Linux execution host owns the sessions, tabs, split panes, PTYs, screen
+state, and agent observations. The TUI runs inside an existing terminal emulator.
 Losing an attached TUI, its working SSH connection, or a local controller must not
 stop remote work **while that daemon and the execution host remain alive**.
 
@@ -58,7 +58,7 @@ agents through the TUI; those actions are outside the external focus operation.
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
-| Desktop | `corvid-desktop.exe` on Windows, with PowerShell tabs, split panes, and an Agents tab | The app owns local ConPTY sessions and reuses the layout tree. The Agents tab uses the companion API |
+| Desktop | `corvid-desktop.exe` on Windows, with daemon sessions, tabs, split panes, and an Agent Deck | An interactive writer uses `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
 | Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests focus through the companion |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows or macOS daemon | Deferred | Independent process, IPC, permission, service, input, and VT validation required |
@@ -74,11 +74,11 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 
 | Decision | Selected design | Reason / verification condition |
 |---|---|---|
-| Form and language | Rust desktop workspace for local sessions and a TUI for Linux daemon sessions | Keep GUI layout independent of transport and preserve the existing interactive SSH path |
+| Form and language | Rust desktop and TUI clients of the Linux daemon | Both use the interactive writer protocol and share the daemon layout |
 | Process boundary | Real client/server foundation in Phase 1 | Detach survival precedes layout expansion |
 | Daemon scope | One daemon per OS user per host, managing all workspaces | One host registry/watch stream and direct cross-workspace focus; larger failure blast radius accepted |
 | Core IPC | Same-host Unix stream sockets (`SOCK_STREAM`) | SSH transports terminal/control channels; local IPC still needs authentication, versioning, bounds, and latency tests |
-| Layout | Workspace → Tab → N-way tree → Pane → optional Terminal | Extensible data model; initially one pane per tab |
+| Layout | Workspace → Tab → N-way tree → Pane → optional Terminal | The daemon creates splits and retains pane identity through selection and detach |
 | State authority | Server reducer for domain state; terminal workers for ordered screen state | UI shows evidence, not agent omniscience |
 | Focus and keymaps | Per ClientId, resolved on server | No system-wide focused pane or active keymap |
 | Input ownership | Explicit workspace writer lease; competing attach rejected | Focus never grants or steals a lease; later observers crop/pad |
@@ -103,21 +103,12 @@ bounded queues reduce overload risk but cannot provide crash isolation.
 ## 3. Architecture and state ownership
 
 ```text
-Local PC                                   Remote Linux host H
-existing terminal -- working SSH/PTY -->   Corvid TUI client
-                                              | client.sock
-                                              v
-desktop / virtual slots                    Corvid daemon (one per user)
-          `---------------> companion         |-- PTYs + VT screens
-                              |               |-- agent registry / reducer
-                              |               |-- workspace and client views
-                              |               |-- control/watch interface
-                              |               `-- persistence worker
-                              |
-                              `-- SSH, no PTY --> corvid control --stdio
-                                                       | control.sock
-                                                       `--> same daemon
-agent observation hook --------------------------------> collector.sock
+Local PC                 SSH              Linux execution host H
+Existing terminal  ---- with PTY ----->   corvid attach         ---- client.sock --> daemon
+Corvid Desktop     ---- without PTY -->   corvid terminal-relay ---- client.sock --> daemon
+                  `---- without PTY -->   corvid control --stdio --- control.sock -> daemon
+Deck -> companion ----- without PTY -->   corvid control --stdio --- control.sock -> daemon
+                                           Agent observation hook -- collector.sock > daemon
 ```
 
 The working SSH PTY hosts the remote TUI client; the daemon owns separate PTYs for
@@ -1239,8 +1230,11 @@ cached slot state and sends actions for the displayed slot and explicitly select
 terminal. The user can bring the selected terminal forward manually.
 See [companion and desktop setup](04_companion.md).
 
-The standalone Windows GPUI deck and the Desktop app's Agents tab share
-the deck view. The view and direct USB prototype use the same device-independent
+The Desktop app reads the daemon snapshot for its Agent Deck. It focuses a run
+through its own attached writer connection. The daemon checks the run ID, the
+displayed location, and the writer lease at focus commit.
+
+The standalone Windows GPUI deck and direct USB prototype use the same device-independent
 slot projection, focus capture, and presentation worker through the private
 pipe. A capture holds the displayed run, slot revision,
 control generation, and selected binding revision from press through release.

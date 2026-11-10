@@ -18,8 +18,9 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, COMMAND_TIMEOUT,
-    DEFAULT_SHELL_CAPABILITY, Frame, FrameReader, FrameWriter, MOVE_TAB_CAPABILITY, PeerRole,
-    ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, Session, decode_envelope,
+    CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameReader, FrameWriter,
+    MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame,
+    Session, decode_envelope,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::signal::unix::{SignalKind, signal};
@@ -45,6 +46,7 @@ pub struct AttachOptions {
     pub restore_cwd: bool,
     pub workspace: Option<String>,
     pub tab: Option<String>,
+    pub pane: Option<String>,
     pub new_workspace: Option<String>,
     pub new_tab: Option<String>,
     pub claim_workspaces: Vec<Uuid>,
@@ -62,6 +64,7 @@ impl Default for AttachOptions {
             restore_cwd: false,
             workspace: None,
             tab: None,
+            pane: None,
             new_workspace: None,
             new_tab: None,
             claim_workspaces: Vec::new(),
@@ -91,6 +94,9 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     }
     if move_tab.is_some() {
         required.push(MOVE_TAB_CAPABILITY.into());
+    }
+    if options.pane.is_some() {
+        required.push(CREATE_VIEW_CAPABILITY.into());
     }
     let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
     let notification = ResponseNotification::negotiate(&connection.session);
@@ -139,6 +145,14 @@ async fn request_attach(
     if notifications {
         terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
     }
+    if connection
+        .session
+        .capabilities
+        .iter()
+        .any(|name| name == CREATE_VIEW_CAPABILITY)
+    {
+        terminal_capabilities.push(CREATE_VIEW_CAPABILITY.into());
+    }
     let launch_if_empty = options.launch_if_empty
         && connection
             .session
@@ -172,6 +186,7 @@ async fn request_attach(
         Body::Attach(Attach {
             workspace_id: options.workspace,
             tab_id: options.tab,
+            pane_id: options.pane,
             create_workspace: options.new_workspace,
             create_tab: options.new_tab,
             viewport: Some(wire_viewport(viewport)),

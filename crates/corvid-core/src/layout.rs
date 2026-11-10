@@ -168,6 +168,69 @@ impl Layout {
         Ok(location)
     }
 
+    pub fn contains(&self, location: Location) -> bool {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.id == location.workspace)
+            .and_then(|workspace| workspace.tabs.iter().find(|tab| tab.id == location.tab))
+            .is_some_and(|tab| tab.root.contains(location.pane))
+    }
+
+    pub fn panes(&self, workspace: Uuid, tab: Uuid) -> Vec<Location> {
+        let mut panes = Vec::new();
+        if let Some(tab) = self
+            .workspaces
+            .iter()
+            .find(|item| item.id == workspace)
+            .and_then(|workspace| workspace.tabs.iter().find(|item| item.id == tab))
+        {
+            tab.root.visit_panes(&mut |pane| {
+                panes.push(Location {
+                    workspace,
+                    tab: tab.id,
+                    pane,
+                })
+            });
+        }
+        panes
+    }
+
+    pub fn split_pane(
+        &mut self,
+        location: Location,
+        axis: Axis,
+    ) -> Result<Location, InvalidLayout> {
+        let nodes: usize = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .map(|tab| tab.root.node_count())
+            .sum();
+        if nodes + 2 > MAX_NODES {
+            return Err(InvalidLayout);
+        }
+        let tab = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == location.workspace)
+            .and_then(|workspace| workspace.tabs.iter_mut().find(|tab| tab.id == location.tab))
+            .ok_or(InvalidLayout)?;
+        let target = tab.root.pane_mut(location.pane, 1).ok_or(InvalidLayout)?;
+        let pane = Uuid::new_v4();
+        let original = target.clone();
+        *target = Node::Split {
+            axis,
+            children: vec![
+                original,
+                Node::Pane {
+                    id: pane,
+                    last_cwd: None,
+                },
+            ],
+        };
+        Ok(Location { pane, ..location })
+    }
+
     pub fn add_tab(&mut self, workspace: Uuid, label: String) -> Result<Location, InvalidLayout> {
         let (tab, pane) = self.make_tab(label)?;
         let location = Location {
@@ -269,6 +332,35 @@ impl Layout {
 }
 
 impl Node {
+    fn visit_panes(&self, visit: &mut impl FnMut(Uuid)) {
+        match self {
+            Self::Pane { id, .. } => visit(*id),
+            Self::Split { children, .. } => {
+                for child in children {
+                    child.visit_panes(visit);
+                }
+            }
+        }
+    }
+    fn contains(&self, pane: Uuid) -> bool {
+        match self {
+            Self::Pane { id, .. } => *id == pane,
+            Self::Split { children, .. } => children.iter().any(|child| child.contains(pane)),
+        }
+    }
+
+    fn pane_mut(&mut self, pane: Uuid, depth: usize) -> Option<&mut Self> {
+        if depth >= MAX_DEPTH {
+            return None;
+        }
+        match self {
+            Self::Pane { id, .. } if *id == pane => Some(self),
+            Self::Split { children, .. } => children
+                .iter_mut()
+                .find_map(|child| child.pane_mut(pane, depth + 1)),
+            Self::Pane { .. } => None,
+        }
+    }
     fn node_count(&self) -> usize {
         match self {
             Self::Pane { .. } => 1,

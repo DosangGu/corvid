@@ -6,9 +6,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 #[cfg(target_os = "linux")]
 use corvid_protocol::unix::SocketRole;
-use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault};
+use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::{COMMAND_TIMEOUT, Frame, FrameWriter, PeerRole, ProtocolFault, Session};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, ChildStderr, Command};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -49,8 +51,13 @@ impl SshAlias {
         &self.0
     }
 
-    fn command(&self) -> Result<Command> {
+    fn command(&self, role: PeerRole) -> Result<Command> {
         let mut command = ssh_command()?;
+        let relay = match role {
+            PeerRole::Control => "corvid control --stdio",
+            PeerRole::Tui => "corvid terminal-relay",
+            _ => unreachable!("SSH only exposes the two daemon client roles"),
+        };
         command.args([
             "-T",
             "-oBatchMode=yes",
@@ -67,7 +74,7 @@ impl SshAlias {
             "-oPermitLocalCommand=no",
             "-oRemoteCommand=none",
             self.as_str(),
-            "corvid control --stdio",
+            relay,
         ]);
         command
             .env("LC_ALL", "C")
@@ -76,6 +83,41 @@ impl SshAlias {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         Ok(command)
+    }
+
+    pub async fn interactive(&self, capabilities: Vec<String>) -> Result<InteractiveConnection> {
+        let (read, write, mut ssh) = SshProcess::start(self, PeerRole::Tui)?;
+        let wire = ssh
+            .negotiate(read, write, PeerRole::Tui, capabilities, None)
+            .await?;
+        let Connection {
+            session,
+            mut reader,
+            writer,
+        } = wire;
+        let (sender, incoming) = mpsc::channel(1);
+        let reader = tokio::spawn(async move {
+            loop {
+                let result = match reader.next_frame().await {
+                    Ok(Some(frame)) => Ok(frame),
+                    Ok(None) => return,
+                    Err(error) => {
+                        let _ = sender.send(Err(error.into())).await;
+                        return;
+                    }
+                };
+                if sender.send(result).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(InteractiveConnection {
+            session,
+            writer,
+            incoming,
+            reader,
+            _ssh: ssh,
+        })
     }
 }
 
@@ -126,6 +168,40 @@ pub(crate) struct ControlConnection {
     _ssh: Option<SshProcess>,
 }
 
+pub struct InteractiveConnection {
+    session: Session,
+    writer: FrameWriter<Output>,
+    incoming: mpsc::Receiver<Result<Frame>>,
+    reader: JoinHandle<()>,
+    _ssh: SshProcess,
+}
+
+impl InteractiveConnection {
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    pub async fn send(&mut self, body: Body) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        let message = self.session.envelope(Some(id.clone()), body);
+        timeout(COMMAND_TIMEOUT, self.writer.envelope(&message)).await??;
+        Ok(id)
+    }
+
+    pub async fn receive(&mut self) -> Result<Frame> {
+        self.incoming
+            .recv()
+            .await
+            .context("daemon closed the interactive connection")?
+    }
+}
+
+impl Drop for InteractiveConnection {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
 impl ControlEndpoint {
     pub(crate) async fn connect(
         &self,
@@ -139,39 +215,37 @@ impl ControlEndpoint {
                 (Box::new(read), Box::new(write), None)
             }
             Self::Ssh(alias) => {
-                let mut child = alias
-                    .command()?
-                    .spawn()
-                    .context("starting SSH control link")?;
-                let read = child.stdout.take().context("SSH stdout is unavailable")?;
-                let write = child.stdin.take().context("SSH stdin is unavailable")?;
-                let stderr = child.stderr.take().context("SSH stderr is unavailable")?;
-                let diagnostic = tokio::spawn(drain_diagnostic(stderr));
-                (
-                    Box::new(read),
-                    Box::new(write),
-                    Some(SshProcess { child, diagnostic }),
-                )
+                let (read, write, process) = SshProcess::start(alias, PeerRole::Control)?;
+                (read, write, Some(process))
             }
         };
 
         let controller = controller.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let negotiate = Connection::negotiate(
-            read,
-            write,
-            PeerRole::Control,
-            vec![capability.to_owned()],
-            Some(controller),
-        );
+        let capabilities = vec![capability.to_owned()];
         let wire = match &mut ssh {
-            Some(process) => match timeout(SSH_SETUP_TIMEOUT, negotiate).await {
-                Ok(Ok(wire)) => wire,
-                Ok(Err(error)) => return Err(process.classify(error).await),
-                Err(_) => return Err(ProtocolFault::new("Offline", "SSH setup timed out").into()),
-            },
-            None => timeout(COMMAND_TIMEOUT, negotiate)
-                .await
-                .context("daemon handshake timed out")??,
+            Some(process) => {
+                process
+                    .negotiate(
+                        read,
+                        write,
+                        PeerRole::Control,
+                        capabilities,
+                        Some(controller),
+                    )
+                    .await?
+            }
+            None => timeout(
+                COMMAND_TIMEOUT,
+                Connection::negotiate(
+                    read,
+                    write,
+                    PeerRole::Control,
+                    capabilities,
+                    Some(controller),
+                ),
+            )
+            .await
+            .context("daemon handshake timed out")??,
         };
         Ok(ControlConnection { wire, _ssh: ssh })
     }
@@ -183,6 +257,37 @@ struct SshProcess {
 }
 
 impl SshProcess {
+    fn start(alias: &SshAlias, role: PeerRole) -> Result<(Input, Output, Self)> {
+        let mut child = alias
+            .command(role)?
+            .spawn()
+            .context("starting Corvid SSH link")?;
+        let read = child.stdout.take().context("SSH stdout is unavailable")?;
+        let write = child.stdin.take().context("SSH stdin is unavailable")?;
+        let stderr = child.stderr.take().context("SSH stderr is unavailable")?;
+        let diagnostic = tokio::spawn(drain_diagnostic(stderr));
+        Ok((Box::new(read), Box::new(write), Self { child, diagnostic }))
+    }
+
+    async fn negotiate(
+        &mut self,
+        read: Input,
+        write: Output,
+        role: PeerRole,
+        capabilities: Vec<String>,
+        controller: Option<String>,
+    ) -> Result<Connection<Input, Output>> {
+        match timeout(
+            SSH_SETUP_TIMEOUT,
+            Connection::negotiate(read, write, role, capabilities, controller),
+        )
+        .await
+        {
+            Ok(Ok(wire)) => Ok(wire),
+            Ok(Err(error)) => Err(self.classify(error).await),
+            Err(_) => Err(ProtocolFault::new("Offline", "SSH setup timed out").into()),
+        }
+    }
     async fn classify(&mut self, error: anyhow::Error) -> anyhow::Error {
         if error.is::<ProtocolFault>() {
             return error;
@@ -235,8 +340,13 @@ fn ssh_failure(diagnostic: &[u8]) -> ProtocolFault {
             "RelayUnavailable",
             "install corvid on the remote command PATH",
         )
+    } else if message.contains("unrecognized subcommand 'terminal-relay'") {
+        ProtocolFault::new(
+            "RelayUnavailable",
+            "update Corvid on the Linux execution host",
+        )
     } else {
-        ProtocolFault::new("Offline", "SSH control connection failed")
+        ProtocolFault::new("Offline", "Corvid SSH connection failed")
     }
 }
 
@@ -250,7 +360,7 @@ mod tests {
             assert!(SshAlias::new(invalid.to_owned()).is_err());
         }
         let alias = SshAlias::new("work.remote-1".to_owned()).unwrap();
-        let command = alias.command().unwrap();
+        let command = alias.command(PeerRole::Control).unwrap();
         let args: Vec<_> = command.as_std().get_args().collect();
         assert_eq!(args[0], "-T");
         assert_eq!(

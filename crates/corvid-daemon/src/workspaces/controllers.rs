@@ -290,10 +290,12 @@ impl Workspaces {
                 } = command
                 {
                     let target = FocusTarget {
-                        controller: controller.to_owned(),
                         client,
                         run,
-                        revision,
+                        authorization: super::focus::FocusAuthorization::Binding {
+                            controller: controller.to_owned(),
+                            revision,
+                        },
                         expires: now + COMMAND_TIMEOUT,
                     };
                     registry.dispatch_focus(FocusDispatch::new(target, sender));

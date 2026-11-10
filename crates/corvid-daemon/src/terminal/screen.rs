@@ -103,6 +103,11 @@ impl TerminalScreen {
         self.render_frame(None, self.bracketed_paste(), outer)
     }
 
+    pub(crate) fn viewport(&self) -> Viewport {
+        let (rows, cols) = self.parser.screen().size();
+        Viewport { rows, cols }
+    }
+
     pub(super) fn bracketed_paste(&self) -> bool {
         self.parser.screen().bracketed_paste()
     }

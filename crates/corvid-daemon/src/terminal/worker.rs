@@ -140,6 +140,7 @@ enum Command {
     Thaw(InputRoute, oneshot::Sender<Reply<InputRoute>>),
     Activate(InputRoute, Viewport, oneshot::Sender<Reply<()>>),
     Resume(InputRoute),
+    Preview(oneshot::Sender<Reply<(Viewport, Vec<u8>)>>),
 }
 
 #[derive(Clone)]
@@ -196,6 +197,14 @@ impl TerminalHandle {
             .try_send(Command::Attach(spec, send))
             .map_err(|_| overloaded())?;
         receive.await.map_err(|_| overloaded())?
+    }
+
+    pub(crate) async fn preview(&self) -> Reply<(Viewport, Vec<u8>)> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Preview(send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
     }
 
     pub(crate) async fn fence(&self, route: InputRoute) -> Reply<bool> {
@@ -337,6 +346,11 @@ impl Worker {
                     lease.switch_pending = false;
                 }
             }
+            Command::Preview(reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.preview());
+                }
+            }
             Command::Action {
                 client,
                 request_id,
@@ -359,6 +373,24 @@ impl Worker {
 
     fn input_mode(&self) -> Option<InputMode> {
         self.lease.as_ref().map(Lease::input_mode)
+    }
+
+    fn preview(&self) -> Reply<(Viewport, Vec<u8>)> {
+        let running = self
+            .terminal
+            .as_ref()
+            .filter(|terminal| terminal.exit.is_none())
+            .ok_or_else(terminal_fault)?;
+        let viewport = running.screen.viewport();
+        let ansi = running
+            .screen
+            .redraw(viewport)
+            .map_err(|_| terminal_fault())?
+            .into_bytes();
+        if ansi.len() > MAX_ANSI {
+            return Err(terminal_fault());
+        }
+        Ok((viewport, ansi))
     }
 
     fn publish_mode_change(&self, previous: Option<InputMode>) {

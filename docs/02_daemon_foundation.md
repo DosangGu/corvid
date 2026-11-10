@@ -38,6 +38,11 @@ Ctrl-] then t starts a new shell tab. Ctrl-] then n or p visits the next or
 previous live tab in the workspace. Each workspace has one writer, and other
 workspaces continue independently.
 
+Press Ctrl-] then `%` to split right, `"` to split down, or `o` to cycle
+through live panes in the tab. Use `corvid attach --workspace WORKSPACE_ID
+--tab TAB_ID --pane PANE_ID` to reattach to an exact pane. Windows Desktop
+creates and selects these same daemon-owned workspaces, tabs, and panes.
+
 To move a hidden live single-pane tab, attach to a different tab in its
 workspace and explicitly claim the destination for that TUI.
 
@@ -89,6 +94,12 @@ ServerEpoch. Run `corvid control workspaces` for workspace, tab, and pane IDs an
 runs as `corvid control --stdio` over a
 non-PTY connection. Give the runtime directory a trusted absolute path through
 `XDG_RUNTIME_DIR`, `CORVID_RUNTIME_DIR`, or `--runtime-dir`.
+
+Desktop uses `corvid terminal-relay` over non-PTY SSH for the interactive
+protocol. That relay reaches `client.sock` and forwards bounded structured
+messages and ANSI render frames. Sibling pane previews are rate limited and
+carry no input route. The control relay still carries structured control
+messages through `control.sock`.
 
 Run `corvid control capabilities` to list the negotiated control features,
 command limits, writer policy, and the daemon build's exact provider profiles.

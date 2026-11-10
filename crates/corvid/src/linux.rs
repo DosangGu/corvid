@@ -51,6 +51,9 @@ pub(super) enum Command {
         /// Attach to a tab by ID within the workspace.
         #[arg(long, conflicts_with_all = ["new_workspace", "new_tab"])]
         tab: Option<String>,
+        /// Attach to an exact pane within the selected workspace and tab.
+        #[arg(long, requires_all = ["workspace", "tab"])]
+        pane: Option<String>,
         /// Create a workspace with this label and open a terminal.
         #[arg(long)]
         new_workspace: Option<String>,
@@ -88,6 +91,8 @@ pub(super) enum Command {
         #[arg(value_enum)]
         request: Option<ControlRequest>,
     },
+    /// Relay the interactive writer protocol over a non-PTY SSH connection.
+    TerminalRelay,
     /// Manage an explicit controller registration or acknowledge an alert.
     Controller {
         #[arg(long)]
@@ -227,6 +232,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             argv,
             workspace,
             tab,
+            pane,
             new_workspace,
             new_tab,
             claim_workspace,
@@ -250,6 +256,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 escape_delay: Duration::from_millis(escape_delay_ms),
                 workspace,
                 tab,
+                pane,
                 new_workspace,
                 new_tab,
                 claim_workspaces: claim_workspace,
@@ -272,6 +279,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             controller_action(&runtime, &scope, request_id, action).await
         }
         Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
+        Command::TerminalRelay => corvid_client::relay_tui(&runtime).await.map(|()| 0),
         Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {
             ControlRequest::Host => {
                 let host = corvid_client::host(&runtime).await?;

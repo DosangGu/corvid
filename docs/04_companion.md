@@ -35,59 +35,41 @@ Point subsequent commands at the same socket directory.
 
 ### Windows quick start
 
-Double-click `corvid-desktop.exe` to open a local session with one PowerShell
-tab and one pane. Use **New tab** to start another tab, and **Split right**
-or **Split down** to add a shell beside or below the focused pane. Each pane
-owns a separate Windows ConPTY and PowerShell process. Click a pane to focus
-it. The app retains the selected pane in each tab and keeps hidden tabs
-running while you work in another tab or open **Agents**.
+Install the current Corvid build on the Linux execution host and start its
+daemon. Install the Windows OpenSSH Client and configure an SSH alias with
+host-key trust and noninteractive authentication. For example:
 
-Use Ctrl+Shift+T for a new tab, Ctrl+Shift+D to split right, Ctrl+Shift+E
-to split down, and Ctrl+Shift+W to close the focused pane. Ctrl+Tab and
-Ctrl+Shift+Tab cycle shell tabs. Closing a tab closes its panes. Closing the
-app ends its local session. The local workspace starts without SSH setup.
-Open **Agents** for the remote agent buttons and WezTerm pairing. Launch
-`corvid-deck.exe` to open those buttons in a dedicated window.
+```sshconfig
+Host work-host
+    HostName linux.example.com
+    User corvid-user
+```
 
-To connect the agent deck to a Linux host:
+Open `corvid-desktop.exe`, enter the alias, and click **Connect**. You can also
+launch it with `--ssh-alias work-host` or use `corvid companion open work-host`.
+Desktop connects to the daemon through `corvid terminal-relay` and uses
+`corvid control --stdio` for the authoritative layout and agent watch.
+The initial attach joins a live pane in the default session or opens its shell.
 
-1. Install `corvid` on the Linux account's remote command `PATH` and start
-   its daemon. Enable the Windows OpenSSH Client feature and open WezTerm for
-   the working terminal. Extract the Windows x64 package to a stable folder
-   and open the desktop app from that folder. See the
-   [Linux daemon setup](02_daemon_foundation.md#run-locally),
-   [Windows OpenSSH setup](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?pivots=windows-11),
-   and [package build](#windows-package-and-login-startup).
-2. Add an alias such as `work-host` to `%USERPROFILE%\.ssh\config` and set up
-   host-key trust and noninteractive authentication. Replace the example
-   hostname and account with your Linux host and user.
+**New session**, **New tab**, **Split right**, and **Split down** create shells
+on the Linux daemon. Click a pane to focus it. Other live panes in the same
+tab show read-only previews. Each workspace has one writer, so detach the TUI
+before using Desktop as the writer for that workspace. **Detach** and window
+close release the writer and keep PTYs running while the daemon survives.
+Use `exit` in a shell to end that PTY.
 
-   ```sshconfig
-   Host work-host
-       HostName linux.example.com
-       User corvid-user
-   ```
+Ctrl+Shift+N creates a session, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
+right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
+the selected session.
 
-3. Open **Agents** in the same Windows logon as WezTerm. On first use,
-   enter your SSH alias and click **Connect**. The app looks up
-   and saves the daemon's HostId, reuses a matching companion if one is
-   running, or starts one for the lifetime of the app. Later visits use
-   the saved host and slot layout. From PowerShell, `.\corvid.exe companion
-   open work-host` opens the same app and supplies the alias for **Agents**.
+**Agent Deck** shows the daemon's observed Codex and Claude Code activity,
+including **Working**, **Input needed**, and **Response observed**. Click a
+live key to focus the corresponding run in the attached Desktop. See the
+[provider setup](03_provider_qualification.md) for hook coverage.
 
-4. Open the working Corvid TUI in WezTerm and run `claude` or `codex`
-   inside it. See [provider setup](03_provider_qualification.md) for
-   release qualification and hook coverage.
-
-   ```powershell
-   ssh -tt work-host corvid
-   ```
-
-5. In the TUI, press Ctrl-] then r and copy the one-time code. In the deck,
-   click **Pair WezTerm…**, choose the pane if prompted, and paste the code
-   within 60 seconds. The deck selects the registered target when pairing
-   completes. Dismiss the TUI prompt with Esc and click a deck key to switch
-   agents. Answer questions and grant permissions in the TUI.
+Use `corvid-deck.exe` for the standalone companion deck and WezTerm pairing.
+Open a working TUI with `ssh -tt work-host corvid`, press Ctrl-] then r, and
+use **Pair WezTerm…** in the standalone deck to register that terminal.
 
 ### Windows state and pipe settings
 
@@ -142,28 +124,29 @@ ready. Rerun `-Mode Enable` after moving the package.
 flowchart LR
     subgraph Windows
         Desktop["corvid-desktop.exe"]
-        PowerShell["Local PowerShell panes"]
         Deck["corvid-deck.exe"]
         Board["corvid-slot-board.exe"]
         CLI["corvid.exe companion CLI"]
         Companion["corvid.exe companion run"]
         WezTerm["WezTerm pane"]
-        Desktop -->|"ConPTY"| PowerShell
-        Desktop -->|"Agents tab via private named pipe"| Companion
         Deck -->|"private named pipe"| Companion
         Board -->|"private named pipe"| Companion
         CLI -->|"private named pipe"| Companion
         Companion -->|"verified pane selection"| WezTerm
     end
     subgraph Linux
+        WriterRelay["corvid terminal-relay"]
         Relay["corvid control --stdio"]
         TUI["corvid attach"]
         Daemon["corvid daemon"]
         Agent["Coding agent CLI"]
         Relay -->|"Unix control socket"| Daemon
+        WriterRelay -->|"Unix client socket"| Daemon
         TUI -->|"Unix client socket"| Daemon
         Daemon -->|"PTY"| Agent
     end
+    Desktop -->|"SSH writer"| WriterRelay
+    Desktop -->|"SSH snapshot watch"| Relay
     Companion -->|"noninteractive SSH -T"| Relay
     WezTerm -->|"working SSH -tt"| TUI
 ```
@@ -173,7 +156,7 @@ flowchart LR
 | Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
 | SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
-| Desktop app | Runs local PowerShell sessions in tabs and split panes. Its Agents tab embeds the same view as the standalone deck. | [corvid-desktop](../crates/corvid-desktop/gui/src/main.rs) |
+| Desktop app | Attaches as a writer to the Linux daemon, displays its tabs and split panes, and projects observed agent activity into the Agent Deck. | [corvid-desktop](../crates/corvid-desktop/gui/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
 | Slot board | Displays snapshots and manages slot assignments and alerts. Its pairing dialog lists verified local panes. | [corvid-slot-board](../crates/corvid-desktop/src/main.rs) |
 | Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid/src/companion.rs) · [deployment](../deploy/windows/) |
@@ -238,7 +221,7 @@ reviewing the refreshed board.
 
 ### Live Stream Deck
 
-The standalone Windows GPUI deck and the Desktop app's Agents tab use the
+The standalone Windows GPUI deck uses the
 running companion's private presentation pipe.
 It displays assigned Claude Code and Codex slots, activity, pending requests,
 unseen alerts, and whether the companion and host are available. The 5 × 3

@@ -213,6 +213,11 @@ fn check_render_header(header: &RenderHeader, ansi_len: usize) -> Result<(), Fra
         || header
             .base_frame_id
             .is_some_and(|base| base == 0 || base >= header.frame_id)
+        || header.preview.as_ref().is_some_and(|preview| {
+            header.base_frame_id.is_some()
+                || !valid_id(&preview.pane_id)
+                || preview.viewport.is_none()
+        })
     {
         return Err(FrameError::RenderHeader);
     }

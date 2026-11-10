@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use corvid_core::agent::{ProcessLiveness, Provider};
-use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
+use corvid_core::layout::{Axis, CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
@@ -47,6 +47,7 @@ type Reply<T> = Result<T, ProtocolFault>;
 pub(crate) struct AttachTarget {
     pub(crate) workspace: Option<Uuid>,
     pub(crate) tab: Option<Uuid>,
+    pub(crate) pane: Option<Uuid>,
     pub(crate) new_workspace: Option<String>,
     pub(crate) new_tab: Option<String>,
     pub(crate) keymap: Keymap,
@@ -64,6 +65,10 @@ pub(crate) struct Active {
 
 pub(crate) enum Destination {
     Exact(Location),
+    Open(Location),
+    CreateWorkspace(String),
+    CreateTab(String),
+    Split(Axis),
     Tab(TabCommand),
 }
 
@@ -391,6 +396,27 @@ impl Workspaces {
         registry.record_view(active);
     }
 
+    pub(crate) async fn preview(&self, active: &Active, pane: Uuid) -> Reply<(Viewport, Vec<u8>)> {
+        let terminal = {
+            let registry = self.lock_registry();
+            registry.require_route(active.route)?;
+            let location = Location {
+                pane,
+                ..active.location
+            };
+            if location == active.location || !self.metadata.layout().contains(location) {
+                return Err(target_gone());
+            }
+            registry
+                .slots
+                .get(&pane)
+                .filter(|slot| slot.terminal.has_live_terminal())
+                .map(|slot| slot.terminal.clone())
+                .ok_or_else(target_gone)?
+        };
+        terminal.preview().await
+    }
+
     pub(crate) async fn switch(
         &self,
         old: &Active,
@@ -432,8 +458,27 @@ impl Workspaces {
         if location == old.location {
             return Ok(None);
         }
-        let lease_generation = registry.require_writer(old.route.client_id, location.workspace)?;
+        let client = old.route.client_id;
+        let creates_workspace = self
+            .metadata
+            .layout()
+            .locate(Some(location.workspace), None)
+            .is_none();
+        let lease_generation = if creates_workspace {
+            registry.next_generation()?
+        } else {
+            registry.require_writer(client, location.workspace)?
+        };
         let reserved = self.reserve_view(&mut registry, old, location, lease_generation, launch)?;
+        if creates_workspace {
+            registry.claims.insert(
+                location.workspace,
+                Claim {
+                    client,
+                    generation: lease_generation,
+                },
+            );
+        }
         if reserved.spec.launch.is_some() {
             registry.publish_layout(layout, Vec::new());
         }
@@ -697,6 +742,7 @@ impl Registry {
             keymap: Some(ClientKeymap {
                 tabs: client.keymap.tabs,
                 pairing: client.keymap.pairing,
+                panes: client.keymap.panes,
             }),
         })
     }
@@ -826,11 +872,19 @@ fn resolve_switch(
     destination: Destination,
 ) -> Reply<Option<(Location, Option<Launch>)>> {
     match destination {
-        Destination::Exact(location) => {
-            if layout.locate(Some(location.workspace), Some(location.tab)) != Some(location) {
+        Destination::Exact(location) | Destination::Open(location) => {
+            if !layout.contains(location) {
                 return Err(target_gone());
             }
-            Ok(Some((location, None)))
+            let launch = if matches!(destination, Destination::Open(_)) {
+                let mut shell = new_shell();
+                shell.if_empty = true;
+                prepare_cwd(layout, location, Some(&mut shell))?;
+                Some(shell)
+            } else {
+                None
+            };
+            Ok(Some((location, launch)))
         }
         Destination::Tab(TabCommand::Create) => {
             let workspace = layout
@@ -839,21 +893,46 @@ fn resolve_switch(
                 .find(|item| item.id == old.location.workspace)
                 .ok_or_else(target_gone)?;
             let label = format!("Shell {}", workspace.tabs.len() + 1);
-            let mut launch = Launch {
-                argv: Vec::new(),
-                cwd: None,
-                provider: None,
-                if_empty: false,
+            resolve_switch(registry, layout, old, Destination::CreateTab(label))
+        }
+        Destination::Tab(TabCommand::Split(axis)) => {
+            resolve_switch(registry, layout, old, Destination::Split(axis))
+        }
+        Destination::Tab(TabCommand::NextPane) => {
+            let panes = layout.panes(old.location.workspace, old.location.tab);
+            let Some(index) = panes.iter().position(|pane| *pane == old.location) else {
+                return Err(target_gone());
             };
-            prepare_cwd(layout, old.location, Some(&mut launch))?;
-            let location = Arc::make_mut(layout)
-                .add_tab(old.location.workspace, label)
-                .map_err(|_| invalid_layout())?;
-            Ok(Some((location, Some(launch))))
+            Ok((1..panes.len())
+                .map(|offset| panes[(index + offset) % panes.len()])
+                .find(|pane| registry.has_live_at(*pane))
+                .map(|pane| (pane, None)))
         }
         Destination::Tab(command) => {
             Ok(cycle(registry, layout, old.location, command).map(|location| (location, None)))
         }
+        creation => {
+            let mut launch = new_shell();
+            prepare_cwd(layout, old.location, Some(&mut launch))?;
+            let layout = Arc::make_mut(layout);
+            let location = match creation {
+                Destination::CreateWorkspace(label) => layout.add_workspace(label, "Shell".into()),
+                Destination::CreateTab(label) => layout.add_tab(old.location.workspace, label),
+                Destination::Split(axis) => layout.split_pane(old.location, axis),
+                _ => unreachable!("all other destinations have already been handled"),
+            }
+            .map_err(|_| invalid_layout())?;
+            Ok(Some((location, Some(launch))))
+        }
+    }
+}
+
+fn new_shell() -> Launch {
+    Launch {
+        argv: Vec::new(),
+        cwd: None,
+        provider: None,
+        if_empty: false,
     }
 }
 
@@ -873,14 +952,12 @@ fn cycle(
         let index = match command {
             TabCommand::Next => (index + offset) % len,
             TabCommand::Previous => (index + len - offset) % len,
-            TabCommand::Create => return None,
+            TabCommand::Create | TabCommand::Split(_) | TabCommand::NextPane => return None,
         };
-        let location = layout.locate(Some(old.workspace), Some(workspace.tabs[index].id))?;
-        registry
-            .slots
-            .get(&location.pane)
-            .filter(|slot| slot.terminal.has_live_terminal())
-            .map(|_| location)
+        layout
+            .panes(old.workspace, workspace.tabs[index].id)
+            .into_iter()
+            .find(|pane| registry.has_live_at(*pane))
     })
 }
 
@@ -891,6 +968,7 @@ fn resolve(
 ) -> Reply<Location> {
     if (target.new_workspace.is_some() && (target.workspace.is_some() || target.tab.is_some()))
         || (target.new_tab.is_some() && target.tab.is_some())
+        || (target.pane.is_some() && (target.tab.is_none() || target.workspace.is_none()))
         || ((target.new_workspace.is_some() || target.new_tab.is_some()) && target.launch.is_none())
     {
         return Err(ProtocolFault::new(
@@ -908,12 +986,19 @@ fn resolve(
         .locate(target.workspace, target.tab)
         .ok_or_else(target_gone)?;
     registry.check_available(location.workspace)?;
+    if let Some(pane) = target.pane {
+        let exact = Location { pane, ..location };
+        return layout
+            .contains(exact)
+            .then_some(exact)
+            .ok_or_else(target_gone);
+    }
     if let Some(label) = &target.new_tab {
         return Arc::make_mut(layout)
             .add_tab(location.workspace, label.clone())
             .map_err(|_| invalid_layout());
     }
-    if target.tab.is_none() && target.launch.as_ref().is_none_or(|launch| launch.if_empty) {
+    if target.launch.as_ref().is_none_or(|launch| launch.if_empty) {
         let workspace = layout
             .workspaces
             .iter()
@@ -921,7 +1006,8 @@ fn resolve(
         if let Some(live) = workspace
             .into_iter()
             .flat_map(|item| &item.tabs)
-            .filter_map(|tab| layout.locate(Some(location.workspace), Some(tab.id)))
+            .filter(|tab| target.tab.is_none_or(|id| id == tab.id))
+            .flat_map(|tab| layout.panes(location.workspace, tab.id))
             .find(|location| registry.has_live_at(*location))
         {
             return Ok(live);
