@@ -66,7 +66,7 @@ def run_lifecycle(old_executable, new_executable, fixture, install_next):
         while time.monotonic() - start < 10:
             probe = subprocess.run(
                 [old_executable, "--runtime-dir", runtime, "control", "host"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, timeout=5,
             )
             if probe.returncode == 0:
                 break
@@ -78,7 +78,7 @@ def run_lifecycle(old_executable, new_executable, fixture, install_next):
         sentinel.write_text("retained\n", encoding="utf-8")
         install_next()
         after = command([new_executable, "--runtime-dir", runtime, "control", "host"],
-                        capture_output=True, text=True)
+                        capture_output=True)
         assert after.stdout == probe.stdout
         assert daemon.poll() is None
     finally:
@@ -114,7 +114,8 @@ def windows(previous, current, fixture):
         assert version != PREVIOUS
         check_payload(root / "versions" / version, "windows-setup")
         assert old.is_dir()
-        assert command([executable, "--version"], capture_output=True, text=True).stdout.strip() == f"corvid {version}"
+        result = command([executable, "--version"], capture_output=True)
+        assert result.stdout.strip() == f"corvid {version}".encode()
     finally:
         command([root / "unins000.exe", *flags])
     assert not (root / "current.txt").exists()
