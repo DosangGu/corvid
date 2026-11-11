@@ -24,6 +24,51 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[tokio::test]
+async fn read_only_terminal_crops_then_accepts_an_explicit_writer_handoff() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let mut writer = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--new",
+            "--",
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+        ]
+        .map(OsString::from),
+    )?;
+    writer.wait_for("PS ")?;
+    let id = terminal_id(&runtime).await?;
+    let mut observer = Tui::open(
+        &runtime,
+        ["attach", "--read-only", "--accept-writer"].map(OsString::from),
+    )?;
+    observer.wait_for("Handoff enabled")?;
+    observer.resize(72, 22)?;
+    observer.send(b"[Console]::WriteLine(('OBSERV' + 'ER_LEAK'))\r")?;
+
+    writer.send(b"[Console]::WriteLine(('OLD_WIDTH_' + [Console]::WindowWidth))\r")?;
+    writer.wait_for("OLD_WIDTH_100")?;
+    writer.wait_without("OBSERVER_LEAK")?;
+    observer.wait_for("OLD_WIDTH_100")?;
+
+    writer.send(b"\x1dg")?;
+    writer.expect_exit(0)?;
+    observer.wait_without("Read-only")?;
+    assert_eq!(terminal_id(&runtime).await?, id);
+    observer.send(b"[Console]::WriteLine(('NEW_WIDTH_' + [Console]::WindowWidth))\r")?;
+    observer.wait_for("NEW_WIDTH_72")?;
+    observer.wait_without("OBSERVER_LEAK")?;
+    observer.send(b"exit\r")?;
+    observer.expect_exit(0)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_agent_launch_tracks_the_owned_child_through_exit() -> Result<()> {
     use corvid_protocol::wire::{
         AgentCollection, AgentLifecycle, AgentProcessState, AgentProvider, ProviderExecutionMode,

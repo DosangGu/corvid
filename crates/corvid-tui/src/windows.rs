@@ -49,6 +49,12 @@ pub(super) enum Command {
     Attach {
         #[arg(long)]
         new: bool,
+        /// Observe an existing terminal without forwarding input or resizing it.
+        #[arg(long, conflicts_with_all = ["new", "agent", "new_workspace", "new_tab", "argv"])]
+        read_only: bool,
+        /// Allow the current writer to hand off input to this read-only view.
+        #[arg(long, requires = "read_only")]
+        accept_writer: bool,
         /// Launch a native agent and observe its process lifecycle.
         #[arg(long, value_enum)]
         agent: Option<ManagedAgent>,
@@ -124,6 +130,8 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
         Command::Upgrade { .. } => upgrade_local_daemon(&runtime, false).await?,
         Command::Attach {
             new,
+            read_only,
+            accept_writer,
             agent,
             workspace,
             tab,
@@ -134,8 +142,10 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
         } => {
             let launch = (new || agent.is_some() || !argv.is_empty()).then_some(argv);
             let options = AttachOptions {
-                launch_if_empty: launch.is_none(),
+                launch_if_empty: launch.is_none() && !read_only,
                 launch,
+                read_only,
+                accept_writer,
                 agent: agent.map(|provider| match provider {
                     ManagedAgent::Claude => AgentProvider::Claude,
                     ManagedAgent::Codex => AgentProvider::Codex,

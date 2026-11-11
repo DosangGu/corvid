@@ -190,11 +190,11 @@ impl Session {
             ) => Ok(body),
             (PeerRole::Tui, Body::Attach(attach)) => {
                 match AttachRole::try_from(attach.requested_role) {
-                    Ok(AttachRole::Writer) => Ok(body),
+                    Ok(AttachRole::Writer | AttachRole::Observer) => Ok(body),
                     Ok(AttachRole::Unspecified) => {
                         Err(ProtocolFault::invalid("missing attach role"))
                     }
-                    _ => Err(ProtocolFault::new(
+                    Err(_) => Err(ProtocolFault::new(
                         "UnsupportedCapability",
                         "attach role is unavailable",
                     )),

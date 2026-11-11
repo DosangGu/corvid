@@ -139,7 +139,8 @@ Windows supports process observation for
 Desktop's Sessions menu watches verified hosts while their terminal views are
 detached. Agent Deck windows and slot layouts remain scoped to their hosts.
 The remaining requested backlog includes Windows provider hook and shell launch
-coverage, a combined Agent Deck view for multiple hosts, and read-only
-attach with explicit writer handoff. Native Windows installers and Linux packaging,
+coverage, a combined Agent Deck view for multiple hosts, and Desktop controls
+for read-only attach and writer handoff. The TUI implements both operations.
+Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in
 [release distribution](05_release_distribution.md#planned-native-installers-and-linux-packages).

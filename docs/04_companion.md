@@ -155,6 +155,15 @@ Ctrl+Shift+N creates a session, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected session.
 
+The TUI supports `corvid attach --read-only` for observing an existing pane
+while a writer is attached. Use Ctrl-] to leave an observer. To let the current
+writer hand off input, start the observer with
+`corvid attach --read-only --accept-writer`. From the writer TUI on the same
+pane, press Ctrl-] then g. Handoff requires exactly one observer that opted in
+on that pane, and waits for the user to try again if a paste is pending.
+The old TUI detaches and the promoted TUI continues with the same terminal at
+its own viewport size. These controls are available on Windows and Linux.
+
 Open **Plugins → Corvid Agent Deck** to see the daemon's observed Codex and Claude
 Code activity, including **Working**, **Input needed**, and **Response observed**.
 Click a live agent's name to open its pane in Desktop. See the

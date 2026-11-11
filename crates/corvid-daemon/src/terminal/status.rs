@@ -44,7 +44,11 @@ pub(super) fn line(
             ("\x1b[0;30;46m", "CORVID", help)
         }
         InputMode::Command => {
-            let help = if keymap.close {
+            let help = if keymap.close && keymap.handoff {
+                " | t new  w list  d detach  g handoff  X/T/S close"
+            } else if keymap.handoff {
+                " | d detach  g handoff"
+            } else if keymap.close {
                 " | t new  w list  d detach  X/T/S close"
             } else if keymap.tabs {
                 " | 1-9 switch  w list  t new  d detach"

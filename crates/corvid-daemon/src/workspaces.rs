@@ -22,7 +22,7 @@ use corvid_protocol::wire::{
     TuiInputMode, Viewport as WireViewport, WriterLeaseState,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -72,6 +72,24 @@ pub(crate) struct Active {
     pub(crate) events: mpsc::Receiver<Event>,
 }
 
+pub(crate) struct Observation {
+    pub(crate) location: Location,
+    pub(crate) terminal_id: Uuid,
+    pub(crate) terminal: TerminalHandle,
+    pub(crate) generation: u64,
+    pub(crate) promoted: oneshot::Receiver<Active>,
+}
+
+struct Observer {
+    location: Location,
+    terminal: Uuid,
+    generation: u64,
+    viewport: TuiViewport,
+    keymap: Keymap,
+    focuses: mpsc::Sender<FocusDispatch>,
+    promote: Option<oneshot::Sender<Active>>,
+}
+
 pub(crate) enum Destination {
     Exact(Location),
     Open(Location),
@@ -115,6 +133,7 @@ pub(crate) struct Registry {
     #[cfg(target_os = "linux")]
     shells: Shells,
     clients: HashMap<Uuid, Client>,
+    observers: HashMap<Uuid, Observer>,
     controllers: Controllers,
     generation: u64,
     claims: HashMap<Uuid, Claim>,
@@ -168,6 +187,7 @@ impl Workspaces {
                 #[cfg(target_os = "linux")]
                 shells: Shells::default(),
                 clients: HashMap::new(),
+                observers: HashMap::new(),
                 controllers: Controllers::default(),
                 generation: 0,
                 claims: HashMap::new(),
@@ -406,6 +426,172 @@ impl Workspaces {
         }
     }
 
+    pub(crate) fn observe(
+        &self,
+        client: Uuid,
+        target: &AttachTarget,
+        focuses: mpsc::Sender<FocusDispatch>,
+    ) -> Reply<Observation> {
+        if target.launch.is_some() || target.new_workspace.is_some() || target.new_tab.is_some() {
+            return Err(ProtocolFault::new(
+                "InvalidMessage",
+                "an observer requires an existing terminal",
+            ));
+        }
+        let mut registry = self.lock_registry();
+        let mut layout = self.metadata.layout();
+        let location = resolve(&registry, &mut layout, target)?;
+        let terminal = registry
+            .slots
+            .get(&location.pane)
+            .filter(|slot| !slot.reserved && slot.terminal.has_live_terminal())
+            .map(|slot| slot.terminal.clone())
+            .ok_or_else(target_gone)?;
+        let id = registry
+            .terminals
+            .iter()
+            .find_map(|(&id, &current)| (current == location).then_some(id))
+            .ok_or_else(target_gone)?;
+        let generation = registry.next_generation()?;
+        let (promote, promoted) = oneshot::channel();
+        registry.observers.insert(
+            client,
+            Observer {
+                location,
+                terminal: id,
+                generation,
+                viewport: target.viewport,
+                keymap: target.keymap,
+                focuses,
+                promote: Some(promote),
+            },
+        );
+        Ok(Observation {
+            location,
+            terminal_id: id,
+            terminal,
+            generation,
+            promoted,
+        })
+    }
+
+    pub(crate) fn resize_observer(&self, client: Uuid, viewport: Viewport) {
+        if let Some(observer) = self.lock_registry().observers.get_mut(&client) {
+            observer.viewport.outer = viewport;
+        }
+    }
+
+    pub(crate) fn can_observe(&self, location: Location, terminal: Uuid) -> bool {
+        let registry = self.lock_registry();
+        registry.terminals.get(&terminal) == Some(&location) && registry.has_live_at(location)
+    }
+
+    pub(crate) async fn handoff(&self, old: &Active) -> Reply<()> {
+        let (spec, receiver, promote, focuses) = {
+            let mut registry = self.lock_registry();
+            registry.require_route(old.route)?;
+            registry.require_writer(old.route.client_id, old.location.workspace)?;
+            let mut eligible = registry.observers.iter().filter(|(_, observer)| {
+                observer.location == old.location
+                    && observer.terminal == old.route.terminal_id
+                    && observer.keymap.handoff
+                    && observer
+                        .promote
+                        .as_ref()
+                        .is_some_and(|send| !send.is_closed())
+            });
+            let observer_required = || {
+                ProtocolFault::new(
+                    "ObserverRequired",
+                    "handoff requires one eligible observer on this pane",
+                )
+            };
+            let (&client, _) = eligible.next().ok_or_else(observer_required)?;
+            if eligible.next().is_some() {
+                return Err(observer_required());
+            }
+            let lease_generation = registry.next_generation()?;
+            let observer = registry
+                .observers
+                .get_mut(&client)
+                .expect("selected observer");
+            let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
+            let spec = AttachSpec {
+                location: observer.location,
+                client_id: client,
+                generation: observer.generation,
+                lease_generation,
+                revision: 2,
+                dormant: false,
+                keymap: observer.keymap,
+                viewport: observer.viewport,
+                launch: None,
+                events,
+            };
+            (
+                spec,
+                receiver,
+                observer.promote.take().expect("eligible observer"),
+                observer.focuses.clone(),
+            )
+        };
+        let client = spec.client_id;
+        let viewport = spec.viewport;
+        let keymap = spec.keymap;
+        let route = match old.terminal.transfer(old.route, spec).await {
+            Ok(route) => route,
+            Err(error) => {
+                if let Some(observer) = self.lock_registry().observers.get_mut(&client) {
+                    observer.promote = Some(promote);
+                }
+                return Err(error);
+            }
+        };
+        let active = Active {
+            route,
+            viewport,
+            location: old.location,
+            terminal: old.terminal.clone(),
+            events: receiver,
+        };
+        {
+            let mut registry = self.lock_registry();
+            registry.observers.remove(&client);
+            if let Some(previous) = registry.clients.get_mut(&old.route.client_id) {
+                previous.view = None;
+            }
+            registry.claims.insert(
+                old.location.workspace,
+                Claim {
+                    client,
+                    generation: route.writer_lease_generation,
+                },
+            );
+            registry.clients.insert(
+                client,
+                Client {
+                    generation: route.connection_generation,
+                    keymap,
+                    view: None,
+                    focuses,
+                    #[cfg(target_os = "linux")]
+                    notices: None,
+                },
+            );
+            registry.set_view(&active);
+            registry.resize_hidden(client, viewport.content(), Some(active.location.pane));
+            let projections = vec![
+                registry.client_projection(old.route.client_id),
+                registry.client_projection(client),
+            ];
+            registry.publish(projections);
+        }
+        if promote.send(active).is_err() {
+            self.release(client);
+        }
+        Ok(())
+    }
+
     fn reserve(
         &self,
         client: Uuid,
@@ -434,6 +620,7 @@ impl Workspaces {
 
     pub(crate) fn release(&self, client: Uuid) {
         let mut registry = self.lock_registry();
+        registry.observers.remove(&client);
         registry.claims.retain(|_, claim| claim.client != client);
         registry.clients.remove(&client);
         registry.controllers.disconnect(client);
@@ -1150,7 +1337,6 @@ fn resolve(
     let location = layout
         .locate(target.workspace, target.tab)
         .ok_or_else(target_gone)?;
-    registry.check_available(location.workspace)?;
     if let Some(pane) = target.pane {
         let exact = Location { pane, ..location };
         return layout

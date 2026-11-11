@@ -235,11 +235,12 @@ impl Tui {
         let reply = reader.next_envelope().await.unwrap().unwrap();
         let session = check_hello_result(&greeting, &reply, PeerRole::Tui).unwrap();
         attach.terminal_capabilities.push("legacy_vt.v1".into());
-        let attach = Attach {
-            viewport: Some(Viewport { cols: 80, rows: 24 }),
-            requested_role: AttachRole::Writer as i32,
-            ..attach
-        };
+        attach
+            .viewport
+            .get_or_insert(Viewport { cols: 80, rows: 24 });
+        if attach.requested_role == AttachRole::Unspecified as i32 {
+            attach.requested_role = AttachRole::Writer as i32;
+        }
         writer
             .envelope(&session.envelope(Some("attach".into()), Body::Attach(attach)))
             .await
@@ -341,6 +342,61 @@ impl Tui {
             Frame::Structured(payload) => decode_envelope(&payload).unwrap().body,
         }
     }
+}
+
+#[tokio::test]
+async fn handoff_rejects_observer_input_and_fences_the_previous_writer() {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let runtime = fixture.path().join("run");
+    let mut daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    timeout(WAIT, async {
+        let capabilities = vec![corvid_protocol::WRITER_HANDOFF_CAPABILITY.to_owned()];
+        let mut writer = Tui::attach_target(&runtime, Attach {
+            terminal_capabilities: capabilities.clone(),
+            launch: Some(LaunchCommand {
+                argv: ["/bin/sh", "-c", "stty -echo; printf 'READY\n'; while IFS= read -r text; do printf 'got:%s\n' \"$text\"; done"]
+                    .map(|arg| arg.as_bytes().to_vec()).into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }).await;
+        let retired = writer.route.clone();
+        let mut source = Vec::new();
+        let mut output = Vec::new();
+        while !String::from_utf8_lossy(&source).contains("READY") {
+            assert!(writer.event(&mut source).await.is_none());
+        }
+        let mut observer = Tui::attach_target(&runtime, Attach {
+            requested_role: AttachRole::Observer as i32,
+            terminal_capabilities: capabilities,
+            viewport: Some(Viewport { cols: 60, rows: 18 }),
+            ..Default::default()
+        }).await;
+        assert_eq!(observer.route.writer_lease_generation, 0);
+        assert_eq!(observer.route.terminal_id, retired.terminal_id);
+        observer.input(retired.clone(), 1, b"before\n").await;
+        let Body::Error(error) = observer.next_body(&mut output).await else { panic!("observer input was accepted") };
+        assert_eq!(error.code, "WriterRequired");
+        assert_eq!(writer.client_state(&runtime).await.viewport.unwrap().cols, 80);
+        writer.enter_command_mode(1, &mut source).await;
+        writer.input(retired.clone(), 2, b"g").await;
+        assert!(matches!(writer.next_body(&mut source).await, Body::Detach(_)));
+
+        observer.moved(&mut output, &writer.selection).await;
+        assert_eq!(observer.route.terminal_id, retired.terminal_id);
+        assert!(observer.route.writer_lease_generation > retired.writer_lease_generation);
+        assert_eq!(observer.client_state(&runtime).await.viewport.unwrap().cols, 60);
+        observer.input(retired, 3, b"after\n").await;
+        let Body::Error(error) = observer.next_body(&mut output).await else { panic!("retired input was accepted") };
+        assert_eq!(error.code, "StaleRoute");
+        observer.input(observer.route.clone(), 1, b"current\n").await;
+        while !String::from_utf8_lossy(&output).contains("got:current") {
+            assert!(observer.event(&mut output).await.is_none());
+        }
+        let text = String::from_utf8_lossy(&output);
+        assert!(!text.contains("got:before") && !text.contains("got:after"));
+    }).await.unwrap();
+    daemon.kill().await.unwrap();
 }
 
 async fn control(runtime: &Path, request: &str) -> String {

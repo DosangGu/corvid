@@ -156,6 +156,7 @@ pub(crate) enum Event {
     Tab(TabCommand),
     Close(corvid_core::layout::CloseTarget),
     PairController,
+    HandoffWriter,
 }
 
 pub(crate) struct Render {
@@ -167,6 +168,7 @@ pub(crate) struct Render {
 }
 
 enum Command {
+    Transfer(InputRoute, AttachSpec, oneshot::Sender<Reply<InputRoute>>),
     Attach(AttachSpec, oneshot::Sender<Reply<InputRoute>>),
     Action {
         client: Uuid,
@@ -255,6 +257,14 @@ impl TerminalHandle {
         let (send, receive) = oneshot::channel();
         self.commands
             .try_send(Command::Attach(spec, send))
+            .map_err(|_| overloaded())?;
+        receive.await.map_err(|_| overloaded())?
+    }
+
+    pub(crate) async fn transfer(&self, route: InputRoute, spec: AttachSpec) -> Reply<InputRoute> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Transfer(route, spec, send))
             .map_err(|_| overloaded())?;
         receive.await.map_err(|_| overloaded())?
     }
@@ -429,6 +439,11 @@ impl Worker {
             Command::Preview(reply) => {
                 if !reply.is_closed() {
                     let _ = reply.send(self.preview());
+                }
+            }
+            Command::Transfer(route, spec, reply) => {
+                if !reply.is_closed() && !spec.events.is_closed() {
+                    let _ = reply.send(self.transfer(route, spec));
                 }
             }
             Command::History(route, reply) => {
@@ -630,6 +645,51 @@ impl Worker {
         Ok(discarded)
     }
 
+    fn transfer(&mut self, route: InputRoute, spec: AttachSpec) -> Reply<InputRoute> {
+        let lease = self
+            .lease
+            .as_ref()
+            .filter(|lease| lease.route == route && lease.armed && lease.location == spec.location)
+            .ok_or_else(stale_route)?;
+        let terminal = self
+            .terminal
+            .as_mut()
+            .filter(|terminal| terminal.exit.is_none())
+            .ok_or_else(terminal_fault)?;
+        if lease.frozen
+            || lease.switch_pending
+            || lease.paste.is_some()
+            || terminal.session.paste_pending()
+        {
+            return Err(input_busy());
+        }
+        terminal
+            .session
+            .resize_active(spec.viewport.content())
+            .map_err(|_| input_busy())?;
+        let route = InputRoute {
+            client_id: spec.client_id,
+            terminal_id: terminal.id,
+            connection_generation: spec.generation,
+            view_revision: spec.revision,
+            writer_lease_generation: spec.lease_generation,
+        };
+        let mut lease = Lease::new(
+            route,
+            spec.events,
+            true,
+            spec.keymap,
+            spec.viewport,
+            spec.location,
+        );
+        // A delayed FrameApplied from the read-only stream belongs to the
+        // lower half of the generation space and cannot acknowledge this view.
+        lease.render_generation = super::PROMOTED_RENDER_GENERATION;
+        self.lease = Some(lease);
+        terminal.dirty = true;
+        Ok(route)
+    }
+
     fn freeze(&mut self, route: InputRoute) -> Reply<()> {
         let lease = self
             .lease
@@ -745,6 +805,11 @@ impl Worker {
                     }
                     Some(KeyCommand::PairController) => {
                         if lease.events.try_send(Event::PairController).is_err() {
+                            self.revoke();
+                        }
+                    }
+                    Some(KeyCommand::HandoffWriter) => {
+                        if lease.events.try_send(Event::HandoffWriter).is_err() {
                             self.revoke();
                         }
                     }

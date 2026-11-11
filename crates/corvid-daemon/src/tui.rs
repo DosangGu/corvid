@@ -1,3 +1,5 @@
+mod observer;
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -9,7 +11,7 @@ use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, AgentResponded, Attach, Attached, CloseView, CreateView, Envelope,
+    AgentProvider, AgentResponded, Attach, AttachRole, Attached, CloseView, CreateView, Envelope,
     FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader,
     RouteToken, SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
     WriterClaimed,
@@ -36,6 +38,8 @@ use crate::workspaces::{
 
 const CAPABILITIES: &[&str] = &[
     "attach.v1",
+    corvid_protocol::OBSERVER_CAPABILITY,
+    corvid_protocol::WRITER_HANDOFF_CAPABILITY,
     "render.v1",
     "ping.v1",
     "paste.v1",
@@ -80,6 +84,19 @@ pub(crate) async fn serve(
     let request = timeout(COMMAND_TIMEOUT, reader.next_envelope())
         .await??
         .context("missing Attach request")?;
+    if let Ok(Body::Attach(attach)) = session.validate_request(&request)
+        && attach.requested_role == AttachRole::Observer as i32
+    {
+        return observer::serve(
+            session,
+            reader,
+            writer,
+            workspaces,
+            request.request_id.clone(),
+            attach_target(attach),
+        )
+        .await;
+    }
     let client = Uuid::new_v4();
     let (focus_tx, focuses) = mpsc::channel(1);
     let (notice_tx, notices) = mpsc::channel(8);
@@ -155,6 +172,17 @@ async fn serve_active(
         selection: Some(selection(active.location)),
     };
     send(&session, &mut writer, request_id, Body::Attached(attached)).await?;
+    serve_writer(session, reader, writer, active, workspaces, client_events).await
+}
+
+async fn serve_writer(
+    session: Session,
+    reader: FrameReader<ReadHalf>,
+    writer: FrameWriter<WriteHalf>,
+    active: Active,
+    workspaces: &Workspaces,
+    client_events: ClientEvents,
+) -> Result<()> {
     TuiConnection {
         session,
         writer,
@@ -335,6 +363,14 @@ impl TuiConnection<'_> {
             Event::Tab(command) => self.switch(Destination::Tab(command), None, true).await?,
             Event::Close(target) => return self.close(target, None, true).await,
             Event::PairController => self.pair(None).await?,
+            Event::HandoffWriter => match self.workspaces.handoff(&self.active).await {
+                Ok(()) => {
+                    self.send(None, Body::Detach(corvid_protocol::wire::Detach {}))
+                        .await?;
+                    return Ok(true);
+                }
+                Err(fault) => self.fault(None, fault).await?,
+            },
         }
         Ok(false)
     }
@@ -800,6 +836,10 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         new_workspace: attach.create_workspace.clone(),
         new_tab: attach.create_tab.clone(),
         keymap: Keymap {
+            handoff: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == corvid_protocol::WRITER_HANDOFF_CAPABILITY),
             tabs: attach
                 .terminal_capabilities
                 .iter()
