@@ -11,15 +11,19 @@ use corvid_protocol::wire::{
 };
 use uuid::Uuid;
 
+use crate::native_process::{Found, Process, ProcessKey};
 use crate::projection;
 use crate::publication::{Group, Projection};
 
 const RETAINED_RUNS: usize = 64;
+const MAX_SHELL_RUNS: usize = 64;
 
 #[derive(Default)]
 pub(crate) struct Agents {
     runs: BTreeMap<Uuid, Run>,
     active: BTreeMap<Uuid, Uuid>,
+    roots: BTreeMap<ProcessKey, Uuid>,
+    shell: BTreeMap<ProcessKey, (Uuid, Process)>,
     retired: VecDeque<Uuid>,
     dirty: BTreeSet<Uuid>,
 }
@@ -31,6 +35,61 @@ struct Run {
 }
 
 impl Agents {
+    pub(crate) fn track_shell(&mut self, terminal: Uuid, root: ProcessKey) {
+        self.roots.insert(root, terminal);
+    }
+
+    pub(crate) fn roots(&self) -> Vec<ProcessKey> {
+        self.roots.keys().copied().collect()
+    }
+
+    pub(crate) fn sample_shells(
+        &mut self,
+        found: Vec<Found>,
+        terminals: &std::collections::HashMap<Uuid, Location>,
+    ) -> bool {
+        let changed: Vec<_> = self
+            .shell
+            .iter()
+            .filter_map(|(&key, (id, process))| {
+                let liveness = process.liveness();
+                (self.runs[id].state.process.value != liveness).then_some((key, *id, liveness))
+            })
+            .collect();
+        for (key, id, liveness) in changed {
+            self.observe_run(id, liveness);
+            if matches!(liveness, ProcessLiveness::Exited { .. }) {
+                self.shell.remove(&key);
+                self.retire(id);
+            }
+        }
+        for candidate in found {
+            if self.shell.len() == MAX_SHELL_RUNS {
+                break;
+            }
+            let key = candidate.process.key;
+            let Some(&terminal) = self.roots.get(&candidate.root) else {
+                continue;
+            };
+            let Some(&location) = terminals.get(&terminal) else {
+                continue;
+            };
+            if self.shell.contains_key(&key)
+                || candidate.process.liveness() != ProcessLiveness::Running
+            {
+                continue;
+            }
+            let id = self.start_run(
+                terminal,
+                location,
+                candidate.provider,
+                ProcessLiveness::Running,
+            );
+            self.shell.insert(key, (id, candidate.process));
+        }
+        !self.dirty.is_empty()
+    }
+
     pub(crate) fn started(
         &mut self,
         terminal: Uuid,
@@ -38,6 +97,17 @@ impl Agents {
         provider: Provider,
         liveness: ProcessLiveness,
     ) {
+        let id = self.start_run(terminal, location, provider, liveness);
+        self.active.insert(terminal, id);
+    }
+
+    fn start_run(
+        &mut self,
+        terminal: Uuid,
+        location: Location,
+        provider: Provider,
+        liveness: ProcessLiveness,
+    ) -> Uuid {
         let id = Uuid::new_v4();
         let identity = RunIdentity {
             id,
@@ -57,15 +127,19 @@ impl Agents {
                 available: true,
             },
         );
-        self.active.insert(terminal, id);
         self.dirty.insert(id);
-        self.observe(terminal, liveness);
+        self.observe_run(id, liveness);
+        id
     }
 
     pub(crate) fn observe(&mut self, terminal: Uuid, liveness: ProcessLiveness) {
         let Some(&id) = self.active.get(&terminal) else {
             return;
         };
+        self.observe_run(id, liveness);
+    }
+
+    fn observe_run(&mut self, id: Uuid, liveness: ProcessLiveness) {
         let (source, confidence) = match liveness {
             ProcessLiveness::Running => (Source::ProcessProbe, Confidence::Confirmed),
             ProcessLiveness::Exited { .. } => (Source::ChildExit, Confidence::Confirmed),
@@ -86,17 +160,41 @@ impl Agents {
     }
 
     pub(crate) fn terminal_unavailable(&mut self, terminal: Uuid) {
-        if let Some(&id) = self.active.get(&terminal) {
-            self.runs.get_mut(&id).expect("active run").available = false;
-            self.dirty.insert(id);
+        self.roots.retain(|_, owner| *owner != terminal);
+        for (&id, run) in &mut self.runs {
+            if run.state.identity.terminal_id == terminal && run.available {
+                run.available = false;
+                self.dirty.insert(id);
+            }
         }
     }
 
     pub(crate) fn retire_terminal(&mut self, terminal: Uuid) {
         self.terminal_unavailable(terminal);
-        let Some(id) = self.active.remove(&terminal) else {
-            return;
-        };
+        if let Some(id) = self.active.remove(&terminal) {
+            self.retire(id);
+        }
+        let shells: Vec<_> = self
+            .shell
+            .iter()
+            .filter(|(_, (id, _))| self.runs[id].state.identity.terminal_id == terminal)
+            .map(|(&key, (id, process))| (key, *id, process.liveness()))
+            .collect();
+        for (key, id, liveness) in shells {
+            self.shell.remove(&key);
+            let liveness = if liveness == ProcessLiveness::Running {
+                ProcessLiveness::Unknown
+            } else {
+                liveness
+            };
+            self.observe_run(id, liveness);
+            self.retire(id);
+        }
+    }
+
+    fn retire(&mut self, id: Uuid) {
+        self.runs.get_mut(&id).expect("tracked run").available = false;
+        self.dirty.insert(id);
         self.retired.push_back(id);
         if self.retired.len() > RETAINED_RUNS
             && let Some(expired) = self.retired.pop_front()
@@ -107,9 +205,11 @@ impl Agents {
     }
 
     pub(crate) fn relocate_terminal(&mut self, terminal: Uuid, location: Location) {
-        if let Some(&id) = self.active.get(&terminal) {
-            self.runs.get_mut(&id).expect("active run").location = location;
-            self.dirty.insert(id);
+        for (&id, run) in &mut self.runs {
+            if run.state.identity.terminal_id == terminal {
+                run.location = location;
+                self.dirty.insert(id);
+            }
         }
     }
 

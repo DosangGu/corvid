@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use corvid_protocol::COMMAND_TIMEOUT;
@@ -55,6 +56,8 @@ pub async fn run_with_options(
     tokio::pin!(incoming_upgrade);
     let mut controls = JoinSet::new();
     let mut clients = JoinSet::new();
+    let mut agents = tokio::time::interval(Duration::from_secs(1));
+    agents.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tokio::pin!(shutdown);
 
     loop {
@@ -62,6 +65,7 @@ pub async fn run_with_options(
             () = &mut shutdown => break,
             _ = controls.join_next(), if !controls.is_empty() => {}
             _ = clients.join_next(), if !clients.is_empty() => {}
+            _ = agents.tick() => workspaces.tick_native_agents().await,
             request = &mut incoming_upgrade => {
                 let preserve = request.preserve_terminals;
                 let prepare = async {

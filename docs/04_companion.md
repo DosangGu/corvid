@@ -178,9 +178,13 @@ corvid attach --new-tab Claude --agent claude
 
 The daemon resolves `codex.exe` or `claude.exe` on its PATH. The Deck can
 show the run and its exact pane once Desktop attaches to the workspace.
-The Windows adapter reports the process started by Corvid and its exit status.
-Provider activity, requests, and response notifications require qualified hooks.
-The native adapter currently covers direct launches of the named executables.
+The Windows adapter also observes native `codex.exe` and `claude.exe`
+processes started inside a Corvid shell, including through a launcher that
+keeps the process ancestry intact. It checks ancestry back to the owned ConPTY
+child and keeps a handle to each observed agent. The host samples once a
+second, so a process that starts and exits between samples may be missed.
+The adapter reports process state and exit status. Provider activity,
+requests, and response notifications require qualified hooks.
 
 Use `corvid-deck.exe` for the standalone companion deck and WezTerm pairing.
 Open a working TUI with `ssh -tt work-host corvid`, press Ctrl-] then r, and

@@ -304,6 +304,26 @@ impl Workspaces {
         self.lock_registry().agents.inventory()
     }
 
+    #[cfg(windows)]
+    pub(crate) async fn tick_native_agents(&self) {
+        let roots = self.lock_registry().agents.roots();
+        if roots.is_empty() {
+            return;
+        }
+        let Ok(found) =
+            tokio::task::spawn_blocking(move || crate::native_process::scan(&roots)).await
+        else {
+            return;
+        };
+        let mut registry = self.lock_registry();
+        let Registry {
+            agents, terminals, ..
+        } = &mut *registry;
+        if agents.sample_shells(found, terminals) {
+            registry.publish(Vec::new());
+        }
+    }
+
     pub(crate) fn clients(&self) -> ClientList {
         let registry = self.lock_registry();
         let mut clients: Vec<_> = registry

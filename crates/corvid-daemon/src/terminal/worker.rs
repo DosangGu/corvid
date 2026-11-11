@@ -1095,7 +1095,7 @@ impl Running {
             (
                 Backend::start(scope.host.as_ref(), id, command, viewport)?,
                 true,
-                false,
+                provider.is_none(),
             )
         };
         if (unmanaged || cwd.is_some())
@@ -1108,6 +1108,8 @@ impl Running {
                     registry
                         .agents
                         .started(id, scope.location, provider, ProcessLiveness::Running);
+                } else if let Some(root) = session.process_key() {
+                    registry.agents.track_shell(id, root);
                 }
                 #[cfg(target_os = "linux")]
                 if shell && let Some(root) = identity {
@@ -1161,6 +1163,8 @@ impl Running {
             registry
                 .agents
                 .started(saved.id, scope.location, provider, liveness);
+        } else if let Some(root) = session.process_key() {
+            registry.agents.track_shell(saved.id, root);
         }
         registry.terminal_started(saved.id, scope.location);
         Ok(Self {

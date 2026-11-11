@@ -8,6 +8,8 @@ mod history;
 mod identity;
 mod incoming;
 mod metadata;
+#[cfg(windows)]
+mod native_process;
 mod platform;
 #[cfg(target_os = "linux")]
 mod process;

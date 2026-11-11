@@ -94,6 +94,9 @@ pub(super) struct Response {
     partial: bool,
     #[prost(message, optional, tag = "13")]
     history: Option<corvid_protocol::wire::TerminalHistory>,
+    #[cfg(windows)]
+    #[prost(uint64, optional, tag = "14")]
+    process_created: Option<u64>,
 }
 
 impl Response {
@@ -125,6 +128,8 @@ pub(super) struct Client {
     connection: Connection,
     executor: Handle,
     pub(super) pid: Option<u32>,
+    #[cfg(windows)]
+    pub(super) process_key: Option<crate::native_process::ProcessKey>,
     pub(super) paste_pending: bool,
     pub(super) retained: bool,
 }
@@ -242,6 +247,8 @@ impl Client {
             connection,
             executor,
             pid: None,
+            #[cfg(windows)]
+            process_key: None,
             paste_pending: false,
             retained: false,
         };
@@ -256,6 +263,10 @@ impl Client {
             "incompatible terminal host"
         );
         client.pid = response.pid;
+        #[cfg(windows)]
+        if let Some((pid, created)) = response.pid.zip(response.process_created) {
+            client.process_key = Some(crate::native_process::ProcessKey { pid, created });
+        }
         Ok(client)
     }
 
@@ -514,6 +525,11 @@ impl Host {
         #[cfg(target_os = "linux")]
         {
             response.pid = self.session.pid();
+        }
+        #[cfg(windows)]
+        if let Some(process) = self.session.process_key() {
+            response.pid = Some(process.pid);
+            response.process_created = Some(process.created);
         }
         timeout(COMMAND_TIMEOUT, write_message(&mut stream, response)).await??;
         let mut interval = tokio::time::interval(TICK);

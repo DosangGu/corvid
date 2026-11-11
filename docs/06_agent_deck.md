@@ -134,8 +134,8 @@ monitor. Windows notification architecture follows the
 [desktop toast sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/DesktopToasts).
 
 Desktop provides [terminal selection, scrollback, and search](04_companion.md#desktop-terminal-selection-and-history).
-Windows supports process observation for
-[direct native agent launches](04_companion.md#windows-quick-start).
+Windows observes [native agent processes](04_companion.md#windows-quick-start)
+launched directly by Corvid or from a Corvid shell.
 Desktop's Sessions menu watches verified hosts while their terminal views are
 detached. In Agent Deck, **Hosts** lists the agents on up to eight hosts
 configured by Desktop or companion setup. Refresh after configuring another
@@ -144,8 +144,8 @@ and marks previously seen observations as cached when a host goes offline.
 **Show host Deck** opens that host's running Deck. Slot actions, pane focus,
 and notification settings use the individual host Deck.
 
-The remaining requested backlog includes Windows provider hook and shell launch
-coverage and Desktop controls for read-only attach and writer handoff.
+The remaining requested backlog includes Windows provider hooks and Desktop
+controls for read-only attach and writer handoff.
 The TUI implements both operations.
 Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in

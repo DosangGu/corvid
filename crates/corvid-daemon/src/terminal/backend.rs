@@ -201,6 +201,14 @@ impl Backend {
         }
     }
 
+    #[cfg(windows)]
+    pub(super) fn process_key(&self) -> Option<crate::native_process::ProcessKey> {
+        match self {
+            Self::Local(session) => session.process_key(),
+            Self::Hosted(client) => client.process_key,
+        }
+    }
+
     pub(super) fn stop(&mut self) -> Option<ExitStatus> {
         match self {
             Self::Local(session) => session.stop(),

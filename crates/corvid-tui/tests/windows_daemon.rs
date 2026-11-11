@@ -135,6 +135,63 @@ async fn native_agent_launch_tracks_the_owned_child_through_exit() -> Result<()>
     Ok(())
 }
 
+#[tokio::test]
+async fn detects_agents_started_inside_an_existing_windows_shell() -> Result<()> {
+    use corvid_protocol::wire::{AgentCollection, AgentProcessState, AgentProvider};
+
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    let system_root = std::env::var_os("SystemRoot").context("SystemRoot is unavailable")?;
+    let executable = fixture.path().join("claude.exe");
+    std::fs::copy(
+        std::path::PathBuf::from(system_root).join("System32/cmd.exe"),
+        &executable,
+    )?;
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let mut tui = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--new",
+            "--",
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+        ]
+        .map(OsString::from),
+    )?;
+    tui.wait_for("PS ")?;
+    let terminal = terminal_id(&runtime).await?;
+    let launch = format!(
+        "& '{}' /d /q /k 'echo AUTO_'+'AGENT'\r",
+        executable.display()
+    );
+    // The image is a stand-in for the CLI. The shell and subprocess are native ConPTY children.
+    tui.send(launch.as_bytes())?;
+    let running = native_agent(&runtime, AgentProcessState::Running).await?;
+    let run = running.summary.context("missing detected agent")?;
+    assert_eq!(run.terminal_id, terminal);
+    assert_eq!(run.provider, AgentProvider::Claude as i32);
+    assert_eq!(run.collection, AgentCollection::NotRegistered as i32);
+
+    tui.send(b"exit 6\r")?;
+    let ended = native_agent(&runtime, AgentProcessState::Exited).await?;
+    let ended = ended.summary.context("missing ended agent")?;
+    assert_eq!(ended.agent_run_id, run.agent_run_id);
+    assert_eq!(ended.exit_code, Some(6));
+    assert_eq!(terminal_id(&runtime).await?, terminal);
+
+    tui.send(launch.as_bytes())?;
+    let next = native_agent(&runtime, AgentProcessState::Running).await?;
+    let next = next.summary.context("missing second agent")?;
+    assert_ne!(next.agent_run_id, run.agent_run_id);
+    assert_eq!(next.terminal_id, terminal);
+    tui.send(b"exit\rexit\r")?;
+    tui.expect_exit(0)?;
+    Ok(())
+}
+
 async fn native_agent(
     runtime: &Path,
     process: corvid_protocol::wire::AgentProcessState,

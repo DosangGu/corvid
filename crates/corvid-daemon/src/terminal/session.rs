@@ -83,6 +83,11 @@ impl TerminalSession {
         self.pty.pid()
     }
 
+    #[cfg(windows)]
+    pub(super) fn process_key(&self) -> Option<crate::native_process::ProcessKey> {
+        self.pty.process_key()
+    }
+
     pub(super) fn stop(&mut self) -> Option<ExitStatus> {
         self.pty.stop()
     }

@@ -2,6 +2,7 @@ use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
 
+use crate::native_process::ProcessKey;
 use anyhow::Result;
 use corvid_core::Viewport;
 use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
@@ -51,6 +52,10 @@ impl TerminalPty {
 
     pub fn resize(&self, viewport: Viewport) -> Result<()> {
         self.master.resize(size(viewport))
+    }
+
+    pub(crate) fn process_key(&self) -> Option<ProcessKey> {
+        ProcessKey::read(self.child.process_id()?, self.child.as_raw_handle()?)
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
