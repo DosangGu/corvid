@@ -1568,6 +1568,7 @@ dependencies = [
  "corvid-companion",
  "corvid-protocol",
  "corvid-tui",
+ "corvid-update",
  "glob",
  "gpui",
  "libc",
@@ -1652,6 +1653,7 @@ dependencies = [
  "corvid-core",
  "corvid-daemon",
  "corvid-protocol",
+ "corvid-update",
  "nix 0.31.3",
  "portable-pty",
  "serde",
@@ -1661,6 +1663,18 @@ dependencies = [
  "uuid",
  "vt100",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "corvid-update"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

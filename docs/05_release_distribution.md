@@ -1,0 +1,200 @@
+# Release distribution and updates
+
+Corvid distributes versioned Desktop and TUI packages through the public
+[`DosangGu/corvid` GitHub Releases](https://github.com/DosangGu/corvid/releases).
+The root Cargo workspace version is the release version. A `vX.Y.Z` tag must
+match that version. Prerelease versions use tags such as `v0.2.0-rc.1`.
+
+## Release assets
+
+| Product | Target | Archive |
+| --- | --- | --- |
+| Linux TUI | `x86_64-unknown-linux-musl` | `corvid-tui-VERSION-x86_64-unknown-linux-musl.tar.gz` |
+| Windows TUI | `x86_64-pc-windows-msvc` | `corvid-tui-VERSION-x86_64-pc-windows-msvc.zip` |
+| Linux Desktop | `x86_64-unknown-linux-gnu` | `corvid-desktop-VERSION-x86_64-unknown-linux-gnu.tar.gz` |
+| Windows Desktop | `x86_64-pc-windows-msvc` | `corvid-desktop-VERSION-x86_64-pc-windows-msvc.zip` |
+
+Linux TUI and daemon binaries are statically linked. Linux Desktop is built on
+Ubuntu 24.04 and requires X11 or XWayland, Fontconfig, and a Vulkan driver.
+Other distributions require separate runtime qualification. WSL uses the Linux
+TUI and daemon package. macOS and ARM64 are outside this release's support scope.
+
+The `corvid` executable contains the TUI, daemon, terminal host, and relays.
+Actions builds this runtime once for each execution platform. TUI packages reuse
+it directly. Both Desktop packages include both runtime payloads under
+`daemon/TARGET/`, each with its own identity and integrity manifest. Packaged
+Desktop starts its adjacent native `corvid` for local daemon use; development
+builds retain their executable-based helper path.
+
+Desktop packages also include Agent Board. Windows Desktop retains the standalone
+Deck and optional login-startup script. Windows packages contain small stable
+launchers used by the installer; portable users run the actual app executables.
+
+Each package contains `package.json`, identifying its product, version, target,
+and source revision, plus `files.sha256` for its files. Each archive has an
+adjacent `.sha256` asset. `release-manifest.json` records the complete set of
+application archives and installation scripts with their sizes and SHA-256
+digests. It is separate from each daemon payload's `manifest.json`.
+
+Downloads trust the public repository over HTTPS and verify the expected asset
+identity and checksums. SHA-256 detects changed bytes; it is not a publisher
+signature independent of GitHub. The repository's release assets and tags should
+be immutable after publication. Corrections require a new version.
+
+## Install on Linux or WSL
+
+The installer requires a Linux x86_64 environment with `curl`, GNU `tar`, and
+standard core utilities including `sha256sum`.
+
+```sh
+curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.sh | sh
+```
+
+For Desktop, download the script and select its product:
+
+```sh
+curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.sh -o install.sh
+sh install.sh --product desktop
+```
+
+Default storage is `$XDG_DATA_HOME/corvid/PRODUCT`, using `~/.local/share` when
+`XDG_DATA_HOME` is unset. Versions live under `versions/VERSION/`; an atomic
+`current` symlink selects the active installation. Entry points in `~/.local/bin`
+refer to that symlink. Add this bin directory to PATH when the installer requests
+it. Shell startup files are not edited automatically.
+
+Options include `--version VERSION`, `--install-root ABSOLUTE_DIR`, and
+`--bin-dir ABSOLUTE_DIR`. Use the original bin directory when updating a custom
+installation. A bin directory already owned by a different Corvid product or
+installation is not overwritten; use separate bin directories to keep both.
+
+Re-running the script performs an update through the same installation path.
+Existing version directories are verified and retained. A damaged version is
+reported instead of overwritten while its processes may still use it. Linux
+installation uses a directory lock; after an interrupted installer, remove the
+reported stale lock only after verifying that no installer remains running.
+
+## Install on Windows
+
+Download `install.ps1` from the release and run it with Windows PowerShell 5.1
+or later. The installer uses `curl.exe`, supplied by supported modern Windows
+installations.
+
+```powershell
+Invoke-WebRequest https://github.com/DosangGu/corvid/releases/latest/download/install.ps1 -OutFile install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+# Or install the whole Desktop distribution:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Product desktop
+```
+
+Default storage is `%LOCALAPPDATA%\Corvid\PRODUCT`. Add its `bin` directory to
+PATH. Options include `-Version VERSION` and `-InstallRoot ABSOLUTE_DIR`.
+The installer does not require elevation or modify the machine PATH.
+
+Stable launchers in `bin` read `current.txt` and start the selected executable
+under `versions\VERSION`. Updating atomically replaces this pointer, not a running
+EXE. Launchers are installed once and retain the v1 pointer contract. Previous
+application versions are retained; no automatic cleanup removes files that a
+terminal host or other process might still need. A future launcher-protocol change
+must include its own migration, rather than overwrite a live launcher.
+
+## Check and install updates
+
+```sh
+corvid update --check
+corvid update
+corvid update --version 0.2.0-rc.1
+```
+
+The default channel checks GitHub's latest published stable release and compares
+SemVer precedence. It never implicitly downgrades. An explicit `--version` can
+select a prerelease or an older package; it does not downgrade a running daemon.
+The check command changes neither installed files nor daemon state. Network,
+rate-limit, missing-release, and validation errors are reported as failures,
+not as evidence that the installation is up to date.
+
+Desktop provides **Help → Check for updates**. It shows the installed and
+available versions and release notes, then offers installation and restart.
+Downloads and installation run outside the UI thread. Cancellation at the
+confirmation leaves the installation alone. An installation error keeps the
+existing executable available.
+
+![Desktop Help menu with the update command](images/release-update-menu.png)
+
+Both clients use `corvid-update`. The updater selects a release once, verifies
+its manifest, and runs that exact tag's verified installer with the expected
+archive digest. The installer fetches assets from the same tag. A CLI inside a
+Desktop distribution updates the entire Desktop package.
+
+Source builds and externally managed binaries without Corvid package metadata
+are not overwritten. Desktop offers the release page for those builds. Updating
+a portable release installs a managed copy in the default product directory;
+the original extracted directory remains intact. The CLI prints the installed
+path and Desktop restarts from the new copy.
+
+The installers also accept local assets for offline installation and validation:
+`--source-dir DIR --version VERSION` on Linux or
+`-SourceDirectory DIR -Version VERSION` on Windows. The directory must contain
+the archive and its `.sha256` file from the same trusted release.
+
+## Daemon lifecycle
+
+Package installation does not start, stop, or replace a daemon. Installed and
+running versions can differ while their protocol remains compatible.
+
+`corvid upgrade`, invoked through the newly installed executable, separately
+replaces an automatically started local daemon. The existing authenticated
+handoff protocol preserves supported terminal hosts, maintains host identity,
+and establishes a new daemon epoch and new client input routes. Unsupported old
+terminal hosts retain the existing idle-only/manual-upgrade restriction.
+
+Foreground and systemd-managed daemons use their existing supervisor procedure.
+The updater never forces a supervisor restart. SSH and WSL daemon provisioning
+retains Desktop's explicit host-specific installation and upgrade prompts.
+An app update does not update all connected hosts.
+
+## Build and publish
+
+`deploy/package.py` separates runtime manifest generation, package assembly,
+and release manifest generation. It validates runtime version, source revision,
+size, and checksum before including a payload. It rejects dynamic Linux daemon
+binaries and binaries exceeding the existing 32 MiB provisioning limit.
+
+The **Package Corvid** workflow performs the following stages:
+
+1. Validate the version/ref and formatting.
+2. Build and test Linux and Windows runtimes independently; package and test TUI.
+3. Build Desktop on both platforms, consume both runtime artifacts, run workspace
+   tests and lints, and test packaged installation. Linux also opens Desktop under Xvfb.
+4. Assemble all four archives, checksums, installation scripts, and manifest.
+5. For a pushed version tag, create a draft, upload and check the complete asset
+   inventory, then publish. Only this job receives repository write permission.
+
+Pull requests, pushes to `main`, and manual workflow runs validate and upload
+workflow artifacts without publishing a release. Re-running publication may repair
+an unpublished draft; it refuses to overwrite an already published release.
+
+For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
+WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt
+`-LinuxDaemonDirectory` and `-WindowsDaemonDirectory` inputs. Python 3.11 or later
+must be available as `python`. The optional `-WithoutSlotBoard` is for local
+packaging; official release packages include Agent Board.
+Commit build inputs before packaging so a source revision identifies the actual
+payload. Packaging rejects uncommitted Cargo, crate, plugin, spike, or deployment
+inputs.
+
+## Validation boundary
+
+`deploy/test_install.py` exercises the actual installers with isolated paths,
+including spaces, a synthetic older version, repeat installation, concurrent
+installation rejection, corrupted downloads, and a running foreground daemon.
+The older executable is a version-probe fixture: this tests installation
+transactions, not historical daemon compatibility. Existing daemon handoff tests
+cover the protocol. Every subsequent release should also qualify an upgrade from
+the previous published release with live terminal sessions.
+
+`deploy/test_desktop.py` checks that the packaged Linux Desktop opens an X11 window.
+Visible menu behavior and native Windows Desktop startup require separate UI
+verification; archive checks and compilation alone do not establish those results.
+On WSL, run Unix integration tests from a Linux filesystem checkout: fixtures
+under a Windows mount can fail the runtime's parent-directory permission checks.

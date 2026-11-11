@@ -6,6 +6,9 @@
 > See [terminal qualification](01_terminal_qualification.md) and
 > [daemon foundation](02_daemon_foundation.md) for implemented paths and runtime evidence.
 > Commands and interfaces described here define the target.
+>
+> See [release distribution and updates](05_release_distribution.md) for package
+> identity, installation, app updates, and the separate daemon upgrade lifecycle.
 
 ## Contents
 

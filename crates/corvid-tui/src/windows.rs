@@ -390,7 +390,7 @@ async fn start_daemon(
     ssh: bool,
     desktop_image: Option<&str>,
 ) -> Result<()> {
-    let mut executable = std::env::current_exe()?;
+    let mut executable = crate::local_daemon_executable()?;
     if let Some(name) = desktop_image {
         // Keep the detached daemon from locking the GUI binary across rebuilds.
         let image = std::fs::read(&executable).context("reading the Desktop daemon image")?;

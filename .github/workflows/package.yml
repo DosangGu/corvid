@@ -3,61 +3,167 @@ name: Package Corvid
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
+  pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+
 jobs:
-  linux-daemon:
+  validate:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Build the static Linux daemon
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ncurses-bin binutils
-          cargo --version
-          rustup target add x86_64-unknown-linux-musl
-          bash deploy/linux/package-corvid.sh
-      - name: Smoke test the packaged daemon
-        run: |
-          binary=target/linux-dist/x86_64-unknown-linux-musl/corvid
-          scratch=$(mktemp -d "$HOME/.corvid-package-test.XXXXXXXX")
-          "$binary" --runtime-dir "$scratch/run" daemon --state-dir "$scratch/state" &
-          daemon_pid=$!
-          trap 'kill "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" || true; rm -rf -- "$scratch"' EXIT
-          for attempt in {1..40}; do
-            if "$binary" --runtime-dir "$scratch/run" control ping 2>/dev/null; then
-              exit 0
-            fi
-            sleep 0.25
-          done
-          "$binary" --runtime-dir "$scratch/run" control ping
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: corvid-linux-x64-daemon
-          path: target/linux-dist/x86_64-unknown-linux-musl/
-          if-no-files-found: error
+      - run: python3 deploy/release.py validate
+      - run: cargo fmt --all -- --check
+      - run: git diff --check
 
-  windows-desktop:
-    needs: linux-daemon
-    runs-on: windows-2025
+  runtime:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            binary: corvid
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            binary: corvid.exe
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: corvid-linux-x64-daemon
-          path: target/linux-daemon
-      - name: Bundle the Windows apps and daemon payloads
-        shell: powershell
-        run: ./deploy/windows/Package-Corvid.ps1 -LinuxDaemonDirectory target/linux-daemon
+      - name: Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ncurses-bin binutils musl-tools
+          mkdir -p "$HOME/.corvid-tests"
+          chmod 700 "$HOME/.corvid-tests"
+          echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
+      - run: rustup target add ${{ matrix.target }}
+      - name: Build runtime and launchers
+        run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-tui -p corvid-update
+      - name: Runtime tests
+        run: cargo test --locked -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
+      - name: Runtime manifest
+        run: python deploy/package.py runtime --target ${{ matrix.target }} --binary target/${{ matrix.target }}/release/${{ matrix.binary }} --output target/runtime
+      - name: Package TUI
+        run: python deploy/package.py package --product tui --target ${{ matrix.target }} --runtime target/runtime --build target/${{ matrix.target }}/release --output target/dist
+      - name: Validate installation and daemon lifecycle
+        run: python deploy/test_install.py --assets target/dist --binary target/${{ matrix.target }}/release/${{ matrix.binary }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: corvid-windows-x64-with-daemon
-          path: target/windows-dist/corvid-windows-x64-with-daemon.zip
+          name: runtime-${{ matrix.target }}
+          path: target/runtime/
           if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tui-${{ matrix.target }}
+          path: target/dist/
+          if-no-files-found: error
+
+  desktop:
+    needs: runtime
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            native: x86_64-unknown-linux-musl
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            native: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Linux Desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ncurses-bin libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev libvulkan1 mesa-vulkan-drivers xvfb xauth x11-utils openbox
+          mkdir -p "$HOME/.corvid-tests"
+          chmod 700 "$HOME/.corvid-tests"
+          echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: runtime-*
+          path: target/runtimes
+      - name: Build Desktop and plugins
+        run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-slot-board -p corvid-update
+      - name: Workspace tests
+        run: cargo test --locked --workspace
+      - name: Workspace lints
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Package Desktop with both runtimes
+        run: python deploy/package.py package --product desktop --target ${{ matrix.target }} --runtime target/runtimes/runtime-${{ matrix.native }} --linux-runtime target/runtimes/runtime-x86_64-unknown-linux-musl --windows-runtime target/runtimes/runtime-x86_64-pc-windows-msvc --build target/${{ matrix.target }}/release --output target/dist
+      - name: Desktop package installation
+        run: python deploy/test_install.py --assets target/dist --binary target/runtimes/runtime-${{ matrix.native }}/${{ runner.os == 'Windows' && 'corvid.exe' || 'corvid' }} --product desktop
+      - name: Linux Desktop display smoke test
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python3 deploy/test_desktop.py target/dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-${{ matrix.target }}
+          path: target/dist/
+          if-no-files-found: error
+
+  assemble:
+    needs: [runtime, desktop]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: tui-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: desktop-*
+          path: dist
+          merge-multiple: true
+      - run: python3 deploy/package.py manifest --output dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: assemble
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-assets
+          path: dist
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/release.py publish --assets dist

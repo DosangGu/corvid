@@ -54,7 +54,7 @@ pub(crate) async fn ensure(path: &Path) -> Result<()> {
 async fn ensure_daemon(runtime: &RuntimeDir) -> Result<()> {
     timeout(COMMAND_TIMEOUT, async {
         let _startup = lock_startup(runtime).await?;
-        ensure_daemon_locked(runtime, None, &env::current_exe()?)
+        ensure_daemon_locked(runtime, None, &crate::local_daemon_executable()?)
             .await
             .map(|_| ())
     })
@@ -66,7 +66,12 @@ pub(crate) async fn upgrade(path: &Path) -> Result<()> {
     let runtime = RuntimeDir::create_all(path)?;
     let _startup = upgrade_lock(&runtime).await?;
     let target = stop_for_upgrade(&runtime, None).await?;
-    finish_upgrade(&runtime, target.as_ref(), &env::current_exe()?).await
+    finish_upgrade(
+        &runtime,
+        target.as_ref(),
+        &crate::local_daemon_executable()?,
+    )
+    .await
 }
 
 pub(super) async fn upgrade_managed(

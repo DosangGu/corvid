@@ -1,3 +1,5 @@
 deploy/linux/*.sh text eol=lf
+deploy/*.sh text eol=lf
+deploy/*.py text eol=lf
 crates/corvid-client/src/endpoint/*.sh text eol=lf
 crates/corvid-client/src/endpoint/*.ps1 text eol=lf

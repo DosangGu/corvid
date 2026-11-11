@@ -3,6 +3,7 @@ mod companion;
 mod hooks;
 #[cfg(target_os = "linux")]
 mod linux;
+mod update;
 #[cfg(windows)]
 mod windows;
 
@@ -40,6 +41,8 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Check for or install a GitHub release without restarting the daemon.
+    Update(update::Options),
     /// Run or use the local controller companion.
     Companion(companion::Options),
     #[cfg(target_os = "linux")]
@@ -61,6 +64,27 @@ pub async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
     {
         windows::ensure_local_daemon(runtime).await
     }
+}
+
+/// Use the shared runtime payload when starting a daemon from packaged Desktop.
+#[cfg(any(windows, target_os = "linux"))]
+fn local_daemon_executable() -> Result<PathBuf> {
+    let executable = std::env::current_exe()?;
+    let directory = executable.parent().context("locating the Corvid runtime")?;
+    if executable
+        .file_stem()
+        .is_some_and(|name| name == "corvid-desktop")
+        && directory.join("package.json").is_file()
+    {
+        let runtime = directory.join(if cfg!(windows) {
+            "corvid.exe"
+        } else {
+            "corvid"
+        });
+        anyhow::ensure!(runtime.is_file(), "the packaged Corvid runtime is missing");
+        return Ok(runtime);
+    }
+    Ok(executable)
 }
 
 /// Replace an automatically started daemon while preserving its hosted terminals.
@@ -149,6 +173,7 @@ pub fn run() -> ExitCode {
     let daemon_runtime = options.runtime_dir;
 
     let result = match options.command {
+        Some(Command::Update(options)) => update::run(options),
         Some(Command::Companion(companion)) => execute(async move {
             companion::execute(companion, daemon_runtime).await?;
             Ok(0)

@@ -12,7 +12,25 @@ the corresponding pane in Desktop.
 | Corvid Desktop | Windows x64 and Linux with X11 or XWayland |
 | Bundled remote daemon | Linux x86_64 and Windows x64 |
 
-## Run the Linux TUI
+## Install a release
+
+Download Windows and Linux Desktop or TUI packages from
+[GitHub Releases](https://github.com/DosangGu/corvid/releases).
+On Linux x86_64 or WSL, install the TUI with:
+
+```sh
+curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.sh | sh
+```
+
+Re-running the installer updates the same installation. Once installed, use
+`corvid update --check` to check for a release or `corvid update` to install it.
+Desktop provides **Help → Check for updates**. Package updates leave running
+daemons unchanged; use `corvid upgrade` separately for automatically started daemons.
+
+See the [distribution guide](docs/05_release_distribution.md) for Desktop and
+Windows installation, custom paths, system requirements, and daemon lifecycle.
+
+## Build and run the Linux TUI
 
 Install Rust with rustup, a C/C++ toolchain, and the ncurses `tic` compiler.
 On Debian or Ubuntu, the system packages are `build-essential` and
@@ -74,6 +92,7 @@ workspace builds require the [Desktop system packages](docs/04_companion.md#linu
 
 - [Architecture and roadmap](docs/00_project_design.md)
 - [Agent hook coverage and setup](docs/03_provider_qualification.md)
+- [Release distribution and updates](docs/05_release_distribution.md)
 - [Repository guidelines](AGENTS.md)
 
 ## License

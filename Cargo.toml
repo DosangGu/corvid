@@ -8,6 +8,7 @@ members = [
     "crates/corvid-presentation",
     "crates/corvid-protocol",
     "crates/corvid-tui",
+    "crates/corvid-update",
     "deploy/cargo-desktop",
     "plugins/slot-board",
     "spikes/deck",
@@ -44,6 +45,7 @@ corvid-daemon = { path = "crates/corvid-daemon" }
 corvid-presentation = { path = "crates/corvid-presentation" }
 corvid-protocol = { path = "crates/corvid-protocol" }
 corvid-tui = { path = "crates/corvid-tui" }
+corvid-update = { path = "crates/corvid-update" }
 crossterm = { version = "=0.29.0", default-features = false }
 eframe = { version = "=0.33.3", default-features = false }
 elgato-streamdeck = { version = "=0.13.1", default-features = false }

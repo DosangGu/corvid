@@ -175,70 +175,55 @@ board. Both ends check the pipe owner and DACL before exchanging frames.
 
 ### Windows package and login startup
 
+For published packages and update behavior, use the
+[release distribution guide](05_release_distribution.md). The current packaging
+command produces versioned Desktop and TUI archives with installation metadata.
+
 Windows source builds require the pinned MSVC Rust toolchain and the Windows
 SDK for the GUI. Cargo builds the Protobuf schema using `protox`. Set
 `$env:GPUI_FXC_PATH` to the full path of the SDK's `fxc.exe` if GPUI
 cannot find it.
 
-From the repository root on Windows x64, run
-`powershell -File deploy/windows/Package-Corvid.ps1`. The script builds the
-release binaries and writes `windows-dist/corvid-windows-x64.zip` under the Cargo target
-directory (`target` by default). The archive includes `corvid.exe`, the Desktop
-terminal workspace `corvid-desktop.exe`, the standalone agent deck
-`corvid-deck.exe`, the license, and `Set-CorvidStartup.ps1`. The optional Agent Board
-is installed under `plugins/slot-board/`. Pass `-WithoutSlotBoard` to the packager
-to omit it. The archive also includes the Windows SSH bundle under
-`daemon/x86_64-pc-windows-msvc/` with the executable and its SHA-256 manifest.
-To run Desktop from source, use
-`cargo run --locked -p corvid-desktop`.
-The Desktop executable starts the local daemon when needed.
-The root workspace manages the Desktop app's dependencies and lockfile.
-A root build without a package selector builds the default workspace members.
-Use `--workspace` to include Desktop, Deck, and the packaging tool.
-The terminal qualification spike runs on Linux. Use the package script to
-build and bundle the Windows applications, or see [Windows local use](02_daemon_foundation.md#run-locally-on-windows)
-for the native TUI and daemon.
+From the repository root on Windows x64, run `cargo build-desktop` to build
+both runtime payloads and the Windows packages. Python 3.11 or later must be
+available as `python`; the Linux runtime is built in the `Ubuntu` WSL
+distribution by default. Select another distribution with
+`cargo build-desktop Ubuntu-24.04`.
 
-The **Package Corvid** GitHub Actions workflow runs on demand and for `v*`
-tags. It builds a static Linux x86_64 `corvid` binary, checks that its daemon
-answers a control ping, and passes it to the Windows packager from the same
-source revision. Download the `corvid-windows-x64-with-daemon` workflow
-artifact for the combined ZIP. It adds `daemon/x86_64-unknown-linux-musl/`
-with the Linux executable and a manifest containing its target, version,
-source revision, byte size, and SHA-256. Keep the daemon directory next to
-`corvid-desktop.exe` to make first-time SSH installation available for both
-targets.
-
-To build the combined archive on Windows x64, use a Windows checkout with
-clean Cargo, Desktop, crate, and spike sources. In an x86_64 WSL distribution, install
-Rust with `rustup` and the native build tools. On Ubuntu, install the system
-packages and add the musl target from the repository root in WSL.
+In WSL, install Rust with rustup and the native build tools, then add the
+static Linux target:
 
 ```sh
 sudo apt-get update
-sudo apt-get install build-essential git ncurses-bin binutils
+sudo apt-get install build-essential git ncurses-bin binutils musl-tools python3
 rustup target add x86_64-unknown-linux-musl
 ```
 
-Run the Cargo packaging command from the Windows checkout root.
+The packager writes versioned `corvid-desktop-VERSION-x86_64-pc-windows-msvc.zip`
+and `corvid-tui-VERSION-x86_64-pc-windows-msvc.zip` archives under
+`target/windows-dist`, or the corresponding `CARGO_TARGET_DIR`. The Desktop
+archive contains `corvid.exe`, `corvid-desktop.exe`, `corvid-deck.exe`, the
+license, launchers, package metadata, and `Set-CorvidStartup.ps1`. Agent Board
+is under `plugins/slot-board/`; `-WithoutSlotBoard` is available for local
+packaging through `Package-Corvid.ps1`.
 
-```powershell
-cargo build-desktop
-```
-
-This uses the `Ubuntu` WSL distribution by default. Pass another installed
-distribution as an argument, for example `cargo build-desktop Ubuntu-24.04`.
-Use `wsl --list --quiet` to find the installed names. The command builds the
-daemon in WSL from the same checkout, verifies the manifest and daemon bytes,
-builds the Windows apps, and writes
-`target/windows-dist/corvid-windows-x64-with-daemon.zip`. If you set
-`CARGO_TARGET_DIR`, it places both the ZIP and the separate `wsl-linux`
-build directory under that location.
+Both Linux and Windows daemon bundles are under `daemon/TARGET/`, with manifests
+containing version, target, source revision, size, and SHA-256. Keep these
+directories beside Desktop for SSH and WSL provisioning. Packaged Desktop
+starts its adjacent native `corvid` runtime when a local daemon is needed.
+Source builds retain the Desktop executable helper path.
 
 For a separate Linux build host, run `bash deploy/linux/package-corvid.sh`
-on the same Git commit. Pass its `target/linux-dist/x86_64-unknown-linux-musl/`
-directory, containing `corvid` and `manifest.json`, to the Windows packager
-with `-LinuxDaemonDirectory`.
+from the same source revision. Pass the resulting
+`target/linux-dist/x86_64-unknown-linux-musl/` directory to
+`Package-Corvid.ps1 -LinuxDaemonDirectory PATH`. An already built Windows
+runtime can also be supplied with `-WindowsDaemonDirectory PATH`.
+
+The **Package Corvid** workflow builds both runtimes before assembling the
+four Desktop/TUI packages. Main-branch and manual runs produce the
+`release-assets` workflow artifact. Version tags publish a GitHub Release only
+after all platform checks and package assembly succeed. See the
+[distribution guide](05_release_distribution.md#build-and-publish) for details.
 
 Extract the archive to a stable directory and use `companion open` to check
 the connection. Run one of the following commands from the extracted

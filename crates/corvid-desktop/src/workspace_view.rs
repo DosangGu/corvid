@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+mod update;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -81,6 +82,9 @@ pub struct WorkspaceView {
     slot_board: slot_board::Settings,
     connections_open: bool,
     plugins_open: bool,
+    help_open: bool,
+    release_update: Option<Task<()>>,
+    update_status: String,
 }
 
 struct KnownSessions {
@@ -126,6 +130,9 @@ impl WorkspaceView {
             slot_board,
             connections_open: false,
             plugins_open: false,
+            help_open: false,
+            release_update: None,
+            update_status: String::new(),
         };
         view.switch_to(
             destination.unwrap_or(Destination::Local),
@@ -702,6 +709,12 @@ impl WorkspaceView {
                     },
                 )))
             })
+            .child(button("help", "Help", self.help_open).on_click(cx.listener(
+                |view, _, _, cx| {
+                    view.help_open = !view.help_open;
+                    cx.notify();
+                },
+            )))
     }
 
     fn plugins_menu(&self, connected: bool, cx: &mut Context<Self>) -> Div {
@@ -1415,6 +1428,7 @@ impl Render for WorkspaceView {
             .when(self.plugins_open, |region| {
                 region.child(self.plugins_menu(connected, cx))
             })
+            .when(self.help_open, |region| region.child(self.update_menu(cx)))
             .child(
                 div()
                     .flex()

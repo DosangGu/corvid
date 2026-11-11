@@ -24,12 +24,18 @@ if ($enabled -and ($shortcut.Description -cne $description -or $shortcut.Argumen
 switch ($Mode) {
     'Enable' {
         $binary = Join-Path $PSScriptRoot 'corvid.exe'
+        $versions = Split-Path -Parent $PSScriptRoot
+        $installation = Split-Path -Parent $versions
+        if ((Split-Path -Leaf $versions) -eq 'versions' -and
+            (Test-Path -LiteralPath (Join-Path $installation 'install.json'))) {
+            $binary = Join-Path $installation 'bin/corvid.exe'
+        }
         if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
             throw 'Extract the Windows package and run this script beside corvid.exe.'
         }
         if ($PSCmdlet.ShouldProcess($path, 'Enable Corvid companion startup for the current user')) {
             $shortcut.TargetPath = $binary
-            $shortcut.WorkingDirectory = $PSScriptRoot
+            $shortcut.WorkingDirectory = Split-Path -Parent $binary
             $shortcut.Description = $description
             $shortcut.Arguments = $arguments
             $shortcut.WindowStyle = 7
