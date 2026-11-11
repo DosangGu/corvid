@@ -15,6 +15,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
 
+use crate::hooks::{self, HookProvider};
 use daemon_process::DaemonProcess;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -80,6 +81,18 @@ pub(super) enum Command {
     },
     /// Relay the interactive protocol over SSH stdio.
     TerminalRelay,
+    /// Print the provider observation hooks for explicit installation.
+    Hooks {
+        #[arg(value_enum)]
+        provider: HookProvider,
+    },
+    /// Submit a provider observation from stdin.
+    Observe {
+        #[arg(long, value_enum)]
+        provider: HookProvider,
+        #[arg(long, hide = true)]
+        neutral_json: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -105,7 +118,31 @@ pub(super) async fn start(runtime: Option<PathBuf>) -> Result<u32> {
     .await
 }
 
-pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
+pub(super) fn dispatch(
+    command: Command,
+    runtime: Option<PathBuf>,
+    started: Instant,
+) -> Result<u32> {
+    match command {
+        Command::Hooks { provider } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&hooks::settings(provider)?)?
+            );
+            Ok(0)
+        }
+        Command::Observe {
+            provider,
+            neutral_json,
+        } => {
+            hooks::observe(provider, neutral_json, false, runtime, started);
+            Ok(0)
+        }
+        other => super::execute(execute(other, runtime)),
+    }
+}
+
+async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
     let runtime = runtime_path(runtime)?;
     match command {
         Command::Daemon {
@@ -175,6 +212,7 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
             _ => unreachable!("Clap requires a control request or --stdio"),
         },
         Command::TerminalRelay => corvid_client::relay_tui(&runtime).await?,
+        Command::Hooks { .. } | Command::Observe { .. } => unreachable!("synchronous hook command"),
     }
     Ok(0)
 }

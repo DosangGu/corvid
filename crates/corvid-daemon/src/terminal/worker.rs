@@ -1091,7 +1091,9 @@ impl Running {
         #[cfg(windows)]
         let (session, unmanaged, shell) = {
             let mut command = launch.into_command()?;
-            scope.hook_environment.configure(&mut command, None, None);
+            scope
+                .hook_environment
+                .configure(&mut command, Some(id), None);
             (
                 Backend::start(scope.host.as_ref(), id, command, viewport)?,
                 true,
@@ -1108,6 +1110,9 @@ impl Running {
                     registry
                         .agents
                         .started(id, scope.location, provider, ProcessLiveness::Running);
+                    if let Some(root) = session.process_key() {
+                        registry.agents.track_managed(id, root);
+                    }
                 } else if let Some(root) = session.process_key() {
                     registry.agents.track_shell(id, root);
                 }
@@ -1163,6 +1168,9 @@ impl Running {
             registry
                 .agents
                 .started(saved.id, scope.location, provider, liveness);
+            if let Some(root) = session.process_key() {
+                registry.agents.track_managed(saved.id, root);
+            }
         } else if let Some(root) = session.process_key() {
             registry.agents.track_shell(saved.id, root);
         }

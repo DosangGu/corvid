@@ -1,48 +1,39 @@
-#[cfg(target_os = "linux")]
 use std::path::PathBuf;
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "linux")]
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
-use corvid_protocol::collector::{
-    CAPABILITY, INPUT_BATCH_CAPABILITY, NESTED_SUBAGENT_CAPABILITY, SHELL_AGENT_CAPABILITY,
-};
+use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY};
 use corvid_protocol::collector::{
     HOST_ID, LAUNCH_ASSOCIATION, RUNTIME_DIR, SERVER_EPOCH, SHELL_TERMINAL,
 };
+#[cfg(target_os = "linux")]
+use corvid_protocol::collector::{NESTED_SUBAGENT_CAPABILITY, SHELL_AGENT_CAPABILITY};
 use corvid_protocol::wire::CollectorTraffic;
+use corvid_protocol::wire::HookCollected;
 #[cfg(target_os = "linux")]
+use corvid_protocol::wire::ShellAgentRegistered;
 use corvid_protocol::wire::envelope::Body;
-#[cfg(target_os = "linux")]
-use corvid_protocol::wire::{HookCollected, ShellAgentRegistered};
-#[cfg(target_os = "linux")]
 use corvid_protocol::{PeerRole, ProtocolFault};
 use portable_pty::CommandBuilder;
 #[cfg(target_os = "linux")]
-use tokio::net::UnixStream;
-#[cfg(target_os = "linux")]
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
+use tokio::time::timeout;
 use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
-use crate::agents::{Hook, HookBinding};
-#[cfg(target_os = "linux")]
+use crate::agents::HookBinding;
 use crate::control::handshake;
-#[cfg(target_os = "linux")]
+use crate::hook_data::Hook;
 use crate::identity::Identity;
+use crate::platform::Stream;
 #[cfg(target_os = "linux")]
 use crate::process::ProcessImage;
 #[cfg(target_os = "linux")]
 use crate::provider::shell::Commands;
-#[cfg(target_os = "linux")]
 use crate::workspaces::Workspaces;
 
-#[cfg(target_os = "linux")]
 const CONNECTION_TIMEOUT: Duration = Duration::from_millis(75);
 
 #[derive(Default)]
@@ -63,7 +54,6 @@ impl CollectorDiagnostics {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn submission(&self, accepted: bool) {
         increment(if accepted {
             &self.accepted
@@ -72,18 +62,15 @@ impl CollectorDiagnostics {
         });
     }
 
-    #[cfg(target_os = "linux")]
     fn connection_failed(&self) {
         increment(&self.failed);
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn admission_refused(&self) {
         increment(&self.saturated);
     }
 }
 
-#[cfg(target_os = "linux")]
 fn increment(counter: &AtomicU64) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
         Some(count.saturating_add(1))
@@ -91,9 +78,7 @@ fn increment(counter: &AtomicU64) {
 }
 
 pub(crate) struct HookEnvironment {
-    #[cfg(target_os = "linux")]
     pub(crate) runtime: PathBuf,
-    #[cfg(target_os = "linux")]
     pub(crate) identity: Arc<Identity>,
     #[cfg(target_os = "linux")]
     pub(crate) shell_commands: Option<Commands>,
@@ -128,7 +113,12 @@ impl HookEnvironment {
         }
     }
     #[cfg(windows)]
-    pub(crate) fn configure(&self, command: &mut CommandBuilder, _: Option<Uuid>, _: Option<Uuid>) {
+    pub(crate) fn configure(
+        &self,
+        command: &mut CommandBuilder,
+        terminal: Option<Uuid>,
+        _: Option<Uuid>,
+    ) {
         for key in [
             LAUNCH_ASSOCIATION,
             HOST_ID,
@@ -138,12 +128,17 @@ impl HookEnvironment {
         ] {
             command.env_remove(key);
         }
+        if let Some(terminal) = terminal {
+            command.env(LAUNCH_ASSOCIATION, terminal.to_string());
+            command.env(HOST_ID, &self.identity.host_id);
+            command.env(SERVER_EPOCH, &self.identity.epoch);
+            command.env(RUNTIME_DIR, &self.runtime);
+        }
     }
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) async fn serve(
-    stream: UnixStream,
+    stream: Stream,
     identity: &Identity,
     workspaces: &Workspaces,
 ) -> Result<()> {
@@ -154,13 +149,8 @@ pub(crate) async fn serve(
     outcome?
 }
 
-#[cfg(target_os = "linux")]
-async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspaces) -> Result<()> {
-    let pid = stream
-        .peer_cred()?
-        .pid()
-        .and_then(|pid| u32::try_from(pid).ok())
-        .context("collector peer PID unavailable")?;
+async fn collect(stream: Stream, identity: &Identity, workspaces: &Workspaces) -> Result<()> {
+    let pid = peer_pid(&stream).context("collector peer PID unavailable")?;
     let Some((session, mut reader, mut writer)) = handshake(
         stream,
         identity,
@@ -168,7 +158,9 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
         &[
             CAPABILITY,
             INPUT_BATCH_CAPABILITY,
+            #[cfg(target_os = "linux")]
             NESTED_SUBAGENT_CAPABILITY,
+            #[cfg(target_os = "linux")]
             SHELL_AGENT_CAPABILITY,
         ],
     )
@@ -190,6 +182,7 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
             workspaces.collector.submission(result.is_ok());
             result.map(|()| Body::HookCollected(HookCollected {}))
         }
+        #[cfg(target_os = "linux")]
         Ok(Body::RegisterShellAgent(registration)) => workspaces
             .register_shell_agent(registration, pid)
             .await
@@ -199,7 +192,10 @@ async fn collect(stream: UnixStream, identity: &Identity, workspaces: &Workspace
                 })
             }),
         Err(fault) => Err(fault),
-        Ok(_) => unreachable!("collector accepts only hook submissions"),
+        Ok(_) => Err(ProtocolFault::new(
+            "UnsupportedCapability",
+            "collector request unavailable",
+        )),
     };
     let body = match result {
         Ok(body) => body,
@@ -235,4 +231,24 @@ async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<Proces
             HookBinding::Starting => sleep(Duration::from_millis(2)).await,
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn peer_pid(stream: &Stream) -> Option<u32> {
+    stream.peer_cred().ok()?.pid()?.try_into().ok()
+}
+
+#[cfg(windows)]
+fn peer_pid(stream: &Stream) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+
+    let mut pid = 0;
+    let read = unsafe { GetNamedPipeClientProcessId(stream.as_raw_handle(), &mut pid) };
+    (read != 0 && pid != 0).then_some(pid)
+}
+
+#[cfg(windows)]
+async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), ProtocolFault> {
+    workspaces.apply_native_hook(hook, pid).await
 }

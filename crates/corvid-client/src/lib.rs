@@ -1,6 +1,6 @@
 #[cfg(any(target_os = "linux", windows))]
 mod attach;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod collector;
 mod connection;
 mod control;
@@ -23,7 +23,9 @@ mod upgrade;
 #[cfg(any(target_os = "linux", windows))]
 pub use attach::{AttachOptions, attach, check_tty};
 #[cfg(target_os = "linux")]
-pub use collector::{register_shell_agent, submit_hook};
+pub use collector::register_shell_agent;
+#[cfg(any(target_os = "linux", windows))]
+pub use collector::submit_hook;
 pub use control::{ControllerRequest, ControllerScope};
 #[cfg(any(target_os = "linux", windows))]
 pub use control::{agents, clients, controller, host, ping, status, workspaces};

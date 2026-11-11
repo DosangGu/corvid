@@ -183,8 +183,9 @@ processes started inside a Corvid shell, including through a launcher that
 keeps the process ancestry intact. It checks ancestry back to the owned ConPTY
 child and keeps a handle to each observed agent. The host samples once a
 second, so a process that starts and exits between samples may be missed.
-The adapter reports process state and exit status. Provider activity,
-requests, and response notifications require qualified hooks.
+The adapter reports process state and exit status. Configure
+[Windows provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage)
+for activity, requests, and response notifications.
 
 Use `corvid-deck.exe` for the standalone companion deck and WezTerm pairing.
 Open a working TUI with `ssh -tt work-host corvid`, press Ctrl-] then r, and

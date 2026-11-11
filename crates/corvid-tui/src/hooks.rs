@@ -3,6 +3,7 @@ mod codex;
 use std::collections::BTreeSet;
 use std::env;
 use std::io::{self, Write};
+#[cfg(target_os = "linux")]
 use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -12,8 +13,11 @@ use clap::ValueEnum;
 use corvid_core::agent::Provider;
 use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, MAX_BATCH_INPUTS, SERVER_EPOCH};
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
+#[cfg(target_os = "linux")]
 use nix::errno::Errno;
+#[cfg(target_os = "linux")]
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+#[cfg(target_os = "linux")]
 use nix::unistd::read;
 use serde::Deserialize;
 use serde_json::Value;
@@ -82,6 +86,7 @@ fn observe_inner(
         ))
 }
 
+#[cfg(target_os = "linux")]
 fn read_hook(deadline: Instant) -> Result<Vec<u8>> {
     let input = io::stdin();
     let mut bytes = Vec::new();
@@ -109,6 +114,52 @@ fn read_hook(deadline: Instant) -> Result<Vec<u8>> {
             "hook input exceeds bound"
         );
         bytes.extend_from_slice(&buffer[..count]);
+    }
+}
+
+#[cfg(windows)]
+fn read_hook(deadline: Instant) -> Result<Vec<u8>> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType, ReadFile};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    ensure!(
+        !input.is_null()
+            && input != INVALID_HANDLE_VALUE
+            && unsafe { GetFileType(input) } == FILE_TYPE_PIPE,
+        "hook stdin is not a pipe"
+    );
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        ensure!(Instant::now() < deadline, "hook input timed out");
+        let mut available = 0;
+        if unsafe { PeekNamedPipe(input, null_mut(), 0, null_mut(), &mut available, null_mut()) }
+            == 0
+        {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+                return Ok(bytes);
+            }
+            return Err(error.into());
+        }
+        if available == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        let mut read = 0;
+        let count = available.min(buffer.len() as u32);
+        if unsafe { ReadFile(input, buffer.as_mut_ptr(), count, &mut read, null_mut()) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        ensure!(
+            bytes.len() + read as usize <= SOURCE_LIMIT,
+            "hook input exceeds bound"
+        );
+        bytes.extend_from_slice(&buffer[..read as usize]);
     }
 }
 

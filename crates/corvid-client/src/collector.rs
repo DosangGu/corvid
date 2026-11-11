@@ -2,17 +2,23 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_protocol::collector::{
-    CAPABILITY, INPUT_BATCH_CAPABILITY, NESTED_SUBAGENT_CAPABILITY, SHELL_AGENT_CAPABILITY,
-};
-use corvid_protocol::unix::SocketRole;
+#[cfg(target_os = "linux")]
+use corvid_protocol::collector::SHELL_AGENT_CAPABILITY;
+use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY, NESTED_SUBAGENT_CAPABILITY};
+#[cfg(target_os = "linux")]
+use corvid_protocol::wire::RegisterShellAgent;
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{CollectHook, HookEvent, RegisterShellAgent};
+use corvid_protocol::wire::{CollectHook, HookEvent};
 use corvid_protocol::{PeerRole, ProtocolFault};
 use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
 
-use crate::connection::{UnixConnection, open};
+use crate::connection::{LocalConnection, SocketRole, open};
+
+#[cfg(target_os = "linux")]
+type Stream = tokio::net::UnixStream;
+#[cfg(windows)]
+type Stream = tokio::net::windows::named_pipe::NamedPipeClient;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(20);
 const SUBMIT_TIMEOUT: Duration = Duration::from_millis(50);
@@ -37,7 +43,7 @@ pub async fn submit_hook(
 }
 
 async fn send_hook(
-    stream: tokio::net::UnixStream,
+    stream: Stream,
     host_id: &str,
     epoch: &str,
     observation: CollectHook,
@@ -64,6 +70,7 @@ async fn send_hook(
     }
 }
 
+#[cfg(target_os = "linux")]
 pub async fn register_shell_agent(
     runtime: &Path,
     host_id: &str,
@@ -89,14 +96,14 @@ pub async fn register_shell_agent(
 }
 
 async fn exchange(
-    stream: tokio::net::UnixStream,
+    stream: Stream,
     host_id: &str,
     epoch: &str,
     capabilities: Vec<String>,
     body: Body,
 ) -> Result<Body> {
     let mut connection =
-        UnixConnection::establish(stream, PeerRole::Collector, capabilities).await?;
+        LocalConnection::establish(stream, PeerRole::Collector, capabilities).await?;
     let session = &connection.session;
     ensure!(
         session.host_id == host_id && session.server_epoch == epoch,

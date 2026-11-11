@@ -1,5 +1,5 @@
 mod companion;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod hooks;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -14,14 +14,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) use corvid_client::runtime_path;
 
 #[derive(Parser)]
@@ -139,7 +139,6 @@ pub fn run_daemon_helper() -> Option<ExitCode> {
 
     match std::env::args_os().nth(1)?.to_str()? {
         "daemon" | "terminal-host" => Some(run()),
-        #[cfg(target_os = "linux")]
         "observe" => Some(run()),
         _ => None,
     }
@@ -167,7 +166,7 @@ pub fn run() -> ExitCode {
             return ExitCode::from(linux::shell_agent::execute(provider, args.collect()));
         }
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     let started = Instant::now();
     let options = Options::parse();
     let daemon_runtime = options.runtime_dir;
@@ -183,7 +182,7 @@ pub fn run() -> ExitCode {
         #[cfg(target_os = "linux")]
         None => execute(linux::start(daemon_runtime)),
         #[cfg(windows)]
-        Some(Command::Windows(command)) => execute(windows::execute(command, daemon_runtime)),
+        Some(Command::Windows(command)) => windows::dispatch(command, daemon_runtime, started),
         #[cfg(windows)]
         None => execute(windows::start(daemon_runtime)),
     };

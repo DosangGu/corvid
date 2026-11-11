@@ -192,6 +192,147 @@ async fn detects_agents_started_inside_an_existing_windows_shell() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn native_hook_provider_fixture() -> Result<()> {
+    let Some(helper) = std::env::var_os("CORVID_TEST_HOOK_HELPER") else {
+        return Ok(());
+    };
+    let provider = if std::env::current_exe()?
+        .file_stem()
+        .is_some_and(|stem| stem == "codex")
+    {
+        "codex"
+    } else {
+        "claude"
+    };
+    let config = Command::new(&helper).args(["hooks", provider]).output()?;
+    ensure!(
+        config.status.success(),
+        "could not generate hook configuration"
+    );
+    let config: serde_json::Value = serde_json::from_slice(&config.stdout)?;
+    for (event, event_fields) in [
+        ("SessionStart", serde_json::json!({"source": "startup"})),
+        (
+            "UserPromptSubmit",
+            serde_json::json!({"turn_id": "turn-1", "prompt_id": "turn-1", "prompt": "discarded fixture text"}),
+        ),
+        (
+            "Stop",
+            serde_json::json!({"turn_id": "turn-1", "prompt_id": "turn-1", "stop_hook_active": false}),
+        ),
+    ] {
+        let handler = &config["hooks"][event][0]["hooks"][0];
+        let invocation = handler["command"].as_str().context("missing command")?;
+        let mut command = if provider == "codex" {
+            let mut command = Command::new("powershell.exe");
+            command.args(["-NoProfile", "-Command", invocation]);
+            command
+        } else {
+            let mut command = Command::new(invocation);
+            for arg in handler["args"].as_array().context("missing arguments")? {
+                command.arg(arg.as_str().context("invalid argument")?);
+            }
+            command
+        };
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut fields = event_fields;
+        fields["hook_event_name"] = event.into();
+        fields["session_id"] = format!("native-{provider}-fixture").into();
+        child
+            .stdin
+            .take()
+            .context("missing hook stdin")?
+            .write_all(fields.to_string().as_bytes())?;
+        let result = child.wait_with_output()?;
+        assert!(result.status.success() && result.stderr.is_empty());
+        if event == "Stop" && provider == "codex" {
+            assert_eq!(String::from_utf8(result.stdout)?.trim(), "{}");
+        } else {
+            assert!(result.stdout.is_empty());
+        }
+    }
+    println!("HOOK_FIXTURE_READY");
+    std::io::stdin().read_line(&mut String::new())?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn windows_shell_hooks_publish_only_bound_provider_observations() -> Result<()> {
+    use corvid_protocol::wire::{
+        AgentCollection, AgentProcessState, AttentionReason, CollectHook, HookEvent,
+    };
+
+    for provider in ["claude", "codex"] {
+        let fixture = tempfile::tempdir()?;
+        let runtime = fixture.path().join("run");
+        ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+        let _daemon = BackgroundDaemon::open(&runtime).await?;
+        let executable = fixture.path().join(format!("{provider}.exe"));
+        std::fs::copy(std::env::current_exe()?, &executable)?;
+        let mut tui = Tui::open(
+            &runtime,
+            [
+                "attach",
+                "--new",
+                "--",
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+            ]
+            .map(OsString::from),
+        )?;
+        tui.wait_for("PS ")?;
+        let launch = format!(
+            "$env:CORVID_TEST_HOOK_HELPER='{}'; & '{}' --exact native_hook_provider_fixture --nocapture\r",
+            CORVID.replace('\'', "''"),
+            executable.to_string_lossy().replace('\'', "''"),
+        );
+        tui.send(launch.as_bytes())?;
+        tui.wait_for("HOOK_FIXTURE_READY")?;
+        let agent = native_agent(&runtime, AgentProcessState::Running).await?;
+        let run = agent.summary.context("missing native hook run")?;
+        assert_eq!(
+            run.provider_session_id,
+            Some(format!("native-{provider}-fixture"))
+        );
+        assert_eq!(run.collection, AgentCollection::Healthy as i32);
+        let host = corvid_client::host(&runtime).await?;
+        let unbound = corvid_client::submit_hook(
+            &runtime,
+            &host.host_id,
+            &host.server_epoch,
+            CollectHook {
+                launch_association: run.terminal_id.clone(),
+                provider: run.provider,
+                event: HookEvent::DeliveryGap as i32,
+                ..Default::default()
+            },
+            tokio::time::Instant::now() + WAIT,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            unbound
+                .downcast_ref::<corvid_protocol::ProtocolFault>()
+                .map(|fault| fault.code.as_str()),
+            Some("Unauthorized")
+        );
+        let snapshot = corvid_client::snapshot(&runtime).await?;
+        assert!(snapshot.snapshot().entities().any(|entry| {
+            matches!(&entry.body, Some(Body::Attention(attention)) if attention.agent_run_id == run.agent_run_id
+                && attention.reason == AttentionReason::Response as i32)
+        }));
+        tui.send(b"\rexit\r")?;
+        tui.expect_exit(0)?;
+    }
+    Ok(())
+}
+
 async fn native_agent(
     runtime: &Path,
     process: corvid_protocol::wire::AgentProcessState,

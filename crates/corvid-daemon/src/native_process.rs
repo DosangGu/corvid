@@ -79,7 +79,7 @@ impl Process {
         }
     }
 
-    fn provider(&self) -> Option<Provider> {
+    fn image(&self) -> Option<std::path::PathBuf> {
         let mut path = [0; 4096];
         let mut len = path.len() as u32;
         if unsafe {
@@ -88,8 +88,11 @@ impl Process {
         {
             return None;
         }
-        let path = OsString::from_wide(&path[..len as usize]);
-        provider_name(Path::new(&path).file_name()?.to_str()?)
+        Some(OsString::from_wide(&path[..len as usize]).into())
+    }
+
+    fn provider(&self) -> Option<Provider> {
+        provider_name(self.image()?.file_name()?.to_str()?)
     }
 }
 
@@ -102,6 +105,81 @@ pub(crate) struct Found {
     pub root: ProcessKey,
     pub provider: Provider,
     pub process: Process,
+}
+
+pub(crate) struct HookOwner {
+    pub found: Found,
+    pub producer: ProcessKey,
+}
+
+pub(crate) fn verify_hook(pid: u32, root: ProcessKey, provider: Provider) -> Option<HookOwner> {
+    let as_of = file_time_now()?;
+    let entries = snapshot()?;
+    let peer = Process::open(pid)?;
+    if peer.key.created > as_of || !is_helper(&peer.image()?) {
+        return None;
+    }
+    let mut parent = parent(&entries, peer.key)?;
+    if provider == Provider::Codex && is_hook_shell(&parent.image()?) {
+        parent = self::parent(&entries, parent.key)?;
+    }
+    if parent.provider() != Some(provider) {
+        return None;
+    }
+    let producer = parent.key;
+    let mut owner = parent;
+    let mut next = owner.key;
+    for _ in 0..MAX_ANCESTORS {
+        if next == root {
+            return Some(HookOwner {
+                found: Found {
+                    root,
+                    provider,
+                    process: owner,
+                },
+                producer,
+            });
+        }
+        let parent = self::parent(&entries, next)?;
+        next = parent.key;
+        if parent.provider() == Some(provider) {
+            owner = parent;
+        }
+    }
+    None
+}
+
+fn is_helper(path: &Path) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let Some(current) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+    else {
+        return false;
+    };
+    path == current
+        || (current
+            .file_stem()
+            .is_some_and(|name| name == "corvid-desktop")
+            && path == current.with_file_name("corvid.exe"))
+}
+
+fn is_hook_shell(path: &Path) -> bool {
+    let Some(system) = std::env::var_os("SystemRoot") else {
+        return false;
+    };
+    let shell = Path::new(&system).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    path.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&shell.as_os_str().to_string_lossy())
+}
+
+fn parent(entries: &BTreeMap<u32, Entry>, child: ProcessKey) -> Option<Process> {
+    let process = Process::open(entries.get(&child.pid)?.parent)?;
+    (process.key.created <= child.created && process.liveness() == ProcessLiveness::Running)
+        .then_some(process)
 }
 
 pub(crate) fn scan(roots: &[ProcessKey]) -> Vec<Found> {
@@ -159,11 +237,8 @@ fn ancestor(
     for _ in 0..MAX_ANCESTORS {
         let pid = entries.get(&child.pid)?.parent;
         let entry = entries.get(&pid)?;
-        let parent = Process::open(pid)?;
+        let parent = parent(entries, child)?;
         // A reused parent PID cannot own a process created before that parent.
-        if parent.key.created > child.created || parent.liveness() != ProcessLiveness::Running {
-            return None;
-        }
         if let Some(root) = roots.get(&pid) {
             return (*root == parent.key).then_some(*root);
         }

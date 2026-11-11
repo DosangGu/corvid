@@ -1,5 +1,25 @@
 # Provider Qualification
 
+## Windows hook setup and fixture coverage
+
+Generate the observer groups with `corvid hooks claude` or
+`corvid hooks codex`. Merge the printed groups into Claude's user or project
+settings or into Codex's `hooks.json`. Use the provider's normal review and
+trust controls. Corvid does not edit provider configuration files.
+
+Run the provider inside a newly opened Corvid shell or use
+`corvid attach --agent`. The hook helper sends only allowlisted event fields
+over a private collector pipe. Corvid verifies the helper's peer process, the
+provider process and its creation time, and the owning ConPTY ancestry.
+Claude uses exec-form hooks. The generated Codex command expects Windows
+PowerShell and emits a fixed empty JSON object for Stop. A process remains
+visible as process-only until a matching SessionStart is observed.
+
+Windows integration fixtures exercise the generated command for both providers,
+including neutral output, context registration, response attention, and
+rejection of an unrelated process. The fixtures stand in for the provider CLIs.
+The exact-version runtime results below apply to Linux.
+
 ## Claude Code 2.1.318 on Linux
 
 Recorded on Linux 7.2.14 on 2026-11-07 and 2026-11-08. The fixture launches the installed

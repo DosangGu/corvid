@@ -144,8 +144,8 @@ and marks previously seen observations as cached when a host goes offline.
 **Show host Deck** opens that host's running Deck. Slot actions, pane focus,
 and notification settings use the individual host Deck.
 
-The remaining requested backlog includes Windows provider hooks and Desktop
-controls for read-only attach and writer handoff.
+Windows supports [opt-in provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage).
+Desktop controls for read-only attach and writer handoff remain planned.
 The TUI implements both operations.
 Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in

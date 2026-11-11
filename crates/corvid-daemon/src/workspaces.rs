@@ -307,13 +307,12 @@ impl Workspaces {
     #[cfg(windows)]
     pub(crate) async fn tick_native_agents(&self) {
         let roots = self.lock_registry().agents.roots();
-        if roots.is_empty() {
-            return;
-        }
-        let Ok(found) =
-            tokio::task::spawn_blocking(move || crate::native_process::scan(&roots)).await
-        else {
-            return;
+        let found = if roots.is_empty() {
+            Vec::new()
+        } else {
+            tokio::task::spawn_blocking(move || crate::native_process::scan(&roots))
+                .await
+                .unwrap_or_default()
         };
         let mut registry = self.lock_registry();
         let Registry {
@@ -322,6 +321,37 @@ impl Workspaces {
         if agents.sample_shells(found, terminals) {
             registry.publish(Vec::new());
         }
+    }
+
+    #[cfg(windows)]
+    pub(crate) async fn apply_native_hook(
+        &self,
+        hook: crate::hook_data::Hook,
+        pid: u32,
+    ) -> Reply<()> {
+        let unauthorized =
+            || ProtocolFault::new("Unauthorized", "hook has no verified Windows agent owner");
+        let root = self
+            .lock_registry()
+            .agents
+            .hook_root(hook.association)
+            .ok_or_else(unauthorized)?;
+        let provider = hook.provider;
+        let owner = tokio::task::spawn_blocking(move || {
+            crate::native_process::verify_hook(pid, root, provider)
+        })
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(unauthorized)?;
+        let mut registry = self.lock_registry();
+        let location = *registry
+            .terminals
+            .get(&hook.association)
+            .ok_or_else(unauthorized)?;
+        let result = registry.agents.apply_hook(hook, owner, location);
+        registry.publish(Vec::new());
+        result
     }
 
     pub(crate) fn clients(&self) -> ClientList {

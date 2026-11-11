@@ -25,7 +25,7 @@ use crate::publication::{Group, Projection};
 use crate::workspaces::Registry;
 use children::{ChildEntry, ChildKey};
 
-pub(crate) use hooks::Hook;
+pub(crate) use crate::hook_data::Hook;
 
 const RETAINED_RUNS: usize = 64;
 
@@ -421,7 +421,7 @@ fn wire_badge(badge: Badge) -> (AgentBadge, u32) {
     (badge, 0)
 }
 
-fn evidence(source: Source, confidence: Confidence) -> Evidence {
+pub(crate) fn evidence(source: Source, confidence: Confidence) -> Evidence {
     Evidence {
         source,
         source_version: env!("CARGO_PKG_VERSION").to_owned(),

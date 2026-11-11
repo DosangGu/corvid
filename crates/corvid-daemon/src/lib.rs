@@ -5,6 +5,7 @@ mod collector;
 mod control;
 mod handoff;
 mod history;
+mod hook_data;
 mod identity;
 mod incoming;
 mod metadata;
@@ -53,12 +54,17 @@ use crate::workspaces::Workspaces;
 
 #[cfg(target_os = "linux")]
 pub use provider::hooks::observer_settings;
+#[cfg(windows)]
+#[path = "provider/windows_hooks.rs"]
+mod windows_hooks;
 #[cfg(target_os = "linux")]
 pub use provider::shell as shell_agent;
 #[cfg(windows)]
 pub use windows::run;
 #[cfg(windows)]
 pub use windows::run_with_options;
+#[cfg(windows)]
+pub use windows_hooks::observer_settings;
 
 /// Read an existing daemon identity without creating state.
 #[cfg(any(windows, target_os = "linux"))]

@@ -8,6 +8,7 @@ use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::windows::{DaemonPipe, StateDirectory};
 use tokio::task::JoinSet;
 
+use crate::collector;
 use crate::collector::HookEnvironment;
 use crate::identity::Identity;
 use crate::workspaces::Workspaces;
@@ -36,8 +37,15 @@ pub async fn run_with_options(
     let identity = Arc::new(Identity::load(&state)?);
     let mut control_pipe = DaemonPipe::Control.bind(&runtime)?;
     let mut client_pipe = DaemonPipe::Client.bind(&runtime)?;
+    let mut collector_pipe = DaemonPipe::Collector.bind(&runtime)?;
     let (metadata, updates, saver) = metadata::start(state, lock)?;
-    let workspaces = Workspaces::new(updates, Arc::new(HookEnvironment {}));
+    let workspaces = Workspaces::new(
+        updates,
+        Arc::new(HookEnvironment {
+            runtime: runtime_path.to_owned(),
+            identity: Arc::clone(&identity),
+        }),
+    );
     let workspaces = if autostarted {
         workspaces.enable_terminal_hosts(runtime_path)?
     } else {
@@ -56,6 +64,7 @@ pub async fn run_with_options(
     tokio::pin!(incoming_upgrade);
     let mut controls = JoinSet::new();
     let mut clients = JoinSet::new();
+    let mut collectors = JoinSet::new();
     let mut agents = tokio::time::interval(Duration::from_secs(1));
     agents.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tokio::pin!(shutdown);
@@ -65,6 +74,7 @@ pub async fn run_with_options(
             () = &mut shutdown => break,
             _ = controls.join_next(), if !controls.is_empty() => {}
             _ = clients.join_next(), if !clients.is_empty() => {}
+            _ = collectors.join_next(), if !collectors.is_empty() => {}
             _ = agents.tick() => workspaces.tick_native_agents().await,
             request = &mut incoming_upgrade => {
                 let preserve = request.preserve_terminals;
@@ -98,10 +108,23 @@ pub async fn run_with_options(
                     });
                 }
             }
+            peer = collector_pipe.accept() => {
+                let stream = peer?;
+                if collectors.len() < 32 {
+                    let identity = Arc::clone(&identity);
+                    let workspaces = Arc::clone(&workspaces);
+                    collectors.spawn(async move {
+                        collector::serve(stream, &identity, &workspaces).await
+                    });
+                } else {
+                    workspaces.collector.admission_refused();
+                }
+            }
         }
     }
     controls.shutdown().await;
     clients.shutdown().await;
+    collectors.shutdown().await;
     workspaces.shutdown().await?;
     drop(workspaces);
     tokio::time::timeout(COMMAND_TIMEOUT, saver)
