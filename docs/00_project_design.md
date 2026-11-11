@@ -619,6 +619,12 @@ generation before the observer can send input. The original writer detaches.
 Desktop exposes the same operation through its writer toolbar. External focus
 controls have no authority to transfer the lease.
 
+A writer attach with the negotiated `session_clients.v1` takeover option can
+replace the current writer of an existing pane using the same PTY transfer and
+paste fencing. A writer can also explicitly disconnect the other interactive
+clients currently viewing its workspace. Disconnect does not stop their PTYs.
+Observers and external controllers cannot request workspace disconnection.
+
 Per-client state includes current workspace/tab/pane, mode/keymap, viewport, prior frame,
 input-route revision, connection generation, and lease ownership. Foreground/keymap
 changes affect only clients viewing that pane, never all clients' focus.

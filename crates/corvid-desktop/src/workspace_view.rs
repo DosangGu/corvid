@@ -511,6 +511,7 @@ impl WorkspaceView {
             let target = AttachTarget::Workspace {
                 id,
                 host_id: known.host_id.clone(),
+                new_tab: None,
             };
             self.switch_to(destination, target, window, cx);
         }
@@ -540,6 +541,57 @@ impl WorkspaceView {
             accept_writer: self.observe_accept_writer,
         };
         self.switch_to(destination, target, window, cx);
+    }
+
+    fn take_over(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = self
+            .session
+            .as_ref()
+            .map(Session::ui)
+            .filter(|ui| ui.connected && ui.read_only && ui.session_clients_supported)
+        else {
+            return;
+        };
+        if let (Some(destination), Some(view), Some(host_id), Some(terminal_id)) = (
+            self.destination.clone(),
+            ui.selected,
+            ui.host_id,
+            ui.terminal_id,
+        ) {
+            self.switch_to(
+                destination,
+                AttachTarget::Takeover {
+                    view,
+                    host_id,
+                    terminal_id,
+                },
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn disconnect_others(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone().filter(|session| {
+            let ui = session.ui();
+            ui.can_write() && ui.session_clients_supported && !ui.changing
+        }) else {
+            return;
+        };
+        let revision = session.view_revision();
+        let reply = window.prompt(
+            PromptLevel::Warning,
+            "Disconnect other clients?",
+            Some("Other clients viewing this session will disconnect. Shells and agents keep running."),
+            &["Cancel", "Disconnect"],
+            cx,
+        );
+        cx.spawn(async move |_, _| {
+            if reply.await == Ok(1) {
+                session.disconnect_others(revision);
+            }
+        })
+        .detach();
     }
 
     fn close_button(
@@ -609,9 +661,13 @@ impl WorkspaceView {
             .chain(panes)
             .filter(|pane| inventory.live(pane))
             .collect();
+        let available = |pane: &ViewSelection| {
+            self.selected.as_ref() == Some(pane) || !inventory.has_writer(pane)
+        };
         if let Some(index) = live
             .iter()
-            .position(|pane| preferred == Some(&pane.pane_id))
+            .position(|pane| preferred == Some(&pane.pane_id) && available(pane))
+            .or_else(|| live.iter().position(available))
         {
             return Some((live.swap_remove(index), false));
         }
@@ -802,6 +858,16 @@ impl WorkspaceView {
                     },
                 ))
             })
+            .when(
+                ui.is_some_and(|ui| ui.connected && ui.read_only && ui.session_clients_supported),
+                |bar| {
+                    bar.child(
+                        button("take-over-pane", "Take over pane", false).on_click(
+                            cx.listener(|view, _, window, cx| view.take_over(window, cx)),
+                        ),
+                    )
+                },
+            )
             .when(ui.is_some_and(Ui::can_handoff), |bar| {
                 let revision = self.session.as_ref().map_or(0, Session::view_revision);
                 bar.child(
@@ -897,6 +963,16 @@ impl WorkspaceView {
                     view.observe_accept_writer = !view.observe_accept_writer;
                     cx.notify();
                 })),
+            )
+            .when(
+                ui.is_some_and(|ui| ui.can_write() && ui.session_clients_supported && !ui.changing),
+                |panel| {
+                    panel.child(
+                        button("disconnect-others", "Disconnect other clients", false).on_click(
+                            cx.listener(|view, _, window, cx| view.disconnect_others(window, cx)),
+                        ),
+                    )
+                },
             )
             .child(
                 div()
@@ -1256,6 +1332,12 @@ impl WorkspaceView {
                 let destination = destination.clone();
                 let observation = destination.clone();
                 let observed_workspace = id.clone();
+                let new_tab_destination = destination.clone();
+                let new_tab_target = AttachTarget::Workspace {
+                    id: id.clone(),
+                    host_id: known.host_id.clone(),
+                    new_tab: Some(format!("Shell {}", workspace.tabs.len() + 1)),
+                };
                 div()
                     .id(SharedString::from(id.clone()))
                     .flex()
@@ -1296,6 +1378,22 @@ impl WorkspaceView {
                                     view.observe(
                                         observation.clone(),
                                         Some(&observed_workspace),
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            ))
+                        },
+                    )
+                    .when(
+                        !changing && known.live && !(active && ui.is_some_and(Ui::can_write)),
+                        |row| {
+                            row.child(button("join-new-tab", "New tab", false).on_click(
+                                cx.listener(move |view, _, window, cx| {
+                                    cx.stop_propagation();
+                                    view.switch_to(
+                                        new_tab_destination.clone(),
+                                        new_tab_target.clone(),
                                         window,
                                         cx,
                                     );
@@ -1446,6 +1544,7 @@ impl WorkspaceView {
                 };
                 let active = ui.connected && target == *selected;
                 let live = inventory.live(&target);
+                let observed = target.clone();
                 let title = format!("Pane {}", *ordinal);
                 let preview_session = self
                     .session
@@ -1467,6 +1566,29 @@ impl WorkspaceView {
                             .text_color(rgb(if active { ACTIVE } else { MUTED }))
                             .text_size(px(12.))
                             .child(div().flex_1().child(title))
+                            .when(
+                                ui.connected && !active && inventory.has_writer(&target),
+                                |header| {
+                                    header.child(button("observe-pane", "Observe", false).on_click(
+                                        cx.listener(move |view, _, window, cx| {
+                                            if let Some(destination) = view.destination.clone() {
+                                                view.switch_to(
+                                                    destination,
+                                                    AttachTarget::Observe {
+                                                        view: Some(observed.clone()),
+                                                        host_id: view.session.as_ref().and_then(
+                                                            |session| session.ui().host_id,
+                                                        ),
+                                                        accept_writer: view.observe_accept_writer,
+                                                    },
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        }),
+                                    ))
+                                },
+                            )
                             .when(ui.connected && ui.close_supported, |header| {
                                 header.child(
                                     div()

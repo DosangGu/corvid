@@ -29,6 +29,8 @@ pub(super) fn key(item: &SnapshotEntity) -> Result<EntityKey> {
 pub(super) fn all(entries: &Entries) -> Result<()> {
     validate_layout(entries)?;
     let mut writers = BTreeSet::new();
+    let mut pane_writers = BTreeSet::new();
+    let mut shared_workspaces = BTreeSet::new();
     let mut live_panes = BTreeSet::new();
     for item in entries.values() {
         entity(entries, item)?;
@@ -38,6 +40,17 @@ pub(super) fn all(entries: &Entries) -> Result<()> {
                     writers.insert(&lease.workspace_id),
                     "duplicate workspace writer",
                 )?;
+            }
+            if let Some(location) = client
+                .pane_writer_view
+                .as_ref()
+                .and_then(|view| view.selection.as_ref())
+            {
+                require(
+                    pane_writers.insert(&location.pane_id),
+                    "duplicate pane writer",
+                )?;
+                shared_workspaces.insert(&location.workspace_id);
             }
         }
         if let Some(Body::Terminal(terminal)) = &item.body
@@ -49,7 +62,10 @@ pub(super) fn all(entries: &Entries) -> Result<()> {
             )?;
         }
     }
-    Ok(())
+    require(
+        writers.is_disjoint(&shared_workspaces),
+        "exclusive workspace has a pane writer",
+    )
 }
 
 pub(super) fn historical_run(record: &HistoricalRun, current_epoch: &str) -> Result<()> {
@@ -207,6 +223,30 @@ fn client_state(entries: &Entries, client: &ClientState) -> Result<()> {
         )?;
     }
     let tty_dimensions = 2..=u32::from(u16::MAX);
+    if let Some(view) = &client.pane_writer_view {
+        require(
+            client.writer_leases.is_empty()
+                && client.terminal_id.is_none()
+                && client.selection.is_none()
+                && client.view_revision.is_none()
+                && client.viewport.is_none()
+                && client.keymap.is_some()
+                && view.lease_generation > 0
+                && view.view_revision > 0
+                && matches!(
+                    TuiInputMode::try_from(view.input_mode),
+                    Ok(TuiInputMode::Passthrough | TuiInputMode::Command)
+                )
+                && view.viewport.as_ref().is_some_and(|size| {
+                    tty_dimensions.contains(&size.cols) && tty_dimensions.contains(&size.rows)
+                })
+                && view
+                    .selection
+                    .as_ref()
+                    .is_some_and(|location| terminal_matches(entries, &view.terminal_id, location)),
+            "invalid pane writer view",
+        )?;
+    }
     match (
         &client.terminal_id,
         &client.selection,

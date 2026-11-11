@@ -113,6 +113,7 @@ fn live_agent() -> AgentState {
 fn client() -> SnapshotEntity {
     SnapshotEntity {
         body: Some(EntityBody::Client(ClientState {
+            pane_writer_view: None,
             client_id: "client".into(),
             connection_generation: 2,
             terminal_id: Some("terminal".into()),

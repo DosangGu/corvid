@@ -17,17 +17,17 @@ use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, ClientState, CloseView,
-    CreateView, FocusViewAgent, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk,
-    PasteEnd, ReadPanePreview, ReadTerminalHistory, RequestWriterHandoff, ResizeViewport,
-    RouteToken, SelectView, TerminalHistory, TerminalState, ViewSelection, Viewport,
-    WorkspaceState,
+    CreateView, DisconnectWorkspaceClients, FocusViewAgent, FrameApplied, InputChunk,
+    LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview, ReadTerminalHistory,
+    RequestWriterHandoff, ResizeViewport, RouteToken, SelectView, TerminalHistory, TerminalState,
+    ViewSelection, Viewport, WorkspaceState,
 };
 use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
     DEFAULT_SHELL_CAPABILITY, Frame, OBSERVER_CAPABILITY, PANE_PREVIEW_CAPABILITY, ProtocolFault,
-    RenderFrame, TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES,
-    TERMINAL_HISTORY_MAX_ROWS, WRITER_HANDOFF_CAPABILITY, WRITER_HANDOFF_REQUEST_CAPABILITY,
-    decode_envelope,
+    RenderFrame, SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY,
+    TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, WRITER_HANDOFF_CAPABILITY,
+    WRITER_HANDOFF_REQUEST_CAPABILITY, decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout};
@@ -60,6 +60,12 @@ pub enum AttachTarget {
     Workspace {
         id: String,
         host_id: String,
+        new_tab: Option<String>,
+    },
+    Takeover {
+        view: ViewSelection,
+        host_id: String,
+        terminal_id: String,
     },
     Observe {
         view: Option<ViewSelection>,
@@ -155,8 +161,13 @@ impl Inventory {
     pub fn observation_target(&self, workspace: &str) -> Option<ViewSelection> {
         self.clients
             .iter()
-            .filter_map(|client| client.selection.as_ref())
-            .find(|view| view.workspace_id == workspace && self.live(view))
+            .filter(|client| {
+                client
+                    .active_selection()
+                    .is_some_and(|view| view.workspace_id == workspace && self.live(view))
+            })
+            .max_by_key(|client| client.connection_generation)
+            .and_then(ClientState::active_selection)
             .cloned()
             .or_else(|| {
                 self.terminals
@@ -165,6 +176,12 @@ impl Inventory {
                     .find(|view| view.workspace_id == workspace)
                     .cloned()
             })
+    }
+
+    pub fn has_writer(&self, selection: &ViewSelection) -> bool {
+        self.clients
+            .iter()
+            .any(|client| client.active_selection() == Some(selection))
     }
 
     fn live_siblings(&self, selected: &ViewSelection) -> Vec<String> {
@@ -214,6 +231,7 @@ pub struct Ui {
     pub read_only: bool,
     pub accept_writer: bool,
     pub handoff_supported: bool,
+    pub session_clients_supported: bool,
     pub closed_view: bool,
     pub deck_focus: u64,
 }
@@ -295,6 +313,7 @@ enum Action {
     },
     ReadHistory(u64, oneshot::Sender<HistoryReply>),
     Handoff(u64),
+    DisconnectOthers(u64),
     Select(ViewSelection, bool),
     Create(Target),
     Close(CloseView),
@@ -338,6 +357,7 @@ impl Session {
                     read_only: false,
                     accept_writer: false,
                     handoff_supported: false,
+                    session_clients_supported: false,
                     closed_view: false,
                     deck_focus: 0,
                 },
@@ -486,6 +506,12 @@ impl Session {
         }
     }
 
+    pub fn disconnect_others(&self, revision: u64) {
+        if self.ui().session_clients_supported {
+            self.change(Action::DisconnectOthers(revision));
+        }
+    }
+
     pub fn open_agent_deck(&self, settings: agent_deck::Settings) {
         if self.shared.buffer().ui.connected {
             let _ = self.actions.try_send(Action::OpenAgentDeck(settings));
@@ -551,6 +577,7 @@ enum Operation {
     Resize,
     Preview,
     Handoff,
+    DisconnectOthers,
 }
 
 async fn run_reconnecting(
@@ -649,6 +676,10 @@ async fn run(
     if accept_writer {
         capabilities.push(WRITER_HANDOFF_CAPABILITY.into());
     }
+    if matches!(target, AttachTarget::Takeover { .. }) {
+        capabilities.push(SESSION_CLIENTS_CAPABILITY.into());
+        capabilities.push(corvid_protocol::PANE_WRITERS_CAPABILITY.into());
+    }
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
     let (endpoint, mut link) = if let Some(remote) = destination.remote() {
         let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
@@ -662,7 +693,9 @@ async fn run(
             matches.then(|| config.host_id.to_string())
         });
         let known_host = match &target {
-            AttachTarget::Workspace { host_id, .. } => Some(host_id.as_str()),
+            AttachTarget::Workspace { host_id, .. } | AttachTarget::Takeover { host_id, .. } => {
+                Some(host_id.as_str())
+            }
             AttachTarget::Observe { host_id, .. } => host_id.as_deref(),
             _ => None,
         };
@@ -729,20 +762,27 @@ async fn run(
             )
             .await?
         }
-        AttachTarget::Workspace { id, host_id } => {
+        AttachTarget::Workspace {
+            id,
+            host_id,
+            new_tab,
+        } => {
             ensure!(
                 link.session().host_id == *host_id,
                 "The connection points to a different Corvid host"
             );
             let mut request = Attach {
                 workspace_id: Some(id.clone()),
+                create_tab: new_tab.clone(),
+                launch: new_tab.as_ref().map(|_| LaunchCommand::default()),
                 ..Default::default()
             };
             match attach(&mut link, grid, request.clone()).await {
                 Err(error)
-                    if error
-                        .downcast_ref::<ProtocolFault>()
-                        .is_some_and(|fault| fault.code == "NoTerminal") =>
+                    if new_tab.is_none()
+                        && error
+                            .downcast_ref::<ProtocolFault>()
+                            .is_some_and(|fault| fault.code == "NoTerminal") =>
                 {
                     drop(link);
                     link = endpoint.interactive(capabilities).await?;
@@ -755,6 +795,29 @@ async fn run(
                 }
                 result => result?,
             }
+        }
+        AttachTarget::Takeover {
+            view,
+            host_id,
+            terminal_id,
+        } => {
+            ensure!(
+                link.session().host_id == *host_id,
+                "The connection points to a different Corvid host"
+            );
+            attach(
+                &mut link,
+                grid,
+                Attach {
+                    workspace_id: Some(view.workspace_id.clone()),
+                    tab_id: Some(view.tab_id.clone()),
+                    pane_id: Some(view.pane_id.clone()),
+                    take_over: true,
+                    expected_terminal_id: Some(terminal_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
         }
         AttachTarget::Pane(view, open) => {
             attach(
@@ -803,7 +866,8 @@ async fn run(
             && (!read_only || attached.writer_leases.is_empty())
             && match &target {
                 AttachTarget::Default => true,
-                AttachTarget::Pane(view, _) => *view == selected,
+                AttachTarget::Pane(view, _) | AttachTarget::Takeover { view, .. } =>
+                    *view == selected,
                 AttachTarget::Observe { view, .. } =>
                     view.as_ref().is_none_or(|view| *view == selected),
                 AttachTarget::Workspace { id, .. } => *id == selected.workspace_id,
@@ -823,11 +887,17 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == WRITER_HANDOFF_REQUEST_CAPABILITY);
+    let session_clients_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == SESSION_CLIENTS_CAPABILITY);
     shared.update_ui(|ui| {
         ui.host_id = Some(host.clone());
         ui.endpoint = Some(endpoint.clone());
         ui.close_supported = close_supported;
         ui.handoff_supported = handoff_supported;
+        ui.session_clients_supported = session_clients_supported;
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
     let mut client = Client {
@@ -1082,6 +1152,16 @@ impl Client<'_> {
                 .await?
             }
             Action::Handoff(_) => {}
+            Action::DisconnectOthers(revision) if !self.read_only() => {
+                self.request(
+                    Body::DisconnectWorkspaceClients(DisconnectWorkspaceClients {
+                        expected_view_revision: Some(revision),
+                    }),
+                    Operation::DisconnectOthers,
+                )
+                .await?;
+            }
+            Action::DisconnectOthers(_) => {}
             Action::ReadHistory(revision, reply) => self.read_history(revision, reply).await?,
             Action::OpenAgentDeck(settings) if self.agent_deck.tasks.is_empty() => {
                 let host = self.link.session().host_id.clone();
@@ -1514,6 +1594,25 @@ impl Client<'_> {
                     }
                 });
                 return Ok(Some(format!("Shell exited ({}).", exit.exit_code)));
+            }
+            Body::WorkspaceClientsDisconnected(reply) => {
+                let pending = self
+                    .pending
+                    .take()
+                    .context("unexpected disconnect result")?;
+                ensure!(
+                    id.as_deref() == Some(&pending.id)
+                        && matches!(pending.kind, Operation::DisconnectOthers),
+                    "disconnect result targets another request"
+                );
+                self.shared.update_ui(|ui| {
+                    ui.changing = false;
+                    ui.message = match reply.client_count {
+                        0 => "No other clients in this session.".into(),
+                        1 => "Disconnected one other client.".into(),
+                        count => format!("Disconnected {count} other clients."),
+                    };
+                });
             }
             Body::Detach(_) => {
                 if self.pending.as_ref().is_some_and(|pending| {

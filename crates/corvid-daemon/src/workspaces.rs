@@ -18,8 +18,8 @@ use corvid_core::layout::{Axis, CloseTarget, CwdObservation, CwdSource, Layout, 
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentList, ClientKeymap, ClientList, ClientState, CollectorStatus, TabMoved, TerminalState,
-    TuiInputMode, Viewport as WireViewport, WriterLeaseState,
+    AgentList, ClientKeymap, ClientList, ClientState, CollectorStatus, PaneWriterView, TabMoved,
+    TerminalState, TuiInputMode, Viewport as WireViewport, WriterLeaseState,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::{mpsc, oneshot};
@@ -62,6 +62,8 @@ pub(crate) struct AttachTarget {
     pub(crate) keymap: Keymap,
     pub(crate) viewport: TuiViewport,
     pub(crate) launch: Option<Launch>,
+    pub(crate) take_over: bool,
+    pub(crate) expected_terminal: Option<Uuid>,
 }
 
 pub(crate) struct Active {
@@ -88,6 +90,7 @@ struct Observer {
     keymap: Keymap,
     focuses: mpsc::Sender<FocusDispatch>,
     promote: Option<oneshot::Sender<Active>>,
+    disconnect: Option<oneshot::Sender<()>>,
 }
 
 pub(crate) enum Destination {
@@ -148,6 +151,7 @@ struct Client {
     keymap: Keymap,
     view: Option<ClientView>,
     focuses: mpsc::Sender<FocusDispatch>,
+    disconnect: Option<oneshot::Sender<()>>,
     #[cfg(target_os = "linux")]
     notices: Option<mpsc::Sender<Provider>>,
 }
@@ -431,9 +435,10 @@ impl Workspaces {
         client: Uuid,
         mut target: AttachTarget,
         focuses: mpsc::Sender<FocusDispatch>,
+        disconnect: Option<oneshot::Sender<()>>,
         #[cfg(target_os = "linux")] notices: Option<mpsc::Sender<Provider>>,
     ) -> Reply<Active> {
-        let (location, generation, terminal) = self.reserve(client, &mut target)?;
+        let (location, generation, terminal, previous) = self.reserve(client, &mut target)?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
             location,
@@ -447,14 +452,40 @@ impl Workspaces {
             launch: target.launch,
             events,
         };
-        let opened = open_pane(terminal, location, spec, receiver).await;
+        let opened = if let Some(route) = previous {
+            terminal.transfer(route, spec).await.map(|(route, events)| {
+                (
+                    Active {
+                        location,
+                        viewport: target.viewport,
+                        route,
+                        terminal,
+                        events: receiver,
+                    },
+                    Some(events),
+                )
+            })
+        } else {
+            open_pane(terminal, location, spec, receiver)
+                .await
+                .map(|active| (active, None))
+        };
 
         let mut registry = self.lock_registry();
         if let Some(slot) = registry.slots.get_mut(&location.pane) {
             slot.reserved = false;
         }
         match opened {
-            Ok(active) => {
+            Ok((active, _previous_events)) => {
+                if let Some(previous) = previous {
+                    registry.pane_claims.remove(&location.pane);
+                    registry.claims.remove(&location.workspace);
+                    registry.insert_claim(location, target.keymap, client, generation);
+                    if let Some(client) = registry.clients.get_mut(&previous.client_id) {
+                        client.view = None;
+                        disconnect_client(&mut client.disconnect);
+                    }
+                }
                 registry.resize_hidden(
                     client,
                     active.viewport.content(),
@@ -467,11 +498,21 @@ impl Workspaces {
                         keymap: target.keymap,
                         view: None,
                         focuses,
+                        disconnect,
                         #[cfg(target_os = "linux")]
                         notices,
                     },
                 );
-                registry.record_view(&active);
+                if let Some(previous) = previous {
+                    registry.set_view(&active);
+                    let projections = vec![
+                        registry.client_projection(previous.client_id),
+                        registry.client_projection(client),
+                    ];
+                    registry.publish(projections);
+                } else {
+                    registry.record_view(&active);
+                }
                 Ok(active)
             }
             Err(fault) => {
@@ -486,8 +527,13 @@ impl Workspaces {
         client: Uuid,
         target: &AttachTarget,
         focuses: mpsc::Sender<FocusDispatch>,
+        disconnect: Option<oneshot::Sender<()>>,
     ) -> Reply<Observation> {
-        if target.launch.is_some() || target.new_workspace.is_some() || target.new_tab.is_some() {
+        if target.launch.is_some()
+            || target.new_workspace.is_some()
+            || target.new_tab.is_some()
+            || target.take_over
+        {
             return Err(ProtocolFault::new(
                 "InvalidMessage",
                 "an observer requires an existing terminal",
@@ -525,6 +571,7 @@ impl Workspaces {
                 keymap: target.keymap,
                 focuses,
                 promote: Some(promote),
+                disconnect,
             },
         );
         Ok(Observation {
@@ -601,8 +648,8 @@ impl Workspaces {
         let client = spec.client_id;
         let viewport = spec.viewport;
         let keymap = spec.keymap;
-        let route = match old.terminal.transfer(old.route, spec).await {
-            Ok(route) => route,
+        let (route, _previous_events) = match old.terminal.transfer(old.route, spec).await {
+            Ok(transfer) => transfer,
             Err(error) => {
                 if let Some(observer) = self.lock_registry().observers.get_mut(&client) {
                     observer.promote = Some(promote);
@@ -619,7 +666,10 @@ impl Workspaces {
         };
         {
             let mut registry = self.lock_registry();
-            registry.observers.remove(&client);
+            let disconnect = registry
+                .observers
+                .remove(&client)
+                .and_then(|observer| observer.disconnect);
             if let Some(previous) = registry.clients.get_mut(&old.route.client_id) {
                 previous.view = None;
             }
@@ -638,6 +688,7 @@ impl Workspaces {
                     keymap,
                     view: None,
                     focuses,
+                    disconnect,
                     #[cfg(target_os = "linux")]
                     notices: None,
                 },
@@ -660,12 +711,39 @@ impl Workspaces {
         &self,
         client: Uuid,
         target: &mut AttachTarget,
-    ) -> Reply<(Location, u64, TerminalHandle)> {
+    ) -> Reply<(Location, u64, TerminalHandle, Option<InputRoute>)> {
         let mut registry = self.lock_registry();
         registry.sweep();
         let mut layout = self.metadata.layout();
-        let location = resolve(&registry, &mut layout, target, target.keymap.pane_writer)?;
-        registry.check_attach(location, target.keymap)?;
+        let mut location = resolve(
+            &registry,
+            &mut layout,
+            target,
+            target.keymap.pane_writer && !target.take_over,
+        )?;
+        if target.take_over
+            && target.tab.is_none()
+            && target.pane.is_none()
+            && let Some(view) = registry.writer_view(location.workspace)
+        {
+            location = view.location;
+        }
+        if let Some(terminal) = target.expected_terminal
+            && registry.terminals.get(&terminal) != Some(&location)
+        {
+            return Err(ProtocolFault::new(
+                "TargetGone",
+                "the observed terminal has changed",
+            ));
+        }
+        let previous = if target.take_over {
+            registry.takeover_source(location)?
+        } else {
+            None
+        };
+        if previous.is_none() {
+            registry.check_attach(location, target.keymap)?;
+        }
         if let Some(launch) = &mut target.launch
             && (!launch.if_empty || !registry.has_live_at(location))
         {
@@ -676,8 +754,35 @@ impl Workspaces {
         if target.new_workspace.is_some() || target.new_tab.is_some() {
             registry.publish_layout(layout, Vec::new());
         }
-        registry.insert_claim(location, target.keymap, client, generation);
-        Ok((location, generation, terminal))
+        if previous.is_none() {
+            registry.insert_claim(location, target.keymap, client, generation);
+        }
+        Ok((location, generation, terminal, previous))
+    }
+
+    pub(crate) fn disconnect_others(&self, active: &Active) -> Reply<u32> {
+        let mut registry = self.lock_registry();
+        let caller = active.route.client_id;
+        let workspace = active.location.workspace;
+        registry.require_route(active.route)?;
+        registry.require_pane_writer(caller, active.location)?;
+        let mut count = 0;
+        for (id, client) in &mut registry.clients {
+            if *id != caller
+                && client
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.location.workspace == workspace)
+            {
+                count += u32::from(disconnect_client(&mut client.disconnect));
+            }
+        }
+        for observer in registry.observers.values_mut() {
+            if observer.location.workspace == workspace {
+                count += u32::from(disconnect_client(&mut observer.disconnect));
+            }
+        }
+        Ok(count)
     }
 
     pub(crate) fn release(&self, client: Uuid) {
@@ -710,7 +815,7 @@ impl Workspaces {
                 Err(busy())
             };
         }
-        if registry.pane_claims_in(workspace).next().is_some() {
+        if registry.has_shared_writer_or_reservation(workspace) {
             return Err(busy());
         }
         let generation = registry.next_generation()?;
@@ -1158,35 +1263,40 @@ impl Registry {
                 generation: claim.generation,
             })
             .collect();
-        if client.keymap.pane_writer
-            && let Some(view) = view
-        {
-            writer_leases.push(WriterLeaseState {
-                workspace_id: view.location.workspace.to_string(),
-                generation: view.route.writer_lease_generation,
-            });
-        }
         writer_leases.sort_by(|first, second| first.workspace_id.cmp(&second.workspace_id));
+        let viewport = |view: &ClientView| WireViewport {
+            cols: u32::from(view.viewport.cols.get()),
+            rows: u32::from(view.viewport.rows.get()),
+        };
+        let mode = |view: &ClientView| match view.input_mode {
+            InputMode::Passthrough => TuiInputMode::Passthrough as i32,
+            InputMode::Command => TuiInputMode::Command as i32,
+        };
+        let legacy = view.filter(|_| !client.keymap.pane_writer);
         Some(ClientState {
             client_id: id.to_string(),
             connection_generation: client.generation,
-            terminal_id: view.map(|view| view.route.terminal_id.to_string()),
-            selection: view.map(|view| projection::selection(view.location)),
-            view_revision: view.map(|view| view.route.view_revision),
-            viewport: view.map(|view| WireViewport {
-                cols: u32::from(view.viewport.cols.get()),
-                rows: u32::from(view.viewport.rows.get()),
-            }),
+            terminal_id: legacy.map(|view| view.route.terminal_id.to_string()),
+            selection: legacy.map(|view| projection::selection(view.location)),
+            view_revision: legacy.map(|view| view.route.view_revision),
+            viewport: legacy.map(viewport),
             writer_leases,
             bindings: self.controllers.bindings(id),
-            input_mode: view.map(|view| match view.input_mode {
-                InputMode::Passthrough => TuiInputMode::Passthrough as i32,
-                InputMode::Command => TuiInputMode::Command as i32,
-            }),
+            input_mode: legacy.map(mode),
             keymap: Some(ClientKeymap {
                 tabs: client.keymap.tabs,
                 pairing: client.keymap.pairing,
                 panes: client.keymap.panes,
+            }),
+            pane_writer_view: view.filter(|_| client.keymap.pane_writer).map(|view| {
+                PaneWriterView {
+                    terminal_id: view.route.terminal_id.to_string(),
+                    selection: Some(projection::selection(view.location)),
+                    view_revision: view.route.view_revision,
+                    viewport: Some(viewport(view)),
+                    input_mode: mode(view),
+                    lease_generation: view.route.writer_lease_generation,
+                }
             }),
         })
     }
@@ -1228,7 +1338,7 @@ impl Registry {
             || if keymap.pane_writer {
                 self.pane_claims.contains_key(&location.pane)
             } else {
-                self.pane_claims_in(location.workspace).next().is_some()
+                self.has_shared_writer_or_reservation(location.workspace)
             }
         {
             return Err(busy());
@@ -1251,12 +1361,9 @@ impl Registry {
         Ok(claim.generation)
     }
 
-    fn pane_claims_in(&self, workspace: Uuid) -> impl Iterator<Item = &Claim> {
-        self.pane_claims.iter().filter_map(move |(pane, claim)| {
-            self.slots
-                .get(pane)
-                .is_some_and(|slot| slot.workspace == workspace)
-                .then_some(claim)
+    fn has_shared_writer_or_reservation(&self, workspace: Uuid) -> bool {
+        self.slots.iter().any(|(pane, slot)| {
+            slot.workspace == workspace && (slot.reserved || self.pane_claims.contains_key(pane))
         })
     }
 
@@ -1272,6 +1379,19 @@ impl Registry {
             .filter_map(|client| client.view.as_ref())
             .filter(|view| view.location.workspace == workspace)
             .max_by_key(|view| view.route.connection_generation)
+    }
+
+    fn takeover_source(&self, location: Location) -> Reply<Option<InputRoute>> {
+        self.check_not_closing(location)?;
+        let Some(claim) = self.writer_at(location) else {
+            return Ok(None);
+        };
+        self.clients
+            .get(&claim.client)
+            .and_then(|client| client.view.as_ref())
+            .filter(|view| view.location == location)
+            .map(|view| Some(view.route))
+            .ok_or_else(busy)
     }
 
     fn require_pane_writer(&self, client: Uuid, location: Location) -> Reply<u64> {
@@ -1445,14 +1565,18 @@ fn resolve_switch(
             let Some(index) = panes.iter().position(|pane| *pane == old.location) else {
                 return Err(target_gone());
             };
+            let client = old.route.client_id;
             Ok((1..panes.len())
                 .map(|offset| panes[(index + offset) % panes.len()])
-                .find(|pane| registry.has_live_at(*pane))
+                .find(|pane| {
+                    registry.has_live_at(*pane)
+                        && registry.check_pane_available(client, *pane).is_ok()
+                })
                 .map(|pane| (pane, None)))
         }
-        Destination::Tab(command) => Ok(
-            select_tab(registry, layout, old.location, command).map(|location| (location, None))
-        ),
+        Destination::Tab(command) => {
+            Ok(select_tab(registry, layout, old, command).map(|location| (location, None)))
+        }
         creation => {
             let mut launch = new_shell();
             prepare_cwd(layout, old.location, Some(&mut launch))?;
@@ -1481,18 +1605,28 @@ fn new_shell() -> Launch {
 fn select_tab(
     registry: &Registry,
     layout: &Layout,
-    old: Location,
+    active: &Active,
     command: TabCommand,
 ) -> Option<Location> {
+    let old = active.location;
+    let client = active.route.client_id;
+    let select = |tab| {
+        layout.panes(old.workspace, tab).into_iter().find(|pane| {
+            registry.has_live_at(*pane) && registry.check_pane_available(client, *pane).is_ok()
+        })
+    };
     let workspace = layout
         .workspaces
         .iter()
         .find(|item| item.id == old.workspace)?;
     match command {
         TabCommand::Index(index) => {
-            return registry.live_tab(layout, old.workspace, workspace.tabs.get(index)?.id);
+            let tab = workspace.tabs.get(index)?.id;
+            return select(tab).or_else(|| registry.live_tab(layout, old.workspace, tab));
         }
-        TabCommand::Select(tab) => return registry.live_tab(layout, old.workspace, tab),
+        TabCommand::Select(tab) => {
+            return select(tab).or_else(|| registry.live_tab(layout, old.workspace, tab));
+        }
         TabCommand::Next | TabCommand::Previous => {}
         TabCommand::Create | TabCommand::Split(_) | TabCommand::NextPane => return None,
     }
@@ -1505,7 +1639,7 @@ fn select_tab(
         } else {
             (index + len - offset) % len
         };
-        registry.live_tab(layout, old.workspace, workspace.tabs[index].id)
+        select(workspace.tabs[index].id)
     })
 }
 
@@ -1589,6 +1723,10 @@ fn prepare_cwd(layout: &Layout, location: Location, launch: Option<&mut Launch>)
 
 fn target_gone() -> ProtocolFault {
     ProtocolFault::new("TargetGone", "workspace or tab does not exist")
+}
+
+fn disconnect_client(signal: &mut Option<oneshot::Sender<()>>) -> bool {
+    signal.take().is_some_and(|signal| signal.send(()).is_ok())
 }
 
 fn busy() -> ProtocolFault {

@@ -107,6 +107,113 @@ async fn two_windows_clients_write_to_different_tabs_in_the_same_workspace() -> 
 }
 
 #[tokio::test]
+async fn takeover_and_disconnect_keep_the_shells_and_other_workspaces_running() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let shell = ["--", "powershell.exe", "-NoLogo", "-NoProfile"];
+    let open = |options: &[&str]| {
+        Tui::open(
+            &runtime,
+            options.iter().copied().chain(shell).map(OsString::from),
+        )
+    };
+    let mut first = open(&["attach", "--new"])?;
+    first.wait_for("PS ")?;
+    first.send(b"$kept='SAME'; [Console]::WriteLine(('WRITER_' + $kept))\r")?;
+    first.wait_for("WRITER_SAME")?;
+    let snapshot = corvid_client::snapshot(&runtime).await?;
+    let selection = snapshot
+        .snapshot()
+        .entities()
+        .find_map(|entity| {
+            if let Some(Body::Terminal(terminal)) = &entity.body {
+                terminal.location.clone()
+            } else {
+                None
+            }
+        })
+        .context("fixture terminal location")?;
+    let terminal = terminal_id(&runtime).await?;
+
+    let mut second = open(&["attach", "--new-tab", "Second"])?;
+    second.wait_for("PS ")?;
+    second.send(b"$peer='RETAINED'; [Console]::WriteLine(('PEER_' + $peer))\r")?;
+    second.wait_for("PEER_RETAINED")?;
+    let snapshot = corvid_client::snapshot(&runtime).await?;
+    let peer = snapshot
+        .snapshot()
+        .entities()
+        .find_map(|entity| {
+            if let Some(Body::Terminal(terminal)) = &entity.body {
+                terminal
+                    .location
+                    .clone()
+                    .filter(|location| location.tab_id != selection.tab_id)
+            } else {
+                None
+            }
+        })
+        .context("peer terminal location")?;
+    let mut observer = Tui::open(&runtime, ["attach", "--read-only"].map(OsString::from))?;
+    observer.wait_for("Read-only")?;
+    let mut other = open(&["attach", "--new-workspace", "Other"])?;
+    other.wait_for("PS ")?;
+    let mut successor = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--takeover",
+            "--workspace",
+            &selection.workspace_id,
+            "--tab",
+            &selection.tab_id,
+            "--pane",
+            &selection.pane_id,
+        ]
+        .map(OsString::from),
+    )?;
+    first.expect_exit(0).context("previous writer detached")?;
+    successor.wait_for("WRITER_SAME")?;
+    successor.send(b"[Console]::WriteLine(('TAKEOVER_' + $kept))\r")?;
+    successor.wait_for("TAKEOVER_SAME")?;
+    let snapshot = corvid_client::snapshot(&runtime).await?;
+    assert!(snapshot.snapshot().entities().any(|entity| {
+        matches!(&entity.body, Some(Body::Terminal(state)) if state.terminal_id == terminal)
+    }));
+
+    successor.send(b"\x1dD")?;
+    second.expect_exit(0).context("peer writer disconnected")?;
+    observer.expect_exit(0).context("observer disconnected")?;
+    other.send(b"[Console]::WriteLine(('OTHER_' + 'STILL_HERE'))\r")?;
+    other.wait_for("OTHER_STILL_HERE")?;
+    successor.send(b"[Console]::WriteLine(('STILL_' + $kept))\r")?;
+    successor.wait_for("STILL_SAME")?;
+    let mut rejoined = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--workspace",
+            &peer.workspace_id,
+            "--tab",
+            &peer.tab_id,
+            "--pane",
+            &peer.pane_id,
+        ]
+        .map(OsString::from),
+    )?;
+    rejoined.wait_for("PEER_RETAINED")?;
+    rejoined.send(b"[Console]::WriteLine(('REJOINED_' + $peer))\r")?;
+    rejoined.wait_for("REJOINED_RETAINED")?;
+    for client in [&mut successor, &mut rejoined, &mut other] {
+        client.send(b"exit\r")?;
+        client.expect_exit(0)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_agent_launch_tracks_the_owned_child_through_exit() -> Result<()> {
     use corvid_protocol::wire::{
         AgentCollection, AgentLifecycle, AgentProcessState, AgentProvider, ProviderExecutionMode,
@@ -613,7 +720,7 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
             let snapshot = corvid_client::snapshot(&runtime).await?;
             if snapshot.snapshot().entities().any(|entity| {
                 matches!(&entity.body, Some(Body::Client(client))
-                    if client.viewport.as_ref().is_some_and(|size| size.cols == 92 && size.rows == 26))
+                    if client.active_viewport().is_some_and(|size| size.cols == 92 && size.rows == 26))
             }) {
                 return Ok::<_, anyhow::Error>(());
             }
@@ -737,7 +844,7 @@ async fn wait_for_layout(
             for entity in snapshot.snapshot().entities() {
                 match &entity.body {
                     Some(Body::Terminal(_)) => count += 1,
-                    Some(Body::Client(client)) => selected = client.terminal_id.as_deref(),
+                    Some(Body::Client(client)) => selected = client.active_terminal(),
                     _ => {}
                 }
             }

@@ -214,6 +214,7 @@ impl Session {
                 | Body::ReadPanePreview(_)
                 | Body::ReadTerminalHistory(_)
                 | Body::RequestWriterHandoff(_)
+                | Body::DisconnectWorkspaceClients(_)
                 | Body::ClaimWorkspaceWriter(_)
                 | Body::MoveTab(_)
                 | Body::IssuePairingCode(_)

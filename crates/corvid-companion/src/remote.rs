@@ -67,7 +67,7 @@ impl Remote {
                     };
                     remote.runs.insert(key, ObservedRun::new(key, agent));
                 }
-                Some(Body::Client(client)) if client.selection.is_some() => {
+                Some(Body::Client(client)) if client.active_selection().is_some() => {
                     if let Some(binding) = client
                         .bindings
                         .iter()

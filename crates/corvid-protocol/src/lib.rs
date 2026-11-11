@@ -36,6 +36,7 @@ pub const OBSERVER_CAPABILITY: &str = "attach.observer.v1";
 pub const WRITER_HANDOFF_CAPABILITY: &str = "writer_handoff.v1";
 pub const WRITER_HANDOFF_REQUEST_CAPABILITY: &str = "writer_handoff.request.v1";
 pub const PANE_WRITERS_CAPABILITY: &str = "pane_writers.v1";
+pub const SESSION_CLIENTS_CAPABILITY: &str = "session_clients.v1";
 pub const TERMINAL_HISTORY_MAX_ROWS: usize = 2048;
 pub const TERMINAL_HISTORY_MAX_BYTES: usize = 192 * 1024;
 pub const MOVE_TAB_CAPABILITY: &str = "move_tab.v1";

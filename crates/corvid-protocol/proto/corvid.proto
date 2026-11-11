@@ -94,6 +94,8 @@ message Envelope {
     ReadTerminalHistory read_terminal_history = 122;
     TerminalHistory terminal_history = 123;
     RequestWriterHandoff request_writer_handoff = 124;
+    DisconnectWorkspaceClients disconnect_workspace_clients = 125;
+    WorkspaceClientsDisconnected workspace_clients_disconnected = 126;
   }
 }
 
@@ -222,6 +224,17 @@ message ClientState {
   repeated ClientBindingState bindings = 8;
   optional TuiInputMode input_mode = 9;
   ClientKeymap keymap = 10;
+  // Kept separate from legacy exclusive workspace leases.
+  PaneWriterView pane_writer_view = 11;
+}
+
+message PaneWriterView {
+  string terminal_id = 1;
+  ViewSelection selection = 2;
+  uint64 view_revision = 3;
+  Viewport viewport = 4;
+  TuiInputMode input_mode = 5;
+  uint64 lease_generation = 6;
 }
 
 enum TuiInputMode {
@@ -960,6 +973,8 @@ message Attach {
   optional string create_workspace = 7;
   optional string create_tab = 8;
   optional string pane_id = 9;
+  bool take_over = 10;
+  optional string expected_terminal_id = 11;
 }
 
 message LaunchCommand {
@@ -1066,6 +1081,14 @@ message ReadTerminalHistory {
 
 message RequestWriterHandoff {
   optional uint64 expected_view_revision = 1;
+}
+
+message DisconnectWorkspaceClients {
+  optional uint64 expected_view_revision = 1;
+}
+
+message WorkspaceClientsDisconnected {
+  uint32 client_count = 1;
 }
 
 message TerminalHistory {

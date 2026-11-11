@@ -56,6 +56,11 @@ async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_e
     let mut second = Tui::attach_target(&runtime, attach(Some("Second".into()))).await;
     assert_eq!(first.selection.workspace_id, second.selection.workspace_id);
     assert_ne!(first.selection.pane_id, second.selection.pane_id);
+    let snapshot = corvid_client::snapshot(&runtime).await.unwrap();
+    let writers = snapshot.snapshot().entities().filter(|entity| {
+        matches!(&entity.body, Some(EntityBody::Client(client)) if client.pane_writer_view.is_some())
+    }).count();
+    assert_eq!(writers, 2);
 
     let mut first_output = Vec::new();
     let mut second_output = Vec::new();
@@ -85,6 +90,66 @@ async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_e
     wait_for_text(&mut second, &mut second_output, "SECOND_PANE").await;
     assert!(!String::from_utf8_lossy(&first_output).contains("SECOND_PANE"));
     assert!(!String::from_utf8_lossy(&second_output).contains("FIRST_PANE"));
+}
+
+#[tokio::test]
+async fn takeover_checks_the_terminal_identity_and_refuses_a_pending_paste() {
+    let fixture = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let runtime = fixture.path().join("run");
+    let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    let mut owner = Tui::attach_target(
+        &runtime,
+        Attach {
+            launch: Some(echo_fixture("OWN")),
+            terminal_capabilities: vec![corvid_protocol::PANE_WRITERS_CAPABILITY.into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let original = owner.route.clone();
+    let selection = owner.selection.clone();
+    let takeover = |terminal| Attach {
+        workspace_id: Some(selection.workspace_id.clone()),
+        tab_id: Some(selection.tab_id.clone()),
+        pane_id: Some(selection.pane_id.clone()),
+        take_over: true,
+        expected_terminal_id: Some(terminal),
+        terminal_capabilities: vec![corvid_protocol::PANE_WRITERS_CAPABILITY.into()],
+        ..Default::default()
+    };
+    let wrong = Tui::try_attach_target(&runtime, takeover(Uuid::new_v4().to_string())).await;
+    assert!(matches!(wrong, Err(fault) if fault.code == "TargetGone"));
+
+    let mut output = Vec::new();
+    wait_for_text(&mut owner, &mut output, "OWN-READY").await;
+    begin_paste(&mut owner, 1).await;
+    owner.send(Body::Ping(Ping {})).await;
+    assert!(matches!(owner.next_body(&mut output).await, Body::Pong(_)));
+    let busy = Tui::try_attach_target(&runtime, takeover(original.terminal_id.clone())).await;
+    assert!(matches!(busy, Err(fault) if fault.code == "InputBusy"));
+    end_paste(&mut owner).await;
+    owner.send(Body::Ping(Ping {})).await;
+    assert!(matches!(owner.next_body(&mut output).await, Body::Pong(_)));
+
+    let mut successor = Tui::attach_target(&runtime, takeover(original.terminal_id.clone())).await;
+    assert_eq!(successor.route.terminal_id, original.terminal_id);
+    assert_ne!(
+        successor.route.writer_lease_generation,
+        original.writer_lease_generation
+    );
+    assert!(matches!(
+        owner.next_body(&mut output).await,
+        Body::Detach(_)
+    ));
+    successor.input(original, 1, b"STALE\n").await;
+    assert!(
+        matches!(successor.next_body(&mut output).await, Body::Error(error) if error.code == "StaleRoute")
+    );
+    successor
+        .input(successor.route.clone(), 1, b"FRESH\n")
+        .await;
+    wait_for_text(&mut successor, &mut output, "OWN=FRESH").await;
+    assert!(!String::from_utf8_lossy(&output).contains("OWN=STALE"));
 }
 
 #[tokio::test]
@@ -266,7 +331,11 @@ impl Tui {
         .await
     }
 
-    async fn attach_target(runtime: &Path, mut attach: Attach) -> Self {
+    async fn attach_target(runtime: &Path, attach: Attach) -> Self {
+        Self::try_attach_target(runtime, attach).await.unwrap()
+    }
+
+    async fn try_attach_target(runtime: &Path, mut attach: Attach) -> Result<Self, ProtocolFault> {
         let directory = RuntimeDir::open(runtime).unwrap();
         let (read, write) = directory
             .connect(SocketRole::Client)
@@ -295,16 +364,18 @@ impl Tui {
             .await
             .unwrap();
         let reply = reader.next_envelope().await.unwrap().unwrap();
-        let Some(Body::Attached(attached)) = reply.body else {
-            panic!("expected Attached")
+        let attached = match reply.body {
+            Some(Body::Attached(attached)) => attached,
+            Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error)),
+            other => panic!("expected Attached, received {other:?}"),
         };
-        Self {
+        Ok(Self {
             reader,
             writer,
             session,
             route: attached.route_token.unwrap(),
             selection: attached.selection.unwrap(),
-        }
+        })
     }
 
     async fn send(&mut self, body: Body) {

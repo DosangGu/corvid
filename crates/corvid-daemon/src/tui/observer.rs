@@ -9,7 +9,7 @@ use corvid_protocol::wire::{
 use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameWriter, ProtocolFault, RenderFrame, Session,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, MissedTickBehavior, interval, timeout};
 use uuid::Uuid;
 
@@ -41,8 +41,9 @@ pub(super) async fn serve(
 ) -> Result<()> {
     let id = Uuid::new_v4();
     let (focus_tx, focuses) = mpsc::channel(1);
+    let (disconnect, mut disconnected) = oneshot::channel();
     let (mut observer, mut size, accepts_writer) = match target.and_then(|target| {
-        let observer = workspaces.observe(id, &target, focus_tx)?;
+        let observer = workspaces.observe(id, &target, focus_tx, Some(disconnect))?;
         Ok((observer, target.viewport, target.keymap.handoff))
     }) {
         Ok(target) => target,
@@ -89,6 +90,9 @@ pub(super) async fn serve(
     loop {
         tokio::select! {
             biased;
+            _ = &mut disconnected => {
+                return send(&session, &mut writer, None, Body::Detach(corvid_protocol::wire::Detach {})).await;
+            }
             promoted = &mut observer.promoted => {
                 let active = promoted.context("writer promotion was cancelled")?;
                 let outer = active.viewport.outer;
@@ -100,7 +104,7 @@ pub(super) async fn serve(
                     paste_discarded: false,
                 })).await?;
                 let (_, notices) = mpsc::channel(1);
-                return serve_writer(session, reader, writer, active, workspaces, ClientEvents { focuses, notices }).await;
+                return serve_writer(session, reader, writer, active, workspaces, ClientEvents { focuses, notices, disconnected }).await;
             }
             request = reader.next_envelope() => {
                 let Some(request) = request? else { return Ok(()) };

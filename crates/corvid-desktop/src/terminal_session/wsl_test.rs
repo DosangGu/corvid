@@ -209,7 +209,7 @@ async fn wait_for_reconnect(
                 let attached = watch.state().snapshot().entities().any(|entity| {
                     matches!(
                         &entity.body,
-                        Some(EntityBody::Client(client)) if client.terminal_id == initial.terminal_id
+                        Some(EntityBody::Client(client)) if client.active_terminal() == initial.terminal_id.as_deref()
                     )
                 });
                 if attached {

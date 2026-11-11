@@ -60,6 +60,9 @@ pub(super) enum Command {
         /// Allow the current writer to hand off input to this read-only view.
         #[arg(long, requires = "read_only")]
         accept_writer: bool,
+        /// Take the writer lease on an existing pane and disconnect its current writer.
+        #[arg(long = "takeover", conflicts_with_all = ["read_only", "new", "agent", "new_workspace", "new_tab", "argv", "claim_workspace", "move_tab"])]
+        take_over: bool,
         /// Start the named provider; arguments after -- go to its CLI.
         #[arg(long, value_enum)]
         agent: Option<ManagedAgent>,
@@ -257,6 +260,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             new,
             read_only,
             accept_writer,
+            take_over,
             agent,
             restore_cwd,
             escape_delay_ms,
@@ -280,6 +284,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 launch,
                 read_only,
                 accept_writer,
+                take_over,
                 launch_if_empty: false,
                 agent: agent.map(|agent| match agent {
                     ManagedAgent::Claude => AgentProvider::Claude,
@@ -398,13 +403,18 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                         "{} generation={}",
                         client.client_id, client.connection_generation
                     );
-                    if let Some(terminal) = client.terminal_id {
+                    if let Some(terminal) = client.active_terminal() {
                         print!(" terminal={terminal}");
                     }
-                    if let Some(revision) = client.view_revision {
+                    let pane_view = client.pane_writer_view.as_ref();
+                    if let Some(revision) = pane_view
+                        .map(|view| view.view_revision)
+                        .or(client.view_revision)
+                    {
                         print!(" view_revision={revision}");
                     }
-                    if let Some(mode) = client.input_mode {
+                    if let Some(mode) = pane_view.map(|view| view.input_mode).or(client.input_mode)
+                    {
                         let mode = TuiInputMode::try_from(mode)?;
                         print!(" mode={mode:?}");
                     }
@@ -416,6 +426,14 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                     }
                     for lease in client.writer_leases {
                         print!(" writer={}/{}", lease.workspace_id, lease.generation);
+                    }
+                    if let Some(view) = pane_view
+                        && let Some(location) = &view.selection
+                    {
+                        print!(
+                            " pane-writer={}/{}",
+                            location.pane_id, view.lease_generation
+                        );
                     }
                     for binding in client.bindings {
                         print!(

@@ -147,8 +147,9 @@ Use **New session** under the active connection. **New tab** creates a shell
 within the selected session. Click a pane to
 focus it. Other live panes in the same tab show read-only previews. Desktop and
 TUI clients using pane writers can operate different panes in the same
-workspace. An active pane has one writer. In the TUI, `corvid attach --new-tab NAME`
-opens a separate tab in the default workspace. **Detach** and window close
+workspace. An active pane has one writer. Use **New tab** next to a session in
+Desktop's **Sessions** panel, or run `corvid attach --new-tab NAME` in the TUI,
+to open a separate tab while another client is writing. **Detach** and window close
 release the writer and keep PTYs running while the daemon survives.
 Use `exit` in a shell to end that PTY.
 
@@ -172,6 +173,17 @@ writer handoff when observing** before connecting if you want to accept input
 ownership. The writer can then choose **Hand off writer** in Desktop or use
 the TUI shortcut above. The observer must be on the same pane and be the
 only observer that opted in there. A handoff leaves the pane running.
+
+To take over from another machine, observe the pane and choose **Take over pane**.
+The TUI equivalent is `corvid attach --takeover`, which selects the most recently
+connected writer's pane in the selected workspace by default. Pass
+`--workspace`, `--tab`, and `--pane` to target a specific pane. The previous
+writer detaches and the existing shell continues. Retry if a paste is in progress.
+
+A writer can use **Sessions → Disconnect other clients** in Desktop or
+Ctrl-] then uppercase D in the TUI. This detaches other writers and observers
+currently viewing that session. Shells, agents, and clients viewing other
+workspaces continue running.
 
 On 2026-11-12, two Desktop windows under Xvfb exercised this flow. The
 observer displayed the writer's output and blocked typed commands. The

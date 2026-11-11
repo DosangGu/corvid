@@ -157,6 +157,7 @@ pub(crate) enum Event {
     Close(corvid_core::layout::CloseTarget),
     PairController,
     HandoffWriter,
+    DisconnectOthers,
 }
 
 pub(crate) struct Render {
@@ -168,7 +169,11 @@ pub(crate) struct Render {
 }
 
 enum Command {
-    Transfer(InputRoute, AttachSpec, oneshot::Sender<Reply<InputRoute>>),
+    Transfer(
+        InputRoute,
+        AttachSpec,
+        oneshot::Sender<Reply<(InputRoute, mpsc::Sender<Event>)>>,
+    ),
     Attach(AttachSpec, oneshot::Sender<Reply<InputRoute>>),
     Action {
         client: Uuid,
@@ -261,7 +266,11 @@ impl TerminalHandle {
         receive.await.map_err(|_| overloaded())?
     }
 
-    pub(crate) async fn transfer(&self, route: InputRoute, spec: AttachSpec) -> Reply<InputRoute> {
+    pub(crate) async fn transfer(
+        &self,
+        route: InputRoute,
+        spec: AttachSpec,
+    ) -> Reply<(InputRoute, mpsc::Sender<Event>)> {
         let (send, receive) = oneshot::channel();
         self.commands
             .try_send(Command::Transfer(route, spec, send))
@@ -645,7 +654,11 @@ impl Worker {
         Ok(discarded)
     }
 
-    fn transfer(&mut self, route: InputRoute, spec: AttachSpec) -> Reply<InputRoute> {
+    fn transfer(
+        &mut self,
+        route: InputRoute,
+        spec: AttachSpec,
+    ) -> Reply<(InputRoute, mpsc::Sender<Event>)> {
         let lease = self
             .lease
             .as_ref()
@@ -667,6 +680,8 @@ impl Worker {
             .session
             .resize_active(spec.viewport.content())
             .map_err(|_| input_busy())?;
+        // Keep the retired connection's event stream alive through the registry commit.
+        let previous_events = lease.events.clone();
         let route = InputRoute {
             client_id: spec.client_id,
             terminal_id: terminal.id,
@@ -687,7 +702,7 @@ impl Worker {
         lease.render_generation = super::PROMOTED_RENDER_GENERATION;
         self.lease = Some(lease);
         terminal.dirty = true;
-        Ok(route)
+        Ok((route, previous_events))
     }
 
     fn freeze(&mut self, route: InputRoute) -> Reply<()> {
@@ -810,6 +825,11 @@ impl Worker {
                     }
                     Some(KeyCommand::HandoffWriter) => {
                         if lease.events.try_send(Event::HandoffWriter).is_err() {
+                            self.revoke();
+                        }
+                    }
+                    Some(KeyCommand::DisconnectOthers) => {
+                        if lease.events.try_send(Event::DisconnectOthers).is_err() {
                             self.revoke();
                         }
                     }

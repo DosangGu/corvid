@@ -40,6 +40,7 @@ pub struct AttachOptions {
     pub launch: Option<Vec<OsString>>,
     pub read_only: bool,
     pub accept_writer: bool,
+    pub take_over: bool,
     /// Open a shell only when there is no live terminal to join.
     pub launch_if_empty: bool,
     pub agent: Option<AgentProvider>,
@@ -61,6 +62,7 @@ impl Default for AttachOptions {
             launch: None,
             read_only: false,
             accept_writer: false,
+            take_over: false,
             launch_if_empty: false,
             agent: None,
             escape_delay: Duration::from_millis(100),
@@ -91,6 +93,20 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     if options.accept_writer {
         required.push(WRITER_HANDOFF_CAPABILITY.into());
     }
+    if options.take_over {
+        ensure!(
+            !options.read_only
+                && options.launch.is_none()
+                && !options.launch_if_empty
+                && options.new_workspace.is_none()
+                && options.new_tab.is_none()
+                && options.claim_workspaces.is_empty()
+                && options.move_tab.is_none(),
+            "pane takeover requires an existing terminal"
+        );
+        required.push(corvid_protocol::SESSION_CLIENTS_CAPABILITY.into());
+        required.push(PANE_WRITERS_CAPABILITY.into());
+    }
     if options.read_only {
         ensure!(
             options.launch.is_none()
@@ -113,6 +129,7 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     }
     let claims = std::mem::take(&mut options.claim_workspaces);
     let move_tab = options.move_tab;
+    let pane_writer = claims.is_empty() && move_tab.is_none();
     if !claims.is_empty() {
         required.push(CLAIM_WORKSPACE_CAPABILITY.into());
     }
@@ -128,7 +145,13 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let accept_writer = options.accept_writer;
     let (connection, route) = timeout(
         COMMAND_TIMEOUT,
-        request_attach(connection, viewport, options, notification.is_some()),
+        request_attach(
+            connection,
+            viewport,
+            options,
+            notification.is_some(),
+            pane_writer,
+        ),
     )
     .await??;
     #[cfg(target_os = "linux")]
@@ -169,6 +192,7 @@ async fn request_attach(
     viewport: Viewport,
     options: AttachOptions,
     notifications: bool,
+    pane_writer: bool,
 ) -> Result<(Connection, RouteToken)> {
     check_viewport_support(&connection.session, viewport)?;
     let handoff = (options.accept_writer || !options.read_only)
@@ -182,7 +206,7 @@ async fn request_attach(
         PAIR_CAPABILITY,
         STATUS_BAR_CAPABILITY,
         CLOSE_VIEW_CAPABILITY,
-        PANE_WRITERS_CAPABILITY,
+        corvid_protocol::SESSION_CLIENTS_CAPABILITY,
     ] {
         if connection
             .session
@@ -192,6 +216,15 @@ async fn request_attach(
         {
             terminal_capabilities.push(capability.into());
         }
+    }
+    if pane_writer
+        && connection
+            .session
+            .capabilities
+            .iter()
+            .any(|name| name == PANE_WRITERS_CAPABILITY)
+    {
+        terminal_capabilities.push(PANE_WRITERS_CAPABILITY.into());
     }
     if notifications {
         terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
@@ -248,6 +281,8 @@ async fn request_attach(
             pane_id: options.pane,
             create_workspace: options.new_workspace,
             create_tab: options.new_tab,
+            take_over: options.take_over,
+            expected_terminal_id: None,
             viewport: Some(wire_viewport(viewport)),
             terminal_capabilities,
             requested_role: if options.read_only {
@@ -609,6 +644,7 @@ impl Interactive {
             }
             Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error).into()),
             Some(Body::Detach(_)) => return Ok(Some(0)),
+            Some(Body::WorkspaceClientsDisconnected(_)) => {}
             _ => bail!("unsupported daemon event"),
         }
         Ok(None)

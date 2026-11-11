@@ -9,6 +9,7 @@ pub(crate) struct Keymap {
     pub(crate) close: bool,
     pub(crate) handoff: bool,
     pub(crate) pane_writer: bool,
+    pub(crate) disconnect: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,7 @@ pub(super) enum KeyCommand {
     PickTab,
     PairController,
     HandoffWriter,
+    DisconnectOthers,
 }
 
 pub(super) enum CloseKind {
@@ -75,6 +77,7 @@ impl Keymap {
             b"w" if self.tabs => Some(KeyCommand::PickTab),
             b"r" if self.pairing => Some(KeyCommand::PairController),
             b"g" if self.handoff => Some(KeyCommand::HandoffWriter),
+            b"D" if self.disconnect => Some(KeyCommand::DisconnectOthers),
             _ => None,
         }
     }

@@ -397,6 +397,8 @@ mod tests {
                 Uuid::new_v4(),
                 AttachTarget {
                     pane: None,
+                    take_over: false,
+                    expected_terminal: None,
                     workspace: None,
                     tab: None,
                     new_workspace: None,
@@ -414,6 +416,7 @@ mod tests {
                     }),
                 },
                 sender,
+                None,
                 None,
             )
             .await

@@ -14,7 +14,7 @@ use corvid_protocol::wire::{
     AgentProvider, AgentResponded, Attach, AttachRole, Attached, CloseView, CreateView, Envelope,
     FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader,
     RouteToken, SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
-    WriterClaimed,
+    WorkspaceClientsDisconnected, WriterClaimed,
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
@@ -23,7 +23,7 @@ use corvid_protocol::{
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
     TERMINAL_HISTORY_CAPABILITY,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -42,6 +42,7 @@ const CAPABILITIES: &[&str] = &[
     corvid_protocol::WRITER_HANDOFF_CAPABILITY,
     corvid_protocol::WRITER_HANDOFF_REQUEST_CAPABILITY,
     corvid_protocol::PANE_WRITERS_CAPABILITY,
+    corvid_protocol::SESSION_CLIENTS_CAPABILITY,
     "render.v1",
     "ping.v1",
     "paste.v1",
@@ -101,6 +102,7 @@ pub(crate) async fn serve(
     }
     let client = Uuid::new_v4();
     let (focus_tx, focuses) = mpsc::channel(1);
+    let (disconnect, disconnected) = oneshot::channel();
     let (notice_tx, notices) = mpsc::channel(8);
     let target = match session.validate_request(&request) {
         Ok(Body::Attach(attach)) => attach_target(attach).map(|target| {
@@ -122,6 +124,7 @@ pub(crate) async fn serve(
                     client,
                     target,
                     focus_tx,
+                    Some(disconnect),
                     #[cfg(target_os = "linux")]
                     enabled.then_some(notice_tx),
                 )
@@ -149,7 +152,11 @@ pub(crate) async fn serve(
         request.request_id,
         active,
         workspaces,
-        ClientEvents { focuses, notices },
+        ClientEvents {
+            focuses,
+            notices,
+            disconnected,
+        },
     )
     .await;
     workspaces.release(client);
@@ -211,6 +218,7 @@ struct TuiConnection<'a> {
 struct ClientEvents {
     focuses: mpsc::Receiver<FocusDispatch>,
     notices: mpsc::Receiver<Provider>,
+    disconnected: oneshot::Receiver<()>,
 }
 
 impl TuiConnection<'_> {
@@ -218,13 +226,19 @@ impl TuiConnection<'_> {
         let mut incoming = Incoming::start(reader);
         loop {
             tokio::select! {
-                request = incoming.requests.recv() => {
-                    let Some(request) = request else { return Ok(()) };
-                    if self.request(request?).await? { return Ok(()) }
+                biased;
+                _ = &mut self.client_events.disconnected => {
+                    self.active.events.close();
+                    self.send(None, Body::Detach(corvid_protocol::wire::Detach {})).await?;
+                    return Ok(());
                 }
                 event = self.active.events.recv() => {
                     let Some(event) = event else { return Ok(()) };
                     if self.event(event).await? { return Ok(()) }
+                }
+                request = incoming.requests.recv() => {
+                    let Some(request) = request else { return Ok(()) };
+                    if self.request(request?).await? { return Ok(()) }
                 }
                 command = self.client_events.focuses.recv() => {
                     let Some(command) = command else { return Ok(()) };
@@ -295,6 +309,15 @@ impl TuiConnection<'_> {
                     return Ok(false);
                 }
                 return self.handoff(request.request_id).await;
+            }
+            Body::DisconnectWorkspaceClients(disconnect) => {
+                match require_view(
+                    disconnect.expected_view_revision,
+                    self.active.route.view_revision,
+                ) {
+                    Ok(()) => self.disconnect_others(request.request_id).await?,
+                    Err(fault) => self.fault(request.request_id, fault).await?,
+                }
             }
             Body::ClaimWorkspaceWriter(claim) => {
                 let workspace = parse_id(&claim.workspace_id);
@@ -376,6 +399,7 @@ impl TuiConnection<'_> {
             Event::Close(target) => return self.close(target, None, true).await,
             Event::PairController => self.pair(None).await?,
             Event::HandoffWriter => return self.handoff(None).await,
+            Event::DisconnectOthers => self.disconnect_others(None).await?,
         }
         Ok(false)
     }
@@ -391,6 +415,21 @@ impl TuiConnection<'_> {
                 self.fault(id, fault).await?;
                 Ok(false)
             }
+        }
+    }
+
+    async fn disconnect_others(&mut self, id: Option<String>) -> Result<()> {
+        match self.workspaces.disconnect_others(&self.active) {
+            Ok(client_count) => {
+                self.send(
+                    id,
+                    Body::WorkspaceClientsDisconnected(WorkspaceClientsDisconnected {
+                        client_count,
+                    }),
+                )
+                .await
+            }
+            Err(fault) => self.fault(id, fault).await,
         }
     }
 
@@ -848,13 +887,36 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
             "default shell requires the default workspace and no program",
         ));
     }
+    if attach.take_over
+        && (attach.requested_role != AttachRole::Writer as i32
+            || attach.launch.is_some()
+            || attach.create_workspace.is_some()
+            || attach.create_tab.is_some()
+            || !attach
+                .terminal_capabilities
+                .iter()
+                .any(|cap| cap == corvid_protocol::PANE_WRITERS_CAPABILITY))
+    {
+        return Err(invalid(
+            "pane takeover requires a writer attach to an existing pane",
+        ));
+    }
+    if attach.expected_terminal_id.is_some() && (!attach.take_over || attach.pane_id.is_none()) {
+        return Err(invalid("terminal identity requires an exact pane takeover"));
+    }
     Ok(AttachTarget {
         workspace: parse_optional_id(attach.workspace_id.as_deref())?,
         tab: parse_optional_id(attach.tab_id.as_deref())?,
         pane: parse_optional_id(attach.pane_id.as_deref())?,
         new_workspace: attach.create_workspace.clone(),
         new_tab: attach.create_tab.clone(),
+        take_over: attach.take_over,
+        expected_terminal: parse_optional_id(attach.expected_terminal_id.as_deref())?,
         keymap: Keymap {
+            disconnect: attach
+                .terminal_capabilities
+                .iter()
+                .any(|cap| cap == corvid_protocol::SESSION_CLIENTS_CAPABILITY),
             pane_writer: attach
                 .terminal_capabilities
                 .iter()

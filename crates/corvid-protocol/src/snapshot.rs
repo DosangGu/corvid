@@ -7,6 +7,29 @@ use crate::wire::{EntityKind, EntityRef, SnapshotEntity};
 pub const SNAPSHOT_CAPABILITY: &str = "snapshot.v1";
 pub const WATCH_CAPABILITY: &str = "snapshot_watch.v1";
 pub const HISTORY_CAPABILITY: &str = "snapshot_history.v1";
+
+impl crate::wire::ClientState {
+    pub fn active_selection(&self) -> Option<&crate::wire::ViewSelection> {
+        self.pane_writer_view
+            .as_ref()
+            .and_then(|view| view.selection.as_ref())
+            .or(self.selection.as_ref())
+    }
+
+    pub fn active_terminal(&self) -> Option<&str> {
+        self.pane_writer_view
+            .as_ref()
+            .map(|view| view.terminal_id.as_str())
+            .or(self.terminal_id.as_deref())
+    }
+
+    pub fn active_viewport(&self) -> Option<&crate::wire::Viewport> {
+        self.pane_writer_view
+            .as_ref()
+            .and_then(|view| view.viewport.as_ref())
+            .or(self.viewport.as_ref())
+    }
+}
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CHUNK_ENTITIES: usize = 256;
 pub const MAX_SNAPSHOT_CHUNKS: u32 = 4096;
