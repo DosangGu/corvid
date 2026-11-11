@@ -244,17 +244,27 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
 
     second.send(b"\x1dt")?;
     wait_for_layout(&runtime, 2, &original, false).await?;
+    second.wait_for("[2:")?;
+    second.send(b"[Console]::WriteLine(('SPLIT_' + 'SOURCE'))\r")?;
+    second.wait_for("SPLIT_SOURCE")?;
     second.send(b"\x1d%")?;
     wait_for_layout(&runtime, 3, &original, false).await?;
+    second.wait_without("SPLIT_SOURCE")?;
     second.send(b"\x1d1")?;
     wait_for_layout(&runtime, 3, &original, true).await?;
+    second.wait_for("[1:")?;
 
     second.send(b"\x1d2")?;
     wait_for_layout(&runtime, 3, &original, false).await?;
+    second.wait_for("[2:")?;
+    second.send(b"[Console]::WriteLine(('CLOSE_' + 'SOURCE'))\r")?;
+    second.wait_for("CLOSE_SOURCE")?;
     second.send(b"\x1dX")?;
     wait_for_layout(&runtime, 2, &original, false).await?;
+    second.wait_without("CLOSE_SOURCE")?;
     second.send(b"\x1dT")?;
     wait_for_layout(&runtime, 1, &original, true).await?;
+    second.wait_for("[1:")?;
 
     second.send(b"exit 7\r")?;
     second.expect_exit(7)?;
@@ -301,7 +311,11 @@ async fn wait_for_layout(
         }
     })
     .await
-    .context("Windows tab or pane transition did not finish")?
+    .with_context(|| {
+        format!(
+            "Windows tab or pane transition did not finish: expected {terminal_count} terminals, original selected = {original_selected}"
+        )
+    })?
 }
 
 #[tokio::test]
@@ -505,6 +519,19 @@ impl Tui {
                     self.screen.screen().contents()
                 )
             })?;
+            self.screen.process(&output);
+        }
+        Ok(())
+    }
+
+    // A daemon snapshot can change before the TUI retires its old input route.
+    // Observe the replacement screen before sending another command.
+    fn wait_without(&mut self, marker: &str) -> Result<()> {
+        let deadline = Instant::now() + WAIT;
+        while self.screen.screen().contents().contains(marker) {
+            let output = self
+                .read(deadline)
+                .with_context(|| format!("waiting for the screen to retire {marker}"))?;
             self.screen.process(&output);
         }
         Ok(())
