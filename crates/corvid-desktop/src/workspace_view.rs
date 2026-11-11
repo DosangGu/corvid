@@ -83,6 +83,7 @@ pub struct WorkspaceView {
     deck_focus: u64,
     agent_deck: agent_deck::Settings,
     connections_open: bool,
+    observe_accept_writer: bool,
     plugins_open: bool,
     help_open: bool,
     release_update: Option<Task<()>>,
@@ -134,6 +135,7 @@ impl WorkspaceView {
             deck_focus: 0,
             agent_deck,
             connections_open: false,
+            observe_accept_writer: false,
             plugins_open: false,
             help_open: false,
             release_update: None,
@@ -217,7 +219,7 @@ impl WorkspaceView {
         self.error = None;
         self.plugins_open = false;
         if matches!(target, AttachTarget::Default)
-            && ui.is_some_and(|ui| ui.connected)
+            && ui.is_some_and(|ui| ui.can_write())
             && self.destination.as_ref() == Some(&destination)
         {
             self.focus_terminal(window, cx);
@@ -486,11 +488,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.destination.as_ref() == Some(&destination)
-            && let Some(ui) = self
-                .session
-                .as_ref()
-                .map(Session::ui)
-                .filter(|ui| ui.connected)
+            && let Some(ui) = self.session.as_ref().map(Session::ui).filter(Ui::can_write)
         {
             if ui.inventory_ready
                 && let Some(inventory) = ui.inventory
@@ -522,6 +520,26 @@ impl WorkspaceView {
         if let Some(session) = &self.session {
             session.create(target);
         }
+    }
+
+    fn observe(
+        &mut self,
+        destination: Destination,
+        workspace: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let known = self.known_sessions.get(&destination);
+        let view = workspace.and_then(|id| known?.inventory.observation_target(id));
+        if workspace.is_some() && view.is_none() {
+            return;
+        }
+        let target = AttachTarget::Observe {
+            view,
+            host_id: known.map(|known| known.host_id.clone()),
+            accept_writer: self.observe_accept_writer,
+        };
+        self.switch_to(destination, target, window, cx);
     }
 
     fn close_button(
@@ -644,7 +662,7 @@ impl WorkspaceView {
             cx.stop_propagation();
             return;
         }
-        if !ui.as_ref().is_some_and(|ui| ui.connected) {
+        if !ui.as_ref().is_some_and(Ui::can_write) {
             return;
         }
         let modifiers = key.modifiers;
@@ -696,7 +714,8 @@ impl WorkspaceView {
         cx.stop_propagation();
     }
 
-    fn toolbar(&self, connected: bool, workspace: Option<&str>, cx: &mut Context<Self>) -> Div {
+    fn toolbar(&self, ui: Option<&Ui>, workspace: Option<&str>, cx: &mut Context<Self>) -> Div {
+        let connected = ui.is_some_and(|ui| ui.connected);
         let location = match self.destination.as_ref() {
             Some(Destination::Ssh(alias)) => format!("SSH · {}", alias.as_str()),
             #[cfg(windows)]
@@ -774,6 +793,27 @@ impl WorkspaceView {
                     },
                 )),
             )
+            .when_some(ui.filter(|ui| ui.connected && ui.read_only), |bar, ui| {
+                bar.child(div().text_size(px(12.)).text_color(rgb(ACTIVE)).child(
+                    if ui.accept_writer {
+                        "Read-only · accepts handoff"
+                    } else {
+                        "Read-only"
+                    },
+                ))
+            })
+            .when(ui.is_some_and(Ui::can_handoff), |bar| {
+                let revision = self.session.as_ref().map_or(0, Session::view_revision);
+                bar.child(
+                    button("writer-handoff", "Hand off writer", false).on_click(cx.listener(
+                        move |view, _, _, _| {
+                            if let Some(session) = &view.session {
+                                session.handoff(revision);
+                            }
+                        },
+                    )),
+                )
+            })
             .when(connected, |bar| {
                 bar.child(button("detach", "Detach", false).on_click(cx.listener(
                     |view, _, window, cx| {
@@ -842,6 +882,21 @@ impl WorkspaceView {
                     .text_color(rgb(TEXT))
                     .text_size(px(19.))
                     .child("Sessions"),
+            )
+            .child(
+                button(
+                    "accept-writer",
+                    if self.observe_accept_writer {
+                        "☑ Allow writer handoff when observing"
+                    } else {
+                        "☐ Allow writer handoff when observing"
+                    },
+                    self.observe_accept_writer,
+                )
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.observe_accept_writer = !view.observe_accept_writer;
+                    cx.notify();
+                })),
             )
             .child(
                 div()
@@ -1103,6 +1158,7 @@ impl WorkspaceView {
             "Connect ›"
         };
         let connection = destination.clone();
+        let observation = destination.clone();
         div()
             .id(SharedString::from(id))
             .flex()
@@ -1159,6 +1215,15 @@ impl WorkspaceView {
                             }))
                     }),
             )
+            .when(!changing, |branch| {
+                branch.child(
+                    button("observe-host", "Observe current pane", false).on_click(cx.listener(
+                        move |view, _, window, cx| {
+                            view.observe(observation.clone(), None, window, cx);
+                        },
+                    )),
+                )
+            })
             .when_some(known, |branch, known| {
                 branch.child(self.session_rows(destination, known, current, changing, cx))
             })
@@ -1189,6 +1254,8 @@ impl WorkspaceView {
                 let id = workspace.workspace_id.clone();
                 let active = selected.is_some_and(|view| view.workspace_id == id);
                 let destination = destination.clone();
+                let observation = destination.clone();
+                let observed_workspace = id.clone();
                 div()
                     .id(SharedString::from(id.clone()))
                     .flex()
@@ -1207,17 +1274,32 @@ impl WorkspaceView {
                             .truncate()
                             .child(workspace.label.clone()),
                     )
+                    .when(ui.is_some_and(Ui::can_close), |row| {
+                        row.child(Self::close_button(
+                            "close-session",
+                            "Close this session?",
+                            CloseView {
+                                workspace_id: workspace.workspace_id.clone(),
+                                ..Default::default()
+                            },
+                            cx,
+                        ))
+                    })
                     .when(
-                        ui.is_some_and(|ui| ui.connected && ui.close_supported),
+                        !changing
+                            && known.live
+                            && known.inventory.observation_target(&id).is_some(),
                         |row| {
-                            row.child(Self::close_button(
-                                "close-session",
-                                "Close this session?",
-                                CloseView {
-                                    workspace_id: workspace.workspace_id.clone(),
-                                    ..Default::default()
-                                },
-                                cx,
+                            row.child(button("observe-session", "Observe", false).on_click(
+                                cx.listener(move |view, _, window, cx| {
+                                    cx.stop_propagation();
+                                    view.observe(
+                                        observation.clone(),
+                                        Some(&observed_workspace),
+                                        window,
+                                        cx,
+                                    );
+                                }),
                             ))
                         },
                     )
@@ -1240,7 +1322,9 @@ impl WorkspaceView {
                     )
             }))
             .when(
-                connected && !changing && ui.is_some_and(|ui| ui.inventory_ready && !ui.changing),
+                connected
+                    && !changing
+                    && ui.is_some_and(|ui| ui.can_write() && ui.inventory_ready && !ui.changing),
                 |list| {
                     let count = workspaces.len();
                     list.child(
@@ -1447,6 +1531,13 @@ impl WorkspaceView {
     }
 
     fn terminal_layout(&self, ui: &Ui, inventory: &Inventory, cx: &mut Context<Self>) -> Div {
+        if ui.read_only && ui.connected {
+            return div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .children(self.terminal.iter().cloned());
+        }
         let Some(selected) = &ui.selected else {
             return self.terminal_placeholder(Some(ui), cx);
         };
@@ -1513,7 +1604,7 @@ impl Render for WorkspaceView {
             .size_full()
             .bg(rgb(BACKGROUND))
             .child(self.toolbar(
-                connected,
+                ui.as_ref(),
                 workspace.map(|workspace| workspace.label.as_str()),
                 cx,
             ))

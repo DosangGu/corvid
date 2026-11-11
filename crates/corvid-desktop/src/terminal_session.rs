@@ -16,15 +16,17 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, CloseView, CreateView,
-    FocusViewAgent, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk, PasteEnd,
-    ReadPanePreview, ReadTerminalHistory, ResizeViewport, RouteToken, SelectView, TerminalHistory,
-    TerminalState, ViewSelection, Viewport, WorkspaceState,
+    AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, ClientState, CloseView,
+    CreateView, FocusViewAgent, FrameApplied, InputChunk, LaunchCommand, PasteBegin, PasteChunk,
+    PasteEnd, ReadPanePreview, ReadTerminalHistory, RequestWriterHandoff, ResizeViewport,
+    RouteToken, SelectView, TerminalHistory, TerminalState, ViewSelection, Viewport,
+    WorkspaceState,
 };
 use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
-    DEFAULT_SHELL_CAPABILITY, Frame, PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame,
-    TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS,
+    DEFAULT_SHELL_CAPABILITY, Frame, OBSERVER_CAPABILITY, PANE_PREVIEW_CAPABILITY, ProtocolFault,
+    RenderFrame, TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES,
+    TERMINAL_HISTORY_MAX_ROWS, WRITER_HANDOFF_CAPABILITY, WRITER_HANDOFF_REQUEST_CAPABILITY,
     decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -55,7 +57,15 @@ pub enum Destination {
 pub enum AttachTarget {
     Default,
     Pane(ViewSelection, bool),
-    Workspace { id: String, host_id: String },
+    Workspace {
+        id: String,
+        host_id: String,
+    },
+    Observe {
+        view: Option<ViewSelection>,
+        host_id: Option<String>,
+        accept_writer: bool,
+    },
 }
 
 impl Destination {
@@ -114,6 +124,7 @@ pub struct Inventory {
     pub workspaces: Vec<WorkspaceState>,
     pub terminals: Vec<TerminalState>,
     pub agents: Vec<AgentInfo>,
+    pub clients: Vec<ClientState>,
 }
 
 impl Inventory {
@@ -128,6 +139,7 @@ impl Inventory {
                 Some(EntityBody::Agent(agent)) if agent.parent_run_id.is_none() => {
                     inventory.agents.extend(agent.summary.clone());
                 }
+                Some(EntityBody::Client(client)) => inventory.clients.push(client.clone()),
                 _ => {}
             }
         }
@@ -138,6 +150,21 @@ impl Inventory {
         self.terminals
             .iter()
             .any(|terminal| terminal.location.as_ref() == Some(selection))
+    }
+
+    pub fn observation_target(&self, workspace: &str) -> Option<ViewSelection> {
+        self.clients
+            .iter()
+            .filter_map(|client| client.selection.as_ref())
+            .find(|view| view.workspace_id == workspace && self.live(view))
+            .cloned()
+            .or_else(|| {
+                self.terminals
+                    .iter()
+                    .filter_map(|terminal| terminal.location.as_ref())
+                    .find(|view| view.workspace_id == workspace)
+                    .cloned()
+            })
     }
 
     fn live_siblings(&self, selected: &ViewSelection) -> Vec<String> {
@@ -184,13 +211,24 @@ pub struct Ui {
     pub connected: bool,
     pub changing: bool,
     pub close_supported: bool,
+    pub read_only: bool,
+    pub accept_writer: bool,
+    pub handoff_supported: bool,
     pub closed_view: bool,
     pub deck_focus: u64,
 }
 
 impl Ui {
+    pub fn can_write(&self) -> bool {
+        self.connected && !self.read_only
+    }
+
     pub fn can_close(&self) -> bool {
-        self.connected && self.close_supported && !self.changing
+        self.can_write() && self.close_supported && !self.changing
+    }
+
+    pub fn can_handoff(&self) -> bool {
+        self.can_write() && self.handoff_supported && !self.changing
     }
 }
 
@@ -256,6 +294,7 @@ enum Action {
         paste: bool,
     },
     ReadHistory(u64, oneshot::Sender<HistoryReply>),
+    Handoff(u64),
     Select(ViewSelection, bool),
     Create(Target),
     Close(CloseView),
@@ -296,6 +335,9 @@ impl Session {
                     connected: false,
                     changing: true,
                     close_supported: false,
+                    read_only: false,
+                    accept_writer: false,
+                    handoff_supported: false,
                     closed_view: false,
                     deck_focus: 0,
                 },
@@ -378,7 +420,7 @@ impl Session {
 
     pub fn history(&self, pane: &str) -> Option<oneshot::Receiver<HistoryReply>> {
         let buffer = self.shared.buffer();
-        if !buffer.ui.connected || !buffer.displayed || !in_pane(&buffer.ui, pane) {
+        if !buffer.ui.can_write() || !buffer.displayed || !in_pane(&buffer.ui, pane) {
             return None;
         }
         let (send, receive) = oneshot::channel();
@@ -404,7 +446,7 @@ impl Session {
 
     pub fn send(&self, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
         let buffer = self.shared.buffer();
-        if !buffer.ui.connected
+        if !buffer.ui.can_write()
             || buffer.ui.changing
             || !buffer.displayed
             || !in_pane(&buffer.ui, pane)
@@ -438,6 +480,12 @@ impl Session {
         self.change(Action::Close(target));
     }
 
+    pub fn handoff(&self, revision: u64) {
+        if self.ui().can_handoff() {
+            self.change(Action::Handoff(revision));
+        }
+    }
+
     pub fn open_agent_deck(&self, settings: agent_deck::Settings) {
         if self.shared.buffer().ui.connected {
             let _ = self.actions.try_send(Action::OpenAgentDeck(settings));
@@ -446,7 +494,7 @@ impl Session {
 
     fn change(&self, action: Action) {
         let mut buffer = self.shared.buffer();
-        if !buffer.ui.connected || buffer.ui.changing {
+        if !buffer.ui.can_write() || buffer.ui.changing {
             return;
         }
         if self.actions.try_send(action).is_ok() {
@@ -479,6 +527,7 @@ struct Client<'a> {
     history: Option<HistoryRequest>,
     preview_index: usize,
     next_preview: Instant,
+    accept_writer: bool,
 }
 
 struct HistoryRequest {
@@ -501,6 +550,7 @@ enum Operation {
     Close,
     Resize,
     Preview,
+    Handoff,
 }
 
 async fn run_reconnecting(
@@ -538,7 +588,13 @@ async fn run_reconnecting(
         let Some(selected) = ui.selected else {
             return Err(error);
         };
-        target = AttachTarget::Pane(selected, false);
+        if ui.read_only
+            && let AttachTarget::Observe { view, .. } = &mut target
+        {
+            *view = Some(selected);
+        } else {
+            target = AttachTarget::Pane(selected, false);
+        }
         explicit = false;
         reconnecting = true;
         requests.terminal = ui.terminal_id;
@@ -569,7 +625,12 @@ async fn run(
     shared: &Shared,
     agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
-    let capabilities: Vec<_> = [
+    let (read_only, accept_writer) = match &target {
+        AttachTarget::Observe { accept_writer, .. } => (true, *accept_writer),
+        _ => (false, false),
+    };
+    let explicit = explicit && !read_only;
+    let mut capabilities: Vec<_> = [
         "attach.v1",
         "render.v1",
         "paste.v1",
@@ -582,6 +643,12 @@ async fn run(
     .into_iter()
     .map(str::to_owned)
     .collect();
+    if read_only {
+        capabilities.push(OBSERVER_CAPABILITY.into());
+    }
+    if accept_writer {
+        capabilities.push(WRITER_HANDOFF_CAPABILITY.into());
+    }
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
     let (endpoint, mut link) = if let Some(remote) = destination.remote() {
         let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
@@ -596,6 +663,7 @@ async fn run(
         });
         let known_host = match &target {
             AttachTarget::Workspace { host_id, .. } => Some(host_id.as_str()),
+            AttachTarget::Observe { host_id, .. } => host_id.as_deref(),
             _ => None,
         };
         let expected_host = host
@@ -633,6 +701,34 @@ async fn run(
     *host = Some(link.session().host_id.clone());
     let grid = sizes.borrow().1;
     let attached = match &target {
+        AttachTarget::Observe { view, host_id, .. } => {
+            ensure!(
+                host_id
+                    .as_ref()
+                    .is_none_or(|host| link.session().host_id == *host),
+                ProtocolFault::new(
+                    "HostMismatch",
+                    "The connection points to a different Corvid host"
+                )
+            );
+            attach(
+                &mut link,
+                grid,
+                Attach {
+                    workspace_id: view.as_ref().map(|view| view.workspace_id.clone()),
+                    tab_id: view.as_ref().map(|view| view.tab_id.clone()),
+                    pane_id: view.as_ref().map(|view| view.pane_id.clone()),
+                    requested_role: AttachRole::Observer as i32,
+                    terminal_capabilities: if accept_writer {
+                        vec![WRITER_HANDOFF_CAPABILITY.into()]
+                    } else {
+                        Vec::new()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await?
+        }
         AttachTarget::Workspace { id, host_id } => {
             ensure!(
                 link.session().host_id == *host_id,
@@ -703,9 +799,13 @@ async fn run(
             && route.connection_generation == attached.connection_generation
             && route.client_id == attached.client_id
             && valid_route(&route)
+            && (route.writer_lease_generation == 0) == read_only
+            && (!read_only || attached.writer_leases.is_empty())
             && match &target {
                 AttachTarget::Default => true,
                 AttachTarget::Pane(view, _) => *view == selected,
+                AttachTarget::Observe { view, .. } =>
+                    view.as_ref().is_none_or(|view| *view == selected),
                 AttachTarget::Workspace { id, .. } => *id == selected.workspace_id,
             },
         "invalid initial daemon route"
@@ -718,10 +818,16 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == CLOSE_VIEW_CAPABILITY);
+    let handoff_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == WRITER_HANDOFF_REQUEST_CAPABILITY);
     shared.update_ui(|ui| {
         ui.host_id = Some(host.clone());
         ui.endpoint = Some(endpoint.clone());
         ui.close_supported = close_supported;
+        ui.handoff_supported = handoff_supported;
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
     let mut client = Client {
@@ -741,6 +847,7 @@ async fn run(
         history: None,
         preview_index: 0,
         next_preview: Instant::now(),
+        accept_writer,
     };
     client.publish_view();
     let inventory = watch_inventory(endpoint, host, epoch, shared);
@@ -781,7 +888,9 @@ async fn attach(
 ) -> Result<Attached> {
     request.viewport = Some(grid.wire());
     request.terminal_capabilities.push("legacy_vt.v1".into());
-    request.requested_role = AttachRole::Writer as i32;
+    if request.requested_role == AttachRole::Unspecified as i32 {
+        request.requested_role = AttachRole::Writer as i32;
+    }
     let id = link.send(Body::Attach(request)).await?;
     let reply = timeout(COMMAND_TIMEOUT, link.receive()).await??;
     let (reply_id, reply) = envelope(link, reply)?;
@@ -850,9 +959,7 @@ fn envelope(link: &InteractiveConnection, frame: Frame) -> Result<(Option<String
 }
 
 fn valid_route(route: &RouteToken) -> bool {
-    route.writer_lease_generation > 0
-        && Uuid::parse_str(&route.client_id).is_ok()
-        && Uuid::parse_str(&route.terminal_id).is_ok()
+    Uuid::parse_str(&route.client_id).is_ok() && Uuid::parse_str(&route.terminal_id).is_ok()
 }
 
 fn validate_selection(view: &ViewSelection) -> Result<()> {
@@ -863,6 +970,10 @@ fn validate_selection(view: &ViewSelection) -> Result<()> {
 }
 
 impl Client<'_> {
+    fn read_only(&self) -> bool {
+        self.route.writer_lease_generation == 0
+    }
+
     fn publish_view(&self) {
         {
             let mut buffer = self.shared.buffer();
@@ -877,8 +988,14 @@ impl Client<'_> {
             buffer.ui.selected = Some(self.selected.clone());
             buffer.ui.terminal_id = Some(self.route.terminal_id.clone());
             buffer.ui.connected = true;
+            buffer.ui.read_only = self.read_only();
+            buffer.ui.accept_writer = self.read_only() && self.accept_writer;
             buffer.ui.changing = self.pending.is_some();
-            buffer.ui.message = "Attached to Corvid daemon".into();
+            buffer.ui.message = if self.read_only() {
+                "Observing existing terminal".into()
+            } else {
+                "Attached to Corvid daemon".into()
+            };
             buffer.revision = self.route.view_revision;
             buffer.displayed = false;
             buffer.parser = Parser::new(self.grid.rows, self.grid.cols, 0);
@@ -899,7 +1016,11 @@ impl Client<'_> {
             ensure!(now < pending.deadline, "daemon view change timed out");
         } else if revision == self.route.view_revision && self.grid != grid {
             self.resize(grid).await?;
-        } else if self.preview.is_none() && now >= self.next_preview && self.applied.is_some() {
+        } else if !self.read_only()
+            && self.preview.is_none()
+            && now >= self.next_preview
+            && self.applied.is_some()
+        {
             self.next_preview = now + PREVIEW_INTERVAL;
             self.read_preview().await?;
         }
@@ -941,6 +1062,16 @@ impl Client<'_> {
 
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
+            Action::Handoff(revision) if !self.read_only() => {
+                self.request(
+                    Body::RequestWriterHandoff(RequestWriterHandoff {
+                        expected_view_revision: Some(revision),
+                    }),
+                    Operation::Handoff,
+                )
+                .await?
+            }
+            Action::Handoff(_) => {}
             Action::ReadHistory(revision, reply) => self.read_history(revision, reply).await?,
             Action::OpenAgentDeck(settings) if self.agent_deck.tasks.is_empty() => {
                 let host = self.link.session().host_id.clone();
@@ -956,7 +1087,8 @@ impl Client<'_> {
                 revision,
                 bytes,
                 paste,
-            } if self.pending.is_none()
+            } if !self.read_only()
+                && self.pending.is_none()
                 && self.applied.is_some()
                 && revision == self.route.view_revision =>
             {
@@ -1025,6 +1157,12 @@ impl Client<'_> {
     }
 
     async fn focus_from_deck(&mut self, request: agent_deck::FocusRequest) -> Result<()> {
+        if self.read_only() {
+            let _ = request
+                .result
+                .send(Err("Desktop is attached read-only.".into()));
+            return Ok(());
+        }
         let run = request.run;
         let session = self.link.session();
         if run.host_id != session.host_id || run.remote_epoch != session.server_epoch {
@@ -1151,6 +1289,17 @@ impl Client<'_> {
     }
 
     async fn resize(&mut self, grid: Grid) -> Result<()> {
+        let body = Body::ResizeViewport(ResizeViewport {
+            client_id: self.route.client_id.clone(),
+            connection_generation: self.route.connection_generation,
+            viewport: Some(grid.wire()),
+        });
+        if self.read_only() {
+            self.link.send(body).await?;
+            self.grid = grid;
+            self.shared.buffer().parser.set_size(grid.rows, grid.cols);
+            return Ok(());
+        }
         {
             let mut buffer = self.shared.buffer();
             if buffer.ui.changing {
@@ -1158,15 +1307,7 @@ impl Client<'_> {
             }
             buffer.ui.changing = true;
         }
-        self.request(
-            Body::ResizeViewport(ResizeViewport {
-                client_id: self.route.client_id.clone(),
-                connection_generation: self.route.connection_generation,
-                viewport: Some(grid.wire()),
-            }),
-            Operation::Resize,
-        )
-        .await
+        self.request(body, Operation::Resize).await
     }
 
     async fn request(&mut self, body: Body, kind: Operation) -> Result<()> {
@@ -1258,6 +1399,11 @@ impl Client<'_> {
                 ensure!(
                     view.view_revision == route.view_revision
                         && valid_route(&route)
+                        && route.writer_lease_generation > 0
+                        && (!self.read_only()
+                            || (self.accept_writer
+                                && route.terminal_id == self.route.terminal_id
+                                && selection == self.selected))
                         && self.route.client_id == route.client_id
                         && self.route.connection_generation == route.connection_generation
                         && (route == self.route
@@ -1273,11 +1419,16 @@ impl Client<'_> {
                     self.pending = None;
                 }
                 if route != self.route {
+                    let promoted = self.read_only();
                     self.grid = Grid::read(view.viewport.context("view update has no viewport")?)?;
                     self.route = route;
                     self.selected = selection;
                     self.applied = None;
                     self.publish_view();
+                    if promoted {
+                        self.shared
+                            .update_ui(|ui| ui.message = "Writer handoff accepted.".into());
+                    }
                 } else if pending {
                     self.shared.update_ui(|ui| ui.changing = false);
                 }
@@ -1355,6 +1506,11 @@ impl Client<'_> {
                 return Ok(Some(format!("Shell exited ({}).", exit.exit_code)));
             }
             Body::Detach(_) => {
+                if self.pending.as_ref().is_some_and(|pending| {
+                    id.as_deref() == Some(&pending.id) && matches!(pending.kind, Operation::Handoff)
+                }) {
+                    return Ok(Some("Writer handed off.".into()));
+                }
                 if self.pending.as_ref().is_some_and(|pending| {
                     id.as_deref() == Some(&pending.id) && matches!(pending.kind, Operation::Close)
                 }) {

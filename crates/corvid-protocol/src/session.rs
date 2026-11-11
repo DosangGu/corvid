@@ -213,6 +213,7 @@ impl Session {
                 | Body::FocusViewAgent(_)
                 | Body::ReadPanePreview(_)
                 | Body::ReadTerminalHistory(_)
+                | Body::RequestWriterHandoff(_)
                 | Body::ClaimWorkspaceWriter(_)
                 | Body::MoveTab(_)
                 | Body::IssuePairingCode(_)

@@ -490,7 +490,18 @@ impl Workspaces {
         }
         let mut registry = self.lock_registry();
         let mut layout = self.metadata.layout();
-        let location = resolve(&registry, &mut layout, target)?;
+        let mut location = resolve(&registry, &mut layout, target)?;
+        if target.tab.is_none()
+            && target.pane.is_none()
+            && let Some(view) = registry
+                .claims
+                .get(&location.workspace)
+                .and_then(|claim| registry.clients.get(&claim.client))
+                .and_then(|client| client.view.as_ref())
+                .filter(|view| view.location.workspace == location.workspace)
+        {
+            location = view.location;
+        }
         let terminal = registry
             .slots
             .get(&location.pane)

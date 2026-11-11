@@ -40,6 +40,7 @@ const CAPABILITIES: &[&str] = &[
     "attach.v1",
     corvid_protocol::OBSERVER_CAPABILITY,
     corvid_protocol::WRITER_HANDOFF_CAPABILITY,
+    corvid_protocol::WRITER_HANDOFF_REQUEST_CAPABILITY,
     "render.v1",
     "ping.v1",
     "paste.v1",
@@ -284,6 +285,16 @@ impl TuiConnection<'_> {
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
             }
+            Body::RequestWriterHandoff(handoff) => {
+                if let Err(fault) = require_view(
+                    handoff.expected_view_revision,
+                    self.active.route.view_revision,
+                ) {
+                    self.fault(request.request_id, fault).await?;
+                    return Ok(false);
+                }
+                return self.handoff(request.request_id).await;
+            }
             Body::ClaimWorkspaceWriter(claim) => {
                 let workspace = parse_id(&claim.workspace_id);
                 let result = match workspace {
@@ -363,16 +374,23 @@ impl TuiConnection<'_> {
             Event::Tab(command) => self.switch(Destination::Tab(command), None, true).await?,
             Event::Close(target) => return self.close(target, None, true).await,
             Event::PairController => self.pair(None).await?,
-            Event::HandoffWriter => match self.workspaces.handoff(&self.active).await {
-                Ok(()) => {
-                    self.send(None, Body::Detach(corvid_protocol::wire::Detach {}))
-                        .await?;
-                    return Ok(true);
-                }
-                Err(fault) => self.fault(None, fault).await?,
-            },
+            Event::HandoffWriter => return self.handoff(None).await,
         }
         Ok(false)
+    }
+
+    async fn handoff(&mut self, id: Option<String>) -> Result<bool> {
+        match self.workspaces.handoff(&self.active).await {
+            Ok(()) => {
+                self.send(id, Body::Detach(corvid_protocol::wire::Detach {}))
+                    .await?;
+                Ok(true)
+            }
+            Err(fault) => {
+                self.fault(id, fault).await?;
+                Ok(false)
+            }
+        }
     }
 
     async fn pair(&mut self, id: Option<String>) -> Result<()> {

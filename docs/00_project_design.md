@@ -612,7 +612,8 @@ writer can use Ctrl-] then g to hand off the selected pane to its sole observer
 that opted in to promotion. The worker refuses handoff during a pending paste,
 fences undelivered input, resizes the terminal, and installs the new lease
 generation before the observer can send input. The original writer detaches.
-Desktop and external focus controls do not perform handoff.
+Desktop exposes the same operation through its writer toolbar. External focus
+controls have no authority to transfer the lease.
 
 Per-client state includes current workspace/tab/pane, mode/keymap, viewport, prior frame,
 input-route revision, connection generation, and lease ownership. Foreground/keymap
@@ -1623,7 +1624,7 @@ Qualify macOS when its separately gated execution work is scheduled.
 ### Later — separately gated extensions
 
 - **Entry:** Phases 1–3 invariants remain covered; each extension has a concrete user need.
-- **Scope:** Desktop read-only attach and writer handoff controls; N-way split,
+- **Scope:** N-way split,
   drag/move and vertical tab-bar UX; automatic keymap profiles/remapping; native Windows
   and macOS execution; opt-in conversation resume; scrollback persistence/search. Consider
   a PTY supervisor only if daemon-crash survival is actually required.

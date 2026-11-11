@@ -145,8 +145,7 @@ and marks previously seen observations as cached when a host goes offline.
 and notification settings use the individual host Deck.
 
 Windows supports [opt-in provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage).
-Desktop controls for read-only attach and writer handoff remain planned.
-The TUI implements both operations.
+Desktop and the TUI support read-only attach and explicit writer handoff.
 Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in
 [release distribution](05_release_distribution.md#planned-native-installers-and-linux-packages).

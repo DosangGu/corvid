@@ -378,8 +378,33 @@ async fn handoff_rejects_observer_input_and_fences_the_previous_writer() {
         let Body::Error(error) = observer.next_body(&mut output).await else { panic!("observer input was accepted") };
         assert_eq!(error.code, "WriterRequired");
         assert_eq!(writer.client_state(&runtime).await.viewport.unwrap().cols, 80);
-        writer.enter_command_mode(1, &mut source).await;
-        writer.input(retired.clone(), 2, b"g").await;
+        let handoff = |revision| Body::RequestWriterHandoff(corvid_protocol::wire::RequestWriterHandoff {
+            expected_view_revision: Some(revision),
+        });
+        observer.send(handoff(observer.route.view_revision)).await;
+        let Body::Error(error) = observer.next_body(&mut output).await else { panic!("observer could hand off") };
+        assert_eq!(error.code, "WriterRequired");
+        writer.send(handoff(retired.view_revision + 1)).await;
+        let Body::Error(error) = writer.next_body(&mut source).await else { panic!("stale handoff was accepted") };
+        assert_eq!(error.code, "StaleRoute");
+        let paste_id = Uuid::new_v4().to_string();
+        writer.send(Body::PasteBegin(PasteBegin {
+            route_token: Some(retired.clone()),
+            paste_id: paste_id.clone(),
+            input_sequence: 1,
+        })).await;
+        writer.send(handoff(retired.view_revision)).await;
+        let Body::Error(error) = writer.next_body(&mut source).await else { panic!("handoff during a paste was accepted") };
+        assert_eq!(error.code, "InputBusy");
+        writer.send(Body::PasteChunk(PasteChunk {
+            paste_id: paste_id.clone(),
+            data: b"paste\n".to_vec(),
+        })).await;
+        writer.send(Body::PasteEnd(PasteEnd { paste_id })).await;
+        while !String::from_utf8_lossy(&source).contains("got:paste") {
+            assert!(writer.event(&mut source).await.is_none());
+        }
+        writer.send(handoff(retired.view_revision)).await;
         assert!(matches!(writer.next_body(&mut source).await, Body::Detach(_)));
 
         observer.moved(&mut output, &writer.selection).await;

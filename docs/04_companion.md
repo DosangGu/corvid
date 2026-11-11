@@ -164,6 +164,14 @@ on that pane, and waits for the user to try again if a paste is pending.
 The old TUI detaches and the promoted TUI continues with the same terminal at
 its own viewport size. These controls are available on Windows and Linux.
 
+In Desktop, open **Sessions** and choose **Observe current pane** on the host
+or **Observe** next to a known session. The toolbar shows **Read-only** and
+the pane accepts selection and copy without forwarding keys. Turn on **Allow
+writer handoff when observing** before connecting if you want to accept input
+ownership. The writer can then choose **Hand off writer** in Desktop or use
+the TUI shortcut above. The observer must be on the same pane and be the
+only observer that opted in there. A handoff leaves the pane running.
+
 Open **Plugins → Corvid Agent Deck** to see the daemon's observed Codex and Claude
 Code activity, including **Working**, **Input needed**, and **Response observed**.
 Click a live agent's name to open its pane in Desktop. See the
