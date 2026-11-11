@@ -45,6 +45,7 @@ pub(super) enum Operation {
     Retain = 8,
     CancelRetain = 9,
     Stop = 10,
+    History = 11,
 }
 
 #[derive(Clone, Message, PartialEq)]
@@ -91,6 +92,8 @@ pub(super) struct Response {
     failure: u32,
     #[prost(bool, tag = "12")]
     partial: bool,
+    #[prost(message, optional, tag = "13")]
+    history: Option<corvid_protocol::wire::TerminalHistory>,
 }
 
 impl Response {
@@ -162,6 +165,13 @@ impl HostConfig {
 }
 
 impl Client {
+    pub(super) fn history(&mut self) -> Result<corvid_protocol::wire::TerminalHistory> {
+        let response = self.command(Operation::History, Vec::new())?;
+        ensure!(!response.rejected, "terminal host could not read history");
+        response
+            .history
+            .context("terminal host did not return history")
+    }
     pub(super) fn start(
         config: &HostConfig,
         id: Uuid,
@@ -616,6 +626,7 @@ impl Host {
                 response.rows = size.rows.get().into();
                 response.bytes = self.session.screen.redraw(size)?.into_bytes();
             }
+            Operation::History => response.history = Some(self.session.screen.history()),
             Operation::Render => {
                 let size = viewport(request.cols, request.rows)?;
                 let footer = if request.footer_row == 0 {

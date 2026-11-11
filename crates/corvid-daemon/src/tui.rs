@@ -19,6 +19,7 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
+    TERMINAL_HISTORY_CAPABILITY,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -44,6 +45,7 @@ const CAPABILITIES: &[&str] = &[
     CREATE_VIEW_CAPABILITY,
     CLOSE_VIEW_CAPABILITY,
     PANE_PREVIEW_CAPABILITY,
+    TERMINAL_HISTORY_CAPABILITY,
     MOVE_TAB_CAPABILITY,
     #[cfg(target_os = "linux")]
     PAIR_CAPABILITY,
@@ -158,6 +160,7 @@ async fn serve_active(
         workspaces,
         client_events,
         last_preview: None,
+        last_history: None,
     }
     .run(reader)
     .await
@@ -170,6 +173,7 @@ struct TuiConnection<'a> {
     workspaces: &'a Workspaces,
     client_events: ClientEvents,
     last_preview: Option<Instant>,
+    last_history: Option<Instant>,
 }
 
 struct ClientEvents {
@@ -239,6 +243,16 @@ impl TuiConnection<'_> {
             }
             Body::ReadPanePreview(preview) => {
                 self.preview(preview, request.request_id.clone()).await?
+            }
+            Body::ReadTerminalHistory(history) => {
+                let result = self.history(history.expected_view_revision).await;
+                match result {
+                    Ok(history) => {
+                        self.send(request.request_id, Body::TerminalHistory(history))
+                            .await?
+                    }
+                    Err(fault) => self.fault(request.request_id, fault).await?,
+                }
             }
             Body::ClaimWorkspaceWriter(claim) => {
                 let workspace = parse_id(&claim.workspace_id);
@@ -564,6 +578,26 @@ impl TuiConnection<'_> {
         )
         .await??;
         Ok(())
+    }
+
+    async fn history(
+        &mut self,
+        revision: Option<u64>,
+    ) -> Result<corvid_protocol::wire::TerminalHistory, ProtocolFault> {
+        let route = self.active.route;
+        require_view(revision, route.view_revision)?;
+        let now = Instant::now();
+        if self
+            .last_history
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(180))
+        {
+            return Err(ProtocolFault::new(
+                "LimitExceeded",
+                "terminal history reads are rate limited",
+            ));
+        }
+        self.last_history = Some(now);
+        self.active.terminal.history(route).await
     }
 
     async fn send(&mut self, id: Option<String>, body: Body) -> Result<()> {

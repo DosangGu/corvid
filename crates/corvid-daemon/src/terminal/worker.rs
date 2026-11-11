@@ -176,6 +176,10 @@ enum Command {
     Activate(InputRoute, TuiViewport, oneshot::Sender<Reply<()>>),
     Resume(InputRoute),
     Preview(oneshot::Sender<Reply<(Viewport, Vec<u8>)>>),
+    History(
+        InputRoute,
+        oneshot::Sender<Reply<corvid_protocol::wire::TerminalHistory>>,
+    ),
     Retain(bool, oneshot::Sender<Reply<Option<RetainedTerminal>>>),
 }
 
@@ -256,6 +260,17 @@ impl TerminalHandle {
         let (send, receive) = oneshot::channel();
         self.commands
             .try_send(Command::Preview(send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
+    }
+
+    pub(crate) async fn history(
+        &self,
+        route: InputRoute,
+    ) -> Reply<corvid_protocol::wire::TerminalHistory> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::History(route, send))
             .map_err(|_| overloaded())?;
         timeout_reply(receive).await
     }
@@ -413,6 +428,11 @@ impl Worker {
                     let _ = reply.send(self.preview());
                 }
             }
+            Command::History(route, reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.history(route));
+                }
+            }
             Command::Retain(retain, reply) => {
                 if !reply.is_closed() {
                     let _ = reply.send(self.retain(retain));
@@ -453,6 +473,22 @@ impl Worker {
             return Err(terminal_fault());
         }
         Ok((viewport, ansi))
+    }
+
+    fn history(&mut self, route: InputRoute) -> Reply<corvid_protocol::wire::TerminalHistory> {
+        if self
+            .lease
+            .as_ref()
+            .is_none_or(|lease| lease.route != route || lease.switch_pending)
+        {
+            return Err(stale_route());
+        }
+        let terminal = self
+            .terminal
+            .as_mut()
+            .filter(|terminal| terminal.exit.is_none())
+            .ok_or_else(terminal_fault)?;
+        terminal.session.history().map_err(|_| terminal_fault())
     }
 
     fn publish_mode_change(&self, previous: Option<InputMode>) {

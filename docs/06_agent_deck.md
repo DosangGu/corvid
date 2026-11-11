@@ -133,8 +133,9 @@ remains unverified because the UI tool could not access its cursor or capture it
 monitor. Windows notification architecture follows the
 [desktop toast sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/DesktopToasts).
 
-The subsequent requested backlog remains terminal selection/scrollback/search,
-native Windows agent observation, unified multi-host management, and read-only
+Desktop provides [terminal selection, scrollback, and search](04_companion.md#desktop-terminal-selection-and-history).
+The remaining requested backlog includes native Windows agent observation,
+unified multi-host management, and read-only
 attach with explicit writer handoff. Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in
 [release distribution](05_release_distribution.md#planned-native-installers-and-linux-packages).

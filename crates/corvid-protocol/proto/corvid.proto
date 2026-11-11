@@ -91,6 +91,8 @@ message Envelope {
     PresentationAttention presentation_attention = 119;
     OpenAgentDeck open_agent_deck = 120;
     AgentDeckOpened agent_deck_opened = 121;
+    ReadTerminalHistory read_terminal_history = 122;
+    TerminalHistory terminal_history = 123;
   }
 }
 
@@ -1055,6 +1057,16 @@ message CloseView {
 message ReadPanePreview {
   optional uint64 expected_view_revision = 1;
   string pane_id = 2;
+}
+
+message ReadTerminalHistory {
+  optional uint64 expected_view_revision = 1;
+}
+
+message TerminalHistory {
+  repeated string lines = 1;
+  uint32 columns = 2;
+  bool truncated = 3;
 }
 
 message ClaimWorkspaceWriter {

@@ -3,12 +3,15 @@ use std::{cell::Cell, ops::Range};
 use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     IntoElement, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
-    Point, Task, UTF16Selection, Window, canvas, div, prelude::*, px, rgb,
+    Point, ScrollWheelEvent, Task, UTF16Selection, Window, canvas, div, prelude::*, px, rgb,
 };
 use vt100::Screen;
 
 use crate::terminal_paint::{self as paint, Frame, Metrics};
 use crate::terminal_session::{MAX_INPUT, Session};
+
+mod history;
+use history::History;
 
 pub struct TerminalView {
     focus: FocusHandle,
@@ -17,6 +20,8 @@ pub struct TerminalView {
     marked: String,
     surface: Cell<Option<(Bounds<Pixels>, Metrics)>>,
     selection: Option<Selection>,
+    history: Option<History>,
+    history_request: Option<Task<()>>,
     _updates: Task<()>,
 }
 
@@ -62,7 +67,14 @@ impl TerminalView {
         let mut changes = session.screen_changes();
         let updates = cx.spawn(async move |view, cx| {
             while changes.changed().await.is_ok() {
-                if view.update(cx, |_, cx| cx.notify()).is_err() {
+                if view
+                    .update(cx, |view, cx| {
+                        if view.history.is_none() && view.selection.is_none() {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -74,6 +86,8 @@ impl TerminalView {
             marked: String::new(),
             surface: Cell::new(None),
             selection: None,
+            history: None,
+            history_request: None,
             _updates: updates,
         }
     }
@@ -97,15 +111,19 @@ impl TerminalView {
         }
         self.marked.clear();
         let anchor = metrics.position(bounds, event.position);
-        self.selection = self
-            .session
-            .screen(&self.pane, Clone::clone)
-            .map(|screen| Selection {
-                screen,
-                anchor,
-                head: anchor,
-                dragging: true,
-            });
+        let screen = if let Some(history) = &self.history {
+            history
+                .screen(metrics.grid(bounds))
+                .map(|(screen, _)| screen)
+        } else {
+            self.session.screen(&self.pane, Clone::clone)
+        };
+        self.selection = screen.map(|screen| Selection {
+            screen,
+            anchor,
+            head: anchor,
+            dragging: true,
+        });
         cx.notify();
     }
 
@@ -149,10 +167,116 @@ impl TerminalView {
         self.session.send(&self.pane, text.into_bytes(), true);
     }
 
+    fn open_history(&mut self, search: bool, back: isize, cx: &mut Context<Self>) {
+        self.selection = None;
+        self.marked.clear();
+        let mut history = History::new(search);
+        if let Some(receive) = self.session.history(&self.pane) {
+            self.history_request = Some(cx.spawn(async move |view, cx| {
+                let result = receive
+                    .await
+                    .unwrap_or_else(|_| Err("The terminal connection ended.".into()));
+                let _ = view.update(cx, |view, cx| {
+                    let height = view.visible_rows();
+                    if let Some(history) = &mut view.history {
+                        history.loaded(result);
+                        if history.search.is_none() {
+                            history.scroll(-back, height);
+                        }
+                        cx.notify();
+                    }
+                });
+            }));
+        } else {
+            history.loaded(Err("Terminal history is unavailable.".into()));
+        }
+        self.history = Some(history);
+        cx.notify();
+    }
+
+    fn visible_rows(&self) -> usize {
+        self.surface.get().map_or(1, |(bounds, metrics)| {
+            usize::from(metrics.grid(bounds).rows.get())
+        })
+    }
+
+    fn scroll_history(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let delta = f32::from(event.delta.pixel_delta(paint::LINE_HEIGHT).y);
+        let rows = (delta / f32::from(paint::LINE_HEIGHT)).abs().ceil() as isize;
+        let height = self.visible_rows();
+        if delta > 0. && self.history.is_none() {
+            self.open_history(false, rows, cx);
+        } else if let Some(history) = &mut self.history {
+            history.scroll(if delta > 0. { -rows } else { rows }, height);
+            self.selection = None;
+            cx.notify();
+        }
+        cx.stop_propagation();
+    }
+
+    fn history_key(&mut self, key: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let height = self.visible_rows();
+        if key.key == "escape" {
+            if self.selection.take().is_none() {
+                self.history_request = None;
+                self.history = None;
+                self.marked.clear();
+            }
+            cx.notify();
+            return true;
+        }
+        let Some(history) = &mut self.history else {
+            return false;
+        };
+        match (key.key.as_str(), key.modifiers.control, key.modifiers.shift) {
+            ("c", true, true) => {
+                let contents = self.selection.as_ref().map(Selection::text).or_else(|| {
+                    let (bounds, metrics) = self.surface.get()?;
+                    history
+                        .screen(metrics.grid(bounds))
+                        .map(|(screen, _)| screen.contents())
+                });
+                if let Some(text) = contents {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+                return true;
+            }
+            ("f", true, true) => {
+                history.search.get_or_insert_with(Default::default);
+            }
+            ("v", true, _) if history.search.is_some() => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    history.edit_query(Some(&text));
+                }
+            }
+            ("backspace", false, _) => history.edit_query(None),
+            ("enter", false, shift) => history.find(shift),
+            ("up", false, _) => history.scroll(-1, height),
+            ("down", false, _) => history.scroll(1, height),
+            ("pageup", _, _) => history.scroll(-(height as isize), height),
+            ("pagedown", _, _) => history.scroll(height as isize, height),
+            ("home", _, _) => history.scroll(isize::MIN, height),
+            ("end", _, _) => history.scroll(isize::MAX, height),
+            _ => return false,
+        }
+        self.selection = None;
+        cx.notify();
+        true
+    }
+
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;
         let modifiers = key.modifiers;
-        if modifiers.control && !modifiers.alt && key.key == "v" {
+        if self.history.is_some() {
+            if !self.history_key(key, cx) {
+                // Let the platform input handler deliver printable and composed text.
+                return;
+            }
+        } else if modifiers.control && modifiers.shift && !modifiers.alt && key.key == "f" {
+            self.open_history(true, 0, cx);
+        } else if modifiers.shift && !modifiers.control && !modifiers.alt && key.key == "pageup" {
+            self.open_history(false, self.visible_rows() as isize, cx);
+        } else if modifiers.control && !modifiers.alt && key.key == "v" {
             self.selection = None;
             self.paste(cx);
             cx.notify();
@@ -193,9 +317,16 @@ impl Render for TerminalView {
                 let grid = metrics.grid(bounds);
                 let terminal = view.read(cx);
                 terminal.surface.set(Some((bounds, metrics)));
-                terminal.session.resize(&terminal.pane, grid);
+                if terminal.history.is_none() {
+                    terminal.session.resize(&terminal.pane, grid);
+                }
                 let frame = if let Some(selection) = &terminal.selection {
                     Frame::selected(&selection.screen, grid, Some(&selection.range()))
+                } else if let Some(history) = &terminal.history {
+                    history
+                        .screen(grid)
+                        .map(|(screen, hit)| Frame::selected(&screen, grid, hit.as_ref()))
+                        .unwrap_or_default()
                 } else {
                     terminal
                         .session
@@ -218,6 +349,7 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::start_selection))
             .on_mouse_move(cx.listener(Self::drag_selection))
+            .on_scroll_wheel(cx.listener(Self::scroll_history))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.end_selection(cx)),
@@ -227,11 +359,24 @@ impl Render for TerminalView {
                 cx.listener(|view, _, _, cx| view.end_selection(cx)),
             )
             .size_full()
+            .flex()
+            .flex_col()
             .min_h_0()
             .p(px(10.))
             .overflow_hidden()
             .bg(rgb(paint::BACKGROUND))
-            .child(surface)
+            .when_some(self.history.as_ref(), |this, history| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_sm()
+                        .text_color(rgb(0xa6c8db))
+                        .pb(px(6.))
+                        .overflow_hidden()
+                        .child(history.title(&self.marked)),
+                )
+            })
+            .child(div().flex_1().min_h_0().child(surface))
     }
 }
 
@@ -294,6 +439,11 @@ impl EntityInputHandler for TerminalView {
     ) {
         self.marked.clear();
         self.selection = None;
+        if let Some(history) = &mut self.history {
+            history.edit_query(Some(text));
+            cx.notify();
+            return;
+        }
         if !text.is_empty() {
             self.session
                 .send(&self.pane, text.as_bytes().to_vec(), text.len() > 8192);
@@ -324,6 +474,9 @@ impl EntityInputHandler for TerminalView {
         window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        if self.history.is_some() {
+            return Some(Metrics::measure(window).cell(bounds.origin, 0, 0, 1));
+        }
         let (row, col) = self.session.screen(&self.pane, Screen::cursor_position)?;
         Some(Metrics::measure(window).cell(bounds.origin, row, col, 1))
     }

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
+use corvid_protocol::wire::TerminalHistory;
 use portable_pty::{CommandBuilder, ExitStatus};
 use uuid::Uuid;
 use vt100::Screen;
@@ -138,6 +139,13 @@ impl Backend {
                 Ok((viewport, session.screen.redraw(viewport)?.into_bytes()))
             }
             Self::Hosted(client) => client.preview(),
+        }
+    }
+
+    pub(super) fn history(&mut self) -> Result<TerminalHistory> {
+        match self {
+            Self::Local(session) => Ok(session.screen.history()),
+            Self::Hosted(client) => client.history(),
         }
     }
 

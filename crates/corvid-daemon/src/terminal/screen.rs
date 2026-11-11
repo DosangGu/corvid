@@ -5,6 +5,8 @@ use anyhow::{Result, ensure};
 use vt100::{Callbacks, Parser, Screen};
 
 use corvid_core::Viewport;
+use corvid_protocol::wire::TerminalHistory;
+use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
 const SCROLLBACK_ROWS: usize = 512;
 const MAX_REPLY_BYTES: usize = 32 * 1024;
@@ -116,6 +118,48 @@ impl TerminalScreen {
         self.parser.screen().clone()
     }
 
+    pub(crate) fn history(&mut self) -> TerminalHistory {
+        let screen = self.parser.screen_mut();
+        let (rows, cols) = screen.size();
+        let height = usize::from(rows.get());
+        let mut remaining = screen.scrollback_len();
+        let mut history = TerminalHistory {
+            columns: cols.get().into(),
+            ..Default::default()
+        };
+        let mut bytes = 0;
+        let mut take = height;
+        'pages: loop {
+            let skip = take.saturating_sub(TERMINAL_HISTORY_MAX_ROWS);
+            let page: Vec<_> = screen.rows(0, cols.get()).take(take).skip(skip).collect();
+            for mut line in page.into_iter().rev() {
+                line.retain(|ch| !ch.is_control() && !is_bidi_control(ch));
+                // Budget for the repeated field tag and encoded string length.
+                bytes += line.len() + 8;
+                if bytes > TERMINAL_HISTORY_MAX_BYTES
+                    || history.lines.len() == TERMINAL_HISTORY_MAX_ROWS
+                {
+                    history.truncated = true;
+                    break 'pages;
+                }
+                history.lines.push(line);
+            }
+            if skip > 0 {
+                history.truncated = true;
+                break;
+            }
+            if remaining == 0 {
+                break;
+            }
+            take = remaining.min(height);
+            screen.set_scrollback(screen.scrollback() + take);
+            remaining -= take;
+        }
+        screen.set_scrollback(0);
+        history.lines.reverse();
+        history
+    }
+
     pub(crate) fn render(
         &self,
         previous: Option<&Screen>,
@@ -170,9 +214,7 @@ impl TerminalScreen {
         // The Unicode Bidi_Control characters can reorder untrusted cell text
         // in the outer terminal. Their removal leaves the VT cell widths intact.
         if !frame.is_ascii() {
-            frame.retain(|ch| {
-                !matches!(ch, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-            });
+            frame.retain(|ch| !is_bidi_control(ch));
         }
 
         // Only these input modes are part of the spike's outer terminal profile.
@@ -220,6 +262,10 @@ impl TerminalScreen {
         }
         Ok(())
     }
+}
+
+fn is_bidi_control(ch: char) -> bool {
+    matches!(ch, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 #[cfg(test)]
@@ -400,6 +446,44 @@ mod tests {
         let redraw = terminal.redraw(Viewport::new(10, 2).unwrap()).unwrap();
         assert!(redraw.contains("visible"));
         assert!(!redraw.contains("\x1b]"));
+    }
+
+    #[test]
+    fn history_contains_scrolled_rows_in_order_and_preserves_live_screen() {
+        let mut terminal = terminal(20, 3);
+        for row in 0..10 {
+            terminal
+                .process(format!("line {row}\r\n").as_bytes())
+                .unwrap();
+        }
+        let live = terminal.parser.screen().contents();
+        let history = terminal.history();
+        assert_eq!(
+            history.lines,
+            (0..10)
+                .map(|row| format!("line {row}"))
+                .chain(std::iter::once(String::new()))
+                .collect::<Vec<_>>()
+        );
+        assert!(!history.truncated);
+        assert_eq!(terminal.parser.screen().contents(), live);
+        assert_eq!(terminal.parser.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn history_limits_large_scrollback_before_encoding() {
+        use prost::Message;
+
+        let mut terminal = terminal(400, 30);
+        let line = format!("{}\r\n", "x".repeat(400));
+        for _ in 0..700 {
+            terminal.process(line.as_bytes()).unwrap();
+        }
+        terminal.process(b"newest").unwrap();
+        let history = terminal.history();
+        assert!(history.truncated);
+        assert_eq!(history.lines.last().map(String::as_str), Some("newest"));
+        assert!(history.encoded_len() < TERMINAL_HISTORY_MAX_BYTES);
     }
 
     #[test]

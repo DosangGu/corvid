@@ -313,6 +313,26 @@ Both clients create tabs and split or select panes on the daemon. Use the
 [shared behavior contract](00_project_design.md#77-shared-tui-and-gui-behavior)
 and acceptance case A32 to verify parity across the full operation set.
 
+### Desktop terminal selection and history
+
+Drag across terminal cells and press **Ctrl+Shift+C** to copy the selection.
+The selected cells stay stable while new output arrives. Escape or typing
+returns a live selection to the current screen.
+
+Scroll up or press **Shift+Page Up** to review a snapshot of the focused pane.
+Use the wheel, arrows, or Page Up and Page Down to move through the snapshot.
+**Ctrl+Shift+F** opens case-sensitive text search within rendered rows. Enter
+and Shift+Enter cycle through matches. Escape returns to the live terminal
+after clearing any selection. The history view consumes terminal input locally
+and uses the same drag-and-copy control.
+
+History is plain text from the daemon's in-memory terminal screen and scrollback.
+Corvid retains up to 128 scrolled rows for a live PTY. A response includes the
+newest rows within 2,048 rows and 192 KiB, and the view reports when that response
+omits older rows. History is read over the attached session using its view
+revision. Opening the view does not resize the PTY or interrupt the program.
+The history controls are currently implemented in Desktop.
+
 The future desktop distribution will include a Stream Deck integration daemon
 that uses companion slots and focus captures, with no authority to own PTYs or
 answer provider requests. The current standalone USB adapter is the prototype

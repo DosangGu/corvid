@@ -203,12 +203,15 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     contender.wait_for("workspace already has a writer")?;
     contender.expect_exit(1)?;
 
+    first.send(b"[Console]::WriteLine(('HISTORY_' + 'START')); 1..40 | ForEach-Object { [Console]::WriteLine(('HISTORY_' + $_)) }\r")?;
+    first.wait_for("HISTORY_40")?;
     first.send(b"\x1dd")?;
     first.expect_exit(0)?;
     ensure!(
         terminal_id(&runtime).await? == original,
         "detach removed the live terminal"
     );
+    tokio::time::timeout(WAIT, assert_history_after_detach(&runtime)).await??;
 
     let mut second = Tui::open(&runtime, [])?;
     second.wait_for("PS ")?;
@@ -281,6 +284,62 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
             .any(|entity| matches!(entity.body, Some(Body::Terminal(_)))),
         "closing the session left a live terminal"
     );
+    Ok(())
+}
+
+async fn assert_history_after_detach(runtime: &Path) -> Result<()> {
+    use corvid_client::ControlEndpoint;
+    use corvid_protocol::wire::envelope::Body;
+    use corvid_protocol::wire::{Attach, AttachRole, Detach, ReadTerminalHistory, Viewport};
+    use corvid_protocol::{Frame, TERMINAL_HISTORY_CAPABILITY, decode_envelope};
+
+    let mut link = ControlEndpoint::Local(runtime.to_owned())
+        .interactive(vec![TERMINAL_HISTORY_CAPABILITY.into()])
+        .await?;
+    link.send(Body::Attach(Attach {
+        requested_role: AttachRole::Writer.into(),
+        terminal_capabilities: vec!["legacy_vt.v1".into()],
+        viewport: Some(Viewport {
+            cols: COLS.into(),
+            rows: ROWS.into(),
+        }),
+        ..Default::default()
+    }))
+    .await?;
+    let Frame::Structured(reply) = link.receive().await? else {
+        anyhow::bail!("expected attach reply");
+    };
+    let Some(Body::Attached(attached)) = decode_envelope(&reply)?.body else {
+        anyhow::bail!("history client was not attached");
+    };
+    let revision = attached.route_token.context("missing route")?.view_revision;
+    link.send(Body::ReadTerminalHistory(ReadTerminalHistory {
+        expected_view_revision: Some(revision),
+    }))
+    .await?;
+    loop {
+        let Frame::Structured(reply) = link.receive().await? else {
+            continue;
+        };
+        let reply = decode_envelope(&reply)?;
+        let Some(Body::TerminalHistory(history)) = reply.body else {
+            anyhow::bail!("unexpected history response: {:?}", reply.body);
+        };
+        let oldest = history
+            .lines
+            .iter()
+            .position(|line| line == "HISTORY_START")
+            .context("missing scrolled row")?;
+        let newest = history
+            .lines
+            .iter()
+            .position(|line| line == "HISTORY_40")
+            .context("missing live row")?;
+        assert!(oldest < newest);
+        break;
+    }
+    link.send(Body::Detach(Detach {})).await?;
+    while link.receive().await.is_ok() {}
     Ok(())
 }
 
