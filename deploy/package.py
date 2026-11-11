@@ -152,8 +152,7 @@ def manifest(args):
         expected_name = f"corvid-{metadata['product']}-{metadata['version']}-{metadata['target']}"
         if metadata["version"] != version or metadata["source_revision"] != revision or not name.startswith(expected_name + "."):
             raise ValueError(f"Package identity mismatch: {name}")
-    required.extend(native_package.verify(args.output, version, revision, target)
-                    for target in (WINDOWS, DESKTOP_LINUX))
+    required.append(native_package.verify(args.output, version, revision))
     for name in ["install.sh", "install.ps1"]:
         copy(ROOT / "deploy" / name, args.output / name)
     for path in sorted(args.output.iterdir()):

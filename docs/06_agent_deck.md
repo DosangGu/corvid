@@ -146,4 +146,4 @@ and notification settings use the individual host Deck.
 
 Windows supports [opt-in provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage).
 Desktop and the TUI support read-only attach and explicit writer handoff.
-Agent Deck is bundled in [Windows Setup and the Ubuntu package](05_release_distribution.md#native-desktop-packages).
+Agent Deck is bundled in [Windows Setup](05_release_distribution.md#windows-setup).

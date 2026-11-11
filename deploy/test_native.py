@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise native Desktop install, upgrade, and removal in isolated paths."""
+"""Exercise Windows Setup install, upgrade, and removal in isolated paths."""
 import argparse
-import os
 from pathlib import Path
 import subprocess
-import tarfile
 import tempfile
 import time
 import zipfile
@@ -30,21 +28,14 @@ def previous_archive(archive, fixture):
         f"{digest(file)}  {file.relative_to(payload).as_posix()}\n" for file in files
     ), encoding="utf-8", newline="\n")
     files.append(sums)
-    stem = f"corvid-desktop-{PREVIOUS}-{metadata['target']}"
-    if metadata["target"] == WINDOWS:
-        previous = fixture / f"{stem}.zip"
-        with zipfile.ZipFile(previous, "w", compression=zipfile.ZIP_DEFLATED) as stream:
-            for file in files:
-                stream.write(file, file.relative_to(payload).as_posix())
-    else:
-        previous = fixture / f"{stem}.tar.gz"
-        with tarfile.open(previous, "w:gz") as stream:
-            for file in files:
-                stream.add(file, file.relative_to(payload).as_posix(), recursive=False)
+    previous = fixture / f"corvid-desktop-{PREVIOUS}-{WINDOWS}.zip"
+    with zipfile.ZipFile(previous, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        for file in files:
+            stream.write(file, file.relative_to(payload).as_posix())
     previous.with_name(previous.name + ".sha256").write_text(
         f"{digest(previous)}  {previous.name}\n", encoding="utf-8", newline="\n"
     )
-    return previous, metadata["target"]
+    return previous
 
 
 def check_payload(directory, owner):
@@ -122,43 +113,16 @@ def windows(previous, current, fixture):
     assert sentinel.read_text() == "retained\n"
 
 
-def linux(previous, current, fixture):
-    root = fixture / "dpkg-root"
-    database = root / "var/lib/dpkg"
-    database.mkdir(parents=True)
-    (database / "status").touch()
-    sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]
-    dpkg = [*sudo, "dpkg", f"--root={root}", "--force-depends"]
-    try:
-        command([*dpkg, "--install", previous])
-        installed = root / "opt/corvid"
-        check_payload(installed, "deb")
-        executable = installed / "corvid"
-        sentinel = run_lifecycle(executable, executable, fixture,
-                                 lambda: command([*dpkg, "--install", current]))
-        check_payload(installed, "deb")
-        assert (root / "usr/bin/corvid-desktop").readlink() == Path("/opt/corvid/corvid-desktop")
-        assert (root / "usr/share/applications/io.corvid.Desktop.desktop").is_file()
-    finally:
-        try:
-            command([*dpkg, "--purge", "corvid-desktop"])
-        finally:
-            if sudo:
-                command([*sudo, "chown", "-R", f"{os.getuid()}:{os.getgid()}", root])
-    assert not installed.exists()
-    assert sentinel.read_text() == "retained\n"
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--iscc", type=Path)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="corvid-native-test-", dir=Path.home() if os.name != "nt" else None) as directory:
+    with tempfile.TemporaryDirectory(prefix="corvid-native-test-") as directory:
         fixture = Path(directory)
-        archive, target = previous_archive(args.archive, fixture)
+        archive = previous_archive(args.archive, fixture)
         build(archive, fixture, args.iscc)
-        previous = fixture / asset_name(PREVIOUS, target)
-        (windows if target == WINDOWS else linux)(previous, args.package.resolve(), fixture)
+        previous = fixture / asset_name(PREVIOUS)
+        windows(previous, args.package.resolve(), fixture)
     print("PASS native install, upgrade with live daemon, and uninstall")

@@ -1630,7 +1630,7 @@ Qualify macOS when its separately gated execution work is scheduled.
   a PTY supervisor only if daemon-crash survival is actually required.
   Converge TUI/GUI workspace operations and session lifetimes (§7.7), and include
   the Stream Deck integration daemon in the desktop distribution (§11.4).
-  Desktop and Agent Deck distribution includes [Windows Setup and the Ubuntu package](05_release_distribution.md#native-desktop-packages).
+  Desktop and Agent Deck distribution includes [Windows Setup](05_release_distribution.md#windows-setup).
 - **Exit:** Extension-specific tests plus regression of existing contracts. Observers must
   crop/pad without resizing, handoff must fence stale input/paste, multi-host clicks need
   existing host-specific registrations, and resume must allocate new run IDs.

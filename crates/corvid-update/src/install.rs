@@ -83,7 +83,7 @@ impl Installation {
     pub fn install(&self, release: &Release) -> Result<Installed> {
         ensure!(
             self.supports_in_app_update(),
-            "Update this installation with its Windows Setup or Linux package manager."
+            "Update this installation using its original installer."
         );
         let product = self.package.product;
         let extension = if cfg!(windows) { "zip" } else { "tar.gz" };

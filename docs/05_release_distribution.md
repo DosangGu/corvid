@@ -13,7 +13,6 @@ match that version. Prerelease versions use tags such as `v0.2.0-rc.1`.
 | Windows TUI | `x86_64-pc-windows-msvc` | `corvid-tui-VERSION-x86_64-pc-windows-msvc.zip` |
 | Linux Desktop | `x86_64-unknown-linux-gnu` | `corvid-desktop-VERSION-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows Desktop | `x86_64-pc-windows-msvc` | `corvid-desktop-VERSION-x86_64-pc-windows-msvc.zip` |
-| Linux Desktop package | Ubuntu 24.04 x86_64 | `corvid-desktop_VERSION_amd64.deb` |
 | Windows Desktop Setup | Windows x64 | `corvid-desktop-VERSION-x86_64-pc-windows-msvc-setup.exe` |
 
 Linux TUI and daemon binaries are statically linked. Linux Desktop is built on
@@ -34,10 +33,10 @@ launchers used by the installer; portable users run the actual app executables.
 
 Each package contains `package.json`, identifying its product, version, target,
 and source revision, plus `files.sha256` for its files. Each archive has an
-adjacent `.sha256` asset, as do the native packages. `release-manifest.json`
-records the application archives, native packages, and installation scripts with
-their sizes and SHA-256 digests. Each native package's `.provenance.json` links it
-to its source Desktop archive. Each daemon payload has its own `manifest.json`.
+adjacent `.sha256` asset, as does Windows Setup. `release-manifest.json` records
+the application archives, Windows Setup, and installation scripts with their
+sizes and SHA-256 digests. The Setup `.provenance.json` links it to its source
+Desktop archive. Each daemon payload has its own `manifest.json`.
 
 Downloads trust the public repository over HTTPS and verify the expected asset
 identity and checksums. SHA-256 detects changed bytes; it is not a publisher
@@ -169,8 +168,8 @@ The **Package Corvid** workflow performs the following stages:
 2. Build and test Linux and Windows runtimes independently; package and test TUI.
 3. Build Desktop on both platforms, consume both runtime artifacts, run workspace
    tests and lints, and test packaged installation. Linux also opens Desktop under Xvfb.
-   Build and test Windows Setup and the Debian package from the verified Desktop archives.
-4. Assemble the four archives, two native packages, checksums, installation scripts,
+   Build and test Windows Setup from the verified Windows Desktop archive.
+4. Assemble the four archives, Windows Setup, checksums, installation scripts,
    and manifest.
 5. For a pushed version tag, create a draft, upload and check the complete asset
    inventory, then publish. Only this job receives repository write permission.
@@ -188,50 +187,27 @@ Commit build inputs before packaging so a source revision identifies the actual
 payload. Packaging rejects uncommitted Cargo, crate, plugin, spike, or deployment
 inputs.
 
-## Native Desktop packages
+## Windows Setup
 
-Both packages include Desktop, the Corvid CLI, Agent Deck, and remote daemon
-payloads. Use `corvid update --check` or **Help → Check for updates** to find
-available releases. Install the new Setup or `.deb` to update a native
-installation. Run `corvid upgrade` separately when you are ready to replace
-an automatically started daemon. Packages preserve per-user settings and
-daemon state.
-
-### Windows Setup
-
+Setup includes Desktop, the Corvid CLI, Agent Deck, and remote daemon payloads.
 Run the x64 Setup executable for a per-user install. The default directory is
 `%LOCALAPPDATA%\Programs\Corvid`. Start menu entries open Corvid Desktop
 and the Corvid Terminal. For CLI access from your own shells, add its `bin`
 directory to your user PATH. Setup builds are currently unsigned.
 
-Run the new Setup over the existing installation to update. Setup keeps older
+Use `corvid update --check` or **Help → Check for updates** to find available
+releases. Run the new Setup over the existing installation to update. Setup keeps older
 version directories and switches the launchers to the selected version after
 copying its files. Agent Deck registers its notification shortcut when started
 and offers an opt-in login startup setting. Those shortcuts follow the selected
 version. Use **Settings → Apps → Installed
 apps** to uninstall Corvid Desktop. The uninstaller removes Setup's shortcuts
-and Agent Deck shortcuts that target this installation.
-
-### Ubuntu 24.04 package
-
-Download the x86_64 package and install it with APT so dependencies are resolved.
-Substitute the downloaded version for `VERSION`.
-
-```sh
-sudo apt install ./corvid-desktop_VERSION_amd64.deb
-```
-
-Corvid Desktop appears in the application menu. The package installs the CLI and
-Desktop commands under `/usr/bin` and their payloads under `/opt/corvid`.
-Use the same APT command with the new file to update. Use
-`sudo apt remove corvid-desktop` to remove the package.
-
-### Build from local archives
+and Agent Deck shortcuts that target this installation. Setup preserves per-user
+settings and daemon state.
 
 Run `python deploy/native_package.py --archive PATH --output DIRECTORY` with
-the platform's Desktop archive and adjacent SHA-256 file. On Windows, pass
-`--iscc PATH` to Inno Setup's compiler. On Linux, install `dpkg-deb` and
-`readelf` and build on Ubuntu 24.04 for the published baseline.
+the Windows Desktop ZIP and adjacent SHA-256 file. Pass `--iscc PATH` with
+the path to the Inno Setup compiler.
 
 ## Validation boundary
 
@@ -243,7 +219,7 @@ transactions, not historical daemon compatibility. Existing daemon handoff tests
 cover the protocol. Every subsequent release should also qualify an upgrade from
 the previous published release with live terminal sessions.
 
-`deploy/test_native.py` checks native install, upgrade from a synthetic earlier
+`deploy/test_native.py` checks Windows Setup install, upgrade from a synthetic earlier
 version with a running daemon, and uninstall with retained user state.
 `deploy/test_desktop.py` checks that the packaged Linux Desktop opens an X11 window.
 Visible menu behavior and native Windows Desktop startup require separate UI

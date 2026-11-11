@@ -18,7 +18,7 @@ additional agents queue and fill slots in order. See [Agent Deck](docs/06_agent_
 
 Download Windows and Linux Desktop or TUI packages from
 [GitHub Releases](https://github.com/DosangGu/corvid/releases).
-Desktop offers [Windows Setup and an Ubuntu 24.04 package](docs/05_release_distribution.md#native-desktop-packages).
+Desktop offers [Windows Setup](docs/05_release_distribution.md#windows-setup).
 On Linux x86_64 or WSL, install the TUI with:
 
 ```sh

@@ -1,7 +1,7 @@
 Corvid's first packaged release includes the Desktop terminal workspace and TUI for Windows x64 and Linux x86_64.
 
 - Desktop includes Linux and Windows daemon payloads for local sessions, SSH setup, and Windows-to-WSL connections.
-- Windows x64 Setup and an Ubuntu 24.04 x86_64 Debian package include Desktop and Agent Deck. Update them with a new Setup or Debian package.
+- Windows x64 Setup includes Desktop and Agent Deck. Update it with a new Setup.
 - Install or update the Linux TUI with `install.sh`; Windows has `install.ps1`. Add `--product desktop` or `-Product desktop` to install Desktop.
 - Use `corvid update --check` to check GitHub Releases and `corvid update` to update a script installation. Desktop provides **Help → Check for updates**.
 - Updates preserve older executables and leave running daemons unchanged. `corvid upgrade` separately replaces automatically started daemons using the existing terminal handoff protocol. Supervised daemons remain managed by their service manager.

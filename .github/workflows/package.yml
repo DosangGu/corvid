@@ -137,13 +137,6 @@ jobs:
       - name: Linux Desktop display smoke test
         if: runner.os == 'Linux'
         run: xvfb-run -a python3 deploy/test_desktop.py target/dist
-      - name: Build and test the Linux package
-        if: runner.os == 'Linux'
-        run: |
-          archive=$(find target/dist -maxdepth 1 -name 'corvid-desktop-*.tar.gz')
-          python3 deploy/native_package.py --archive "$archive" --output target/dist
-          package=$(find target/dist -maxdepth 1 -name 'corvid-desktop_*.deb')
-          python3 deploy/test_native.py --archive "$archive" --package "$package"
       - name: Build and test Windows Setup
         if: runner.os == 'Windows'
         shell: pwsh
