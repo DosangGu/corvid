@@ -125,8 +125,8 @@ Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
 The initial attach joins a live pane in the default session or opens its shell.
 
-Use **New session** under the active connection. **New tab**, **Split right**,
-and **Split down** create shells within the selected session. Click a pane to
+Use **New session** under the active connection. **New tab** creates a shell
+within the selected session. Click a pane to
 focus it. Other live panes in the same tab show read-only previews. Each
 workspace has one writer, so detach the TUI
 before using Desktop as the writer for that workspace. **Detach** and window

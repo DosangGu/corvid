@@ -1117,32 +1117,6 @@ impl WorkspaceView {
             })
     }
 
-    fn controls(&self, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(7.))
-            .px(px(12.))
-            .py(px(7.))
-            .child(
-                button("split-right", "Split right", false).on_click(cx.listener(
-                    |view, _, _, _| view.create(Target::SplitAxis(SplitAxis::Horizontal as i32)),
-                )),
-            )
-            .child(
-                button("split-down", "Split down", false).on_click(cx.listener(|view, _, _, _| {
-                    view.create(Target::SplitAxis(SplitAxis::Vertical as i32))
-                })),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_color(rgb(MUTED))
-                    .text_size(px(11.))
-                    .child("Ctrl+Shift+N Session  ·  T Tab  ·  D Split right  ·  E Split down"),
-            )
-    }
-
     fn panes(
         &self,
         tab: &TabState,
@@ -1285,7 +1259,6 @@ impl WorkspaceView {
             .when_some(workspace, |region, workspace| {
                 region.child(self.tabs(workspace, inventory, ui, cx))
             })
-            .when(ui.connected, |region| region.child(self.controls(cx)))
             .child(div().flex().flex_1().min_h_0().p(px(5.)).child(body))
     }
 }
