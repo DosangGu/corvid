@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use gpui::{
     App, Bounds, FontStyle, FontWeight, Pixels, Point, TextRun, UnderlineStyle, Window, fill, font,
     point, px, rgb, size,
@@ -41,6 +43,14 @@ impl Metrics {
             origin: origin + point(self.column * f32::from(col), LINE_HEIGHT * f32::from(row)),
             size: size(self.column * f32::from(count), LINE_HEIGHT),
         }
+    }
+
+    pub fn position(self, bounds: Bounds<Pixels>, point: Point<Pixels>) -> (u16, u16) {
+        let grid = self.grid(bounds);
+        let relative = point - bounds.origin;
+        let row = ((relative.y / LINE_HEIGHT) as u16).min(grid.rows.get() - 1);
+        let col = ((relative.x / self.column) as u16).min(grid.cols.get() - 1);
+        (row, col)
     }
 }
 
@@ -98,6 +108,10 @@ impl Style {
 
 impl Frame {
     pub fn new(screen: &Screen, grid: Grid) -> Self {
+        Self::selected(screen, grid, None)
+    }
+
+    pub fn selected(screen: &Screen, grid: Grid, selection: Option<&Range<(u16, u16)>>) -> Self {
         let (rows, cols) = screen.size();
         let mut spans: Vec<Span> = Vec::new();
         for row in 0..rows.get().min(grid.rows.get()) {
@@ -108,7 +122,11 @@ impl Frame {
                 if cell.is_wide_continuation() {
                     continue;
                 }
-                let style = Style::from_cell(cell);
+                let mut style = Style::from_cell(cell);
+                if selection.is_some_and(|selection| selection.contains(&(row, col))) {
+                    style.bg = 0x315773;
+                    style.fg = FOREGROUND;
+                }
                 if !cell.has_contents() && style.bg == BACKGROUND {
                     continue;
                 }
@@ -138,8 +156,11 @@ impl Frame {
             }
         }
         let (row, col) = screen.cursor_position();
-        let cursor = (!screen.hide_cursor() && screen.scrollback() == 0 && row < grid.rows.get())
-            .then_some((row, col.min(grid.cols.get() - 1)));
+        let cursor = (selection.is_none()
+            && !screen.hide_cursor()
+            && screen.scrollback() == 0
+            && row < grid.rows.get())
+        .then_some((row, col.min(grid.cols.get() - 1)));
         Self { spans, cursor }
     }
 
