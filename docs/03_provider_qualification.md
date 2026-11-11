@@ -17,8 +17,14 @@ visible as process-only until a matching SessionStart is observed.
 
 Windows integration fixtures exercise the generated command for both providers,
 including neutral output, context registration, response attention, and
-rejection of an unrelated process. The fixtures stand in for the provider CLIs.
-The exact-version runtime results below apply to Linux.
+rejection of an unrelated process.
+
+On 2026-11-12, Codex CLI 0.167.0-alpha.3.2 and Claude Code 2.1.318 each ran
+inside PowerShell in a Corvid ConPTY with an isolated provider profile and the
+generated hooks. A loopback model endpoint supplied a synthetic response.
+For each CLI, the daemon associated `SessionStart` with its native run and
+published response attention after `Stop`. This run covered a single response
+per provider. The wider Claude interaction coverage below was exercised on Linux.
 
 ## Claude Code 2.1.318 on Linux
 

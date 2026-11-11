@@ -172,6 +172,11 @@ ownership. The writer can then choose **Hand off writer** in Desktop or use
 the TUI shortcut above. The observer must be on the same pane and be the
 only observer that opted in there. A handoff leaves the pane running.
 
+On 2026-11-12, two Desktop windows under Xvfb exercised this flow. The
+observer displayed the writer's output and blocked typed commands. The
+writer's button released ownership and the promoted Desktop ran a command in
+the same pane. The Windows ConPTY integration test covers the daemon handoff.
+
 Open **Plugins → Corvid Agent Deck** to see the daemon's observed Codex and Claude
 Code activity, including **Working**, **Input needed**, and **Response observed**.
 Click a live agent's name to open its pane in Desktop. See the
