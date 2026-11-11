@@ -6,6 +6,7 @@ use base64::engine::general_purpose::STANDARD;
 use corvid_protocol::ProtocolFault;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
+use uuid::Uuid;
 
 use super::{SshAlias, drain_diagnostic, ssh_failure};
 
@@ -78,17 +79,7 @@ impl SshAlias {
         binary: &[u8],
         sha256: &str,
     ) -> Result<()> {
-        ensure!(
-            !binary.is_empty() && binary.len() <= MAX_BINARY,
-            "daemon binary exceeds the transfer limit or is empty"
-        );
-        ensure!(
-            sha256.len() == 64
-                && sha256
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-            "invalid daemon SHA-256"
-        );
+        validate_payload(binary, sha256)?;
         match platform {
             SshPlatform::Linux => {
                 let header = format!("{} {sha256}\n", binary.len());
@@ -98,6 +89,52 @@ impl SshAlias {
             SshPlatform::Windows => {
                 let archive = windows_archive(binary)?;
                 let script = windows_install(binary.len(), sha256);
+                self.bootstrap(&windows_setup(&script), Some((&[], &archive)))
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn daemon_version(&self, platform: SshPlatform, daemon: SshDaemon) -> Result<String> {
+        let output = self
+            .bootstrap(&daemon_command(platform, daemon, "--version"), None)
+            .await?;
+        let version = std::str::from_utf8(response(&output))?
+            .strip_prefix("corvid ")
+            .context("unexpected Corvid version response")?;
+        Ok(version.to_owned())
+    }
+
+    pub async fn upgrade_managed_daemon(
+        &self,
+        platform: SshPlatform,
+        binary: &[u8],
+        sha256: &str,
+        previous_version: &str,
+        expected_host: Option<Uuid>,
+    ) -> Result<()> {
+        validate_payload(binary, sha256)?;
+        ensure!(
+            !previous_version.is_empty()
+                && previous_version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b'-')),
+            "invalid installed Corvid version"
+        );
+        let host = expected_host
+            .map(|host| host.to_string())
+            .unwrap_or_default();
+        match platform {
+            SshPlatform::Linux => {
+                let command = linux_command(&format!("upgrade {previous_version} {host}"));
+                let header = format!("{} {sha256}\n", binary.len());
+                self.bootstrap(&command, Some((header.as_bytes(), binary)))
+                    .await?;
+            }
+            SshPlatform::Windows => {
+                let archive = windows_archive(binary)?;
+                let script = windows_upgrade(binary.len(), sha256, previous_version, &host);
                 self.bootstrap(&windows_setup(&script), Some((&[], &archive)))
                     .await?;
             }
@@ -157,6 +194,21 @@ impl SshAlias {
     }
 }
 
+fn validate_payload(binary: &[u8], sha256: &str) -> Result<()> {
+    ensure!(
+        !binary.is_empty() && binary.len() <= MAX_BINARY,
+        "daemon binary exceeds the transfer limit or is empty"
+    );
+    ensure!(
+        sha256.len() == 64
+            && sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "invalid daemon SHA-256"
+    );
+    Ok(())
+}
+
 pub(super) fn daemon_command(platform: SshPlatform, daemon: SshDaemon, arguments: &str) -> String {
     match platform {
         SshPlatform::Linux => {
@@ -188,6 +240,11 @@ fn windows_setup(action: &str) -> String {
 
 fn windows_install(size: usize, sha256: &str) -> String {
     format!("$size = {size}\n$sha = '{sha256}'\n{WINDOWS_INSTALL}")
+}
+
+fn windows_upgrade(size: usize, sha256: &str, previous_version: &str, host: &str) -> String {
+    let install = windows_install(size, sha256);
+    format!("$version = '{previous_version}'\n$hostId = '{host}'\n{install}")
 }
 
 fn windows_archive(binary: &[u8]) -> Result<Vec<u8>> {
@@ -249,6 +306,30 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
             "WindowsTarUnavailable",
             "Windows SSH installation requires the system tar.exe",
         ),
+        _ if String::from_utf8_lossy(diagnostic).contains("DaemonBusy:") => (
+            "DaemonBusy",
+            "this daemon cannot hand off a live terminal. Close unsupported terminals or restart it once with the updated build",
+        ),
+        _ if String::from_utf8_lossy(diagnostic).contains("InputBusy:") => (
+            "InputBusy",
+            "finish the active paste or view operation and retry the upgrade",
+        ),
+        _ if String::from_utf8_lossy(diagnostic).contains("HostMismatch:") => (
+            "HostMismatch",
+            "SSH alias points to a different Corvid host",
+        ),
+        _ if String::from_utf8_lossy(diagnostic).contains("InstallationChanged:") => (
+            "InstallationChanged",
+            "the installed Corvid version changed; reconnect and retry",
+        ),
+        _ if String::from_utf8_lossy(diagnostic).contains("UnsupportedCapability:")
+            || String::from_utf8_lossy(diagnostic).contains("ProtocolMismatch:") =>
+        {
+            (
+                "ManualUpgradeRequired",
+                "close live terminals and restart Corvid with the updated binary on the SSH host",
+            )
+        }
         _ if String::from_utf8_lossy(diagnostic).contains("path must be shorter than SUN_LEN") => (
             "RuntimePathTooLong",
             "the remote runtime path is too long. Set a shorter private CORVID_RUNTIME_DIR",
@@ -277,6 +358,16 @@ mod tests {
     #[test]
     fn windows_commands_fit_the_default_ssh_shell_limit() {
         assert!(windows_setup(&windows_install(MAX_BINARY, &"0".repeat(64))).len() < 8000);
+        assert!(
+            windows_setup(&windows_upgrade(
+                MAX_BINARY,
+                &"0".repeat(64),
+                &"0".repeat(MAX_RESPONSE),
+                &Uuid::nil().to_string(),
+            ))
+            .len()
+                < 8000
+        );
         assert!(
             daemon_command(SshPlatform::Windows, SshDaemon::Managed, "control --stdio").len()
                 < 8000

@@ -21,6 +21,21 @@ fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
+#[tokio::test]
+async fn terminal_host_sockets_support_long_private_runtime_paths() {
+    let parent = test_parent();
+    let path = parent.path().join("x".repeat(120));
+    let runtime = RuntimeDir::create(&path).unwrap();
+    let instance = runtime.lock_instance().unwrap();
+    let server = instance.bind(SocketRole::TerminalHost).await.unwrap();
+    let client = runtime.connect(SocketRole::TerminalHost).await.unwrap();
+    let peer = server.accept().await.unwrap().unwrap();
+    drop(peer);
+    drop(client);
+    drop(server);
+    assert!(!path.join("pty.sock").exists());
+}
+
 #[test]
 fn rejects_symlink_and_writable_runtime_ancestors() {
     let parent = test_parent();

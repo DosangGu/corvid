@@ -52,7 +52,7 @@ impl Identity {
 }
 
 #[cfg(target_os = "linux")]
-fn read(state: &StateDirectory) -> Result<Option<Uuid>> {
+pub(crate) fn read(state: &StateDirectory) -> Result<Option<Uuid>> {
     let fd = match openat(
         state,
         FILE_NAME,
@@ -122,7 +122,7 @@ fn create(state: &StateDirectory) -> Result<Uuid> {
 }
 
 #[cfg(windows)]
-fn read(state: &StateDirectory) -> Result<Option<Uuid>> {
+pub(crate) fn read(state: &StateDirectory) -> Result<Option<Uuid>> {
     state
         .read_private_file(FILE_NAME, MAX_BYTES)?
         .as_deref()

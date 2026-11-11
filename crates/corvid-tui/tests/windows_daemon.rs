@@ -24,6 +24,135 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[tokio::test]
+async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    let state = fixture.path().join("state");
+    ensure_daemon(&runtime, &state).await?;
+    let old_daemon = BackgroundDaemon::open(&runtime).await?;
+    let original = corvid_client::host(&runtime).await?;
+    let powershell = std::path::PathBuf::from(
+        std::env::var_os("SystemRoot").context("SystemRoot is unavailable")?,
+    )
+    .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut first = Tui::open(
+        &runtime,
+        [
+            OsString::from("attach"),
+            "--new".into(),
+            "--".into(),
+            powershell.into_os_string(),
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+        ],
+    )?;
+    first.wait_for("PS ")?;
+    first.send(
+        b"$env:CORVID_UPGRADE_VALUE='retained'; $env:CORVID_UPGRADE_PID=$PID; [Console]::WriteLine(('BE' + 'FORE_' + $PID))\r",
+    )?;
+    first.wait_for("BEFORE_")?;
+    let original_terminal = terminal_id(&runtime).await?;
+    let output = tokio::process::Command::new(CORVID)
+        .arg("--runtime-dir")
+        .arg(&runtime)
+        .arg("upgrade")
+        .output()
+        .await?;
+    ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _replacement = BackgroundDaemon::open(&runtime).await?;
+    drop(old_daemon);
+    drop(first);
+    let current = corvid_client::host(&runtime).await?;
+    ensure!(current.host_id == original.host_id && current.server_epoch != original.server_epoch);
+    ensure!(terminal_id(&runtime).await? == original_terminal);
+    let mut second = Tui::open(&runtime, [])?;
+    second.wait_for("BEFORE_")?;
+    second.send(b"[Console]::WriteLine(('AF' + 'TER_' + $PID + '_' + $env:CORVID_UPGRADE_VALUE)); [Console]::WriteLine(('SAME_' + 'PROCESS_' + ($env:CORVID_UPGRADE_PID -eq $PID)))\r")?;
+    second.wait_for("_retained")?;
+    second.wait_for("SAME_PROCESS_True")?;
+    second.send(b"exit\r")?;
+    second.expect_exit(0)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_upgrade_replaces_the_windows_image_after_terminal_handoff() -> Result<()> {
+    use corvid_protocol::windows::StateDirectory;
+
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    let directory = StateDirectory::create_all(&runtime)?;
+    let root = fixture.path().join("Corvid-SSH");
+    let installation = StateDirectory::create_all(&root)?;
+    let staged = root.join(".corvid-update.exe");
+    let mut image = std::fs::read(CORVID)?;
+    installation.replace_private_file("corvid.exe", &image)?;
+    image.extend_from_slice(b"staged release");
+    installation.replace_private_file(".corvid-update.exe", &image)?;
+    let upgrade = || {
+        Command::new(&staged)
+            .env("LOCALAPPDATA", fixture.path())
+            .arg("--runtime-dir")
+            .arg(&runtime)
+            .args(["upgrade", "--managed-ssh-from", env!("CARGO_PKG_VERSION")])
+            .output()
+    };
+
+    let instance = directory.lock_instance()?;
+    let refused = upgrade()?;
+    assert!(!refused.status.success());
+    assert_ne!(std::fs::read(root.join("corvid.exe"))?, image);
+
+    drop(instance);
+    let state = fixture.path().join("custom-state");
+    let started = Command::new(root.join("corvid.exe"))
+        .env("LOCALAPPDATA", fixture.path())
+        .arg("--runtime-dir")
+        .arg(&runtime)
+        .args(["ensure-daemon", "--state-dir"])
+        .arg(&state)
+        .output()?;
+    ensure!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let old_daemon = BackgroundDaemon::open(&runtime).await?;
+    let old_host = corvid_client::host(&runtime).await?;
+    let args = ["attach", "--new", "--", "cmd.exe", "/d", "/q"].map(OsString::from);
+    let mut first = Tui::open(&runtime, args)?;
+    first.wait_for("Microsoft Windows")?;
+    first.send(b"set CORVID_MANAGED=READY\r")?;
+    first.send(b"echo MANAGED_%CORVID_MANAGED%\r")?;
+    first.wait_for("MANAGED_READY")?;
+    let original_terminal = terminal_id(&runtime).await?;
+
+    let updated = upgrade()?;
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    drop(old_daemon);
+    drop(first);
+    assert_eq!(std::fs::read(root.join("corvid.exe"))?, image);
+    assert_eq!(terminal_id(&runtime).await?, original_terminal);
+    let new_host = corvid_client::host(&runtime).await?;
+    assert_eq!(new_host.host_id, old_host.host_id);
+    assert_ne!(new_host.server_epoch, old_host.server_epoch);
+    let mut second = Tui::open(&runtime, [])?;
+    second.wait_for("MANAGED_READY")?;
+    second.send(b"exit\r")?;
+    second.expect_exit(0)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -368,9 +497,12 @@ impl Tui {
     fn wait_for(&mut self, marker: &str) -> Result<()> {
         let deadline = Instant::now() + WAIT;
         while !self.screen.screen().contents().contains(marker) {
-            let output = self
-                .read(deadline)
-                .with_context(|| format!("waiting for {marker}"))?;
+            let output = self.read(deadline).with_context(|| {
+                format!(
+                    "waiting for {marker}, test screen was {:?}",
+                    self.screen.screen().contents()
+                )
+            })?;
             self.screen.process(&output);
         }
         Ok(())

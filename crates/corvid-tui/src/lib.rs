@@ -63,6 +63,43 @@ pub async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
     }
 }
 
+/// Replace an automatically started daemon while preserving its hosted terminals.
+#[cfg(any(windows, target_os = "linux"))]
+pub async fn upgrade_local_daemon(runtime: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::upgrade(runtime).await
+    }
+    #[cfg(windows)]
+    {
+        windows::upgrade_local_daemon(runtime, true).await
+    }
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+async fn verify_installed_version(executable: &Path, previous_version: &str) -> Result<()> {
+    use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
+
+    let output = tokio::time::timeout(
+        COMMAND_TIMEOUT,
+        tokio::process::Command::new(executable)
+            .arg("--version")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    anyhow::ensure!(
+        output.status.success()
+            && std::str::from_utf8(&output.stdout)?.trim_end_matches(['\r', '\n'])
+                == format!("corvid {previous_version}"),
+        ProtocolFault::new(
+            "InstallationChanged",
+            "the installed Corvid version changed; reconnect and retry"
+        )
+    );
+    Ok(())
+}
+
 /// Dispatch daemon subprocesses and Linux agent helpers before opening a GUI.
 #[cfg(any(windows, target_os = "linux"))]
 pub fn run_daemon_helper() -> Option<ExitCode> {
@@ -77,7 +114,7 @@ pub fn run_daemon_helper() -> Option<ExitCode> {
     }
 
     match std::env::args_os().nth(1)?.to_str()? {
-        "daemon" => Some(run()),
+        "daemon" | "terminal-host" => Some(run()),
         #[cfg(target_os = "linux")]
         "observe" => Some(run()),
         _ => None,
@@ -85,6 +122,16 @@ pub fn run_daemon_helper() -> Option<ExitCode> {
 }
 
 pub fn run() -> ExitCode {
+    #[cfg(any(windows, target_os = "linux"))]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("terminal-host")) {
+        return match corvid_daemon::terminal::run_helper(std::env::args_os().skip(2)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("corvid: {error:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     #[cfg(target_os = "linux")]
     {
         let mut args = std::env::args_os();

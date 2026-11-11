@@ -38,6 +38,157 @@ use common::{WAIT, command, daemon, start_daemon};
 const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
+#[tokio::test]
+async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let home = fixture.path();
+    let runtime = home.join("run");
+    let state = home.join("state");
+    let managed = home.join(".corvid");
+    std::fs::create_dir(&managed).unwrap();
+    let installed = managed.join("corvid");
+    let staged = managed.join(".corvid.upgrade");
+    let previous = b"#!/bin/sh\nprintf 'corvid 0.0.1\\n'\n";
+    std::fs::write(&installed, previous).unwrap();
+    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_corvid"), &staged).unwrap();
+
+    let mut daemon = command(&runtime)
+        .args(["daemon", "--autostarted", "--state-dir"])
+        .arg(&state)
+        .spawn()
+        .unwrap();
+    let original = timeout(WAIT, async {
+        loop {
+            assert!(daemon.try_wait().unwrap().is_none());
+            if let Ok(host) = corvid_client::host(&runtime).await {
+                break host;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let upgrade = |expected_host: String| {
+        let mut command = tokio::process::Command::new(&staged);
+        command
+            .env("HOME", home)
+            .arg("--runtime-dir")
+            .arg(&runtime)
+            .args(["upgrade", "--managed-ssh-from", "0.0.1", "--expected-host"])
+            .arg(expected_host)
+            .kill_on_drop(true);
+        command
+    };
+    let output = upgrade(Uuid::new_v4().to_string()).output().await.unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("HostMismatch:"));
+    assert_eq!(std::fs::read(&installed).unwrap(), previous);
+
+    let mut client = Tui::attach(&runtime, Some(vec![b"/bin/sh".to_vec()])).await;
+    let terminal_id = client.route.terminal_id.clone();
+    client
+        .input(
+            client.route.clone(),
+            1,
+            b"CORVID_TEST=retained; CORVID_TEST_PID=$$; printf 'BE%s_%s\\n' FORE $$\r",
+        )
+        .await;
+    let mut output = Vec::new();
+    wait_for_text(&mut client, &mut output, "BEFORE_").await;
+    {
+        // An updater that cannot restore hosted terminals must retain the idle-only contract.
+        let directory = RuntimeDir::open(&runtime).unwrap();
+        let (read, write) = directory
+            .connect(SocketRole::Upgrade)
+            .await
+            .unwrap()
+            .into_split();
+        let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly)
+            .await
+            .unwrap();
+        let mut reader = FrameReader::start(read, FrameRole::StructuredOnly)
+            .await
+            .unwrap();
+        let greeting = hello(
+            "legacy-upgrade".into(),
+            None,
+            vec![corvid_protocol::DAEMON_UPGRADE_CAPABILITY.into()],
+        );
+        writer.envelope(&greeting).await.unwrap();
+        let reply = reader.next_envelope().await.unwrap().unwrap();
+        let session = check_hello_result(&greeting, &reply, PeerRole::Upgrade).unwrap();
+        writer
+            .envelope(&session.envelope(
+                Some("upgrade".into()),
+                Body::UpgradeDaemon(corvid_protocol::wire::UpgradeDaemon::default()),
+            ))
+            .await
+            .unwrap();
+        let reply = reader.next_envelope().await.unwrap().unwrap();
+        assert!(matches!(reply.body, Some(Body::Error(error)) if error.code == "DaemonBusy"));
+        assert_eq!(
+            corvid_client::host(&runtime).await.unwrap().server_epoch,
+            original.server_epoch
+        );
+    }
+    begin_paste(&mut client, 2).await;
+    client.send(Body::Ping(Ping {})).await;
+    assert!(matches!(client.next_body(&mut output).await, Body::Pong(_)));
+    let busy = upgrade(original.host_id.clone()).output().await.unwrap();
+    assert!(String::from_utf8_lossy(&busy.stderr).contains("InputBusy:"));
+    assert_eq!(std::fs::read(&installed).unwrap(), previous);
+    end_paste(&mut client).await;
+    client.send(Body::Ping(Ping {})).await;
+    assert!(matches!(client.next_body(&mut output).await, Body::Pong(_)));
+
+    let updated = upgrade(original.host_id.clone()).output().await.unwrap();
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    drop(client);
+    let mut client = Tui::attach(&runtime, None).await;
+    assert_eq!(client.route.terminal_id, terminal_id);
+    let mut output = Vec::new();
+    wait_for_text(&mut client, &mut output, "BEFORE_").await;
+    client
+        .input(
+            client.route.clone(),
+            1,
+            b"printf 'AFTER_%s_%s\\n' $$ $CORVID_TEST; [ \"$CORVID_TEST_PID\" = \"$$\" ] && printf 'SAME_%s\\n' PROCESS\r",
+        )
+        .await;
+    wait_for_text(&mut client, &mut output, "_retained").await;
+    wait_for_text(&mut client, &mut output, "SAME_PROCESS").await;
+    client.input(client.route.clone(), 2, b"exit\r").await;
+    drop(client);
+    let directory = RuntimeDir::open(&runtime).unwrap();
+    let peer = directory.connect(SocketRole::Control).await.unwrap();
+    let pid = peer.peer_cred().unwrap().pid().unwrap();
+    let updated = corvid_client::host(&runtime).await.unwrap();
+    assert!(
+        tokio::process::Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    timeout(WAIT, async {
+        while directory.lock_instance().is_err() {
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(daemon.wait().await.unwrap().success());
+    assert_eq!(updated.host_id, original.host_id);
+    assert_ne!(updated.server_epoch, original.server_epoch);
+    assert!(!staged.exists());
+    assert_ne!(std::fs::read(&installed).unwrap(), previous);
+}
+
 struct Tui {
     reader: FrameReader<OwnedReadHalf>,
     writer: FrameWriter<OwnedWriteHalf>,

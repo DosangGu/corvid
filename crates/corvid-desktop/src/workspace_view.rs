@@ -221,7 +221,7 @@ impl WorkspaceView {
             target,
             explicit,
         );
-        let (session, job) = match result {
+        let (session, job, mut prompts) = match result {
             Ok(connection) => connection,
             Err(error) => {
                 self.error = Some(format!("{error:#}"));
@@ -249,8 +249,30 @@ impl WorkspaceView {
                 {
                     break;
                 }
-                if changes.changed().await.is_err() {
-                    break;
+                tokio::select! {
+                    change = changes.changed() => {
+                        if change.is_err() {
+                            break;
+                        }
+                    }
+                    Some(prompt) = prompts.recv() => {
+                        let reply = view.update_in(cx, |_, window, cx| {
+                            let buttons = match prompt.action {
+                                Some(action) => vec!["Cancel", action],
+                                None => vec!["OK"],
+                            };
+                            window.prompt(
+                                PromptLevel::Warning,
+                                prompt.title,
+                                Some(&prompt.message),
+                                &buttons,
+                                cx,
+                            )
+                        });
+                        if let Ok(reply) = reply {
+                            let _ = prompt.decision.send(reply.await == Ok(1));
+                        }
+                    }
                 }
             }
         }));

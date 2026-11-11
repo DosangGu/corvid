@@ -1,6 +1,6 @@
 use std::fs::{self, File, Metadata, Permissions};
 use std::io::{self, ErrorKind, Read, Write};
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -27,6 +27,7 @@ pub enum SocketRole {
     Collector,
     Presentation,
     Upgrade,
+    TerminalHost,
 }
 
 impl SocketRole {
@@ -37,6 +38,7 @@ impl SocketRole {
             Self::Collector => "collector.sock",
             Self::Presentation => "companion.sock",
             Self::Upgrade => "upgrade.sock",
+            Self::TerminalHost => "pty.sock",
         }
     }
 }
@@ -177,7 +179,7 @@ impl RuntimeDir {
     }
 
     pub async fn connect(&self, role: SocketRole) -> Result<UnixStream> {
-        let path = self.path.join(role.name());
+        let path = self.socket_path(role);
         let metadata = fs::symlink_metadata(&path).context("opening daemon socket")?;
         check_socket(&metadata, self.uid)?;
 
@@ -187,6 +189,18 @@ impl RuntimeDir {
             .context("connecting to daemon socket")?;
         authenticate(&stream, self.uid)?;
         Ok(stream)
+    }
+
+    fn socket_path(&self, role: SocketRole) -> PathBuf {
+        if matches!(role, SocketRole::TerminalHost) {
+            // Address the open private directory without extending the runtime pathname.
+            return PathBuf::from(format!(
+                "/proc/self/fd/{}/{}",
+                self.directory.as_raw_fd(),
+                role.name()
+            ));
+        }
+        self.path.join(role.name())
     }
 }
 
@@ -282,8 +296,9 @@ pub struct Instance<'a> {
 impl Instance<'_> {
     pub async fn bind(&self, role: SocketRole) -> Result<BoundSocket<'_>> {
         let path = self.runtime.path.join(role.name());
-        remove_stale(&path, self.runtime.uid).await?;
-        let listener = UnixListener::bind(&path).context("binding daemon socket")?;
+        let socket_path = self.runtime.socket_path(role);
+        remove_stale(&socket_path, self.runtime.uid).await?;
+        let listener = UnixListener::bind(&socket_path).context("binding daemon socket")?;
         let metadata = fs::symlink_metadata(&path).context("reading bound socket identity")?;
         let socket = BoundSocket {
             instance: self,

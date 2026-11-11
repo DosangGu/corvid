@@ -28,7 +28,7 @@ use crate::runtime_path;
 
 use crate::{hooks, read_pairing_code};
 
-pub(super) use start::{ensure, start};
+pub(super) use start::{ensure, start, upgrade};
 
 #[derive(Subcommand)]
 pub(super) enum Command {
@@ -42,8 +42,13 @@ pub(super) enum Command {
     },
     /// Start the background daemon if needed without attaching a terminal.
     EnsureDaemon,
-    /// Replace an idle background daemon with this build.
-    Upgrade,
+    /// Replace the background daemon and preserve hosted terminals.
+    Upgrade {
+        #[arg(long, hide = true)]
+        managed_ssh_from: Option<String>,
+        #[arg(long, hide = true, requires = "managed_ssh_from")]
+        expected_host: Option<Uuid>,
+    },
     /// Attach to the live terminal, or start one explicitly.
     Attach {
         /// Start a new terminal with the user's shell.
@@ -235,7 +240,13 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             .map(|()| 0)
         }
         Command::EnsureDaemon => start::ensure(&runtime).await.map(|()| 0),
-        Command::Upgrade => start::upgrade(&runtime).await.map(|()| 0),
+        Command::Upgrade {
+            managed_ssh_from: Some(version),
+            expected_host,
+        } => start::upgrade_managed(&runtime, &version, expected_host)
+            .await
+            .map(|()| 0),
+        Command::Upgrade { .. } => start::upgrade(&runtime).await.map(|()| 0),
         Command::Attach {
             new,
             agent,

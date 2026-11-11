@@ -389,10 +389,7 @@ fn ssh_failure(diagnostic: &[u8]) -> ProtocolFault {
             "install corvid on the remote command PATH",
         )
     } else if message.contains("unrecognized subcommand 'terminal-relay'") {
-        ProtocolFault::new(
-            "RelayUnavailable",
-            "update Corvid on the SSH execution host",
-        )
+        ProtocolFault::new("UpgradeRequired", "update Corvid on the SSH execution host")
     } else {
         ProtocolFault::new("Offline", "Corvid SSH connection failed")
     }

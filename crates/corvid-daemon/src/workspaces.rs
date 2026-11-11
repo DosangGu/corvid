@@ -36,8 +36,8 @@ use crate::process::{self, HookProducer, Incarnation, ProbeBudget, ProcessImage}
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
 use crate::terminal::{
-    AttachSpec, Event, InputMode, Keymap, Launch, LaunchScope, TabCommand, TerminalHandle,
-    TuiViewport,
+    AttachSpec, Event, HostConfig, InputMode, Keymap, Launch, LaunchScope, RetainedTerminal,
+    TabCommand, TerminalHandle, TuiViewport,
 };
 
 pub(crate) use close::Closed;
@@ -101,6 +101,7 @@ pub(crate) struct Workspaces {
     #[cfg(target_os = "linux")]
     probes: Arc<ProbeBudget>,
     hook_environment: Arc<HookEnvironment>,
+    host: Option<HostConfig>,
 }
 
 pub(crate) struct Registry {
@@ -180,6 +181,97 @@ impl Workspaces {
             #[cfg(target_os = "linux")]
             probes: Arc::new(ProbeBudget::default()),
             hook_environment,
+            host: None,
+        }
+    }
+
+    pub(crate) fn enable_terminal_hosts(mut self, runtime: &Path) -> Result<Self> {
+        self.host = Some(HostConfig::new(runtime)?);
+        Ok(self)
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        let mut registry = self.lock_registry();
+        registry.sweep();
+        registry.clients.is_empty()
+            && registry.claims.is_empty()
+            && registry.slots.is_empty()
+            && registry.retired.is_empty()
+    }
+
+    pub(crate) async fn retain_terminals(
+        &self,
+        retain: bool,
+    ) -> Result<Vec<(Location, RetainedTerminal)>> {
+        let terminals: Vec<_> = {
+            let registry = self.lock_registry();
+            registry
+                .slots
+                .iter()
+                .filter_map(|(pane, slot)| {
+                    registry.terminals.iter().find_map(|(_, location)| {
+                        (location.pane == *pane).then(|| (*location, slot.terminal.clone()))
+                    })
+                })
+                .collect()
+        };
+        let mut saved = Vec::new();
+        for (location, terminal) in &terminals {
+            match terminal.retain(retain).await {
+                Ok(Some(terminal)) => saved.push((*location, terminal)),
+                Ok(None) => {}
+                Err(error) => {
+                    if retain {
+                        for (_, terminal) in &terminals {
+                            let _ = terminal.retain(false).await;
+                        }
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(saved)
+    }
+
+    pub(crate) async fn recover_terminals(
+        &self,
+        terminals: Vec<(Location, RetainedTerminal)>,
+    ) -> Result<()> {
+        for (location, saved) in terminals {
+            anyhow::ensure!(
+                self.metadata.layout().contains(location),
+                "handoff pane is absent from the saved layout"
+            );
+            let recovered = TerminalHandle::recover(self.launch_scope(location), saved).await;
+            let (terminal, task) = match recovered {
+                Ok(recovered) => recovered,
+                Err(error) if terminal_host_ended(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            self.lock_registry().slots.insert(
+                location.pane,
+                Slot {
+                    workspace: location.workspace,
+                    terminal,
+                    task,
+                    reserved: false,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn launch_scope(&self, location: Location) -> LaunchScope {
+        LaunchScope {
+            location,
+            metadata: self.metadata.clone(),
+            registry: Arc::downgrade(&self.registry),
+            #[cfg(target_os = "linux")]
+            boot_id: self.boot_id,
+            #[cfg(target_os = "linux")]
+            probes: Arc::clone(&self.probes),
+            hook_environment: Arc::clone(&self.hook_environment),
+            host: self.host.clone(),
         }
     }
 
@@ -261,16 +353,6 @@ impl Workspaces {
         let mut collector = CollectorStatus::default();
         collector.traffic = Some(self.collector.traffic());
         (terminal_live, collector)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn is_idle(&self) -> bool {
-        let mut registry = self.lock_registry();
-        registry.sweep();
-        registry.clients.is_empty()
-            && registry.claims.is_empty()
-            && registry.slots.is_empty()
-            && registry.retired.is_empty()
     }
 
     pub(crate) async fn attach(
@@ -602,16 +684,7 @@ impl Workspaces {
         if registry.slots.len() + registry.retired.len() >= MAX_PTY_WORKERS {
             return Err(limit());
         }
-        let scope = LaunchScope {
-            location,
-            metadata: self.metadata.clone(),
-            registry: Arc::downgrade(&self.registry),
-            #[cfg(target_os = "linux")]
-            boot_id: self.boot_id,
-            #[cfg(target_os = "linux")]
-            probes: Arc::clone(&self.probes),
-            hook_environment: Arc::clone(&self.hook_environment),
-        };
+        let scope = self.launch_scope(location);
         let (terminal, task) = TerminalHandle::start(scope);
         registry.slots.insert(
             location.pane,
@@ -624,6 +697,22 @@ impl Workspaces {
         );
         Ok(terminal)
     }
+}
+
+fn terminal_host_ended(error: &anyhow::Error) -> bool {
+    #[cfg(target_os = "linux")]
+    if error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) {
+        return true;
+    }
+    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound
+                | std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        )
+    })
 }
 
 impl Registry {

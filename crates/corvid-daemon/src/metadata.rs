@@ -98,7 +98,6 @@ impl MetadataView {
         }
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) async fn wait_saved(&mut self) -> bool {
         loop {
             match self.save_state() {

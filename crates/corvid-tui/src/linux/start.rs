@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use nix::errno::Errno;
 use nix::fcntl::Flock;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
+use uuid::Uuid;
 
 use super::runtime_path;
 
@@ -53,34 +54,121 @@ pub(crate) async fn ensure(path: &Path) -> Result<()> {
 async fn ensure_daemon(runtime: &RuntimeDir) -> Result<()> {
     timeout(COMMAND_TIMEOUT, async {
         let _startup = lock_startup(runtime).await?;
-        ensure_daemon_locked(runtime, None).await.map(|_| ())
+        ensure_daemon_locked(runtime, None, &env::current_exe()?)
+            .await
+            .map(|_| ())
     })
     .await
     .context("waiting for the Corvid daemon to start")?
 }
 
-pub(super) async fn upgrade(path: &Path) -> Result<()> {
-    let runtime = RuntimeDir::create(path)?;
-    let _startup = timeout(COMMAND_TIMEOUT, lock_startup(&runtime))
-        .await
-        .context("waiting for exclusive daemon startup")??;
-    if !daemon_ready(path).await? {
-        timeout(COMMAND_TIMEOUT, ensure_daemon_locked(&runtime, None))
-            .await
-            .context("waiting for the Corvid daemon to start")??;
-        println!("Started the Corvid daemon from this build");
-        return Ok(());
-    }
+pub(crate) async fn upgrade(path: &Path) -> Result<()> {
+    let runtime = RuntimeDir::create_all(path)?;
+    let _startup = upgrade_lock(&runtime).await?;
+    let target = stop_for_upgrade(&runtime, None).await?;
+    finish_upgrade(&runtime, target.as_ref(), &env::current_exe()?).await
+}
 
-    let target = corvid_client::prepare_upgrade(&runtime).await?;
-    timeout(COMMAND_TIMEOUT, wait_for_shutdown(&runtime))
+pub(super) async fn upgrade_managed(
+    path: &Path,
+    previous_version: &str,
+    expected_host: Option<Uuid>,
+) -> Result<()> {
+    let staged = env::current_exe()?;
+    let home = env::var_os("HOME").context("HOME is unavailable")?;
+    let root = PathBuf::from(home).join(".corvid");
+    ensure!(
+        staged.parent() == Some(root.as_path())
+            && staged
+                .file_name()
+                .is_some_and(|name| name.as_encoded_bytes().starts_with(b".corvid.")),
+        "the managed upgrade must run from a staged Corvid binary"
+    );
+    let installed = root.join("corvid");
+    let runtime = RuntimeDir::create_all(path)?;
+    let _startup = upgrade_lock(&runtime).await?;
+    crate::verify_installed_version(&installed, previous_version).await?;
+
+    let backup = tempfile::tempdir_in(&root)?;
+    let previous = backup.path().join("corvid");
+    fs::hard_link(&installed, &previous).context("saving the previous Corvid binary")?;
+    let target = stop_for_upgrade(&runtime, expected_host).await?;
+    if target.is_none()
+        && let Some(host) = expected_host
+    {
+        ensure!(
+            corvid_daemon::stored_host_id(&super::state_path(None)?)? == Some(host),
+            ProtocolFault::new(
+                "HostMismatch",
+                "SSH alias points to a different Corvid host"
+            )
+        );
+    }
+    {
+        let _instance = try_lock(runtime.lock_instance())?.context(ProtocolFault::new(
+            "DaemonBusy",
+            "the Corvid daemon is still active",
+        ))?;
+        fs::rename(&staged, &installed).context("publishing the updated Corvid binary")?;
+    }
+    let result = finish_upgrade(&runtime, target.as_ref(), &installed).await;
+    if result.is_err()
+        && let Some(_instance) = try_lock(runtime.lock_instance())?
+    {
+        fs::rename(previous, installed).context("restoring the previous Corvid binary")?;
+        drop(_instance);
+        if target.is_some() {
+            finish_upgrade(&runtime, target.as_ref(), &root.join("corvid"))
+                .await
+                .context("restarting the previous Corvid daemon after the update failed")?;
+        }
+    }
+    result
+}
+
+async fn upgrade_lock(runtime: &RuntimeDir) -> Result<Flock<File>> {
+    timeout(COMMAND_TIMEOUT, lock_startup(runtime))
+        .await
+        .context("waiting for exclusive daemon startup")?
+}
+
+async fn stop_for_upgrade(
+    runtime: &RuntimeDir,
+    expected_host: Option<Uuid>,
+) -> Result<Option<UpgradeTarget>> {
+    match daemon_ready(runtime.path()).await {
+        Ok(false) => return Ok(None),
+        Ok(true) => {}
+        Err(error)
+            if error
+                .downcast_ref::<ProtocolFault>()
+                .is_some_and(|fault| fault.code == "ProtocolMismatch") => {}
+        Err(error) => return Err(error),
+    }
+    let target = corvid_client::prepare_upgrade_for(runtime, expected_host).await?;
+    timeout(COMMAND_TIMEOUT, wait_for_shutdown(runtime))
         .await
         .context("waiting for the previous Corvid daemon to shut down")??;
-    timeout(COMMAND_TIMEOUT, start_replacement(&runtime, &target))
-        .await
-        .context("waiting for the updated Corvid daemon to start")??;
-    println!("Upgraded the Corvid daemon");
-    Ok(())
+    Ok(Some(target))
+}
+
+async fn finish_upgrade(
+    runtime: &RuntimeDir,
+    target: Option<&UpgradeTarget>,
+    executable: &Path,
+) -> Result<()> {
+    timeout(COMMAND_TIMEOUT, async {
+        if let Some(target) = target {
+            start_replacement(runtime, target, executable).await?;
+            println!("Upgraded the Corvid daemon");
+        } else {
+            ensure_daemon_locked(runtime, None, executable).await?;
+            println!("Started the Corvid daemon from this build");
+        }
+        Ok(())
+    })
+    .await
+    .context("waiting for the updated Corvid daemon to start")?
 }
 
 async fn lock_startup(runtime: &RuntimeDir) -> Result<Flock<File>> {
@@ -101,8 +189,12 @@ async fn wait_for_shutdown(runtime: &RuntimeDir) -> Result<()> {
     }
 }
 
-async fn start_replacement(runtime: &RuntimeDir, target: &UpgradeTarget) -> Result<()> {
-    let pid = ensure_daemon_locked(runtime, Some(&target.state_directory))
+async fn start_replacement(
+    runtime: &RuntimeDir,
+    target: &UpgradeTarget,
+    executable: &Path,
+) -> Result<()> {
+    let pid = ensure_daemon_locked(runtime, Some(&target.state_directory), executable)
         .await?
         .context("another daemon started during upgrade")?;
     let peer = runtime.connect(SocketRole::Control).await?.peer_cred()?;
@@ -121,6 +213,7 @@ async fn start_replacement(runtime: &RuntimeDir, target: &UpgradeTarget) -> Resu
 async fn ensure_daemon_locked(
     runtime: &RuntimeDir,
     state_directory: Option<&Path>,
+    executable: &Path,
 ) -> Result<Option<u32>> {
     let mut child: Option<StartingDaemon> = None;
     loop {
@@ -128,13 +221,13 @@ async fn ensure_daemon_locked(
             child.check_running()?;
         }
         if daemon_ready(runtime.path()).await? {
-            return Ok(child.and_then(|child| child.process.id()));
+            return Ok(child.and_then(StartingDaemon::detach));
         }
         if child.is_none()
             && let Some(instance) = try_lock(runtime.lock_instance())?
         {
             drop(instance);
-            child = Some(StartingDaemon::spawn(runtime, state_directory)?);
+            child = Some(StartingDaemon::spawn(runtime, state_directory, executable)?);
         }
         sleep(STARTUP_POLL).await;
     }
@@ -159,16 +252,21 @@ async fn daemon_ready(runtime: &Path) -> Result<bool> {
 struct StartingDaemon {
     process: Child,
     diagnostics: File,
+    ready: bool,
 }
 
 impl StartingDaemon {
-    fn spawn(runtime: &RuntimeDir, state_directory: Option<&Path>) -> Result<Self> {
+    fn spawn(
+        runtime: &RuntimeDir,
+        state_directory: Option<&Path>,
+        executable: &Path,
+    ) -> Result<Self> {
         let terminfo = runtime.path().join("terminfo");
         let entries = RuntimeDir::create_all(&terminfo.join("c"))?;
         entries.replace_private_file("corvid", TERMINFO)?;
 
         let diagnostics = tempfile::tempfile()?;
-        let mut command = Command::new(env::current_exe()?);
+        let mut command = Command::new(executable);
         command
             .arg("daemon")
             .arg("--runtime-dir")
@@ -196,7 +294,13 @@ impl StartingDaemon {
         Ok(Self {
             process,
             diagnostics,
+            ready: false,
         })
+    }
+
+    fn detach(mut self) -> Option<u32> {
+        self.ready = true;
+        self.process.id()
     }
 
     fn check_running(&mut self) -> Result<()> {
@@ -207,5 +311,13 @@ impl StartingDaemon {
             bail!("background daemon exited ({status}): {}", diagnostic.trim());
         }
         Ok(())
+    }
+}
+
+impl Drop for StartingDaemon {
+    fn drop(&mut self) {
+        if !self.ready {
+            let _ = self.process.start_kill();
+        }
     }
 }

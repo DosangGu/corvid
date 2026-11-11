@@ -2,6 +2,7 @@
 mod agents;
 mod collector;
 mod control;
+mod handoff;
 mod history;
 mod identity;
 mod incoming;
@@ -16,7 +17,6 @@ mod publication;
 mod snapshot;
 pub mod terminal;
 mod tui;
-#[cfg(target_os = "linux")]
 mod upgrade;
 #[cfg(windows)]
 mod windows;
@@ -54,6 +54,14 @@ pub use provider::hooks::observer_settings;
 pub use provider::shell as shell_agent;
 #[cfg(windows)]
 pub use windows::run;
+#[cfg(windows)]
+pub use windows::run_with_options;
+
+/// Read an existing daemon identity without creating state.
+#[cfg(any(windows, target_os = "linux"))]
+pub fn stored_host_id(state_path: &std::path::Path) -> anyhow::Result<Option<uuid::Uuid>> {
+    identity::read(&platform::StateDirectory::open(state_path)?)
+}
 
 // Keep room for ordinary requests when the snapshot watch limit is full.
 const MAX_CONTROL_CONNECTIONS: usize = MAX_WATCHES + 8;
@@ -87,7 +95,16 @@ pub async fn run(
         identity: Arc::clone(&identity),
         shell_commands: shell_agent::Commands::install(runtime.path()).ok(),
     });
-    let workspaces = Arc::new(Workspaces::new(updates, hook_environment));
+    let workspaces = Workspaces::new(updates, hook_environment);
+    let workspaces = if autostarted {
+        workspaces.enable_terminal_hosts(runtime.path())?
+    } else {
+        workspaces
+    };
+    let workspaces = Arc::new(workspaces);
+    if autostarted {
+        handoff::recover(runtime.path(), &identity, &workspaces).await?;
+    }
     let mut controls = JoinSet::new();
     let mut clients = JoinSet::new();
     let mut collectors = JoinSet::new();
@@ -104,12 +121,14 @@ pub async fn run(
             _ = clients.join_next(), if !clients.is_empty() => {}
             _ = collectors.join_next(), if !collectors.is_empty() => {}
             request = &mut incoming_upgrade => {
-                // While this branch runs, the loop cannot accept another TUI.
-                while clients.try_join_next().is_some() {}
-                let idle = clients.is_empty() && workspaces.is_idle();
-                if request.respond(idle, metadata.clone(), state_path).await.unwrap_or(false) {
+                let preserve = request.preserve_terminals;
+                let prepare = async {
+                    handoff::prepare(runtime.path(), &identity, &workspaces, metadata.clone(), &mut clients, preserve).await
+                };
+                if request.respond(state_path, prepare).await.unwrap_or(false) {
                     break;
                 }
+                let _ = handoff::cancel(runtime.path(), &identity, &workspaces).await;
                 incoming_upgrade.set(upgrade::listen(upgrade_socket.as_ref(), &identity));
             }
             _ = agent_clock.tick() => workspaces.tick_agents(),

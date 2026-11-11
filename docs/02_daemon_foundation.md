@@ -1,6 +1,7 @@
 # Daemon Foundation
 
-The daemon owns PTYs and their screens. The attach process owns the outer TTY.
+The daemon service owns PTYs and their screens. Automatically started daemons
+delegate each terminal to a private terminal-host process. The attach process owns the outer TTY.
 The control socket supports host identity, health, workspace inventory, and ping
 independently of the attached TUI.
 
@@ -23,13 +24,33 @@ For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
 
 After building or installing an updated binary, run `target/debug/corvid upgrade`
-or `corvid upgrade` with the updated executable. The command replaces an idle
-automatically started daemon on the selected runtime directory. Exit every
-live shell first, including detached tabs. The replacement keeps the same
-state directory, host identity, and saved layout, and starts a new daemon
-epoch. If the runtime is stopped, the command starts the updated daemon.
+or `corvid upgrade` with the updated executable. Linux and Windows use the same
+planned handoff for automatically started daemons. The daemon fences terminal input,
+detaches current clients, waits for metadata persistence, and records the terminal-host
+identities in a private `handoff.json` in the runtime directory.
+The replacement keeps the same state directory, host identity, layout, terminal IDs,
+PTY processes, and terminal screen state, and starts a new daemon epoch. Reattach a TUI
+after the connection closes. Desktop retries a lost connection against the same host and
+terminal ID, fences queued actions, and acquires a fresh writer lease.
+An active paste or unfinished view operation must finish before handoff.
+If the runtime is stopped, the command starts the updated daemon.
 For foreground or systemd daemons, use their existing start and stop procedure.
-An older daemon without upgrade support also needs one manual restart.
+An older daemon without terminal-host support needs one initial idle upgrade or
+manual restart before its new terminals can survive subsequent replacements.
+
+The shared terminal backend owns input queues, VT query replies, parsing, resize,
+preview, and rendering. Its versioned, bounded Protobuf protocol uses private Unix
+sockets on Linux and per-user named pipes on Windows. Terminal content stays in the
+terminal host's memory. A retained host continues draining output and answering VT
+queries while the replacement starts. The handoff file contains terminal identities
+and layout locations. Windows uses a separate executable image for terminal hosts
+so they can remain alive while the daemon executable is replaced.
+
+Client identities, writer leases, and input routes are freshly established after
+handoff. Queued user input is fenced. Agent observations from the previous epoch
+remain historical. New agent invocations from a retained Linux shell register against
+the current daemon epoch. Existing provider processes retain their original observer
+environment and may need a fresh invocation to restore qualified hook monitoring.
 
 Press Ctrl-] then d to detach and run `corvid` again to return to the shell.
 The bottom status bar shows **CORVID**, the current workspace, and tab numbers

@@ -17,7 +17,7 @@ mod tty;
 #[cfg(windows)]
 #[path = "tty/windows.rs"]
 mod tty;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod upgrade;
 
 #[cfg(any(target_os = "linux", windows))]
@@ -37,5 +37,9 @@ pub use runtime::{daemon_missing, runtime_path};
 pub use snapshot::SnapshotWatch;
 #[cfg(any(target_os = "linux", windows))]
 pub use snapshot::{snapshot, watch_snapshot};
+#[cfg(windows)]
+pub use upgrade::UpgradeTarget;
+#[cfg(any(target_os = "linux", windows))]
+pub use upgrade::prepare_daemon_upgrade;
 #[cfg(target_os = "linux")]
-pub use upgrade::{UpgradeTarget, prepare_upgrade};
+pub use upgrade::{UpgradeTarget, prepare_upgrade, prepare_upgrade_for};

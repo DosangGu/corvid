@@ -26,6 +26,7 @@ pub(super) enum Kind {
     Reply,
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct WriteFailure {
     pub(super) kind: Kind,
     pub(super) partial: bool,

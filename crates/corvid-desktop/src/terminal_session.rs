@@ -28,6 +28,7 @@ use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 use vt100::{Parser, Screen};
 
+use crate::daemon_prompt::{Prompt, Prompts};
 use crate::{local_bootstrap, slot_board, ssh_bootstrap};
 
 pub const MAX_INPUT: usize = 64 * 1024;
@@ -136,6 +137,7 @@ impl Inventory {
 #[derive(Clone)]
 pub struct Ui {
     pub host_id: Option<String>,
+    pub terminal_id: Option<String>,
     pub selected: Option<ViewSelection>,
     pub inventory: Option<Arc<Inventory>>,
     pub inventory_ready: bool,
@@ -223,6 +225,9 @@ enum Action {
 struct Requests {
     actions: mpsc::Receiver<Action>,
     sizes: watch::Receiver<(u64, Grid)>,
+    prompts: Prompts,
+    host: Option<String>,
+    terminal: Option<String>,
 }
 
 impl Session {
@@ -231,7 +236,7 @@ impl Session {
         state_dir: PathBuf,
         target: AttachTarget,
         explicit: bool,
-    ) -> Result<(Self, Job)> {
+    ) -> Result<(Self, Job, mpsc::UnboundedReceiver<Prompt>)> {
         let grid = Grid::new(26, 112);
         let (screen_changed, _) = watch::channel(());
         let (ui_changed, _) = watch::channel(());
@@ -239,6 +244,7 @@ impl Session {
             buffer: Mutex::new(Buffer {
                 ui: Ui {
                     host_id: None,
+                    terminal_id: None,
                     selected: None,
                     inventory: None,
                     inventory_ready: false,
@@ -261,10 +267,14 @@ impl Session {
             ui_changed,
         });
         let (actions, incoming) = mpsc::channel(32);
+        let (prompt_sender, prompts) = mpsc::unbounded_channel();
         let (size, sizes) = watch::channel((0, grid));
         let requests = Requests {
             actions: incoming,
             sizes,
+            prompts: Prompts(prompt_sender),
+            host: None,
+            terminal: None,
         };
         let (stop, mut stopped) = oneshot::channel();
         let state = Arc::clone(&shared);
@@ -274,7 +284,7 @@ impl Session {
                 .and_then(|runtime| runtime.block_on(async {
                     let mut slot_board = slot_board::Job::default();
                     let result = tokio::select! {
-                        result = run(destination, state_dir, target, explicit, requests, &state, &mut slot_board) => result,
+                        result = run_reconnecting(destination, state_dir, target, explicit, requests, &state, &mut slot_board) => result,
                         _ = &mut stopped => Ok("Detached from Corvid.".into()),
                     };
                     slot_board.close().await;
@@ -300,6 +310,7 @@ impl Session {
                 stop: Some(stop),
                 thread,
             },
+            prompts,
         ))
     }
 
@@ -431,12 +442,69 @@ enum Operation {
     Preview,
 }
 
+async fn run_reconnecting(
+    destination: Destination,
+    state_dir: PathBuf,
+    mut target: AttachTarget,
+    mut explicit: bool,
+    mut requests: Requests,
+    shared: &Shared,
+    slot_board: &mut slot_board::Job,
+) -> Result<String> {
+    let mut reconnecting = false;
+    loop {
+        let result = run(
+            destination.clone(),
+            state_dir.clone(),
+            target.clone(),
+            explicit,
+            &mut requests,
+            shared,
+            slot_board,
+        )
+        .await;
+        let error = match result {
+            Ok(message) => return Ok(message),
+            Err(error) => error,
+        };
+        let ui = shared.buffer().ui.clone();
+        let transient = error
+            .downcast_ref::<ProtocolFault>()
+            .is_none_or(|fault| matches!(fault.code.as_str(), "Offline" | "DaemonUnavailable"));
+        if !transient || (!reconnecting && !ui.connected) {
+            return Err(error);
+        }
+        let Some(selected) = ui.selected else {
+            return Err(error);
+        };
+        target = AttachTarget::Pane(selected, false);
+        explicit = false;
+        reconnecting = true;
+        requests.terminal = ui.terminal_id;
+        shared.update_ui(|ui| {
+            ui.connected = false;
+            ui.inventory_ready = false;
+            ui.changing = false;
+            ui.message = "Reconnecting to the existing Corvid terminal…".into();
+        });
+        // Disable new input before draining requests for the retired writer.
+        while requests.actions.try_recv().is_ok() {}
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn run(
     destination: Destination,
     state_dir: PathBuf,
     target: AttachTarget,
     explicit: bool,
-    Requests { mut actions, sizes }: Requests,
+    Requests {
+        actions,
+        sizes,
+        prompts,
+        host,
+        terminal,
+    }: &mut Requests,
     shared: &Shared,
     slot_board: &mut slot_board::Job,
 ) -> Result<String> {
@@ -455,7 +523,9 @@ async fn run(
     .collect();
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
     let (endpoint, mut link) = match destination {
-        Destination::Local => local_bootstrap::connect(capabilities.clone(), progress).await?,
+        Destination::Local => {
+            local_bootstrap::connect(capabilities.clone(), explicit, prompts, progress).await?
+        }
         Destination::Ssh(alias) => {
             let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
                 matches!(config.endpoint, HostEndpoint::Ssh { alias: saved } if saved == alias.as_str())
@@ -465,22 +535,38 @@ async fn run(
                 AttachTarget::Workspace { host_id, .. } => Some(host_id.as_str()),
                 _ => None,
             };
-            let expected_host = configured_host.as_deref().or(known_host);
+            let expected_host = host
+                .as_deref()
+                .or(configured_host.as_deref())
+                .or(known_host);
             let (alias, link) = ssh_bootstrap::connect(
                 alias,
                 capabilities.clone(),
                 explicit,
                 expected_host,
+                prompts,
                 progress,
             )
             .await?;
             ensure!(
                 expected_host.is_none_or(|host| host == link.session().host_id),
-                "SSH alias points to a different Corvid host"
+                ProtocolFault::new(
+                    "HostMismatch",
+                    "SSH alias points to a different Corvid host"
+                )
             );
             (ControlEndpoint::Ssh(alias), link)
         }
     };
+    ensure!(
+        host.as_ref()
+            .is_none_or(|host| *host == link.session().host_id),
+        ProtocolFault::new(
+            "HostMismatch",
+            "the connection points to a different Corvid host"
+        )
+    );
+    *host = Some(link.session().host_id.clone());
     let grid = sizes.borrow().1;
     let attached = match &target {
         AttachTarget::Workspace { id, host_id } => {
@@ -538,6 +624,13 @@ async fn run(
         }
     };
     let route = attached.route_token.context("missing input route")?;
+    ensure!(
+        terminal.as_ref().is_none_or(|id| *id == route.terminal_id),
+        ProtocolFault::new(
+            "TerminalChanged",
+            "the previous terminal ended while the daemon was disconnected"
+        )
+    );
     let selected = attached.selection.context("missing attached view")?;
     validate_selection(&selected)?;
     ensure!(
@@ -728,6 +821,7 @@ impl Client<'_> {
                 buffer.previews.clear();
             }
             buffer.ui.selected = Some(self.selected.clone());
+            buffer.ui.terminal_id = Some(self.route.terminal_id.clone());
             buffer.ui.connected = true;
             buffer.ui.changing = self.pending.is_some();
             buffer.ui.message = "Attached to Corvid daemon".into();

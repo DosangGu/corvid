@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -13,6 +12,7 @@ use corvid_core::layout::{CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -30,18 +30,18 @@ use crate::process::{
 use crate::provider;
 use crate::workspaces::Registry;
 
-use super::input::{InputQueue, Kind, WriteFailure};
+use super::backend::Backend;
+use super::host::HostConfig;
+use super::input::{Kind, WriteFailure};
 use super::keys::{InputMode, KeyCommand, Keymap, TabCommand};
 use super::paste::Paste;
 use super::status::{self, TuiViewport};
 use super::tabs::{PickerAction, TabPicker};
-use super::{TerminalPty, TerminalScreen};
 
 const COMMAND_CAPACITY: usize = 32;
 const TICK: Duration = Duration::from_millis(8);
 const FRAME_INTERVAL: Duration = Duration::from_millis(34);
 const MAX_ANSI: usize = RENDER_LIMIT - 16 * 1024 - 5;
-const LIVE_SCROLLBACK_ROWS: usize = 128;
 const LEADER_TIMEOUT: Duration = Duration::from_secs(2);
 
 type Reply<T> = Result<T, ProtocolFault>;
@@ -62,6 +62,13 @@ pub(crate) struct LaunchScope {
     #[cfg(target_os = "linux")]
     pub(crate) probes: Arc<ProbeBudget>,
     pub(crate) hook_environment: Arc<HookEnvironment>,
+    pub(crate) host: Option<HostConfig>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub(crate) struct RetainedTerminal {
+    pub(crate) id: Uuid,
+    shell: bool,
 }
 
 impl LaunchScope {
@@ -169,6 +176,7 @@ enum Command {
     Activate(InputRoute, TuiViewport, oneshot::Sender<Reply<()>>),
     Resume(InputRoute),
     Preview(oneshot::Sender<Reply<(Viewport, Vec<u8>)>>),
+    Retain(bool, oneshot::Sender<Reply<Option<RetainedTerminal>>>),
 }
 
 #[derive(Clone)]
@@ -181,17 +189,34 @@ pub(crate) struct TerminalHandle {
 
 impl TerminalHandle {
     pub(crate) fn start(scope: LaunchScope) -> (Self, JoinHandle<()>) {
+        Self::start_worker(scope, None)
+    }
+
+    pub(crate) async fn recover(
+        scope: LaunchScope,
+        saved: RetainedTerminal,
+    ) -> Result<(Self, JoinHandle<()>)> {
+        let (scope, terminal) = tokio::task::spawn_blocking(move || {
+            let terminal = Running::recover(saved, &scope)?;
+            Ok::<_, anyhow::Error>((scope, terminal))
+        })
+        .await??;
+        Ok(Self::start_worker(scope, Some(terminal)))
+    }
+
+    fn start_worker(scope: LaunchScope, terminal: Option<Running>) -> (Self, JoinHandle<()>) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
-        let live = Arc::new(AtomicBool::new(false));
+        let live = Arc::new(AtomicBool::new(terminal.is_some()));
         let viewing = Arc::new(AtomicBool::new(false));
         let hidden_viewport = Arc::new(Mutex::new(None));
         let mut worker = Worker {
             scope,
-            terminal: None,
+            terminal,
             lease: None,
             live: Arc::clone(&live),
             viewing: Arc::clone(&viewing),
             hidden_viewport: Arc::clone(&hidden_viewport),
+            retaining: false,
         };
         let worker = tokio::task::spawn_blocking(move || worker.run(receiver));
         (
@@ -231,6 +256,14 @@ impl TerminalHandle {
         let (send, receive) = oneshot::channel();
         self.commands
             .try_send(Command::Preview(send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
+    }
+
+    pub(crate) async fn retain(&self, retain: bool) -> Reply<Option<RetainedTerminal>> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Retain(retain, send))
             .map_err(|_| overloaded())?;
         timeout_reply(receive).await
     }
@@ -312,6 +345,7 @@ struct Worker {
     live: Arc<AtomicBool>,
     viewing: Arc<AtomicBool>,
     hidden_viewport: Arc<Mutex<Option<Viewport>>>,
+    retaining: bool,
 }
 
 impl Worker {
@@ -379,6 +413,11 @@ impl Worker {
                     let _ = reply.send(self.preview());
                 }
             }
+            Command::Retain(retain, reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.retain(retain));
+                }
+            }
             Command::Action {
                 client,
                 request_id,
@@ -403,18 +442,13 @@ impl Worker {
         self.lease.as_ref().map(Lease::input_mode)
     }
 
-    fn preview(&self) -> Reply<(Viewport, Vec<u8>)> {
+    fn preview(&mut self) -> Reply<(Viewport, Vec<u8>)> {
         let running = self
             .terminal
-            .as_ref()
+            .as_mut()
             .filter(|terminal| terminal.exit.is_none())
             .ok_or_else(terminal_fault)?;
-        let viewport = running.screen.viewport();
-        let ansi = running
-            .screen
-            .redraw(viewport)
-            .map_err(|_| terminal_fault())?
-            .into_bytes();
+        let (viewport, ansi) = running.session.preview().map_err(|_| terminal_fault())?;
         if ansi.len() > MAX_ANSI {
             return Err(terminal_fault());
         }
@@ -436,6 +470,49 @@ impl Worker {
         {
             registry.record_input_mode(lease.route, mode);
         }
+    }
+
+    fn retain(&mut self, retain: bool) -> Reply<Option<RetainedTerminal>> {
+        if !retain && !self.retaining {
+            return Ok(None);
+        }
+        let Some(terminal) = self
+            .terminal
+            .as_mut()
+            .filter(|terminal| terminal.exit.is_none())
+        else {
+            return Ok(None);
+        };
+        if retain
+            && (terminal.session.paste_pending()
+                || self.lease.as_ref().is_some_and(|lease| {
+                    lease.paste.is_some()
+                        || lease.switch_pending
+                        || (lease.frozen && !self.retaining)
+                }))
+        {
+            return Err(input_busy());
+        }
+        let live = terminal
+            .session
+            .retain(retain)
+            .map_err(|_| terminal_fault())?;
+        if retain && !live {
+            return Err(ProtocolFault::new(
+                "DaemonBusy",
+                "a live terminal cannot be handed to the replacement daemon",
+            ));
+        }
+        if let Some(lease) = &mut self.lease {
+            lease.frozen = retain;
+            lease.leader = None;
+            lease.picker = None;
+        }
+        self.retaining = retain;
+        Ok(live.then_some(RetainedTerminal {
+            id: terminal.id,
+            shell: terminal.shell,
+        }))
     }
 
     fn attach(&mut self, spec: AttachSpec) -> Reply<InputRoute> {
@@ -504,7 +581,7 @@ impl Worker {
             .filter(|lease| lease.armed && lease.route == route)
             .ok_or_else(stale_route)?;
         let terminal = self.terminal.as_ref().ok_or_else(terminal_fault)?;
-        if terminal.input.paste_pending() {
+        if terminal.session.paste_pending() {
             return Err(input_busy());
         }
         let discarded = lease.paste.is_some();
@@ -523,7 +600,7 @@ impl Worker {
             .as_mut()
             .filter(|terminal| terminal.exit.is_none())
             .ok_or_else(terminal_fault)?;
-        if lease.switch_pending || lease.paste.is_some() || terminal.input.paste_pending() {
+        if lease.switch_pending || lease.paste.is_some() || terminal.session.paste_pending() {
             return Err(input_busy());
         }
         terminal.fence_input().map_err(|_| input_busy())?;
@@ -603,7 +680,7 @@ impl Worker {
                 bytes,
             } => {
                 lease.check_input(route, sequence, terminal)?;
-                match lease.keys(sequence, bytes, &mut terminal.input)? {
+                match lease.keys(sequence, bytes, &mut terminal.session)? {
                     None => {}
                     Some(KeyCommand::Detach) => {
                         let _ = lease.events.try_send(Event::Detached);
@@ -638,10 +715,10 @@ impl Worker {
                 id,
             } => {
                 lease.check_input(route, sequence, terminal)?;
-                if terminal.input.paste_pending() {
+                if terminal.session.paste_pending() {
                     return Err(input_busy());
                 }
-                lease.flush_leader(&mut terminal.input)?;
+                lease.flush_leader(&mut terminal.session)?;
                 lease.paste = Some(Paste::new(id, route, request_id));
                 lease.input_sequence = sequence;
             }
@@ -657,11 +734,7 @@ impl Worker {
                 if terminal.exit.is_some() {
                     return Err(stale_route());
                 }
-                if lease.picker.is_none()
-                    && !terminal
-                        .input
-                        .paste(paste.finish(), terminal.screen.bracketed_paste())
-                {
+                if lease.picker.is_none() && !terminal.session.paste(paste.finish()) {
                     return Err(input_busy());
                 }
             }
@@ -672,7 +745,7 @@ impl Worker {
                 if connection_generation != lease.route.connection_generation {
                     return Err(stale_route());
                 }
-                if terminal.input.paste_pending() {
+                if terminal.session.paste_pending() {
                     return Err(input_busy());
                 }
                 let revision = lease
@@ -688,13 +761,11 @@ impl Worker {
                     outer: viewport,
                     ..lease.viewport
                 };
-                #[cfg(windows)]
-                terminal.complete_input_write().map_err(|_| input_busy())?;
                 terminal
-                    .resize(next_viewport.content())
+                    .session
+                    .resize_active(next_viewport.content())
                     .map_err(|_| terminal_fault())?;
                 lease.viewport = next_viewport;
-                terminal.input.fence();
                 lease.leader = None;
                 if let Some(paste) = lease.paste.take()
                     && lease
@@ -765,8 +836,8 @@ impl Worker {
         {
             let _ = terminal.resize(viewport);
         }
-        let state = match terminal.advance() {
-            Ok(state) => state,
+        let failure = match terminal.advance() {
+            Ok(failure) => failure,
             Err(_) => {
                 self.fail(terminal_fault(), true);
                 return;
@@ -779,22 +850,19 @@ impl Worker {
             }
         }
         if terminal.exit.is_some()
-            && let Some(failure) = terminal.input.interrupted_paste()
+            && let Some(failure) = failure
         {
             self.write_failed(failure);
             self.finish_exited();
             return;
         }
         if let Some(lease) = &mut self.lease
-            && lease.expire_input(&mut terminal.input).is_err()
+            && lease.expire_input(&mut terminal.session).is_err()
         {
             self.fail(overloaded(), false);
             return;
         }
-        if terminal.exit.is_none()
-            && !matches!(state, ReadState::Eof)
-            && let Err(error) = terminal.input.flush(&mut terminal.pty)
-        {
+        if let Some(error) = failure {
             self.write_failed(error);
             return;
         }
@@ -883,9 +951,8 @@ impl Worker {
 struct Running {
     id: Uuid,
     registry: Weak<Mutex<Registry>>,
-    pty: TerminalPty,
-    screen: TerminalScreen,
-    input: InputQueue,
+    session: Backend,
+    shell: bool,
     dirty: bool,
     exit: Option<ExitStatus>,
     #[cfg(target_os = "linux")]
@@ -898,40 +965,28 @@ struct TerminalProcess {
     probe: Option<Probe>,
 }
 
-enum ReadState {
-    Drained,
-    Eof,
-    BudgetUsed,
-}
-
 impl Running {
     fn fence_input(&mut self) -> Result<()> {
-        #[cfg(windows)]
-        self.complete_input_write()?;
-        self.input.fence();
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    fn complete_input_write(&mut self) -> Result<()> {
-        if let Some(written) = self.pty.complete_write()? {
-            self.input.record_written(written);
-        }
-        Ok(())
+        self.session.fence()
     }
 
     fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
         let id = Uuid::new_v4();
         let cwd = launch.cwd.clone();
         #[cfg(target_os = "linux")]
-        let (pty, process, shell, identity) = TerminalProcess::spawn(launch, viewport, scope, id)?;
+        let (session, process, shell, identity) =
+            TerminalProcess::spawn(launch, viewport, scope, id)?;
         #[cfg(target_os = "linux")]
         let unmanaged = process.managed.is_none();
         #[cfg(windows)]
-        let (pty, unmanaged) = {
+        let (session, unmanaged, shell) = {
             let mut command = launch.into_command()?;
             scope.hook_environment.configure(&mut command, None, None);
-            (TerminalPty::spawn(command, viewport)?, true)
+            (
+                Backend::start(scope.host.as_ref(), id, command, viewport)?,
+                true,
+                false,
+            )
         };
         if (unmanaged || cwd.is_some())
             && let Some(registry) = scope.registry.upgrade()
@@ -951,9 +1006,8 @@ impl Running {
         Ok(Self {
             id,
             registry: scope.registry.clone(),
-            pty,
-            screen: TerminalScreen::with_scrollback(viewport, LIVE_SCROLLBACK_ROWS),
-            input: InputQueue::default(),
+            session,
+            shell,
             dirty: true,
             exit: None,
             #[cfg(target_os = "linux")]
@@ -962,21 +1016,44 @@ impl Running {
     }
 
     fn resize(&mut self, viewport: Viewport) -> Result<()> {
-        self.pty.resize(viewport)?;
-        self.screen.resize(viewport);
-        Ok(())
+        self.session.resize(viewport)
     }
 
-    fn advance(&mut self) -> Result<ReadState> {
-        if self.exit.is_some() {
-            return Ok(ReadState::Eof);
-        }
-        let (state, output) = self.read_output()?;
-        #[cfg(windows)]
-        let _ = output;
-        if !matches!(state, ReadState::BudgetUsed)
-            && let Some(status) = self.pty.try_wait()?
+    fn recover(saved: RetainedTerminal, scope: &LaunchScope) -> Result<Self> {
+        let root = &scope.host.as_ref().ok_or_else(terminal_fault)?.root;
+        #[allow(unused_mut)]
+        let mut session = Backend::recover(root, saved.id)?;
+        #[cfg(target_os = "linux")]
+        let (process, identity) =
+            TerminalProcess::started(None, &mut session, scope, saved.id, None);
+        let registry = scope.registry.upgrade().ok_or_else(terminal_fault)?;
+        let mut registry = registry.lock().expect("workspace registry lock poisoned");
+        #[cfg(target_os = "linux")]
+        if saved.shell
+            && let Some(root) = identity
         {
+            registry.shell_started(saved.id, root);
+        }
+        registry.terminal_started(saved.id, scope.location);
+        Ok(Self {
+            id: saved.id,
+            registry: scope.registry.clone(),
+            session,
+            shell: saved.shell,
+            dirty: true,
+            exit: None,
+            #[cfg(target_os = "linux")]
+            process,
+        })
+    }
+
+    fn advance(&mut self) -> Result<Option<WriteFailure>> {
+        if self.exit.is_some() {
+            return Ok(None);
+        }
+        let tick = self.session.poll()?;
+        self.dirty |= tick.output;
+        if let Some(status) = tick.exit {
             #[cfg(target_os = "linux")]
             {
                 self.process.probe = None;
@@ -987,7 +1064,7 @@ impl Running {
             self.exit = Some(status);
         } else {
             #[cfg(target_os = "linux")]
-            if let Some(cwd) = self.process.sample(output)
+            if let Some(cwd) = self.process.sample(tick.output)
                 && let Some(registry) = self.registry.upgrade()
             {
                 registry
@@ -996,28 +1073,7 @@ impl Running {
                     .record_cwd(self.id, &cwd, CwdSource::ProcessDirectory);
             }
         }
-        Ok(state)
-    }
-
-    fn read_output(&mut self) -> Result<(ReadState, bool)> {
-        let mut bytes = [0; 8192];
-        let mut output = false;
-        for _ in 0..16 {
-            match self.pty.read(&mut bytes) {
-                Ok(0) => return Ok((ReadState::Eof, output)),
-                Ok(count) => {
-                    self.input.reply(self.screen.process(&bytes[..count])?)?;
-                    self.dirty = true;
-                    output = true;
-                }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    return Ok((ReadState::Drained, output));
-                }
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok((ReadState::BudgetUsed, output))
+        Ok(tick.failure)
     }
 }
 
@@ -1025,9 +1081,10 @@ impl Drop for Running {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
         if self.exit.is_none()
+            && !self.session.is_retained()
             && let Some(managed) = &self.process.managed
         {
-            let status = self.pty.stop();
+            let status = self.session.stop();
             let (liveness, source) = match status.as_ref() {
                 Some(status) => (exited(status), Source::ChildExit),
                 None => (ProcessLiveness::Unknown, Source::ProcessProbe),
@@ -1058,7 +1115,7 @@ impl TerminalProcess {
         viewport: Viewport,
         scope: &LaunchScope,
         id: Uuid,
-    ) -> Result<(TerminalPty, Self, bool, Option<Incarnation>)> {
+    ) -> Result<(Backend, Self, bool, Option<Incarnation>)> {
         let shell = launch.provider.is_none() && launch.argv.is_empty();
         let program = launch.provider.and_then(provider::installed_program);
         let executable = launch
@@ -1081,24 +1138,24 @@ impl TerminalProcess {
             .hook_environment
             .configure(&mut command, association, shell.then_some(id));
 
-        let mut pty = TerminalPty::spawn(command, viewport)?;
-        let (process, identity) = Self::started(reservation, &mut pty, scope, id, executable);
-        Ok((pty, process, shell, identity))
+        let mut session = Backend::start(scope.host.as_ref(), id, command, viewport)?;
+        let (process, identity) = Self::started(reservation, &mut session, scope, id, executable);
+        Ok((session, process, shell, identity))
     }
 
     fn started(
         managed: Option<ManagedLaunch>,
-        pty: &mut TerminalPty,
+        session: &mut Backend,
         scope: &LaunchScope,
         terminal: Uuid,
         executable: Option<Executable>,
     ) -> (Self, Option<Incarnation>) {
-        let (liveness, source) = match pty.try_wait() {
+        let (liveness, source) = match session.status() {
             Ok(None) => (ProcessLiveness::Running, Source::ProcessProbe),
             Ok(Some(status)) => (exited(&status), Source::ChildExit),
             Err(_) => (ProcessLiveness::Unknown, Source::ProcessProbe),
         };
-        let process = pty
+        let process = session
             .pid()
             .zip(scope.boot_id)
             .filter(|_| !matches!(liveness, ProcessLiveness::Exited { .. }));
@@ -1231,7 +1288,7 @@ struct Lease {
 }
 
 enum LastFrame {
-    Terminal(Box<Screen>),
+    Terminal(Option<Box<Screen>>),
     Picker,
 }
 
@@ -1295,7 +1352,7 @@ impl Lease {
         &mut self,
         sequence: u64,
         mut bytes: Vec<u8>,
-        queue: &mut InputQueue,
+        queue: &mut Backend,
     ) -> Reply<Option<KeyCommand>> {
         if let Some(picker) = &mut self.picker {
             self.input_sequence = sequence;
@@ -1334,16 +1391,16 @@ impl Lease {
             self.input_sequence = sequence;
             return Ok(None);
         }
-        if !queue.user(bytes) {
+        if !queue.keys(bytes) {
             return Err(overloaded());
         }
         self.input_sequence = sequence;
         Ok(None)
     }
 
-    fn flush_leader(&mut self, queue: &mut InputQueue) -> Reply<()> {
+    fn flush_leader(&mut self, queue: &mut Backend) -> Reply<()> {
         if self.leader.is_some() {
-            if !queue.user(vec![KEY_LEADER]) {
+            if !queue.keys(vec![KEY_LEADER]) {
                 return Err(overloaded());
             }
             self.leader = None;
@@ -1351,7 +1408,7 @@ impl Lease {
         Ok(())
     }
 
-    fn expire_input(&mut self, queue: &mut InputQueue) -> Reply<()> {
+    fn expire_input(&mut self, queue: &mut Backend) -> Reply<()> {
         if self
             .leader
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
@@ -1452,7 +1509,7 @@ impl Lease {
 
     fn paint(
         &mut self,
-        terminal: &Running,
+        terminal: &mut Running,
         metadata: &MetadataUpdates,
     ) -> Result<Option<(String, LastFrame)>> {
         if let Some(picker) = &mut self.picker {
@@ -1465,7 +1522,7 @@ impl Lease {
 
         let status_changed = self.refresh_status(metadata);
         let previous = match &self.previous {
-            Some(LastFrame::Terminal(screen)) => Some(screen.as_ref()),
+            Some(LastFrame::Terminal(screen)) => Some(screen),
             _ => None,
         };
         if !terminal.dirty && !status_changed && previous.is_some() {
@@ -1478,13 +1535,10 @@ impl Lease {
             .zip(self.status.as_ref())
             .filter(|_| status_changed || previous.is_none())
             .map(|(row, status)| (row, status.ansi.as_str()));
-        let ansi = terminal
-            .screen
+        let (ansi, screen) = terminal
+            .session
             .render(previous, self.viewport.outer, footer)?;
-        Ok(Some((
-            ansi,
-            LastFrame::Terminal(Box::new(terminal.screen.snapshot())),
-        )))
+        Ok(Some((ansi, LastFrame::Terminal(screen))))
     }
 }
 

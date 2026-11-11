@@ -1,6 +1,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(any(windows, target_os = "linux"))]
+mod daemon_prompt;
+#[cfg(any(windows, target_os = "linux"))]
 mod local_bootstrap;
 #[cfg(any(windows, target_os = "linux"))]
 mod platform;

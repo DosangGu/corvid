@@ -208,7 +208,7 @@ fn only_the_local_upgrade_role_accepts_daemon_upgrade() {
         let (session, _) = accept_hello(&request, role, "host", "epoch", &[]).unwrap();
         let request = session.envelope(
             Some("upgrade".into()),
-            Body::UpgradeDaemon(UpgradeDaemon {}),
+            Body::UpgradeDaemon(UpgradeDaemon::default()),
         );
         assert_eq!(
             session.validate_request(&request).is_ok(),

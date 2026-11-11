@@ -17,6 +17,8 @@ pub use storage::{StateDirectory, check_component, require_local_acl_volume};
 pub enum DaemonPipe {
     Client,
     Control,
+    Upgrade,
+    TerminalHost,
 }
 
 impl DaemonPipe {
@@ -24,6 +26,8 @@ impl DaemonPipe {
         match self {
             Self::Client => "corvid-daemon-v1-client",
             Self::Control => "corvid-daemon-v1-control",
+            Self::Upgrade => "corvid-daemon-v1-upgrade",
+            Self::TerminalHost => "corvid-terminal-host-v1",
         }
     }
 

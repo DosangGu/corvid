@@ -63,7 +63,7 @@ case "$1" in
             exit 70
         fi
         ;;
-    install)
+    install|upgrade)
         [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || exit 70
         if command -v corvid >/dev/null 2>&1; then exit 74; fi
         safe_home || exit 71
@@ -80,9 +80,19 @@ case "$1" in
         trap 'exit 73' HUP INT TERM
         head -c "$size" > "$stage" && verify_payload "$stage" || exit 72
         chmod 700 -- "$stage" || exit 73
-        # Publish the verified inode without replacing another installation.
-        if ! ln -T -- "$stage" "$root/corvid" 2>/dev/null; then
-            managed_binary && verify_payload "$root/corvid" || exit 74
+        if [ "$1" = upgrade ]; then
+            managed_binary || exit 74
+            prepare_runtime
+            version=$2
+            host=${3:-}
+            set -- upgrade --managed-ssh-from "$version"
+            if [ -n "$host" ]; then set -- "$@" --expected-host "$host"; fi
+            "$stage" "$@"
+        else
+            # Publish the verified inode without replacing another installation.
+            if ! ln -T -- "$stage" "$root/corvid" 2>/dev/null; then
+                managed_binary && verify_payload "$root/corvid" || exit 74
+            fi
         fi
         ;;
     path)

@@ -30,7 +30,8 @@ Restrict $acl
 [void][IO.Directory]::CreateDirectory($dir, $acl)
 Private $dir $true
 $exe = Join-Path $dir 'corvid.exe'
-$stage = Join-Path $dir ('.corvid-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+$extension = if ($version) { '.exe' } else { '.tmp' }
+$stage = Join-Path $dir ('.corvid-' + [Guid]::NewGuid().ToString('N') + $extension)
 $acl = [Security.AccessControl.FileSecurity]::new()
 Restrict $acl
 try {
@@ -62,6 +63,12 @@ try {
         }
     } finally { $file.Dispose() }
     if (!(Matches $stage)) { exit 72 }
+    if ($version) {
+        if (!(ManagedDaemon)) { exit 74 }
+        $arguments = "upgrade --ssh --managed-ssh-from $version"
+        if ($hostId) { $arguments += " --expected-host $hostId" }
+        RunDaemon $stage $arguments
+    }
     try { [IO.File]::Move($stage, $exe) }
     catch [IO.IOException] {
         if (!(Exists $exe)) { throw }

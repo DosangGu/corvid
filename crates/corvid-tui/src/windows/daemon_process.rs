@@ -6,19 +6,44 @@ use std::ptr::null;
 
 use anyhow::{Result, ensure};
 use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
-    GetExitCodeProcess, PROCESS_INFORMATION, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    GetExitCodeProcess, OpenProcess, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 
 pub(super) struct DaemonProcess(OwnedHandle);
 
 impl DaemonProcess {
+    pub(super) async fn open(runtime: &Path) -> Result<Self> {
+        let pipe = corvid_protocol::windows::DaemonPipe::Control
+            .connect(runtime)
+            .await?;
+        let mut pid = 0;
+        // The private pipe stays open while its server identity is queried.
+        if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if process.is_null() {
+            return Err(io::Error::last_os_error().into());
+        }
+        // The handle remains tied to this process across PID reuse.
+        Ok(Self(unsafe { OwnedHandle::from_raw_handle(process) }))
+    }
+
     pub(super) fn spawn(exe: &Path, runtime: &Path, state: &Path, ssh: bool) -> Result<Self> {
         let application: Vec<_> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut command = Vec::new();
         append_path(&mut command, exe)?;
-        command.extend(" daemon --runtime-dir ".encode_utf16());
+        command.extend(" daemon --autostarted --runtime-dir ".encode_utf16());
         append_path(&mut command, runtime)?;
         command.extend(" --state-dir ".encode_utf16());
         append_path(&mut command, state)?;

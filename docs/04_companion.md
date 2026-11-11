@@ -57,8 +57,9 @@ from `~/.ssh/config` or enter one. Pass `-- --ssh-alias work-host` to the Cargo
 command to open SSH directly. When an alias matches the companion configuration,
 Desktop checks its expected Corvid host ID.
 
-An explicit connection starts an installed daemon if needed. For first-time
-installation, put the target bundle in `daemon/` alongside the built
+An explicit connection starts an installed daemon if needed. Desktop asks for
+confirmation before installing or updating an SSH daemon. Put the target bundle
+in `daemon/` alongside the built
 `corvid-desktop` binary. Build the Linux x86_64 bundle with
 `bash deploy/linux/package-corvid.sh` from a clean checkout and copy the
 generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
@@ -89,11 +90,21 @@ the app is open. Select a session to open it directly. Switching connections
 detaches the current view and keeps its daemon's terminals running.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
 An explicit Desktop connection detects the host OS and starts an installed
-Corvid daemon if needed. With the matching bundle, Desktop can also install
-on a fresh Linux x86_64 or Windows x64 host. The transfer uses SSH stdin,
-verifies size and SHA-256 on both sides, and publishes the binary without
-overwriting an existing installation. Remote installation and startup require
-an explicit SSH connection request.
+Corvid daemon if needed. When Desktop finds a fresh Linux x86_64 or Windows x64
+host and has the matching bundle, it shows the SSH alias and asks before
+installing and connecting. The transfer uses SSH stdin, verifies size and
+SHA-256 on both sides, and checks that the installation is still absent.
+Canceling the dialog ends the connection attempt.
+
+Desktop can update an older managed SSH installation from its matching bundle
+when the daemon is stopped or the connection reports a version problem.
+The confirmation shows the installed and bundled versions. On Linux and Windows,
+a running daemon with terminal-host support preserves live shells and screen state
+through the replacement. Clients detach and establish fresh input routes.
+An active paste or unfinished view operation must finish first.
+After a successful update, Desktop
+connects to the updated daemon. For a PATH installation, use its existing
+installation method and reconnect.
 
 Linux provisioning uses a POSIX shell and Linux core utilities. The binary
 is installed at `~/.corvid/corvid`. Windows provisioning uses Windows PowerShell
@@ -105,7 +116,8 @@ paths as the local Windows TUI.
 On Linux, the SSH launch commands use `CORVID_RUNTIME_DIR` or `XDG_RUNTIME_DIR` when
 configured. Otherwise Desktop uses a private directory under
 `~/.corvid/` scoped to the current Linux boot. An existing installation
-is reused. If its version cannot start over SSH, update it or start it manually.
+is reused. An older daemon without terminal-host support needs one initial idle
+upgrade or manual restart. Subsequent terminals can survive planned replacements.
 For deployments that need the daemon to survive the host's last-login policy,
 see [systemd deployment](02_daemon_foundation.md#run-under-systemd).
 

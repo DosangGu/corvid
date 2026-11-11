@@ -93,7 +93,9 @@ class OuterTerminal:
         deadline = time.monotonic() + 5
         while (match := re.search(pattern, self.output)) is None:
             wait = max(0, deadline - time.monotonic())
-            assert select.select([self.master], [], [], wait)[0], self.output[-500:]
+            assert select.select([self.master], [], [], wait)[0], (
+                self.output[:700], self.output[-500:]
+            )
             self.output.extend(os.read(self.master, 8192))
             assert len(self.output) <= 1024 * 1024, "unexpected output volume"
         return match
@@ -462,10 +464,11 @@ def verify_default_start(binary, directory):
             active.send(b"d")
             active.wait(0)
 
-        refused = subprocess.run(
+        upgraded = subprocess.run(
             [*command, "upgrade"], env=env, capture_output=True, timeout=5,
         )
-        assert refused.returncode == 1 and b"DaemonBusy" in refused.stderr, refused
+        assert upgraded.returncode == 0, upgraded
+        daemon = background_daemon_pid(runtime)
 
         with OuterTerminal(command, cols=319, rows=80, env=env) as second:
             assert shell_pid(second) == pid
@@ -483,11 +486,12 @@ def verify_default_start(binary, directory):
             attaching.settimeout(3)
             attaching.connect(os.fspath(runtime / "client.sock"))
             assert attaching.recv(1), "daemon did not accept the pending TUI"
-            refused = subprocess.run(
+            upgraded = subprocess.run(
                 [*command, "upgrade"], env=env, capture_output=True, timeout=5,
             )
-            assert refused.returncode == 1 and b"DaemonBusy" in refused.stderr, refused
-            assert background_daemon_pid(runtime) == daemon
+            assert upgraded.returncode == 0, upgraded
+            assert background_daemon_pid(runtime) != daemon
+            daemon = background_daemon_pid(runtime)
 
         verify_upgrade(command, runtime, home, env, daemon)
         with OuterTerminal(command, cols=319, rows=80, env=env) as updated:
@@ -666,7 +670,7 @@ def run(binary):
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
                 verify_shell_agent_notifications(binary, directory, database, shell_name=shell)
-    print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, detach, tab switching, the tab picker, and idle daemon upgrade.")
+    print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, detach, tab switching, the tab picker, and daemon replacement with a retained shell.")
 
 
 if __name__ == "__main__":

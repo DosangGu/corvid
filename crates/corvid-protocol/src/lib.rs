@@ -3,6 +3,8 @@ mod preflight;
 mod provider;
 mod session;
 pub mod snapshot;
+#[cfg(any(target_os = "linux", windows))]
+pub mod upgrade;
 
 #[cfg(target_os = "linux")]
 pub mod unix;
@@ -35,3 +37,4 @@ pub const RESPONSE_NOTIFICATION_CAPABILITY: &str = "response_notification.v1";
 pub const DEFAULT_SHELL_CAPABILITY: &str = "default_shell.v1";
 pub const LEGACY_DEFAULT_LAUNCH_CAPABILITY: &str = "default_launch.v1";
 pub const DAEMON_UPGRADE_CAPABILITY: &str = "daemon_upgrade.v1";
+pub const DAEMON_HANDOFF_CAPABILITY: &str = "daemon_handoff.v1";

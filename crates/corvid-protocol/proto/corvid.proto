@@ -121,9 +121,12 @@ message Ping {}
 message Pong {}
 message GetHost {}
 message GetCapabilities {}
-message UpgradeDaemon {}
+message UpgradeDaemon {
+  bool preserve_terminals = 1;
+}
 
 message DaemonUpgradeReady {
+  // Native Unix path bytes or little-endian UTF-16 on Windows.
   bytes state_directory = 1;
 }
 

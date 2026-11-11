@@ -2,7 +2,7 @@
 
 > Rust · shared TUI/GUI workspace behavior · remote Linux daemon · ordinary SSH
 >
-> Design revision: 2026-11-09. This document specifies the intended product.
+> Design revision: 2026-11-11. This document specifies the intended product.
 > See [terminal qualification](01_terminal_qualification.md) and
 > [daemon foundation](02_daemon_foundation.md) for implemented paths and runtime evidence.
 > Commands and interfaces described here define the target.
@@ -83,7 +83,7 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 | Decision | Selected design | Reason / verification condition |
 |---|---|---|
 | Form and language | Rust desktop and TUI clients of the Linux daemon | Both use the interactive writer protocol and share the daemon layout and workspace operations |
-| Process boundary | Real client/server foundation in Phase 1 | Detach survival precedes layout expansion |
+| Process boundary | Client/server foundation with separate terminal hosts for planned replacement | Terminal hosts retain PTYs and VT state while the daemon coordinator is replaced |
 | Daemon scope | One daemon per OS user per host, managing all workspaces | One host registry/watch stream and direct cross-workspace focus; larger failure blast radius accepted |
 | Core IPC | Same-host Unix stream sockets (`SOCK_STREAM`) | SSH transports terminal/control channels; local IPC still needs authentication, versioning, bounds, and latency tests |
 | Layout | Workspace → Tab → N-way tree → Pane → optional Terminal | The daemon creates splits and retains pane identity through selection and detach |
@@ -99,7 +99,7 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 | Render payload | Small Protobuf header plus raw ANSI bytes in a separate frame kind | Custom encoding is limited to framing; no bulk terminal data over the control subscription |
 | Persistence | Schema-versioned JSON metadata, atomic replacement | Bincode rejected; see §13 |
 | External actions | Read, subscribe, explicit pairing, exact focus, attention acknowledgment | No keystrokes, approvals, spawning, or writer transfer |
-| Crash recovery | Layout/metadata restoration only | PTY-owner crash is not detach; supervisor excluded from MVP |
+| Recovery | Planned daemon replacement retains terminal hosts; unplanned failure restores layout/metadata | Automatic recovery after PTY-owner loss remains deferred |
 | Controller slots | Bound to AgentRunId with revisions | Names, pane numbers, and PID reuse cannot redirect clicks |
 | Desktop hardware integration | Bundle a Stream Deck integration daemon with the desktop app in a later phase | Reuse companion state and actions; packaging and process lifecycle remain to be implemented |
 
@@ -1429,10 +1429,20 @@ actual deployment, including service/cgroup policy and runtime-directory lifetim
 | G. Remote OS reboot | Old processes/PTYs do not survive | HostId/layout may survive; new epoch, no old Live run | Restore layout/CWD/labels; explicit new shell/agent, optional future conversation resume |
 | H. Agent process exits | That run ends; shell/PTY may remain | Record exit evidence and cancel its pending requests with reason | Release unpinned run slot; next agent gets a new run ID even in same pane |
 
-A future PTY supervisor would need to own PTY masters, process identity, screen recovery,
-and its own protocol across daemon restarts. That is an additional availability subsystem,
-not a free effect of saving layout.json, and is excluded from MVP. Do not auto-adopt an
-orphan based on PID, CWD, or a familiar terminal title.
+Planned replacement of an automatically started daemon is implemented on Linux and Windows.
+Each terminal host owns its PTY, ordered input, VT parser, and screen state. The daemon
+retains authoritative layout, leases, routes, and observations. The shared handoff coordinator
+freezes input, detaches clients, waits for metadata persistence, and records host-qualified
+terminal identities and layout locations in private runtime storage. A replacement validates
+the host identity and live terminal-host protocol before adopting those sessions. The new
+epoch requires fresh client identities and writer routes. Older updater clients retain their
+idle-only contract through explicit handoff capability negotiation.
+
+Terminal hosts keep their launching implementation until their sessions end. New terminals
+use the updated executable. Qualified provider hook observations remain scoped to their daemon
+epoch. Agent invocations made after reattaching a retained shell register with the new epoch.
+Automatic recovery after an unplanned PTY-owner failure remains deferred. Adoption requires
+the explicit handoff record and private protocol identity.
 
 ### 12.3 Stored data and privacy
 
@@ -1666,7 +1676,7 @@ negative assertions (including no unexpected process/window/input creation).
 |---|---|---|
 | Incomplete provider causality or approval IDs | False input/working/completion claims | Per-field evidence, qualified capabilities, request sets, stale-event rejection, Unknown; A5/A9/A22 |
 | Hook neutrality differs by version/event | Monitoring changes execution or blocks a CLI | Static neutral output, finite deadlines, no policy fields, fault-injection qualification; disable failing event; A17 |
-| One PTY-owning daemon | Crash affects all workspaces; live processes not recoverable | Explicit matrix, metadata backup, no resurrection claim; supervisor deferred; A23 |
+| PTY-owning terminal host failure | The affected session loses live process and screen continuity | Explicit matrix, metadata backup, and A23; automatic PTY-host crash recovery remains deferred |
 | VT engine/input mismatch | Broken CLI, corrupt screen, lost/misdirected input | Phase 0 gate, TERM honesty, per-client full redraw and input fences; A19/A20 |
 | Local terminal identity/OS foreground restrictions | Correct remote view but wrong/no local activation | Explicit pairing, instance/revision checks, separate outcome and manual fallback; A10/A25 |
 | Slow consumers and output bursts | Unbounded memory or all agents stalling | Per-terminal/parser budgets, separate control/render queues, disconnect/resync; A13 |
