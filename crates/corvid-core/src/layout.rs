@@ -71,7 +71,7 @@ pub struct Location {
     pub pane: Uuid,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CloseTarget {
     Workspace(Uuid),
     Tab { workspace: Uuid, tab: Uuid },

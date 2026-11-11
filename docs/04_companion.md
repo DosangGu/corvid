@@ -145,10 +145,11 @@ The initial attach joins a live pane in the default session or opens its shell.
 
 Use **New session** under the active connection. **New tab** creates a shell
 within the selected session. Click a pane to
-focus it. Other live panes in the same tab show read-only previews. Each
-workspace has one writer, so detach the TUI
-before using Desktop as the writer for that workspace. **Detach** and window
-close release the writer and keep PTYs running while the daemon survives.
+focus it. Other live panes in the same tab show read-only previews. Desktop and
+TUI clients using pane writers can operate different panes in the same
+workspace. An active pane has one writer. In the TUI, `corvid attach --new-tab NAME`
+opens a separate tab in the default workspace. **Detach** and window close
+release the writer and keep PTYs running while the daemon survives.
 Use `exit` in a shell to end that PTY.
 
 Ctrl+Shift+N creates a session, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits

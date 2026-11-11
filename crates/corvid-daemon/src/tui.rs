@@ -41,6 +41,7 @@ const CAPABILITIES: &[&str] = &[
     corvid_protocol::OBSERVER_CAPABILITY,
     corvid_protocol::WRITER_HANDOFF_CAPABILITY,
     corvid_protocol::WRITER_HANDOFF_REQUEST_CAPABILITY,
+    corvid_protocol::PANE_WRITERS_CAPABILITY,
     "render.v1",
     "ping.v1",
     "paste.v1",
@@ -854,6 +855,10 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         new_workspace: attach.create_workspace.clone(),
         new_tab: attach.create_tab.clone(),
         keymap: Keymap {
+            pane_writer: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == corvid_protocol::PANE_WRITERS_CAPABILITY),
             handoff: attach
                 .terminal_capabilities
                 .iter()

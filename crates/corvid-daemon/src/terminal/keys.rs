@@ -8,6 +8,7 @@ pub(crate) struct Keymap {
     pub(crate) panes: bool,
     pub(crate) close: bool,
     pub(crate) handoff: bool,
+    pub(crate) pane_writer: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

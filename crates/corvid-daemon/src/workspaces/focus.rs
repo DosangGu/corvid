@@ -117,12 +117,12 @@ impl Workspaces {
             Prepared::Move(destination, reserved) => (destination, reserved),
         };
         let result = self.switch_focus(old, target, destination, reserved).await;
-        if let Some(slot) = self
-            .lock_registry()
-            .slots
-            .get_mut(&destination.location.pane)
-        {
+        let mut registry = self.lock_registry();
+        if let Some(slot) = registry.slots.get_mut(&destination.location.pane) {
             slot.reserved = false;
+        }
+        if result.is_err() {
+            registry.remove_pane_claim(destination.location.pane, old.route.client_id);
         }
         result
     }
@@ -305,7 +305,16 @@ impl Registry {
         {
             return Err(target_gone());
         }
-        let lease = self.require_writer(target.client, location.workspace)?;
+        let lease = if client.keymap.pane_writer {
+            let view = client.view.as_ref().expect("validated client view");
+            if view.location.workspace != location.workspace {
+                return Err(super::writer_required());
+            }
+            self.check_pane_available(target.client, location)?;
+            view.route.writer_lease_generation
+        } else {
+            self.require_writer(target.client, location.workspace)?
+        };
         debug_assert_eq!(client.view.as_ref().unwrap().route.client_id, target.client);
         Ok(FocusDestination {
             location,

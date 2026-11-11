@@ -39,6 +39,55 @@ const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
 #[tokio::test]
+async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_edits() {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let runtime = fixture.path().join("run");
+    let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    let attach = |new_tab| Attach {
+        create_tab: new_tab,
+        terminal_capabilities: vec![corvid_protocol::PANE_WRITERS_CAPABILITY.into()],
+        launch: Some(LaunchCommand {
+            argv: vec![b"/bin/sh".to_vec()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut first = Tui::attach_target(&runtime, attach(None)).await;
+    let mut second = Tui::attach_target(&runtime, attach(Some("Second".into()))).await;
+    assert_eq!(first.selection.workspace_id, second.selection.workspace_id);
+    assert_ne!(first.selection.pane_id, second.selection.pane_id);
+
+    let mut first_output = Vec::new();
+    let mut second_output = Vec::new();
+    first.select(&second.selection).await;
+    assert!(
+        matches!(first.next_body(&mut first_output).await, Body::Error(error) if error.code == "WorkspaceBusy")
+    );
+    first
+        .send(Body::CloseView(CloseView {
+            expected_view_revision: Some(first.route.view_revision),
+            workspace_id: first.selection.workspace_id.clone(),
+            tab_id: None,
+            pane_id: None,
+        }))
+        .await;
+    assert!(
+        matches!(first.next_body(&mut first_output).await, Body::Error(error) if error.code == "WorkspaceBusy")
+    );
+
+    first
+        .input(first.route.clone(), 1, b"printf 'FIR%s\\n' ST_PANE\r")
+        .await;
+    second
+        .input(second.route.clone(), 1, b"printf 'SEC%s\\n' OND_PANE\r")
+        .await;
+    wait_for_text(&mut first, &mut first_output, "FIRST_PANE").await;
+    wait_for_text(&mut second, &mut second_output, "SECOND_PANE").await;
+    assert!(!String::from_utf8_lossy(&first_output).contains("SECOND_PANE"));
+    assert!(!String::from_utf8_lossy(&second_output).contains("FIRST_PANE"));
+}
+
+#[tokio::test]
 async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let home = fixture.path();

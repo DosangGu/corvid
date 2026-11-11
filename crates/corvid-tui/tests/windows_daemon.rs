@@ -69,6 +69,44 @@ async fn read_only_terminal_crops_then_accepts_an_explicit_writer_handoff() -> R
 }
 
 #[tokio::test]
+async fn two_windows_clients_write_to_different_tabs_in_the_same_workspace() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let shell = ["--", "powershell.exe", "-NoLogo", "-NoProfile"];
+    let mut first = Tui::open(
+        &runtime,
+        ["attach", "--new"]
+            .into_iter()
+            .chain(shell)
+            .map(OsString::from),
+    )?;
+    first.wait_for("PS ")?;
+    let mut second = Tui::open(
+        &runtime,
+        ["attach", "--new-tab", "Second"]
+            .into_iter()
+            .chain(shell)
+            .map(OsString::from),
+    )?;
+    second.wait_for("PS ")?;
+    second.resize(72, 22)?;
+    second.wait_for("CORVID")?;
+    first.send(b"[Console]::WriteLine(('FIRST_' + [Console]::WindowWidth))\r")?;
+    second.send(b"[Console]::WriteLine(('SECOND_' + [Console]::WindowWidth))\r")?;
+    first.wait_for("FIRST_100")?;
+    second.wait_for("SECOND_72")?;
+    first.wait_without("SECOND_72")?;
+    second.wait_without("FIRST_100")?;
+    first.send(b"exit\r")?;
+    second.send(b"exit\r")?;
+    first.expect_exit(0)?;
+    second.expect_exit(0)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_agent_launch_tracks_the_owned_child_through_exit() -> Result<()> {
     use corvid_protocol::wire::{
         AgentCollection, AgentLifecycle, AgentProcessState, AgentProvider, ProviderExecutionMode,

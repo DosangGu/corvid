@@ -93,7 +93,7 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 | Layout | Workspace → Tab → N-way tree → Pane → optional Terminal | The daemon creates splits and retains pane identity through selection and detach |
 | State authority | Server reducer for domain state; terminal workers for ordered screen state | UI shows evidence, not agent omniscience |
 | Focus and keymaps | Per ClientId, resolved on server | No system-wide focused pane or active keymap |
-| Input ownership | Explicit workspace writer lease; competing attach rejected | Focus never grants or steals a lease; later observers crop/pad |
+| Input ownership | One writer per pane for clients using pane writers | Competing input is rejected. Observers crop or pad the writer's screen. |
 | PTY size | One canonical size per PTY, derived from its workspace writer | Client viewport is separate; last size survives writer departure |
 | Input path | Modal controls plus byte-preserving passthrough first | Legacy bytes do not always identify unambiguous keys |
 | Rendering | Server composition and per-client frame state | Ratatui is a composition/diff tool, not a VT engine or recovery protocol |
@@ -589,11 +589,13 @@ only if it fences old generations and reconstructs all outer-terminal state.
 
 ### 7.3 Writer ownership and canonical sizes
 
-Initial policy is **writer-or-reject per workspace**. An explicit attach/claim grants a
-lease only if the workspace is unowned. A second attach to that workspace returns
-`WorkspaceBusy`; it is not silently promoted, made writer, or used to resize the PTYs.
-A client may explicitly claim multiple workspaces for switching between them. Creating a
-workspace in the TUI claims it for that client. FocusAgent does not claim/release leases.
+Clients using `pane_writers.v1` hold a writer lease on their selected pane.
+Clients can select and write to different panes in the same workspace. Selecting
+a pane owned by another client returns `WorkspaceBusy`. An attach without an exact
+pane prefers a live pane with no writer. A successful switch releases the source
+pane. Bound agent focus can switch to an available pane in the writer's current
+workspace. Older clients retain exclusive workspace claims. A legacy claim and
+pane writers cannot coexist in the same workspace.
 
 The writer's viewport and Corvid chrome determine layout dimensions and each PTY's
 canonical rows/columns. The child process sees exactly one size. Retain the last valid
@@ -602,8 +604,10 @@ chrome) only for a terminal that has never had a writer. Reject invalid dimensio
 
 The `status_bar.v1` capability reserves the bottom row when the outer viewport
 has at least three rows. The daemon composes the workspace, tabs, and input
-mode into the render stream and sets each PTY in that writer's workspaces to
-the remaining size. Peers without the capability use the full viewport.
+mode into the render stream and sets the selected PTY to the remaining size.
+Other panes keep their last size until they have a writer. Peers without the
+capability use the full viewport. A legacy workspace writer still sizes its
+hidden panes.
 
 An explicit TUI read-only attach displays the canonical screen using crop/pad.
 An observer's larger viewport does not create a larger child screen, and a
@@ -728,12 +732,14 @@ daemon; keep rendering, mouse interaction, and key bindings in the presentations
 Equivalent action sequences must produce equivalent domain state and lifecycle
 outcomes. This does not require identical pixels or keyboard shortcuts.
 
-Both clients can create tabs and split or select panes on the daemon. Explicit
-close requires the target workspace's writer lease. The daemon removes the
+Both clients can create tabs and split or select panes on the daemon. A pane
+writer can close views in its workspace when the target contains no pane
+owned by another writer. The daemon removes the
 target and stops its PTYs. Removing the last pane removes its tab, and removing
 the last tab removes its workspace. When the active pane closes, the daemon
-prefers a surviving live pane in the same tab, then the same workspace, then
-another workspace owned by the client. If none is available, the client detaches.
+prefers an available live pane in the same tab and then the same workspace.
+A legacy writer can also fall back to another workspace it claimed.
+If none is available, the client detaches.
 Closing the final workspace leaves a fresh layout without a running shell.
 Closing the GUI window releases its writer lease while the daemon keeps its PTYs
 alive. Operation-by-operation parity remains subject to A32.

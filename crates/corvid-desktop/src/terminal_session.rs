@@ -888,6 +888,16 @@ async fn attach(
 ) -> Result<Attached> {
     request.viewport = Some(grid.wire());
     request.terminal_capabilities.push("legacy_vt.v1".into());
+    if link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == corvid_protocol::PANE_WRITERS_CAPABILITY)
+    {
+        request
+            .terminal_capabilities
+            .push(corvid_protocol::PANE_WRITERS_CAPABILITY.into());
+    }
     if request.requested_role == AttachRole::Unspecified as i32 {
         request.requested_role = AttachRole::Writer as i32;
     }

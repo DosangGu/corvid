@@ -17,8 +17,9 @@ use corvid_protocol::wire::{
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
     COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameReader,
-    FrameWriter, MOVE_TAB_CAPABILITY, PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY,
-    RenderFrame, STATUS_BAR_CAPABILITY, Session, WRITER_HANDOFF_CAPABILITY, decode_envelope,
+    FrameWriter, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
+    RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
+    WRITER_HANDOFF_CAPABILITY, decode_envelope,
 };
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{SignalKind, signal};
@@ -181,6 +182,7 @@ async fn request_attach(
         PAIR_CAPABILITY,
         STATUS_BAR_CAPABILITY,
         CLOSE_VIEW_CAPABILITY,
+        PANE_WRITERS_CAPABILITY,
     ] {
         if connection
             .session

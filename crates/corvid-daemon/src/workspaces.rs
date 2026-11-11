@@ -14,7 +14,7 @@ use anyhow::Result;
 use corvid_core::agent::ProcessLiveness;
 #[cfg(target_os = "linux")]
 use corvid_core::agent::Provider;
-use corvid_core::layout::{Axis, CwdObservation, CwdSource, Layout, Location};
+use corvid_core::layout::{Axis, CloseTarget, CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
@@ -137,6 +137,8 @@ pub(crate) struct Registry {
     controllers: Controllers,
     generation: u64,
     claims: HashMap<Uuid, Claim>,
+    pane_claims: HashMap<Uuid, Claim>,
+    closing: Vec<CloseTarget>,
     slots: HashMap<Uuid, Slot>,
     retired: Vec<JoinHandle<()>>,
 }
@@ -191,6 +193,8 @@ impl Workspaces {
                 controllers: Controllers::default(),
                 generation: 0,
                 claims: HashMap::new(),
+                pane_claims: HashMap::new(),
+                closing: Vec::new(),
                 slots: HashMap::new(),
                 retired: Vec::new(),
             })),
@@ -214,6 +218,7 @@ impl Workspaces {
         registry.sweep();
         registry.clients.is_empty()
             && registry.claims.is_empty()
+            && registry.pane_claims.is_empty()
             && registry.slots.is_empty()
             && registry.retired.is_empty()
     }
@@ -397,7 +402,7 @@ impl Workspaces {
         let notice = registry.agents.apply_hook(hook, owner, producer)?;
         registry.publish(Vec::new());
         if let Some((location, provider)) = notice
-            && let Some(claim) = registry.claims.get(&location.workspace)
+            && let Some(claim) = registry.writer_at(location)
             && let Some(client) = registry.clients.get(&claim.client)
             && client.view.is_some()
             && let Some(notices) = &client.notices
@@ -470,7 +475,7 @@ impl Workspaces {
                 Ok(active)
             }
             Err(fault) => {
-                registry.claims.retain(|_, claim| claim.client != client);
+                registry.release_claims(client);
                 Err(fault)
             }
         }
@@ -490,15 +495,10 @@ impl Workspaces {
         }
         let mut registry = self.lock_registry();
         let mut layout = self.metadata.layout();
-        let mut location = resolve(&registry, &mut layout, target)?;
+        let mut location = resolve(&registry, &mut layout, target, false)?;
         if target.tab.is_none()
             && target.pane.is_none()
-            && let Some(view) = registry
-                .claims
-                .get(&location.workspace)
-                .and_then(|claim| registry.clients.get(&claim.client))
-                .and_then(|client| client.view.as_ref())
-                .filter(|view| view.location.workspace == location.workspace)
+            && let Some(view) = registry.writer_view(location.workspace)
         {
             location = view.location;
         }
@@ -551,11 +551,13 @@ impl Workspaces {
         let (spec, receiver, promote, focuses) = {
             let mut registry = self.lock_registry();
             registry.require_route(old.route)?;
-            registry.require_writer(old.route.client_id, old.location.workspace)?;
+            registry.require_pane_writer(old.route.client_id, old.location)?;
+            let shared = registry.clients[&old.route.client_id].keymap.pane_writer;
             let mut eligible = registry.observers.iter().filter(|(_, observer)| {
                 observer.location == old.location
                     && observer.terminal == old.route.terminal_id
                     && observer.keymap.handoff
+                    && (!shared || observer.keymap.pane_writer)
                     && observer
                         .promote
                         .as_ref()
@@ -621,12 +623,13 @@ impl Workspaces {
             if let Some(previous) = registry.clients.get_mut(&old.route.client_id) {
                 previous.view = None;
             }
-            registry.claims.insert(
-                old.location.workspace,
-                Claim {
-                    client,
-                    generation: route.writer_lease_generation,
-                },
+            registry.pane_claims.remove(&old.location.pane);
+            registry.claims.remove(&old.location.workspace);
+            registry.insert_claim(
+                active.location,
+                keymap,
+                client,
+                route.writer_lease_generation,
             );
             registry.clients.insert(
                 client,
@@ -661,8 +664,8 @@ impl Workspaces {
         let mut registry = self.lock_registry();
         registry.sweep();
         let mut layout = self.metadata.layout();
-        let location = resolve(&registry, &mut layout, target)?;
-        registry.check_available(location.workspace)?;
+        let location = resolve(&registry, &mut layout, target, target.keymap.pane_writer)?;
+        registry.check_attach(location, target.keymap)?;
         if let Some(launch) = &mut target.launch
             && (!launch.if_empty || !registry.has_live_at(location))
         {
@@ -673,16 +676,14 @@ impl Workspaces {
         if target.new_workspace.is_some() || target.new_tab.is_some() {
             registry.publish_layout(layout, Vec::new());
         }
-        registry
-            .claims
-            .insert(location.workspace, Claim { client, generation });
+        registry.insert_claim(location, target.keymap, client, generation);
         Ok((location, generation, terminal))
     }
 
     pub(crate) fn release(&self, client: Uuid) {
         let mut registry = self.lock_registry();
         registry.observers.remove(&client);
-        registry.claims.retain(|_, claim| claim.client != client);
+        registry.release_claims(client);
         registry.clients.remove(&client);
         registry.controllers.disconnect(client);
         registry.publish(vec![(Group::Client(client), Vec::new())]);
@@ -698,12 +699,19 @@ impl Workspaces {
         {
             return Err(target_gone());
         }
+        if registry.clients[&client].keymap.pane_writer {
+            registry.check_workspace_writer(client, workspace)?;
+            return Ok(registry.clients[&client].generation);
+        }
         if let Some(claim) = registry.claims.get(&workspace) {
             return if claim.client == client {
                 Ok(claim.generation)
             } else {
                 Err(busy())
             };
+        }
+        if registry.pane_claims_in(workspace).next().is_some() {
+            return Err(busy());
         }
         let generation = registry.next_generation()?;
         registry
@@ -726,13 +734,25 @@ impl Workspaces {
 
         let source_workspace = active.location.workspace;
         let client = active.route.client_id;
-        registry.require_writer(client, source_workspace)?;
-        registry.require_writer(client, destination)?;
+        registry.require_pane_writer(client, active.location)?;
+        let pane_writer = registry.clients[&client].keymap.pane_writer;
+        if pane_writer {
+            registry.check_workspace_writer(client, destination)?;
+        } else {
+            registry.require_writer(client, destination)?;
+        }
 
         let mut layout = self.metadata.layout();
         let source = layout
             .locate(Some(source_workspace), Some(tab))
             .ok_or_else(target_gone)?;
+        registry.check_pane_available(client, source)?;
+        if registry.closing.iter().any(|target| {
+            target.contains(source)
+                || matches!(target, CloseTarget::Workspace(id) if *id == destination)
+        }) {
+            return Err(input_busy());
+        }
         let terminal = registry.movable_terminal(source)?;
         let location = Arc::make_mut(&mut layout)
             .move_pane_tab(source, destination)
@@ -809,6 +829,8 @@ impl Workspaces {
         }
         if let Ok(switched) = &result {
             registry.record_view(&switched.active);
+        } else {
+            registry.remove_pane_claim(location.pane, old.route.client_id);
         }
         result.map(Some)
     }
@@ -835,13 +857,17 @@ impl Workspaces {
             .layout()
             .locate(Some(location.workspace), None)
             .is_none();
-        let lease_generation = if creates_workspace {
+        let pane_writer = registry.clients[&client].keymap.pane_writer;
+        let lease_generation = if pane_writer {
+            registry.check_pane_available(client, location)?;
+            old.route.writer_lease_generation
+        } else if creates_workspace {
             registry.next_generation()?
         } else {
             registry.require_writer(client, location.workspace)?
         };
         let reserved = self.reserve_view(&mut registry, old, location, lease_generation, launch)?;
-        if creates_workspace {
+        if creates_workspace && !pane_writer {
             registry.claims.insert(
                 location.workspace,
                 Claim {
@@ -866,7 +892,11 @@ impl Workspaces {
     ) -> Reply<ReservedSwitch> {
         let revision = old.route.view_revision.checked_add(1).ok_or_else(limit)?;
         let keymap = registry.clients[&old.route.client_id].keymap;
+        registry.check_not_closing(location)?;
         let terminal = self.reserve_slot(registry, location, launch.is_some())?;
+        if keymap.pane_writer {
+            registry.insert_claim(location, keymap, old.route.client_id, lease_generation);
+        }
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
             location,
@@ -1046,6 +1076,9 @@ impl Registry {
                 .as_ref()
                 .is_some_and(|view| view.route.terminal_id == id)
             {
+                if let Some(view) = &client.view {
+                    self.pane_claims.remove(&view.location.pane);
+                }
                 client.view = None;
                 cleared.push(*client_id);
             }
@@ -1079,6 +1112,9 @@ impl Registry {
             && client.generation == route.connection_generation
         {
             client.view = view;
+            self.pane_claims.retain(|pane, claim| {
+                claim.client != route.client_id || *pane == active.location.pane
+            });
             return true;
         }
         false
@@ -1122,6 +1158,14 @@ impl Registry {
                 generation: claim.generation,
             })
             .collect();
+        if client.keymap.pane_writer
+            && let Some(view) = view
+        {
+            writer_leases.push(WriterLeaseState {
+                workspace_id: view.location.workspace.to_string(),
+                generation: view.route.writer_lease_generation,
+            });
+        }
         writer_leases.sort_by(|first, second| first.workspace_id.cmp(&second.workspace_id));
         Some(ClientState {
             client_id: id.to_string(),
@@ -1178,8 +1222,15 @@ impl Registry {
         }
     }
 
-    fn check_available(&self, workspace: Uuid) -> Reply<()> {
-        if self.claims.contains_key(&workspace) {
+    fn check_attach(&self, location: Location, keymap: Keymap) -> Reply<()> {
+        self.check_not_closing(location)?;
+        if self.claims.contains_key(&location.workspace)
+            || if keymap.pane_writer {
+                self.pane_claims.contains_key(&location.pane)
+            } else {
+                self.pane_claims_in(location.workspace).next().is_some()
+            }
+        {
             return Err(busy());
         }
         Ok(())
@@ -1198,6 +1249,90 @@ impl Registry {
             return Err(busy());
         }
         Ok(claim.generation)
+    }
+
+    fn pane_claims_in(&self, workspace: Uuid) -> impl Iterator<Item = &Claim> {
+        self.pane_claims.iter().filter_map(move |(pane, claim)| {
+            self.slots
+                .get(pane)
+                .is_some_and(|slot| slot.workspace == workspace)
+                .then_some(claim)
+        })
+    }
+
+    fn writer_at(&self, location: Location) -> Option<&Claim> {
+        self.claims
+            .get(&location.workspace)
+            .or_else(|| self.pane_claims.get(&location.pane))
+    }
+
+    fn writer_view(&self, workspace: Uuid) -> Option<&ClientView> {
+        self.clients
+            .values()
+            .filter_map(|client| client.view.as_ref())
+            .filter(|view| view.location.workspace == workspace)
+            .max_by_key(|view| view.route.connection_generation)
+    }
+
+    fn require_pane_writer(&self, client: Uuid, location: Location) -> Reply<u64> {
+        let claim = self.writer_at(location).ok_or_else(writer_required)?;
+        if claim.client != client {
+            return Err(busy());
+        }
+        Ok(claim.generation)
+    }
+
+    fn check_workspace_writer(&self, client: Uuid, workspace: Uuid) -> Reply<()> {
+        if self
+            .claims
+            .get(&workspace)
+            .is_some_and(|claim| claim.client != client)
+        {
+            return Err(busy());
+        }
+        Ok(())
+    }
+
+    fn check_not_closing(&self, location: Location) -> Reply<()> {
+        if self.closing.iter().any(|target| target.contains(location)) {
+            return Err(input_busy());
+        }
+        Ok(())
+    }
+
+    fn check_pane_available(&self, client: Uuid, location: Location) -> Reply<()> {
+        self.check_not_closing(location)?;
+        if self
+            .writer_at(location)
+            .is_some_and(|claim| claim.client != client)
+        {
+            return Err(busy());
+        }
+        Ok(())
+    }
+
+    fn insert_claim(&mut self, location: Location, keymap: Keymap, client: Uuid, generation: u64) {
+        let claim = Claim { client, generation };
+        if keymap.pane_writer {
+            self.pane_claims.insert(location.pane, claim);
+        } else {
+            self.claims.insert(location.workspace, claim);
+        }
+    }
+
+    fn remove_pane_claim(&mut self, pane: Uuid, client: Uuid) {
+        if self
+            .pane_claims
+            .get(&pane)
+            .is_some_and(|claim| claim.client == client)
+        {
+            self.pane_claims.remove(&pane);
+        }
+    }
+
+    fn release_claims(&mut self, client: Uuid) {
+        self.claims.retain(|_, claim| claim.client != client);
+        self.pane_claims.retain(|_, claim| claim.client != client);
     }
 
     fn movable_terminal(&self, location: Location) -> Reply<Uuid> {
@@ -1378,6 +1513,7 @@ fn resolve(
     registry: &Registry,
     layout: &mut Arc<Layout>,
     target: &AttachTarget,
+    prefer_available: bool,
 ) -> Reply<Location> {
     if (target.new_workspace.is_some() && (target.workspace.is_some() || target.tab.is_some()))
         || (target.new_tab.is_some() && target.tab.is_some())
@@ -1415,14 +1551,19 @@ fn resolve(
             .workspaces
             .iter()
             .find(|item| item.id == location.workspace);
-        if let Some(live) = workspace
+        let mut live = workspace
             .into_iter()
             .flat_map(|item| &item.tabs)
             .filter(|tab| target.tab.is_none_or(|id| id == tab.id))
             .flat_map(|tab| layout.panes(location.workspace, tab.id))
-            .find(|location| registry.has_live_at(*location))
-        {
-            return Ok(live);
+            .filter(|location| registry.has_live_at(*location));
+        if let Some(first) = live.next() {
+            if prefer_available && registry.check_attach(first, target.keymap).is_err() {
+                return Ok(live
+                    .find(|location| registry.check_attach(*location, target.keymap).is_ok())
+                    .unwrap_or(first));
+            }
+            return Ok(first);
         }
     }
     Ok(location)
@@ -1451,7 +1592,11 @@ fn target_gone() -> ProtocolFault {
 }
 
 fn busy() -> ProtocolFault {
-    ProtocolFault::new("WorkspaceBusy", "workspace already has a writer")
+    ProtocolFault::new("WorkspaceBusy", "pane or workspace already has a writer")
+}
+
+fn input_busy() -> ProtocolFault {
+    ProtocolFault::new("InputBusy", "the layout is changing")
 }
 
 fn writer_required() -> ProtocolFault {
