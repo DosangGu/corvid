@@ -56,10 +56,19 @@ jobs:
           chmod 700 "$HOME/.corvid-tests"
           echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
       - run: rustup target add ${{ matrix.target }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+            target/${{ matrix.target }}/release
+          key: rust-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: rust-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-tui -p corvid-update
       - name: Runtime tests
-        run: cargo test --locked -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
+        run: cargo test --locked --release --target ${{ matrix.target }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
       - name: Runtime manifest
         run: python deploy/package.py runtime --target ${{ matrix.target }} --binary target/${{ matrix.target }}/release/${{ matrix.binary }} --output target/runtime
       - name: Package TUI
@@ -106,12 +115,21 @@ jobs:
         with:
           pattern: runtime-*
           path: target/runtimes
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+            target/${{ matrix.target }}/release
+          key: desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-slot-board -p corvid-update
       - name: Workspace tests
-        run: cargo test --locked --workspace
+        run: cargo test --locked --release --target ${{ matrix.target }} --workspace
       - name: Workspace lints
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --release --target ${{ matrix.target }} --workspace --all-targets -- -D warnings
       - name: Package Desktop with both runtimes
         run: python deploy/package.py package --product desktop --target ${{ matrix.target }} --runtime target/runtimes/runtime-${{ matrix.native }} --linux-runtime target/runtimes/runtime-x86_64-unknown-linux-musl --windows-runtime target/runtimes/runtime-x86_64-pc-windows-msvc --build target/${{ matrix.target }}/release --output target/dist
       - name: Desktop package installation
