@@ -136,8 +136,10 @@ monitor. Windows notification architecture follows the
 Desktop provides [terminal selection, scrollback, and search](04_companion.md#desktop-terminal-selection-and-history).
 Windows supports process observation for
 [direct native agent launches](04_companion.md#windows-quick-start).
+Desktop's Sessions menu watches verified hosts while their terminal views are
+detached. Agent Deck windows and slot layouts remain scoped to their hosts.
 The remaining requested backlog includes Windows provider hook and shell launch
-coverage, unified multi-host management, and read-only
+coverage, a combined Agent Deck view for multiple hosts, and read-only
 attach with explicit writer handoff. Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in
 [release distribution](05_release_distribution.md#planned-native-installers-and-linux-packages).

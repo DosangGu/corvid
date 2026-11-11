@@ -85,9 +85,13 @@ Open **Sessions** in the toolbar to browse sessions under **Local Terminal**
 and each connected SSH host. The list shows concrete
 `Host` aliases from `%USERPROFILE%\.ssh\config` and static, unconditional
 `Include` files. Use **Refresh** after editing the config, or enter an alias
-manually. Desktop keeps the last session list for visited connections while
-the app is open. Select a session to open it directly. Switching connections
-detaches the current view and keeps its daemon's terminals running.
+manually. While Desktop is open, **Sessions** keeps verified inventories for
+visited connections. Desktop continues to watch up to eight detached hosts for
+session and agent changes, with the status **Live · detached**. If a watch loses
+the connection, Desktop marks the retained inventory **Cached**. A detached
+watch checks the previously verified host ID and holds no writer lease.
+Select a session to open it directly. Switching connections detaches the
+current view and keeps its daemon's terminals running.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
 
 On Windows, **Sessions → WSL** lists installed distributions. Select a distribution

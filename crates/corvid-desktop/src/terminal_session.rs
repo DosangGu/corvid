@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use corvid_client::WslDistribution;
 use corvid_client::{ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias};
 use corvid_companion::{Config, HostEndpoint};
+use corvid_protocol::snapshot::SynchronizedSnapshot;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::layout_node_state::Body as Node;
@@ -116,6 +117,23 @@ pub struct Inventory {
 }
 
 impl Inventory {
+    pub fn read(state: &SynchronizedSnapshot) -> Self {
+        let mut inventory = Self::default();
+        for entity in state.snapshot().entities() {
+            match &entity.body {
+                Some(EntityBody::Workspace(workspace)) => {
+                    inventory.workspaces.push(workspace.clone())
+                }
+                Some(EntityBody::Terminal(terminal)) => inventory.terminals.push(terminal.clone()),
+                Some(EntityBody::Agent(agent)) if agent.parent_run_id.is_none() => {
+                    inventory.agents.extend(agent.summary.clone());
+                }
+                _ => {}
+            }
+        }
+        inventory
+    }
+
     pub fn live(&self, selection: &ViewSelection) -> bool {
         self.terminals
             .iter()
@@ -157,6 +175,7 @@ impl Inventory {
 #[derive(Clone)]
 pub struct Ui {
     pub host_id: Option<String>,
+    pub endpoint: Option<ControlEndpoint>,
     pub terminal_id: Option<String>,
     pub selected: Option<ViewSelection>,
     pub inventory: Option<Arc<Inventory>>,
@@ -265,6 +284,7 @@ impl Session {
             buffer: Mutex::new(Buffer {
                 ui: Ui {
                     host_id: None,
+                    endpoint: None,
                     terminal_id: None,
                     selected: None,
                     inventory: None,
@@ -700,6 +720,7 @@ async fn run(
         .any(|name| name == CLOSE_VIEW_CAPABILITY);
     shared.update_ui(|ui| {
         ui.host_id = Some(host.clone());
+        ui.endpoint = Some(endpoint.clone());
         ui.close_supported = close_supported;
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
@@ -797,19 +818,7 @@ async fn watch_inventory_once(
         "daemon restarted during attach"
     );
     loop {
-        let mut inventory = Inventory::default();
-        for entity in watch.state().snapshot().entities() {
-            match &entity.body {
-                Some(EntityBody::Workspace(workspace)) => {
-                    inventory.workspaces.push(workspace.clone())
-                }
-                Some(EntityBody::Terminal(terminal)) => inventory.terminals.push(terminal.clone()),
-                Some(EntityBody::Agent(agent)) if agent.parent_run_id.is_none() => {
-                    inventory.agents.extend(agent.summary.clone());
-                }
-                _ => {}
-            }
-        }
+        let inventory = Inventory::read(watch.state());
         {
             let mut buffer = shared.buffer();
             buffer.previews.retain(|pane, _| {

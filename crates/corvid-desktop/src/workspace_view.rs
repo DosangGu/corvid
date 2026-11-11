@@ -1,13 +1,14 @@
 use std::cell::RefCell;
+mod host_watch;
 mod update;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use corvid_client::SshAlias;
 #[cfg(windows)]
 use corvid_client::WslDistribution;
+use corvid_client::{ControlEndpoint, SshAlias};
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::{CloseView, SplitAxis, TabState, ViewSelection, WorkspaceState};
@@ -28,6 +29,7 @@ const TEXT: u32 = 0xe3e8ee;
 const MUTED: u32 = 0xa4adbc;
 const ACTIVE: u32 = 0x83dec0;
 const ACTIVE_FILL: u32 = 0x20332f;
+const MAX_BACKGROUND_HOSTS: usize = 8;
 
 #[derive(Clone, Default)]
 pub struct Lifetime(Rc<RefCell<Option<Job>>>);
@@ -89,7 +91,10 @@ pub struct WorkspaceView {
 
 struct KnownSessions {
     host_id: String,
+    endpoint: ControlEndpoint,
     inventory: Arc<Inventory>,
+    live: bool,
+    watch: Option<(Instant, Task<()>)>,
 }
 
 impl WorkspaceView {
@@ -281,7 +286,14 @@ impl WorkspaceView {
             self.preferred_tabs.clear();
             self.preferred_panes.clear();
         }
-        self.destination = Some(destination);
+        let previous = self.destination.replace(destination.clone());
+        if let Some(known) = self.known_sessions.get_mut(&destination) {
+            known.watch = None;
+            known.live = false;
+        }
+        if let Some(previous) = previous.filter(|previous| previous != &destination) {
+            self.watch_host(previous, cx);
+        }
         let mut changes = session.changes();
         self.session = Some(session);
         self.updates = Some(cx.spawn_in(window, async move |view, cx| {
@@ -322,19 +334,72 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = &self.session else { return };
-        let ui = session.ui();
-        if ui.closed_view
-            && let Some(destination) = &self.destination
+    fn watch_host(&mut self, destination: Destination, cx: &mut Context<Self>) {
+        let Some(known) = self
+            .known_sessions
+            .get(&destination)
+            .filter(|known| known.watch.is_none())
+        else {
+            return;
+        };
+        let Ok(mut updates) = host_watch::start(known.endpoint.clone(), known.host_id.clone())
+        else {
+            return;
+        };
+        if self
+            .known_sessions
+            .values()
+            .filter(|known| known.watch.is_some())
+            .count()
+            >= MAX_BACKGROUND_HOSTS
+            && let Some(oldest) = self
+                .known_sessions
+                .values_mut()
+                .filter(|known| known.watch.is_some())
+                .min_by_key(|known| known.watch.as_ref().map(|(started, _)| *started))
         {
-            self.known_sessions.remove(destination);
+            oldest.watch = None;
+            oldest.live = false;
+        }
+        let target = destination.clone();
+        let task = cx.spawn(async move |view, cx| {
+            while updates.changed().await.is_ok() {
+                let inventory = updates.borrow_and_update().clone();
+                if view
+                    .update(cx, |view, cx| {
+                        if let Some(known) = view.known_sessions.get_mut(&target) {
+                            known.live = inventory.is_some();
+                            if let Some(inventory) = inventory {
+                                known.inventory = inventory;
+                            }
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let known = self
+            .known_sessions
+            .get_mut(&destination)
+            .expect("known host");
+        known.live = false;
+        known.watch = Some((Instant::now(), task));
+    }
+
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = self.session.as_ref().map(Session::ui) else {
+            return;
+        };
+        if ui.closed_view {
             self.selected = None;
             self.terminal = None;
         }
         if ui.inventory_ready
-            && let (Some(destination), Some(host_id), Some(inventory)) =
-                (&self.destination, &ui.host_id, &ui.inventory)
+            && let (Some(destination), Some(host_id), Some(endpoint), Some(inventory)) =
+                (&self.destination, &ui.host_id, &ui.endpoint, &ui.inventory)
             && self
                 .known_sessions
                 .get(destination)
@@ -344,9 +409,18 @@ impl WorkspaceView {
                 destination.clone(),
                 KnownSessions {
                     host_id: host_id.clone(),
+                    endpoint: endpoint.clone(),
                     inventory: Arc::clone(inventory),
+                    live: true,
+                    watch: None,
                 },
             );
+        }
+        if !ui.connected
+            && !ui.changing
+            && let Some(destination) = &self.destination
+        {
+            self.watch_host(destination.clone(), cx);
         }
         if ui.connected
             && let Some(selected) = ui.selected
@@ -357,7 +431,7 @@ impl WorkspaceView {
             self.preferred_panes
                 .insert(selected.tab_id.clone(), selected.pane_id.clone());
             let pane = selected.pane_id.clone();
-            let session = session.clone();
+            let session = self.session.clone().expect("connected session");
             self.selected = Some(selected);
             self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, cx)));
             if !self.alias_focus.is_focused(window) {
@@ -1021,8 +1095,10 @@ impl WorkspaceView {
             "Connected"
         } else if current.is_some_and(|ui| ui.changing) {
             "Connecting…"
+        } else if known.is_some_and(|known| known.live) {
+            "Live · detached"
         } else if known.is_some() {
-            "Reconnect ›"
+            "Cached · reconnect ›"
         } else {
             "Connect ›"
         };
@@ -1047,6 +1123,22 @@ impl WorkspaceView {
                     .text_color(rgb(TEXT))
                     .text_size(px(13.))
                     .child(div().flex_1().min_w_0().truncate().child(label))
+                    .when_some(known.filter(|known| known.live), |row, known| {
+                        let agents = known
+                            .inventory
+                            .agents
+                            .iter()
+                            .filter(|agent| agent.terminal_available)
+                            .count();
+                        row.when(agents > 0, |row| {
+                            row.child(div().flex_none().text_xs().text_color(rgb(MUTED)).child(
+                                format!(
+                                    "{agents} {}",
+                                    if agents == 1 { "agent" } else { "agents" }
+                                ),
+                            ))
+                        })
+                    })
                     .child(
                         div()
                             .flex_none()
