@@ -134,8 +134,10 @@ monitor. Windows notification architecture follows the
 [desktop toast sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/DesktopToasts).
 
 Desktop provides [terminal selection, scrollback, and search](04_companion.md#desktop-terminal-selection-and-history).
-The remaining requested backlog includes native Windows agent observation,
-unified multi-host management, and read-only
+Windows supports process observation for
+[direct native agent launches](04_companion.md#windows-quick-start).
+The remaining requested backlog includes Windows provider hook and shell launch
+coverage, unified multi-host management, and read-only
 attach with explicit writer handoff. Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in
 [release distribution](05_release_distribution.md#planned-native-installers-and-linux-packages).

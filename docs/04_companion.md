@@ -156,6 +156,19 @@ Code activity, including **Working**, **Input needed**, and **Response observed*
 Click a live agent's name to open its pane in Desktop. See the
 [provider setup](03_provider_qualification.md) for hook coverage.
 
+For native Windows process observation, launch the agent in a new Corvid tab:
+
+```powershell
+corvid attach --new-tab Codex --agent codex
+corvid attach --new-tab Claude --agent claude
+```
+
+The daemon resolves `codex.exe` or `claude.exe` on its PATH. The Deck can
+show the run and its exact pane once Desktop attaches to the workspace.
+The Windows adapter reports the process started by Corvid and its exit status.
+Provider activity, requests, and response notifications require qualified hooks.
+The native adapter currently covers direct launches of the named executables.
+
 Use `corvid-deck.exe` for the standalone companion deck and WezTerm pairing.
 Open a working TUI with `ssh -tt work-host corvid`, press Ctrl-] then r, and
 use **Pair WezTerm…** in the standalone deck to register that terminal.

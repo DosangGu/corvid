@@ -24,6 +24,105 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[tokio::test]
+async fn native_agent_launch_tracks_the_owned_child_through_exit() -> Result<()> {
+    use corvid_protocol::wire::{
+        AgentCollection, AgentLifecycle, AgentProcessState, AgentProvider, ProviderExecutionMode,
+    };
+
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    let programs = fixture.path().join("programs");
+    std::fs::create_dir(&programs)?;
+    let system_root = std::env::var_os("SystemRoot").context("SystemRoot is unavailable")?;
+    // The fixture has no provider hooks. Its exit is observed through ConPTY's owned child.
+    std::fs::copy(
+        std::path::PathBuf::from(system_root).join("System32/cmd.exe"),
+        programs.join("codex.exe"),
+    )?;
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(programs).chain(std::env::split_paths(&inherited_path)),
+    )?;
+    let started = Command::new(CORVID)
+        .env("PATH", path)
+        .arg("--runtime-dir")
+        .arg(&runtime)
+        .args(["ensure-daemon", "--state-dir"])
+        .arg(fixture.path().join("state"))
+        .output()?;
+    ensure!(started.status.success(), "fixture daemon failed to start");
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let args = [
+        "attach",
+        "--new-tab",
+        "Native",
+        "--agent",
+        "codex",
+        "--",
+        "/d",
+        "/q",
+        "/k",
+        "echo NATIVE_AGENT",
+    ]
+    .map(OsString::from);
+    let mut tui = Tui::open(&runtime, args)?;
+    tui.wait_for("NATIVE_AGENT")?;
+
+    let running = native_agent(&runtime, AgentProcessState::Running).await?;
+    let run = running.summary.context("missing native agent summary")?;
+    assert_eq!(run.provider, AgentProvider::Codex as i32);
+    assert_eq!(run.collection, AgentCollection::NotRegistered as i32);
+    assert_eq!(
+        run.adapter.unwrap().mode,
+        ProviderExecutionMode::ProcessOnly as i32
+    );
+    assert!(run.terminal_available);
+
+    tui.send(b"exit 7\r")?;
+    tui.expect_exit(7)?;
+    let ended = native_agent(&runtime, AgentProcessState::Exited).await?;
+    assert_eq!(ended.lifecycle, AgentLifecycle::Ended as i32);
+    let ended = ended.summary.context("missing ended agent summary")?;
+    assert_eq!(ended.agent_run_id, run.agent_run_id);
+    assert_eq!(ended.location, run.location);
+    assert_eq!(ended.exit_code, Some(7));
+    assert!(!ended.terminal_available);
+    Ok(())
+}
+
+async fn native_agent(
+    runtime: &Path,
+    process: corvid_protocol::wire::AgentProcessState,
+) -> Result<corvid_protocol::wire::AgentState> {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let snapshot = corvid_client::snapshot(runtime).await?;
+            if let Some(agent) =
+                snapshot
+                    .snapshot()
+                    .entities()
+                    .find_map(|entity| match &entity.body {
+                        Some(Body::Agent(agent))
+                            if agent
+                                .summary
+                                .as_ref()
+                                .is_some_and(|summary| summary.process == process as i32) =>
+                        {
+                            Some(agent.as_ref().clone())
+                        }
+                        _ => None,
+                    })
+            {
+                return Ok(agent);
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .context("native agent state was not published")?
+}
+
+#[tokio::test]
 async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");

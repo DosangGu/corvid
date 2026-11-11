@@ -20,7 +20,6 @@ pub(crate) enum Group {
     Layout,
     Terminal(Uuid),
     Client(Uuid),
-    #[cfg(any(target_os = "linux", test))]
     Agent(Uuid),
 }
 

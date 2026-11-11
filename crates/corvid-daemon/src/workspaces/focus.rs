@@ -291,10 +291,7 @@ impl Registry {
             .filter(|(_, owner)| owner.is_current())
             .map(|(terminal, _)| terminal);
         #[cfg(windows)]
-        let terminal = {
-            let _ = target.run;
-            None
-        };
+        let terminal = self.agents.focus_terminal(target.run);
         let terminal = terminal.ok_or_else(target_gone)?;
         let location = *self.terminals.get(&terminal).ok_or_else(target_gone)?;
         if matches!(target.authorization, FocusAuthorization::Writer { location: expected } if location != expected)

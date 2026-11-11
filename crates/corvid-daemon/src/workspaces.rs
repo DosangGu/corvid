@@ -27,8 +27,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use crate::agents::Agents;
 #[cfg(target_os = "linux")]
-use crate::agents::{Agents, Hook, HookBinding};
+use crate::agents::{Hook, HookBinding};
 use crate::collector::{CollectorDiagnostics, HookEnvironment};
 use crate::metadata::MetadataUpdates;
 #[cfg(target_os = "linux")]
@@ -105,7 +106,6 @@ pub(crate) struct Workspaces {
 }
 
 pub(crate) struct Registry {
-    #[cfg(target_os = "linux")]
     pub(crate) agents: Agents,
     metadata: MetadataUpdates,
     #[cfg(target_os = "linux")]
@@ -159,7 +159,6 @@ impl Workspaces {
         Self {
             collector: CollectorDiagnostics::default(),
             registry: Arc::new(Mutex::new(Registry {
-                #[cfg(target_os = "linux")]
                 agents: Agents::default(),
                 metadata: metadata.clone(),
                 #[cfg(target_os = "linux")]
@@ -282,10 +281,7 @@ impl Workspaces {
     }
 
     pub(crate) fn agents(&self) -> AgentList {
-        #[cfg(target_os = "linux")]
-        return self.lock_registry().agents.inventory();
-        #[cfg(windows)]
-        AgentList::default()
+        self.lock_registry().agents.inventory()
     }
 
     pub(crate) fn clients(&self) -> ClientList {
@@ -505,7 +501,6 @@ impl Workspaces {
             .expect("validated terminal slot")
             .workspace = destination;
         registry.terminals.insert(terminal, location);
-        #[cfg(target_os = "linux")]
         registry.agents.relocate_terminal(terminal, location);
         registry.publish_layout(layout, vec![terminal_projection(terminal, location)]);
         Ok(TabMoved {
@@ -731,17 +726,13 @@ impl Registry {
         self.commit(projections, Some(layout));
     }
 
-    fn commit(&mut self, projections: Vec<Projection>, layout: Option<Arc<Layout>>) {
+    fn commit(&mut self, mut projections: Vec<Projection>, layout: Option<Arc<Layout>>) {
         #[cfg(target_os = "linux")]
-        let projections = {
-            self.metadata
-                .update(layout, self.agents.changed_history(self.epoch));
-            let mut projections = projections;
-            projections.extend(self.agents.take_projections());
-            projections
-        };
+        self.metadata
+            .update(layout, self.agents.changed_history(self.epoch));
         #[cfg(windows)]
         self.metadata.update(layout, std::iter::empty());
+        projections.extend(self.agents.take_projections());
         self.publication.commit(projections);
     }
 
@@ -786,7 +777,10 @@ impl Registry {
 
     pub(crate) fn terminal_closed(&mut self, id: Uuid, association: Option<Uuid>) {
         #[cfg(windows)]
-        let _ = association;
+        {
+            let _ = association;
+            self.agents.retire_terminal(id);
+        }
         #[cfg(target_os = "linux")]
         if let Some(association) = association {
             self.agents.retire_launch(association);

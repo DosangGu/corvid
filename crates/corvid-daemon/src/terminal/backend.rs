@@ -182,7 +182,6 @@ impl Backend {
         Ok(response.exit_code.is_none())
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn is_retained(&self) -> bool {
         matches!(self, Self::Hosted(client) if client.retained)
     }
@@ -195,7 +194,6 @@ impl Backend {
         }
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn status(&mut self) -> Result<Option<ExitStatus>> {
         match self {
             Self::Local(session) => Ok(session.try_wait()?),
@@ -203,7 +201,6 @@ impl Backend {
         }
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn stop(&mut self) -> Option<ExitStatus> {
         match self {
             Self::Local(session) => session.stop(),

@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
 use corvid_client::{AttachOptions, attach, check_tty, daemon_missing, host, ping, runtime_path};
 use corvid_protocol::windows::StateDirectory;
+use corvid_protocol::wire::AgentProvider;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -48,6 +49,9 @@ pub(super) enum Command {
     Attach {
         #[arg(long)]
         new: bool,
+        /// Launch a native agent and observe its process lifecycle.
+        #[arg(long, value_enum)]
+        agent: Option<ManagedAgent>,
         #[arg(long)]
         workspace: Option<String>,
         #[arg(long)]
@@ -76,6 +80,12 @@ pub(super) enum Command {
 pub(super) enum ControlRequest {
     Host,
     Ping,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub(super) enum ManagedAgent {
+    Claude,
+    Codex,
 }
 
 pub(super) async fn start(runtime: Option<PathBuf>) -> Result<u32> {
@@ -114,6 +124,7 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
         Command::Upgrade { .. } => upgrade_local_daemon(&runtime, false).await?,
         Command::Attach {
             new,
+            agent,
             workspace,
             tab,
             pane,
@@ -121,10 +132,14 @@ pub(super) async fn execute(command: Command, runtime: Option<PathBuf>) -> Resul
             new_tab,
             argv,
         } => {
-            let launch = (new || !argv.is_empty()).then_some(argv);
+            let launch = (new || agent.is_some() || !argv.is_empty()).then_some(argv);
             let options = AttachOptions {
                 launch_if_empty: launch.is_none(),
                 launch,
+                agent: agent.map(|provider| match provider {
+                    ManagedAgent::Claude => AgentProvider::Claude,
+                    ManagedAgent::Codex => AgentProvider::Codex,
+                }),
                 workspace,
                 tab,
                 pane,

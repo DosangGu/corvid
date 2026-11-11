@@ -57,6 +57,8 @@ const CAPABILITIES: &[&str] = &[
     LEGACY_DEFAULT_LAUNCH_CAPABILITY,
     #[cfg(target_os = "linux")]
     "agent_launch.v1",
+    #[cfg(windows)]
+    corvid_protocol::PROCESS_AGENT_LAUNCH_CAPABILITY,
     #[cfg(target_os = "linux")]
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
@@ -856,13 +858,6 @@ fn launch(command: &LaunchCommand, if_empty: bool) -> Result<Launch, ProtocolFau
         Some(Ok(AgentProvider::Codex)) => Some(Provider::Codex),
         _ => return Err(invalid("unsupported managed agent provider")),
     };
-    #[cfg(windows)]
-    if provider.is_some() {
-        return Err(ProtocolFault::new(
-            "UnsupportedCapability",
-            "managed agent launch is unavailable",
-        ));
-    }
     let total: usize = command.argv.iter().map(Vec::len).sum();
     if command.argv.len() > 128
         || total > 64 * 1024

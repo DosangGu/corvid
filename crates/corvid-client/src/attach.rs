@@ -80,8 +80,12 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let stream = open(runtime, SocketRole::Client).await?;
     let mut required = vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()];
     if options.agent.is_some() {
+        #[cfg(target_os = "linux")]
         required.push("agent_launch.v1".into());
+        #[cfg(windows)]
+        required.push(corvid_protocol::PROCESS_AGENT_LAUNCH_CAPABILITY.into());
     }
+    #[cfg(target_os = "linux")]
     if options.agent == Some(AgentProvider::Codex) {
         required.push(corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY.into());
     }

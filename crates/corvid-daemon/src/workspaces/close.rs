@@ -136,8 +136,8 @@ impl Registry {
                 if let Some(agent) = self.shells.remove(*id) {
                     self.agents.retire_shell(agent, ProcessLiveness::Unknown);
                 }
-                self.agents.terminal_unavailable(*id);
             }
+            self.agents.terminal_unavailable(*id);
             projections.push((Group::Terminal(*id), Vec::new()));
             false
         });

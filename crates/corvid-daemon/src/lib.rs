@@ -1,4 +1,5 @@
-#[cfg(target_os = "linux")]
+#[cfg_attr(windows, path = "agents/windows.rs")]
+#[cfg(any(windows, target_os = "linux"))]
 mod agents;
 mod collector;
 mod control;

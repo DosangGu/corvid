@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use corvid_core::agent::Provider;
 #[cfg(target_os = "linux")]
-use corvid_core::agent::{ProcessLiveness, Source};
+use corvid_core::agent::Source;
+use corvid_core::agent::{ProcessLiveness, Provider};
 use corvid_core::layout::{CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
@@ -69,6 +69,9 @@ pub(crate) struct LaunchScope {
 pub(crate) struct RetainedTerminal {
     pub(crate) id: Uuid,
     shell: bool,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<Provider>,
 }
 
 impl LaunchScope {
@@ -548,6 +551,8 @@ impl Worker {
         Ok(live.then_some(RetainedTerminal {
             id: terminal.id,
             shell: terminal.shell,
+            #[cfg(windows)]
+            provider: terminal.provider,
         }))
     }
 
@@ -993,6 +998,8 @@ struct Running {
     exit: Option<ExitStatus>,
     #[cfg(target_os = "linux")]
     process: TerminalProcess,
+    #[cfg(windows)]
+    provider: Option<Provider>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1015,6 +1022,8 @@ impl Running {
         #[cfg(target_os = "linux")]
         let unmanaged = process.managed.is_none();
         #[cfg(windows)]
+        let provider = launch.provider;
+        #[cfg(windows)]
         let (session, unmanaged, shell) = {
             let mut command = launch.into_command()?;
             scope.hook_environment.configure(&mut command, None, None);
@@ -1029,6 +1038,12 @@ impl Running {
         {
             let mut registry = registry.lock().expect("workspace registry lock poisoned");
             if unmanaged {
+                #[cfg(windows)]
+                if let Some(provider) = provider {
+                    registry
+                        .agents
+                        .started(id, scope.location, provider, ProcessLiveness::Running);
+                }
                 #[cfg(target_os = "linux")]
                 if shell && let Some(root) = identity {
                     registry.shell_started(id, root);
@@ -1048,6 +1063,8 @@ impl Running {
             exit: None,
             #[cfg(target_os = "linux")]
             process,
+            #[cfg(windows)]
+            provider,
         })
     }
 
@@ -1057,7 +1074,6 @@ impl Running {
 
     fn recover(saved: RetainedTerminal, scope: &LaunchScope) -> Result<Self> {
         let root = &scope.host.as_ref().ok_or_else(terminal_fault)?.root;
-        #[allow(unused_mut)]
         let mut session = Backend::recover(root, saved.id)?;
         #[cfg(target_os = "linux")]
         let (process, identity) =
@@ -1070,6 +1086,17 @@ impl Running {
         {
             registry.shell_started(saved.id, root);
         }
+        #[cfg(windows)]
+        if let Some(provider) = saved.provider {
+            let liveness = match session.status() {
+                Ok(None) => ProcessLiveness::Running,
+                Ok(Some(status)) => exited(&status),
+                Err(_) => ProcessLiveness::Unknown,
+            };
+            registry
+                .agents
+                .started(saved.id, scope.location, provider, liveness);
+        }
         registry.terminal_started(saved.id, scope.location);
         Ok(Self {
             id: saved.id,
@@ -1080,6 +1107,8 @@ impl Running {
             exit: None,
             #[cfg(target_os = "linux")]
             process,
+            #[cfg(windows)]
+            provider: saved.provider,
         })
     }
 
@@ -1097,6 +1126,8 @@ impl Running {
                     managed.observe(exited(&status), None, Source::ChildExit);
                 }
             }
+            #[cfg(windows)]
+            self.observe(exited(&status));
             self.exit = Some(status);
         } else {
             #[cfg(target_os = "linux")]
@@ -1111,10 +1142,26 @@ impl Running {
         }
         Ok(tick.failure)
     }
+
+    #[cfg(windows)]
+    fn observe(&self, liveness: ProcessLiveness) {
+        if self.provider.is_some()
+            && let Some(registry) = self.registry.upgrade()
+        {
+            let mut registry = registry.lock().expect("workspace registry lock poisoned");
+            registry.agents.observe(self.id, liveness);
+            registry.publish(Vec::new());
+        }
+    }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        if self.provider.is_some() && self.exit.is_none() && !self.session.is_retained() {
+            let status = self.session.stop();
+            self.observe(status.as_ref().map_or(ProcessLiveness::Unknown, exited));
+        }
         #[cfg(target_os = "linux")]
         if self.exit.is_none()
             && !self.session.is_retained()
@@ -1263,14 +1310,25 @@ impl Launch {
 
     #[cfg(windows)]
     fn into_command(self) -> Result<CommandBuilder> {
-        anyhow::ensure!(
-            self.provider.is_none(),
-            "managed agent launch is unavailable"
-        );
         let mut argv = self.argv.into_iter();
-        let program = match argv.next() {
-            Some(program) => program,
-            None => {
+        let program = match (self.provider, argv.as_slice().is_empty()) {
+            (Some(provider), _) => {
+                let name = match provider {
+                    Provider::Claude => "claude.exe",
+                    Provider::Codex => "codex.exe",
+                };
+                std::env::var_os("PATH")
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(std::env::split_paths)
+                    .filter(|directory| directory.is_absolute())
+                    .map(|directory| directory.join(name))
+                    .find(|candidate| candidate.is_file())
+                    .ok_or_else(|| anyhow::anyhow!("{name} is not on the daemon PATH"))?
+                    .into_os_string()
+            }
+            (None, false) => argv.next().expect("first argument"),
+            (None, true) => {
                 let root = std::env::var_os("SystemRoot")
                     .ok_or_else(|| anyhow::anyhow!("SystemRoot is unavailable"))?;
                 PathBuf::from(root)
@@ -1279,6 +1337,11 @@ impl Launch {
             }
         };
         let mut command = CommandBuilder::new(program);
+        if self.provider.is_some() {
+            // The child handle must identify the native executable. Do not
+            // fall back to a shell script through PATHEXT.
+            command.env("PATHEXT", ".EXE");
+        }
         command.args(argv);
         if let Some(cwd) = self.cwd {
             command.cwd(cwd);
@@ -1289,7 +1352,6 @@ impl Launch {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn exited(status: &ExitStatus) -> ProcessLiveness {
     ProcessLiveness::Exited {
         code: status.signal().is_none().then(|| status.exit_code()),
