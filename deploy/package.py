@@ -97,6 +97,8 @@ def package(args):
                 copy(args.build / f"corvid-agent-deck{suffix}", stage / "plugins" / "agent-deck" / f"corvid-agent-deck{suffix}", True)
             if windows:
                 copy(args.build / "corvid-desktop-launch.exe", stage / "corvid-desktop-launch.exe", True)
+                if not args.without_agent_deck:
+                    copy(args.build / "corvid-agent-deck-launch.exe", stage / "corvid-agent-deck-launch.exe", True)
                 copy(args.build / "corvid-deck.exe", stage / "corvid-deck.exe", True)
                 copy(ROOT / "deploy/windows/Set-CorvidStartup.ps1", stage / "Set-CorvidStartup.ps1")
             for target, directory in [(LINUX, args.linux_runtime), (WINDOWS, args.windows_runtime)]:
@@ -126,6 +128,8 @@ def package(args):
 
 
 def manifest(args):
+    import native_package
+
     version, revision = identity()
     required = [
         f"corvid-tui-{version}-{LINUX}.tar.gz",
@@ -148,6 +152,8 @@ def manifest(args):
         expected_name = f"corvid-{metadata['product']}-{metadata['version']}-{metadata['target']}"
         if metadata["version"] != version or metadata["source_revision"] != revision or not name.startswith(expected_name + "."):
             raise ValueError(f"Package identity mismatch: {name}")
+    required.extend(native_package.verify(args.output, version, revision, target)
+                    for target in (WINDOWS, DESKTOP_LINUX))
     for name in ["install.sh", "install.ps1"]:
         copy(ROOT / "deploy" / name, args.output / name)
     for path in sorted(args.output.iterdir()):

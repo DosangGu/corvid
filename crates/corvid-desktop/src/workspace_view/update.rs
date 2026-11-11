@@ -38,42 +38,38 @@ impl WorkspaceView {
                 let release = check.await?;
                 if !release.is_newer_than(env!("CARGO_PKG_VERSION"))? {
                     view.update_in(cx, |view, _, cx| {
-                        view.update_status = format!(
-                            "Corvid {} is up to date.",
-                            env!("CARGO_PKG_VERSION")
-                        );
+                        view.update_status =
+                            format!("Corvid {} is up to date.", env!("CARGO_PKG_VERSION"));
                         cx.notify();
                     })?;
                     return Ok(());
                 }
-                let installation = corvid_update::Installation::current();
-                let detail = match &installation {
-                    Ok(_) => "Install this release and restart Desktop. Running daemons are left unchanged.",
-                    Err(_) => "This build is managed outside the Corvid installer. Open the release to download the new version.",
+                let installation = corvid_update::Installation::current().ok();
+                let installation = installation.filter(|install| install.supports_in_app_update());
+                let detail = if installation.is_some() {
+                    "Install this release and restart Desktop. Running daemons are left unchanged."
+                } else {
+                    "Open the release to update using your original installation method."
                 };
                 let notes = release.notes.chars().take(240).collect::<String>();
                 let message = prompt_text(&format!(
                     "Installed: {}\nAvailable: {}\n\n{detail}\n\n{notes}",
-                    env!("CARGO_PKG_VERSION"), release.version
+                    env!("CARGO_PKG_VERSION"),
+                    release.version
                 ));
                 let response = view.update_in(cx, |view, window, cx| {
                     view.update_status = format!("Corvid {} is available.", release.version);
                     cx.notify();
-                    let action = if installation.is_ok() {
-                        "Install and restart"
+                    let buttons: &[_] = if installation.is_some() {
+                        &["Later", "Install and restart", "Release notes"]
                     } else {
-                        "Open release"
-                    };
-                    let buttons = if installation.is_ok() {
-                        vec!["Later", action, "Release notes"]
-                    } else {
-                        vec!["Later", action]
+                        &["Later", "Open release"]
                     };
                     window.prompt(
                         PromptLevel::Info,
                         "Corvid update available",
                         Some(&message),
-                        &buttons,
+                        buttons,
                         cx,
                     )
                 })?;
@@ -86,18 +82,16 @@ impl WorkspaceView {
                     return Ok(());
                 }
 
-                let installation = match installation {
-                    Ok(installation) => installation,
-                    Err(_) => {
-                        view.update_in(cx, |_, _, cx| cx.open_url(&release.url()))?;
-                        return Ok(());
-                    }
+                let Some(installation) = installation else {
+                    view.update_in(cx, |_, _, cx| cx.open_url(&release.url()))?;
+                    return Ok(());
                 };
                 view.update_in(cx, |view, _, cx| {
                     view.update_status = "Downloading and installing…".into();
                     cx.notify();
                 })?;
-                let install = cx.background_executor()
+                let install = cx
+                    .background_executor()
                     .spawn(async move { installation.install(&release) });
                 let installed = install.await?;
                 // Release the old writer connection before the replacement app attaches.
@@ -105,10 +99,12 @@ impl WorkspaceView {
                 installed.start_desktop()?;
                 view.update_in(cx, |_, _, cx| cx.quit())?;
                 Ok(())
-            }.await;
+            }
+            .await;
             let response = view.update_in(cx, |view, window, cx| {
                 let response = outcome.err().map(|error| {
-                    view.update_status = "Update failed. Your existing installation is available.".into();
+                    view.update_status =
+                        "Update failed. Your existing installation is available.".into();
                     window.prompt(
                         PromptLevel::Warning,
                         "Corvid update failed",

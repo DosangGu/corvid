@@ -22,5 +22,9 @@ path = "src/bin/launch.rs"
 name = "corvid-desktop-launch"
 path = "src/bin/desktop_launch.rs"
 
+[[bin]]
+name = "corvid-agent-deck-launch"
+path = "src/bin/agent_deck_launch.rs"
+
 [lints]
 workspace = true

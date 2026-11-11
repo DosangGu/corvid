@@ -13,6 +13,7 @@ pub struct Installation {
     pub package: Package,
     pub root: Option<PathBuf>,
     pub bin_dir: Option<PathBuf>,
+    native_package: bool,
 }
 
 #[derive(Deserialize)]
@@ -70,11 +71,20 @@ impl Installation {
             package,
             root: root.map(Path::to_owned),
             bin_dir,
+            native_package: directory.join("native-package").is_file(),
         })
+    }
+
+    pub fn supports_in_app_update(&self) -> bool {
+        !self.native_package
     }
 
     /// Runs a verified, version-pinned installer. Never contacts or restarts a daemon.
     pub fn install(&self, release: &Release) -> Result<Installed> {
+        ensure!(
+            self.supports_in_app_update(),
+            "Update this installation with its Windows Setup or Linux package manager."
+        );
         let product = self.package.product;
         let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
         let archive = format!(
@@ -190,7 +200,7 @@ impl Installed {
 }
 
 /// Stable Windows entry point: only the current-version pointer changes on update.
-pub fn launch(desktop: bool) -> Result<ExitCode> {
+pub fn launch(binary: &str, wait: bool) -> Result<ExitCode> {
     let executable = env::current_exe()?;
     let root = executable
         .parent()
@@ -202,19 +212,14 @@ pub fn launch(desktop: bool) -> Result<ExitCode> {
         current.trim() == selected.to_string(),
         "invalid current version"
     );
-    let binary = if desktop {
-        "corvid-desktop.exe"
-    } else {
-        "corvid.exe"
-    };
     let mut command = Command::new(
         root.join("versions")
             .join(selected.to_string())
             .join(binary),
     );
     command.args(env::args_os().skip(1));
-    if desktop {
-        command.spawn().context("starting Corvid Desktop")?;
+    if !wait {
+        command.spawn().context("starting Corvid application")?;
         return Ok(ExitCode::SUCCESS);
     }
     let status = command.status().context("starting Corvid")?;
@@ -254,5 +259,10 @@ mod tests {
         let installation = Installation::at(&directory.path().join("corvid")).unwrap();
         assert_eq!(installation.package.product, Product::Desktop);
         assert!(installation.root.is_none());
+        assert!(installation.supports_in_app_update());
+
+        fs::write(directory.path().join("native-package"), "native\n").unwrap();
+        let installation = Installation::at(&directory.path().join("corvid")).unwrap();
+        assert!(!installation.supports_in_app_update());
     }
 }

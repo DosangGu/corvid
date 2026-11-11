@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<std::process::ExitCode> {
-    corvid_update::launch(false)
+    corvid_update::launch("corvid.exe", true)
 }

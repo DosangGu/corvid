@@ -18,6 +18,7 @@ additional agents queue and fill slots in order. See [Agent Deck](docs/06_agent_
 
 Download Windows and Linux Desktop or TUI packages from
 [GitHub Releases](https://github.com/DosangGu/corvid/releases).
+Desktop offers [Windows Setup and an Ubuntu 24.04 package](docs/05_release_distribution.md#native-desktop-packages).
 On Linux x86_64 or WSL, install the TUI with:
 
 ```sh
@@ -25,7 +26,7 @@ curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.s
 ```
 
 Re-running the installer updates the same installation. Once installed, use
-`corvid update --check` to check for a release or `corvid update` to install it.
+`corvid update --check` to check for a release or `corvid update` to update a script installation.
 Desktop provides **Help → Check for updates**. Package updates leave running
 daemons unchanged; use `corvid upgrade` separately for automatically started daemons.
 
