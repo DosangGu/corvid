@@ -2405,7 +2405,47 @@ impl PressureLayout {
             tui.next_body(&mut Vec::new()).await,
             Body::WriterClaimed(_)
         ));
+        self.prepare_hidden_tab_for_moves(&mut tui).await;
         tui
+    }
+
+    async fn prepare_hidden_tab_for_moves(&self, tui: &mut Tui) {
+        // Removing a client precedes the terminal worker retiring its view.
+        // Establish a movable hidden tab before starting the pressure measurement.
+        let mut output = Vec::new();
+        timeout(WAIT, async {
+            loop {
+                match tui
+                    .move_tab(
+                        &self.hidden.tab_id,
+                        &self.views[1].workspace_id,
+                        &mut output,
+                    )
+                    .await
+                {
+                    Body::TabMoved(_) => break,
+                    Body::Error(error) if error.code == "InputBusy" => {
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                    reply => panic!("unexpected setup move result {reply:?}"),
+                }
+            }
+        })
+        .await
+        .expect("hidden terminal did not retire its setup view");
+        tui.select(&self.views[1]).await;
+        tui.moved(&mut output, &self.views[1]).await;
+        assert!(matches!(
+            tui.move_tab(
+                &self.hidden.tab_id,
+                &self.views[0].workspace_id,
+                &mut output
+            )
+            .await,
+            Body::TabMoved(_)
+        ));
+        tui.select(&self.views[0]).await;
+        tui.moved(&mut output, &self.views[0]).await;
     }
 
     async fn churn(
