@@ -107,7 +107,6 @@ impl WorkspaceView {
                 Ok(())
             }.await;
             let response = view.update_in(cx, |view, window, cx| {
-                view.release_update = None;
                 let response = outcome.err().map(|error| {
                     view.update_status = "Update failed. Your existing installation is available.".into();
                     window.prompt(
@@ -124,6 +123,10 @@ impl WorkspaceView {
             if let Ok(Some(response)) = response {
                 let _ = response.await;
             }
+            let _ = view.update_in(cx, |view, _, cx| {
+                view.release_update = None;
+                cx.notify();
+            });
         }));
         cx.notify();
     }
