@@ -191,6 +191,8 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     ];
     let mut first = Tui::open(&runtime, shell.clone())?;
     first.wait_for("PS ")?;
+    // Windows PowerShell otherwise uses the host's legacy console code page.
+    first.send(b"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()\r")?;
     first.send(
         b"$env:CORVID_TEST_VALUE='retained'; [Console]::WriteLine(('CORVID_' + [char]0xD55C))\r",
     )?;
