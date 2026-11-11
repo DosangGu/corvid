@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use corvid_client::SshAlias;
+#[cfg(windows)]
+use corvid_client::WslDistribution;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::{CloseView, SplitAxis, TabState, ViewSelection, WorkspaceState};
@@ -61,6 +63,10 @@ pub struct WorkspaceView {
     alias_focus: FocusHandle,
     hosts: std::io::Result<Vec<SshAlias>>,
     host_scan: Option<Task<()>>,
+    #[cfg(windows)]
+    distributions: anyhow::Result<Vec<WslDistribution>>,
+    #[cfg(windows)]
+    wsl_scan: Option<Task<()>>,
     host_switch: Option<Task<()>>,
     session: Option<Session>,
     destination: Option<Destination>,
@@ -84,7 +90,7 @@ struct KnownSessions {
 
 impl WorkspaceView {
     pub fn new(
-        alias: Option<String>,
+        destination: Option<Destination>,
         lifetime: Lifetime,
         slot_board: slot_board::Settings,
         window: &mut Window,
@@ -94,11 +100,18 @@ impl WorkspaceView {
         window.focus(&setup_focus);
         let mut view = Self {
             lifetime,
-            alias: alias.clone().unwrap_or_default(),
+            alias: match &destination {
+                Some(Destination::Ssh(alias)) => alias.as_str().to_owned(),
+                _ => String::new(),
+            },
             setup_focus,
             alias_focus: cx.focus_handle(),
             hosts: Ok(Vec::new()),
             host_scan: None,
+            #[cfg(windows)]
+            distributions: Ok(Vec::new()),
+            #[cfg(windows)]
+            wsl_scan: None,
             host_switch: None,
             session: None,
             destination: None,
@@ -114,11 +127,12 @@ impl WorkspaceView {
             connections_open: false,
             plugins_open: false,
         };
-        if let Some(alias) = alias {
-            view.connect_host(alias, window, cx);
-        } else {
-            view.switch_to(Destination::Local, AttachTarget::Default, window, cx);
-        }
+        view.switch_to(
+            destination.unwrap_or(Destination::Local),
+            AttachTarget::Default,
+            window,
+            cx,
+        );
         view
     }
 
@@ -132,6 +146,28 @@ impl WorkspaceView {
             let _ = view.update(cx, |view, cx| {
                 view.hosts = hosts;
                 view.host_scan = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    #[cfg(windows)]
+    fn refresh_wsl(&mut self, cx: &mut Context<Self>) {
+        if self.wsl_scan.is_some() {
+            return;
+        }
+        let scan = cx.background_executor().spawn(async {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(WslDistribution::list())
+        });
+        self.wsl_scan = Some(cx.spawn(async move |view, cx| {
+            let distributions = scan.await;
+            let _ = view.update(cx, |view, cx| {
+                view.distributions = distributions;
+                view.wsl_scan = None;
                 cx.notify();
             });
         }));
@@ -582,6 +618,8 @@ impl WorkspaceView {
     fn toolbar(&self, connected: bool, workspace: Option<&str>, cx: &mut Context<Self>) -> Div {
         let location = match self.destination.as_ref() {
             Some(Destination::Ssh(alias)) => format!("SSH · {}", alias.as_str()),
+            #[cfg(windows)]
+            Some(Destination::Wsl(distribution)) => format!("WSL · {}", distribution.as_str()),
             _ => "Local".into(),
         };
         div()
@@ -630,6 +668,8 @@ impl WorkspaceView {
                             view.plugins_open = false;
                             window.focus(&view.setup_focus);
                             view.refresh_hosts(cx);
+                            #[cfg(windows)]
+                            view.refresh_wsl(cx);
                         } else {
                             view.focus_terminal(window, cx);
                         }
@@ -726,6 +766,11 @@ impl WorkspaceView {
                     .gap(px(12.))
                     .overflow_y_scroll()
                     .child(self.connection_branch(&Destination::Local, ui, changing, cx))
+                    .when(cfg!(windows), |tree| {
+                        #[cfg(windows)]
+                        let tree = tree.child(self.wsl_list(ui, changing, cx));
+                        tree
+                    })
                     .child(self.host_list(ui, changing, cx)),
             )
             .when_some(self.error.clone(), |panel, error| {
@@ -822,7 +867,7 @@ impl WorkspaceView {
             .chain(self.destination.iter())
             .filter_map(|destination| match destination {
                 Destination::Ssh(alias) => Some(alias),
-                Destination::Local => None,
+                _ => None,
             })
             .filter(|alias| !hosts.contains(alias))
             .cloned()
@@ -879,6 +924,65 @@ impl WorkspaceView {
             )
     }
 
+    #[cfg(windows)]
+    fn wsl_list(&self, ui: Option<&Ui>, changing: bool, cx: &mut Context<Self>) -> Div {
+        let mut distributions: Vec<_> = self
+            .distributions
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        for destination in self.known_sessions.keys().chain(self.destination.iter()) {
+            if let Destination::Wsl(distribution) = destination
+                && !distributions.contains(distribution)
+            {
+                distributions.push(distribution.clone());
+            }
+        }
+        distributions.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let note = if self.wsl_scan.is_some() {
+            Some("Reading WSL distributions…".to_owned())
+        } else {
+            match &self.distributions {
+                Err(error) => Some(error.to_string()),
+                Ok(_) if distributions.is_empty() => {
+                    Some("No WSL distributions installed.".to_owned())
+                }
+                Ok(_) => None,
+            }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(5.))
+            .w_full()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_size(px(14.)).text_color(rgb(TEXT)).child("WSL"))
+                    .child(
+                        button("refresh-wsl", "Refresh", false)
+                            .on_click(cx.listener(|view, _, _, cx| view.refresh_wsl(cx))),
+                    ),
+            )
+            .when_some(note, |list, message| {
+                list.child(
+                    div()
+                        .p(px(10.))
+                        .text_size(px(13.))
+                        .text_color(rgb(MUTED))
+                        .child(message),
+                )
+            })
+            .children(distributions.into_iter().map(|distribution| {
+                self.connection_branch(&Destination::Wsl(distribution), ui, changing, cx)
+            }))
+    }
+
     fn connection_branch(
         &self,
         destination: &Destination,
@@ -891,6 +995,11 @@ impl WorkspaceView {
             Destination::Ssh(alias) => {
                 (format!("ssh-{}", alias.as_str()), alias.as_str().to_owned())
             }
+            #[cfg(windows)]
+            Destination::Wsl(distribution) => (
+                format!("wsl-{}", distribution.as_str()),
+                distribution.as_str().to_owned(),
+            ),
         };
         let current = ui.filter(|_| self.destination.as_ref() == Some(destination));
         let connected = current.is_some_and(|ui| ui.connected);

@@ -94,6 +94,9 @@ async fn open(
         ControlEndpoint::Ssh(alias) => HostEndpoint::Ssh {
             alias: alias.as_str().to_owned(),
         },
+        ControlEndpoint::Wsl(distribution) => HostEndpoint::Wsl {
+            distribution: distribution.as_str().to_owned(),
+        },
     };
     let (scope, config) = settings.scope(saved, host)?;
     if let Some(client) = PresentationClient::connect_if_present(&scope.address).await? {

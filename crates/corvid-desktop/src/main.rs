@@ -7,9 +7,9 @@ mod local_bootstrap;
 #[cfg(any(windows, target_os = "linux"))]
 mod platform;
 #[cfg(any(windows, target_os = "linux"))]
-mod slot_board;
+mod remote_bootstrap;
 #[cfg(any(windows, target_os = "linux"))]
-mod ssh_bootstrap;
+mod slot_board;
 #[cfg(any(windows, target_os = "linux"))]
 mod ssh_hosts;
 #[cfg(any(windows, target_os = "linux"))]
@@ -52,6 +52,9 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         state_dir: Option<PathBuf>,
         #[arg(long)]
         ssh_alias: Option<String>,
+        #[cfg(windows)]
+        #[arg(long, conflicts_with = "ssh_alias")]
+        wsl_distribution: Option<String>,
     }
 
     let options = Options::parse();
@@ -61,7 +64,18 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         "Corvid Desktop requires an X11 or XWayland display"
     );
 
-    let alias = options.ssh_alias;
+    let destination = options
+        .ssh_alias
+        .map(corvid_client::SshAlias::new)
+        .transpose()?
+        .map(terminal_session::Destination::Ssh);
+    #[cfg(windows)]
+    let destination = match options.wsl_distribution {
+        Some(name) => Some(terminal_session::Destination::Wsl(
+            corvid_client::WslDistribution::new(name)?,
+        )),
+        None => destination,
+    };
     let state = options
         .state_dir
         .map_or_else(platform::default_state_dir, Ok)?;
@@ -94,7 +108,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             ..Default::default()
         };
         cx.open_window(options, move |window, cx| {
-            cx.new(|cx| WorkspaceView::new(alias, app_lifetime, slot_board, window, cx))
+            cx.new(|cx| WorkspaceView::new(destination, app_lifetime, slot_board, window, cx))
         })
         .expect("could not open Corvid Desktop");
         cx.activate(true);

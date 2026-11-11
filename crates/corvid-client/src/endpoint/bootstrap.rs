@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use super::{SshAlias, drain_diagnostic, ssh_failure};
+use super::{RemoteHost, drain_diagnostic, relay_failure};
 
 const LINUX_SCRIPT: &str = include_str!("bootstrap.sh");
 const WINDOWS_SCRIPT: &str = include_str!("bootstrap_windows.ps1");
@@ -27,66 +27,79 @@ const MAX_BINARY: usize = 32 * 1024 * 1024;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SshDaemon {
+pub enum DaemonInstallation {
     Path,
     Managed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SshPlatform {
+pub enum HostPlatform {
     Linux,
     Windows,
 }
 
-impl SshAlias {
-    pub fn with_daemon(mut self, platform: SshPlatform, daemon: SshDaemon) -> Self {
-        self.desktop_daemon = Some((platform, daemon));
+impl RemoteHost {
+    pub fn with_daemon(mut self, platform: HostPlatform, daemon: DaemonInstallation) -> Self {
+        match &mut self {
+            Self::Ssh(alias) => alias.desktop_daemon = Some((platform, daemon)),
+            Self::Wsl(distribution) => distribution.daemon = Some(daemon),
+        }
         self
     }
 
-    pub async fn probe_platform(&self) -> Result<SshPlatform> {
+    pub async fn probe_platform(&self) -> Result<HostPlatform> {
+        if matches!(self, Self::Wsl(_)) {
+            let output = self.bootstrap("uname -s", None).await?;
+            ensure!(
+                response(&output) == b"Linux",
+                "WSL distribution is not running Linux"
+            );
+            return Ok(HostPlatform::Linux);
+        }
         // Start with a single shell-neutral read-only command. Never send the
         // POSIX bootstrap to a host that has not identified itself as Linux.
         match self.bootstrap("uname -s", None).await {
-            Ok(output) if response(&output) == b"Linux" => return Ok(SshPlatform::Linux),
+            Ok(output) if response(&output) == b"Linux" => return Ok(HostPlatform::Linux),
             Err(error) if !setup_unavailable(&error) => return Err(error),
             _ => {}
         }
         let command = windows_command(WINDOWS_PLATFORM);
         match self.bootstrap(&command, None).await {
-            Ok(output) if response(&output) == b"Windows" => Ok(SshPlatform::Windows),
+            Ok(output) if response(&output) == b"Windows" => Ok(HostPlatform::Windows),
             Err(error) if !setup_unavailable(&error) => Err(error),
             _ => Err(unsupported_host().into()),
         }
     }
 
-    pub async fn probe_daemon(&self, platform: SshPlatform) -> Result<Option<SshDaemon>> {
+    pub async fn probe_daemon(&self, platform: HostPlatform) -> Result<Option<DaemonInstallation>> {
         let command = match platform {
-            SshPlatform::Linux => linux_command("probe"),
-            SshPlatform::Windows => windows_setup(WINDOWS_PROBE),
+            HostPlatform::Linux => linux_command("probe"),
+            HostPlatform::Windows => windows_setup(WINDOWS_PROBE),
         };
         match response(&self.bootstrap(&command, None).await?) {
-            b"path" => Ok(Some(SshDaemon::Path)),
-            b"managed" => Ok(Some(SshDaemon::Managed)),
+            b"path" => Ok(Some(DaemonInstallation::Path)),
+            b"managed" => Ok(Some(DaemonInstallation::Managed)),
             b"missing" => Ok(None),
-            _ => Err(ProtocolFault::new("BootstrapFailed", "unexpected SSH probe response").into()),
+            _ => Err(
+                ProtocolFault::new("BootstrapFailed", "unexpected daemon probe response").into(),
+            ),
         }
     }
 
     pub async fn install_daemon(
         &self,
-        platform: SshPlatform,
+        platform: HostPlatform,
         binary: &[u8],
         sha256: &str,
     ) -> Result<()> {
         validate_payload(binary, sha256)?;
         match platform {
-            SshPlatform::Linux => {
+            HostPlatform::Linux => {
                 let header = format!("{} {sha256}\n", binary.len());
                 self.bootstrap(&linux_command("install"), Some((header.as_bytes(), binary)))
                     .await?;
             }
-            SshPlatform::Windows => {
+            HostPlatform::Windows => {
                 let archive = windows_archive(binary)?;
                 let script = windows_install(binary.len(), sha256);
                 self.bootstrap(&windows_setup(&script), Some((&[], &archive)))
@@ -96,7 +109,11 @@ impl SshAlias {
         Ok(())
     }
 
-    pub async fn daemon_version(&self, platform: SshPlatform, daemon: SshDaemon) -> Result<String> {
+    pub async fn daemon_version(
+        &self,
+        platform: HostPlatform,
+        daemon: DaemonInstallation,
+    ) -> Result<String> {
         let output = self
             .bootstrap(&daemon_command(platform, daemon, "--version"), None)
             .await?;
@@ -108,7 +125,7 @@ impl SshAlias {
 
     pub async fn upgrade_managed_daemon(
         &self,
-        platform: SshPlatform,
+        platform: HostPlatform,
         binary: &[u8],
         sha256: &str,
         previous_version: &str,
@@ -126,13 +143,13 @@ impl SshAlias {
             .map(|host| host.to_string())
             .unwrap_or_default();
         match platform {
-            SshPlatform::Linux => {
+            HostPlatform::Linux => {
                 let command = linux_command(&format!("upgrade {previous_version} {host}"));
                 let header = format!("{} {sha256}\n", binary.len());
                 self.bootstrap(&command, Some((header.as_bytes(), binary)))
                     .await?;
             }
-            SshPlatform::Windows => {
+            HostPlatform::Windows => {
                 let archive = windows_archive(binary)?;
                 let script = windows_upgrade(binary.len(), sha256, previous_version, &host);
                 self.bootstrap(&windows_setup(&script), Some((&[], &archive)))
@@ -142,10 +159,14 @@ impl SshAlias {
         Ok(())
     }
 
-    pub async fn ensure_daemon(&self, platform: SshPlatform, daemon: SshDaemon) -> Result<()> {
+    pub async fn ensure_daemon(
+        &self,
+        platform: HostPlatform,
+        daemon: DaemonInstallation,
+    ) -> Result<()> {
         let arguments = match platform {
-            SshPlatform::Linux => "ensure-daemon",
-            SshPlatform::Windows => "ensure-daemon --ssh",
+            HostPlatform::Linux => "ensure-daemon",
+            HostPlatform::Windows => "ensure-daemon --ssh",
         };
         self.bootstrap(&daemon_command(platform, daemon, arguments), None)
             .await?;
@@ -156,10 +177,10 @@ impl SshAlias {
         let mut child = self
             .remote_command(command)?
             .spawn()
-            .context("starting Corvid SSH setup")?;
-        let stdout = child.stdout.take().context("SSH stdout is unavailable")?;
-        let stderr = child.stderr.take().context("SSH stderr is unavailable")?;
-        let mut stdin = child.stdin.take().context("SSH stdin is unavailable")?;
+            .context("starting Corvid daemon setup")?;
+        let stdout = child.stdout.take().context("setup stdout is unavailable")?;
+        let stderr = child.stderr.take().context("setup stderr is unavailable")?;
+        let mut stdin = child.stdin.take().context("setup stdin is unavailable")?;
 
         let send = async move {
             if let Some((header, binary)) = payload {
@@ -179,7 +200,7 @@ impl SshAlias {
             )
         })
         .await
-        .context("SSH daemon setup timed out")?;
+        .context("daemon setup timed out")?;
         let status = status?;
         if !status.success() {
             return Err(bootstrap_failure(status.code(), &diagnostic).into());
@@ -188,7 +209,7 @@ impl SshAlias {
         sent?;
         ensure!(
             output.len() <= MAX_RESPONSE,
-            "SSH daemon setup response is too large"
+            "daemon setup response is too large"
         );
         Ok(output)
     }
@@ -209,26 +230,30 @@ fn validate_payload(binary: &[u8], sha256: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn daemon_command(platform: SshPlatform, daemon: SshDaemon, arguments: &str) -> String {
+pub(super) fn daemon_command(
+    platform: HostPlatform,
+    daemon: DaemonInstallation,
+    arguments: &str,
+) -> String {
     match platform {
-        SshPlatform::Linux => {
+        HostPlatform::Linux => {
             let mode = match daemon {
-                SshDaemon::Path => "path",
-                SshDaemon::Managed => "managed",
+                DaemonInstallation::Path => "path",
+                DaemonInstallation::Managed => "managed",
             };
             linux_command(&format!("{mode} {arguments}"))
         }
-        SshPlatform::Windows => {
+        HostPlatform::Windows => {
             let resolve = match daemon {
-                SshDaemon::Path => "PathDaemon",
-                SshDaemon::Managed => "ManagedDaemon",
+                DaemonInstallation::Path => "PathDaemon",
+                DaemonInstallation::Managed => "ManagedDaemon",
             };
             windows_setup(&format!("RunDaemon ({resolve}) '{arguments}'"))
         }
     }
 }
 
-fn linux_command(arguments: &str) -> String {
+pub(super) fn linux_command(arguments: &str) -> String {
     // The command and arguments are fixed. The artifact header and bytes travel over stdin.
     let script = LINUX_SCRIPT.replace('\'', "'\\''");
     format!("sh -c '{script}' corvid-ssh {arguments}")
@@ -282,13 +307,13 @@ fn setup_unavailable(error: &anyhow::Error) -> bool {
 fn unsupported_host() -> ProtocolFault {
     ProtocolFault::new(
         "UnsupportedHost",
-        "automatic installation requires a Linux x86_64 or Windows x64 SSH host",
+        "automatic installation requires a Linux x86_64 or Windows x64 host",
     )
 }
 
 fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
     let (code, message) = match code {
-        Some(255) => return ssh_failure(diagnostic),
+        Some(255) => return relay_failure(diagnostic),
         Some(70) => return unsupported_host(),
         Some(71) => (
             "UnsafeInstallPath",
@@ -316,7 +341,7 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
         ),
         _ if String::from_utf8_lossy(diagnostic).contains("HostMismatch:") => (
             "HostMismatch",
-            "SSH alias points to a different Corvid host",
+            "connection points to a different Corvid host",
         ),
         _ if String::from_utf8_lossy(diagnostic).contains("InstallationChanged:") => (
             "InstallationChanged",
@@ -327,7 +352,7 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
         {
             (
                 "ManualUpgradeRequired",
-                "close live terminals and restart Corvid with the updated binary on the SSH host",
+                "close live terminals and restart Corvid with the updated binary on the execution host",
             )
         }
         _ if String::from_utf8_lossy(diagnostic).contains("path must be shorter than SUN_LEN") => (
@@ -340,7 +365,7 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
         {
             (
                 "UpgradeRequired",
-                "the installed Corvid cannot start over SSH. Update it or start it on the remote host",
+                "the installed Corvid cannot start through the relay. Update it or start it on the remote host",
             )
         }
         _ => (
@@ -369,7 +394,12 @@ mod tests {
                 < 8000
         );
         assert!(
-            daemon_command(SshPlatform::Windows, SshDaemon::Managed, "control --stdio").len()
+            daemon_command(
+                HostPlatform::Windows,
+                DaemonInstallation::Managed,
+                "control --stdio"
+            )
+            .len()
                 < 8000
         );
     }

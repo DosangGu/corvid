@@ -69,6 +69,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows daemon and TUI | Windows x64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
+| WSL connections | Windows Desktop to an installed Linux distribution's default user | `wsl.exe` stdio carries terminal and control relays. Linux owns PTYs and metadata. Setup and planned replacement share the remote connection implementation |
 | Native macOS daemon | Deferred | Independent process, IPC, permission, service, input, and VT validation required |
 
 This is not a replacement for every terminal emulator feature. Zellij and tmux are

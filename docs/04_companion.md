@@ -89,6 +89,20 @@ manually. Desktop keeps the last session list for visited connections while
 the app is open. Select a session to open it directly. Switching connections
 detaches the current view and keeps its daemon's terminals running.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
+
+On Windows, **Sessions → WSL** lists installed distributions. Select a distribution
+to connect as its default Linux user, or launch with
+`corvid-desktop.exe --wsl-distribution Ubuntu`. **Refresh** reloads the distribution
+list. Desktop runs the terminal relay and control watch through `wsl.exe` stdio.
+Tabs, split panes, Agent Board, detach, and daemon-replacement reconnection use the
+same session behavior as other connections.
+
+WSL setup reuses the Linux daemon bundle beside Desktop. It asks before installing
+at `~/.corvid/corvid` or upgrading an incompatible managed installation. Daemon
+metadata stays in the distribution's Linux state directory. Existing PATH
+installations are reused. Installation requires the Linux x86_64 bundle described
+above. `--wsl-distribution` and `--ssh-alias` select mutually exclusive destinations.
+
 An explicit Desktop connection detects the host OS and starts an installed
 Corvid daemon if needed. When Desktop finds a fresh Linux x86_64 or Windows x64
 host and has the matching bundle, it shows the SSH alias and asks before

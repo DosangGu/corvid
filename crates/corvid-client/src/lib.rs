@@ -29,7 +29,10 @@ pub use control::{ControllerRequest, ControllerScope};
 pub use control::{agents, clients, controller, host, ping, status, workspaces};
 #[cfg(windows)]
 pub use endpoint::check_system_openssh;
-pub use endpoint::{ControlEndpoint, InteractiveConnection, SshAlias, SshDaemon, SshPlatform};
+pub use endpoint::{
+    ControlEndpoint, DaemonInstallation, HostPlatform, InteractiveConnection, RemoteHost, SshAlias,
+    WslDistribution,
+};
 #[cfg(any(target_os = "linux", windows))]
 pub use relay::{relay, relay_tui};
 #[cfg(any(target_os = "linux", windows))]

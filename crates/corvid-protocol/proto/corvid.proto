@@ -325,6 +325,7 @@ message PresentedHost {
   oneof endpoint {
     string ssh_alias = 2;
     LocalHostEndpoint local = 3;
+    string wsl_distribution = 8;
   }
   CompanionConnection connection = 4;
   optional string issue_code = 5;

@@ -16,6 +16,9 @@ impl Service {
         let endpoint = match &self.endpoint {
             ControlEndpoint::Local(_) => Endpoint::Local(LocalHostEndpoint {}),
             ControlEndpoint::Ssh(alias) => Endpoint::SshAlias(alias.as_str().to_owned()),
+            ControlEndpoint::Wsl(distribution) => {
+                Endpoint::WslDistribution(distribution.as_str().to_owned())
+            }
         };
         let remote = self.remote.as_ref().filter(|_| self.generation.is_some());
 

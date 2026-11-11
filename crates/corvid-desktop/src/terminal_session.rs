@@ -6,7 +6,9 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use corvid_client::{ControlEndpoint, InteractiveConnection, SshAlias};
+#[cfg(windows)]
+use corvid_client::WslDistribution;
+use corvid_client::{ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias};
 use corvid_companion::{Config, HostEndpoint};
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
@@ -29,16 +31,21 @@ use uuid::Uuid;
 use vt100::{Parser, Screen};
 
 use crate::daemon_prompt::{Prompt, Prompts};
-use crate::{local_bootstrap, slot_board, ssh_bootstrap};
+use crate::{local_bootstrap, remote_bootstrap, slot_board};
 
 pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
 
+#[cfg(all(test, windows))]
+mod wsl_test;
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Destination {
     Local,
     Ssh(SshAlias),
+    #[cfg(windows)]
+    Wsl(WslDistribution),
 }
 
 #[derive(Clone)]
@@ -53,6 +60,17 @@ impl Destination {
         match self {
             Self::Local => "Local",
             Self::Ssh(alias) => alias.as_str(),
+            #[cfg(windows)]
+            Self::Wsl(distribution) => distribution.as_str(),
+        }
+    }
+
+    fn remote(&self) -> Option<RemoteHost> {
+        match self {
+            Self::Local => None,
+            Self::Ssh(alias) => Some(RemoteHost::Ssh(alias.clone())),
+            #[cfg(windows)]
+            Self::Wsl(distribution) => Some(RemoteHost::Wsl(distribution.clone())),
         }
     }
 }
@@ -250,7 +268,7 @@ impl Session {
                     inventory_ready: false,
                     message: match destination {
                         Destination::Local => "Opening the local terminal…".into(),
-                        Destination::Ssh(_) => "Connecting to Corvid…".into(),
+                        _ => "Connecting to Corvid…".into(),
                     },
                     connected: false,
                     changing: true,
@@ -522,41 +540,44 @@ async fn run(
     .map(str::to_owned)
     .collect();
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
-    let (endpoint, mut link) = match destination {
-        Destination::Local => {
-            local_bootstrap::connect(capabilities.clone(), explicit, prompts, progress).await?
-        }
-        Destination::Ssh(alias) => {
-            let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
-                matches!(config.endpoint, HostEndpoint::Ssh { alias: saved } if saved == alias.as_str())
-                    .then(|| config.host_id.to_string())
-            });
-            let known_host = match &target {
-                AttachTarget::Workspace { host_id, .. } => Some(host_id.as_str()),
-                _ => None,
+    let (endpoint, mut link) = if let Some(remote) = destination.remote() {
+        let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
+            let matches = match (&config.endpoint, &remote) {
+                (HostEndpoint::Ssh { alias }, RemoteHost::Ssh(target)) => alias == target.as_str(),
+                (HostEndpoint::Wsl { distribution }, RemoteHost::Wsl(target)) => {
+                    distribution == target.as_str()
+                }
+                _ => false,
             };
-            let expected_host = host
-                .as_deref()
-                .or(configured_host.as_deref())
-                .or(known_host);
-            let (alias, link) = ssh_bootstrap::connect(
-                alias,
-                capabilities.clone(),
-                explicit,
-                expected_host,
-                prompts,
-                progress,
+            matches.then(|| config.host_id.to_string())
+        });
+        let known_host = match &target {
+            AttachTarget::Workspace { host_id, .. } => Some(host_id.as_str()),
+            _ => None,
+        };
+        let expected_host = host
+            .as_deref()
+            .or(configured_host.as_deref())
+            .or(known_host);
+        let (remote, link) = remote_bootstrap::connect(
+            remote,
+            capabilities.clone(),
+            explicit,
+            expected_host,
+            prompts,
+            progress,
+        )
+        .await?;
+        ensure!(
+            expected_host.is_none_or(|host| host == link.session().host_id),
+            ProtocolFault::new(
+                "HostMismatch",
+                "connection points to a different Corvid host"
             )
-            .await?;
-            ensure!(
-                expected_host.is_none_or(|host| host == link.session().host_id),
-                ProtocolFault::new(
-                    "HostMismatch",
-                    "SSH alias points to a different Corvid host"
-                )
-            );
-            (ControlEndpoint::Ssh(alias), link)
-        }
+        );
+        (remote.endpoint(), link)
+    } else {
+        local_bootstrap::connect(capabilities.clone(), explicit, prompts, progress).await?
     };
     ensure!(
         host.as_ref()

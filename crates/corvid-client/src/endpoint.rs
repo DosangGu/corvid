@@ -20,9 +20,11 @@ use crate::connection::Connection;
 use crate::connection::open;
 
 mod bootstrap;
-pub use bootstrap::{SshDaemon, SshPlatform};
+mod wsl;
+pub use bootstrap::{DaemonInstallation, HostPlatform};
+pub use wsl::WslDistribution;
 
-const SSH_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
+const RELAY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_DIAGNOSTIC: usize = 4096;
 
@@ -31,12 +33,46 @@ pub enum ControlEndpoint {
     #[cfg(any(target_os = "linux", windows))]
     Local(PathBuf),
     Ssh(SshAlias),
+    Wsl(WslDistribution),
+}
+
+#[derive(Clone, Debug)]
+pub enum RemoteHost {
+    Ssh(SshAlias),
+    Wsl(WslDistribution),
+}
+
+impl RemoteHost {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Ssh(alias) => alias.as_str(),
+            Self::Wsl(distribution) => distribution.as_str(),
+        }
+    }
+
+    pub fn endpoint(self) -> ControlEndpoint {
+        match self {
+            Self::Ssh(alias) => ControlEndpoint::Ssh(alias),
+            Self::Wsl(distribution) => ControlEndpoint::Wsl(distribution),
+        }
+    }
+
+    fn remote_command(&self, remote: &str) -> Result<Command> {
+        match self {
+            Self::Ssh(alias) => alias.remote_command(remote),
+            Self::Wsl(distribution) => distribution.remote_command(remote),
+        }
+    }
+
+    pub async fn interactive(&self, capabilities: Vec<String>) -> Result<InteractiveConnection> {
+        self.clone().endpoint().interactive(capabilities).await
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SshAlias {
     name: String,
-    desktop_daemon: Option<(SshPlatform, SshDaemon)>,
+    desktop_daemon: Option<(HostPlatform, DaemonInstallation)>,
 }
 
 impl SshAlias {
@@ -58,6 +94,11 @@ impl SshAlias {
 
     pub fn as_str(&self) -> &str {
         &self.name
+    }
+
+    pub fn with_daemon(mut self, platform: HostPlatform, daemon: DaemonInstallation) -> Self {
+        self.desktop_daemon = Some((platform, daemon));
+        self
     }
 
     fn command(&self, role: PeerRole) -> Result<Command> {
@@ -103,11 +144,11 @@ impl SshAlias {
     }
 
     pub async fn interactive(&self, capabilities: Vec<String>) -> Result<InteractiveConnection> {
-        let (read, write, mut ssh) = SshProcess::start(self, PeerRole::Tui)?;
-        let wire = ssh
+        let (read, write, mut relay) = RelayProcess::start(self.command(PeerRole::Tui)?)?;
+        let wire = relay
             .negotiate(read, write, PeerRole::Tui, capabilities, None)
             .await?;
-        Ok(InteractiveConnection::new(wire, Some(ssh)))
+        Ok(InteractiveConnection::new(wire, Some(relay)))
     }
 }
 
@@ -134,6 +175,11 @@ pub fn check_system_openssh() -> Result<()> {
 
 #[cfg(windows)]
 fn system_openssh() -> Result<PathBuf> {
+    Ok(system_directory()?.join(r"OpenSSH\ssh.exe"))
+}
+
+#[cfg(windows)]
+fn system_directory() -> Result<PathBuf> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
@@ -147,7 +193,7 @@ fn system_openssh() -> Result<PathBuf> {
         (1..directory.len()).contains(&len),
         "Windows system directory is unavailable"
     );
-    Ok(PathBuf::from(OsString::from_wide(&directory[..len])).join(r"OpenSSH\ssh.exe"))
+    Ok(PathBuf::from(OsString::from_wide(&directory[..len])))
 }
 
 type Input = Box<dyn AsyncRead + Send + Unpin>;
@@ -165,7 +211,7 @@ async fn local_halves(path: &Path, role: SocketRole) -> Result<(Input, Output)> 
 
 pub(crate) struct ControlConnection {
     pub(crate) wire: Connection<Input, Output>,
-    _ssh: Option<SshProcess>,
+    _relay: Option<RelayProcess>,
 }
 
 pub struct InteractiveConnection {
@@ -173,11 +219,11 @@ pub struct InteractiveConnection {
     writer: FrameWriter<Output>,
     incoming: mpsc::Receiver<Result<Frame>>,
     reader: JoinHandle<()>,
-    _ssh: Option<SshProcess>,
+    _relay: Option<RelayProcess>,
 }
 
 impl InteractiveConnection {
-    fn new(wire: Connection<Input, Output>, ssh: Option<SshProcess>) -> Self {
+    fn new(wire: Connection<Input, Output>, relay: Option<RelayProcess>) -> Self {
         let Connection {
             session,
             mut reader,
@@ -204,7 +250,7 @@ impl InteractiveConnection {
             writer,
             incoming,
             reader,
-            _ssh: ssh,
+            _relay: relay,
         }
     }
 
@@ -248,6 +294,14 @@ impl ControlEndpoint {
                 Ok(InteractiveConnection::new(wire, None))
             }
             Self::Ssh(alias) => alias.interactive(capabilities).await,
+            Self::Wsl(distribution) => {
+                let (read, write, mut relay) =
+                    RelayProcess::start(distribution.command(PeerRole::Tui)?)?;
+                let wire = relay
+                    .negotiate(read, write, PeerRole::Tui, capabilities, None)
+                    .await?;
+                Ok(InteractiveConnection::new(wire, Some(relay)))
+            }
         }
     }
 
@@ -256,21 +310,27 @@ impl ControlEndpoint {
         capability: &str,
         controller: Option<String>,
     ) -> Result<ControlConnection> {
-        let (read, write, mut ssh): (Input, Output, _) = match self {
+        let (read, write, mut relay): (Input, Output, _) = match self {
             #[cfg(any(target_os = "linux", windows))]
             Self::Local(path) => {
                 let (read, write) = local_halves(path, SocketRole::Control).await?;
                 (read, write, None)
             }
             Self::Ssh(alias) => {
-                let (read, write, process) = SshProcess::start(alias, PeerRole::Control)?;
+                let (read, write, process) =
+                    RelayProcess::start(alias.command(PeerRole::Control)?)?;
+                (read, write, Some(process))
+            }
+            Self::Wsl(distribution) => {
+                let (read, write, process) =
+                    RelayProcess::start(distribution.command(PeerRole::Control)?)?;
                 (read, write, Some(process))
             }
         };
 
         let controller = controller.unwrap_or_else(|| Uuid::new_v4().to_string());
         let capabilities = vec![capability.to_owned()];
-        let wire = match &mut ssh {
+        let wire = match &mut relay {
             Some(process) => {
                 process
                     .negotiate(
@@ -295,24 +355,24 @@ impl ControlEndpoint {
             .await
             .context("daemon handshake timed out")??,
         };
-        Ok(ControlConnection { wire, _ssh: ssh })
+        Ok(ControlConnection {
+            wire,
+            _relay: relay,
+        })
     }
 }
 
-struct SshProcess {
+struct RelayProcess {
     child: Child,
     diagnostic: JoinHandle<Vec<u8>>,
 }
 
-impl SshProcess {
-    fn start(alias: &SshAlias, role: PeerRole) -> Result<(Input, Output, Self)> {
-        let mut child = alias
-            .command(role)?
-            .spawn()
-            .context("starting Corvid SSH link")?;
-        let read = child.stdout.take().context("SSH stdout is unavailable")?;
-        let write = child.stdin.take().context("SSH stdin is unavailable")?;
-        let stderr = child.stderr.take().context("SSH stderr is unavailable")?;
+impl RelayProcess {
+    fn start(mut command: Command) -> Result<(Input, Output, Self)> {
+        let mut child = command.spawn().context("starting Corvid relay")?;
+        let read = child.stdout.take().context("relay stdout is unavailable")?;
+        let write = child.stdin.take().context("relay stdin is unavailable")?;
+        let stderr = child.stderr.take().context("relay stderr is unavailable")?;
         let diagnostic = tokio::spawn(drain_diagnostic(stderr));
         Ok((Box::new(read), Box::new(write), Self { child, diagnostic }))
     }
@@ -326,14 +386,14 @@ impl SshProcess {
         controller: Option<String>,
     ) -> Result<Connection<Input, Output>> {
         match timeout(
-            SSH_SETUP_TIMEOUT,
+            RELAY_SETUP_TIMEOUT,
             Connection::negotiate(read, write, role, capabilities, controller),
         )
         .await
         {
             Ok(Ok(wire)) => Ok(wire),
             Ok(Err(error)) => Err(self.classify(error).await),
-            Err(_) => Err(ProtocolFault::new("Offline", "SSH setup timed out").into()),
+            Err(_) => Err(ProtocolFault::new("Offline", "daemon relay setup timed out").into()),
         }
     }
     async fn classify(&mut self, error: anyhow::Error) -> anyhow::Error {
@@ -348,13 +408,13 @@ impl SshProcess {
         })
         .await;
         match diagnostic {
-            Ok(Some(bytes)) => ssh_failure(&bytes).into(),
+            Ok(Some(bytes)) => relay_failure(&bytes).into(),
             _ => error,
         }
     }
 }
 
-impl Drop for SshProcess {
+impl Drop for RelayProcess {
     fn drop(&mut self) {
         self.diagnostic.abort();
     }
@@ -371,7 +431,7 @@ async fn drain_diagnostic(mut stderr: ChildStderr) -> Vec<u8> {
     tail
 }
 
-fn ssh_failure(diagnostic: &[u8]) -> ProtocolFault {
+fn relay_failure(diagnostic: &[u8]) -> ProtocolFault {
     let message = String::from_utf8_lossy(diagnostic);
     if message.contains("Host key verification failed")
         || message.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
@@ -389,9 +449,9 @@ fn ssh_failure(diagnostic: &[u8]) -> ProtocolFault {
             "install corvid on the remote command PATH",
         )
     } else if message.contains("unrecognized subcommand 'terminal-relay'") {
-        ProtocolFault::new("UpgradeRequired", "update Corvid on the SSH execution host")
+        ProtocolFault::new("UpgradeRequired", "update Corvid on the execution host")
     } else {
-        ProtocolFault::new("Offline", "Corvid SSH connection failed")
+        ProtocolFault::new("Offline", "Corvid relay connection failed")
     }
 }
 
@@ -417,12 +477,12 @@ mod tests {
     }
 
     #[test]
-    fn classifies_without_leaking_ssh_diagnostics() {
-        let error = ssh_failure(b"secret@host: Permission denied (publickey).");
+    fn classifies_without_leaking_relay_diagnostics() {
+        let error = relay_failure(b"secret@host: Permission denied (publickey).");
         assert_eq!(error.code, "AuthenticationRequired");
         assert!(!error.message.contains("secret"));
         assert_eq!(
-            ssh_failure(b"Host key verification failed.").code,
+            relay_failure(b"Host key verification failed.").code,
             "HostKeyRequired"
         );
     }

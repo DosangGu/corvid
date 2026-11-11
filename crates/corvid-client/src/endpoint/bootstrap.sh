@@ -49,6 +49,19 @@ verify_payload() {
     [ "${digest%% *}" = "$sha" ]
 }
 
+# Persisted WSL endpoints can resolve either installation after reconnecting.
+if [ "$1" = auto ]; then
+    shift
+    if command -v corvid >/dev/null 2>&1; then
+        set -- path "$@"
+    elif [ -e "$root/corvid" ] || [ -L "$root/corvid" ]; then
+        set -- managed "$@"
+    else
+        printf 'corvid: not found\n' >&2
+        exit 127
+    fi
+fi
+
 case "$1" in
     probe)
         [ "$(uname -s)" = Linux ] || exit 70

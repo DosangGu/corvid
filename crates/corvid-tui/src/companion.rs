@@ -487,6 +487,9 @@ fn show_hosts(list: HostList, expected_host: &str) -> Result<()> {
     let endpoint = match host.endpoint.as_ref().context("missing host endpoint")? {
         Endpoint::Local(_) => "endpoint=local".to_owned(),
         Endpoint::SshAlias(alias) => format!("endpoint=ssh ssh_alias={alias}"),
+        Endpoint::WslDistribution(distribution) => {
+            format!("endpoint=wsl distribution={distribution}")
+        }
     };
     print!(
         "host_id={} {endpoint} connection={connection:?}",

@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use corvid_client::{ControlEndpoint, SshAlias};
+use corvid_client::{ControlEndpoint, SshAlias, WslDistribution};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -28,6 +28,7 @@ type StatusCache = BTreeMap<RunKey, LastKnown>;
 pub enum HostEndpoint {
     Local { runtime_dir: PathBuf },
     Ssh { alias: String },
+    Wsl { distribution: String },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -86,6 +87,9 @@ impl Config {
                 ControlEndpoint::Local(runtime_dir.clone())
             }
             HostEndpoint::Ssh { alias } => ControlEndpoint::Ssh(SshAlias::new(alias.clone())?),
+            HostEndpoint::Wsl { distribution } => {
+                ControlEndpoint::Wsl(WslDistribution::new(distribution.clone())?)
+            }
         })
     }
 
