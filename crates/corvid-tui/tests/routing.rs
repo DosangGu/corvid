@@ -805,7 +805,7 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert!(first.reader.next_frame().await.unwrap().is_none());
         drop(first);
 
-        let replacement = Tui::attach_command(&runtime, Some(launch("NEW"))).await;
+        let mut replacement = Tui::attach_command(&runtime, Some(launch("NEW"))).await;
         let fresh = wait_for_agent(&runtime, &replacement.route.terminal_id, |agent| {
             agent.terminal_available
         })
@@ -817,12 +817,49 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert_eq!(unchanged.agent_run_id, two.agent_run_id);
         assert_eq!(unchanged.process, AgentProcessState::Running as i32);
         let changed = presented(&mut companion, |view| {
-            slot_run(view, 0) == Some(fresh.agent_run_id.as_str())
+            view.overflow.iter().any(|run| {
+                run.key
+                    .as_ref()
+                    .is_some_and(|key| key.agent_run_id == fresh.agent_run_id)
+            })
         })
         .await;
-        assert!(changed.slots[0].revision > placements.slots[0].revision);
+        assert_eq!(slot_run(&changed, 0), Some(one.agent_run_id.as_str()));
+        assert_eq!(changed.slots[0].revision, placements.slots[0].revision);
         assert_eq!(changed.slots[1], placements.slots[1]);
-        assert_eq!(changed.recent_ended[0].agent_run_id, one.agent_run_id);
+        assert!(changed.recent_ended.is_empty());
+
+        replacement
+            .send(Body::CloseView(CloseView {
+                expected_view_revision: Some(replacement.route.view_revision),
+                workspace_id: replacement.selection.workspace_id.clone(),
+                tab_id: Some(replacement.selection.tab_id.clone()),
+                pane_id: Some(replacement.selection.pane_id.clone()),
+            }))
+            .await;
+        let mut replacement_output = Vec::new();
+        assert!(matches!(
+            replacement.next_body(&mut replacement_output).await,
+            Body::Detach(_)
+        ));
+        let compacted = presented(&mut companion, |view| {
+            slot_run(view, 0) == Some(two.agent_run_id.as_str()) && view.overflow_count == 0
+        })
+        .await;
+        assert!(compacted.slots[0].revision > placements.slots[0].revision);
+        assert_eq!(slot_run(&compacted, 1), None);
+        let closed: std::collections::BTreeSet<_> = compacted
+            .recent_ended
+            .iter()
+            .map(|run| run.agent_run_id.as_str())
+            .collect();
+        assert_eq!(
+            closed,
+            std::collections::BTreeSet::from([
+                one.agent_run_id.as_str(),
+                fresh.agent_run_id.as_str()
+            ])
+        );
     })
     .await
     .unwrap();

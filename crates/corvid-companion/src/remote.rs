@@ -1,21 +1,27 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::snapshot::SynchronizedSnapshot;
 use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{
-    AgentBadge, AgentLifecycle, AgentProcessState, AgentState, InputRequestStatus, PresentedRun,
-    PresentedRunKey, RunAvailability,
+    AgentBadge, AgentLifecycle, AgentProcessState, AgentState, InputRequestStatus,
+    PresentedAttention, PresentedRun, PresentedRunKey, RunAvailability,
 };
 use uuid::Uuid;
 
 use crate::{RunKey, RunObservation};
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) struct Remote {
     pub(crate) epoch: Uuid,
     pub(crate) sequence: u64,
     pub(crate) bindings: BTreeMap<Uuid, u64>,
     pub(crate) runs: BTreeMap<RunKey, ObservedRun>,
+    pub(crate) panes: BTreeSet<Uuid>,
+    pub(crate) attention: Vec<PresentedAttention>,
+    pub(crate) omitted_attention: u32,
 }
 
 pub(crate) struct ObservedRun {
@@ -37,9 +43,21 @@ impl Remote {
             sequence: snapshot.sequence(),
             bindings: BTreeMap::new(),
             runs: BTreeMap::new(),
+            panes: BTreeSet::new(),
+            attention: Vec::new(),
+            omitted_attention: 0,
         };
         for entry in snapshot.entities() {
             match &entry.body {
+                Some(Body::Workspace(workspace)) => {
+                    for node in workspace.tabs.iter().flat_map(|tab| &tab.nodes) {
+                        if let Some(corvid_protocol::wire::layout_node_state::Body::PaneId(pane)) =
+                            &node.body
+                        {
+                            remote.panes.insert(parse_id(pane)?);
+                        }
+                    }
+                }
                 Some(Body::Agent(agent)) if agent.parent_run_id.is_none() => {
                     let summary = agent.summary.as_ref().ok_or_else(invalid)?;
                     let key = RunKey {
@@ -63,6 +81,22 @@ impl Remote {
                 _ => {}
             }
         }
+        for run in remote.runs.values_mut() {
+            run.observation.eligible = run
+                .observation
+                .pane
+                .is_some_and(|pane| remote.panes.contains(&pane));
+        }
+        let requests: BTreeMap<_, _> = snapshot
+            .entities()
+            .filter_map(|entry| match &entry.body {
+                Some(Body::Request(request)) => Some((
+                    (request.agent_run_id.as_str(), request.request_id.as_str()),
+                    request,
+                )),
+                _ => None,
+            })
+            .collect();
         for entry in snapshot.entities() {
             match &entry.body {
                 Some(Body::Attention(alert)) if alert.acknowledged_unix_ms.is_none() => {
@@ -72,6 +106,19 @@ impl Remote {
                         run: parse_id(&alert.agent_run_id)?,
                     };
                     if let Some(run) = remote.runs.get_mut(&key) {
+                        let request = alert
+                            .request_id
+                            .as_deref()
+                            .and_then(|id| requests.get(&(alert.agent_run_id.as_str(), id)));
+                        remote.attention.push(PresentedAttention {
+                            run: Some(key.into()),
+                            attention_id: alert.attention_id.clone(),
+                            reason: alert.reason,
+                            created_unix_ms: alert.created_unix_ms,
+                            provider: run.display.provider,
+                            request_status: request.map(|request| request.status),
+                            request_kind: request.map(|request| request.kind),
+                        });
                         run.display.unseen_attention += 1;
                         let latest = (alert.created_unix_ms, alert.attention_id.clone());
                         if run.latest_alert.as_ref().is_none_or(|old| *old < latest) {
@@ -104,6 +151,17 @@ impl Remote {
                 _ => {}
             }
         }
+        remote.attention.sort_unstable_by(|a, b| {
+            (b.created_unix_ms, &b.attention_id).cmp(&(a.created_unix_ms, &a.attention_id))
+        });
+        remote.omitted_attention = remote
+            .attention
+            .len()
+            .saturating_sub(crate::PRESENTATION_ATTENTION_LIMIT)
+            as u32;
+        remote
+            .attention
+            .truncate(crate::PRESENTATION_ATTENTION_LIMIT);
         Ok(remote)
     }
 }
@@ -141,6 +199,10 @@ impl ObservedRun {
         Self {
             observation: RunObservation {
                 created_sequence: agent.created_sequence,
+                pane: summary
+                    .location
+                    .as_ref()
+                    .and_then(|location| Uuid::parse_str(&location.pane_id).ok()),
                 navigable,
                 eligible,
                 ended,

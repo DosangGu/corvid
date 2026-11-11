@@ -1,8 +1,8 @@
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     Attach, AttachRole, CollectHook, FocusAgentRequest, FocusSlot, GetCapabilities,
-    GetPresentationSlots, InputChunk, ListHosts, Ping, ProviderAdapter, ProviderExecutionMode,
-    ProviderProfile, UpgradeDaemon,
+    GetPresentationAttention, GetPresentationSlots, InputChunk, ListHosts, OpenAgentDeck, Ping,
+    ProviderAdapter, ProviderExecutionMode, ProviderProfile, UpgradeDaemon,
 };
 use corvid_protocol::{
     PeerRole, accept_hello, accept_hello_with_profiles, check_hello_result, decode_envelope, hello,
@@ -263,6 +263,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
     for body in [
         Body::ListHosts(ListHosts {}),
         Body::GetPresentationSlots(GetPresentationSlots::default()),
+        Body::GetPresentationAttention(GetPresentationAttention {}),
         Body::FocusSlot(FocusSlot::default()),
     ] {
         let request = session.envelope(Some("presentation".into()), body);
@@ -271,6 +272,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
     for body in [
         Body::FocusAgent(FocusAgentRequest::default()),
         Body::InputChunk(InputChunk::default()),
+        Body::OpenAgentDeck(OpenAgentDeck::default()),
     ] {
         let request = session.envelope(Some("presentation".into()), body);
         assert_eq!(
@@ -285,6 +287,8 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
     for body in [
         Body::ListHosts(ListHosts {}),
         Body::FocusSlot(FocusSlot::default()),
+        Body::GetPresentationAttention(GetPresentationAttention {}),
+        Body::OpenAgentDeck(OpenAgentDeck::default()),
     ] {
         let request = session.envelope(Some("presentation".into()), body);
         assert_eq!(

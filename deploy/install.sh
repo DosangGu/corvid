@@ -109,8 +109,8 @@ chmod 755 "$stage/package/corvid"
 [ "$("$stage/package/corvid" --version)" = "corvid $release_version" ] || fail 'Executable version mismatch'
 if [ "$product" = desktop ]; then
     chmod 755 "$stage/package/corvid-desktop"
-    if [ -f "$stage/package/plugins/slot-board/corvid-slot-board" ]; then
-        chmod 755 "$stage/package/plugins/slot-board/corvid-slot-board"
+    if [ -f "$stage/package/plugins/agent-deck/corvid-agent-deck" ]; then
+        chmod 755 "$stage/package/plugins/agent-deck/corvid-agent-deck"
     fi
     chmod 755 "$stage/package/daemon/x86_64-unknown-linux-musl/corvid"
 fi

@@ -26,6 +26,7 @@ impl RunKey {
 #[derive(Clone, Copy, Debug)]
 pub struct RunObservation {
     pub created_sequence: Option<u64>,
+    pub pane: Option<Uuid>,
     pub navigable: bool,
     pub eligible: bool,
     pub ended: bool,
@@ -51,6 +52,14 @@ pub struct SlotLayout {
     order: Vec<RunKey>,
     suppressed: BTreeSet<RunKey>,
     ended: VecDeque<RunKey>,
+    #[serde(default)]
+    owners: Vec<OwnedPane>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct OwnedPane {
+    run: RunKey,
+    pane: Uuid,
 }
 
 impl SlotLayout {
@@ -73,6 +82,7 @@ impl SlotLayout {
             order: Vec::new(),
             suppressed: BTreeSet::new(),
             ended: VecDeque::new(),
+            owners: Vec::new(),
         })
     }
 
@@ -94,6 +104,14 @@ impl SlotLayout {
 
     pub fn suppressed(&self) -> impl Iterator<Item = RunKey> + '_ {
         self.suppressed.iter().copied()
+    }
+
+    pub(crate) fn closed_panes(&self, panes: &BTreeSet<Uuid>) -> BTreeSet<RunKey> {
+        self.owners
+            .iter()
+            .filter(|owner| !panes.contains(&owner.pane))
+            .map(|owner| owner.run)
+            .collect()
     }
 
     pub fn exact_slot(&self, id: u32, revision: u64, run: Option<RunKey>) -> Result<&Slot> {
@@ -120,10 +138,9 @@ impl SlotLayout {
         if self.suppressed.len() == MAX_TRACKED {
             return Err(limit());
         }
-        self.clear_placement(run)?;
         self.order.retain(|key| *key != run);
         self.suppressed.insert(run);
-        Ok(())
+        self.compact()
     }
 
     pub fn readd(&mut self, run: RunKey) -> Result<()> {
@@ -146,32 +163,22 @@ impl SlotLayout {
         runs: &BTreeMap<RunKey, RunObservation>,
         removed: &BTreeSet<RunKey>,
     ) -> Result<()> {
-        self.retire(runs, removed)?;
+        self.retire(removed)?;
         self.admit(runs)?;
-        let available: Vec<_> = self
-            .overflow()
-            .filter(|run| runs.get(run).is_some_and(|run| run.navigable))
-            .collect();
-        let free: Vec<_> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| slot.run.is_none() && !slot.pinned)
-            .map(|(index, _)| index)
-            .collect();
-        for (index, run) in free.into_iter().zip(available) {
-            self.assign(index, run)?;
+        for run in self.order.iter().chain(&self.suppressed) {
+            if let Some(pane) = runs.get(run).and_then(|run| run.pane) {
+                if let Some(owner) = self.owners.iter_mut().find(|owner| owner.run == *run) {
+                    owner.pane = pane;
+                } else {
+                    self.owners.push(OwnedPane { run: *run, pane });
+                }
+            }
         }
-        Ok(())
+        self.compact()
     }
 
-    fn retire(
-        &mut self,
-        runs: &BTreeMap<RunKey, RunObservation>,
-        removed: &BTreeSet<RunKey>,
-    ) -> Result<()> {
-        let ended =
-            |run: &RunKey| removed.contains(run) || runs.get(run).is_some_and(|run| run.ended);
+    fn retire(&mut self, removed: &BTreeSet<RunKey>) -> Result<()> {
+        let ended = |run: &RunKey| removed.contains(run);
         let retired: Vec<_> = self
             .order
             .iter()
@@ -180,7 +187,6 @@ impl SlotLayout {
             .filter(ended)
             .collect();
         for run in &retired {
-            self.clear_placement(*run)?;
             if self.ended.len() == MAX_HISTORY {
                 self.ended.pop_front();
             }
@@ -189,6 +195,7 @@ impl SlotLayout {
         if !retired.is_empty() {
             self.order.retain(|run| !ended(run));
             self.suppressed.retain(|run| !ended(run));
+            self.owners.retain(|owner| !ended(&owner.run));
         }
         Ok(())
     }
@@ -198,12 +205,8 @@ impl SlotLayout {
         let mut new: Vec<_> = runs
             .iter()
             .filter_map(|(key, run)| {
-                (run.eligible
-                    && run.navigable
-                    && !run.ended
-                    && !tracked.contains(key)
-                    && !self.suppressed.contains(key))
-                .then_some((run.created_sequence.unwrap_or(u64::MAX), *key))
+                (run.eligible && !tracked.contains(key) && !self.suppressed.contains(key))
+                    .then_some((run.created_sequence.unwrap_or(u64::MAX), *key))
             })
             .collect();
         if self.order.len() + new.len() > MAX_TRACKED {
@@ -214,11 +217,37 @@ impl SlotLayout {
         Ok(())
     }
 
-    fn clear_placement(&mut self, run: RunKey) -> Result<()> {
-        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.run == Some(run)) {
-            slot.revise()?;
-            slot.run = None;
+    fn compact(&mut self) -> Result<()> {
+        // Preserve the displayed order, then admit queued runs in arrival order.
+        // A pin follows its agent; it cannot reserve a hole in the packed queue.
+        let pins: BTreeMap<_, _> = self
+            .slots
+            .iter()
+            .filter_map(|slot| slot.run.map(|run| (run, slot.pinned)))
+            .collect();
+        let mut order: Vec<_> = self
+            .slots
+            .iter()
+            .filter_map(|slot| slot.run)
+            .filter(|run| self.order.contains(run))
+            .collect();
+        let placed: BTreeSet<_> = order.iter().copied().collect();
+        order.extend(
+            self.order
+                .iter()
+                .copied()
+                .filter(|run| !placed.contains(run)),
+        );
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let run = order.get(index).copied();
+            let pinned = run.and_then(|run| pins.get(&run)).copied().unwrap_or(false);
+            if slot.run != run || slot.pinned != pinned {
+                slot.revise()?;
+                slot.run = run;
+                slot.pinned = pinned;
+            }
         }
+        self.order = order;
         Ok(())
     }
 
@@ -234,6 +263,7 @@ impl SlotLayout {
             || self.order.len() > MAX_TRACKED
             || self.suppressed.len() > MAX_TRACKED
             || self.ended.len() > MAX_HISTORY
+            || self.owners.len() > MAX_TRACKED * 2
         {
             return false;
         }
@@ -245,6 +275,17 @@ impl SlotLayout {
             && order.is_disjoint(&ended)
             && order.is_disjoint(&self.suppressed)
             && ended.is_disjoint(&self.suppressed)
+            && self.owners.iter().all(|owner| {
+                !owner.pane.is_nil()
+                    && (order.contains(&owner.run) || self.suppressed.contains(&owner.run))
+            })
+            && self
+                .owners
+                .iter()
+                .map(|owner| owner.run)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == self.owners.len()
             && order
                 .iter()
                 .chain(&ended)
@@ -268,4 +309,41 @@ fn limit() -> ProtocolFault {
         "LimitExceeded",
         "slot revision or run history limit reached",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persists_pane_ownership_and_only_retires_deleted_layout_members() {
+        let key = RunKey {
+            host: Uuid::new_v4(),
+            epoch: Uuid::new_v4(),
+            run: Uuid::new_v4(),
+        };
+        let pane = Uuid::new_v4();
+        let mut layout = SlotLayout::new(2).unwrap();
+        let runs = BTreeMap::from([(
+            key,
+            RunObservation {
+                pane: Some(pane),
+                created_sequence: Some(1),
+                eligible: true,
+                navigable: true,
+                ended: false,
+            },
+        )]);
+        layout.reconcile(&runs, &BTreeSet::new()).unwrap();
+        let mut restored: SlotLayout =
+            serde_json::from_slice(&serde_json::to_vec(&layout).unwrap()).unwrap();
+        // Even after agent history is pruned, a retained pane keeps the card.
+        let removed = restored.closed_panes(&BTreeSet::from([pane]));
+        restored.reconcile(&BTreeMap::new(), &removed).unwrap();
+        assert_eq!(restored.slots()[0].run, Some(key));
+        let removed = restored.closed_panes(&BTreeSet::new());
+        restored.reconcile(&BTreeMap::new(), &removed).unwrap();
+        assert!(restored.slots().iter().all(|slot| slot.run.is_none()));
+        assert_eq!(restored.ended().collect::<Vec<_>>(), [key]);
+    }
 }

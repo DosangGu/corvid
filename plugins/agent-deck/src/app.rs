@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
@@ -12,6 +12,8 @@ use uuid::Uuid;
 use corvid_presentation::ipc::{Command, Completion, DesktopClient, Display, Link};
 use corvid_presentation::model::Snapshot;
 
+use crate::background::Background;
+use crate::notifications::{Notice, now_ms};
 use crate::parent::DesktopLink;
 
 pub(crate) fn configure(ctx: &egui::Context) {
@@ -34,14 +36,18 @@ pub(crate) fn configure(ctx: &egui::Context) {
 
 pub(crate) struct Desktop {
     client: DesktopClient,
-    parent: Option<DesktopLink>,
+    parent: DesktopLink,
+    background: Background,
     view: Display,
     binding: Option<PresentedBinding>,
-    placement: Option<PresentedRunKey>,
     section: Section,
     page: u32,
     pending: Option<Uuid>,
     notice: Option<Completion>,
+    pending_since: Option<Instant>,
+    notifications_seen: u64,
+    selected_notice: Option<Notice>,
+    quitting: bool,
     #[cfg(windows)]
     pairing: crate::pairing::Pairing,
 }
@@ -52,20 +58,25 @@ enum Section {
     Slots,
     Overflow,
     History,
+    Notifications,
 }
 
 impl Desktop {
-    pub(crate) fn new(client: DesktopClient, parent: Option<DesktopLink>) -> Self {
+    pub(crate) fn new(client: DesktopClient, background: Background) -> Self {
         Self {
             client,
-            parent,
+            parent: background.desktop.clone(),
+            background,
             view: Display::default(),
             binding: None,
-            placement: None,
             section: Section::Slots,
             page: 0,
             pending: None,
             notice: None,
+            pending_since: None,
+            notifications_seen: 0,
+            selected_notice: None,
+            quitting: false,
             #[cfg(windows)]
             pairing: crate::pairing::Pairing::default(),
         }
@@ -79,8 +90,7 @@ impl Desktop {
             self.pending = None;
             self.notice = Some(completion.clone());
         }
-        if let Some(parent) = &mut self.parent
-            && let Ok(completion) = parent.results.try_recv()
+        if let Ok(completion) = self.background.completed.try_recv()
             && self.pending == Some(completion.id)
         {
             self.pending = None;
@@ -94,16 +104,35 @@ impl Desktop {
             {
                 self.binding
                     .take_if(|binding| !current.contains_binding(binding));
-                self.placement.take_if(|key| !current.can_place(key));
             }
             _ => {
                 self.binding = None;
-                self.placement = None;
                 #[cfg(windows)]
                 self.pairing.close();
             }
         }
         self.view = next;
+        let background = self.background.view.borrow().clone();
+        if background.notifications_open != self.notifications_seen {
+            self.notifications_seen = background.notifications_open;
+            self.selected_notice = background.selected;
+            self.section = Section::Notifications;
+        }
+        if self.pending.is_some()
+            && self
+                .pending_since
+                .is_some_and(|time| time.elapsed() > Duration::from_secs(8))
+        {
+            let id = self.pending.take().unwrap();
+            self.notice = Some(Completion {
+                id,
+                message:
+                    "The action was not confirmed. Review the current state before trying again."
+                        .into(),
+                failed: true,
+                paired: None,
+            });
+        }
         if let Some(snapshot) = &self.view.snapshot
             && self.page >= snapshot.page_count()
         {
@@ -135,6 +164,7 @@ impl Desktop {
         }
         if self.client.commands.try_send(command).is_ok() {
             self.pending = Some(id);
+            self.pending_since = Some(Instant::now());
             self.notice = None;
         } else {
             self.notice = Some(Completion {
@@ -149,7 +179,6 @@ impl Desktop {
 
     fn set_page(&mut self, page: u32) {
         self.page = page;
-        self.placement = None;
         self.client.page.send_replace(page);
     }
 
@@ -162,9 +191,14 @@ impl Desktop {
 
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Agent Board");
+            ui.heading("Corvid Agent Deck");
             let text = connection_text(&self.view);
             ui.label(RichText::new(text).strong());
+            ui.selectable_value(
+                &mut self.section,
+                Section::Notifications,
+                "Notifications & settings",
+            );
         });
         if let Some(snapshot) = self.view.snapshot.clone() {
             ui.label(format!("Host {}", snapshot.host));
@@ -195,11 +229,11 @@ impl Desktop {
                 }
                 _ => {}
             }
-            if self.parent.is_none() {
+            if !self.parent.connected() {
                 self.binding_picker(ui, &snapshot);
             }
             #[cfg(windows)]
-            if self.parent.is_none()
+            if !self.parent.connected()
                 && snapshot.can_pair_wezterm
                 && ui
                     .add_enabled(self.ready(&snapshot), egui::Button::new("Pair WezTerm…"))
@@ -244,23 +278,15 @@ impl Desktop {
             ui.selectable_value(
                 &mut self.section,
                 Section::Overflow,
-                format!("Overflow ({})", snapshot.data.overflow_count),
+                format!("Queue ({})", snapshot.data.overflow_count),
             );
-            ui.selectable_value(&mut self.section, Section::History, "Recent ended");
+            ui.selectable_value(&mut self.section, Section::History, "Closed panes");
         });
         ui.separator();
     }
 
     fn board(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
-        if let Some(key) = &self.placement {
-            let id = short_id(&key.agent_run_id);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("Choose an empty slot for {id}"));
-                if ui.button("Cancel placement").clicked() {
-                    self.placement = None;
-                }
-            });
-        }
+        ui.weak("Completed agents stay here until their pane, tab, or session is closed.");
         let columns = ((ui.available_width() / 250.0) as usize).clamp(1, 4);
         for row in snapshot.data.slots.chunks(columns) {
             ui.columns(columns, |cells| {
@@ -286,7 +312,7 @@ impl Desktop {
             if let Some(run) = &slot.run {
                 self.run(ui, snapshot, run);
                 ui.horizontal_wrapped(|ui| {
-                    if self.parent.is_none() {
+                    if !self.parent.connected() {
                         let focus = self
                             .binding
                             .as_ref()
@@ -298,21 +324,13 @@ impl Desktop {
                     }
                 });
             } else {
-                ui.weak(if slot.pinned { "Reserved" } else { "Empty" });
-                if let Some(body) = self
-                    .placement
-                    .as_ref()
-                    .and_then(|key| snapshot.place(slot, key))
-                {
-                    self.action(ui, snapshot, "Place chosen run", Some(body));
-                }
+                ui.weak("Empty");
             }
 
             ui.horizontal_wrapped(|ui| {
                 let pin = if slot.pinned { "Unpin" } else { "Pin" };
-                self.action(ui, snapshot, pin, snapshot.pin(slot));
                 if slot.run.is_some() {
-                    self.action(ui, snapshot, "Remove", snapshot.remove(slot));
+                    self.action(ui, snapshot, pin, snapshot.pin(slot));
                 }
             });
         });
@@ -349,28 +367,16 @@ impl Desktop {
             return;
         }
         if snapshot.data.overflow.is_empty() && snapshot.data.suppressed.is_empty() {
-            ui.weak("No overflow or removed runs on this page.");
+            ui.weak("No queued agents on this page.");
         }
         for (index, run) in snapshot.data.overflow.iter().enumerate() {
             ui.push_id(("overflow", index), |ui| {
                 ui.separator();
                 self.run(ui, snapshot, run);
                 ui.horizontal_wrapped(|ui| {
-                    if let Some(key) = run.key.as_ref().filter(|key| snapshot.can_place(key))
-                        && ui
-                            .add_enabled(
-                                self.ready(snapshot),
-                                egui::Button::new("Choose for placement"),
-                            )
-                            .clicked()
-                    {
-                        self.placement = Some(key.clone());
-                        self.section = Section::Slots;
-                    }
                     if run.latest_unseen_attention_id.is_some() {
                         self.action(ui, snapshot, "Acknowledge alert", snapshot.acknowledge(run));
                     }
-                    self.action(ui, snapshot, "Remove", snapshot.remove_overflow(run));
                 });
             });
         }
@@ -403,30 +409,141 @@ impl Desktop {
         let key = snapshot.live_key(run);
         let focus = self
             .parent
-            .as_ref()
-            .map(|_| key.is_some() && self.ready(snapshot));
+            .connected()
+            .then(|| key.is_some() && self.ready(snapshot));
         let cached = self.view.link != Link::Online || snapshot.generation().is_none();
         if describe_run(ui, run, cached, focus)
-            && let (Some(parent), Some(key)) = (&self.parent, key)
+            && let Some(key) = key
         {
-            let id = Uuid::new_v4();
-            if parent.focus(id, key.clone()) {
-                self.pending = Some(id);
-                self.notice = None;
+            self.focus_run(key.clone());
+        }
+    }
+
+    fn focus_run(&mut self, key: PresentedRunKey) {
+        let id = Uuid::new_v4();
+        if self.parent.focus(id, key) {
+            self.pending = Some(id);
+            self.pending_since = Some(Instant::now());
+            self.notice = None;
+        } else {
+            self.notice = Some(Completion {
+                id,
+                message: "Could not send the action to Desktop.".into(),
+                failed: true,
+                paired: None,
+            });
+        }
+    }
+
+    fn notifications(&mut self, ui: &mut Ui) {
+        let background = self.background.view.borrow().clone();
+        let mut settings = background.settings;
+        let mut changed = ui
+            .checkbox(&mut settings.enabled, "Show OS notifications")
+            .changed();
+        ui.horizontal_wrapped(|ui| {
+            changed |= ui
+                .checkbox(&mut settings.input, "Questions and approvals")
+                .changed();
+            changed |= ui
+                .checkbox(&mut settings.responses, "New responses")
+                .changed();
+            changed |= ui.checkbox(&mut settings.failures, "Errors").changed();
+            changed |= ui.checkbox(&mut settings.sound, "Sound").changed();
+        });
+        if background.background {
+            changed |= ui
+                .checkbox(&mut settings.start_at_login, "Start Agent Deck at login")
+                .changed();
+            ui.weak("Closing this window keeps Agent Deck in the system tray.");
+        } else {
+            ui.weak("Keep this window open to receive notifications. A system tray backend is unavailable.");
+        }
+        let paused = settings.paused_until_ms > now_ms();
+        if ui
+            .button(if paused {
+                "Resume notifications"
             } else {
-                self.notice = Some(Completion {
-                    id,
-                    message: "Could not send the action to Desktop.".into(),
-                    failed: true,
-                    paired: None,
-                });
+                "Pause for 1 hour"
+            })
+            .clicked()
+        {
+            settings.paused_until_ms = if paused {
+                0
+            } else {
+                now_ms().saturating_add(60 * 60 * 1000)
+            };
+            changed = true;
+        }
+        if changed {
+            self.background.configure(settings);
+        }
+        if !background.status.is_empty() {
+            ui.label(RichText::new(background.status).color(ui.visuals().warn_fg_color));
+        }
+        if ui.button("Send test notification").clicked() {
+            self.background.test_notification();
+        }
+        if ui.button("Quit Corvid Agent Deck").clicked() {
+            self.quitting = true;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ui.separator();
+        if let Some(notice) = self.selected_notice.clone() {
+            ui.heading(&notice.title);
+            ui.label(&notice.body);
+            let current = self.view.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.host == notice.key.host
+                    && snapshot.data.remote_epoch.as_deref()
+                        == Some(notice.key.epoch.to_string().as_str())
+                    && snapshot.generation().is_some()
+            });
+            if ui
+                .add_enabled(
+                    current && self.parent.connected() && self.pending.is_none(),
+                    egui::Button::new("Open existing terminal in Desktop"),
+                )
+                .clicked()
+            {
+                self.focus_run(notice.key.run());
             }
+            ui.weak("The current Desktop and daemon revalidate the exact agent. Questions stay pending until answered in the terminal.");
+            ui.separator();
+        }
+        ui.heading("Recent notifications");
+        if background.history.is_empty() {
+            ui.weak("New agent notifications will appear here.");
+        }
+        for notice in background.history {
+            ui.push_id(notice.key.attention, |ui| {
+                if ui
+                    .selectable_label(
+                        self.selected_notice
+                            .as_ref()
+                            .is_some_and(|selected| selected.key == notice.key),
+                        &notice.title,
+                    )
+                    .clicked()
+                {
+                    self.selected_notice = Some(notice.clone());
+                }
+                ui.weak(&notice.body);
+            });
         }
     }
 }
 
 impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let background = self.background.view.borrow().clone();
+        if ctx.input(|input| input.viewport().close_requested())
+            && background.background
+            && !background.quit
+            && !self.quitting
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
         // Widgets process a release against the previous frame. Keep the same
         // slot and binding visible until the entire gesture has been processed.
         if !gesture_active(ctx) {
@@ -449,7 +566,7 @@ impl eframe::App for Desktop {
                         text = text.color(ui.visuals().error_fg_color);
                     }
                     ui.label(text);
-                } else if self.parent.is_some() {
+                } else if self.parent.connected() {
                     ui.weak("Click an agent to open its pane in Desktop.");
                 } else {
                     ui.weak("Select a paired terminal to focus a slot.");
@@ -459,6 +576,10 @@ impl eframe::App for Desktop {
         egui::CentralPanel::default()
             .frame(content)
             .show(ctx, |ui| {
+                if self.section == Section::Notifications {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.notifications(ui));
+                    return;
+                }
                 let Some(snapshot) = self.view.snapshot.clone() else {
                     ui.label("Start corvid companion run to load slots.");
                     return;
@@ -468,6 +589,7 @@ impl eframe::App for Desktop {
                     Section::Slots => self.board(ui, &snapshot),
                     Section::Overflow => self.overflow(ui, &snapshot),
                     Section::History => ended(ui, &snapshot),
+                    Section::Notifications => self.notifications(ui),
                 });
             });
         #[cfg(windows)]
@@ -497,7 +619,7 @@ fn gesture_active(ctx: &egui::Context) -> bool {
 
 fn ended(ui: &mut Ui, snapshot: &Snapshot) {
     if snapshot.data.recent_ended.is_empty() {
-        ui.weak("No recent ended runs.");
+        ui.weak("No agents removed by pane closure yet.");
     }
     for run in &snapshot.data.recent_ended {
         ui.horizontal_wrapped(|ui| {

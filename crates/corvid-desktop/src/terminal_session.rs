@@ -31,7 +31,7 @@ use uuid::Uuid;
 use vt100::{Parser, Screen};
 
 use crate::daemon_prompt::{Prompt, Prompts};
-use crate::{local_bootstrap, remote_bootstrap, slot_board};
+use crate::{agent_deck, local_bootstrap, remote_bootstrap};
 
 pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
@@ -164,7 +164,7 @@ pub struct Ui {
     pub changing: bool,
     pub close_supported: bool,
     pub closed_view: bool,
-    pub board_focus: u64,
+    pub deck_focus: u64,
 }
 
 impl Ui {
@@ -237,7 +237,7 @@ enum Action {
     Select(ViewSelection, bool),
     Create(Target),
     Close(CloseView),
-    OpenSlotBoard(slot_board::Settings),
+    OpenAgentDeck(agent_deck::Settings),
 }
 
 struct Requests {
@@ -274,7 +274,7 @@ impl Session {
                     changing: true,
                     close_supported: false,
                     closed_view: false,
-                    board_focus: 0,
+                    deck_focus: 0,
                 },
                 parser: Parser::new(grid.rows, grid.cols, 0),
                 revision: 0,
@@ -300,12 +300,12 @@ impl Session {
             let result = tokio::runtime::Builder::new_current_thread().enable_all().build()
                 .map_err(anyhow::Error::from)
                 .and_then(|runtime| runtime.block_on(async {
-                    let mut slot_board = slot_board::Job::default();
+                    let mut agent_deck = agent_deck::Job::default();
                     let result = tokio::select! {
-                        result = run_reconnecting(destination, state_dir, target, explicit, requests, &state, &mut slot_board) => result,
+                        result = run_reconnecting(destination, state_dir, target, explicit, requests, &state, &mut agent_deck) => result,
                         _ = &mut stopped => Ok("Detached from Corvid.".into()),
                     };
-                    slot_board.close().await;
+                    agent_deck.close().await;
                     result
                 }));
             state.update_ui(|ui| {
@@ -403,9 +403,9 @@ impl Session {
         self.change(Action::Close(target));
     }
 
-    pub fn open_slot_board(&self, settings: slot_board::Settings) {
+    pub fn open_agent_deck(&self, settings: agent_deck::Settings) {
         if self.shared.buffer().ui.connected {
-            let _ = self.actions.try_send(Action::OpenSlotBoard(settings));
+            let _ = self.actions.try_send(Action::OpenAgentDeck(settings));
         }
     }
 
@@ -430,9 +430,9 @@ fn in_pane(ui: &Ui, pane: &str) -> bool {
 struct Client<'a> {
     link: InteractiveConnection,
     endpoint: ControlEndpoint,
-    slot_board: &'a mut slot_board::Job,
-    board_requests: mpsc::Sender<slot_board::FocusRequest>,
-    board_result: Option<oneshot::Sender<Result<(), String>>>,
+    agent_deck: &'a mut agent_deck::Job,
+    deck_requests: mpsc::Sender<agent_deck::FocusRequest>,
+    deck_result: Option<oneshot::Sender<Result<(), String>>>,
     shared: &'a Shared,
     selected: ViewSelection,
     route: RouteToken,
@@ -467,7 +467,7 @@ async fn run_reconnecting(
     mut explicit: bool,
     mut requests: Requests,
     shared: &Shared,
-    slot_board: &mut slot_board::Job,
+    agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
     let mut reconnecting = false;
     loop {
@@ -478,7 +478,7 @@ async fn run_reconnecting(
             explicit,
             &mut requests,
             shared,
-            slot_board,
+            agent_deck,
         )
         .await;
         let error = match result {
@@ -524,7 +524,7 @@ async fn run(
         terminal,
     }: &mut Requests,
     shared: &Shared,
-    slot_board: &mut slot_board::Job,
+    agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
     let capabilities: Vec<_> = [
         "attach.v1",
@@ -679,13 +679,13 @@ async fn run(
         ui.host_id = Some(host.clone());
         ui.close_supported = close_supported;
     });
-    let (board_requests, mut board_focus) = mpsc::channel(1);
+    let (deck_requests, mut deck_focus) = mpsc::channel(1);
     let mut client = Client {
         link,
         endpoint: endpoint.clone(),
-        slot_board,
-        board_requests,
-        board_result: None,
+        agent_deck,
+        deck_requests,
+        deck_result: None,
         shared,
         selected,
         route,
@@ -712,11 +712,11 @@ async fn run(
                 Some(action) => client.action(action).await?,
                 None => return Ok("Detached from Corvid.".into()),
             },
-            Some(request) = board_focus.recv() => client.focus_from_board(request).await?,
-            result = client.slot_board.tasks.join_next(), if !client.slot_board.tasks.is_empty() => {
+            Some(request) = deck_focus.recv() => client.focus_from_deck(request).await?,
+            result = client.agent_deck.tasks.join_next(), if !client.agent_deck.tasks.is_empty() => {
                 match result {
                     Some(Ok(Err(error))) => shared.update_ui(|ui| ui.message = format!("{error:#}")),
-                    Some(Err(_)) => shared.update_ui(|ui| ui.message = "Agent Board stopped unexpectedly.".into()),
+                    Some(Err(_)) => shared.update_ui(|ui| ui.message = "Corvid Agent Deck stopped unexpectedly.".into()),
                     _ => {}
                 }
             }
@@ -905,18 +905,16 @@ impl Client<'_> {
 
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
-            Action::OpenSlotBoard(settings) if self.slot_board.tasks.is_empty() => {
+            Action::OpenAgentDeck(settings) if self.agent_deck.tasks.is_empty() => {
                 let host = self.link.session().host_id.clone();
-                self.slot_board.spawn(
+                self.agent_deck.spawn(
                     settings,
                     self.endpoint.clone(),
                     host,
-                    self.board_requests.clone(),
+                    self.deck_requests.clone(),
                 );
             }
-            Action::OpenSlotBoard(_) => self.shared.update_ui(|ui| {
-                ui.message = "Agent Board is already open or starting.".into();
-            }),
+            Action::OpenAgentDeck(_) => self.agent_deck.show(),
             Action::Input {
                 revision,
                 bytes,
@@ -947,7 +945,7 @@ impl Client<'_> {
         Ok(())
     }
 
-    async fn focus_from_board(&mut self, request: slot_board::FocusRequest) -> Result<()> {
+    async fn focus_from_deck(&mut self, request: agent_deck::FocusRequest) -> Result<()> {
         let run = request.run;
         let session = self.link.session();
         if run.host_id != session.host_id || run.remote_epoch != session.server_epoch {
@@ -985,16 +983,16 @@ impl Client<'_> {
             selection
         };
         self.shared.ui_changed.send_replace(());
-        self.board_result = Some(request.result);
+        self.deck_result = Some(request.result);
         self.begin_select(selection, false, Some(run.agent_run_id))
             .await
     }
 
-    fn finish_board_focus(&mut self, result: Result<(), String>) {
-        if let Some(reply) = self.board_result.take() {
+    fn finish_deck_focus(&mut self, result: Result<(), String>) {
+        if let Some(reply) = self.deck_result.take() {
             if result.is_ok() {
                 self.shared
-                    .update_ui(|ui| ui.board_focus = ui.board_focus.wrapping_add(1));
+                    .update_ui(|ui| ui.deck_focus = ui.deck_focus.wrapping_add(1));
             }
             let _ = reply.send(result);
         }
@@ -1185,7 +1183,7 @@ impl Client<'_> {
                     self.shared.update_ui(|ui| ui.changing = false);
                 }
                 if pending {
-                    self.finish_board_focus(Ok(()));
+                    self.finish_deck_focus(Ok(()));
                 }
             }
             Body::WriterClaimed(claim) => {
@@ -1217,7 +1215,7 @@ impl Client<'_> {
                         ui.changing = false;
                         ui.message = "The selected agent has moved or ended.".into();
                     });
-                    self.finish_board_focus(Err("The selected agent has moved or ended.".into()));
+                    self.finish_deck_focus(Err("The selected agent has moved or ended.".into()));
                 }
             }
             Body::Error(error) => {
@@ -1238,7 +1236,7 @@ impl Client<'_> {
                 }
                 let message = ProtocolFault::from_wire(&error).to_string();
                 if matched {
-                    self.finish_board_focus(Err(message.clone()));
+                    self.finish_deck_focus(Err(message.clone()));
                 }
                 self.shared.update_ui(|ui| {
                     if matched {

@@ -10,7 +10,7 @@ members = [
     "crates/corvid-tui",
     "crates/corvid-update",
     "deploy/cargo-desktop",
-    "plugins/slot-board",
+    "plugins/agent-deck",
     "spikes/deck",
     "spikes/terminal",
 ]
@@ -22,7 +22,7 @@ default-members = [
     "crates/corvid-daemon",
     "crates/corvid-presentation",
     "crates/corvid-protocol",
-    "plugins/slot-board",
+    "plugins/agent-deck",
     "spikes/terminal",
 ]
 resolver = "3"
@@ -35,6 +35,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+corvid-agent-deck = { path = "plugins/agent-deck", default-features = false }
 anyhow = "1.0"
 base64 = "=0.22.1"
 clap = { version = "4.6", features = ["derive"] }
@@ -76,6 +77,8 @@ unicode-width = "0.2"
 uuid = { version = "1.29", features = ["v4", "serde"] }
 vt100 = { version = "=0.18.1", default-features = false }
 windows-sys = "=0.61.2"
+windows = "=0.61.3"
+embed-resource = "=3.0.12"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

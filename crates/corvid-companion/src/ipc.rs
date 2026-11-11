@@ -29,6 +29,8 @@ use crate::service::{Call, Service};
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
 pub const PRESENTATION_PAGE_SIZE: u32 = 32;
+pub const PRESENTATION_ATTENTION_CAPABILITY: &str = "presentation_attention.v1";
+pub const PRESENTATION_ATTENTION_LIMIT: usize = 512;
 const LIST_HOSTS_CAPABILITY: &str = "list_hosts.v1";
 #[cfg(windows)]
 pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
@@ -36,6 +38,7 @@ pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
 pub const WEZTERM_SELECTION_CAPABILITY: &str = "wezterm_selection.v1";
 const CAPABILITIES: &[&str] = &[
     PRESENTATION_CAPABILITY,
+    PRESENTATION_ATTENTION_CAPABILITY,
     LIST_HOSTS_CAPABILITY,
     #[cfg(windows)]
     WEZTERM_CAPABILITY,

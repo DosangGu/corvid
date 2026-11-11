@@ -9,7 +9,7 @@ mod platform;
 #[cfg(any(windows, target_os = "linux"))]
 mod remote_bootstrap;
 #[cfg(any(windows, target_os = "linux"))]
-mod slot_board;
+use corvid_agent_deck::desktop as agent_deck;
 #[cfg(any(windows, target_os = "linux"))]
 mod ssh_hosts;
 #[cfg(any(windows, target_os = "linux"))]
@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let state = options
         .state_dir
         .map_or_else(platform::default_state_dir, Ok)?;
-    let slot_board = slot_board::Settings {
+    let agent_deck = agent_deck::Settings {
         state,
         #[cfg(windows)]
         pipe_instance: options.pipe_instance,
@@ -108,7 +108,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             ..Default::default()
         };
         cx.open_window(options, move |window, cx| {
-            cx.new(|cx| WorkspaceView::new(destination, app_lifetime, slot_board, window, cx))
+            cx.new(|cx| WorkspaceView::new(destination, app_lifetime, agent_deck, window, cx))
         })
         .expect("could not open Corvid Desktop");
         cx.activate(true);

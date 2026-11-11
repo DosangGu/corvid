@@ -16,6 +16,7 @@ fn key(run: u128) -> RunKey {
 fn live(sequence: u64) -> RunObservation {
     RunObservation {
         created_sequence: Some(sequence),
+        pane: Some(Uuid::from_u128(u128::from(sequence))),
         navigable: true,
         eligible: true,
         ended: false,
@@ -36,40 +37,76 @@ fn private_parent() -> tempfile::TempDir {
 }
 
 #[test]
-fn orders_by_creation_then_preserves_pinned_slots_and_overflow() {
-    let mut layout = SlotLayout::new(2).unwrap();
-    let [a, b, c, d] = [key(10), key(8), key(4), key(5)];
-    let mut runs = BTreeMap::from([(a, live(1)), (b, live(2)), (c, live(3))]);
+fn retains_completed_agents_and_packs_the_queue_after_pane_closure() {
+    let mut layout = SlotLayout::new(3).unwrap();
+    let [a, b, c, d, e] = [key(10), key(8), key(4), key(5), key(6)];
+    let mut runs = BTreeMap::from([
+        (a, live(1)),
+        (b, live(2)),
+        (c, live(3)),
+        (d, live(4)),
+        (e, live(5)),
+    ]);
     let removed = BTreeSet::new();
     layout.reconcile(&runs, &removed).unwrap();
-    let revision = layout.slots()[0].revision;
     assert_eq!(layout.slots()[0].run, Some(a));
     assert_eq!(layout.slots()[1].run, Some(b));
-    assert_eq!(layout.overflow().collect::<Vec<_>>(), [c]);
-
-    layout.pin(1, revision, Some(a), true).unwrap();
-    let pressed = layout.slots()[0].revision;
-    runs.insert(d, live(4));
-    runs.get_mut(&a).unwrap().ended = true;
+    assert_eq!(layout.slots()[2].run, Some(c));
+    assert_eq!(layout.overflow().collect::<Vec<_>>(), [d, e]);
+    layout
+        .pin(3, layout.slots()[2].revision, Some(c), true)
+        .unwrap();
+    let pressed = layout.slots()[1].clone();
+    for run in [b, d] {
+        runs.get_mut(&run).unwrap().ended = true;
+        runs.get_mut(&run).unwrap().navigable = false;
+    }
     layout.reconcile(&runs, &removed).unwrap();
-    assert!(layout.slots()[0].pinned);
-    assert_eq!(layout.slots()[0].run, None);
-    assert_eq!(layout.ended().collect::<Vec<_>>(), [a]);
-    assert_eq!(layout.overflow().collect::<Vec<_>>(), [c, d]);
+    assert_eq!(layout.slots()[1], pressed);
+    assert!(layout.ended().next().is_none());
+    assert_eq!(layout.overflow().collect::<Vec<_>>(), [d, e]);
+
+    layout.reconcile(&runs, &BTreeSet::from([b])).unwrap();
     assert_eq!(
-        layout.exact_slot(1, pressed, Some(a)).unwrap_err().code,
+        layout
+            .slots()
+            .iter()
+            .filter_map(|slot| slot.run)
+            .collect::<Vec<_>>(),
+        [a, c, d]
+    );
+    assert!(layout.slots()[1].pinned);
+    assert_eq!(layout.overflow().collect::<Vec<_>>(), [e]);
+    assert_eq!(
+        layout
+            .exact_slot(2, pressed.revision, Some(b))
+            .unwrap_err()
+            .code,
         "StaleBinding"
     );
+    layout.reconcile(&runs, &BTreeSet::from([a, c])).unwrap();
+    assert_eq!(
+        layout
+            .slots()
+            .iter()
+            .filter_map(|slot| slot.run)
+            .collect::<Vec<_>>(),
+        [d, e]
+    );
+    assert!(layout.overflow().next().is_none());
+    assert!(layout.slots().iter().all(|slot| !slot.pinned));
+}
 
-    layout.place(1, layout.slots()[0].revision, d).unwrap();
-    layout.remove(b).unwrap();
-    layout.reconcile(&runs, &removed).unwrap();
-    assert_eq!(layout.slots()[0].run, Some(d));
-    assert_eq!(layout.slots()[1].run, Some(c));
-    assert_eq!(layout.suppressed().collect::<Vec<_>>(), [b]);
-    layout.readd(b).unwrap();
-    layout.reconcile(&runs, &removed).unwrap();
-    assert_eq!(layout.overflow().collect::<Vec<_>>(), [b]);
+#[test]
+fn admits_an_already_completed_run_with_an_existing_pane() {
+    let mut completed = live(1);
+    completed.navigable = false;
+    completed.ended = true;
+    let mut layout = SlotLayout::new(1).unwrap();
+    layout
+        .reconcile(&BTreeMap::from([(key(2), completed)]), &BTreeSet::new())
+        .unwrap();
+    assert_eq!(layout.slots()[0].run, Some(key(2)));
 }
 
 #[test]

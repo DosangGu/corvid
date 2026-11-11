@@ -115,12 +115,12 @@ enum Command {
         #[arg(long)]
         attention_id: Uuid,
     },
-    /// Keep the slot reserved when its run ends or is removed.
+    /// Mark the slot's agent as pinned; the pin follows the agent during compaction.
     Pin {
         #[arg(long)]
         slot: String,
     },
-    /// Allow an empty slot to be assigned automatically.
+    /// Remove the pin from the slot's agent.
     Unpin {
         #[arg(long)]
         slot: String,

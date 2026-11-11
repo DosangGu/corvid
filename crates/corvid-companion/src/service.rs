@@ -1,7 +1,7 @@
 mod actions;
 mod presentation;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -216,7 +216,7 @@ impl Service {
     fn synchronize(
         &mut self,
         watch: &SnapshotWatch,
-        contiguous: bool,
+        _contiguous: bool,
     ) -> Result<(), ProtocolFault> {
         if !watch.is_ready() {
             return Err(ProtocolFault::new(
@@ -225,17 +225,9 @@ impl Service {
             ));
         }
         let remote = Remote::read(watch.state(), &self.controller)?;
-        let removed = self
-            .remote
-            .as_ref()
-            .filter(|old| contiguous && old.epoch == remote.epoch)
-            .map_or_else(BTreeSet::new, |old| {
-                old.runs
-                    .keys()
-                    .copied()
-                    .filter(|key| !remote.runs.contains_key(key))
-                    .collect()
-            });
+        // Only authoritative layout deletion retires a tracked card. Agent
+        // completion, entity pruning, transport loss, and epoch changes do not.
+        let removed = self.store.layout().closed_panes(&remote.panes);
         let runs = observations(&remote);
         self.store
             .update(|layout| Ok(layout.reconcile(&runs, &removed)?))

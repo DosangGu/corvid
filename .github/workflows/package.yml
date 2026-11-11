@@ -125,7 +125,7 @@ jobs:
           key: desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-slot-board -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
         run: cargo test --locked --release --target ${{ matrix.target }} --workspace
       - name: Workspace lints

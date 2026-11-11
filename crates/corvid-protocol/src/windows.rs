@@ -10,7 +10,7 @@ use tokio::time::timeout;
 
 use crate::COMMAND_TIMEOUT;
 
-pub use pipe::{PipeListener, open_pipe};
+pub use pipe::{PipeListener, open_pipe, open_scoped};
 pub use storage::{StateDirectory, check_component, require_local_acl_volume};
 
 #[derive(Clone, Copy)]

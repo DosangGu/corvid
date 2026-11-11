@@ -1051,10 +1051,10 @@ class CorvidFixture:
         assert current["run"] != previous["run"]
         for field in ("resolved", "pending", "unverified", "cancelled"):
             assert current[field] == "0"
-        self.verify_reassigned_slot(previous["run"], current["run"])
+        self.verify_retained_slot(previous["run"], current["run"])
         return current
 
-    def verify_reassigned_slot(self, previous, replacement):
+    def verify_retained_slot(self, previous, replacement):
         slot, binding = self.focus_capture
 
         def replaced(view):
@@ -1062,13 +1062,15 @@ class CorvidFixture:
 
         view = self.companion.wait(replaced)
         current = next(item for item in view["slots"] if item.get("run", "").endswith("/" + replacement))
-        assert current["slot"] == slot["slot"] and int(current["revision"]) > int(slot["revision"])
-        assert any(run.endswith("/" + previous) for run in view["ended"])
+        assert int(current["slot"]) > int(slot["slot"])
+        retained = assigned_slots(view)[previous]
+        assert retained["slot"] == slot["slot"] and retained["revision"] == slot["revision"]
+        assert not any(run.endswith("/" + previous) for run in view["ended"])
         assert binding["capture"] == view["bindings"][0]["capture"]
         stale = self.companion.run(
             "focus-slot", "--slot", slot["capture"], "--binding", binding["capture"], check=False,
         )
-        assert stale.returncode != 0 and "StaleBinding" in stale.stderr
+        assert stale.returncode != 0 and "TargetGone" in stale.stderr
         self.focus_capture = (current, binding)
 
     def acknowledge_question(self, question):

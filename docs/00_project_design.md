@@ -68,7 +68,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
-| Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and the Agent Board plugin | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
+| Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and the Corvid Agent Deck plugin | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
 | Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows daemon and TUI | Windows x64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
@@ -308,7 +308,7 @@ Use text/icon alongside color. All presentations use the same derivation.
 | Priority | Condition | Primary display | Secondary behavior |
 |---|---|---|---|
 | 1 | Controller not Ready | Connecting / Syncing / Offline / Incompatible | Dim last-known badge/timestamp; retain slot; disable focus until synchronized |
-| 2 | Run definitively ended | Ended, with reason | Distinguish process exit from context replacement; release under §11 policy |
+| 2 | Run definitively ended | Ended, with reason | Distinguish process exit from context replacement; retain its card until pane closure under §11 policy |
 | 3 | Confirmed pending requests | Needs input (count/kind) | Focus/ack never clears; warning if resolution may have been missed |
 | 4 | Unknown run, material collection gap, ambiguous or unverified request/activity | Unknown / Check terminal | Last-known facts remain visible; stale Working/Ready is not current certainty |
 | 5 | Current correlated failure/interruption | Error / Interrupted | Independent unseen-attention marker |
@@ -1295,16 +1295,21 @@ On Linux, run `corvid companion slots --count 8` to display slot assignments,
 state and evidence, unseen counts, connection status, and exact TUI registrations.
 `focus-slot` takes the displayed slot and binding captures. The captures include the
 slot revision and the current control connection generation. The CLI uses the same
-private Protobuf endpoint as the Agent Board. The board shows live and
+private Protobuf endpoint as the Corvid Agent Deck. The board shows live and
 cached slot state and sends actions for the displayed slot and explicitly selected
 terminal. The user can bring the selected terminal forward manually.
 See [companion and desktop setup](04_companion.md).
 
-The Desktop-launched Agent Board sends focus requests over the private pipes
-it inherits from Desktop. Desktop resolves the displayed host, epoch, and run
+Corvid Agent Deck runs independently and sends focus requests over its private
+reconnectable Desktop registration. Desktop resolves the displayed host, epoch, and run
 against its current daemon snapshot. It focuses the pane through its attached
 writer connection. The daemon checks the run ID, pane location, and writer
 lease at focus commit.
+
+The Windows plugin owns its tray, native notifications, history, startup setting,
+and app identity. It starts or reuses a separate companion service; closing either
+window does not end daemon-owned work. See [Agent Deck](06_agent_deck.md) for the
+implemented lifetime, Linux limitations, and notification validation boundary.
 
 The standalone Windows GPUI deck and direct USB prototype use the same device-independent
 slot projection, focus capture, and presentation worker through the private
@@ -1323,29 +1328,27 @@ A current daemon publishes an immutable creation sequence on each agent record.
 The slot allocator sorts records from older peers without this field by run ID
 after records with a known sequence. The Linux companion store keeps controller
 identity and host configuration in `config.json` and placements in `slots.json`.
-Its layout supports up to 64 slots, a bounded overflow, and 256 ended records.
+Its layout supports up to 64 slots, a FIFO queue, and 256 closed-pane records.
 
 A slot record contains SlotId, optional `(HostId, ServerEpoch, AgentRunId)`, monotonically
 increasing slot revision, pin, eligibility order, and removal status. Bind to a run, not
 PaneId or a provider session that might be resumed in another execution.
 
-- Assign the lowest free unpinned slot when a live, navigable top-level run first becomes
-  eligible (confirmed launch/context or first supported activity). On initial snapshot,
-  keep valid saved placements, then sort unassigned runs by server creation sequence and
-  ID; later multi-host ordering adds HostId as a deterministic tie-breaker.
-- Keep a run in its slot through Working, Needs input, Response observed, acknowledgment,
-  and quiet waiting. Preserve existing placements as urgency changes.
-- On confirmed run end (process exit or confirmed context replacement), clear its binding
-  and increment revision; retain an ended record in history. A pinned slot stays reserved
-  and empty until explicit reassignment/unpin. An explicit remove suppresses that exact
-  run until the user re-adds it; it is not automatically reallocated by the next delta.
-- Offline/Syncing/Unknown retains the binding. Missing from a snapshot without an explicit
-  end/removal explanation is “check needed,” not permission to reuse the slot. Epoch change
-  invalidates focus and retains the historical slot for reconciliation; confirmed remote
-  OS reboot can establish prior process termination, otherwise require explicit removal
-  or end evidence. Never match an old run to a same-name new run.
-- With more runs than slots, append to a stable overflow list in eligibility order. Virtual
-  cards can page it. Preserve assigned slots when more urgent runs arrive.
+- Admit top-level runs with an owning pane in the synchronized layout, including runs
+  already completed when first observed. Preserve saved order, then append new runs by
+  server creation sequence and ID. The first N occupy slots; the rest form the FIFO queue.
+- Keep a run through work completion, process exit, context replacement, acknowledgment,
+  and quiet waiting. Completion never releases its card or changes other placements.
+- Remove a tracked run when its owning pane is absent from a synchronized daemon layout
+  after an explicit pane, tab, or workspace/session close. Shift every following card
+  forward, then admit queued cards at the tail. Pins follow their cards; empty holes are
+  not reserved. Increment each changed slot's revision and retain closed-pane history.
+- Persist pane ownership so history pruning and reconnects cannot lose that association.
+  Offline/Syncing/Unknown, a missing agent record, or an epoch change alone retains the
+  card. Old-epoch focus remains invalid. Never match an old run to a same-name new run.
+- Queue completed runs as well as active runs; urgency cannot reorder them. Legacy CLI
+  remove/re-add/place commands remain available for compatibility, but Agent Deck's UI
+  uses pane closure and automatic compaction for cleanup and placement.
 - Persist after allocation/removal/pin changes, atomically. On restart load placements as
   stale, synchronize, reconcile exact identities, then enable clicks. Never persist queued
   clicks, approval actions, or terminal IDs as trusted permanent registrations.
@@ -1358,7 +1361,7 @@ pressed action's displayed binding until release/cancellation. Companion compare
 captured slot and terminal-binding revisions with its current records before any remote
 or local action. A mismatch returns StaleBinding and refreshes the display.
 
-Example: slot 2 shows A at revision 8; A ends and B is assigned at revision 9 while the
+Example: slot 2 shows A at revision 8; A's pane closes and B shifts into revision 9 while the
 old press is in flight. The press still targets `(A, 8)` and is rejected. It cannot be
 reinterpreted as `(B, 9)`. If A moved panes but its slot/binding did not change, the server
 resolves A's new location. Page switching increments displayed binding revisions and
@@ -1431,7 +1434,7 @@ actual deployment, including service/cgroup policy and runtime-directory lifetim
 | E. Remote control relay restart | Preserved | Daemon and working client unchanged | Reconnect background stdio SSH and full snapshot; retain/revalidate existing binding |
 | F. PTY-owning daemon crash/restart | **Not preserved/recoverable by contract**; an orphan process might survive, but PTY ownership/screen continuity is lost | New epoch; saved layout only, old runs historical/Unknown; old focus rejected | Reconcile stale slots; explicitly create new PTYs/runs; no silent process adoption |
 | G. Remote OS reboot | Old processes/PTYs do not survive | HostId/layout may survive; new epoch, no old Live run | Restore layout/CWD/labels; explicit new shell/agent, optional future conversation resume |
-| H. Agent process exits | That run ends; shell/PTY may remain | Record exit evidence and cancel its pending requests with reason | Release unpinned run slot; next agent gets a new run ID even in same pane |
+| H. Agent process exits | That run ends; shell/PTY may remain | Record exit evidence and cancel its pending requests with reason | Retain its card until pane closure; next agent gets a distinct run ID and queues even in the same pane |
 
 Planned replacement of an automatically started daemon is implemented on Linux and Windows.
 Each terminal host owns its PTY, ordered input, VT parser, and screen state. The daemon
@@ -1622,6 +1625,8 @@ Qualify macOS when its separately gated execution work is scheduled.
   a PTY supervisor only if daemon-crash survival is actually required.
   Converge TUI/GUI workspace operations and session lifetimes (§7.7), and include
   the Stream Deck integration daemon in the desktop distribution (§11.4).
+  Add native Windows installers and Linux packaging, including Desktop and Agent
+  Deck integration, as planned in [release distribution](05_release_distribution.md#planned-native-installers-and-linux-packages).
 - **Exit:** Extension-specific tests plus regression of existing contracts. Observers must
   crop/pad without resizing, handoff must fence stale input/paste, multi-host clicks need
   existing host-specific registrations, and resume must allocate new run IDs.
@@ -1643,7 +1648,7 @@ negative assertions (including no unexpected process/window/input creation).
 | A3 | Two clients own different workspaces; focus A in client 1 | Client 2's selection/mode/keymap unchanged; busy destination rejects without lease theft | P2 |
 | A4 | Open a screen with a pending question and acknowledge its alert | Request remains pending; only view/attention fields change | P2 |
 | A5 | Answer one of two outstanding questions in the terminal | Only matching resolution changes its RequestId; other request remains; missing correlation becomes Unverified | P2, P3 |
-| A6 | Response boundary, then later agent process exit | Response alone keeps process/run live and slot allocated; verified exit ends run and releases eligible slot | P2, P3 |
+| A6 | Response boundary, then later agent process exit and pane closure | Response and exit retain the card; closing the owning pane removes it and compacts following cards from the FIFO queue | P2, P3 |
 | A7 | PC/control link off while remote agent asks a question | Healthy remote collector retains request; full resync displays it without replaying a prompt/answer | P2, P3 |
 | A8 | Mutate request and move pane during snapshot encoding | Immutable S plus contiguous deltas yields latest consistent result; gap/overflow triggers full resync | P2 |
 | A9 | Duplicate, delayed, reversed events; old Stop after new turn; `/clear`; child shares environment | No old/child event overwrites new/parent activity; bounded orphan correlation; ambiguity explicitly visible | P2, P3 |
@@ -1665,7 +1670,7 @@ negative assertions (including no unexpected process/window/input creation).
 | A25 | Restart desktop, companion, PC, and relay separately | Apply distinct recovery matrix; preserve slots through connection loss; revalidate/re-pair runtime terminal identifiers | P2, P3 |
 | A26 | Resume same provider conversation; compact current conversation | Resume creates new run; pure compaction retains current run; old requests never migrate | P2, P3 |
 | A27 | Silent shell exec/foreground transition with no PTY output or useful SIGCHLD | Periodic probe eventually detects incarnation/group change within documented budget; no activity inference | P2 |
-| A28 | More runs than configured slots; pin, end, remove, and page changes | Stable slots and deterministic overflow. Explicit removal suppresses the exact run, and urgency changes preserve existing placements | P3 |
+| A28 | More runs than slots; completion, pin, pane closure, and page changes | Completed runs stay in place or queue. Pane closure packs remaining cards and the FIFO queue forward; pins follow their agents and old revisions cannot retarget | P3 |
 | A29 | Old/new schema peers; unknown optional fields, bodies, enum numbers; missing binding revision; differently encoded retries | Additive fields interoperate; reserved field/enum identifiers cannot be reused; unsupported semantics never become default actions/state; unknown state events invalidate cache; required presence is enforced; dedup uses semantic command identity | P1 foundation, P2 control methods, P3 presentation |
 | A30 | Split/coalesced stream reads; bad preamble/kind/role; zero, overflowing, oversized, or truncated lengths; inconsistent render header; excessive nesting/collections | Exact framing survives arbitrary read boundaries; limits apply before allocation/mutation; invalid frames emit no partial ANSI; only offending connection fails and unrelated work continues | P1 |
 | A31 | Regenerate schema on a clean pinned toolchain and round-trip uint64 above 2^53 and arbitrary bytes | Reproducible generated contract. IDs, revisions, and bytes round-trip exactly. Packaged binaries need no compiler | P1 build |

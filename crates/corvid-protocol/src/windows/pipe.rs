@@ -24,7 +24,7 @@ impl PipeListener {
         Self::bind_scoped(COMPANION_PREFIX, instance)
     }
 
-    pub(super) fn bind_scoped(prefix: &str, instance: &str) -> Result<Self> {
+    pub fn bind_scoped(prefix: &str, instance: &str) -> Result<Self> {
         let user = current_user()?;
         let name = pipe_name(prefix, &user, instance)?;
         let waiting = listen(&name, &user, true)?;
@@ -75,7 +75,7 @@ pub async fn open_pipe(instance: &str) -> Result<NamedPipeClient> {
     open_scoped(COMPANION_PREFIX, instance).await
 }
 
-pub(super) async fn open_scoped(prefix: &str, instance: &str) -> Result<NamedPipeClient> {
+pub async fn open_scoped(prefix: &str, instance: &str) -> Result<NamedPipeClient> {
     let user = current_user()?;
     let name = pipe_name(prefix, &user, instance)?;
     let mut options = ClientOptions::new();

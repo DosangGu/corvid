@@ -64,7 +64,7 @@ in `daemon/` alongside the built
 `bash deploy/linux/package-corvid.sh` from a clean checkout and copy the
 generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
 from the Windows Desktop ZIP. Desktop uses the sessions, tabs, split panes,
-and Agent Board described in the Windows quick start.
+and Corvid Agent Deck described in the Windows quick start.
 
 The workspace pins `libc` to 0.2.189 while GPUI's HTTP client transitively uses
 `xattr` 0.2.3, which needs the Linux `ENOATTR` constant.
@@ -94,7 +94,7 @@ On Windows, **Sessions → WSL** lists installed distributions. Select a distrib
 to connect as its default Linux user, or launch with
 `corvid-desktop.exe --wsl-distribution Ubuntu`. **Refresh** reloads the distribution
 list. Desktop runs the terminal relay and control watch through `wsl.exe` stdio.
-Tabs, split panes, Agent Board, detach, and daemon-replacement reconnection use the
+Tabs, split panes, Corvid Agent Deck, detach, and daemon-replacement reconnection use the
 same session behavior as other connections.
 
 WSL setup reuses the Linux daemon bundle beside Desktop. It asks before installing
@@ -151,7 +151,7 @@ Ctrl+Shift+N creates a session, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected session.
 
-Open **Plugins → Agent Board** to see the daemon's observed Codex and Claude
+Open **Plugins → Corvid Agent Deck** to see the daemon's observed Codex and Claude
 Code activity, including **Working**, **Input needed**, and **Response observed**.
 Click a live agent's name to open its pane in Desktop. See the
 [provider setup](03_provider_qualification.md) for hook coverage.
@@ -203,8 +203,8 @@ The packager writes versioned `corvid-desktop-VERSION-x86_64-pc-windows-msvc.zip
 and `corvid-tui-VERSION-x86_64-pc-windows-msvc.zip` archives under
 `target/windows-dist`, or the corresponding `CARGO_TARGET_DIR`. The Desktop
 archive contains `corvid.exe`, `corvid-desktop.exe`, `corvid-deck.exe`, the
-license, launchers, package metadata, and `Set-CorvidStartup.ps1`. Agent Board
-is under `plugins/slot-board/`; `-WithoutSlotBoard` is available for local
+license, launchers, package metadata, and `Set-CorvidStartup.ps1`. Corvid Agent Deck
+is under `plugins/agent-deck/`; `-WithoutAgentDeck` is available for local
 packaging through `Package-Corvid.ps1`.
 
 Both Linux and Windows daemon bundles are under `daemon/TARGET/`, with manifests
@@ -250,7 +250,7 @@ flowchart LR
     subgraph Windows
         Desktop["corvid-desktop.exe"]
         Deck["corvid-deck.exe"]
-        Board["corvid-slot-board.exe"]
+        Board["corvid-agent-deck.exe"]
         CLI["corvid.exe companion CLI"]
         Companion["corvid.exe companion run"]
         WezTerm["WezTerm pane"]
@@ -281,9 +281,9 @@ flowchart LR
 | Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
 | SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
-| Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and opens agent panes requested by Agent Board. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
+| Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and opens agent panes requested by Corvid Agent Deck. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
-| Slot board | Displays snapshots and manages slot assignments and alerts in a separate plugin window. Its pairing dialog lists verified local panes. | [corvid-slot-board](../plugins/slot-board/src/main.rs) |
+| Corvid Agent Deck | Displays slots and queue, independently watches attention, and owns Windows tray/toasts/settings. Its pairing dialog lists verified local panes. | [corvid-agent-deck](../plugins/agent-deck/src/main.rs) |
 | Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../deploy/windows/) |
 | Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
 
@@ -297,6 +297,11 @@ agents survive the loss of either Windows connection while the daemon and
 its host remain alive.
 
 ### Planned desktop convergence
+
+The former Agent Board is now **Corvid Agent Deck**, with independent background
+operation, a Windows system tray, native notifications, and a packaged icon. See
+[Agent Deck](06_agent_deck.md) for implemented behavior, source consolidation,
+notification policy, and platform qualification limits.
 
 The GUI is the graphical presentation of the same multiplexer behavior as the
 TUI. Tabs and panes must share creation, selection, split, resize, and close
@@ -341,34 +346,42 @@ When the watch is ready, the row also includes the verified remote epoch and
 snapshot sequence. The query reads the companion's current state without opening
 an additional control connection. The presentation capability is `list_hosts.v1`.
 
-## Desktop Agent Board
+## Corvid Agent Deck plugin
 
-Open a local or SSH terminal in Desktop and choose **Plugins → Agent Board**. The
-board opens in a separate process and closes when Desktop detaches or switches
+Open a local or SSH terminal in Desktop and choose **Plugins → Corvid Agent Deck**. The
+Deck opens in an independent process and stays alive when Desktop detaches or switches
 hosts. Desktop checks the companion host and controller IDs before opening the
 window. A matching configured companion keeps its existing state. Other hosts
 get their own companion state below `slot-board/` in Desktop's state directory.
-When Desktop starts a companion for the board, it uses the same Corvid daemon
+When Deck starts a companion service, it uses the same Corvid daemon
 as the attached terminal. On Linux the plugin requires `XDG_RUNTIME_DIR`.
 
 The Windows archive includes the plugin by default. For source builds, run
-`cargo build --locked -p corvid-slot-board` and place the resulting executable
-under `plugins/slot-board/` next to the Desktop executable. You can also launch
-the board directly against a running companion using `--socket-dir` on Linux
-or `--pipe-instance` on Windows. The board uses eframe 0.33.3 with the Glow
+`cargo build --locked -p corvid-agent-deck` and place the resulting executable
+under `plugins/agent-deck/` next to the Desktop executable. You can also launch
+Deck directly using its configured `--state-dir` and `--socket-dir` on Linux
+or `--pipe-instance` on Windows. It starts or reuses the companion service.
+The window uses eframe 0.33.3 with the Glow
 renderer and connects directly to the private Protobuf endpoint.
 [eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
 
-When launched from Desktop, click an agent in **Slots** or **Overflow** to
+When launched from Desktop, click an agent in **Slots** or **Queue** to
 focus its pane and bring Desktop forward. On Linux, the board minimizes after
 a successful focus. When running the plugin directly,
 choose a paired TUI in **Target terminal**, then click **Focus** on a slot.
 The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant
-permissions in the terminal. Slot cards support pin and remove. Use **Overflow**
-to page through unassigned or removed runs, re-add a removed run, or choose an
-overflow run and place it into an empty slot. **Recent ended** shows recent run
-IDs released from the layout.
+permissions in the terminal. Completed agents retain their cards until their
+pane, tab, or workspace/session is explicitly closed. Additional agents queue
+in arrival order. Closing a pane shifts all following cards forward and fills
+vacancies from the queue. Pins follow their cards. **Closed panes** shows recent
+removed run IDs. Older manually suppressed runs can still be re-added.
+
+On Windows, closing the Deck window hides it to the tray. **Notifications &
+settings** controls categories, sound, pause, and optional login startup. Use
+**Quit Corvid Agent Deck** to exit. Linux currently supports `notify-send`
+notifications without a tray; closing its window exits. Details and limits are
+in [Agent Deck](06_agent_deck.md).
 
 On disconnection the board keeps the last snapshot visible and disables its
 actions. Reconnection loads a fresh snapshot. Standalone mode requires another
@@ -383,7 +396,7 @@ running companion's private presentation pipe.
 It displays assigned Claude Code and Codex slots, activity, pending requests,
 unseen alerts, and whether the companion and host are available. The 5 × 3
 layout shows 14 slots per page. The lower-right key advances the page, and the
-side panel shows unassigned runs separately. Use Agent Board to edit slots
+side panel shows unassigned runs separately. Use Corvid Agent Deck to edit slots
 and manage overflow.
 
 Run the deck from the repository root to use the same first-run flow during
@@ -555,7 +568,7 @@ The A29 version-skew fixture sent an unknown focus activation result and
 then an unknown run availability. The desktop kept the last valid snapshot
 as a cache and disabled actions. A compatible snapshot restored the link,
 and the user had to select the terminal again before focusing.
-`cargo test --locked -p corvid-slot-board -p corvid-presentation` checks capture, connection fencing,
+`cargo test --locked -p corvid-agent-deck -p corvid-presentation` checks capture, connection fencing,
 and input-frame behavior without a display. The Windows desktop binary
 cross-linked for `x86_64-pc-windows-gnu`. Wine 11.21 ran its four tests and
 rendered the offline window.

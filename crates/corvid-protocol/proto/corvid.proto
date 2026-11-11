@@ -87,6 +87,10 @@ message Envelope {
     CloseView close_view = 115;
     FocusDesktopAgent focus_desktop_agent = 116;
     DesktopAgentFocused desktop_agent_focused = 117;
+    GetPresentationAttention get_presentation_attention = 118;
+    PresentationAttention presentation_attention = 119;
+    OpenAgentDeck open_agent_deck = 120;
+    AgentDeckOpened agent_deck_opened = 121;
   }
 }
 
@@ -342,12 +346,43 @@ message PresentedRunKey {
   string agent_run_id = 3;
 }
 
-// Used only over the anonymous pipes inherited by the Desktop-launched board.
+// Used only over Agent Deck's private activation/registered-Desktop connection.
 message FocusDesktopAgent {
   PresentedRunKey run = 1;
 }
 
 message DesktopAgentFocused {}
+
+// Private plugin endpoint; unavailable on daemon and companion connections.
+message OpenAgentDeck {
+  string host_id = 1;
+  string controller_id = 2;
+  bool register_desktop = 3;
+}
+
+message AgentDeckOpened {}
+
+message GetPresentationAttention {}
+
+message PresentedAttention {
+  PresentedRunKey run = 1;
+  string attention_id = 2;
+  AttentionReason reason = 3;
+  uint64 created_unix_ms = 4;
+  AgentProvider provider = 5;
+  optional InputRequestStatus request_status = 6;
+  optional InputRequestKind request_kind = 7;
+}
+
+message PresentationAttention {
+  string controller_id = 1;
+  CompanionConnection connection = 2;
+  optional string control_generation = 3;
+  optional string remote_epoch = 4;
+  optional uint64 remote_sequence = 5;
+  repeated PresentedAttention attention = 6;
+  uint32 omitted_count = 7;
+}
 
 enum RunAvailability {
   RUN_AVAILABILITY_UNSPECIFIED = 0;

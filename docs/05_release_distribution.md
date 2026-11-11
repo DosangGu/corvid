@@ -26,7 +26,7 @@ it directly. Both Desktop packages include both runtime payloads under
 Desktop starts its adjacent native `corvid` for local daemon use; development
 builds retain their executable-based helper path.
 
-Desktop packages also include Agent Board. Windows Desktop retains the standalone
+Desktop packages also include Corvid Agent Deck. Windows Desktop retains the standalone
 Deck and optional login-startup script. Windows packages contain small stable
 launchers used by the installer; portable users run the actual app executables.
 
@@ -177,11 +177,31 @@ an unpublished draft; it refuses to overwrite an already published release.
 For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
 WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt
 `-LinuxDaemonDirectory` and `-WindowsDaemonDirectory` inputs. Python 3.11 or later
-must be available as `python`. The optional `-WithoutSlotBoard` is for local
-packaging; official release packages include Agent Board.
+must be available as `python`. The optional `-WithoutAgentDeck` is for local
+packaging; official release packages include Corvid Agent Deck.
 Commit build inputs before packaging so a source revision identifies the actual
 payload. Packaging rejects uncommitted Cargo, crate, plugin, spike, or deployment
 inputs.
+
+## Planned native installers and Linux packages
+
+Native Windows installers and Linux packages are requested follow-up work. The
+implemented distribution remains the archives and installation scripts described
+above; native package formats and tooling have not been selected.
+
+- **Windows:** Provide an installer with install, update, and uninstall flows for
+  Desktop and its bundled Agent Deck. Include application icons and Start menu
+  entries, integrate notification registration, and make startup at login opt-in.
+  Uninstallation must clean up the registrations owned by the installation.
+- **Linux:** Select package formats and supported distributions, declare runtime
+  dependencies, and provide desktop launcher and icon integration. Define install,
+  update, and removal behavior, including how package-manager ownership interacts
+  with `corvid upgrade`.
+- **Shared acceptance:** Preserve user settings and Deck state across updates,
+  retain the existing release identity and integrity checks, and avoid terminating
+  active daemon/PTY sessions as an installation side effect. Qualify clean install,
+  upgrade from the previous release, and uninstall on each supported target,
+  including installed Desktop and Agent Deck behavior.
 
 ## Validation boundary
 

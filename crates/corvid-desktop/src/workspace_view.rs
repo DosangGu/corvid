@@ -16,7 +16,7 @@ use gpui::{
     SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
 };
 
-use crate::slot_board;
+use crate::agent_deck;
 use crate::ssh_hosts;
 use crate::terminal_session::{AttachTarget, Destination, Inventory, Job, Session, Ui};
 use crate::terminal_view::{TerminalView, preview};
@@ -78,8 +78,8 @@ pub struct WorkspaceView {
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
     error: Option<String>,
-    board_focus: u64,
-    slot_board: slot_board::Settings,
+    deck_focus: u64,
+    agent_deck: agent_deck::Settings,
     connections_open: bool,
     plugins_open: bool,
     help_open: bool,
@@ -96,7 +96,7 @@ impl WorkspaceView {
     pub fn new(
         destination: Option<Destination>,
         lifetime: Lifetime,
-        slot_board: slot_board::Settings,
+        agent_deck: agent_deck::Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -126,8 +126,8 @@ impl WorkspaceView {
             preferred_panes: HashMap::new(),
             updates: None,
             error: None,
-            board_focus: 0,
-            slot_board,
+            deck_focus: 0,
+            agent_deck,
             connections_open: false,
             plugins_open: false,
             help_open: false,
@@ -260,7 +260,7 @@ impl WorkspaceView {
         }
         let result = Session::start(
             destination.clone(),
-            self.slot_board.state.clone(),
+            self.agent_deck.state.clone(),
             target,
             explicit,
         );
@@ -276,7 +276,7 @@ impl WorkspaceView {
         self.error = None;
         self.terminal = None;
         self.selected = None;
-        self.board_focus = 0;
+        self.deck_focus = 0;
         if self.destination.as_ref() != Some(&destination) {
             self.preferred_tabs.clear();
             self.preferred_panes.clear();
@@ -364,8 +364,8 @@ impl WorkspaceView {
                 self.focus_terminal(window, cx);
             }
         }
-        if self.board_focus != ui.board_focus {
-            self.board_focus = ui.board_focus;
+        if self.deck_focus != ui.deck_focus {
+            self.deck_focus = ui.deck_focus;
             window.activate_window();
             self.focus_terminal(window, cx);
         }
@@ -728,10 +728,10 @@ impl WorkspaceView {
             .bg(rgb(PANEL))
             .when(connected, |menu| {
                 menu.child(
-                    button("agent-board", "Agent Board", false).on_click(cx.listener(
+                    button("agent-deck", "Corvid Agent Deck", false).on_click(cx.listener(
                         |view, _, window, cx| {
                             if let Some(session) = &view.session {
-                                session.open_slot_board(view.slot_board.clone());
+                                session.open_agent_deck(view.agent_deck.clone());
                             }
                             view.plugins_open = false;
                             view.focus_terminal(window, cx);
@@ -745,7 +745,7 @@ impl WorkspaceView {
                     div()
                         .text_size(px(13.))
                         .text_color(rgb(MUTED))
-                        .child("Open a Corvid terminal to use Agent Board."),
+                        .child("Open a Corvid terminal to use Corvid Agent Deck."),
                 )
             })
     }

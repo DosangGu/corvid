@@ -12,6 +12,19 @@ use crate::remote::invalid;
 use crate::{MAX_SLOTS, PRESENTATION_PAGE_SIZE, Recovery, RunKey};
 
 impl Service {
+    pub(super) fn attention(&self) -> Body {
+        let remote = self.remote.as_ref().filter(|_| self.generation.is_some());
+        Body::PresentationAttention(corvid_protocol::wire::PresentationAttention {
+            controller_id: self.controller.clone(),
+            connection: self.connection as i32,
+            control_generation: self.generation.map(|generation| generation.to_string()),
+            remote_epoch: remote.map(|remote| remote.epoch.to_string()),
+            remote_sequence: remote.map(|remote| remote.sequence),
+            attention: remote.map_or_else(Vec::new, |remote| remote.attention.clone()),
+            omitted_count: remote.map_or(0, |remote| remote.omitted_attention),
+        })
+    }
+
     pub(super) fn list_hosts(&self) -> Body {
         let endpoint = match &self.endpoint {
             ControlEndpoint::Local(_) => Endpoint::Local(LocalHostEndpoint {}),

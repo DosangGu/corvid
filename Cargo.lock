@@ -1480,6 +1480,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "corvid-agent-deck"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "corvid-client",
+ "corvid-companion",
+ "corvid-presentation",
+ "corvid-protocol",
+ "eframe",
+ "embed-resource",
+ "image",
+ "resvg",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "windows 0.61.3",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "corvid-client"
 version = "0.1.0"
 dependencies = [
@@ -1564,6 +1587,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "corvid-agent-deck",
  "corvid-client",
  "corvid-companion",
  "corvid-protocol",
@@ -1615,21 +1639,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "corvid-slot-board"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "corvid-companion",
- "corvid-presentation",
- "corvid-protocol",
- "eframe",
- "tokio",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "corvid-terminal-spike"
 version = "0.1.0"
 dependencies = [
@@ -1648,6 +1657,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "corvid-agent-deck",
  "corvid-client",
  "corvid-companion",
  "corvid-core",

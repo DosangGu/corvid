@@ -4,7 +4,7 @@ param(
     [string]$LinuxDaemonDirectory,
     [string]$WindowsDaemonDirectory,
     [string]$WslDistribution,
-    [switch]$WithoutSlotBoard
+    [switch]$WithoutAgentDeck
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
@@ -37,14 +37,14 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Windows runtime packaging failed' }
     }
     $packages = @('-p', 'corvid-desktop', '-p', 'corvid-deck', '-p', 'corvid-update')
-    if (!$WithoutSlotBoard) { $packages += @('-p', 'corvid-slot-board') }
+    if (!$WithoutAgentDeck) { $packages += @('-p', 'corvid-agent-deck') }
     cargo build --locked --release --target $target @packages
     if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed' }
     $output = Join-Path $metadata.target_directory 'windows-dist'
     python deploy/package.py package --product tui --target $target --runtime $WindowsDaemonDirectory --build $build --output $output
     if ($LASTEXITCODE -ne 0) { throw 'TUI packaging failed' }
     $options = @()
-    if ($WithoutSlotBoard) { $options += '--without-slot-board' }
+    if ($WithoutAgentDeck) { $options += '--without-agent-deck' }
     python deploy/package.py package --product desktop --target $target --runtime $WindowsDaemonDirectory --linux-runtime $LinuxDaemonDirectory --windows-runtime $WindowsDaemonDirectory --build $build --output $output @options
     if ($LASTEXITCODE -ne 0) { throw 'Desktop packaging failed' }
     Get-ChildItem -LiteralPath $output -Filter '*.zip'

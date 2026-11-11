@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="480" viewBox="0 0 1120 480">
+  <title>Corvid Agent Deck icon and tray concept</title>
+  <defs>
+    <g id="bird" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 17 10 6l9-3-3 6 5 2-6 2-5 8-1-6-5 2Z M12 10l2-1"/>
+    </g>
+  </defs>
+  <rect width="1120" height="480" rx="20" fill="#101216"/>
+  <g font-family="Segoe UI, sans-serif">
+    <text x="40" y="46" fill="#83dec0" font-size="13" letter-spacing="2">ICON STUDY · EXISTING CORVID MARK</text>
+    <text x="40" y="85" fill="#f3f4f6" font-size="28" font-weight="600">Corvid Agent Deck</text>
+    <text x="40" y="111" fill="#a4adbc" font-size="14">Background agent monitoring · tray presence · native notifications</text>
+    <rect x="40" y="143" width="244" height="267" rx="16" fill="#191c23"/>
+    <g transform="translate(82 166) scale(.625)">
+      <rect x="8" y="8" width="240" height="240" rx="56" fill="#111318"/>
+      <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="#30343f" stroke-width="2"/>
+      <g transform="translate(31 29) scale(8)">
+        <path d="M4 17 10 6l9-3-3 6 5 2-6 2-5 8-1-6-5 2Z" fill="none" stroke="#83dec0" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M12 10l2-1" fill="none" stroke="#f3f4f6" stroke-width="1.7" stroke-linecap="round"/>
+      </g>
+    </g>
+    <text x="162" y="361" text-anchor="middle" fill="#f3f4f6" font-size="16">App icon</text>
+    <text x="162" y="386" text-anchor="middle" fill="#a4adbc" font-size="12">Mint outline · charcoal tile</text>
+    <rect x="308" y="143" width="360" height="267" rx="16" fill="#191c23"/>
+    <text x="332" y="177" fill="#f3f4f6" font-size="16">System tray</text>
+    <rect x="332" y="195" width="312" height="64" rx="10" fill="#101216"/>
+    <use href="#bird" x="357" y="215" stroke="#f3f4f6"/>
+    <text x="400" y="232" fill="#cbd0d9" font-size="13">Normal</text>
+    <use href="#bird" x="505" y="215" stroke="#f3f4f6"/>
+    <circle cx="528" cy="217" r="5" fill="#f7b968" stroke="#101216" stroke-width="2"/>
+    <text x="551" y="232" fill="#cbd0d9" font-size="13">Attention</text>
+    <rect x="332" y="273" width="312" height="64" rx="10" fill="#e8ebef"/>
+    <use href="#bird" x="357" y="293" stroke="#191c23"/>
+    <text x="400" y="310" fill="#30343f" font-size="13">Normal</text>
+    <use href="#bird" x="505" y="293" stroke="#191c23"/>
+    <circle cx="528" cy="295" r="5" fill="#ae5c00" stroke="#e8ebef" stroke-width="2"/>
+    <text x="551" y="310" fill="#30343f" font-size="13">Attention</text>
+    <text x="332" y="376" fill="#a4adbc" font-size="12">24 px samples on dark and light surfaces</text>
+    <rect x="692" y="143" width="388" height="267" rx="16" fill="#191c23"/>
+    <text x="716" y="177" fill="#f3f4f6" font-size="16">Notification content</text>
+    <rect x="716" y="195" width="340" height="142" rx="12" fill="#252932" stroke="#30343f"/>
+    <use href="#bird" x="733" y="211" stroke="#83dec0"/>
+    <text x="768" y="229" fill="#cbd0d9" font-size="12">Corvid Agent Deck</text>
+    <text x="736" y="265" fill="#f3f4f6" font-size="18" font-weight="600">Claude needs your input</text>
+    <text x="736" y="291" fill="#a4adbc" font-size="13">work-host · Backend</text>
+    <text x="736" y="317" fill="#83dec0" font-size="12">Open in Agent Deck</text>
+    <text x="716" y="376" fill="#a4adbc" font-size="12">Illustrative content; the OS controls its layout.</text>
+    <text x="40" y="451" fill="#818b9c" font-size="12">Design proposal · runtime behavior and packaged app icons are not changed</text>
+  </g>
+</svg>

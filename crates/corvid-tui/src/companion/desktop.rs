@@ -1,10 +1,8 @@
 use std::env;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail, ensure};
-use corvid_companion::launch::{DesktopStartup, prepare_desktop, wait_for_desktop};
+use anyhow::{Context, Result, ensure};
 use tokio::process::Command;
-use tokio::sync::oneshot;
 
 pub(super) async fn open(instance: &str, state: &Path, alias: Option<String>) -> Result<()> {
     let cli = env::current_exe()?;
@@ -18,64 +16,13 @@ pub(super) async fn open(instance: &str, state: &Path, alias: Option<String>) ->
         }
         command
     } else {
-        let plugin = cli
-            .with_file_name("plugins")
-            .join("slot-board/corvid-slot-board.exe");
-        let board = if plugin.is_file() {
-            plugin
-        } else {
-            cli.with_file_name("corvid-slot-board.exe")
-        };
-        ensure!(
-            board.is_file(),
-            "place corvid-desktop.exe beside corvid.exe, or use the Windows package"
-        );
-        let mut command = Command::new(board);
-        command.args(["--pipe-instance", instance]);
-        return open_board(command, instance, state, alias.as_deref()).await;
+        return corvid_agent_deck::launch::open(instance, state, alias.as_deref()).await;
     };
     command.args(["--pipe-instance", instance]);
     tokio::select! {
         result = show(command) => result,
         _ = super::shutdown()? => Ok(()),
     }
-}
-
-async fn open_board(
-    command: Command,
-    instance: &str,
-    state: &Path,
-    alias: Option<&str>,
-) -> Result<()> {
-    let config = match prepare_desktop(instance, state, alias).await? {
-        DesktopStartup::NeedsHost => {
-            bail!("first use requires an OpenSSH alias. Run corvid companion open work-host")
-        }
-        DesktopStartup::Reuse(_) => {
-            return tokio::select! {
-                result = show(command) => result,
-                _ = super::shutdown()? => Ok(()),
-            };
-        }
-        DesktopStartup::Start(config) => config,
-    };
-    let (stop, stopped) = oneshot::channel();
-    let companion = corvid_companion::run(instance, state, async {
-        let _ = stopped.await;
-    });
-    tokio::pin!(companion);
-    let desktop = async {
-        wait_for_desktop(instance, &config).await?;
-        show(command).await
-    };
-    let result = tokio::select! {
-        result = &mut companion => return result,
-        result = desktop => result,
-        _ = super::shutdown()? => Ok(()),
-    };
-    let _ = stop.send(());
-    companion.await?;
-    result
 }
 
 async fn show(mut command: Command) -> Result<()> {

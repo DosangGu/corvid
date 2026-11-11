@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 anyhow.workspace = true
+corvid-agent-deck.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true

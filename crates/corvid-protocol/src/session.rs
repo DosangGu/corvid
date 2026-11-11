@@ -165,6 +165,7 @@ impl Session {
             | (
                 PeerRole::Presentation,
                 Body::GetPresentationSlots(_)
+                | Body::GetPresentationAttention(_)
                 | Body::ListHosts(_)
                 | Body::PairTerminal(_)
                 | Body::UnpairTerminal(_)

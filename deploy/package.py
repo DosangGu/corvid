@@ -93,8 +93,8 @@ def package(args):
             copy(args.build / "corvid-launch.exe", stage / "corvid-launch.exe", True)
         if args.product == "desktop":
             copy(args.build / f"corvid-desktop{suffix}", stage / f"corvid-desktop{suffix}", True)
-            if not args.without_slot_board:
-                copy(args.build / f"corvid-slot-board{suffix}", stage / "plugins" / "slot-board" / f"corvid-slot-board{suffix}", True)
+            if not args.without_agent_deck:
+                copy(args.build / f"corvid-agent-deck{suffix}", stage / "plugins" / "agent-deck" / f"corvid-agent-deck{suffix}", True)
             if windows:
                 copy(args.build / "corvid-desktop-launch.exe", stage / "corvid-desktop-launch.exe", True)
                 copy(args.build / "corvid-deck.exe", stage / "corvid-deck.exe", True)
@@ -175,7 +175,7 @@ def main():
     command.add_argument("--build", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(run=package)
-    command.add_argument("--without-slot-board", action="store_true")
+    command.add_argument("--without-agent-deck", action="store_true")
     command = sub.add_parser("manifest")
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(run=manifest)
