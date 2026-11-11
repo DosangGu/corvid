@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use corvid_protocol::wire::envelope::Body;
@@ -13,6 +14,7 @@ use corvid_presentation::ipc::{Command, Completion, DesktopClient, Display, Link
 use corvid_presentation::model::Snapshot;
 
 use crate::background::Background;
+use crate::catalog::Catalog;
 use crate::notifications::{Notice, now_ms};
 use crate::parent::DesktopLink;
 
@@ -48,6 +50,8 @@ pub(crate) struct Desktop {
     notifications_seen: u64,
     selected_notice: Option<Notice>,
     quitting: bool,
+    catalog_scope: (PathBuf, Uuid),
+    catalog: Option<Result<Catalog, String>>,
     #[cfg(windows)]
     pairing: crate::pairing::Pairing,
 }
@@ -59,10 +63,15 @@ enum Section {
     Overflow,
     History,
     Notifications,
+    Hosts,
 }
 
 impl Desktop {
-    pub(crate) fn new(client: DesktopClient, background: Background) -> Self {
+    pub(crate) fn new(
+        client: DesktopClient,
+        background: Background,
+        catalog_scope: (PathBuf, Uuid),
+    ) -> Self {
         Self {
             client,
             parent: background.desktop.clone(),
@@ -77,6 +86,8 @@ impl Desktop {
             notifications_seen: 0,
             selected_notice: None,
             quitting: false,
+            catalog_scope,
+            catalog: None,
             #[cfg(windows)]
             pairing: crate::pairing::Pairing::default(),
         }
@@ -192,6 +203,13 @@ impl Desktop {
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.heading("Corvid Agent Deck");
+            if self.section == Section::Hosts {
+                ui.selectable_value(&mut self.section, Section::Slots, "Slots");
+            }
+            ui.selectable_value(&mut self.section, Section::Hosts, "Hosts");
+            if self.section == Section::Hosts {
+                return;
+            }
             let text = connection_text(&self.view);
             ui.label(RichText::new(text).strong());
             ui.selectable_value(
@@ -200,6 +218,9 @@ impl Desktop {
                 "Notifications & settings",
             );
         });
+        if self.section == Section::Hosts {
+            return;
+        }
         if let Some(snapshot) = self.view.snapshot.clone() {
             ui.label(format!("Host {}", snapshot.host));
             if self.view.link != Link::Online || snapshot.generation().is_none() {
@@ -419,6 +440,74 @@ impl Desktop {
         }
     }
 
+    fn hosts(&mut self, ui: &mut Ui) {
+        let (state, current) = &self.catalog_scope;
+        if ui.button("Refresh hosts").clicked() {
+            self.catalog = None;
+        }
+        let catalog = self.catalog.get_or_insert_with(|| {
+            Catalog::start(state.clone(), *current, ui.ctx().clone())
+                .map_err(|error| error.to_string())
+        });
+        let catalog = match catalog {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                ui.label(RichText::new(error.as_str()).color(ui.visuals().error_fg_color));
+                return;
+            }
+        };
+        let view = catalog.views.borrow().clone();
+        if let Some(message) = view.message {
+            ui.label(message);
+        }
+        for (id, host) in view.hosts {
+            ui.push_id(id, |ui| {
+                ui.group(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(&host.label);
+                        ui.monospace(short_id(&id.to_string()));
+                        ui.label(if host.online {
+                            "Live"
+                        } else if host.runs.is_empty() {
+                            "Offline"
+                        } else {
+                            "Cached"
+                        });
+                        if id == *current {
+                            if ui.button("This Deck's slots").clicked() {
+                                self.section = Section::Slots;
+                            }
+                        } else if ui.button("Show host Deck").clicked() {
+                            catalog.open(id);
+                        }
+                    });
+                    if host.online && host.runs.is_empty() {
+                        ui.weak("No observed agents.");
+                    }
+                    for run in &host.runs {
+                        ui.horizontal_wrapped(|ui| {
+                            let provider = match AgentProvider::try_from(run.provider) {
+                                Ok(AgentProvider::Claude) => "Claude",
+                                Ok(AgentProvider::Codex) => "Codex",
+                                _ => "Agent",
+                            };
+                            ui.label(provider);
+                            ui.monospace(short_id(&run.agent_run_id));
+                            let (badge, color) = badge_style(run.badge, ui.visuals());
+                            ui.label(RichText::new(badge).color(color));
+                            if run.pending_requests > 0 {
+                                ui.label(format!("{} pending", run.pending_requests));
+                            }
+                        });
+                    }
+                    if host.omitted > 0 {
+                        ui.weak(format!("{} older runs omitted", host.omitted));
+                    }
+                });
+            });
+        }
+    }
+
     fn focus_run(&mut self, key: PresentedRunKey) {
         let id = Uuid::new_v4();
         if self.parent.focus(id, key) {
@@ -566,6 +655,8 @@ impl eframe::App for Desktop {
                         text = text.color(ui.visuals().error_fg_color);
                     }
                     ui.label(text);
+                } else if self.section == Section::Hosts {
+                    ui.weak("Each host keeps its own slots and notifications.");
                 } else if self.parent.connected() {
                     ui.weak("Click an agent to open its pane in Desktop.");
                 } else {
@@ -576,6 +667,11 @@ impl eframe::App for Desktop {
         egui::CentralPanel::default()
             .frame(content)
             .show(ctx, |ui| {
+                if self.section == Section::Hosts {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.hosts(ui));
+                    return;
+                }
+                self.catalog = None;
                 if self.section == Section::Notifications {
                     egui::ScrollArea::vertical().show(ui, |ui| self.notifications(ui));
                     return;
@@ -590,6 +686,7 @@ impl eframe::App for Desktop {
                     Section::Overflow => self.overflow(ui, &snapshot),
                     Section::History => ended(ui, &snapshot),
                     Section::Notifications => self.notifications(ui),
+                    Section::Hosts => self.hosts(ui),
                 });
             });
         #[cfg(windows)]

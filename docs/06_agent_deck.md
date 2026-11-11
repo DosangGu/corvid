@@ -137,10 +137,16 @@ Desktop provides [terminal selection, scrollback, and search](04_companion.md#de
 Windows supports process observation for
 [direct native agent launches](04_companion.md#windows-quick-start).
 Desktop's Sessions menu watches verified hosts while their terminal views are
-detached. Agent Deck windows and slot layouts remain scoped to their hosts.
+detached. In Agent Deck, **Hosts** lists the agents on up to eight hosts
+configured by Desktop or companion setup. Refresh after configuring another
+host. The overview checks the expected host identity before using a snapshot
+and marks previously seen observations as cached when a host goes offline.
+**Show host Deck** opens that host's running Deck. Slot actions, pane focus,
+and notification settings use the individual host Deck.
+
 The remaining requested backlog includes Windows provider hook and shell launch
-coverage, a combined Agent Deck view for multiple hosts, and Desktop controls
-for read-only attach and writer handoff. The TUI implements both operations.
+coverage and Desktop controls for read-only attach and writer handoff.
+The TUI implements both operations.
 Native Windows installers and Linux packaging,
 including installed Agent Deck integration, are also planned as follow-up work in
 [release distribution](05_release_distribution.md#planned-native-installers-and-linux-packages).

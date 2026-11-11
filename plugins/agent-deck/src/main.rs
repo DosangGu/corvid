@@ -2,6 +2,7 @@
 
 mod app;
 mod background;
+mod catalog;
 mod notifications;
 #[cfg(windows)]
 mod pairing;
@@ -92,6 +93,7 @@ fn main() -> Result<()> {
             app::configure(&creation.egui_ctx);
             let ctx = creation.egui_ctx.clone();
             let identity = Some((config.host_id, config.controller_id));
+            let catalog = (state.clone(), config.host_id);
             let background =
                 background::Background::start(state, address.clone(), config, ctx.clone())?;
             if !background.view.borrow().background {
@@ -99,7 +101,7 @@ fn main() -> Result<()> {
             }
             let client =
                 DesktopClient::start_scoped(address, identity, move || ctx.request_repaint())?;
-            Ok(Box::new(app::Desktop::new(client, background)))
+            Ok(Box::new(app::Desktop::new(client, background, catalog)))
         }),
     )
     .map_err(|error| anyhow!("could not open Corvid Agent Deck: {error}"))

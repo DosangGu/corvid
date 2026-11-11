@@ -1623,8 +1623,7 @@ Qualify macOS when its separately gated execution work is scheduled.
 ### Later — separately gated extensions
 
 - **Entry:** Phases 1–3 invariants remain covered; each extension has a concrete user need.
-- **Scope:** A combined Agent Deck view for multiple hosts; Desktop read-only attach
-  and writer handoff controls; N-way split,
+- **Scope:** Desktop read-only attach and writer handoff controls; N-way split,
   drag/move and vertical tab-bar UX; automatic keymap profiles/remapping; native Windows
   and macOS execution; opt-in conversation resume; scrollback persistence/search. Consider
   a PTY supervisor only if daemon-crash survival is actually required.
