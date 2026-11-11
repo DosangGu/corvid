@@ -680,6 +680,13 @@ async fn run(
         capabilities.push(SESSION_CLIENTS_CAPABILITY.into());
         capabilities.push(corvid_protocol::PANE_WRITERS_CAPABILITY.into());
     }
+    let known_host = match &target {
+        AttachTarget::Workspace { host_id, .. } | AttachTarget::Takeover { host_id, .. } => {
+            Some(host_id.as_str())
+        }
+        AttachTarget::Observe { host_id, .. } => host_id.as_deref(),
+        _ => None,
+    };
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
     let (endpoint, mut link) = if let Some(remote) = destination.remote() {
         let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
@@ -692,13 +699,6 @@ async fn run(
             };
             matches.then(|| config.host_id.to_string())
         });
-        let known_host = match &target {
-            AttachTarget::Workspace { host_id, .. } | AttachTarget::Takeover { host_id, .. } => {
-                Some(host_id.as_str())
-            }
-            AttachTarget::Observe { host_id, .. } => host_id.as_deref(),
-            _ => None,
-        };
         let expected_host = host
             .as_deref()
             .or(configured_host.as_deref())
@@ -724,14 +724,20 @@ async fn run(
         local_bootstrap::connect(capabilities.clone(), explicit, prompts, progress).await?
     };
     ensure!(
-        host.as_ref()
-            .is_none_or(|host| *host == link.session().host_id),
+        host.as_deref()
+            .or(known_host)
+            .is_none_or(|host| host == link.session().host_id),
         ProtocolFault::new(
             "HostMismatch",
             "the connection points to a different Corvid host"
         )
     );
     *host = Some(link.session().host_id.clone());
+    // Keep the verified endpoint available to Sessions even when attach is busy.
+    shared.update_ui(|ui| {
+        ui.host_id = host.clone();
+        ui.endpoint = Some(endpoint.clone());
+    });
     let grid = sizes.borrow().1;
     let attached = match &target {
         AttachTarget::Observe { view, host_id, .. } => {
@@ -893,8 +899,6 @@ async fn run(
         .iter()
         .any(|name| name == SESSION_CLIENTS_CAPABILITY);
     shared.update_ui(|ui| {
-        ui.host_id = Some(host.clone());
-        ui.endpoint = Some(endpoint.clone());
         ui.close_supported = close_supported;
         ui.handoff_supported = handoff_supported;
         ui.session_clients_supported = session_clients_supported;

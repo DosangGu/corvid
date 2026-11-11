@@ -422,6 +422,17 @@ impl WorkspaceView {
             && !ui.changing
             && let Some(destination) = &self.destination
         {
+            if let (Some(host_id), Some(endpoint)) = (ui.host_id, ui.endpoint) {
+                self.known_sessions
+                    .entry(destination.clone())
+                    .or_insert_with(|| KnownSessions {
+                        host_id,
+                        endpoint,
+                        inventory: Arc::default(),
+                        live: false,
+                        watch: None,
+                    });
+            }
             self.watch_host(destination.clone(), cx);
         }
         if ui.connected
@@ -582,7 +593,7 @@ impl WorkspaceView {
         let reply = window.prompt(
             PromptLevel::Warning,
             "Disconnect other clients?",
-            Some("Other clients viewing this session will disconnect. Shells and agents keep running."),
+            Some("Applies to the current session.\nShells and agents keep running."),
             &["Cancel", "Disconnect"],
             cx,
         );
