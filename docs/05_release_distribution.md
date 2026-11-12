@@ -27,7 +27,8 @@ it directly. Both Desktop packages include both runtime payloads under
 Desktop starts its adjacent native `corvid` for local daemon use; development
 builds retain their executable-based helper path.
 
-Desktop packages also include Corvid Agent Deck. Windows Desktop retains the standalone
+Desktop packages include the built-in Agents window, implemented by Corvid Agent Deck.
+It ships and updates with Desktop. Windows Desktop retains the standalone
 Deck and optional login-startup script. Windows packages contain small stable
 launchers used by the installer; portable users run the actual app executables.
 

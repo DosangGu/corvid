@@ -2,7 +2,7 @@
 
 > Rust · shared TUI/GUI workspace behavior · remote Linux daemon · ordinary SSH
 >
-> Design revision: 2026-11-11. This document specifies the intended product.
+> Design revision: 2026-11-12. This document specifies the intended product.
 > See [terminal qualification](01_terminal_qualification.md) and
 > [daemon foundation](02_daemon_foundation.md) for implemented paths and runtime evidence.
 > Commands and interfaces described here define the target.
@@ -68,7 +68,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
-| Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and the Corvid Agent Deck plugin | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
+| Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and a built-in Agents window | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
 | Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows daemon and TUI | Windows x64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
@@ -1323,13 +1323,19 @@ cached slot state and sends actions for the displayed slot and explicitly select
 terminal. The user can bring the selected terminal forward manually.
 See [companion and desktop setup](04_companion.md).
 
+Agents is a built-in Desktop feature, implemented by Corvid Agent Deck in a
+separate window and process. It ships and updates with Desktop. The terminal
+toolbar provides a compact Agents entry point; Settings uses an Agents category.
+Agent activity, notification preferences, and card management belong in the
+separate window. Its module/package boundary does not define a public plugin API.
+
 Corvid Agent Deck runs independently and sends focus requests over its private
 reconnectable Desktop registration. Desktop resolves the displayed host, epoch, and run
 against its current daemon snapshot. It focuses the pane through its attached
 writer connection. The daemon checks the run ID, pane location, and writer
 lease at focus commit.
 
-The Windows plugin owns its tray, native notifications, history, startup setting,
+The Windows Agents process owns its tray, native notifications, history, startup setting,
 and app identity. It starts or reuses a separate companion service; closing either
 window does not end daemon-owned work. See [Agent Deck](06_agent_deck.md) for the
 implemented lifetime, Linux limitations, and notification validation boundary.

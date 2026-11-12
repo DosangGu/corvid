@@ -8,7 +8,7 @@ use corvid_protocol::COMMAND_TIMEOUT;
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 
-/// The CLI delegates plugin startup here so executable discovery and plugin
+/// The CLI delegates Agents startup here so executable discovery and process
 /// lifetime remain owned by the Agent Deck package.
 pub async fn open(instance: &str, state: &Path, alias: Option<&str>) -> Result<()> {
     let config = match prepare_desktop(instance, state, alias).await? {

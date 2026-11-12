@@ -6,7 +6,7 @@ pub(super) enum Page {
     Connections,
     Terminal,
     Shortcuts,
-    Extensions,
+    Agents,
     About,
 }
 
@@ -138,17 +138,18 @@ impl WorkspaceView {
             (Page::Connections, "Connections"),
             (Page::Terminal, "Terminal"),
             (Page::Shortcuts, "Shortcuts"),
-            (Page::Extensions, "Extensions"),
+            (Page::Agents, "Agents"),
             (Page::About, "About & updates"),
         ];
         let content = match self.management_page {
             Page::Connections => self.connections_panel(ui.as_ref(), cx),
             Page::Terminal => self.terminal_settings(cx),
             Page::Shortcuts => shortcuts(),
-            Page::Extensions => settings_page("Extensions")
-                .child(description("Corvid Agent Deck runs in its own window. Questions and approvals stay in the terminal."))
+            Page::Agents => settings_page("Agents")
+                .child(description("View agent activity and input requests in a separate window. Select an agent to return to its terminal."))
+                .child(description("In the Agents window, open Notifications & settings to choose notification types, sound, and pauses."))
                 .when(ui.as_ref().is_some_and(|ui| ui.connected), |page| {
-                    page.child(button("open-deck-settings", "Open Agent Deck", true).on_click(
+                    page.child(button("open-agents-settings", "Open Agents", true).on_click(
                         cx.listener(|view, _, _, _| {
                             if let Some(session) = &view.session {
                                 session.open_agent_deck(view.agent_deck.clone());
@@ -157,8 +158,9 @@ impl WorkspaceView {
                     ))
                 })
                 .when(!ui.as_ref().is_some_and(|ui| ui.connected), |page| {
-                    page.child(description("Connect to a terminal to open its Agent Deck."))
-                }),
+                    page.child(description("Connect to a terminal to view its agents."))
+                })
+                .child(description("Questions and approvals are answered in the terminal.")),
             Page::About => settings_page("About & updates")
                 .child(self.update_menu(cx))
                 .child(description("Desktop updates and daemon updates are separate. Connection setup checks the selected daemon when needed.")),

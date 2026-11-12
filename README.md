@@ -3,8 +3,8 @@
 Corvid is a terminal multiplexer for coding agents. A daemon manages
 workspaces, tabs, and split panes and keeps shells running when clients detach.
 Corvid Desktop opens a local terminal and connects to remote hosts over SSH.
-Its Corvid Agent Deck plugin shows observed Codex and Claude Code activity and opens
-the corresponding pane in Desktop. On Windows, Agent Deck stays in the system tray
+Its built-in Agents window (Corvid Agent Deck) shows observed Codex and Claude Code
+activity and opens the corresponding pane in Desktop. On Windows, Agent Deck stays in the system tray
 and delivers OS notifications. Completed agents remain until their panes close;
 additional agents queue and fill slots in order. See [Agent Deck](docs/06_agent_deck.md).
 
@@ -27,7 +27,7 @@ curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.s
 
 Re-running the installer updates the same installation. Once installed, use
 `corvid update --check` to check for a release or `corvid update` to update a script installation.
-Desktop provides **Help → Check for updates**. Package updates leave running
+Desktop provides **Settings → About & updates → Check for updates**. Package updates leave running
 daemons unchanged; use `corvid upgrade` separately for automatically started daemons.
 
 See the [distribution guide](docs/05_release_distribution.md) for Desktop and
@@ -71,14 +71,15 @@ for local state paths and validation.
 
 Follow the [Windows quick start](docs/04_companion.md#windows-quick-start)
 or [Linux Desktop quick start](docs/04_companion.md#linux-desktop-quick-start)
-for build requirements. Run this command from the repository root.
+for build requirements. Build the Agents window and run Desktop from the repository root.
 
 ```sh
+cargo build --locked -p corvid-agent-deck
 cargo run --locked -p corvid-desktop
 ```
 
 Desktop starts or reuses the local Corvid daemon and opens a terminal. Open
-**Sessions** to open a session under **Local Terminal** or an SSH host.
+**Settings → Connections** to choose **Local Terminal** or an SSH host.
 Use **×** on a session, tab, or pane to close it and stop its shells.
 Choose a host from `~/.ssh/config` or enter an alias. Remote hosts require
 host-key trust and noninteractive authentication. Pass `-- --ssh-alias work-host`

@@ -71,7 +71,7 @@ pub async fn run(
     run_service(runtime, store, endpoint, shutdown).await
 }
 
-/// Serve a Desktop plugin using the endpoint that Desktop verified.
+/// Serve the built-in Agents window using the endpoint that Desktop verified.
 pub async fn run_for_endpoint(
     runtime: &PresentationAddress,
     state: &Path,

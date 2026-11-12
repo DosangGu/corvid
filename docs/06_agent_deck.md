@@ -1,15 +1,29 @@
 # Corvid Agent Deck
 
-Corvid Agent Deck extends the former Agent Board. The packaged executable and
-all Board-specific UI, launch, background, notification, and OS integration code
-now live in [`plugins/agent-deck`](../plugins/agent-deck/). Desktop and the Windows
-CLI delegate to that package. The daemon remains authoritative for PTYs and agent
-state; `corvid-companion` owns the shared slot policy and presentation service.
+Corvid Agent Deck is Corvid Desktop's built-in **Agents** window. It ships and
+updates with Desktop and extends the former Agent Board. Agent status, cards,
+notifications, and navigation live in this separate window; the terminal toolbar
+provides a compact **Agents** entry point with an input-request count when needed.
+**Settings → Agents** provides access and explains notification preferences.
+
+The executable and its UI, launch, background, notification, and OS integration
+code remain in [`plugins/agent-deck`](../plugins/agent-deck/) for source and package
+compatibility. This is an internal module boundary, not a user-installable plugin
+or a public plugin API. Desktop and the Windows CLI delegate to that package.
+The daemon remains authoritative for PTYs and agent state; `corvid-companion`
+owns the shared slot policy and presentation service.
 The physical Stream Deck/GPUI prototype in `spikes/deck` remains separate.
+
+On 2026-11-12, Linux Xvfb checks verified the Settings → Agents page, opening and
+reactivating the same Agents window from Settings and the toolbar, access to
+Notifications & settings, and unchanged terminal dimensions. Desktop and Agent
+Deck built on Windows and Linux; Windows workspace Clippy, formatting, and
+whitespace checks passed. Native Windows GUI interaction was not exercised in
+this pass.
 
 ## Launch and lifetime
 
-Open **Agents** in the top bar (or **Settings → Extensions → Open Agent Deck**)
+Open **Agents** in the top bar (or **Settings → Agents → Open Agents**)
 in Desktop. Build source installations with
 `cargo build --locked -p corvid-agent-deck`; Desktop finds the binary beside itself
 or in `plugins/agent-deck/` in an installed package. Direct launches require an

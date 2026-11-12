@@ -47,6 +47,7 @@ toolchain. On Debian or Ubuntu, install `build-essential`, `ncurses-bin`, `libxc
 X11 or XWayland session with Fontconfig and a working Vulkan driver.
 
 ```sh
+cargo build --locked -p corvid-agent-deck
 cargo run --locked -p corvid-desktop
 ```
 
@@ -187,7 +188,7 @@ use Up/Down and Enter. Cached workspaces are identified explicitly.
 Ctrl+Shift+F hides/restores the tab bar; **Show tabs** also exits focus mode.
 Ctrl+Shift+Z expands the selected pane and restores its split layout without
 changing the daemon's layout. Settings opens a reusable separate window with
-Connections, Terminal, Shortcuts, Extensions, and About & updates. Closing
+Connections, Terminal, Shortcuts, Agents, and About & updates. Closing
 settings keeps the terminal attached; closing the terminal window also closes
 its settings window. View preferences currently last for that window's lifetime.
 
@@ -234,10 +235,14 @@ observer displayed the writer's output and blocked typed commands. The
 writer's button released ownership and the promoted Desktop ran a command in
 the same pane. The Windows ConPTY integration test covers the daemon handoff.
 
-Open **Agents** in the top bar (or **Settings → Extensions → Open Agent Deck**)
+Open **Agents** in the top bar (or **Settings → Agents → Open Agents**)
 to see the daemon's observed Codex and Claude Code activity, including
 **Working**, **Input needed**, and **Response observed**.
-Click a live agent's name to open its pane in Desktop. See the
+The toolbar keeps the **Agents** label and includes an input-request count when
+needed. Activity lists, notification preferences, and card management stay in
+the separate Agents window. Open **Notifications & settings** there to choose
+notification types, sound, and pauses. Click a live agent's name to open its pane
+in Desktop. See the
 [provider setup](03_provider_qualification.md) for hook coverage.
 
 For native Windows process observation, launch the agent in a new Corvid tab:
@@ -468,18 +473,18 @@ When the watch is ready, the row also includes the verified remote epoch and
 snapshot sequence. The query reads the companion's current state without opening
 an additional control connection. The presentation capability is `list_hosts.v1`.
 
-## Corvid Agent Deck plugin
+## Built-in Agents window
 
 Open a local or SSH terminal in Desktop and choose **Agents** in the top bar
-(or **Settings → Extensions → Open Agent Deck**). The Deck opens in an independent
+(or **Settings → Agents → Open Agents**). The Deck opens in an independent
 process and stays alive when Desktop detaches or switches
 hosts. Desktop checks the companion host and controller IDs before opening the
 window. A matching configured companion keeps its existing state. Other hosts
 get their own companion state below `slot-board/` in Desktop's state directory.
 When Deck starts a companion service, it uses the same Corvid daemon
-as the attached terminal. On Linux the plugin requires `XDG_RUNTIME_DIR`.
+as the attached terminal. On Linux Agent Deck requires `XDG_RUNTIME_DIR`.
 
-The Windows archive includes the plugin by default. For source builds, run
+Desktop archives include Agent Deck as a built-in feature. For source builds, run
 `cargo build --locked -p corvid-agent-deck` and place the resulting executable
 under `plugins/agent-deck/` next to the Desktop executable. You can also launch
 Deck directly using its configured `--state-dir` and `--socket-dir` on Linux
@@ -490,7 +495,7 @@ renderer and connects directly to the private Protobuf endpoint.
 
 When launched from Desktop, click an agent in **Slots** or **Queue** to
 focus its pane and bring Desktop forward. On Linux, the board minimizes after
-a successful focus. When running the plugin directly,
+a successful focus. When running Agent Deck directly,
 choose a paired TUI in **Target terminal**, then click **Focus** on a slot.
 The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant

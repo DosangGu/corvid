@@ -283,9 +283,9 @@ impl WorkspaceView {
             .when(ui.is_some_and(|ui| ui.connected), |bar| {
                 bar.child(
                     button(
-                        "agent-deck",
+                        "agents",
                         if needs_input > 0 {
-                            format!("Needs input · {needs_input}")
+                            format!("Agents · {needs_input} need input")
                         } else {
                             "Agents".into()
                         },

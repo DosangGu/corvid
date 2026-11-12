@@ -52,7 +52,7 @@ impl Job {
 
     pub async fn close(&mut self) {
         self.show = None;
-        // Retire only this Desktop registration. The independent plugin keeps
+        // Retire only this Desktop registration. The separate Agents process keeps
         // observing its host and does not own the terminal writer's lifetime.
         self.tasks.shutdown().await;
     }
@@ -81,7 +81,7 @@ pub fn executable() -> Result<PathBuf> {
     let development = directory.join(binary);
     ensure!(
         development.is_file(),
-        "Corvid Agent Deck is unavailable. Install the plugin or build corvid-agent-deck."
+        "The Agents window is missing from this installation. Reinstall Corvid Desktop to restore it."
     );
     Ok(development)
 }
