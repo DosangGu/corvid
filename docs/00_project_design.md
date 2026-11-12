@@ -67,7 +67,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Server and remote TUI | Linux, one OS user, ordinary SSH | One daemon per user/host; first production slice has one interactive client |
 | Working local terminal | Any terminal satisfying the advertised input/VT profile | Windows-to-Linux SSH is a client scenario, not Windows server support |
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
-| Additional attached clients | One writer per workspace; additional attach to an occupied workspace is rejected initially | Read-only observers and handoff are later extensions |
+| Additional attached clients | One writer per pane; clients can edit different panes independently | Opening an occupied pane transfers its input ownership |
 | Desktop | `corvid-desktop` on Windows and Linux (X11 or XWayland), with daemon sessions, tabs, split panes, and a built-in Agents window | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
 | Deck | `corvid-deck.exe` on Windows and an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
@@ -93,7 +93,7 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 | Layout | Workspace → Tab → N-way tree → Pane → optional Terminal | The daemon creates splits and retains pane identity through selection and detach |
 | State authority | Server reducer for domain state; terminal workers for ordered screen state | UI shows evidence, not agent omniscience |
 | Focus and keymaps | Per ClientId, resolved on server | No system-wide focused pane or active keymap |
-| Input ownership | One writer per pane for clients using pane writers | Competing input is rejected. Observers crop or pad the writer's screen. |
+| Input ownership | One writer per pane for clients using pane writers | Retired input is rejected; opening the same pane resumes its existing terminal. |
 | PTY size | One canonical size per PTY, derived from its workspace writer | Client viewport is separate; last size survives writer departure |
 | Input path | Modal controls plus byte-preserving passthrough first | Legacy bytes do not always identify unambiguous keys |
 | Rendering | Server composition and per-client frame state | Ratatui is a composition/diff tool, not a VT engine or recovery protocol |
@@ -591,8 +591,7 @@ only if it fences old generations and reconstructs all outer-terminal state.
 
 Clients using `pane_writers.v1` hold a writer lease on their selected pane.
 Clients can select and write to different panes in the same workspace. Selecting
-a pane owned by another client returns `WorkspaceBusy`. An attach without an exact
-pane prefers a live pane with no writer. A successful switch releases the source
+a pane owned by another client returns `WorkspaceBusy`. An attach without takeover prefers a live pane with no writer. A successful switch releases the source
 pane. Bound agent focus can switch to an available pane in the writer's current
 workspace. Older clients retain exclusive workspace claims. A legacy claim and
 pane writers cannot coexist in the same workspace.
@@ -609,21 +608,20 @@ Other panes keep their last size until they have a writer. Peers without the
 capability use the full viewport. A legacy workspace writer still sizes its
 hidden panes.
 
-An explicit TUI read-only attach displays the canonical screen using crop/pad.
-An observer's larger viewport does not create a larger child screen, and a
-smaller observer may not see the cursor. It holds no writer lease. The current
-writer can use Ctrl-] then g to hand off the selected pane to its sole observer
-that opted in to promotion. The worker refuses handoff during a pending paste,
-fences undelivered input, resizes the terminal, and installs the new lease
-generation before the observer can send input. The original writer detaches.
-Desktop exposes the same operation through its writer toolbar. External focus
-controls have no authority to transfer the lease.
+Desktop and TUI connections are interactive. With `attach.resume.v1`, ordinary
+user-initiated attaches use the `session_clients.v1` takeover option to resume an existing
+pane directly, selecting the most recently connected writer when no tab or pane
+is specified. The default-shell attach may create a shell only when no live
+terminal exists. Desktop also uses exact, terminal-ID-checked takeover when the
+user selects an occupied pane. Automatic reconnection does not request takeover.
+There is no observer role or opt-in writer promotion. Their retired wire values
+remain reserved, and older observer requests are rejected.
 
-A writer attach with the negotiated `session_clients.v1` takeover option can
-replace the current writer of an existing pane using the same PTY transfer and
-paste fencing. A writer can also explicitly disconnect the other interactive
-clients currently viewing its workspace. Disconnect does not stop their PTYs.
-Observers and external controllers cannot request workspace disconnection.
+The worker refuses transfer during a pending paste, fences the previous input
+route, resizes the terminal, and installs a new lease generation before the new
+client can write. The previous client detaches. External focus controls have no
+authority to transfer the lease. A writer can also explicitly disconnect the
+other interactive clients viewing its workspace without stopping their PTYs.
 
 Per-client state includes current workspace/tab/pane, mode/keymap, viewport, prior frame,
 input-route revision, connection generation, and lease ownership. Foreground/keymap
@@ -660,7 +658,7 @@ screen and do not change canonical PTY dimensions.
 
 Every input delivery carries `(ClientId, connection_generation, view_revision,
 TerminalId, writer_lease_generation, input_sequence)`. The coordinator and PTY worker
-reject stale routes. On focus/handoff, fence the old route, discard undelivered stale
+reject stale routes. On focus/transfer, fence the old route, discard undelivered stale
 input, increment the view/lease generation as applicable, and inform the client. Input
 already written before the fence cannot be undone. The client suppresses new forwarding
 until it has the new route token; it does not replay keys collected while disconnected.
@@ -670,7 +668,7 @@ buffer on a route change instead of completing it against the new target.
 A paste is one bounded transaction. Capture its target at PasteBegin, buffer up to 1 MiB,
 and validate the same route at PasteEnd before writing. Send its accepted bytes as one
 serialized PTY write batch, with bracketed delimiters only if the child enabled that mode.
-Focus/handoff returns `InputBusy` while an accepted paste is being written; it never
+Focus/transfer returns `InputBusy` while an accepted paste is being written; it never
 redirects a suffix to another agent. A stale, incomplete, oversized, or timed-out buffered
 paste is discarded with a visible error. If a PTY fails mid-write, report partial delivery
 and prohibit automatic retry. No promise that the application interprets a paste atomically.
@@ -1227,8 +1225,7 @@ Under the coordinator, after authentication and protocol validation:
    navigable, non-ended run with its terminal present; otherwise TargetGone. No creation.
 4. Apply initial writer policy: target client must already hold the destination workspace
    lease. Return WriterRequired if unclaimed, WorkspaceBusy if another client owns it.
-   Do not acquire, release, or steal input rights. Later observers may focus read-only
-   under an explicitly negotiated capability.
+   Do not acquire, release, or steal input rights.
 5. Fence its input route (§7.4), then select workspace → tab → pane in one transaction,
    increment that client's view revision, and publish/render the change. Active paste
    returns InputBusy for a fresh user retry. Other ClientIds' view/keymap stay unchanged.
@@ -1614,7 +1611,7 @@ Qualify macOS when its separately gated execution work is scheduled.
 - **Failure alternative:** Correct service lifetime/configuration or explicitly limit the
   deployment; do not declare detach support from a successful daemonize call. Reduce
   rendering frequency or disconnect slow clients, not discard parser input.
-- **Excluded:** Full split UX, provider assumptions, observers, writer handoff, Windows server.
+- **Excluded:** Full split UX, provider assumptions, Windows server.
 
 ### Phase 2 — minimum useful agent management
 
@@ -1647,7 +1644,7 @@ Qualify macOS when its separately gated execution work is scheduled.
   unverified foreground activation. If only Codex notify is qualified, report notify-only
   capabilities and report the observed request coverage.
 - **Excluded:** App Server replacement of interactive CLI, cross-host automatic routing,
-  writer handoff/observers, native Windows daemon, durable PTY crash recovery.
+  native Windows daemon, durable PTY crash recovery.
 
 ### Later — separately gated extensions
 
@@ -1659,8 +1656,8 @@ Qualify macOS when its separately gated execution work is scheduled.
   Converge TUI/GUI workspace operations and session lifetimes (§7.7), and include
   the Stream Deck integration daemon in the desktop distribution (§11.4).
   Desktop and Agent Deck distribution includes [Windows Setup](05_release_distribution.md#windows-setup).
-- **Exit:** Extension-specific tests plus regression of existing contracts. Observers must
-  crop/pad without resizing, handoff must fence stale input/paste, multi-host clicks need
+- **Exit:** Extension-specific tests plus regression of existing contracts. Input transfers
+  must fence stale input/paste, multi-host clicks need
   existing host-specific registrations, and resume must allocate new run IDs.
 - **Failure alternative:** Keep the working exclusive-writer/Linux/manual policy and leave
   the extension disabled. Do not weaken ID, input, or persistence guarantees for parity.
@@ -1688,13 +1685,13 @@ negative assertions (including no unexpected process/window/input creation).
 | A11 | Remote reboot, then send old focus command | EpochMismatch; old IDs not interpreted, old Live state not resurrected | P1, P2 |
 | A12 | Reuse PID and pane display number for a different agent | Old run or slot capture cannot target the replacement. Process incarnation check prevents reuse confusion | P2 |
 | A13 | High PTY output plus stalled state watcher/render client | Bounded queues/memory; watcher resync or render disconnect; ordered parser bytes and unrelated agents continue within host resource budget | P1, P2 |
-| A14 | Attach clients with different sizes to one workspace | Initial competing attach rejected; no resize. Later observers crop/pad canonical writer screen; no writer keeps last size | P1, Later |
+| A14 | Attach clients with different sizes to one workspace | Independent pane sizes; resuming an occupied pane fences its previous writer and applies the new viewport; no writer keeps last size | P1, Later |
 | A15 | Updated CLI meets an old running daemon | Compatible negotiation or clear ProtocolMismatch; daemon/processes stay alive | P1 |
 | A16 | Slot reassigned or page changed during press | Captured run/revision rejected as stale, never redirected to new occupant; no replay after reconnect | P2, P3 |
 | A17 | Corrupt/newer-schema storage, unsupported events, hook timeout/crash/missing helper/full queue | Preserve/recover files safely; no guessed Live state, policy change, blocked agent, or unlimited diagnostics | P1–P3 |
 | A18 | Agent emits forged OSC/title/question text containing shell/control syntax | Display sanitization; no shell interpolation, focus, approval, or trusted lifecycle mutation | P2 |
 | A19 | Fragmented UTF-8, Korean/wide/combining, alternate screen/cursor/color/erase/scroll, resize, paste, Ctrl-C/Esc/Alt, queries, TERM profile | Qualified behavior matches advertised capabilities; full redraw reconstructs current visible state | P0, P1 |
-| A20 | Focus/resize/disconnect while keys or paste are buffered; later lease handoff | Fenced old tokens rejected; accepted paste stays at original target; partial delivery not retried; no stale-key replay | P1, Later |
+| A20 | Focus/resize/disconnect while keys or paste are buffered; input ownership transfer | Fenced old tokens rejected; accepted paste stays at original target; partial delivery not retried; no stale-key replay | P1, Later |
 | A21 | Long-running child; abrupt SSH disconnect and clean last logout | Same daemon/PTY/process survives on documented deployment; reattach observes continued progress | P1 |
 | A22 | Collector gap followed by full control resync | Cache consistent but affected activity/request remains Unknown/Unverified until actual evidence | P2 |
 | A23 | Kill PTY-owning daemon mid-work, restart with saved layout | New epoch and empty PTY slots; historical state labeled; no process continuity claim or automatic resume | P1 |

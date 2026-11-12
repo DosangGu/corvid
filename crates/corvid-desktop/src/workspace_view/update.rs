@@ -62,18 +62,10 @@ impl WorkspaceView {
         let Some(installed) = &self.update.installed else {
             return;
         };
-        let target = self.session.as_ref().map(Session::ui).map(|ui| {
-            if ui.read_only {
-                AttachTarget::Observe {
-                    view: self.selected.clone(),
-                    host_id: ui.host_id,
-                    accept_writer: self.observe_accept_writer,
-                }
-            } else {
-                self.selected.clone().map_or(AttachTarget::Default, |view| {
-                    AttachTarget::Pane(view, false)
-                })
-            }
+        let target = self.session.as_ref().map(|_| {
+            self.selected.clone().map_or(AttachTarget::Default, |view| {
+                AttachTarget::Pane(view, false)
+            })
         });
         // Release the writer before the new process attaches. Restore this
         // connection if spawning fails, keeping the prepared update retryable.

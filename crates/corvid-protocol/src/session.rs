@@ -190,7 +190,7 @@ impl Session {
             ) => Ok(body),
             (PeerRole::Tui, Body::Attach(attach)) => {
                 match AttachRole::try_from(attach.requested_role) {
-                    Ok(AttachRole::Writer | AttachRole::Observer) => Ok(body),
+                    Ok(AttachRole::Writer) => Ok(body),
                     Ok(AttachRole::Unspecified) => {
                         Err(ProtocolFault::invalid("missing attach role"))
                     }
@@ -214,7 +214,6 @@ impl Session {
                 | Body::FocusViewAgent(_)
                 | Body::ReadPanePreview(_)
                 | Body::ReadTerminalHistory(_)
-                | Body::RequestWriterHandoff(_)
                 | Body::DisconnectWorkspaceClients(_)
                 | Body::ClaimWorkspaceWriter(_)
                 | Body::MoveTab(_)

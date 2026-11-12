@@ -167,7 +167,7 @@ def verify(command, directory):
         verify_pairing(command, first, pid)
         verify_command_menu(first, progress, pid)
 
-        with OuterTerminal([*command, "attach"], cols=110, rows=31) as busy:
+        with OuterTerminal([*command, "attach", "--new"], cols=110, rows=31) as busy:
             busy.expect(b"WorkspaceBusy")
             busy.wait(1)
         first.send(b"s")
@@ -475,12 +475,18 @@ def verify_default_start(binary, directory):
         ):
             sessions = [first, second]
             startup = rb"CORVID-PROMPT>|WorkspaceBusy"
-            active, = [
-                terminal for terminal in sessions
-                if terminal.expect(startup)[0] == b"CORVID-PROMPT>"
-            ]
-            rejected, = [terminal for terminal in sessions if terminal is not active]
-            rejected.wait(1)
+            for terminal in sessions:
+                terminal.expect(startup)
+            deadline = time.monotonic() + 5
+            while all(terminal.process.poll() is None for terminal in sessions):
+                assert time.monotonic() < deadline, "both clients retained input ownership"
+                time.sleep(0.02)
+            active, = [terminal for terminal in sessions if terminal.process.poll() is None]
+            retired, = [terminal for terminal in sessions if terminal is not active]
+            # A concurrent shell creation can still be reserved; an established
+            # terminal is resumed and the previous client exits successfully.
+            assert retired.process.returncode in (0, 1)
+            retired.wait(retired.process.returncode)
             pid = shell_pid(active)
             daemon = background_daemon_pid(runtime)
             assert os.getsid(daemon) == daemon
@@ -593,6 +599,29 @@ def verify_shell_with_agents(binary, directory, terminfo, providers):
         stop(daemon)
 
 
+def verify_resume(binary, directory):
+    root = directory / "resume"
+    root.mkdir()
+    command = [binary, "--runtime-dir", root / "run"]
+    daemon = subprocess.Popen([*command, "daemon", "--state-dir", root / "state"])
+    try:
+        wait_for_daemon(command, daemon)
+        with OuterTerminal([*command, "attach", "--new", "--", "/bin/sh", "-c", "echo RESUME_READY; exec /bin/sh"]) as first:
+            first.expect(b"RESUME_READY")
+            first.send(b'kept=preserved; printf "FIRST_%s\\n" "$kept"\n')
+            first.expect(b"FIRST_preserved")
+            # The normal attach command requires neither Observe nor a takeover flag.
+            with OuterTerminal([*command, "attach"], cols=60, rows=20) as second:
+                first.wait(0)
+                second.expect(b"FIRST_preserved")
+                second.send(b'printf "RESUMED_%s\\n" "$kept"; stty size\n')
+                second.expect(rb"RESUMED_preserved[\s\S]*19 60")
+                second.send(b"exit\n")
+                second.wait(0)
+    finally:
+        stop(daemon)
+
+
 def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shell_name="sh"):
     root = directory / f"notify-{shell_name}"
     root.mkdir()
@@ -689,6 +718,7 @@ def run(binary):
             verify_tab_picker(command, directory)
         finally:
             stop(daemon)
+        verify_resume(binary, directory)
         verify_default_start(binary, directory)
         for providers in [("claude",), ("codex",), ("claude", "codex")]:
             verify_shell_with_agents(binary, directory, database, providers)

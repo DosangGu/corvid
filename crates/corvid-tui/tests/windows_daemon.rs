@@ -145,7 +145,7 @@ async fn command_menu_consumes_input_and_paste_without_resizing_the_terminal() -
 }
 
 #[tokio::test]
-async fn read_only_terminal_crops_then_accepts_an_explicit_writer_handoff() -> Result<()> {
+async fn ordinary_attach_resumes_the_terminal_and_updates_its_size() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
     ensure_daemon(&runtime, &fixture.path().join("state")).await?;
@@ -163,29 +163,18 @@ async fn read_only_terminal_crops_then_accepts_an_explicit_writer_handoff() -> R
         .map(OsString::from),
     )?;
     writer.wait_for("PS ")?;
+    writer.send(b"$kept='PRESERVED'; [Console]::WriteLine(('STATE_' + $kept))\r")?;
+    writer.wait_for("STATE_PRESERVED")?;
     let id = terminal_id(&runtime).await?;
-    let mut observer = Tui::open(
-        &runtime,
-        ["attach", "--read-only", "--accept-writer"].map(OsString::from),
-    )?;
-    observer.wait_for("Handoff enabled")?;
-    observer.resize(72, 22)?;
-    observer.send(b"[Console]::WriteLine(('OBSERV' + 'ER_LEAK'))\r")?;
 
-    writer.send(b"[Console]::WriteLine(('OLD_WIDTH_' + [Console]::WindowWidth))\r")?;
-    writer.wait_for("OLD_WIDTH_100")?;
-    writer.wait_without("OBSERVER_LEAK")?;
-    observer.wait_for("OLD_WIDTH_100")?;
-
-    writer.send(b"\x1dg")?;
+    let mut successor = Tui::open_sized(&runtime, ["attach"].map(OsString::from), 72, 22)?;
     writer.expect_exit(0)?;
-    observer.wait_without("Read-only")?;
+    successor.wait_for("STATE_PRESERVED")?;
     assert_eq!(terminal_id(&runtime).await?, id);
-    observer.send(b"[Console]::WriteLine(('NEW_WIDTH_' + [Console]::WindowWidth))\r")?;
-    observer.wait_for("NEW_WIDTH_72")?;
-    observer.wait_without("OBSERVER_LEAK")?;
-    observer.send(b"exit\r")?;
-    observer.expect_exit(0)?;
+    successor.send(b"'RESUMED_'+$kept+'_'+[Console]::WindowWidth\r")?;
+    successor.wait_for("RESUMED_PRESERVED_72")?;
+    successor.send(b"exit\r")?;
+    successor.expect_exit(0)?;
     Ok(())
 }
 
@@ -277,8 +266,6 @@ async fn takeover_and_disconnect_keep_the_shells_and_other_workspaces_running() 
             }
         })
         .context("peer terminal location")?;
-    let mut observer = Tui::open(&runtime, ["attach", "--read-only"].map(OsString::from))?;
-    observer.wait_for("Read-only")?;
     let mut other = open(&["attach", "--new-workspace", "Other"])?;
     other.wait_for("PS ")?;
     let mut successor = Tui::open(
@@ -306,7 +293,6 @@ async fn takeover_and_disconnect_keep_the_shells_and_other_workspaces_running() 
 
     successor.send(b"\x1dD")?;
     second.expect_exit(0).context("peer writer disconnected")?;
-    observer.expect_exit(0).context("observer disconnected")?;
     other.send(b"[Console]::WriteLine(('OTHER_' + 'STILL_HERE'))\r")?;
     other.wait_for("OTHER_STILL_HERE")?;
     successor.send(b"[Console]::WriteLine(('STILL_' + $kept))\r")?;
@@ -815,7 +801,7 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     first.wait_for("CORVID_한")?;
     let original = terminal_id(&runtime).await?;
 
-    let mut contender = Tui::open(&runtime, [])?;
+    let mut contender = Tui::open(&runtime, shell.clone())?;
     contender.wait_for("workspace already has a writer")?;
     contender.expect_exit(1)?;
 
@@ -1106,9 +1092,18 @@ struct Tui {
 
 impl Tui {
     fn open(runtime: &Path, args: impl IntoIterator<Item = OsString>) -> Result<Self> {
+        Self::open_sized(runtime, args, COLS, ROWS)
+    }
+
+    fn open_sized(
+        runtime: &Path,
+        args: impl IntoIterator<Item = OsString>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
-            rows: ROWS,
-            cols: COLS,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })?;
@@ -1135,8 +1130,8 @@ impl Tui {
             input,
             output: Some(output),
             screen: vt100::Parser::new(
-                NonZeroU16::new(ROWS).unwrap(),
-                NonZeroU16::new(COLS).unwrap(),
+                NonZeroU16::new(rows).unwrap(),
+                NonZeroU16::new(cols).unwrap(),
                 0,
             ),
         };

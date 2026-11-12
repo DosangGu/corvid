@@ -26,4 +26,3 @@ pub(crate) use worker::{
 
 pub(crate) use host::HostConfig;
 pub use host::run_helper;
-pub(crate) const PROMOTED_RENDER_GENERATION: u64 = 1 << 63;

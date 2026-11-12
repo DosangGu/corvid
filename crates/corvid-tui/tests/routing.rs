@@ -546,83 +546,29 @@ impl Tui {
 }
 
 #[tokio::test]
-async fn handoff_rejects_observer_input_and_fences_the_previous_writer() {
+async fn retired_observer_role_is_rejected_without_disturbing_the_writer() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
-    let mut daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     timeout(WAIT, async {
-        let capabilities = vec![corvid_protocol::WRITER_HANDOFF_CAPABILITY.to_owned()];
-        let mut writer = Tui::attach_target(&runtime, Attach {
-            terminal_capabilities: capabilities.clone(),
-            launch: Some(LaunchCommand {
-                argv: ["/bin/sh", "-c", "stty -echo; printf 'READY\n'; while IFS= read -r text; do printf 'got:%s\n' \"$text\"; done"]
-                    .map(|arg| arg.as_bytes().to_vec()).into(),
+        let mut writer = Tui::attach_command(&runtime, Some(echo_fixture("WRITER"))).await;
+        let result = Tui::try_attach_target(
+            &runtime,
+            Attach {
+                requested_role: 2, // Retired ATTACH_ROLE_OBSERVER wire value.
                 ..Default::default()
-            }),
-            ..Default::default()
-        }).await;
-        let retired = writer.route.clone();
-        let mut source = Vec::new();
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(error) if error.code == "UnsupportedCapability"));
         let mut output = Vec::new();
-        while !String::from_utf8_lossy(&source).contains("READY") {
-            assert!(writer.event(&mut source).await.is_none());
-        }
-        let mut observer = Tui::attach_target(&runtime, Attach {
-            requested_role: AttachRole::Observer as i32,
-            terminal_capabilities: capabilities,
-            viewport: Some(Viewport { cols: 60, rows: 18 }),
-            ..Default::default()
-        }).await;
-        assert_eq!(observer.route.writer_lease_generation, 0);
-        assert_eq!(observer.route.terminal_id, retired.terminal_id);
-        observer.input(retired.clone(), 1, b"before\n").await;
-        let Body::Error(error) = observer.next_body(&mut output).await else { panic!("observer input was accepted") };
-        assert_eq!(error.code, "WriterRequired");
-        assert_eq!(writer.client_state(&runtime).await.viewport.unwrap().cols, 80);
-        let handoff = |revision| Body::RequestWriterHandoff(corvid_protocol::wire::RequestWriterHandoff {
-            expected_view_revision: Some(revision),
-        });
-        observer.send(handoff(observer.route.view_revision)).await;
-        let Body::Error(error) = observer.next_body(&mut output).await else { panic!("observer could hand off") };
-        assert_eq!(error.code, "WriterRequired");
-        writer.send(handoff(retired.view_revision + 1)).await;
-        let Body::Error(error) = writer.next_body(&mut source).await else { panic!("stale handoff was accepted") };
-        assert_eq!(error.code, "StaleRoute");
-        let paste_id = Uuid::new_v4().to_string();
-        writer.send(Body::PasteBegin(PasteBegin {
-            route_token: Some(retired.clone()),
-            paste_id: paste_id.clone(),
-            input_sequence: 1,
-        })).await;
-        writer.send(handoff(retired.view_revision)).await;
-        let Body::Error(error) = writer.next_body(&mut source).await else { panic!("handoff during a paste was accepted") };
-        assert_eq!(error.code, "InputBusy");
-        writer.send(Body::PasteChunk(PasteChunk {
-            paste_id: paste_id.clone(),
-            data: b"paste\n".to_vec(),
-        })).await;
-        writer.send(Body::PasteEnd(PasteEnd { paste_id })).await;
-        while !String::from_utf8_lossy(&source).contains("got:paste") {
-            assert!(writer.event(&mut source).await.is_none());
-        }
-        writer.send(handoff(retired.view_revision)).await;
-        assert!(matches!(writer.next_body(&mut source).await, Body::Detach(_)));
-
-        observer.moved(&mut output, &writer.selection).await;
-        assert_eq!(observer.route.terminal_id, retired.terminal_id);
-        assert!(observer.route.writer_lease_generation > retired.writer_lease_generation);
-        assert_eq!(observer.client_state(&runtime).await.viewport.unwrap().cols, 60);
-        observer.input(retired, 3, b"after\n").await;
-        let Body::Error(error) = observer.next_body(&mut output).await else { panic!("retired input was accepted") };
-        assert_eq!(error.code, "StaleRoute");
-        observer.input(observer.route.clone(), 1, b"current\n").await;
-        while !String::from_utf8_lossy(&output).contains("got:current") {
-            assert!(observer.event(&mut output).await.is_none());
-        }
-        let text = String::from_utf8_lossy(&output);
-        assert!(!text.contains("got:before") && !text.contains("got:after"));
-    }).await.unwrap();
-    daemon.kill().await.unwrap();
+        writer
+            .input(writer.route.clone(), 1, b"still-writing\n")
+            .await;
+        wait_for_text(&mut writer, &mut output, "WRITER=still-writing").await;
+    })
+    .await
+    .unwrap();
 }
 
 async fn control(runtime: &Path, request: &str) -> String {

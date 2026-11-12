@@ -18,8 +18,7 @@ use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
     COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameReader,
     FrameWriter, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
-    RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
-    WRITER_HANDOFF_CAPABILITY, decode_envelope,
+    RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session, decode_envelope,
 };
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{SignalKind, signal};
@@ -38,8 +37,6 @@ const LEGACY_MAX_ROWS: u16 = 120;
 
 pub struct AttachOptions {
     pub launch: Option<Vec<OsString>>,
-    pub read_only: bool,
-    pub accept_writer: bool,
     pub take_over: bool,
     /// Open a shell only when there is no live terminal to join.
     pub launch_if_empty: bool,
@@ -60,8 +57,6 @@ impl Default for AttachOptions {
     fn default() -> Self {
         Self {
             launch: None,
-            read_only: false,
-            accept_writer: false,
             take_over: false,
             launch_if_empty: false,
             agent: None,
@@ -86,17 +81,9 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
     let mut required = vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()];
-    ensure!(
-        !options.accept_writer || options.read_only,
-        "writer acceptance requires read-only attach"
-    );
-    if options.accept_writer {
-        required.push(WRITER_HANDOFF_CAPABILITY.into());
-    }
     if options.take_over {
         ensure!(
-            !options.read_only
-                && options.launch.is_none()
+            options.launch.is_none()
                 && !options.launch_if_empty
                 && options.new_workspace.is_none()
                 && options.new_tab.is_none()
@@ -106,16 +93,6 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         );
         required.push(corvid_protocol::SESSION_CLIENTS_CAPABILITY.into());
         required.push(PANE_WRITERS_CAPABILITY.into());
-    }
-    if options.read_only {
-        ensure!(
-            options.launch.is_none()
-                && !options.launch_if_empty
-                && options.claim_workspaces.is_empty()
-                && options.move_tab.is_none(),
-            "read-only attach requires an existing terminal"
-        );
-        required.push(corvid_protocol::OBSERVER_CAPABILITY.into());
     }
     if options.agent.is_some() {
         #[cfg(target_os = "linux")]
@@ -142,7 +119,6 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
     let notification = ResponseNotification::negotiate(&connection.session);
     let escape_delay = options.escape_delay;
-    let accept_writer = options.accept_writer;
     let (connection, route) = timeout(
         COMMAND_TIMEOUT,
         request_attach(
@@ -166,7 +142,6 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let tty = Tty::enter()?;
     timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
     let mut client = Interactive::new(connection, viewport, route, escape_delay, notification);
-    client.accept_writer = accept_writer;
     tokio::select! {
         result = async {
             client.configure_layout(&tty, claims, move_tab).await?;
@@ -195,12 +170,6 @@ async fn request_attach(
     pane_writer: bool,
 ) -> Result<(Connection, RouteToken)> {
     check_viewport_support(&connection.session, viewport)?;
-    let handoff = (options.accept_writer || !options.read_only)
-        && connection
-            .session
-            .capabilities
-            .iter()
-            .any(|name| name == WRITER_HANDOFF_CAPABILITY);
     let mut terminal_capabilities = vec!["legacy_vt.v1".into(), "tabs.v1".into()];
     for capability in [
         PAIR_CAPABILITY,
@@ -230,9 +199,6 @@ async fn request_attach(
     if notifications {
         terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
     }
-    if handoff {
-        terminal_capabilities.push(WRITER_HANDOFF_CAPABILITY.into());
-    }
     if connection
         .session
         .capabilities
@@ -250,6 +216,24 @@ async fn request_attach(
     if launch_if_empty {
         terminal_capabilities.push(DEFAULT_SHELL_CAPABILITY.into());
     }
+    let can_resume = pane_writer
+        && options.new_workspace.is_none()
+        && options.new_tab.is_none()
+        && (options.launch.is_none() || launch_if_empty)
+        && [
+            PANE_WRITERS_CAPABILITY,
+            corvid_protocol::SESSION_CLIENTS_CAPABILITY,
+            corvid_protocol::RESUME_ATTACH_CAPABILITY,
+        ]
+        .iter()
+        .all(|capability| {
+            connection
+                .session
+                .capabilities
+                .iter()
+                .any(|name| name == capability)
+        });
+    let take_over = options.take_over || can_resume;
     let launch = options
         .launch
         .or_else(|| launch_if_empty.then(Vec::new))
@@ -282,15 +266,11 @@ async fn request_attach(
             pane_id: options.pane,
             create_workspace: options.new_workspace,
             create_tab: options.new_tab,
-            take_over: options.take_over,
+            take_over,
             expected_terminal_id: None,
             viewport: Some(wire_viewport(viewport)),
             terminal_capabilities,
-            requested_role: if options.read_only {
-                AttachRole::Observer
-            } else {
-                AttachRole::Writer
-            } as i32,
+            requested_role: AttachRole::Writer as i32,
             launch,
         }),
     );
@@ -319,8 +299,7 @@ async fn request_attach(
             && route.connection_generation == attached.connection_generation
             && route.connection_generation > 0
             && route.view_revision > 0
-            && (route.writer_lease_generation == 0) == options.read_only
-            && (!options.read_only || attached.writer_leases.is_empty())
+            && route.writer_lease_generation > 0
             && Uuid::parse_str(&route.client_id).is_ok()
             && Uuid::parse_str(&route.terminal_id).is_ok(),
         "invalid initial input route"
@@ -375,7 +354,6 @@ struct Interactive {
     pairing: Option<PairingDisplay>,
     restoring: bool,
     notification: Option<ResponseNotification>,
-    accept_writer: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -451,7 +429,6 @@ impl Interactive {
             pairing: None,
             restoring: false,
             notification,
-            accept_writer: false,
         }
     }
 
@@ -547,12 +524,6 @@ impl Interactive {
                     let count = count?;
                     if count == 0 {
                         return self.detach().await;
-                    }
-                    if self.route.writer_lease_generation == 0 {
-                        if buffer[..count] == [corvid_core::KEY_LEADER] {
-                            return self.detach().await;
-                        }
-                        continue;
                     }
                     if self.pairing.is_some() {
                         if buffer[..count].iter().any(|byte| matches!(byte, b'\r' | b'\n' | 0x1b)) {
@@ -707,13 +678,6 @@ impl Interactive {
                 && self.route.view_revision.checked_add(1) == Some(route.view_revision),
             "view update targets a different or retired route"
         );
-        if self.route.writer_lease_generation == 0 {
-            ensure!(
-                self.accept_writer && route.terminal_id == self.route.terminal_id,
-                "unexpected writer promotion"
-            );
-            self.accept_writer = false;
-        }
         let pending = self.pending_resize.take();
         self.viewport = match view.viewport {
             Some(viewport) => {
@@ -873,15 +837,11 @@ impl Interactive {
                 viewport: Some(wire_viewport(viewport)),
             }))
             .await?;
-        if self.route.writer_lease_generation == 0 {
-            self.viewport = viewport;
-        } else {
-            self.pending_resize = Some(PendingResize {
-                viewport,
-                request_id,
-                deadline: Instant::now() + COMMAND_TIMEOUT,
-            });
-        }
+        self.pending_resize = Some(PendingResize {
+            viewport,
+            request_id,
+            deadline: Instant::now() + COMMAND_TIMEOUT,
+        });
         Ok(())
     }
 

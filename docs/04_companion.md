@@ -190,8 +190,8 @@ and closing, and manual-name/title recovery through daemon replacement. Native
 Windows Desktop GUI and IME composition were not exercised in these checks.
 
 Desktop keeps navigation in one compact row. A single pane has no extra title
-bar or border, and normal attachment does not add a bottom status bar. Read-only,
-reconnection, synchronization, and error states remain visible. The workspace
+bar or border, and normal attachment does not add a bottom status bar.
+Reconnection, synchronization, and error states remain visible. The workspace
 picker and action menus overlay the terminal without resizing its PTY; Escape
 returns focus to the terminal. Type to filter workspaces by host and label, then
 use Up/Down and Enter. Cached workspaces are identified explicitly.
@@ -212,39 +212,27 @@ window also closed settings. The Windows
 workspace tests and Linux routing and interactive TTY suites passed. Native
 Windows GUI interaction for this layout has not yet been verified.
 
-The TUI supports `corvid attach --read-only` for observing an existing pane
-while a writer is attached. Use Ctrl-] to leave an observer. To let the current
-writer hand off input, start the observer with
-`corvid attach --read-only --accept-writer`. From the writer TUI on the same
-pane, press Ctrl-] then g. Handoff requires exactly one observer that opted in
-on that pane, and waits for the user to try again if a paste is pending.
-The old TUI detaches and the promoted TUI continues with the same terminal at
-its own viewport size. These controls are available on Windows and Linux.
+Open an existing pane in Desktop, or run `corvid attach` from another machine,
+to continue typing in the same terminal. An ordinary attach selects the most
+recently connected writer's pane in the selected workspace; pass `--workspace`,
+`--tab`, and `--pane` to target a specific pane. Desktop pane clicks also resume
+panes held by another client. The previous client detaches, the shell and agents
+keep running, and the new client's viewport becomes the terminal size. Retry
+if a paste is in progress. `--takeover` remains an explicit alias for attaching
+to an existing terminal without creating a shell.
+Automatic resume requires a daemon advertising `attach.resume.v1`; older daemons
+retain their attach behavior and may require `--takeover` or an upgrade.
 
-In Desktop, choose **⋯ → Observe current pane**, or select a workspace in
-the picker and choose **Observe**. The toolbar shows **Read-only** and
-the pane accepts selection and copy without forwarding keys. Turn on
-**Settings → Terminal → Accept writer handoff when observing** before connecting
-if you want to accept input ownership. The writer can then choose
-**⋯ → Hand off input control** in Desktop or use
-the TUI shortcut above. The observer must be on the same pane and be the
-only observer that opted in there. A handoff leaves the pane running.
-
-To take over from another machine, observe the pane and choose **⋯ → Take input control**.
-The TUI equivalent is `corvid attach --takeover`, which selects the most recently
-connected writer's pane in the selected workspace by default. Pass
-`--workspace`, `--tab`, and `--pane` to target a specific pane. The previous
-writer detaches and the existing shell continues. Retry if a paste is in progress.
+There is no Observe mode, read-only attach, or writer-handoff preference.
+Different panes remain independently editable by different clients. A pane has
+one input owner at a time, and the daemon rejects input from retired routes.
+Automatic Desktop reconnection does not take a pane back from another client.
+External agent-focus controls cannot transfer input ownership.
 
 A writer can use **⋯ → Disconnect other clients** in Desktop or
-Ctrl-] then uppercase D in the TUI. This detaches other writers and observers
+Ctrl-] then uppercase D in the TUI. This detaches other interactive clients
 currently viewing that session. Shells, agents, and clients viewing other
 workspaces continue running.
-
-On 2026-11-12, two Desktop windows under Xvfb exercised this flow. The
-observer displayed the writer's output and blocked typed commands. The
-writer's button released ownership and the promoted Desktop ran a command in
-the same pane. The Windows ConPTY integration test covers the daemon handoff.
 
 Open **Agents** in the top bar (or **Settings → Agents → Open Agents**)
 to see the daemon's observed Codex and Claude Code activity, including
