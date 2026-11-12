@@ -1108,7 +1108,13 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         .await;
         assert_eq!(slot_run(&changed, 0), Some(one.agent_run_id.as_str()));
         assert_eq!(changed.slots[0].revision, placements.slots[0].revision);
-        assert_eq!(changed.slots[1], placements.slots[1]);
+        // The other run may be observed again while the first run is replaced.
+        let mut expected_other_slot = placements.slots[1].clone();
+        let expected_other_run = expected_other_slot.run.as_mut().unwrap();
+        let observed_at = changed.slots[1].run.as_ref().unwrap().last_observed_unix_ms;
+        assert!(observed_at >= expected_other_run.last_observed_unix_ms);
+        expected_other_run.last_observed_unix_ms = observed_at;
+        assert_eq!(changed.slots[1], expected_other_slot);
         assert!(changed.recent_ended.is_empty());
 
         replacement
