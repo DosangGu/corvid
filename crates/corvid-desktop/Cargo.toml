@@ -32,10 +32,16 @@ vt100.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 gpui = { workspace = true, features = ["windows-manifest"] }
+windows-sys = { workspace = true, features = ["Win32_UI_Shell"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui = { workspace = true, features = ["x11"] }
 libc.workspace = true
+image = { workspace = true, features = ["png"] }
+x11rb.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
 
 [target.'cfg(any(windows, target_os = "linux"))'.dev-dependencies]
 tempfile.workspace = true

@@ -1,0 +1,2 @@
+// GPUI loads resource 1 for every Windows window, including settings windows.
+1 ICON "corvid.ico"

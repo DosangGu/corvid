@@ -77,6 +77,12 @@ reported instead of overwritten while its processes may still use it. Linux
 installation uses a directory lock; after an interrupted installer, remove the
 reported stale lock only after verifying that no installer remains running.
 
+Linux Desktop installations register per-user application menu entries and
+hicolor icons under `$XDG_DATA_HOME` (or `~/.local/share`). Entries follow the
+stable `current` link, and files owned by another installation are preserved.
+Portable and development Desktop windows also provide their icon directly to
+X11, including the Settings window. See the [shared icon assets](../assets/icons/).
+
 ## Install on Windows
 
 Download `install.ps1` from the release and run it with Windows PowerShell 5.1
@@ -93,6 +99,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Product deskt
 Default storage is `%LOCALAPPDATA%\Corvid\PRODUCT`. Add its `bin` directory to
 PATH. Options include `-Version VERSION` and `-InstallRoot ABSOLUTE_DIR`.
 The installer does not require elevation or modify the machine PATH.
+
+Windows executables and stable launchers carry the shared Corvid icon. Windows
+Setup uses it for Start menu entries, the optional Desktop shortcut, and the
+uninstaller; its Desktop shortcuts share the running app's `Corvid.Desktop`
+identity. Script installations also keep `corvid.ico` at the installation root
+for user-created shortcuts. Existing stable launcher EXEs remain unchanged when
+updating an older installation, while the selected app carries the new icon.
 
 Stable launchers in `bin` read `current.txt` and start the selected executable
 under `versions\VERSION`. Updating atomically replaces this pointer, not a running

@@ -35,6 +35,7 @@ switch ($Mode) {
         }
         if ($PSCmdlet.ShouldProcess($path, 'Enable Corvid companion startup for the current user')) {
             $shortcut.TargetPath = $binary
+            $shortcut.IconLocation = (Join-Path $PSScriptRoot 'corvid.ico') + ',0'
             $shortcut.WorkingDirectory = Split-Path -Parent $binary
             $shortcut.Description = $description
             $shortcut.Arguments = $arguments

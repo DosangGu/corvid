@@ -39,6 +39,9 @@ windows-sys = { workspace = true, features = [
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process"] }
 
+[build-dependencies]
+embed-resource.workspace = true
+
 [target.'cfg(windows)'.dev-dependencies]
 portable-pty.workspace = true
 vt100.workspace = true

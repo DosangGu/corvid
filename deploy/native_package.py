@@ -13,7 +13,7 @@ import zipfile
 
 from package import ROOT, WINDOWS, digest, write_json
 
-ICON = ROOT / "plugins/agent-deck/assets/app.ico"
+ICON = ROOT / "assets/icons/corvid.ico"
 MAX_PAYLOAD_BYTES = 512 * 1024 * 1024
 MAX_MEMBERS = 256
 

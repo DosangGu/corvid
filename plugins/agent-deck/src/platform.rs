@@ -47,7 +47,7 @@ impl Native {
         command
             .args([
                 "--app-name=Corvid Agent Deck",
-                "--icon=dialog-information",
+                "--icon=corvid",
                 "--",
                 &notice.title,
                 &notice.body,

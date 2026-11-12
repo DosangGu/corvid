@@ -214,7 +214,7 @@ Unavailable or ended targets remain in history without opening a new terminal.
 - [`src/window/layout.rs`](../plugins/agent-deck/src/window/layout.rs): fixed grid presets, orientation, and window dimensions.
 - [`src/notifications.rs`](../plugins/agent-deck/src/notifications.rs): bounded delivery policy and persistence.
 - [`src/platform`](../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
-- [`assets`](../plugins/agent-deck/assets/): canonical SVG, PNG, and multi-size ICO assets; `tools/render_icons.rs` regenerates raster assets.
+- [`assets`](../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../assets/icons/); `cargo run -p corvid-agent-deck --example render-icons` regenerates all raster assets.
 
 The icon extends the existing Corvid bird silhouette. App and tray icons have a
 normal state and a separate attention overlay. See the [icon preview](images/agent-deck/preview.png).

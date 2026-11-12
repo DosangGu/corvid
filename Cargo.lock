@@ -1575,6 +1575,7 @@ dependencies = [
  "corvid-presentation",
  "corvid-protocol",
  "elgato-streamdeck",
+ "embed-resource",
  "gpui",
  "hidapi",
  "image",
@@ -1596,8 +1597,10 @@ dependencies = [
  "corvid-protocol",
  "corvid-tui",
  "corvid-update",
+ "embed-resource",
  "glob",
  "gpui",
+ "image",
  "libc",
  "semver",
  "serde",
@@ -1608,6 +1611,8 @@ dependencies = [
  "unicode-width 0.2.3",
  "uuid",
  "vt100",
+ "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]
@@ -1668,6 +1673,7 @@ dependencies = [
  "corvid-daemon",
  "corvid-protocol",
  "corvid-update",
+ "embed-resource",
  "nix 0.31.3",
  "portable-pty",
  "serde",
@@ -1684,6 +1690,7 @@ name = "corvid-update"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "embed-resource",
  "semver",
  "serde",
  "serde_json",

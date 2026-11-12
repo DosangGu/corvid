@@ -131,6 +131,9 @@ mv -Tf -- "$stage/current" "$install_root/current"
 for name in $commands; do
     if [ ! -L "$bin_dir/$name" ]; then ln -s "$install_root/current/$name" "$bin_dir/$name"; fi
 done
+if [ "$product" = desktop ] && [ -f "$destination/install-desktop.sh" ]; then
+    sh "$destination/install-desktop.sh" "$install_root"
+fi
 printf 'Installed Corvid %s (%s).\n' "$release_version" "$product"
 printf 'CORVID_EXECUTABLE=%s/corvid\n' "$destination"
 case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add %s to PATH to run Corvid.\n' "$bin_dir" ;; esac

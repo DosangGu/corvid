@@ -18,7 +18,7 @@ DESKTOP_LINUX = "x86_64-unknown-linux-gnu"
 
 
 def identity():
-    inputs = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates", "plugins", "spikes", "deploy"]
+    inputs = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "assets", "crates", "plugins", "spikes", "deploy"]
     changes = subprocess.check_output(
         ["git", "-c", "core.safecrlf=false", "status", "--porcelain", "--untracked-files=normal", "--", *inputs],
         cwd=ROOT, text=True,
@@ -91,7 +91,12 @@ def package(args):
         copy(ROOT / "LICENSE", stage / "LICENSE")
         if windows:
             copy(args.build / "corvid-launch.exe", stage / "corvid-launch.exe", True)
+            copy(ROOT / "assets/icons/corvid.ico", stage / "corvid.ico")
         if args.product == "desktop":
+            for extension in ["svg", "png"]:
+                copy(ROOT / f"assets/icons/corvid.{extension}", stage / f"icons/corvid.{extension}")
+            if not windows:
+                copy(ROOT / "deploy/linux/install-desktop.sh", stage / "install-desktop.sh")
             copy(args.build / f"corvid-desktop{suffix}", stage / f"corvid-desktop{suffix}", True)
             if not args.without_agent_deck:
                 copy(args.build / f"corvid-agent-deck{suffix}", stage / "plugins" / "agent-deck" / f"corvid-agent-deck{suffix}", True)

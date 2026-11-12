@@ -58,6 +58,7 @@ impl WorkspaceView {
                 return;
             }
             let options = WindowOptions {
+                app_id: Some(crate::app_icon::APP_ID.into()),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Corvid Settings".into()),
                     ..Default::default()
@@ -72,6 +73,10 @@ impl WorkspaceView {
             };
             let settings_owner = owner.clone();
             let result = cx.open_window(options, move |window, cx| {
+                #[cfg(target_os = "linux")]
+                if let Err(error) = crate::app_icon::set_window_icons() {
+                    eprintln!("Could not set Corvid Settings icon: {error}");
+                }
                 window.focus(&focus);
                 cx.new(|cx| ManagementView::new(settings_owner, window, cx))
             });

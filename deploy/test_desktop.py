@@ -2,6 +2,7 @@
 """Launch the packaged Linux Desktop under an isolated X11 display."""
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -30,16 +31,28 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
         else:
             raise AssertionError("Daemon did not start")
         desktop = subprocess.Popen([str(root / "corvid-desktop")], env=environment, start_new_session=True)
-        for _ in range(80):
-            if desktop.poll() is not None:
-                raise AssertionError(f"Desktop exited with {desktop.returncode}")
-            windows = subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
-            if '"Corvid Desktop"' in windows:
-                print("PASS packaged Linux Desktop opened an X11 window")
-                break
-            time.sleep(0.25)
-        else:
-            raise AssertionError("Desktop did not open a window")
+        def wait_for_icon(title):
+            for _ in range(80):
+                if desktop.poll() is not None:
+                    raise AssertionError(f"Desktop exited with {desktop.returncode}")
+                windows = subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
+                match = re.search(r'(0x[0-9a-f]+) "' + re.escape(title) + '"', windows)
+                if match:
+                    window = match.group(1)
+                    properties = subprocess.check_output(
+                        ["xprop", "-id", window, "WM_CLASS", "_NET_WM_ICON"], text=True,
+                    )
+                    if ('"Corvid.Desktop"' in properties and "_NET_WM_ICON(CARDINAL)" in properties
+                            and "32 x 32" in properties and "128 x 128" in properties):
+                        return window
+                time.sleep(0.25)
+            raise AssertionError(f"{title} did not open with its app identity and icon")
+
+        window = wait_for_icon("Corvid Desktop")
+        subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
+        subprocess.run(["xdotool", "key", "ctrl+comma"], check=True, timeout=10)
+        wait_for_icon("Corvid Settings")
+        print("PASS packaged Linux Desktop and Settings opened with X11 icons and app identity")
     finally:
         for process in [desktop, daemon, manager]:
             if process is not None and process.poll() is None:
