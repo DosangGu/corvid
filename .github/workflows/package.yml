@@ -64,7 +64,9 @@ jobs:
             target/release
             target/${{ matrix.target }}/release
           key: rust-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: rust-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+          restore-keys: |
+            rust-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            rust-${{ runner.os }}-${{ matrix.target }}-v1-
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-tui -p corvid-update
       - name: Runtime tests
@@ -123,7 +125,9 @@ jobs:
             target/release
             target/${{ matrix.target }}/release
           key: desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+          restore-keys: |
+            desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            desktop-${{ runner.os }}-${{ matrix.target }}-v1-
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
