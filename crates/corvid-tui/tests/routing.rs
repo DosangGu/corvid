@@ -1695,9 +1695,14 @@ async fn verify_focus_rejections(
     .await;
     assert!(before.bindings.is_empty());
     let mut capture = capture_slot(&before, slot_for_run(&before, &agent.agent_run_id).unwrap());
-    let initial = control(runtime, "snapshot").await;
+    // Agent observations may advance the global sequence independently of focus.
+    // Rejected focus requests must preserve the full state of every client.
+    let initial_clients = corvid_client::clients(runtime).await.unwrap();
     assert_focus_refused(&mut companion, &capture, "NoAttachedClient").await;
-    assert_eq!(control(runtime, "snapshot").await, initial);
+    assert_eq!(
+        corvid_client::clients(runtime).await.unwrap(),
+        initial_clients
+    );
 
     for code in [issue_pairing(main).await.to_string(), other_code] {
         let registered = companion
@@ -1711,7 +1716,7 @@ async fn verify_focus_rejections(
         assert!(matches!(registered, Body::ClientBindingRegistered(_)));
     }
     let paired = presented(&mut companion, |view| view.bindings.len() == 2).await;
-    let both_attached = control(runtime, "snapshot").await;
+    let both_attached = corvid_client::clients(runtime).await.unwrap();
     assert_focus_refused(&mut companion, &capture, "AmbiguousClient").await;
 
     let other_binding = paired
@@ -1723,14 +1728,17 @@ async fn verify_focus_rejections(
     wrong_revision.revision += 1;
     capture.binding = Some(wrong_revision);
     assert_focus_refused(&mut companion, &capture, "StaleBinding").await;
-    assert_eq!(control(runtime, "snapshot").await, both_attached);
+    assert_eq!(
+        corvid_client::clients(runtime).await.unwrap(),
+        both_attached
+    );
 
     drop(other);
     presented(&mut companion, |view| {
         view.bindings.len() == 1 && view.bindings[0].client_id == main.route.client_id
     })
     .await;
-    let one_attached = control(runtime, "snapshot").await;
+    let one_attached = corvid_client::clients(runtime).await.unwrap();
     capture.binding = None;
     assert_focus_refused(&mut companion, &capture, "InvalidMessage").await;
     capture.binding = Some(other_binding.clone());
@@ -1747,7 +1755,7 @@ async fn verify_focus_rejections(
     .await
     .unwrap_err();
     assert_eq!(retired.code, "NoAttachedClient");
-    assert_eq!(control(runtime, "snapshot").await, one_attached);
+    assert_eq!(corvid_client::clients(runtime).await.unwrap(), one_attached);
 }
 
 async fn assert_focus_refused(companion: &mut PresentationClient, capture: &FocusSlot, code: &str) {
