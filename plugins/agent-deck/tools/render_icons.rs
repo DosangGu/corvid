@@ -1,10 +1,14 @@
-// cargo run -p corvid-agent-deck --example render-icons -- plugins/agent-deck/assets
+// cargo run -p corvid-agent-deck --example render-icons
 use resvg::{tiny_skia, usvg};
 use std::{fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = PathBuf::from(std::env::args().nth(1).ok_or("missing assets directory")?);
-    for name in ["app", "tray", "tray-attention"] {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (directory, name) in [
+        (root.join("assets/icons"), "corvid"),
+        (root.join("plugins/agent-deck/assets"), "tray"),
+        (root.join("plugins/agent-deck/assets"), "tray-attention"),
+    ] {
         let tree = usvg::Tree::from_data(
             &fs::read(directory.join(format!("{name}.svg")))?,
             &usvg::Options::default(),

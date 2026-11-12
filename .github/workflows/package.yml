@@ -27,6 +27,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 deploy/release.py validate
+      - run: python3 deploy/test_icons.py
       - run: cargo fmt --all -- --check
       - run: git diff --check
 
@@ -109,7 +110,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ncurses-bin libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev libvulkan1 mesa-vulkan-drivers xvfb xauth x11-utils openbox
+          sudo apt-get install -y build-essential ncurses-bin libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev libvulkan1 mesa-vulkan-drivers xvfb xauth x11-utils xdotool desktop-file-utils openbox
           mkdir -p "$HOME/.corvid-tests"
           chmod 700 "$HOME/.corvid-tests"
           echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
@@ -130,6 +131,9 @@ jobs:
             desktop-${{ runner.os }}-${{ matrix.target }}-v1-
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
+      - name: Verify Windows executable icons
+        if: runner.os == 'Windows'
+        run: python deploy/test_icons.py --build target/${{ matrix.target }}/release --runtime target/runtimes/runtime-x86_64-pc-windows-msvc/corvid.exe
       - name: Workspace tests
         run: cargo test --locked --release --target ${{ matrix.target }} --workspace
       - name: Workspace lints

@@ -1,6 +1,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(any(windows, target_os = "linux"))]
+mod app_icon;
+#[cfg(any(windows, target_os = "linux"))]
 mod daemon_prompt;
 #[cfg(any(windows, target_os = "linux"))]
 mod local_bootstrap;
@@ -58,6 +60,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     }
 
     let options = Options::parse();
+    #[cfg(windows)]
+    app_icon::identify()?;
     #[cfg(target_os = "linux")]
     anyhow::ensure!(
         gpui::guess_compositor() == "X11",
@@ -99,6 +103,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
         let bounds = Bounds::centered(None, size(px(1080.), px(680.)), cx);
         let options = WindowOptions {
+            app_id: Some(app_icon::APP_ID.into()),
             titlebar: Some(TitlebarOptions {
                 title: Some("Corvid Desktop".into()),
                 ..Default::default()
@@ -108,6 +113,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             ..Default::default()
         };
         cx.open_window(options, move |window, cx| {
+            #[cfg(target_os = "linux")]
+            if let Err(error) = app_icon::set_window_icons() {
+                eprintln!("Could not set Corvid Desktop icon: {error}");
+            }
             cx.new(|cx| WorkspaceView::new(destination, app_lifetime, agent_deck, window, cx))
         })
         .expect("could not open Corvid Desktop");

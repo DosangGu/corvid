@@ -113,6 +113,11 @@ try {
         Assert-Package $destination
     } else { [IO.Directory]::Move($package, $destination) }
     New-Item -ItemType Directory -Path $bin -Force | Out-Null
+    $icon = Join-Path $destination 'corvid.ico'
+    if (Test-Path -LiteralPath $icon) {
+        Copy-Item -LiteralPath $icon -Destination (Join-Path $stage 'corvid.ico')
+        Set-AtomicFile (Join-Path $stage 'corvid.ico') (Join-Path $InstallRoot 'corvid.ico')
+    }
     # Stable launchers are installed once. Their v1 pointer contract is independent of app versions.
     $launchers = @{ 'corvid.exe' = 'corvid-launch.exe' }
     if ($Product -eq 'desktop') { $launchers['corvid-desktop.exe'] = 'corvid-desktop-launch.exe' }

@@ -73,7 +73,8 @@ fn main() -> Result<()> {
     drop(runtime);
     #[cfg(windows)]
     platform::identify(config.controller_id)?;
-    let image = image::load_from_memory(include_bytes!("../assets/app.png"))?.into_rgba8();
+    let image =
+        image::load_from_memory(include_bytes!("../../../assets/icons/corvid.png"))?.into_rgba8();
     let icon = egui::IconData {
         width: image.width(),
         height: image.height(),
@@ -81,6 +82,7 @@ fn main() -> Result<()> {
     };
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_app_id("corvid-agent-deck")
             .with_inner_size(window::GridLayout::default().size())
             .with_min_inner_size([204.0, 140.0])
             .with_decorations(false)

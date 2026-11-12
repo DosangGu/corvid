@@ -108,6 +108,7 @@ def main():
         previous_fixture(assets, archive, temporary)
         root = temporary / "installed with spaces"
         bin_dir = root / "bin" if WINDOWS else temporary / "bin with spaces"
+        data_home = temporary / "desktop data"
 
         def install(selected=version, success=True):
             if WINDOWS:
@@ -116,7 +117,7 @@ def main():
             else:
                 arguments = ["sh", ROOT / "deploy/install.sh", "--version", selected, "--product", args.product,
                              "--install-root", root, "--bin-dir", bin_dir, "--source-dir", assets]
-            return run(arguments, success)
+            return run(arguments, success, env=dict(os.environ, XDG_DATA_HOME=str(data_home)))
 
         def installed_version():
             return run([bin_dir / ("corvid.exe" if WINDOWS else "corvid"), "--version"]).stdout.strip()
@@ -126,6 +127,17 @@ def main():
         install()
         assert installed_version() == f"corvid {version}"
         assert (root / "versions/0.0.0").is_dir(), "Previous executables must be retained"
+        if WINDOWS:
+            assert (root / "corvid.ico").read_bytes() == (ROOT / "assets/icons/corvid.ico").read_bytes()
+        elif args.product == "desktop":
+            entry = data_home / "applications/Corvid.Desktop.desktop"
+            contents = entry.read_text()
+            assert f'Exec="{root}/current/corvid-desktop"' in contents
+            assert "StartupWMClass=Corvid.Desktop" in contents
+            assert f"Icon={root}/current/icons/corvid.svg" in contents
+            assert (data_home / "icons/hicolor/scalable/apps/corvid.svg").resolve() == root / "versions" / version / "icons/corvid.svg"
+            if shutil.which("desktop-file-validate"):
+                run(["desktop-file-validate", entry])
         install()
         with installer_lock(root):
             install(success=False)

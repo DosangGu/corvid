@@ -31,9 +31,13 @@ Source: "{#Payload}\corvid-desktop-launch.exe"; DestDir: "{app}\bin"; DestName: 
 Source: "{#Payload}\corvid-agent-deck-launch.exe"; DestDir: "{app}\bin"; DestName: "corvid-agent-deck.exe"; Flags: onlyifdoesntexist
 Source: "{#Icon}"; DestDir: "{app}"; DestName: "corvid.ico"; Flags: ignoreversion
 
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
 [Icons]
-Name: "{group}\Corvid Desktop"; Filename: "{app}\bin\corvid-desktop.exe"; IconFilename: "{app}\corvid.ico"
+Name: "{group}\Corvid Desktop"; Filename: "{app}\bin\corvid-desktop.exe"; IconFilename: "{app}\corvid.ico"; AppUserModelID: "Corvid.Desktop"
 Name: "{group}\Corvid Terminal"; Filename: "{app}\bin\corvid.exe"; IconFilename: "{app}\corvid.ico"
+Name: "{autodesktop}\Corvid Desktop"; Filename: "{app}\bin\corvid-desktop.exe"; IconFilename: "{app}\corvid.ico"; AppUserModelID: "Corvid.Desktop"; Tasks: desktopicon
 
 [UninstallDelete]
 Type: files; Name: "{app}\current.txt"

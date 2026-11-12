@@ -37,3 +37,6 @@ hidapi = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 resvg = { workspace = true, features = ["system-fonts", "text"], optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync"], optional = true }
+
+[build-dependencies]
+embed-resource.workspace = true

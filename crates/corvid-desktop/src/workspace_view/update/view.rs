@@ -11,7 +11,14 @@ impl WorkspaceView {
             .items_center()
             .justify_between()
             .gap(px(8.))
-            .child(div().text_size(px(17.)).child("Corvid Desktop"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(gpui::img(crate::app_icon::image()).size(px(40.)))
+                    .child(div().text_size(px(17.)).child("Corvid Desktop")),
+            )
             .child(
                 div()
                     .text_color(rgb(ACTIVE))

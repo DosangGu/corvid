@@ -5,6 +5,15 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    println!("cargo:rerun-if-changed=../../assets/icons");
+    if env::var("CARGO_CFG_TARGET_OS")? == "windows" {
+        embed_resource::compile_for(
+            "../../assets/icons/app.rc",
+            ["corvid"],
+            embed_resource::NONE,
+        )
+        .manifest_required()?;
+    }
     if env::var("CARGO_CFG_TARGET_OS")? != "linux" {
         return Ok(());
     }
