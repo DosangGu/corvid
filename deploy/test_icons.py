@@ -5,7 +5,13 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import tarfile
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
+import zipfile
+
+import package
 
 ROOT = Path(__file__).resolve().parent.parent
 SIZES = [16, 20, 24, 32, 48, 64, 128, 256]
@@ -30,6 +36,53 @@ def artwork():
         images.append(png)
     assert images[-1] == (ROOT / "assets/icons/corvid.png").read_bytes()
     return images
+
+
+def desktop_packages():
+    """Exercise the archive writer with small binaries and real shared assets."""
+    with tempfile.TemporaryDirectory(prefix="corvid-icon-package-") as temporary:
+        base = Path(temporary)
+        version, revision = "0.0.0-icon-test", "a" * 40
+        runtimes = {}
+        for target in [package.LINUX, package.WINDOWS]:
+            directory = base / target
+            directory.mkdir()
+            binary = directory / ("corvid.exe" if target == package.WINDOWS else "corvid")
+            binary.write_bytes(b"fixture runtime")
+            package.write_json(directory / "manifest.json", {
+                "schema_version": 1, "target": target, "version": version,
+                "source_revision": revision, "size": binary.stat().st_size,
+                "sha256": package.digest(binary),
+            })
+            runtimes[target] = directory
+        build = base / "build"
+        build.mkdir()
+        for name in BINARIES:
+            for suffix in ["", ".exe"]:
+                (build / (name + suffix)).write_bytes(b"fixture application")
+        output = base / "dist"
+        for target in [package.WINDOWS, package.DESKTOP_LINUX]:
+            args = SimpleNamespace(
+                product="desktop", target=target, runtime=runtimes[
+                    package.WINDOWS if target == package.WINDOWS else package.LINUX
+                ], linux_runtime=runtimes[package.LINUX], windows_runtime=runtimes[package.WINDOWS],
+                build=build, output=output, without_agent_deck=False,
+            )
+            with patch.object(package, "identity", return_value=(version, revision)):
+                package.package(args)
+            extension = "zip" if target == package.WINDOWS else "tar.gz"
+            archive = output / f"corvid-desktop-{version}-{target}.{extension}"
+            assert archive.is_file(), f"Desktop archive must retain its {extension} extension"
+            if target == package.WINDOWS:
+                with zipfile.ZipFile(archive) as stream:
+                    names = stream.namelist()
+                    assert stream.read("corvid.ico") == (ROOT / "assets/icons/corvid.ico").read_bytes()
+            else:
+                with tarfile.open(archive) as stream:
+                    names = stream.getnames()
+                    assert "install-desktop.sh" in names
+            assert {"icons/corvid.svg", "icons/corvid.png", "files.sha256"} <= set(names)
+        print("PASS Desktop archive names and packaged icon assets on both platforms")
 
 
 def windows_resources(build, images, runtime=None):
@@ -142,6 +195,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     images = artwork()
     print("PASS shared PNG and eight ICO sizes")
+    desktop_packages()
     if os.name != "nt":
         linux_menu()
     if args.build:

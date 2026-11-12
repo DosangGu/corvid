@@ -93,8 +93,8 @@ def package(args):
             copy(args.build / "corvid-launch.exe", stage / "corvid-launch.exe", True)
             copy(ROOT / "assets/icons/corvid.ico", stage / "corvid.ico")
         if args.product == "desktop":
-            for extension in ["svg", "png"]:
-                copy(ROOT / f"assets/icons/corvid.{extension}", stage / f"icons/corvid.{extension}")
+            for icon_extension in ["svg", "png"]:
+                copy(ROOT / f"assets/icons/corvid.{icon_extension}", stage / f"icons/corvid.{icon_extension}")
             if not windows:
                 copy(ROOT / "deploy/linux/install-desktop.sh", stage / "install-desktop.sh")
             copy(args.build / f"corvid-desktop{suffix}", stage / f"corvid-desktop{suffix}", True)
