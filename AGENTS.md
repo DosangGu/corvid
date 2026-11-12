@@ -70,6 +70,9 @@ such as `feat:` or `fix:` for implementation. Keep commits focused. PRs should e
 the problem, resulting behavior, validation, and limitations. Link relevant issues and
 acceptance IDs; include screenshots for visible UI changes.
 
+Use the exact version tag as the GitHub Release title, such as `v0.1.2` or
+`v0.2.0-rc.1`. Do not add `Corvid`, a product name, or any other prefix or suffix.
+
 ## Architecture & Security Constraints
 
 Preserve the daemon/client boundary: the daemon owns PTYs and authoritative state.

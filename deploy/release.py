@@ -48,7 +48,7 @@ def publish(directory):
         if not json.loads(existing.stdout)["isDraft"]:
             raise ValueError("This release is already published; create a new version")
     else:
-        gh("release", "create", tag, "--verify-tag", "--draft", "--title", f"Corvid {tag}",
+        gh("release", "create", tag, "--verify-tag", "--draft", "--title", tag,
            "--notes-file", str(ROOT / "deploy/release-notes.md"), check=True)
     files = sorted(str(path) for path in directory.iterdir() if path.is_file())
     gh("release", "upload", tag, *files, "--clobber", check=True)
@@ -57,7 +57,7 @@ def publish(directory):
     expected = {Path(path).name: Path(path).stat().st_size for path in files}
     if actual != expected:
         raise ValueError("Draft asset inventory does not match the release")
-    options = ["--draft=false", "--prerelease=" + str("-" in version).lower()]
+    options = ["--title", tag, "--draft=false", "--prerelease=" + str("-" in version).lower()]
     if "-" not in version:
         options.append("--latest")
     gh("release", "edit", tag, *options, check=True)
