@@ -116,23 +116,41 @@ The check command changes neither installed files nor daemon state. Network,
 rate-limit, missing-release, and validation errors are reported as failures,
 not as evidence that the installation is up to date.
 
-Desktop provides **Settings → About & updates → Check for updates**. It shows
-the installed and available versions and release notes, then offers installation
-and restart.
-Downloads and installation run outside the UI thread. Cancellation at the
-confirmation leaves the installation alone. An installation error keeps the
-existing executable available.
+Desktop provides **Settings → About & updates → Check for updates**. One compact
+panel keeps the running version, installation type, stable channel, and last check
+time visible. Check results and actionable errors stay in that page; technical
+error details can be expanded. Release notes open the selected release page.
+
+For managed and portable installations, **Download update** downloads, verifies,
+and installs the selected release in the background. The panel shows those three
+stages; it does not estimate a percentage. Checking and installation continue when
+Settings is closed. Reopening Settings restores the current result or progress.
+Repeated clicks cannot start concurrent checks or installations.
+
+Once prepared, the update offers **Restart to apply** and **Later**. Later closes
+Settings and keeps the prepared update available in the current app session.
+The managed installation's next launch also uses the new version. A restart
+failure leaves the app open, restores its terminal connection, and permits a retry.
+Terminal jobs remain owned by their existing daemon throughout this flow.
+
+![Available update in Settings](images/release-update-available.png)
+![Prepared update with a choice of restart time](images/release-update-ready.png)
 
 Both clients use `corvid-update`. The updater selects a release once, verifies
 its manifest, and runs that exact tag's verified installer with the expected
-archive digest. The installer fetches assets from the same tag. A CLI inside a
-script-installed Desktop distribution updates the entire Desktop package.
+archive digest. The updater downloads that tag's archive, verifies its exact size
+and SHA-256, and supplies the verified local assets to the installer. The installer
+also checks archive and package integrity before switching the current version.
+A CLI inside a script-installed Desktop distribution updates the entire Desktop
+package. The CLI reports download, verification, and installation stages, and
+`corvid update --check` explicitly reports whether a newer release is available.
 
 Source builds and externally managed binaries without Corvid package metadata
 are not overwritten. Desktop offers the release page for those builds. Updating
 a portable release installs a managed copy in the default product directory;
 the original extracted directory remains intact. The CLI prints the installed
-path and Desktop restarts from the new copy.
+path and Desktop's restart action opens the new copy. Future launches of the
+original portable executable still use that original copy.
 
 The installers also accept local assets for offline installation and validation:
 `--source-dir DIR --version VERSION` on Linux or
@@ -196,7 +214,9 @@ and the Corvid Terminal. For CLI access from your own shells, add its `bin`
 directory to your user PATH. Setup builds are currently unsigned.
 
 Use `corvid update --check` or **Settings → About & updates → Check for updates** to find available
-releases. Run the new Setup over the existing installation to update. Setup keeps older
+releases. Desktop identifies Setup installations and offers **Download installer**
+for a release with a matching Setup asset, or **Open release** when it is absent.
+Run the new Setup over the existing installation to update. Setup keeps older
 version directories and switches the launchers to the selected version after
 copying its files. Agent Deck registers its notification shortcut when started
 and offers an opt-in login startup setting. Those shortcuts follow the selected
@@ -210,6 +230,21 @@ the Windows Desktop ZIP and adjacent SHA-256 file. Pass `--iscc PATH` with
 the path to the Inno Setup compiler.
 
 ## Validation boundary
+
+The Settings screenshots above use synthetic release metadata in an isolated
+Linux Xvfb session. On 2026-11-12, UI checks verified closing and reopening Settings
+during a check and installation, retrying after a failed check or corrupted archive,
+minimum-width layout, deferred restart, and restart failure with the same retained
+shell PID. The real Linux installer ran with verified local fixture assets in a
+private installation directory containing spaces. A replacement-process fixture
+verified restart dispatch while the daemon and original shell remained alive;
+this does not establish compatibility between two published Desktop versions.
+The Windows updater also rejected a corrupted fixture archive before mutation,
+then ran the real PowerShell installer successfully with verified local assets
+and an installation path containing spaces. Desktop, updater, and CLI checks
+passed on Windows (30 tests, one WSL-profile test ignored) and Linux (49 tests),
+along with builds, Clippy, formatting, and whitespace checks.
+Native Windows GUI and Setup-download clicks were not exercised in this pass.
 
 `deploy/test_install.py` exercises the actual installers with isolated paths,
 including spaces, a synthetic older version, repeat installation, concurrent

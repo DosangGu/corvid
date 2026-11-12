@@ -162,8 +162,7 @@ impl WorkspaceView {
                 })
                 .child(description("Questions and approvals are answered in the terminal.")),
             Page::About => settings_page("About & updates")
-                .child(self.update_menu(cx))
-                .child(description("Desktop updates and daemon updates are separate. Connection setup checks the selected daemon when needed.")),
+                .child(self.update_menu(cx)),
         };
         div()
             .id("management")

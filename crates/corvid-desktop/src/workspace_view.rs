@@ -102,7 +102,7 @@ pub struct WorkspaceView {
     menu_create: bool,
     menu_index: usize,
     release_update: Option<Task<()>>,
-    update_status: String,
+    update: update::State,
 }
 
 struct KnownSessions {
@@ -164,7 +164,7 @@ impl WorkspaceView {
             menu_create: false,
             menu_index: 0,
             release_update: None,
-            update_status: String::new(),
+            update: update::State::default(),
         };
         cx.on_release(|view, _| view.lifetime.stop()).detach();
         view.switch_to(

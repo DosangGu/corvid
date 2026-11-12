@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::Command;
 
@@ -73,6 +74,19 @@ pub fn verify(bytes: &[u8], size: u64, sha256: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn verify_file(path: &Path, size: u64, sha256: &str) -> Result<()> {
+    let file = fs::File::open(path)?;
+    ensure!(file.metadata()?.len() == size, "download size mismatch");
+    let mut digest = Sha256::new();
+    let copied = io::copy(&mut file.take(size.saturating_add(1)), &mut digest)?;
+    ensure!(copied == size, "download size mismatch");
+    ensure!(
+        format!("{:x}", digest.finalize()) == sha256,
+        "download SHA-256 mismatch"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -81,5 +95,16 @@ mod tests {
         super::verify(b"abc", 3, hash).unwrap();
         assert!(super::verify(b"abd", 3, hash).is_err());
         assert!(super::verify(b"abc", 4, hash).is_err());
+    }
+
+    #[test]
+    fn verifies_archive_files_before_installation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        std::fs::write(file.path(), b"abc").unwrap();
+        super::verify_file(file.path(), 3, hash).unwrap();
+        assert!(super::verify_file(file.path(), 2, hash).is_err());
+        std::fs::write(file.path(), b"abd").unwrap();
+        assert!(super::verify_file(file.path(), 3, hash).is_err());
     }
 }

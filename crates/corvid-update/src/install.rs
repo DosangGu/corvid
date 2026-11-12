@@ -27,9 +27,27 @@ pub struct Installed {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallProgress {
+    Downloading,
+    Verifying,
+    Installing,
+}
+
 impl Installation {
     pub fn current() -> Result<Self> {
-        Self::at(&env::current_exe()?)
+        Self::detect()?.context(
+            "This is a source build or an externally managed installation. Update it using its original installation method.",
+        )
+    }
+
+    pub fn detect() -> Result<Option<Self>> {
+        let executable = env::current_exe()?;
+        let directory = executable.parent().context("locating the installation")?;
+        if !directory.join("package.json").try_exists()? {
+            return Ok(None);
+        }
+        Self::at(&executable).map(Some)
     }
 
     pub fn at(executable: &Path) -> Result<Self> {
@@ -81,6 +99,14 @@ impl Installation {
 
     /// Runs a verified, version-pinned installer. Never contacts or restarts a daemon.
     pub fn install(&self, release: &Release) -> Result<Installed> {
+        self.install_with_progress(release, |_| {})
+    }
+
+    pub fn install_with_progress(
+        &self,
+        release: &Release,
+        mut progress: impl FnMut(InstallProgress),
+    ) -> Result<Installed> {
         ensure!(
             self.supports_in_app_update(),
             "Update this installation using its original installer."
@@ -105,6 +131,7 @@ impl Installation {
             script_asset.size <= 256 * 1024,
             "installer exceeds size limit"
         );
+        progress(InstallProgress::Downloading);
         let script = download::bytes(
             &format!("{RELEASES}/download/v{}/{script_name}", release.version),
             256 * 1024,
@@ -113,46 +140,20 @@ impl Installation {
         let temporary = tempfile::tempdir()?;
         let script_path = temporary.path().join(script_name);
         fs::write(&script_path, script)?;
-        let mut command = if cfg!(windows) {
-            let mut command = download::command("powershell.exe");
-            command.env_remove("PSModulePath");
-            command.args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ]);
-            command
-                .arg(&script_path)
-                .arg("-Version")
-                .arg(release.version.to_string())
-                .arg("-Product")
-                .arg(product.as_str())
-                .arg("-ArchiveSha256")
-                .arg(&asset.sha256);
-            if let Some(root) = &self.root {
-                command.arg("-InstallRoot").arg(root);
-            }
-            command
-        } else {
-            let mut command = download::command("sh");
-            command
-                .arg(&script_path)
-                .arg("--version")
-                .arg(release.version.to_string())
-                .arg("--product")
-                .arg(product.as_str())
-                .arg("--archive-sha256")
-                .arg(&asset.sha256);
-            if let Some(root) = &self.root {
-                command.arg("--install-root").arg(root);
-            }
-            if let Some(bin) = &self.bin_dir {
-                command.arg("--bin-dir").arg(bin);
-            }
-            command
-        };
+        let archive_path = temporary.path().join(&archive);
+        download::file(
+            &format!("{RELEASES}/download/v{}/{archive}", release.version),
+            &archive_path,
+            asset.size,
+        )?;
+        progress(InstallProgress::Verifying);
+        download::verify_file(&archive_path, asset.size, &asset.sha256)?;
+        fs::write(
+            temporary.path().join(format!("{archive}.sha256")),
+            format!("{}  {archive}\n", asset.sha256),
+        )?;
+        let mut command = self.installer_command(&script_path, temporary.path(), release, asset);
+        progress(InstallProgress::Installing);
         let output = command.output().context("running the Corvid installer")?;
         ensure!(
             output.status.success(),
@@ -181,6 +182,60 @@ impl Installation {
             executable,
             message,
         })
+    }
+
+    fn installer_command(
+        &self,
+        script_path: &Path,
+        source: &Path,
+        release: &Release,
+        asset: &crate::Asset,
+    ) -> Command {
+        let product = self.package.product;
+        if cfg!(windows) {
+            let mut command = download::command("powershell.exe");
+            command.env_remove("PSModulePath");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ]);
+            command
+                .arg(script_path)
+                .arg("-SourceDirectory")
+                .arg(source)
+                .arg("-Version")
+                .arg(release.version.to_string())
+                .arg("-Product")
+                .arg(product.as_str())
+                .arg("-ArchiveSha256")
+                .arg(&asset.sha256);
+            if let Some(root) = &self.root {
+                command.arg("-InstallRoot").arg(root);
+            }
+            command
+        } else {
+            let mut command = download::command("sh");
+            command
+                .arg(script_path)
+                .arg("--source-dir")
+                .arg(source)
+                .arg("--version")
+                .arg(release.version.to_string())
+                .arg("--product")
+                .arg(product.as_str())
+                .arg("--archive-sha256")
+                .arg(&asset.sha256);
+            if let Some(root) = &self.root {
+                command.arg("--install-root").arg(root);
+            }
+            if let Some(bin) = &self.bin_dir {
+                command.arg("--bin-dir").arg(bin);
+            }
+            command
+        }
     }
 }
 

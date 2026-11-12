@@ -19,15 +19,36 @@ pub(super) fn run(options: Options) -> Result<u32> {
         release.version,
         release.url()
     );
+    let newer = release.is_newer_than(current)?;
     if options.check {
+        println!(
+            "{}",
+            if newer {
+                "An update is available."
+            } else {
+                "No newer release is available."
+            }
+        );
         return Ok(0);
     }
-    if options.version.is_none() && !release.is_newer_than(current)? {
+    if options.version.is_none() && !newer {
         println!("Corvid is up to date.");
         return Ok(0);
     }
     let installation = corvid_update::Installation::current()?;
-    let installed = installation.install(&release)?;
+    let installed = installation.install_with_progress(&release, |stage| {
+        eprintln!(
+            "{}",
+            match stage {
+                corvid_update::InstallProgress::Downloading => "Downloading update…",
+                corvid_update::InstallProgress::Verifying => "Verifying download…",
+                corvid_update::InstallProgress::Installing => "Installing update…",
+            }
+        );
+    })?;
     print!("{}", installed.message);
+    println!(
+        "Update installed. Reopen Corvid when you are ready. Running terminal jobs continue; server updates are separate."
+    );
     Ok(0)
 }
