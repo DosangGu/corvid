@@ -135,6 +135,17 @@ is installed at `~/.corvid/corvid`. Windows provisioning uses Windows PowerShell
 daemon runs outside the SSH session job and uses the same runtime and state
 paths as the local Windows TUI.
 
+Linux SSH and WSL bootstrap validation uses the `C` locale internally, then
+restores the incoming `LC_ALL` before launching or upgrading Corvid. This keeps
+the daemon's shells in the user's configured locale. Older clients could leak
+`LC_ALL=C` into the daemon: with a Unicode prompt and zsh autosuggestions, cursor
+width calculations could leave duplicated-looking characters even though the
+command buffer contained each character only once. Updating the client does not
+change the environment of an existing daemon or retained shell. If `LANG` already
+names a UTF-8 locale and `LC_ALL=C` came from this bug, run `unset LC_ALL; exec zsh`
+at an idle zsh prompt to repair that shell. Start or upgrade the daemon from an
+environment with the intended locale so future shells also inherit it.
+
 On Linux, the SSH launch commands use `CORVID_RUNTIME_DIR` or `XDG_RUNTIME_DIR` when
 configured. Otherwise Desktop uses a private directory under
 `~/.corvid/` scoped to the current Linux boot. An existing installation

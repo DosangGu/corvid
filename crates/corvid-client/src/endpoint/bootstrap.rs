@@ -380,6 +380,88 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_bootstrap_preserves_runtime_locale() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+
+        // Managed installations reject world-writable ancestors such as /tmp.
+        let directory = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let home = directory.path();
+        let managed = home.join(".corvid");
+        std::fs::create_dir(&managed).unwrap();
+        std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let binary = b"#!/bin/sh\nprintf '%s\\n' \"${LC_ALL+set}\" \"${LC_ALL-unset}\" \"${LANG-unset}\" \"${LC_CTYPE-unset}\"\n";
+        for path in [home.join("corvid"), managed.join("corvid")] {
+            std::fs::write(&path, binary).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = format!("{}:/usr/bin:/bin", home.display());
+        let checksum = Command::new("sha256sum")
+            .arg(home.join("corvid"))
+            .output()
+            .unwrap();
+        assert!(checksum.status.success());
+        let checksum = String::from_utf8(checksum.stdout).unwrap();
+        let checksum = checksum.split_whitespace().next().unwrap();
+        let header = format!("{} {checksum}\n", binary.len());
+
+        for mode in ["path", "managed", "auto-path", "auto-managed", "upgrade"] {
+            let arguments = match mode {
+                "auto-path" | "auto-managed" => "auto",
+                "upgrade" => "upgrade 0.1.0",
+                _ => mode,
+            };
+            let path = if matches!(mode, "auto-managed" | "upgrade") {
+                "/usr/bin:/bin"
+            } else {
+                &path
+            };
+            for locale in [None, Some(""), Some("C"), Some("C.UTF-8")] {
+                let mut command = Command::new("sh");
+                command
+                    .args(["-c", &linux_command(arguments)])
+                    .env("HOME", home)
+                    .env("PATH", path)
+                    .env("CORVID_RUNTIME_DIR", home.join("runtime"))
+                    .env("LANG", "C.UTF-8")
+                    .env("LC_CTYPE", "C.UTF-8")
+                    .env_remove("LC_ALL")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if let Some(locale) = locale {
+                    command.env("LC_ALL", locale);
+                }
+                let mut child = command.spawn().unwrap();
+                let mut input = child.stdin.take().unwrap();
+                if mode == "upgrade" {
+                    input.write_all(header.as_bytes()).unwrap();
+                    input.write_all(binary).unwrap();
+                }
+                drop(input);
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{mode}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let expected = format!(
+                    "{}\n{}\nC.UTF-8\nC.UTF-8\n",
+                    if locale.is_some() { "set" } else { "" },
+                    locale.unwrap_or("unset")
+                );
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap(),
+                    expected,
+                    "{mode}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn windows_commands_fit_the_default_ssh_shell_limit() {
         assert!(windows_setup(&windows_install(MAX_BINARY, &"0".repeat(64))).len() < 8000);
