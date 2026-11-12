@@ -46,11 +46,13 @@ identity, slots, and pins across the rename.
 | Windows action | Result |
 | --- | --- |
 | Close the Deck window | Hide it; tray and notifications continue. |
-| Click the tray icon | Reopen the existing window. |
+| Click the tray icon | Open the existing instance as a mini deck. |
+| Turn Always on top on | Keep the deck visible above other windows, including after focusing a terminal. |
+| Turn Always on top off | Hide to the tray immediately. Reopened popups hide when focus leaves or terminal navigation succeeds. |
 | Open tray menu | Open Deck, notifications/settings, pause/resume, or quit. |
 | Click a notification | Show its captured event in Deck; batch notices open history. |
 | Choose Quit | Exit Deck and clear its Windows notification-center entries. |
-| Enable Start at login | Create a per-user shortcut for a hidden background launch. Default: off. |
+| Enable Start at login | Create a per-user background-launch shortcut. Always on top shows the deck without taking focus; tray mode starts hidden. Login startup defaults to off. |
 
 If native tray setup fails, the window stays available and closing it exits.
 Windows uses an AppUserModelID per controller, a Start Menu shortcut, native WinRT
@@ -63,16 +65,60 @@ Linux currently sends notifications through `notify-send` when available. It has
 no tray or login-startup backend: its window remains visible, and closing it exits.
 Windows background parity is not claimed for Linux.
 
+## Floating window
+
+The default view is a borderless mini deck with eight keys in a **4 × 2** grid
+(**392 × 256 logical pixels**). The layout button in its footer opens a visual
+preset picker. Dimensions always mean **columns × rows**:
+
+| Keys | Landscape | Portrait |
+| --- | --- | --- |
+| 6 | 3 × 2 | 2 × 3 |
+| 8 (default) | 4 × 2 | 2 × 4 |
+| 12 | 4 × 3 | 3 × 4 |
+| 15 | 5 × 3 | 3 × 5 |
+
+Changing the preset or orientation immediately resizes the window. Its selected
+shape stays fixed as agents arrive and leave; empty keys remain as quiet,
+non-interactive placeholders. Extra agents scroll inside the panel. Portrait
+windows have compact header controls, including an **Always on top** pin button.
+Windows places it near the bottom-right corner of the current monitor's work
+area, clear of the taskbar. Reopening in tray mode uses the cursor's monitor;
+native pixel coordinates account for negative monitor origins and DPI changes.
+Drag the **Agent Deck** title to move it. Linux placement is window-manager dependent.
+
+**Always on top** defaults to on and is saved per controller in the private
+`agent-deck/window.json`, together with the preset and orientation. Existing saved
+preferences retain their visibility choice and default to the 4 × 2 grid. With
+Always on top off, the tray or Desktop's **Agents** entry opens
+the panel temporarily. Clicking elsewhere, successful terminal navigation, or
+Escape hides it. Closing explicitly hides even an always-on-top deck. Without a
+working tray, automatic hiding is disabled and closing exits, preserving access
+on Linux and after Windows tray setup failure. Incoming agent notifications do
+not open the deck or take focus.
+
+**More** (the **…** button) expands the same window for the queue, closed panes, hosts, terminal
+selection, and notification preferences. **Mini deck** returns to the compact
+view. Notification activation opens its history in the expanded view. Window
+visibility and size do not affect daemon-owned work or the slot policy. The mini
+deck shows assigned slots followed by the first 32 queued runs, so larger grids
+can display more agents than the companion's configured slot count. Queued keys
+are marked **Q** and navigate through Desktop using their exact run identity;
+they do not acquire a fabricated slot or pin action. If more queued runs remain,
+the footer's **+N** button opens the paginated queue.
+
 ## Slots and queue
 
-The **Deck** view uses square keys with a raised rim and dark inset face. The
-default window fits four columns; resizing adjusts the grid from one to six
-columns. Keys show their number, provider, short run ID, current status, unseen
-alert count, and a **PIN** indicator when pinned. Empty keys are inactive.
+The **Deck** view uses keys with a raised rim and dark face. The
+mini deck uses the selected grid of compact keys; the expanded view adjusts its larger
+square keys from one to six columns when resized. Keys show their number, provider,
+short run ID, current status, unseen alert count, and a pin indicator (**P** in the
+mini deck, **PIN** when expanded). Empty keys in the expanded view are inactive.
 
 Click anywhere on an available key to focus its existing terminal. Hover for
-evidence and request details; right-click for **Pin / Unpin** and **Acknowledge
-alert**. Acknowledging an alert does not answer or resolve a pending question.
+evidence and request details; right-click assigned slots for **Pin / Unpin** and
+unseen alerts for **Acknowledge alert**. Acknowledging an alert does not answer or
+resolve a pending question.
 The displayed slot snapshot stays fixed throughout a click or open context menu,
 so compaction cannot change the action's captured target.
 
@@ -83,16 +129,28 @@ last activity as live. Unverified input requests say **Check terminal**.
 **Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
 
-![Agent Deck with test agents and a pinned input request](images/agent-deck/window.png)
+![Floating Agent Deck with synthetic agents](images/agent-deck/floating.png)
+
+![Portrait Agent Deck with fifteen keys](images/agent-deck/floating-portrait.png)
 
 The screenshot uses synthetic agents in an isolated Linux Xvfb session. On
-2026-11-12, that session verified the default and 400-pixel-wide layouts, whole-key
-navigation to the correct Desktop pane, context-menu pinning, and acknowledging
-an alert while its input request remained pending. Windows tests for Agent Deck
-and presentation passed (18 tests, one native-notification test ignored), as did
-Windows Clippy for Desktop and Agent Deck, formatting, and whitespace checks.
-Desktop and Agent Deck built on Windows and Linux. Native Windows GUI interaction
-was not exercised for this redesign.
+2026-11-12, floating-window checks verified the preset menu, 3 × 2 and 2 × 3
+layouts, portrait controls at 204 pixels wide, and 5 × 3 / 3 × 5 layouts. Whole-key
+navigation, including a queued run beyond the first eight slots, retains the
+correct Desktop pane identity while the always-on-top deck stays open. Ten
+synthetic agents were used to verify the larger grids.
+Earlier Windows UI checks exercised the compact empty state, expansion, returning to the
+mini deck, and hiding when Always on top was disabled; its saved setting was
+verified on disk. Policy tests cover focus-loss dismissal, the no-tray fallback,
+preference persistence, all preset orientations, legacy preference migration,
+queued-run projection without slot mutation, and positioning within a monitor work area.
+Scoped Agent Deck and presentation tests passed on Windows (24 passed, one native
+notification test ignored) and Linux (22 passed), along with builds, Clippy,
+workspace formatting, and whitespace checks. Linux UI checks also confirmed that
+turning Always on top off does not hide a window without a tray.
+Native tray-click reopening, dragging, mixed-DPI monitors, and taskbar relocation
+still require interactive qualification. The earlier larger-key checks verified
+context-menu pinning and acknowledging an alert without resolving its input request.
 
 An agent's work finishing, process exiting, or provider context changing does not
 remove its card. The card remains until its owning pane is removed from the daemon's
@@ -152,6 +210,8 @@ Unavailable or ended targets remain in history without opening a new terminal.
 - [`src/desktop.rs`](../plugins/agent-deck/src/desktop.rs): Desktop launch and focus adapter.
 - [`src/connection.rs`](../plugins/agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
 - [`src/background.rs`](../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
+- [`src/window.rs`](../plugins/agent-deck/src/window.rs), [`src/app/floating.rs`](../plugins/agent-deck/src/app/floating.rs): floating-window policy, saved topmost preference, native placement, and compact controls.
+- [`src/window/layout.rs`](../plugins/agent-deck/src/window/layout.rs): fixed grid presets, orientation, and window dimensions.
 - [`src/notifications.rs`](../plugins/agent-deck/src/notifications.rs): bounded delivery policy and persistence.
 - [`src/platform`](../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
 - [`assets`](../plugins/agent-deck/assets/): canonical SVG, PNG, and multi-size ICO assets; `tools/render_icons.rs` regenerates raster assets.

@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["ui"]
-ui = ["dep:eframe", "dep:image", "dep:windows"]
+ui = ["dep:eframe", "dep:image", "dep:windows", "dep:raw-window-handle"]
 
 [[bin]]
 name = "corvid-agent-deck"
@@ -32,6 +32,7 @@ serde_json.workspace = true
 image = { workspace = true, optional = true, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
+raw-window-handle = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Pipes"] }
 windows = { workspace = true, optional = true, features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_WinRT"] }
 

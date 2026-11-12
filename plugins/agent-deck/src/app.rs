@@ -19,6 +19,7 @@ use crate::notifications::{Notice, now_ms};
 use crate::parent::DesktopLink;
 
 mod deck;
+mod floating;
 
 pub(crate) fn configure(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
@@ -61,6 +62,8 @@ pub(crate) struct Desktop {
     quitting: bool,
     catalog_scope: (PathBuf, Uuid),
     catalog: Option<Result<Catalog, String>>,
+    window: crate::window::Window,
+    focus_pending: Option<Uuid>,
     #[cfg(windows)]
     pairing: crate::pairing::Pairing,
 }
@@ -80,6 +83,7 @@ impl Desktop {
         client: DesktopClient,
         background: Background,
         catalog_scope: (PathBuf, Uuid),
+        window: crate::window::Window,
     ) -> Self {
         Self {
             client,
@@ -97,6 +101,8 @@ impl Desktop {
             quitting: false,
             catalog_scope,
             catalog: None,
+            window,
+            focus_pending: None,
             #[cfg(windows)]
             pairing: crate::pairing::Pairing::default(),
         }
@@ -137,6 +143,7 @@ impl Desktop {
             self.notifications_seen = background.notifications_open;
             self.selected_notice = background.selected;
             self.section = Section::Notifications;
+            self.window.expanded = true;
         }
         if self.pending.is_some()
             && self
@@ -211,6 +218,11 @@ impl Desktop {
 
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
+            if ui.button("Mini deck").clicked() {
+                self.window.expanded = false;
+                self.section = Section::Slots;
+                self.set_page(0);
+            }
             ui.heading("Agent Deck");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.selectable_value(&mut self.section, Section::Notifications, "Notifications");
@@ -379,16 +391,21 @@ impl Desktop {
             };
         let cached = self.view.link != Link::Online || snapshot.generation().is_none();
         let response = ui.add(deck::Key {
-            slot,
+            number: slot.slot_id,
+            run: slot.run.as_ref(),
+            pinned: slot.pinned,
+            queued: false,
             edge,
             cached,
             can_focus,
+            compact: !self.window.expanded,
         });
         if response.clicked() && can_focus {
             if desktop {
                 self.focus_run(key.expect("focusable agent"));
             } else {
                 self.submit(snapshot, focus.expect("focusable terminal binding"));
+                self.focus_pending = self.pending;
             }
         }
         let Some(run) = &slot.run else {
@@ -576,6 +593,7 @@ impl Desktop {
         let id = Uuid::new_v4();
         if self.parent.focus(id, key) {
             self.pending = Some(id);
+            self.focus_pending = Some(id);
             self.pending_since = Some(Instant::now());
             self.notice = None;
         } else {
@@ -687,22 +705,43 @@ impl Desktop {
 }
 
 impl eframe::App for Desktop {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let background = self.background.view.borrow().clone();
+        let opened = crate::window::take_open_request(ctx);
+        if opened {
+            self.window.expanded = false;
+            self.section = Section::Slots;
+            self.set_page(0);
+        }
         if ctx.input(|input| input.viewport().close_requested())
             && background.background
             && !background.quit
             && !self.quitting
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.window.hide(ctx);
         }
         // Widgets process a release against the previous frame. Keep the same
         // slot and binding visible until the entire gesture has been processed.
         if !gesture_active(ctx) {
             self.refresh_view();
         }
+        if let Some(notice) = &self.notice
+            && self.focus_pending == Some(notice.id)
+        {
+            self.focus_pending = None;
+            if !notice.failed && !self.window.always_on_top() && background.background {
+                self.window.hide(ctx);
+            }
+        }
+        self.window
+            .update(ctx, frame, background.background, opened);
         ctx.request_repaint_after(Duration::from_secs(1));
+
+        if !self.window.expanded {
+            self.floating(ctx, background.background);
+            return;
+        }
 
         let panel = Frame::side_top_panel(&ctx.style()).inner_margin(Margin::symmetric(20, 12));
         egui::TopBottomPanel::top("connection")

@@ -186,6 +186,7 @@ impl DesktopLink {
 }
 
 pub(crate) fn show(ctx: &egui::Context) {
+    crate::window::request_open(ctx);
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);

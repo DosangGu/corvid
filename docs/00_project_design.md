@@ -1336,7 +1336,11 @@ writer connection. The daemon checks the run ID, pane location, and writer
 lease at focus commit.
 
 The Windows Agents process owns its tray, native notifications, history, startup setting,
-and app identity. It starts or reuses a separate companion service; closing either
+and app identity. Its default view is a compact floating deck. Always-on-top mode
+keeps it visible; tray mode hides it when focus leaves, with management views
+available by expanding the window. Saved grid presets offer 6, 8, 12, or 15 visible
+keys in landscape or portrait orientation without changing authoritative slot
+assignments. It starts or reuses a separate companion service; closing either
 window does not end daemon-owned work. See [Agent Deck](06_agent_deck.md) for the
 implemented lifetime, Linux limitations, and notification validation boundary.
 

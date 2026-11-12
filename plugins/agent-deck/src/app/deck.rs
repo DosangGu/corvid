@@ -51,25 +51,35 @@ fn status(run: &PresentedRun, cached: bool) -> Status {
 }
 
 pub(super) struct Key<'a> {
-    pub slot: &'a PresentedSlot,
+    pub number: u32,
+    pub run: Option<&'a PresentedRun>,
+    pub pinned: bool,
+    pub queued: bool,
     pub edge: f32,
     pub cached: bool,
     pub can_focus: bool,
+    pub compact: bool,
 }
 
 impl Widget for Key<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let sense = if self.slot.run.is_some() {
+        let sense = if self.run.is_some() {
             Sense::click()
         } else {
             Sense::hover()
         };
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(self.edge), sense);
-        let state = self.slot.run.as_ref().map(|run| status(run, self.cached));
-        let label = match (&self.slot.run, &state) {
+        let size = if self.compact {
+            egui::vec2(self.edge, crate::window::KEY_HEIGHT)
+        } else {
+            Vec2::splat(self.edge)
+        };
+        let (rect, response) = ui.allocate_exact_size(size, sense);
+        let state = self.run.map(|run| status(run, self.cached));
+        let label = match (self.run, &state) {
             (Some(run), Some(state)) => format!(
-                "Slot {}: {}, {}, {}. {}",
-                self.slot.slot_id,
+                "{} {}: {}, {}, {}. {}",
+                if self.queued { "Queued agent" } else { "Slot" },
+                self.number,
                 provider(run).1,
                 state.label,
                 run.key.as_ref().map_or_else(
@@ -82,7 +92,7 @@ impl Widget for Key<'_> {
                     "Focus unavailable"
                 },
             ),
-            _ => format!("Slot {}: awaiting agent", self.slot.slot_id),
+            _ => format!("Empty key {}", self.number),
         };
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, self.can_focus, &label)
@@ -100,8 +110,12 @@ impl Widget for Key<'_> {
 
 impl Key<'_> {
     fn paint(&self, ui: &Ui, rect: Rect, response: &Response, state: Option<&Status>) {
+        if self.compact {
+            self.paint_compact(ui, rect, response, state);
+            return;
+        }
         let painter = ui.painter().with_clip_rect(rect);
-        let occupied = self.slot.run.is_some();
+        let occupied = self.run.is_some();
         let pressed = self.can_focus && response.is_pointer_button_down_on();
         let face = rect
             .shrink(1.0)
@@ -127,7 +141,7 @@ impl Key<'_> {
         painter.rect(face, 17, fill, border, StrokeKind::Inside);
         let screen = face.shrink(7.0);
         painter.rect_filled(screen, 12, BACKGROUND);
-        let number = format!("{:02}", self.slot.slot_id);
+        let number = format!("{:02}", self.number);
         painter.text(
             screen.left_top() + egui::vec2(12.0, 11.0),
             Align2::LEFT_TOP,
@@ -135,7 +149,7 @@ impl Key<'_> {
             FontId::monospace(11.0),
             MUTED,
         );
-        if self.slot.pinned {
+        if self.pinned {
             painter.text(
                 screen.right_top() + egui::vec2(-12.0, 11.0),
                 Align2::RIGHT_TOP,
@@ -144,7 +158,7 @@ impl Key<'_> {
                 MINT,
             );
         }
-        if let (Some(run), Some(state)) = (&self.slot.run, state) {
+        if let (Some(run), Some(state)) = (self.run, state) {
             let (symbol, name) = provider(run);
             let center = screen.center();
             painter.text(
@@ -217,6 +231,102 @@ impl Key<'_> {
                 "Awaiting agent",
                 FontId::proportional(11.0),
                 MUTED,
+            );
+        }
+    }
+
+    fn paint_compact(&self, ui: &Ui, rect: Rect, response: &Response, state: Option<&Status>) {
+        let painter = ui.painter().with_clip_rect(rect);
+        let pressed = self.can_focus && response.is_pointer_button_down_on();
+        let face = rect
+            .shrink(1.0)
+            .translate(egui::vec2(0.0, if pressed { 1.0 } else { 0.0 }));
+        let face = Rect::from_min_max(face.min, face.max - egui::vec2(0.0, 3.0));
+        painter.rect_filled(
+            face.translate(egui::vec2(0.0, 3.0)),
+            9,
+            Color32::from_rgb(5, 8, 12),
+        );
+        let fill = if self.run.is_none() {
+            BACKGROUND
+        } else if response.hovered() {
+            Color32::from_rgb(39, 49, 62)
+        } else {
+            PANEL
+        };
+        let border = if response.has_focus() {
+            MINT
+        } else {
+            Color32::from_rgb(47, 58, 71)
+        };
+        painter.rect(face, 9, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+        let (Some(run), Some(state)) = (self.run, state) else {
+            painter.circle_filled(face.center(), 1.5, Color32::from_rgb(47, 58, 71));
+            return;
+        };
+        let number = format!(
+            "{}{:02}{}",
+            if self.queued { "Q" } else { "" },
+            self.number,
+            if self.pinned { " P" } else { "" }
+        );
+        painter.text(
+            face.left_top() + egui::vec2(7.0, 5.0),
+            Align2::LEFT_TOP,
+            number,
+            FontId::monospace(9.0),
+            if self.pinned { MINT } else { MUTED },
+        );
+        painter.text(
+            egui::pos2(face.center().x, face.top() + 25.0),
+            Align2::CENTER_CENTER,
+            provider(run).1,
+            FontId::proportional(13.0),
+            TEXT,
+        );
+        if let Some(key) = &run.key {
+            painter.text(
+                egui::pos2(face.center().x, face.top() + 41.0),
+                Align2::CENTER_CENTER,
+                short_id(&key.agent_run_id),
+                FontId::monospace(9.0),
+                MUTED,
+            );
+        }
+        let label = match state.label {
+            "Needs input" => "Input needed",
+            "New response" => "Response",
+            "Check terminal" => "Check terminal",
+            label => label,
+        };
+        painter.text(
+            egui::pos2(face.center().x, face.bottom() - 13.0),
+            Align2::CENTER_CENTER,
+            label,
+            FontId::proportional(10.0),
+            state.color,
+        );
+        painter.rect_filled(
+            Rect::from_min_size(
+                egui::pos2(face.left() + 8.0, face.bottom() - 4.0),
+                egui::vec2(face.width() - 16.0, 2.0),
+            ),
+            1,
+            state.color.gamma_multiply(0.7),
+        );
+        if run.unseen_attention > 0 {
+            let badge = face.right_top() + egui::vec2(-10.0, 10.0);
+            painter.circle_filled(badge, 7.0, AMBER);
+            painter.text(
+                badge,
+                Align2::CENTER_CENTER,
+                if run.unseen_attention > 9 {
+                    "9+".into()
+                } else {
+                    run.unseen_attention.to_string()
+                },
+                FontId::monospace(8.0),
+                BACKGROUND,
             );
         }
     }

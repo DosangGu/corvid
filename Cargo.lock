@@ -1492,6 +1492,7 @@ dependencies = [
  "eframe",
  "embed-resource",
  "image",
+ "raw-window-handle",
  "resvg",
  "serde",
  "serde_json",

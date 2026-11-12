@@ -8,6 +8,7 @@ mod notifications;
 mod pairing;
 mod parent;
 mod platform;
+mod window;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
@@ -28,7 +29,7 @@ struct Options {
     #[cfg(windows)]
     #[arg(long, default_value = "main")]
     pipe_instance: String,
-    /// Start in the system tray. Requires a working tray backend.
+    /// Start without taking focus; tray mode stays hidden when its backend works.
     #[arg(long)]
     background: bool,
     #[arg(long, hide = true)]
@@ -80,10 +81,14 @@ fn main() -> Result<()> {
     };
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([880.0, 600.0])
-            .with_min_inner_size([400.0, 320.0])
+            .with_inner_size(window::GridLayout::default().size())
+            .with_min_inner_size([204.0, 140.0])
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_taskbar(!cfg!(windows))
+            .with_active(!options.background)
             .with_icon(icon)
-            .with_visible(!options.background || !cfg!(windows)),
+            .with_visible(!cfg!(windows)),
         ..Default::default()
     };
     eframe::run_native(
@@ -94,6 +99,7 @@ fn main() -> Result<()> {
             let ctx = creation.egui_ctx.clone();
             let identity = Some((config.host_id, config.controller_id));
             let catalog = (state.clone(), config.host_id);
+            let window = window::Window::load(&state, options.background)?;
             let background =
                 background::Background::start(state, address.clone(), config, ctx.clone())?;
             if !background.view.borrow().background {
@@ -101,7 +107,9 @@ fn main() -> Result<()> {
             }
             let client =
                 DesktopClient::start_scoped(address, identity, move || ctx.request_repaint())?;
-            Ok(Box::new(app::Desktop::new(client, background, catalog)))
+            Ok(Box::new(app::Desktop::new(
+                client, background, catalog, window,
+            )))
         }),
     )
     .map_err(|error| anyhow!("could not open Corvid Agent Deck: {error}"))
