@@ -54,6 +54,17 @@ runtime compatibility.
 
 ## Commit & Pull Request Guidelines
 
+Start each independent task in a dedicated branch and Git worktree based on the
+latest `origin/main`. Make and validate the task's changes in that worktree,
+preserving unrelated work in other worktrees.
+
+Push the task branch and open one PR per coherent unit of work against `main`.
+Do not commit or push task changes directly to `main`. Hand off the PR URL with
+validation results and any limitations, and leave the PR open for review unless
+the user requests a merge. Follow the PR's CI checks through completion and fix
+failures before declaring it ready for review. Report any checks that remain
+pending or blocked explicitly.
+
 History uses `docs:`. Use concise, imperative subjects and appropriate prefixes
 such as `feat:` or `fix:` for implementation. Keep commits focused. PRs should explain
 the problem, resulting behavior, validation, and limitations. Link relevant issues and
