@@ -4,6 +4,8 @@ Corvid distributes versioned Desktop and TUI packages through the public
 [`DosangGu/corvid` GitHub Releases](https://github.com/DosangGu/corvid/releases).
 The root Cargo workspace version is the release version. A `vX.Y.Z` tag must
 match that version. Prerelease versions use tags such as `v0.2.0-rc.1`.
+The GitHub Release title is exactly the version tag, with no product name or
+other text (for example, `v0.1.2`, not `Corvid v0.1.2`).
 
 ## Release assets
 
