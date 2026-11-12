@@ -37,6 +37,7 @@ use crate::workspaces::{
 };
 
 const CAPABILITIES: &[&str] = &[
+    corvid_protocol::VIEW_TITLES_CAPABILITY,
     "attach.v1",
     corvid_protocol::OBSERVER_CAPABILITY,
     corvid_protocol::WRITER_HANDOFF_CAPABILITY,
@@ -278,6 +279,24 @@ impl TuiConnection<'_> {
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
             }
+            Body::RenameView(view) => {
+                let result =
+                    require_view(view.expected_view_revision, self.active.route.view_revision)
+                        .and_then(|_| {
+                            self.workspaces
+                                .rename(&self.active, view.pane, view.name.clone())
+                        });
+                match result {
+                    Ok(()) => {
+                        self.send(
+                            request.request_id,
+                            Body::ViewRenamed(corvid_protocol::wire::ViewRenamed {}),
+                        )
+                        .await?
+                    }
+                    Err(fault) => self.fault(request.request_id, fault).await?,
+                }
+            }
             Body::CloseView(view) => match close_target(view, self.active.route.view_revision) {
                 Ok(target) => return self.close(target, request.request_id, false).await,
                 Err(fault) => self.fault(request.request_id, fault).await?,
@@ -366,6 +385,12 @@ impl TuiConnection<'_> {
 
     async fn event(&mut self, event: Event) -> Result<bool> {
         match event {
+            Event::Rename(route, pane, name) if route == self.active.route => {
+                if let Err(fault) = self.workspaces.rename(&self.active, pane, name) {
+                    self.fault(None, fault).await?;
+                }
+            }
+            Event::Rename(_, _, _) => {}
             Event::Render(render) if render.route == self.active.route => {
                 self.render(render).await?
             }
@@ -727,6 +752,9 @@ fn create_destination(view: &CreateView, revision: u64) -> Result<Destination, P
         .ok_or_else(|| invalid("missing view target"))?
     {
         Target::WorkspaceLabel(label) => Ok(Destination::CreateWorkspace(label.clone())),
+        Target::TabLabel(label) if label.is_empty() => {
+            Ok(Destination::Tab(crate::terminal::TabCommand::Create))
+        }
         Target::TabLabel(label) => Ok(Destination::CreateTab(label.clone())),
         Target::SplitAxis(axis) => match SplitAxis::try_from(*axis) {
             Ok(SplitAxis::Horizontal) => Ok(Destination::Split(Axis::Horizontal)),
@@ -913,6 +941,10 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         take_over: attach.take_over,
         expected_terminal: parse_optional_id(attach.expected_terminal_id.as_deref())?,
         keymap: Keymap {
+            naming: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == corvid_protocol::VIEW_TITLES_CAPABILITY),
             disconnect: attach
                 .terminal_capabilities
                 .iter()

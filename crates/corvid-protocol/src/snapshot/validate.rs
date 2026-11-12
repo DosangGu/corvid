@@ -379,7 +379,8 @@ fn validate_layout(entries: &Entries) -> Result<()> {
             require(
                 valid_id(&tab.tab_id)
                     && ids.insert(tab.tab_id.as_str())
-                    && valid_display(&tab.label),
+                    && valid_display(&tab.label)
+                    && tab.manual_name.as_deref().is_none_or(valid_display),
                 "invalid tab",
             )?;
             nodes += tab.nodes.len();
@@ -397,6 +398,11 @@ fn validate_tree<'a>(nodes: &'a [LayoutNodeState], ids: &mut BTreeSet<&'a str>) 
     let mut depths = vec![0; nodes.len()];
     depths[0] = 1;
     for (index, node) in nodes.iter().enumerate() {
+        require(
+            (node.title.is_empty() || valid_display(&node.title))
+                && node.manual_name.as_deref().is_none_or(valid_display),
+            "invalid pane title",
+        )?;
         let depth = depths[index];
         require((1..=32).contains(&depth), "invalid pane tree depth")?;
         match &node.body {

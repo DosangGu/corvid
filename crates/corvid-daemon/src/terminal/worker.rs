@@ -31,6 +31,7 @@ use crate::provider;
 use crate::workspaces::Registry;
 
 use super::backend::Backend;
+use super::commands;
 use super::host::HostConfig;
 use super::input::{Kind, WriteFailure};
 use super::keys::{InputMode, KeyCommand, Keymap, TabCommand};
@@ -78,7 +79,7 @@ impl LaunchScope {
     fn tab_picker(&self, location: Location) -> Option<TabPicker> {
         let registry = self.registry.upgrade()?;
         let registry = registry.lock().ok()?;
-        let layout = self.metadata.layout();
+        let layout = self.metadata.display_layout();
         let workspace = layout
             .workspaces
             .iter()
@@ -136,6 +137,7 @@ pub(crate) enum Action {
 }
 
 pub(crate) enum Event {
+    Rename(InputRoute, bool, String),
     Render(Render),
     ViewChanged {
         route: InputRoute,
@@ -570,6 +572,8 @@ impl Worker {
             lease.frozen = retain;
             lease.leader = None;
             lease.picker = None;
+            lease.command_help = false;
+            lease.naming = None;
         }
         self.retaining = retain;
         Ok(live.then_some(RetainedTerminal {
@@ -723,6 +727,8 @@ impl Worker {
         lease.frozen = true;
         lease.leader = None;
         lease.picker = None;
+        lease.command_help = false;
+        lease.naming = None;
         Ok(())
     }
 
@@ -797,6 +803,18 @@ impl Worker {
             } => {
                 lease.check_input(route, sequence, terminal)?;
                 match lease.keys(sequence, bytes, &mut terminal.session)? {
+                    Some(KeyCommand::BeginRename(pane)) => {
+                        lease.naming = Some(super::rename::NameEditor::new(pane));
+                    }
+                    Some(KeyCommand::Rename(pane, name)) => {
+                        if lease
+                            .events
+                            .try_send(Event::Rename(lease.route, pane, name))
+                            .is_err()
+                        {
+                            self.revoke();
+                        }
+                    }
                     None => {}
                     Some(KeyCommand::Detach) => {
                         let _ = lease.events.try_send(Event::Detached);
@@ -844,7 +862,9 @@ impl Worker {
                 if terminal.session.paste_pending() {
                     return Err(input_busy());
                 }
-                lease.flush_leader(&mut terminal.session)?;
+                if !lease.command_help && lease.naming.is_none() {
+                    lease.flush_leader(&mut terminal.session)?;
+                }
                 lease.paste = Some(Paste::new(id, route, request_id));
                 lease.input_sequence = sequence;
             }
@@ -860,7 +880,13 @@ impl Worker {
                 if terminal.exit.is_some() {
                     return Err(stale_route());
                 }
-                if lease.picker.is_none() && !terminal.session.paste(paste.finish()) {
+                let bytes = paste.finish();
+                if let Some(editor) = &mut lease.naming {
+                    editor.append(&String::from_utf8_lossy(&bytes));
+                } else if lease.picker.is_none()
+                    && !lease.command_help
+                    && !terminal.session.paste(bytes)
+                {
                     return Err(input_busy());
                 }
             }
@@ -973,6 +999,8 @@ impl Worker {
             self.live.store(false, Ordering::Release);
             if let Some(lease) = &mut self.lease {
                 lease.picker = None;
+                lease.command_help = false;
+                lease.naming = None;
             }
         }
         if terminal.exit.is_some()
@@ -1214,6 +1242,12 @@ impl Running {
             return Ok(None);
         }
         let tick = self.session.poll()?;
+        if let Some(registry) = self.registry.upgrade() {
+            registry
+                .lock()
+                .expect("workspace registry lock poisoned")
+                .record_title(self.id, tick.title);
+        }
         self.dirty |= tick.output;
         if let Some(status) = tick.exit {
             #[cfg(target_os = "linux")]
@@ -1462,6 +1496,7 @@ struct Flight {
 }
 
 struct Lease {
+    naming: Option<super::rename::NameEditor>,
     route: InputRoute,
     input_sequence: u64,
     events: mpsc::Sender<Event>,
@@ -1473,6 +1508,7 @@ struct Lease {
     paste: Option<Paste>,
     leader: Option<Instant>,
     picker: Option<TabPicker>,
+    command_help: bool,
     armed: bool,
     frozen: bool,
     switch_pending: bool,
@@ -1483,8 +1519,10 @@ struct Lease {
 }
 
 enum LastFrame {
+    Naming,
     Terminal(Option<Box<Screen>>),
     Picker,
+    Commands(bool),
 }
 
 struct Status {
@@ -1515,6 +1553,8 @@ impl Lease {
             paste: None,
             leader: None,
             picker: None,
+            command_help: false,
+            naming: None,
             armed,
             frozen: false,
             switch_pending: false,
@@ -1526,7 +1566,11 @@ impl Lease {
     }
 
     fn input_mode(&self) -> InputMode {
-        if self.leader.is_some() || self.picker.is_some() {
+        if self.leader.is_some()
+            || self.picker.is_some()
+            || self.command_help
+            || self.naming.is_some()
+        {
             InputMode::Command
         } else {
             InputMode::Passthrough
@@ -1549,6 +1593,21 @@ impl Lease {
         mut bytes: Vec<u8>,
         queue: &mut Backend,
     ) -> Reply<Option<KeyCommand>> {
+        if let Some(editor) = &mut self.naming {
+            self.input_sequence = sequence;
+            return Ok(match editor.key(&bytes) {
+                super::rename::Edit::Keep => None,
+                super::rename::Edit::Cancel => {
+                    self.naming = None;
+                    None
+                }
+                super::rename::Edit::Save(name) => {
+                    let pane = editor.pane;
+                    self.naming = None;
+                    Some(KeyCommand::Rename(pane, name))
+                }
+            });
+        }
         if let Some(picker) = &mut self.picker {
             self.input_sequence = sequence;
             return Ok(match picker.key(&bytes) {
@@ -1569,6 +1628,37 @@ impl Lease {
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
         {
             self.flush_leader(queue)?;
+        }
+        if self.command_help || self.leader.is_some() {
+            if matches!(bytes.as_slice(), b"\x1b" | b"\x03") {
+                self.leader = None;
+                self.command_help = false;
+                self.input_sequence = sequence;
+                return Ok(None);
+            }
+            if bytes == b"?" {
+                self.leader = None;
+                self.command_help = true;
+                self.input_sequence = sequence;
+                return Ok(None);
+            }
+        }
+        if self.command_help {
+            self.input_sequence = sequence;
+            if let Some(command) = self.keymap.command(&bytes) {
+                if queue.paste_pending() {
+                    return Err(input_busy());
+                }
+                self.command_help = false;
+                return Ok(Some(command));
+            }
+            if bytes == [KEY_LEADER] {
+                if !queue.keys(bytes) {
+                    return Err(overloaded());
+                }
+                self.command_help = false;
+            }
+            return Ok(None);
         }
         if self.leader.take().is_some() {
             if let Some(command) = self.keymap.command(&bytes) {
@@ -1645,7 +1735,7 @@ impl Lease {
         if self.viewport.status_row().is_none() {
             return self.status.take().is_some();
         }
-        let layout = metadata.layout();
+        let layout = metadata.display_layout();
         let cols = self.viewport.outer.cols.get();
         let mode = self.input_mode();
         if self.status.as_ref().is_some_and(|previous| {
@@ -1653,7 +1743,18 @@ impl Lease {
         }) {
             return false;
         }
-        let ansi = status::line(&layout, self.location, cols, mode, self.keymap);
+        let split = layout
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .any(|tab| {
+                tab.id == self.location.tab
+                    && matches!(tab.root, corvid_core::layout::Node::Split { .. })
+            });
+        let pane = split
+            .then(|| layout.pane_title(self.location, &metadata.titles()))
+            .flatten();
+        let ansi = status::line(&layout, self.location, cols, mode, pane.as_deref());
         let changed = self
             .status
             .as_ref()
@@ -1688,7 +1789,7 @@ impl Lease {
         self.events
             .try_send(Event::Render(render))
             .map_err(|_| overloaded())?;
-        if matches!(painted, LastFrame::Terminal(_)) {
+        if matches!(painted, LastFrame::Terminal(_) | LastFrame::Commands(_)) {
             terminal.dirty = false;
         }
         self.previous = Some(painted);
@@ -1707,7 +1808,23 @@ impl Lease {
         terminal: &mut Running,
         metadata: &MetadataUpdates,
     ) -> Result<Option<(String, LastFrame)>> {
+        if let Some(editor) = &mut self.naming {
+            if !editor.dirty && matches!(self.previous, Some(LastFrame::Naming)) {
+                return Ok(None);
+            }
+            let (mut ansi, _) = terminal.session.render(None, self.viewport.outer, None)?;
+            ansi.push_str(&editor.paint(self.viewport.outer));
+            return Ok(Some((ansi, LastFrame::Naming)));
+        }
         if let Some(picker) = &mut self.picker {
+            let layout = metadata.display_layout();
+            if let Some(workspace) = layout
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == self.location.workspace)
+            {
+                picker.refresh_names(workspace);
+            }
             if !picker.dirty && matches!(self.previous, Some(LastFrame::Picker)) {
                 return Ok(None);
             }
@@ -1716,6 +1833,26 @@ impl Lease {
         }
 
         let status_changed = self.refresh_status(metadata);
+        if self.leader.is_some() || self.command_help {
+            if matches!(self.previous, Some(LastFrame::Commands(expanded)) if expanded == self.command_help)
+                && !terminal.dirty
+                && !status_changed
+            {
+                return Ok(None);
+            }
+            let footer = self
+                .viewport
+                .status_row()
+                .zip(self.status.as_ref())
+                .map(|(row, status)| (row, status.ansi.as_str()));
+            let (mut ansi, _) = terminal.session.render(None, self.viewport.outer, footer)?;
+            ansi.push_str(&commands::paint(
+                self.viewport.outer,
+                self.keymap,
+                self.command_help,
+            )?);
+            return Ok(Some((ansi, LastFrame::Commands(self.command_help))));
+        }
         let previous = match &self.previous {
             Some(LastFrame::Terminal(screen)) => Some(screen),
             _ => None,

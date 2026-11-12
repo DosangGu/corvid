@@ -16,6 +16,7 @@ corvid-agent-deck.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
+corvid-core.workspace = true
 corvid-protocol.workspace = true
 corvid-tui.workspace = true
 corvid-update.workspace = true

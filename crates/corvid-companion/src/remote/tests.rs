@@ -84,9 +84,12 @@ fn bounded_attention_includes_queued_runs_and_request_metadata() {
             workspace_id: location.workspace_id.clone(),
             label: "Fixture".into(),
             tabs: vec![TabState {
+                manual_name: None,
                 tab_id: location.tab_id.clone(),
                 label: "Fixture".into(),
                 nodes: vec![LayoutNodeState {
+                    title: String::new(),
+                    manual_name: None,
                     body: Some(layout_node_state::Body::PaneId(location.pane_id.clone())),
                 }],
             }],

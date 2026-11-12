@@ -1,18 +1,22 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::os::windows::io::AsRawHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_core::Viewport;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use windows_sys::Win32::System::Console::{
-    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, FlushConsoleInputBuffer,
-    GetConsoleMode, SetConsoleMode,
+    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    FlushConsoleInputBuffer, GetConsoleMode, GetNumberOfConsoleInputEvents, INPUT_RECORD,
+    KEY_EVENT, KEY_EVENT_RECORD, ReadConsoleInputW, SetConsoleMode,
 };
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_MENU;
 
 pub(crate) struct Tty {
     output_mode: u32,
+    input: RefCell<ConsoleInput>,
 }
 
 impl Tty {
@@ -40,8 +44,17 @@ impl Tty {
                 output_mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
             )
         })?;
-        let tty = Self { output_mode };
+        let tty = Self {
+            output_mode,
+            input: RefCell::new(ConsoleInput::default()),
+        };
         enable_raw_mode()?;
+        let input = io::stdin().as_raw_handle();
+        let mut input_mode = 0;
+        // Keep ConPTY's VT input boundaries, including bracketed paste markers.
+        // Crossterm restores the original input mode when raw mode is disabled.
+        checked(unsafe { GetConsoleMode(input, &mut input_mode) })?;
+        checked(unsafe { SetConsoleMode(input, input_mode | ENABLE_VIRTUAL_TERMINAL_INPUT) })?;
         tty.discard_input()?;
         Ok(tty)
     }
@@ -49,6 +62,7 @@ impl Tty {
     pub(crate) fn discard_input(&self) -> Result<()> {
         // The standard input is a console handle, checked before entering raw mode.
         checked(unsafe { FlushConsoleInputBuffer(io::stdin().as_raw_handle()) })?;
+        *self.input.borrow_mut() = ConsoleInput::default();
         Ok(())
     }
 
@@ -64,23 +78,36 @@ impl Tty {
     }
 
     pub(crate) fn try_read(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        let handle = io::stdin().as_raw_handle();
+        let mut input = self.input.borrow_mut();
         let mut count = 0;
         for _ in 0..64 {
-            if buffer.len() - count < 16 || !event::poll(Duration::ZERO)? {
+            while count < buffer.len() {
+                let Some(byte) = input.pending.pop_front() else {
+                    break;
+                };
+                buffer[count] = byte;
+                count += 1;
+            }
+            if count == buffer.len() {
                 break;
             }
-            let Event::Key(key) = event::read()? else {
-                continue;
-            };
-            if key.kind == KeyEventKind::Release {
+            let mut available = 0;
+            // Only this TTY reader consumes the process's console input records.
+            checked(unsafe { GetNumberOfConsoleInputEvents(handle, &mut available) })?;
+            if available == 0 {
+                break;
+            }
+            let mut record = INPUT_RECORD::default();
+            let mut read = 0;
+            // A record is available and both output pointers are writable.
+            checked(unsafe { ReadConsoleInputW(handle, &mut record, 1, &mut read) })?;
+            if read == 0 || record.EventType != KEY_EVENT as u16 {
                 continue;
             }
-            let bytes = encode_key(key);
-            if bytes.is_empty() {
-                continue;
-            }
-            buffer[count..count + bytes.len()].copy_from_slice(&bytes);
-            count += bytes.len();
+            // EventType identifies the active union member. VT input arrives as
+            // UTF-16 key records, including literal ESC and control characters.
+            input.key(unsafe { record.Event.KeyEvent });
         }
         if count == 0 {
             return Err(ErrorKind::WouldBlock.into());
@@ -106,66 +133,46 @@ impl Drop for Tty {
     }
 }
 
-fn encode_key(key: KeyEvent) -> Vec<u8> {
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    let control = key.modifiers.contains(KeyModifiers::CONTROL);
-    let modifier = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(control);
-    let sequence = match key.code {
-        KeyCode::Up => Some(('A', 0)),
-        KeyCode::Down => Some(('B', 0)),
-        KeyCode::Right => Some(('C', 0)),
-        KeyCode::Left => Some(('D', 0)),
-        KeyCode::Home => Some(('H', 0)),
-        KeyCode::End => Some(('F', 0)),
-        KeyCode::Insert => Some(('~', 2)),
-        KeyCode::Delete => Some(('~', 3)),
-        KeyCode::PageUp => Some(('~', 5)),
-        KeyCode::PageDown => Some(('~', 6)),
-        KeyCode::F(number @ 5..=12) => Some((
-            '~',
-            [15, 17, 18, 19, 20, 21, 23, 24][usize::from(number - 5)],
-        )),
-        _ => None,
-    };
-    if let Some((final_byte, number)) = sequence {
-        return match (modifier, number) {
-            (1, 0) => format!("\x1b[{final_byte}"),
-            (1, _) => format!("\x1b[{number}{final_byte}"),
-            (_, 0) => format!("\x1b[1;{modifier}{final_byte}"),
-            _ => format!("\x1b[{number};{modifier}{final_byte}"),
-        }
-        .into_bytes();
-    }
-    let mut bytes = match key.code {
-        KeyCode::Char(character) if control && !alt && character.is_ascii() => {
-            match character.to_ascii_uppercase() {
-                '@'..='_' => vec![character.to_ascii_uppercase() as u8 & 0x1f],
-                ' ' => vec![0],
-                '?' => vec![0x7f],
-                _ => character.to_string().into_bytes(),
+#[derive(Default)]
+struct ConsoleInput {
+    pending: VecDeque<u8>,
+    surrogate: Option<u16>,
+}
+
+impl ConsoleInput {
+    fn key(&mut self, key: KEY_EVENT_RECORD) {
+        // ReadConsoleInputW supplies the Unicode member of this union.
+        let unit = unsafe { key.uChar.UnicodeChar };
+        // ConPTY can deliver non-BMP text as Alt-code key-up events.
+        let text_event = key.bKeyDown != 0 || (key.wVirtualKeyCode == VK_MENU && unit != 0);
+        if text_event && (unit != 0 || key.wVirtualKeyCode == 0) {
+            for _ in 0..key.wRepeatCount {
+                self.push(unit);
             }
         }
-        KeyCode::Char(character) => character.to_string().into_bytes(),
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Tab => vec![b'\t'],
-        KeyCode::BackTab => b"\x1b[Z".to_vec(),
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Esc => vec![0x1b],
-        KeyCode::F(number @ 1..=4) => {
-            let final_byte = char::from(b'P' + number - 1);
-            return if modifier == 1 {
-                format!("\x1bO{final_byte}").into_bytes()
-            } else {
-                format!("\x1b[1;{modifier}{final_byte}").into_bytes()
-            };
-        }
-        _ => return Vec::new(),
-    };
-    if alt && !control {
-        bytes.insert(0, 0x1b);
     }
-    bytes
+
+    fn push(&mut self, unit: u16) {
+        if let Some(high) = self.surrogate.take() {
+            if (0xdc00..=0xdfff).contains(&unit) {
+                let scalar =
+                    0x10000 + ((u32::from(high) - 0xd800) << 10) + (u32::from(unit) - 0xdc00);
+                self.character(char::from_u32(scalar).unwrap());
+                return;
+            }
+            self.character(char::REPLACEMENT_CHARACTER);
+        }
+        if (0xd800..=0xdbff).contains(&unit) {
+            self.surrogate = Some(unit);
+        } else {
+            self.character(char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER));
+        }
+    }
+
+    fn character(&mut self, character: char) {
+        self.pending
+            .extend(character.encode_utf8(&mut [0; 4]).bytes());
+    }
 }
 
 fn checked(result: i32) -> io::Result<()> {
@@ -173,4 +180,59 @@ fn checked(result: i32) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_alt_code_key_up_text_without_duplicating_normal_key_releases() {
+        let mut input = ConsoleInput::default();
+        for unit in "🐦".encode_utf16() {
+            let mut key = KEY_EVENT_RECORD {
+                wVirtualKeyCode: VK_MENU,
+                wRepeatCount: 1,
+                ..Default::default()
+            };
+            key.uChar.UnicodeChar = unit;
+            input.key(key);
+        }
+        let mut release = KEY_EVENT_RECORD {
+            wVirtualKeyCode: 65,
+            wRepeatCount: 1,
+            ..Default::default()
+        };
+        release.uChar.UnicodeChar = u16::from(b'a');
+        input.key(release);
+        assert_eq!(
+            input.pending.into_iter().collect::<Vec<_>>(),
+            "🐦".as_bytes()
+        );
+    }
+
+    #[test]
+    fn console_input_preserves_vt_boundaries_and_split_surrogate_pairs() {
+        let mut input = ConsoleInput::default();
+        let text = "\x1b[200~한글 🦀\r\x1b[201~\x1d\0";
+        for unit in text.encode_utf16() {
+            input.push(unit);
+        }
+        assert_eq!(
+            input.pending.into_iter().collect::<Vec<_>>(),
+            text.as_bytes()
+        );
+    }
+
+    #[test]
+    fn malformed_surrogate_does_not_consume_the_next_control_character() {
+        let mut input = ConsoleInput::default();
+        input.push(0xd800);
+        input.push(0x1b);
+        input.push(0xdc00);
+        assert_eq!(
+            input.pending.into_iter().collect::<Vec<_>>(),
+            "\u{fffd}\x1b\u{fffd}".as_bytes(),
+        );
+    }
 }

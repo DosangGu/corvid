@@ -651,6 +651,12 @@ In command mode, 1–9 selects a live tab by its displayed position and w opens 
 scrolling list of all tabs in the current workspace. While the list is open, the
 daemon consumes keys and pastes locally. Enter resolves the selected tab ID against
 the current workspace before running the ordinary route-fenced switch.
+Typing filters the list without changing tab identities. Ctrl-] then `?` opens
+a persistent capability-aware command sheet; it consumes unmapped keys and paste
+until the user selects a command or cancels with Esc/Ctrl-C. A repeated leader
+sends one literal leader. The initial two-second prefix and its literal fallback
+remain compatible, except Esc/Ctrl-C now cancel it. Menus overlay the existing
+screen and do not change canonical PTY dimensions.
 
 Every input delivery carries `(ClientId, connection_generation, view_revision,
 TerminalId, writer_lease_generation, input_sequence)`. The coordinator and PTY worker

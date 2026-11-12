@@ -139,7 +139,7 @@ def wait_for_daemon(command, process):
 
 def verify_resize(outer, progress, cols, rows, inner_size):
     outer.resize(cols, rows)
-    footer = f"\x1b[{rows};1H\x1b[0;30;46m\x1b[2KCORVID".encode()
+    footer = f"\x1b[{rows};1H\x1b[0;2m\x1b[2KCORVID".encode()
     outer.expect(re.escape(footer))
     wait_for_child_size(progress, inner_size)
 
@@ -160,11 +160,12 @@ def verify(command, directory):
     start = [*command, "attach", "--", sys.executable, __file__, "--child", progress]
     with OuterTerminal(start) as first:
         initial = first.expect(rb"PID=(\d+) TICK=(\d+) SIZE=80x23")
-        first.expect(re.escape(b"\x1b[24;1H\x1b[0;30;46m\x1b[2KCORVID  Main"))
+        first.expect(re.escape(b"\x1b[24;1H\x1b[0;2m\x1b[2KCORVID  Main"))
         pid, tick = int(initial[1]), int(initial[2])
         first.send(b"a")
         first.expect("한글 e\u0301".encode())
         verify_pairing(command, first, pid)
+        verify_command_menu(first, progress, pid)
 
         with OuterTerminal([*command, "attach"], cols=110, rows=31) as busy:
             busy.expect(b"WorkspaceBusy")
@@ -216,6 +217,23 @@ def verify_pairing(command, outer, pid):
     assert int(restored[1]) == pid
 
 
+def verify_command_menu(outer, progress, pid):
+    outer.output.clear()
+    outer.send(b"\x1d?")
+    outer.expect(b"CORVID COMMANDS")
+    outer.send(b"QQQ" + PASTE_START + b"q\n" + PASTE_END)
+    time.sleep(2.2)
+    outer.output.clear()
+    outer.send(b"?")
+    outer.expect(b"CORVID COMMANDS")
+    outer.output.clear()
+    outer.send(b"\x1b")
+    restored = outer.expect(rb"PID=(\d+) TICK=\d+ SIZE=80x23")
+    assert int(restored[1]) == pid
+    outer.expect(re.escape(b"CORVID  Main"))
+    wait_for_child_size(progress, "80x23")
+
+
 def send_paste(outer):
     for chunk in (PASTE_START[:4], PASTE_START[4:], PASTE, PASTE_END[:2], PASTE_END[2:]):
         outer.send(chunk)
@@ -258,16 +276,16 @@ def verify_tabs(command, directory):
         second.output.clear()
         second.send(b"\x1d1")
         assert second.expect(marker)[1] == first_pid
-        second.expect(re.escape(b"[1:Shell]"))
+        second.expect(re.escape(b"[1:Pane 1]"))
         second.resize(100, 30)
         second.expect(b"RESIZED=100x29")
-        deadline = time.monotonic() + 5
-        while not second_log.read_text().strip().endswith("100x29"):
-            assert time.monotonic() < deadline, "hidden tab kept the old PTY size"
-            time.sleep(0.02)
+        # Pane writers resize their selected pane; hidden panes retain their size
+        # until selected, so another writer's viewport cannot be changed.
+        assert second_log.read_text().strip().endswith("80x23")
         second.output.clear()
         second.send(b"\x1d2")
-        assert second.expect(rb"PID=(\d+) TICK=\d+ SIZE=100x29")[1] == second_pid
+        assert second.expect(rb"PID=(\d+) TICK=\d+ SIZE=\d+x\d+")[1] == second_pid
+        wait_for_child_size(second_log, "100x29")
         second.expect(re.escape(b"[2:Second]"))
         second.send(b"\x1dd")
         second.wait(0)
@@ -293,7 +311,7 @@ def verify_tab_move(command, directory, moved_pid, visible_pid):
     layout = inventory()
     source_id = re.search(r"^workspace ([\da-f-]+) Main$", layout, re.M)[1]
     destination_id = re.search(r"^workspace ([\da-f-]+) Destination$", layout, re.M)[1]
-    moved_tab = re.search(r"^  tab ([\da-f-]+) Shell$", layout, re.M)[1]
+    moved_tab = re.search(r"^  tab ([\da-f-]+) Pane 1$", layout, re.M)[1]
     visible_tab = re.search(r"^  tab ([\da-f-]+) Second$", layout, re.M)[1]
     move = [
         *attach, "--workspace", source_id, "--tab", visible_tab,
@@ -302,7 +320,7 @@ def verify_tab_move(command, directory, moved_pid, visible_pid):
     with OuterTerminal(move, cols=100, rows=30) as visible:
         assert visible.expect(marker)[1] == visible_pid
         deadline = time.monotonic() + 5
-        while f"  tab {moved_tab} Shell" not in inventory().split(" Destination\n", 1)[1]:
+        while f"  tab {moved_tab} Pane 1" not in inventory().split(" Destination\n", 1)[1]:
             assert time.monotonic() < deadline, "tab did not move to the destination"
             time.sleep(0.02)
         visible.send(b"\x1dd")
@@ -340,7 +358,7 @@ def verify_tab_picker(command, directory):
 
     with OuterTerminal(attach, rows=6) as outer:
         assert outer.expect(marker)[1] == pids[1]
-        outer.expect(re.escape(b"[1:Shell]"))
+        outer.expect(re.escape(b"[1:Pane 1]"))
         outer.output.clear()
         outer.send(b"\x1dw")
         outer.expect(b"Tabs 1/11")
@@ -369,6 +387,14 @@ def verify_tab_picker(command, directory):
         outer.send(b"\r")
         assert outer.expect(marker)[1] == pids[10]
         outer.expect(re.escape(f"[10:{tenth}]".encode()))
+        outer.output.clear()
+        outer.send(b"\x1dw")
+        outer.expect(b"Tabs 10/11")
+        outer.send(tenth.encode())
+        outer.expect(b"Tabs 1/1")
+        outer.output.clear()
+        outer.send(b"\r")
+        assert outer.expect(marker)[1] == pids[10]
         outer.send(b"\x1dd")
         outer.wait(0)
 
@@ -670,7 +696,7 @@ def run(binary):
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
                 verify_shell_agent_notifications(binary, directory, database, shell_name=shell)
-    print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, detach, tab switching, the tab picker, and daemon replacement with a retained shell.")
+    print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, command-menu isolation, detach, tab switching, tab search, and daemon replacement with a retained shell.")
 
 
 if __name__ == "__main__":

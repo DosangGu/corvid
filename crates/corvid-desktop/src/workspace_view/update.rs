@@ -5,8 +5,8 @@ impl WorkspaceView {
     pub(super) fn update_menu(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
-            .items_center()
-            .justify_end()
+            .flex_col()
+            .items_start()
             .gap(px(10.))
             .px(px(10.))
             .pb(px(6.))

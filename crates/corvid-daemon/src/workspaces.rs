@@ -177,6 +177,24 @@ struct Slot {
 }
 
 impl Workspaces {
+    pub(crate) fn rename(&self, active: &Active, pane: bool, name: String) -> Reply<()> {
+        let mut registry = self.lock_registry();
+        registry.require_pane_writer(active.route.client_id, active.location)?;
+        if !registry
+            .clients
+            .get(&active.route.client_id)
+            .and_then(|client| client.view.as_ref())
+            .is_some_and(|view| view.route == active.route)
+        {
+            return Err(target_gone());
+        }
+        let mut layout = self.metadata.layout();
+        Arc::make_mut(&mut layout)
+            .rename(active.location, pane, (!name.is_empty()).then_some(name))
+            .map_err(|_| ProtocolFault::new("InvalidMessage", "invalid view name"))?;
+        registry.publish_layout(layout, Vec::new());
+        Ok(())
+    }
     pub(crate) fn new(metadata: MetadataUpdates, hook_environment: Arc<HookEnvironment>) -> Self {
         let publication = Publication::seed(projection::layout(&metadata.layout()));
         #[cfg(target_os = "linux")]
@@ -1105,7 +1123,7 @@ impl Registry {
     }
 
     fn publish_layout(&mut self, layout: Arc<Layout>, mut projections: Vec<Projection>) {
-        projections.push(projection::layout(&layout));
+        projections.push(projection::named_layout(&layout, &self.metadata.titles()));
         self.commit(projections, Some(layout));
     }
 
@@ -1122,6 +1140,18 @@ impl Registry {
     pub(crate) fn terminal_started(&mut self, id: Uuid, location: Location) {
         self.terminals.insert(id, location);
         self.publish(vec![terminal_projection(id, location)]);
+    }
+
+    pub(crate) fn record_title(&mut self, id: Uuid, title: String) {
+        let Some(location) = self.terminals.get(&id) else {
+            return;
+        };
+        if self.metadata.set_title(location.pane, title) {
+            self.publish(vec![projection::named_layout(
+                &self.metadata.layout(),
+                &self.metadata.titles(),
+            )]);
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1172,8 +1202,13 @@ impl Registry {
         if let Some(agent) = self.shells.remove(id) {
             self.agents.retire_shell(agent, ProcessLiveness::Unknown);
         }
-        self.terminals.remove(&id);
-        let mut projections = vec![(Group::Terminal(id), Vec::new())];
+        if let Some(location) = self.terminals.remove(&id) {
+            self.metadata.set_title(location.pane, String::new());
+        }
+        let mut projections = vec![
+            (Group::Terminal(id), Vec::new()),
+            projection::named_layout(&self.metadata.layout(), &self.metadata.titles()),
+        ];
         let mut cleared = Vec::new();
         for (client_id, client) in &mut self.clients {
             if client
@@ -1555,7 +1590,13 @@ fn resolve_switch(
                 .find(|item| item.id == old.location.workspace)
                 .ok_or_else(target_gone)?;
             let label = format!("Shell {}", workspace.tabs.len() + 1);
-            resolve_switch(registry, layout, old, Destination::CreateTab(label))
+            let result = resolve_switch(registry, layout, old, Destination::CreateTab(label))?;
+            if let Some((location, _)) = &result {
+                Arc::make_mut(layout)
+                    .rename(*location, false, None)
+                    .map_err(|_| target_gone())?;
+            }
+            Ok(result)
         }
         Destination::Tab(TabCommand::Split(axis)) => {
             resolve_switch(registry, layout, old, Destination::Split(axis))
@@ -1660,10 +1701,19 @@ fn resolve(
         ));
     }
     if let Some(label) = &target.new_workspace {
-        let tab = target.new_tab.clone().unwrap_or_else(|| "Shell".to_owned());
-        return Arc::make_mut(layout)
+        let manual = target
+            .new_tab
+            .as_ref()
+            .filter(|name| !name.is_empty())
+            .cloned();
+        let tab = manual.clone().unwrap_or_else(|| "Shell".to_owned());
+        let location = Arc::make_mut(layout)
             .add_workspace(label.clone(), tab)
-            .map_err(|_| invalid_layout());
+            .map_err(|_| invalid_layout())?;
+        Arc::make_mut(layout)
+            .rename(location, false, manual)
+            .map_err(|_| invalid_layout())?;
+        return Ok(location);
     }
     let location = layout
         .locate(target.workspace, target.tab)
@@ -1676,9 +1726,21 @@ fn resolve(
             .ok_or_else(target_gone);
     }
     if let Some(label) = &target.new_tab {
-        return Arc::make_mut(layout)
-            .add_tab(location.workspace, label.clone())
-            .map_err(|_| invalid_layout());
+        let automatic = label.is_empty();
+        let label = if automatic {
+            "Shell".to_owned()
+        } else {
+            label.clone()
+        };
+        let location = Arc::make_mut(layout)
+            .add_tab(location.workspace, label)
+            .map_err(|_| invalid_layout())?;
+        if automatic {
+            Arc::make_mut(layout)
+                .rename(location, false, None)
+                .map_err(|_| invalid_layout())?;
+        }
+        return Ok(location);
     }
     if target.launch.as_ref().is_none_or(|launch| launch.if_empty) {
         let workspace = layout

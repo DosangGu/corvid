@@ -65,6 +65,12 @@ daemon. When starting a daemon directly, install the terminfo entry with
 Ctrl-] enters command mode for the next complete key. Ctrl-] twice sends one
 literal Ctrl-]. An unmapped key sends the leader and the key as terminal input.
 The daemon returns an idle leader to the current PTY after two seconds.
+Esc or Ctrl-C cancels a pending leader without sending it to the terminal.
+Ctrl-] then `?` opens a persistent command sheet. It shows only negotiated
+operations and distinguishes detaching from ending terminals. Unmapped keys and
+bracketed paste stay in this sheet; Esc or Ctrl-C closes it, a command key runs
+that command, and Ctrl-] sends one literal leader and closes it. The sheet and
+the brief prefix hints paint over the existing screen without resizing the PTY.
 A signal or connection loss also releases the writer.
 The shell's exit status reaches the attach process on normal completion.
 
@@ -74,10 +80,12 @@ workspace has no writer. `corvid control workspaces` lists the IDs. Attach to
 an exact tab with `--workspace WORKSPACE_ID --tab TAB_ID`. In an attached TUI,
 Ctrl-] then t starts a new shell tab. Ctrl-] then 1–9 switches to the live tab
 with that number. Ctrl-] then w opens the full tab list for the workspace,
-including tabs numbered 10 and above. Use Up or Down to move, Enter to switch
-to a live tab, and Esc to return to the current tab. Closed tabs are labeled
-in the list. Ctrl-] then n or p still cycles through live tabs. Each workspace
-has one writer, and other workspaces continue independently.
+including tabs numbered 10 and above. Type to filter tab names, Backspace to edit
+the query, Up or Down to move, Enter to switch to a live tab, and Esc to return
+to the current tab. Closed tabs are labeled in the list alongside their pane
+counts. Ctrl-] then n or p still cycles through live tabs. Pane writers resize
+their selected pane; hidden panes retain their size until selected. Other
+writers keep their own viewports.
 
 Press Ctrl-] then `%` to split right, `"` to split down, or `o` to cycle
 through live panes in the tab. Use `corvid attach --workspace WORKSPACE_ID
@@ -212,9 +220,12 @@ run history in `state.json`. It publishes changes to a separate writer and
 debounces disk writes by one second. The archive retains up to 128 runs and
 keeps current top-level running agents ahead of older records when evicting.
 The state directory lock allows one writer. A successful save retains the preceding
-valid state in `state.json.bak`. Startup upgrades validated schema 1 and 2 files
-to schema 3 and keeps the original as the backup. Schema 1 starts with an empty
-archive. Schema 3 adds a process-directory observation source. Startup
+valid state in `state.json.bak`. Startup upgrades validated schema 1, 2, and 3 files
+to schema 4 and keeps the original as the backup. Schema 1 starts with an empty
+archive. Schema 3 adds a process-directory observation source. Schema 4 stores
+optional manual pane and tab names. Legacy `Shell` and `Shell N` tab labels become
+automatic; other labels remain manual. Older schemas did not distinguish an
+explicitly chosen `Shell` label from the generated default. Startup
 preserves bounded corrupt primary bytes in
 `state.json.corrupt`, then loads a valid backup or opens an empty layout. Newer
 schemas require a compatible binary. The status command reports the recovery source.
@@ -338,6 +349,11 @@ Managed agent observations on Windows are planned separately.
 
 The `windows_daemon` integration tests run the Windows binary inside ConPTY
 and exercise startup, input, rendering, resize, and detach and reattach.
+Windows console input preserves VT sequences and bracketed-paste boundaries
+before routing input to the daemon. The command-menu regression verifies that
+unmapped keys and pasted shell commands stay out of the PTY, the menu remains
+open past the prefix timeout, and closing it preserves terminal identity and
+dimensions. UTF-16 input tests cover surrogate pairs and control characters.
 
 ```powershell
 cargo test --locked -p corvid-tui --test windows_daemon
@@ -392,10 +408,30 @@ to 32 workers and 8 attached TUI connections. Production history is limited to
 under the aggregate screen budget.
 It sends one frame at a time and waits for the TTY write acknowledgement.
 The PTY worker drains up to 128 KiB per tick and continues parsing without a writer.
-The VT engine consumes child OSC title and clipboard commands. Both full and
+The VT engine captures OSC 0/2 terminal titles (BEL or ST terminated) as bounded
+display data, including titles emitted while detached. It consumes clipboard
+commands. Titles never become terminal input, shell code, or agent identity.
+Both full and
 incremental redraws strip Unicode `Bidi_Control` characters from cell output
 and preserve visible Unicode and cell positions.
 [Unicode character properties](https://www.unicode.org/Public/17.0.0/ucd/PropList.txt)
+
+Pane titles follow the latest terminal title unless the pane has a manual name.
+An automatic tab with one pane follows that pane's effective title; a split tab
+uses `Tab N`, where N is its position in the workspace. Manual tab names take
+precedence independently. Until a terminal supplies a nonempty title, a pane
+uses `Pane N`. Printable Unicode, spaces, and semicolons are preserved; control
+and bidi-control characters are removed, and titles are bounded to 1,024 UTF-8
+bytes. Terminal titles are transient; only manual names are written to state.
+Retained terminal hosts report their latest title again after daemon replacement.
+
+The TUI shortcuts are Ctrl-] then `.` to rename the pane and Ctrl-] then `,` to
+rename the tab. Enter saves, Escape cancels, Ctrl-U clears, and saving an empty
+name restores automatic naming. The editor consumes input and bracketed paste
+without sending it to the child process. Split tabs show the active pane title
+beside the tab strip; the tab picker updates names while open.
+Clients negotiate `view_titles.v1`; `RenameView` requires the current view
+revision and writer ownership. A rename preserves the input route and PTY.
 
 PTY process checks run on a staggered two-second timer. PTY output can bring a
 check forward after a 500 ms debounce. Due checks wait in arrival order, at least

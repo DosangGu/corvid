@@ -18,6 +18,7 @@ const DEVICE_ATTRIBUTES: &str = "\x1b[?6c";
 struct QueryReplies {
     bytes: Vec<u8>,
     overflow: bool,
+    title: String,
 }
 
 impl QueryReplies {
@@ -32,6 +33,16 @@ impl QueryReplies {
 }
 
 impl Callbacks for QueryReplies {
+    fn set_window_title(&mut self, _: &mut Screen, title: &[u8]) {
+        self.title = corvid_core::layout::clean_title(&String::from_utf8_lossy(title));
+    }
+
+    fn unhandled_osc(&mut self, screen: &mut Screen, params: &[&[u8]]) {
+        if matches!(params.first(), Some(&b"0" | &b"2")) {
+            self.set_window_title(screen, &params[1..].join(&b';'));
+        }
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut Screen,
@@ -78,6 +89,9 @@ pub struct TerminalScreen {
 }
 
 impl TerminalScreen {
+    pub(super) fn title(&self) -> &str {
+        &self.parser.callbacks().title
+    }
     pub fn new(viewport: Viewport) -> Self {
         Self::with_scrollback(viewport, SCROLLBACK_ROWS)
     }
@@ -276,6 +290,27 @@ mod tests {
 
     fn terminal(cols: u16, rows: u16) -> TerminalScreen {
         TerminalScreen::new(Viewport::new(cols, rows).unwrap())
+    }
+
+    #[test]
+    fn captures_fragmented_osc_titles_without_changing_terminal_cells() {
+        let mut terminal = terminal(80, 24);
+        terminal.process(b"content").unwrap();
+        for byte in "\x1b]0; 한글; build 🐦 \x07".as_bytes() {
+            terminal.process(&[*byte]).unwrap();
+        }
+        assert_eq!(terminal.title(), " 한글; build 🐦 ");
+        assert_eq!(terminal.snapshot().contents(), "content");
+        terminal.process(b"\x1b]2;next").unwrap();
+        assert_eq!(terminal.title(), " 한글; build 🐦 ");
+        terminal.process(b"\x1b\\").unwrap();
+        assert_eq!(terminal.title(), "next");
+        terminal
+            .process(b"\x1b]1;icon only\x07\x1b]52;c;clipboard\x07")
+            .unwrap();
+        assert_eq!(terminal.title(), "next");
+        terminal.process(b"\x1b]2;\x07").unwrap();
+        assert_eq!(terminal.title(), "");
     }
 
     #[test]

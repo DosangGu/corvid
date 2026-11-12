@@ -97,6 +97,8 @@ pub(super) struct Response {
     #[cfg(windows)]
     #[prost(uint64, optional, tag = "14")]
     process_created: Option<u64>,
+    #[prost(string, tag = "15")]
+    pub(super) title: String,
 }
 
 impl Response {
@@ -581,6 +583,7 @@ impl Host {
 
     fn response(&self) -> Response {
         Response {
+            title: self.session.screen.title().to_owned(),
             paste_pending: self.session.input.paste_pending(),
             exit_code: self.exit.as_ref().map(ExitStatus::exit_code),
             signal: self

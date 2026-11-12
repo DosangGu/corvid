@@ -1,5 +1,7 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use uuid::Uuid;
 
 use anyhow::{Result, bail, ensure};
 use corvid_core::layout::Layout;
@@ -14,7 +16,7 @@ use crate::platform::{StateDirectory, StateLock};
 const STATE: &str = "state.json";
 const BACKUP: &str = "state.json.bak";
 const QUARANTINE: &str = "state.json.corrupt";
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const DEBOUNCE: Duration = Duration::from_secs(1);
 
@@ -76,14 +78,15 @@ pub(crate) enum SaveState {
 #[derive(Clone)]
 pub(crate) struct MetadataView {
     updates: watch::Receiver<Stored>,
+    display: watch::Receiver<Arc<Layout>>,
     saved: watch::Receiver<Saved>,
     pub(crate) history: Arc<Vec<HistoricalRun>>,
     pub(crate) recovery: Recovery,
 }
 
 impl MetadataView {
-    pub(crate) fn layout(&self) -> Arc<Layout> {
-        Arc::clone(&self.updates.borrow().layout)
+    pub(crate) fn display_layout(&self) -> Arc<Layout> {
+        Arc::clone(&self.display.borrow())
     }
 
     pub(crate) fn save_state(&self) -> SaveState {
@@ -113,13 +116,53 @@ impl MetadataView {
 }
 
 #[derive(Clone)]
-pub(crate) struct MetadataUpdates(watch::Sender<Stored>);
+pub(crate) struct MetadataUpdates(
+    watch::Sender<Stored>,
+    Arc<Mutex<HashMap<Uuid, String>>>,
+    watch::Sender<Arc<Layout>>,
+);
 
 impl MetadataUpdates {
+    fn new(updates: watch::Sender<Stored>) -> Self {
+        let layout = Arc::new(updates.borrow().layout.display(&HashMap::new()));
+        Self(updates, Arc::default(), watch::channel(layout).0)
+    }
+
+    fn refresh_display(&self) {
+        self.2
+            .send_replace(Arc::new(self.layout().display(&self.titles())));
+    }
+
+    pub(crate) fn titles(&self) -> HashMap<Uuid, String> {
+        self.1
+            .lock()
+            .expect("terminal titles lock poisoned")
+            .clone()
+    }
+
+    pub(crate) fn display_layout(&self) -> Arc<Layout> {
+        Arc::clone(&self.2.borrow())
+    }
+
+    pub(crate) fn set_title(&self, pane: Uuid, title: String) -> bool {
+        let mut titles = self.1.lock().expect("terminal titles lock poisoned");
+        if titles.get(&pane).map(String::as_str).unwrap_or_default() == title {
+            return false;
+        }
+        if title.is_empty() {
+            titles.remove(&pane);
+        } else {
+            titles.insert(pane, title);
+        }
+        drop(titles);
+        self.refresh_display();
+        true
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn in_memory(layout: Layout) -> Self {
         let (updates, _) = watch::channel(Stored::from_layout(layout));
-        Self(updates)
+        Self::new(updates)
     }
 
     pub(crate) fn layout(&self) -> Arc<Layout> {
@@ -135,6 +178,7 @@ impl MetadataUpdates {
         if layout.is_none() && history.peek().is_none() {
             return;
         }
+        let update_display = layout.is_some();
         self.0.send_if_modified(|stored| {
             let mut changed = false;
             if let Some(layout) = layout {
@@ -156,6 +200,9 @@ impl MetadataUpdates {
             }
             changed
         });
+        if update_display {
+            self.refresh_display();
+        }
     }
 }
 
@@ -175,6 +222,7 @@ pub(crate) fn start(
         store.save(&stored)?;
     }
     let (updates, snapshots) = watch::channel(stored.clone());
+    let updates = MetadataUpdates::new(updates);
     let (results, saved) = watch::channel(Saved {
         stored,
         succeeded: true,
@@ -183,11 +231,12 @@ pub(crate) fn start(
     Ok((
         MetadataView {
             updates: snapshots,
+            display: updates.2.subscribe(),
             saved,
             history,
             recovery,
         },
-        MetadataUpdates(updates),
+        updates,
         task,
     ))
 }
@@ -297,12 +346,27 @@ fn read(directory: &StateDirectory, name: &str) -> Result<Candidate> {
     let stored = match version.schema_version {
         1 => serde_json::from_slice::<LegacyLayout>(&bytes)
             .map(|old| Stored::from_layout(old.layout)),
-        2 | SCHEMA_VERSION => serde_json::from_slice::<Stored>(&bytes),
+        2 | 3 | SCHEMA_VERSION => serde_json::from_slice::<Stored>(&bytes),
         version => bail!(
             "{name} uses unsupported layout schema {}; use a compatible Corvid version",
             version
         ),
     };
+    let stored = stored.map(|mut stored| {
+        if version.schema_version < 4 {
+            for workspace in &mut Arc::make_mut(&mut stored.layout).workspaces {
+                for tab in &mut workspace.tabs {
+                    let generated = tab.label == "Shell"
+                        || tab
+                            .label
+                            .strip_prefix("Shell ")
+                            .is_some_and(|suffix| suffix.parse::<usize>().is_ok());
+                    tab.manual_name = (!generated).then(|| tab.label.clone());
+                }
+            }
+        }
+        stored
+    });
     match stored {
         Ok(stored) if stored.layout.validate().is_ok() && stored.history.validate() => {
             Ok(Candidate::Valid(stored, bytes))

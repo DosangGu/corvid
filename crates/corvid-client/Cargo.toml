@@ -23,6 +23,7 @@ nix = { workspace = true, features = ["term"] }
 crossterm = { workspace = true, features = ["events", "windows"] }
 windows-sys = { workspace = true, features = [
     "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [target.'cfg(windows)'.dev-dependencies]

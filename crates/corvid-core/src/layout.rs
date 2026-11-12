@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -27,6 +27,8 @@ pub struct Workspace {
 pub struct Tab {
     pub id: Uuid,
     pub label: String,
+    #[serde(default)]
+    pub manual_name: Option<String>,
     pub root: Node,
 }
 
@@ -36,6 +38,8 @@ pub enum Node {
     Pane {
         id: Uuid,
         last_cwd: Option<CwdObservation>,
+        #[serde(default)]
+        manual_name: Option<String>,
     },
     Split {
         axis: Axis,
@@ -100,6 +104,61 @@ impl CloseTarget {
 pub struct InvalidLayout;
 
 impl Layout {
+    pub fn rename(
+        &mut self,
+        location: Location,
+        pane: bool,
+        name: Option<String>,
+    ) -> Result<(), InvalidLayout> {
+        if let Some(name) = &name {
+            validate_label(name)?;
+        }
+        let tab = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == location.workspace)
+            .and_then(|workspace| workspace.tabs.iter_mut().find(|tab| tab.id == location.tab))
+            .ok_or(InvalidLayout)?;
+        if pane {
+            let Node::Pane { manual_name, .. } =
+                tab.root.pane_mut(location.pane, 1).ok_or(InvalidLayout)?
+            else {
+                return Err(InvalidLayout);
+            };
+            *manual_name = name;
+        } else {
+            tab.manual_name = name;
+        }
+        Ok(())
+    }
+
+    pub fn display(&self, titles: &HashMap<Uuid, String>) -> Self {
+        let mut result = self.clone();
+        for workspace in &mut result.workspaces {
+            for (index, tab) in workspace.tabs.iter_mut().enumerate() {
+                tab.label = tab.display_name(index, titles);
+            }
+        }
+        result
+    }
+
+    pub fn pane_title(&self, location: Location, titles: &HashMap<Uuid, String>) -> Option<String> {
+        let tab = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == location.workspace)?
+            .tabs
+            .iter()
+            .find(|tab| tab.id == location.tab)?;
+        let mut panes = Vec::new();
+        tab.root.named_panes(&mut panes);
+        let (index, (_, manual)) = panes
+            .iter()
+            .enumerate()
+            .find(|(_, (id, _))| *id == location.pane)?;
+        Some(pane_name(location.pane, *manual, index, titles))
+    }
+
     pub fn empty_terminal() -> Self {
         Self {
             workspaces: vec![Workspace {
@@ -108,9 +167,11 @@ impl Layout {
                 tabs: vec![Tab {
                     id: Uuid::new_v4(),
                     label: "Shell".to_owned(),
+                    manual_name: None,
                     root: Node::Pane {
                         id: Uuid::new_v4(),
                         last_cwd: None,
+                        manual_name: None,
                     },
                 }],
             }],
@@ -132,6 +193,9 @@ impl Layout {
             for tab in &workspace.tabs {
                 limits.id(tab.id)?;
                 validate_label(&tab.label)?;
+                if let Some(name) = &tab.manual_name {
+                    validate_label(name)?;
+                }
                 limits.node(&tab.root, 1)?;
             }
         }
@@ -178,7 +242,8 @@ impl Layout {
             return Err(InvalidLayout);
         }
         let workspace = Uuid::new_v4();
-        let (tab, pane) = self.make_tab(tab_label)?;
+        let (mut tab, pane) = self.make_tab(tab_label)?;
+        tab.manual_name = None;
         let location = Location {
             workspace,
             tab: tab.id,
@@ -287,6 +352,7 @@ impl Layout {
                 Node::Pane {
                     id: pane,
                     last_cwd: None,
+                    manual_name: None,
                 },
             ],
         };
@@ -353,10 +419,12 @@ impl Layout {
         Ok((
             Tab {
                 id: Uuid::new_v4(),
+                manual_name: Some(label.clone()),
                 label,
                 root: Node::Pane {
                     id: pane,
                     last_cwd: None,
+                    manual_name: None,
                 },
             },
             pane,
@@ -393,7 +461,61 @@ impl Layout {
     }
 }
 
+impl Tab {
+    pub fn display_name(&self, index: usize, titles: &HashMap<Uuid, String>) -> String {
+        if let Some(name) = &self.manual_name {
+            return name.clone();
+        }
+        if let Node::Pane {
+            id, manual_name, ..
+        } = &self.root
+        {
+            return pane_name(*id, manual_name.as_deref(), 0, titles);
+        }
+        format!("Tab {}", index + 1)
+    }
+}
+
+pub fn pane_name(
+    id: Uuid,
+    manual_name: Option<&str>,
+    index: usize,
+    titles: &HashMap<Uuid, String>,
+) -> String {
+    manual_name
+        .map(str::to_owned)
+        .or_else(|| titles.get(&id).filter(|title| !title.is_empty()).cloned())
+        .unwrap_or_else(|| format!("Pane {}", index + 1))
+}
+
+pub fn clean_title(text: &str) -> String {
+    let mut result = String::new();
+    for ch in text.chars().filter(|ch| {
+        !ch.is_control()
+            && !matches!(*ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    }) {
+        if result.len() + ch.len_utf8() > MAX_LABEL {
+            break;
+        }
+        result.push(ch);
+    }
+    result
+}
+
 impl Node {
+    fn named_panes<'a>(&'a self, panes: &mut Vec<(Uuid, Option<&'a str>)>) {
+        match self {
+            Self::Pane {
+                id, manual_name, ..
+            } => panes.push((*id, manual_name.as_deref())),
+            Self::Split { children, .. } => {
+                for child in children {
+                    child.named_panes(panes);
+                }
+            }
+        }
+    }
+
     fn remove_child_pane(&mut self, pane: Uuid) -> bool {
         let Self::Split { children, .. } = self else {
             return false;
@@ -473,7 +595,7 @@ impl Node {
 
     fn cwd(&self, pane: Uuid) -> Option<&CwdObservation> {
         match self {
-            Self::Pane { id, last_cwd } if *id == pane => last_cwd.as_ref(),
+            Self::Pane { id, last_cwd, .. } if *id == pane => last_cwd.as_ref(),
             Self::Pane { .. } => None,
             Self::Split { children, .. } => children.iter().find_map(|child| child.cwd(pane)),
         }
@@ -481,7 +603,7 @@ impl Node {
 
     fn cwd_mut(&mut self, pane: Uuid) -> Option<&mut Option<CwdObservation>> {
         match self {
-            Self::Pane { id, last_cwd } if *id == pane => Some(last_cwd),
+            Self::Pane { id, last_cwd, .. } if *id == pane => Some(last_cwd),
             Self::Pane { .. } => None,
             Self::Split { children, .. } => {
                 children.iter_mut().find_map(|child| child.cwd_mut(pane))
@@ -511,7 +633,14 @@ impl Limits {
             return Err(InvalidLayout);
         }
         match node {
-            Node::Pane { id, last_cwd } => {
+            Node::Pane {
+                id,
+                last_cwd,
+                manual_name,
+            } => {
+                if let Some(name) = manual_name {
+                    validate_label(name)?;
+                }
                 self.id(*id)?;
                 if let Some(cwd) = last_cwd {
                     validate_path(&cwd.path)?;
@@ -542,4 +671,95 @@ fn validate_path(path: &[u8]) -> Result<(), InvalidLayout> {
         return Err(InvalidLayout);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_titles_follow_panes_and_tab_positions() {
+        let mut layout = Layout::empty_terminal();
+        let first = layout.primary().unwrap();
+        let mut titles = HashMap::from([(first.pane, "한글; build 🐦".to_owned())]);
+        assert_eq!(
+            layout.display(&titles).workspaces[0].tabs[0].label,
+            "한글; build 🐦"
+        );
+        let split = layout.split_pane(first, Axis::Horizontal).unwrap();
+        titles.insert(split.pane, "other".into());
+        assert_eq!(layout.display(&titles).workspaces[0].tabs[0].label, "Tab 1");
+        assert_eq!(
+            layout.pane_title(first, &titles).as_deref(),
+            Some("한글; build 🐦")
+        );
+        let second = layout.add_tab(first.workspace, "temporary".into()).unwrap();
+        layout.rename(second, false, None).unwrap();
+        layout.split_pane(second, Axis::Vertical).unwrap();
+        assert_eq!(layout.display(&titles).workspaces[0].tabs[1].label, "Tab 2");
+        layout.close(CloseTarget::Pane(split)).unwrap();
+        assert_eq!(
+            layout.display(&titles).workspaces[0].tabs[0].label,
+            "한글; build 🐦"
+        );
+        layout
+            .close(CloseTarget::Tab {
+                workspace: first.workspace,
+                tab: first.tab,
+            })
+            .unwrap();
+        assert_eq!(layout.display(&titles).workspaces[0].tabs[0].label, "Tab 1");
+    }
+
+    #[test]
+    fn manual_names_override_independently_and_reset_to_latest_terminal_title() {
+        let mut layout = Layout::empty_terminal();
+        let location = layout.primary().unwrap();
+        let mut titles = HashMap::from([(location.pane, "first".to_owned())]);
+        layout
+            .rename(location, true, Some("pane name".into()))
+            .unwrap();
+        assert_eq!(
+            layout.display(&titles).workspaces[0].tabs[0].label,
+            "pane name"
+        );
+        layout
+            .rename(location, false, Some("tab name".into()))
+            .unwrap();
+        titles.insert(location.pane, "latest".into());
+        assert_eq!(
+            layout.pane_title(location, &titles).as_deref(),
+            Some("pane name")
+        );
+        assert_eq!(
+            layout.display(&titles).workspaces[0].tabs[0].label,
+            "tab name"
+        );
+        layout.rename(location, true, None).unwrap();
+        assert_eq!(
+            layout.pane_title(location, &titles).as_deref(),
+            Some("latest")
+        );
+        assert_eq!(
+            layout.display(&titles).workspaces[0].tabs[0].label,
+            "tab name"
+        );
+        layout.rename(location, false, None).unwrap();
+        assert_eq!(
+            layout.display(&titles).workspaces[0].tabs[0].label,
+            "latest"
+        );
+        titles.clear();
+        assert_eq!(
+            layout.display(&titles).workspaces[0].tabs[0].label,
+            "Pane 1"
+        );
+    }
+
+    #[test]
+    fn terminal_titles_preserve_printable_text_and_bound_utf8() {
+        assert_eq!(clean_title(" x;한글🦀 e\u{301} "), " x;한글🦀 e\u{301} ");
+        assert_eq!(clean_title("a\n\x1b\u{202e}b"), "ab");
+        assert_eq!(clean_title(&"한".repeat(400)).len(), 1023);
+    }
 }

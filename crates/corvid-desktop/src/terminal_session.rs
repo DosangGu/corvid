@@ -218,6 +218,7 @@ impl Inventory {
 
 #[derive(Clone)]
 pub struct Ui {
+    pub naming_supported: bool,
     pub host_id: Option<String>,
     pub endpoint: Option<ControlEndpoint>,
     pub terminal_id: Option<String>,
@@ -306,6 +307,7 @@ impl Job {
 }
 
 enum Action {
+    Rename(corvid_protocol::wire::RenameView),
     Input {
         revision: u64,
         bytes: Vec<u8>,
@@ -341,6 +343,7 @@ impl Session {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(Buffer {
                 ui: Ui {
+                    naming_supported: false,
                     host_id: None,
                     endpoint: None,
                     terminal_id: None,
@@ -500,6 +503,14 @@ impl Session {
         self.change(Action::Close(target));
     }
 
+    pub fn rename(&self, pane: bool, name: String, revision: u64) {
+        self.change(Action::Rename(corvid_protocol::wire::RenameView {
+            expected_view_revision: Some(revision),
+            pane,
+            name,
+        }));
+    }
+
     pub fn handoff(&self, revision: u64) {
         if self.ui().can_handoff() {
             self.change(Action::Handoff(revision));
@@ -570,6 +581,7 @@ struct Pending {
 }
 
 enum Operation {
+    Rename,
     Claim(ViewSelection, bool, Option<String>),
     ClaimClose(CloseView),
     View,
@@ -900,6 +912,11 @@ async fn run(
         .any(|name| name == SESSION_CLIENTS_CAPABILITY);
     shared.update_ui(|ui| {
         ui.close_supported = close_supported;
+        ui.naming_supported = link
+            .session()
+            .capabilities
+            .iter()
+            .any(|name| name == corvid_protocol::VIEW_TITLES_CAPABILITY);
         ui.handoff_supported = handoff_supported;
         ui.session_clients_supported = session_clients_supported;
     });
@@ -962,6 +979,15 @@ async fn attach(
 ) -> Result<Attached> {
     request.viewport = Some(grid.wire());
     request.terminal_capabilities.push("legacy_vt.v1".into());
+    if request.create_tab.is_some()
+        && link
+            .session()
+            .capabilities
+            .iter()
+            .any(|name| name == corvid_protocol::VIEW_TITLES_CAPABILITY)
+    {
+        request.create_tab = Some(String::new());
+    }
     if link
         .session()
         .capabilities
@@ -1146,6 +1172,11 @@ impl Client<'_> {
 
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
+            Action::Rename(target) if !self.read_only() => {
+                self.request(Body::RenameView(target), Operation::Rename)
+                    .await?;
+            }
+            Action::Rename(_) => {}
             Action::Handoff(revision) if !self.read_only() => {
                 self.request(
                     Body::RequestWriterHandoff(RequestWriterHandoff {
@@ -1372,6 +1403,12 @@ impl Client<'_> {
     }
 
     async fn create(&mut self, target: Target) -> Result<()> {
+        let target =
+            if matches!(target, Target::TabLabel(_)) && self.shared.buffer().ui.naming_supported {
+                Target::TabLabel(String::new())
+            } else {
+                target
+            };
         self.request(
             Body::CreateView(CreateView {
                 expected_view_revision: Some(self.route.view_revision),
@@ -1486,6 +1523,14 @@ impl Client<'_> {
             return Ok(None);
         }
         match body {
+            Body::ViewRenamed(_) => {
+                let pending = self.pending.take().context("unexpected rename result")?;
+                ensure!(
+                    id.as_deref() == Some(&pending.id) && matches!(pending.kind, Operation::Rename),
+                    "rename result targets another request"
+                );
+                self.shared.update_ui(|ui| ui.changing = false);
+            }
             Body::ViewChanged(view) => {
                 let route = view.route_token.context("view update has no route")?;
                 let selection = view.selection.context("view update has no selection")?;

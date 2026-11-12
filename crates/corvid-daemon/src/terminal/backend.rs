@@ -17,6 +17,7 @@ pub(super) enum Backend {
 }
 
 pub(super) struct Tick {
+    pub(super) title: String,
     pub(super) output: bool,
     pub(super) exit: Option<ExitStatus>,
     pub(super) failure: Option<WriteFailure>,
@@ -59,6 +60,7 @@ impl Backend {
                     session.flush_input().err()
                 };
                 Ok(Tick {
+                    title: session.screen.title().to_owned(),
                     output,
                     exit,
                     failure,
@@ -69,6 +71,7 @@ impl Backend {
                 ensure!(!response.rejected, "terminal host poll failed");
                 let exit = response.status();
                 Ok(Tick {
+                    title: response.title.clone(),
                     output: response.changed,
                     exit,
                     failure: response.write_failure(),

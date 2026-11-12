@@ -54,9 +54,12 @@ fn workspace() -> SnapshotEntity {
             workspace_id: "workspace".into(),
             label: "Example".into(),
             tabs: vec![TabState {
+                manual_name: None,
                 tab_id: "tab".into(),
                 label: "Example tab".into(),
                 nodes: vec![LayoutNodeState {
+                    title: String::new(),
+                    manual_name: None,
                     body: Some(NodeBody::PaneId("pane".into())),
                 }],
             }],

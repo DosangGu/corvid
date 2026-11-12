@@ -230,7 +230,7 @@ fn status(metadata: &MetadataView, workspaces: &Workspaces) -> ConnectionStatus 
 }
 
 fn inventory(metadata: &MetadataView) -> WorkspaceList {
-    let layout = metadata.layout();
+    let layout = metadata.display_layout();
     let workspaces = layout
         .workspaces
         .iter()

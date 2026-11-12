@@ -2,7 +2,7 @@ use corvid_core::Viewport;
 use corvid_core::layout::{Layout, Location, Workspace};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::keys::{InputMode, Keymap};
+use super::keys::InputMode;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TuiViewport {
@@ -31,44 +31,22 @@ pub(super) fn line(
     location: Location,
     cols: u16,
     mode: InputMode,
-    keymap: Keymap,
+    pane: Option<&str>,
 ) -> String {
     let width = usize::from(cols - 1);
     let (style, title, help) = match mode {
-        InputMode::Passthrough => {
-            let help = if keymap.tabs {
-                " | Ctrl-] 1-9 / w tabs"
-            } else {
-                " | Ctrl-] commands"
-            };
-            ("\x1b[0;30;46m", "CORVID", help)
-        }
-        InputMode::Command => {
-            let help = if keymap.disconnect && keymap.close && keymap.handoff {
-                " | t new  w list  d detach  D others  g handoff  X/T/S close"
-            } else if keymap.close && keymap.handoff {
-                " | t new  w list  d detach  g handoff  X/T/S close"
-            } else if keymap.handoff {
-                " | d detach  g handoff"
-            } else if keymap.close {
-                " | t new  w list  d detach  X/T/S close"
-            } else if keymap.tabs {
-                " | 1-9 switch  w list  t new  d detach"
-            } else {
-                " | d detach"
-            };
-            ("\x1b[0;30;43m", "CORVID CMD", help)
-        }
+        InputMode::Passthrough => ("\x1b[0;2m", "CORVID", " | Ctrl-] commands"),
+        InputMode::Command => ("\x1b[0;1m", "CORVID CMD", " | ? all commands · Esc return"),
     };
     let title = clip(title, width);
     let mut text = format!("{style}\x1b[2K{title}");
     let mut remaining = width - title.len();
-    let help = if remaining >= help.len() + 24 {
+    let help = if remaining >= help.width() + 24 {
         help
     } else {
         ""
     };
-    remaining -= help.len();
+    remaining -= help.width();
 
     if let Some(workspace) = layout
         .workspaces
@@ -83,7 +61,20 @@ pub(super) fn line(
                 remaining -= 2 + name.width();
             }
         }
-        append_tabs(&mut text, workspace, location, remaining);
+        let pane = pane
+            .map(|title| clip(title, remaining.saturating_sub(12) / 2))
+            .filter(|title| !title.is_empty());
+        let pane_width = pane.as_ref().map_or(0, |title| title.width() + 3);
+        append_tabs(
+            &mut text,
+            workspace,
+            location,
+            remaining.saturating_sub(pane_width),
+        );
+        if let Some(title) = pane {
+            text.push_str(" · ");
+            text.push_str(&title);
+        }
     }
     text.push_str(help);
     text
@@ -151,7 +142,7 @@ pub(super) fn clip(text: &str, mut room: usize) -> String {
         if width > room {
             break;
         }
-        if width > 0 {
+        if width > 0 || !result.is_empty() {
             result.push(ch);
             room -= width;
         }

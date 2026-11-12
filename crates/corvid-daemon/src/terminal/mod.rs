@@ -1,4 +1,5 @@
 mod backend;
+mod commands;
 mod host;
 mod input;
 mod keys;
@@ -8,6 +9,7 @@ mod pty;
 #[cfg(windows)]
 #[path = "pty/windows.rs"]
 mod pty;
+mod rename;
 mod screen;
 mod session;
 mod status;

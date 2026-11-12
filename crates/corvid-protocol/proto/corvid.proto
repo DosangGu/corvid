@@ -96,6 +96,8 @@ message Envelope {
     RequestWriterHandoff request_writer_handoff = 124;
     DisconnectWorkspaceClients disconnect_workspace_clients = 125;
     WorkspaceClientsDisconnected workspace_clients_disconnected = 126;
+    RenameView rename_view = 127;
+    ViewRenamed view_renamed = 128;
   }
 }
 
@@ -636,11 +638,14 @@ message WorkspaceState {
 message TabState {
   string tab_id = 1;
   string label = 2;
+  optional string manual_name = 4;
   // Preorder tree rooted at index zero. Split children refer to this array.
   repeated LayoutNodeState nodes = 3;
 }
 
 message LayoutNodeState {
+  string title = 3;
+  optional string manual_name = 4;
   oneof body {
     string pane_id = 1;
     SplitState split = 2;
@@ -1074,6 +1079,16 @@ message ReadPanePreview {
   optional uint64 expected_view_revision = 1;
   string pane_id = 2;
 }
+
+message RenameView {
+  // Requires view_titles.v1 and the writer's current selected view.
+  optional uint64 expected_view_revision = 1;
+  bool pane = 2;
+  // Empty restores automatic naming for the selected pane or tab.
+  string name = 3;
+}
+
+message ViewRenamed {}
 
 message ReadTerminalHistory {
   optional uint64 expected_view_revision = 1;

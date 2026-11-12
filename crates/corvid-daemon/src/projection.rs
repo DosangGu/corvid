@@ -21,6 +21,13 @@ pub(crate) fn entry(body: Body) -> SnapshotEntity {
 }
 
 pub(crate) fn layout(layout: &Layout) -> Projection {
+    named_layout(layout, &std::collections::HashMap::new())
+}
+
+pub(crate) fn named_layout(
+    layout: &Layout,
+    titles: &std::collections::HashMap<uuid::Uuid, String>,
+) -> Projection {
     let workspaces = layout
         .workspaces
         .iter()
@@ -28,12 +35,14 @@ pub(crate) fn layout(layout: &Layout) -> Projection {
             let tabs = workspace
                 .tabs
                 .iter()
-                .map(|tab| {
+                .enumerate()
+                .map(|(index, tab)| {
                     let mut nodes = Vec::new();
-                    flatten(&tab.root, &mut nodes);
+                    flatten(&tab.root, &mut nodes, titles, &mut 0);
                     TabState {
                         tab_id: tab.id.to_string(),
-                        label: tab.label.clone(),
+                        label: tab.display_name(index, titles),
+                        manual_name: tab.manual_name.clone(),
                         nodes,
                     }
                 })
@@ -48,17 +57,33 @@ pub(crate) fn layout(layout: &Layout) -> Projection {
     (Group::Layout, workspaces)
 }
 
-fn flatten(node: &Node, nodes: &mut Vec<LayoutNodeState>) -> u32 {
+fn flatten(
+    node: &Node,
+    nodes: &mut Vec<LayoutNodeState>,
+    titles: &std::collections::HashMap<uuid::Uuid, String>,
+    ordinal: &mut usize,
+) -> u32 {
     let index = nodes.len();
     nodes.push(LayoutNodeState::default());
     let body = match node {
-        Node::Pane { id, .. } => NodeBody::PaneId(id.to_string()),
+        Node::Pane {
+            id, manual_name, ..
+        } => {
+            nodes[index].title =
+                corvid_core::layout::pane_name(*id, manual_name.as_deref(), *ordinal, titles);
+            nodes[index].manual_name = manual_name.clone();
+            *ordinal += 1;
+            NodeBody::PaneId(id.to_string())
+        }
         Node::Split { axis, children } => {
             let axis = match axis {
                 Axis::Horizontal => SplitAxis::Horizontal,
                 Axis::Vertical => SplitAxis::Vertical,
             };
-            let children = children.iter().map(|child| flatten(child, nodes)).collect();
+            let children = children
+                .iter()
+                .map(|child| flatten(child, nodes, titles, ordinal))
+                .collect();
             NodeBody::Split(SplitState {
                 axis: axis as i32,
                 children,

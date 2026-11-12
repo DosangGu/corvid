@@ -24,6 +24,127 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[tokio::test]
+async fn terminal_titles_follow_shells_and_manual_names_restore_latest_title() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let mut tui = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--new",
+            "--",
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+        ]
+        .map(OsString::from),
+    )?;
+    tui.wait_for("PS ")?;
+    tui.send(b"[Console]::Title='AUTO_ONE'\r")?;
+    wait_for_title(&runtime, "AUTO_ONE", "AUTO_ONE").await?;
+
+    tui.send(b"\x1d.")?;
+    tui.wait_for("Rename pane")?;
+    tui.send(b"\x1b[200~Manual\r\nPane\x1b[201~")?;
+    tui.wait_for("> ManualPane")?;
+    tui.send(b"\r")?;
+    tui.wait_without("Rename pane")?;
+    wait_for_title(&runtime, "ManualPane", "ManualPane").await?;
+    tui.send(b"[Console]::Title='AUTO_TWO'; [Console]::WriteLine(('TITLE_' + 'UPDATED'))\r")?;
+    tui.wait_for("TITLE_UPDATED")?;
+    wait_for_title(&runtime, "ManualPane", "ManualPane").await?;
+
+    tui.send(b"\x1d,")?;
+    tui.wait_for("Rename tab")?;
+    tui.send("이름 🐦".as_bytes())?;
+    tui.send(b"\r")?;
+    tui.wait_without("Rename tab")?;
+    wait_for_title(&runtime, "이름 🐦", "ManualPane").await?;
+    tui.send(b"\x1d.")?;
+    tui.wait_for("Rename pane")?;
+    tui.send(b"\r")?;
+    tui.wait_without("Rename pane")?;
+    wait_for_title(&runtime, "이름 🐦", "AUTO_TWO").await?;
+    tui.send(b"\x1d,")?;
+    tui.wait_for("Rename tab")?;
+    tui.send(b"\r")?;
+    tui.wait_without("Rename tab")?;
+    wait_for_title(&runtime, "AUTO_TWO", "AUTO_TWO").await?;
+
+    tui.send(b"\x1d%")?;
+    tui.wait_for("Tab 1")?;
+    wait_for_title(&runtime, "Tab 1", "AUTO_TWO").await?;
+    tui.send(b"\x1dX")?;
+    tui.wait_without("Tab 1")?;
+    wait_for_title(&runtime, "AUTO_TWO", "AUTO_TWO").await?;
+    tui.send(b"exit\r")?;
+    tui.expect_exit(0)?;
+    Ok(())
+}
+
+async fn wait_for_title(runtime: &Path, tab_name: &str, pane_name: &str) -> Result<()> {
+    let mut observed = Vec::new();
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let snapshot = corvid_client::snapshot(runtime).await?;
+            observed = snapshot.snapshot().entities().filter_map(|entity| {
+                if let Some(Body::Workspace(workspace)) = &entity.body {
+                    Some(workspace.tabs.iter().map(|tab| (tab.label.clone(), tab.nodes.iter().map(|node| node.title.clone()).collect::<Vec<_>>())).collect::<Vec<_>>())
+                } else { None }
+            }).collect::<Vec<_>>();
+            if snapshot.snapshot().entities().any(|entity| {
+                matches!(&entity.body, Some(Body::Workspace(workspace)) if workspace.tabs.iter().any(|tab| tab.label == tab_name && tab.nodes.iter().any(|node| node.title == pane_name)))
+            }) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await.with_context(|| format!("waiting for tab {tab_name:?}, pane {pane_name:?}; observed {observed:?}"))?
+}
+
+#[tokio::test]
+async fn command_menu_consumes_input_and_paste_without_resizing_the_terminal() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let mut tui = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--new",
+            "--",
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+        ]
+        .map(OsString::from),
+    )?;
+    tui.wait_for("PS ")?;
+    let original = terminal_id(&runtime).await?;
+    tui.send(b"[Console]::WriteLine(('BEFORE_' + [Console]::WindowHeight + 'x' + [Console]::WindowWidth))\r")?;
+    tui.wait_for("BEFORE_29x100")?;
+    tui.send(b"\x1d?")?;
+    tui.wait_for("CORVID COMMANDS")?;
+    tui.send(b"QQQ")?;
+    tui.send(b"\x1b[200~$env:CORVID_MENU_LEAK='yes'\r\x1b[201~")?;
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    tui.send(b"?")?;
+    tui.wait_for("CORVID COMMANDS")?;
+    tui.send(b"\x1b")?;
+    tui.wait_without("CORVID COMMANDS")?;
+    tui.send(b"if (!$env:CORVID_MENU_LEAK) { [Console]::WriteLine(('MENU_' + 'CLEAN')) }; [Console]::WriteLine(('AFTER_' + [Console]::WindowHeight + 'x' + [Console]::WindowWidth))\r")?;
+    tui.wait_for("MENU_CLEAN")?;
+    tui.wait_for("AFTER_29x100")?;
+    assert_eq!(terminal_id(&runtime).await?, original);
+    tui.send(b"exit\r")?;
+    tui.expect_exit(0)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn read_only_terminal_crops_then_accepts_an_explicit_writer_handoff() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -538,6 +659,13 @@ async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
         b"$env:CORVID_UPGRADE_VALUE='retained'; $env:CORVID_UPGRADE_PID=$PID; [Console]::WriteLine(('BE' + 'FORE_' + $PID))\r",
     )?;
     first.wait_for("BEFORE_")?;
+    first.send(b"[Console]::Title='RETAINED_TITLE'\r")?;
+    wait_for_title(&runtime, "RETAINED_TITLE", "RETAINED_TITLE").await?;
+    first.send(b"\x1d,")?;
+    first.wait_for("Rename tab")?;
+    first.send(b"Retained tab\r")?;
+    first.wait_without("Rename tab")?;
+    wait_for_title(&runtime, "Retained tab", "RETAINED_TITLE").await?;
     let original_terminal = terminal_id(&runtime).await?;
     let output = tokio::process::Command::new(CORVID)
         .arg("--runtime-dir")
@@ -556,6 +684,7 @@ async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
     let current = corvid_client::host(&runtime).await?;
     ensure!(current.host_id == original.host_id && current.server_epoch != original.server_epoch);
     ensure!(terminal_id(&runtime).await? == original_terminal);
+    wait_for_title(&runtime, "Retained tab", "RETAINED_TITLE").await?;
     let mut second = Tui::open(&runtime, [])?;
     second.wait_for("BEFORE_")?;
     second.send(b"[Console]::WriteLine(('AF' + 'TER_' + $PID + '_' + $env:CORVID_UPGRADE_VALUE)); [Console]::WriteLine(('SAME_' + 'PROCESS_' + ($env:CORVID_UPGRADE_PID -eq $PID)))\r")?;

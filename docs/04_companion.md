@@ -52,7 +52,8 @@ cargo run --locked -p corvid-desktop
 
 Desktop opens a local shell through the local daemon. It reuses a running daemon
 or starts its own daemon process from the Desktop executable. It uses the same
-runtime directory as the TUI. Open **Sessions** to select an SSH alias
+runtime directory as the TUI. Open **Settings → Connections** (Ctrl+,) to select
+an SSH alias
 from `~/.ssh/config` or enter one. Pass `-- --ssh-alias work-host` to the Cargo
 command to open SSH directly. When an alias matches the companion configuration,
 Desktop checks its expected Corvid host ID.
@@ -81,20 +82,22 @@ Host work-host
 ```
 
 Open `corvid-desktop.exe` to attach to the local Corvid daemon and open its shell.
-Open **Sessions** in the toolbar to browse sessions under **Local Terminal**
-and each connected SSH host. The list shows concrete
+Open **Settings → Connections** (Ctrl+,) to browse **Local Terminal**, SSH hosts,
+and WSL distributions in a separate window. The list shows concrete
 `Host` aliases from `%USERPROFILE%\.ssh\config` and static, unconditional
 `Include` files. Use **Refresh** after editing the config, or enter an alias
-manually. While Desktop is open, **Sessions** keeps verified inventories for
-visited connections. Desktop continues to watch up to eight detached hosts for
+manually. While Desktop is open, the workspace picker keeps verified inventories
+for visited connections. Open it with the host/workspace button or Ctrl+Shift+P.
+Desktop continues to watch up to eight detached hosts for
 session and agent changes, with the status **Live · detached**. If a watch loses
 the connection, Desktop marks the retained inventory **Cached**. A detached
 watch checks the previously verified host ID and holds no writer lease.
-Select a session to open it directly. Switching connections detaches the
-current view and keeps its daemon's terminals running.
+Select a workspace in the picker to open it directly. Switching connections
+detaches the current view and keeps its daemon's terminals running.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
 
-On Windows, **Sessions → WSL** lists installed distributions. Select a distribution
+On Windows, **Settings → Connections → WSL** lists installed distributions.
+Select a distribution
 to connect as its default Linux user, or launch with
 `corvid-desktop.exe --wsl-distribution Ubuntu`. **Refresh** reloads the distribution
 list. Desktop runs the terminal relay and control watch through `wsl.exe` stdio.
@@ -143,19 +146,59 @@ Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
 The initial attach joins a live pane in the default session or opens its shell.
 
-Use **New session** under the active connection. **New tab** creates a shell
-within the selected session. Click a pane to
-focus it. Other live panes in the same tab show read-only previews. Desktop and
+Use **+ → New workspace** under the active connection. **+ → New tab** creates
+a shell within the selected workspace. Click a pane to focus it. Other live
+panes in the same tab show read-only previews. Desktop and
 TUI clients using pane writers can operate different panes in the same
-workspace. An active pane has one writer. Use **New tab** next to a session in
-Desktop's **Sessions** panel, or run `corvid attach --new-tab NAME` in the TUI,
-to open a separate tab while another client is writing. **Detach** and window close
+workspace. An active pane has one writer. Select a workspace in Desktop's picker
+and use **Open in new tab**, or run `corvid attach --new-tab NAME` in the TUI,
+to open a separate tab while another client is writing. **⋯ → Detach** and window close
 release the writer and keep PTYs running while the daemon survives.
 Use `exit` in a shell to end that PTY.
 
-Ctrl+Shift+N creates a session, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
+Ctrl+Shift+N creates a workspace, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
-the selected session.
+the selected workspace.
+
+Pane titles follow terminal OSC 0/2 titles in real time. An automatic tab follows
+its only pane's effective title, or uses `Tab N` when it contains multiple panes.
+N is the tab's workspace position. Manual pane and tab names override automatic
+names independently and persist across restarts. Ctrl+Shift+R renames the active
+pane; Ctrl+Alt+R renames the tab. Both actions are also in the terminal menu.
+Save an empty name or choose **Use automatic title** to resume synchronization
+with the latest terminal title. Before a terminal supplies a title, panes use
+`Pane N`. These actions require a daemon advertising `view_titles.v1`.
+
+On 2026-11-12, isolated Linux Desktop GUI checks verified both rename shortcuts,
+manual-name precedence during subsequent OSC changes, split-tab numbering,
+single-pane title restoration after closing a split, and the automatic-title
+button. Opening the editor preserved the PTY dimensions. Native Windows ConPTY
+tests covered typed Korean and emoji, pasted newlines, title overrides, splitting
+and closing, and manual-name/title recovery through daemon replacement. Native
+Windows Desktop GUI and IME composition were not exercised in these checks.
+
+Desktop keeps navigation in one compact row. A single pane has no extra title
+bar or border, and normal attachment does not add a bottom status bar. Read-only,
+reconnection, synchronization, and error states remain visible. The workspace
+picker and action menus overlay the terminal without resizing its PTY; Escape
+returns focus to the terminal. Type to filter workspaces by host and label, then
+use Up/Down and Enter. Cached workspaces are identified explicitly.
+
+Ctrl+Shift+F hides/restores the tab bar; **Show tabs** also exits focus mode.
+Ctrl+Shift+Z expands the selected pane and restores its split layout without
+changing the daemon's layout. Settings opens a reusable separate window with
+Connections, Terminal, Shortcuts, Extensions, and About & updates. Closing
+settings keeps the terminal attached; closing the terminal window also closes
+its settings window. View preferences currently last for that window's lifetime.
+
+On 2026-11-12, the terminal-first layout was exercised under Linux Xvfb with
+an isolated real daemon. Settings creation, reuse, close/reopen, workspace
+search (including empty results), split, pane expansion/restoration, and focus
+mode were checked. Closing the picker restored terminal input; opening settings
+and the picker kept the selected PTY at the same dimensions. Closing the terminal
+window also closed settings. The Windows
+workspace tests and Linux routing and interactive TTY suites passed. Native
+Windows GUI interaction for this layout has not yet been verified.
 
 The TUI supports `corvid attach --read-only` for observing an existing pane
 while a writer is attached. Use Ctrl-] to leave an observer. To let the current
@@ -166,21 +209,22 @@ on that pane, and waits for the user to try again if a paste is pending.
 The old TUI detaches and the promoted TUI continues with the same terminal at
 its own viewport size. These controls are available on Windows and Linux.
 
-In Desktop, open **Sessions** and choose **Observe current pane** on the host
-or **Observe** next to a known session. The toolbar shows **Read-only** and
-the pane accepts selection and copy without forwarding keys. Turn on **Allow
-writer handoff when observing** before connecting if you want to accept input
-ownership. The writer can then choose **Hand off writer** in Desktop or use
+In Desktop, choose **⋯ → Observe current pane**, or select a workspace in
+the picker and choose **Observe**. The toolbar shows **Read-only** and
+the pane accepts selection and copy without forwarding keys. Turn on
+**Settings → Terminal → Accept writer handoff when observing** before connecting
+if you want to accept input ownership. The writer can then choose
+**⋯ → Hand off input control** in Desktop or use
 the TUI shortcut above. The observer must be on the same pane and be the
 only observer that opted in there. A handoff leaves the pane running.
 
-To take over from another machine, observe the pane and choose **Take over pane**.
+To take over from another machine, observe the pane and choose **⋯ → Take input control**.
 The TUI equivalent is `corvid attach --takeover`, which selects the most recently
 connected writer's pane in the selected workspace by default. Pass
 `--workspace`, `--tab`, and `--pane` to target a specific pane. The previous
 writer detaches and the existing shell continues. Retry if a paste is in progress.
 
-A writer can use **Sessions → Disconnect other clients** in Desktop or
+A writer can use **⋯ → Disconnect other clients** in Desktop or
 Ctrl-] then uppercase D in the TUI. This detaches other writers and observers
 currently viewing that session. Shells, agents, and clients viewing other
 workspaces continue running.
@@ -190,8 +234,9 @@ observer displayed the writer's output and blocked typed commands. The
 writer's button released ownership and the promoted Desktop ran a command in
 the same pane. The Windows ConPTY integration test covers the daemon handoff.
 
-Open **Plugins → Corvid Agent Deck** to see the daemon's observed Codex and Claude
-Code activity, including **Working**, **Input needed**, and **Response observed**.
+Open **Agents** in the top bar (or **Settings → Extensions → Open Agent Deck**)
+to see the daemon's observed Codex and Claude Code activity, including
+**Working**, **Input needed**, and **Response observed**.
 Click a live agent's name to open its pane in Desktop. See the
 [provider setup](03_provider_qualification.md) for hook coverage.
 
@@ -425,8 +470,9 @@ an additional control connection. The presentation capability is `list_hosts.v1`
 
 ## Corvid Agent Deck plugin
 
-Open a local or SSH terminal in Desktop and choose **Plugins → Corvid Agent Deck**. The
-Deck opens in an independent process and stays alive when Desktop detaches or switches
+Open a local or SSH terminal in Desktop and choose **Agents** in the top bar
+(or **Settings → Extensions → Open Agent Deck**). The Deck opens in an independent
+process and stays alive when Desktop detaches or switches
 hosts. Desktop checks the companion host and controller IDs before opening the
 window. A matching configured companion keeps its existing state. Other hosts
 get their own companion state below `slot-board/` in Desktop's state directory.

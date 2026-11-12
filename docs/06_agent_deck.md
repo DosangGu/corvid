@@ -9,7 +9,8 @@ The physical Stream Deck/GPUI prototype in `spikes/deck` remains separate.
 
 ## Launch and lifetime
 
-Open **Plugins → Corvid Agent Deck** in Desktop. Build source installations with
+Open **Agents** in the top bar (or **Settings → Extensions → Open Agent Deck**)
+in Desktop. Build source installations with
 `cargo build --locked -p corvid-agent-deck`; Desktop finds the binary beside itself
 or in `plugins/agent-deck/` in an installed package. Direct launches require an
 existing companion `--state-dir` and the matching `--pipe-instance` (Windows) or
@@ -136,7 +137,7 @@ monitor. Windows notification architecture follows the
 Desktop provides [terminal selection, scrollback, and search](04_companion.md#desktop-terminal-selection-and-history).
 Windows observes [native agent processes](04_companion.md#windows-quick-start)
 launched directly by Corvid or from a Corvid shell.
-Desktop's Sessions menu watches verified hosts while their terminal views are
+Desktop's workspace picker watches verified hosts while their terminal views are
 detached. In Agent Deck, **Hosts** lists the agents on up to eight hosts
 configured by Desktop or companion setup. Refresh after configuring another
 host. The overview checks the expected host identity before using a snapshot

@@ -115,13 +115,12 @@ The check command changes neither installed files nor daemon state. Network,
 rate-limit, missing-release, and validation errors are reported as failures,
 not as evidence that the installation is up to date.
 
-Desktop provides **Help → Check for updates**. It shows the installed and
-available versions and release notes, then offers installation and restart.
+Desktop provides **Settings → About & updates → Check for updates**. It shows
+the installed and available versions and release notes, then offers installation
+and restart.
 Downloads and installation run outside the UI thread. Cancellation at the
 confirmation leaves the installation alone. An installation error keeps the
 existing executable available.
-
-![Desktop Help menu with the update command](images/release-update-menu.png)
 
 Both clients use `corvid-update`. The updater selects a release once, verifies
 its manifest, and runs that exact tag's verified installer with the expected
@@ -195,7 +194,7 @@ Run the x64 Setup executable for a per-user install. The default directory is
 and the Corvid Terminal. For CLI access from your own shells, add its `bin`
 directory to your user PATH. Setup builds are currently unsigned.
 
-Use `corvid update --check` or **Help → Check for updates** to find available
+Use `corvid update --check` or **Settings → About & updates → Check for updates** to find available
 releases. Run the new Setup over the existing installation to update. Setup keeps older
 version directories and switches the launchers to the selected version after
 copying its files. Agent Deck registers its notification shortcut when started

@@ -1591,6 +1591,7 @@ dependencies = [
  "corvid-agent-deck",
  "corvid-client",
  "corvid-companion",
+ "corvid-core",
  "corvid-protocol",
  "corvid-tui",
  "corvid-update",

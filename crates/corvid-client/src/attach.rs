@@ -205,6 +205,7 @@ async fn request_attach(
     for capability in [
         PAIR_CAPABILITY,
         STATUS_BAR_CAPABILITY,
+        corvid_protocol::VIEW_TITLES_CAPABILITY,
         CLOSE_VIEW_CAPABILITY,
         corvid_protocol::SESSION_CLIENTS_CAPABILITY,
     ] {
