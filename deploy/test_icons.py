@@ -120,12 +120,18 @@ def linux_menu():
         install()
         assert entry.read_bytes() == before
         assert icon.resolve() == second / "icons/corvid.svg"
+        (second / "plugins/agent-deck/corvid-agent-deck").unlink()
+        install()
+        agent_entry = data / "applications/corvid-agent-deck.desktop"
+        assert not agent_entry.exists(), "Removed plugins must not leave a dead menu entry"
+        agent_entry.write_text("[Desktop Entry]\nName=Foreign Agent Deck\n")
         entry.write_text("[Desktop Entry]\nName=Another installation\n")
         icon.unlink()
         icon.write_text("foreign icon")
         install()
         assert entry.read_text() == "[Desktop Entry]\nName=Another installation\n"
         assert icon.read_text() == "foreign icon"
+        assert agent_entry.read_text() == "[Desktop Entry]\nName=Foreign Agent Deck\n"
         print("PASS Linux menu escaping, update paths, and foreign-file preservation")
 
 

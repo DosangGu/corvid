@@ -63,6 +63,11 @@ install_icon 256x256 png
 install_entry Corvid.Desktop 'Corvid Desktop' "$install_root/current/corvid-desktop" Corvid.Desktop
 if [ -f "$install_root/current/plugins/agent-deck/corvid-agent-deck" ]; then
     install_entry corvid-agent-deck 'Corvid Agent Deck' "$install_root/current/plugins/agent-deck/corvid-agent-deck" corvid-agent-deck
+else
+    entry="$applications/corvid-agent-deck.desktop"
+    if [ -f "$entry" ] && [ ! -L "$entry" ] && grep -Fxq -- "$owner" "$entry"; then
+        rm -f -- "$entry"
+    fi
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$applications" || true
