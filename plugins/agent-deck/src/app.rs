@@ -18,7 +18,16 @@ use crate::catalog::Catalog;
 use crate::notifications::{Notice, now_ms};
 use crate::parent::DesktopLink;
 
+mod deck;
+
 pub(crate) fn configure(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = deck::PANEL;
+    visuals.window_fill = deck::PANEL;
+    visuals.extreme_bg_color = deck::BACKGROUND;
+    visuals.selection.bg_fill = Color32::from_rgb(38, 72, 65);
+    visuals.selection.stroke.color = Color32::from_rgb(119, 216, 183);
+    ctx.set_visuals(visuals);
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(9.0, 4.0);
@@ -202,27 +211,56 @@ impl Desktop {
 
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Corvid Agent Deck");
-            if self.section == Section::Hosts {
-                ui.selectable_value(&mut self.section, Section::Slots, "Slots");
-            }
-            ui.selectable_value(&mut self.section, Section::Hosts, "Hosts");
-            if self.section == Section::Hosts {
-                return;
-            }
-            let text = connection_text(&self.view);
-            ui.label(RichText::new(text).strong());
-            ui.selectable_value(
-                &mut self.section,
-                Section::Notifications,
-                "Notifications & settings",
+            ui.heading("Agent Deck");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.selectable_value(&mut self.section, Section::Notifications, "Notifications");
+                ui.selectable_value(&mut self.section, Section::Hosts, "Hosts");
+                if matches!(self.section, Section::Hosts | Section::Notifications) {
+                    ui.selectable_value(&mut self.section, Section::Slots, "Deck");
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            let host = self
+                .view
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.host.to_string());
+            let label = host.as_deref().map_or_else(
+                || "Corvid".into(),
+                |host| format!("Corvid · {}", short_id(host)),
             );
+            let response = ui.weak(label);
+            if let Some(host) = host {
+                response.on_hover_text(format!("Host {host}"));
+            }
+            let online = self.view.link == Link::Online
+                && self
+                    .view
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.generation())
+                    .is_some();
+            let color = if online {
+                Color32::from_rgb(119, 216, 183)
+            } else {
+                ui.visuals().warn_fg_color
+            };
+            ui.label(
+                RichText::new(if online {
+                    "Connected"
+                } else {
+                    "Check connection"
+                })
+                .size(12.0)
+                .color(color),
+            )
+            .on_hover_text(connection_text(&self.view));
         });
         if self.section == Section::Hosts {
             return;
         }
         if let Some(snapshot) = self.view.snapshot.clone() {
-            ui.label(format!("Host {}", snapshot.host));
             if self.view.link != Link::Online || snapshot.generation().is_none() {
                 if let Some(seen) = self.view.last_ready {
                     ui.label(format!(
@@ -295,7 +333,7 @@ impl Desktop {
 
     fn sections(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.section, Section::Slots, "Slots");
+            ui.selectable_value(&mut self.section, Section::Slots, "Deck");
             ui.selectable_value(
                 &mut self.section,
                 Section::Overflow,
@@ -303,56 +341,82 @@ impl Desktop {
             );
             ui.selectable_value(&mut self.section, Section::History, "Closed panes");
         });
-        ui.separator();
+        ui.add_space(12.0);
     }
 
     fn board(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
-        ui.weak("Completed agents stay here until their pane, tab, or session is closed.");
-        let columns = ((ui.available_width() / 250.0) as usize).clamp(1, 4);
+        let (columns, edge) = deck::grid(ui.available_width());
+        let width = columns as f32 * edge + (columns - 1) as f32 * deck::GAP;
+        let inset = (ui.available_width() - width).max(0.0) / 2.0;
         for row in snapshot.data.slots.chunks(columns) {
-            ui.columns(columns, |cells| {
-                for (ui, slot) in cells.iter_mut().zip(row) {
-                    ui.push_id(slot.slot_id, |ui| self.card(ui, snapshot, slot));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = deck::GAP;
+                ui.add_space(inset);
+                for slot in row {
+                    ui.push_id(slot.slot_id, |ui| self.card(ui, snapshot, slot, edge));
                 }
             });
-            ui.add_space(10.0);
+            ui.add_space(deck::GAP - ui.spacing().item_spacing.y);
         }
     }
 
-    fn card(&mut self, ui: &mut Ui, snapshot: &Snapshot, slot: &PresentedSlot) {
-        Frame::group(ui.style()).inner_margin(12.0).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.set_min_height(116.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("Slot {:02}", slot.slot_id));
-                if slot.pinned {
-                    ui.weak("Pinned");
-                }
-            });
-
-            if let Some(run) = &slot.run {
-                self.run(ui, snapshot, run);
-                ui.horizontal_wrapped(|ui| {
-                    if !self.parent.connected() {
-                        let focus = self
-                            .binding
-                            .as_ref()
-                            .and_then(|binding| snapshot.focus(slot, binding));
-                        self.action(ui, snapshot, "Focus", focus);
-                    }
-                    if run.latest_unseen_attention_id.is_some() {
-                        self.action(ui, snapshot, "Acknowledge alert", snapshot.acknowledge(run));
-                    }
-                });
+    fn card(&mut self, ui: &mut Ui, snapshot: &Snapshot, slot: &PresentedSlot, edge: f32) {
+        let desktop = self.parent.connected();
+        let key = slot
+            .run
+            .as_ref()
+            .and_then(|run| snapshot.live_key(run))
+            .cloned();
+        let focus = self
+            .binding
+            .as_ref()
+            .and_then(|binding| snapshot.focus(slot, binding));
+        let can_focus = self.ready(snapshot)
+            && if desktop {
+                key.is_some()
             } else {
-                ui.weak("Empty");
+                focus.is_some()
+            };
+        let cached = self.view.link != Link::Online || snapshot.generation().is_none();
+        let response = ui.add(deck::Key {
+            slot,
+            edge,
+            cached,
+            can_focus,
+        });
+        if response.clicked() && can_focus {
+            if desktop {
+                self.focus_run(key.expect("focusable agent"));
+            } else {
+                self.submit(snapshot, focus.expect("focusable terminal binding"));
             }
-
-            ui.horizontal_wrapped(|ui| {
-                let pin = if slot.pinned { "Unpin" } else { "Pin" };
-                if slot.run.is_some() {
-                    self.action(ui, snapshot, pin, snapshot.pin(slot));
-                }
+        }
+        let Some(run) = &slot.run else {
+            return;
+        };
+        response.context_menu(|ui| {
+            ui.strong(format!("Key {:02}", slot.slot_id));
+            ui.separator();
+            self.action(
+                ui,
+                snapshot,
+                if slot.pinned { "Unpin" } else { "Pin" },
+                snapshot.pin(slot),
+            );
+            if run.latest_unseen_attention_id.is_some() {
+                self.action(ui, snapshot, "Acknowledge alert", snapshot.acknowledge(run));
+            }
+            if self.pending.is_some() {
+                ui.close();
+            }
+        });
+        response.on_hover_ui(|ui| {
+            describe_run(ui, run, cached, None);
+            ui.separator();
+            ui.weak(if can_focus {
+                "Click to open terminal · Right-click for actions"
+            } else {
+                "Focus unavailable · Right-click for actions"
             });
         });
     }
@@ -640,7 +704,7 @@ impl eframe::App for Desktop {
         }
         ctx.request_repaint_after(Duration::from_secs(1));
 
-        let panel = Frame::side_top_panel(&ctx.style()).inner_margin(Margin::symmetric(16, 10));
+        let panel = Frame::side_top_panel(&ctx.style()).inner_margin(Margin::symmetric(20, 12));
         egui::TopBottomPanel::top("connection")
             .frame(panel)
             .show(ctx, |ui| self.header(ui));
@@ -657,13 +721,21 @@ impl eframe::App for Desktop {
                     ui.label(text);
                 } else if self.section == Section::Hosts {
                     ui.weak("Each host keeps its own slots and notifications.");
+                } else if self.section == Section::Slots
+                    && self.view.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.data.slots.iter().all(|slot| slot.run.is_none())
+                    })
+                {
+                    ui.weak("Run Codex or Claude in a Corvid terminal to fill the deck.");
                 } else if self.parent.connected() {
-                    ui.weak("Click an agent to open its pane in Desktop.");
+                    ui.weak("Click a key to open its terminal · Right-click for pin and alerts");
                 } else {
                     ui.weak("Select a paired terminal to focus a slot.");
                 }
             });
-        let content = Frame::central_panel(&ctx.style()).inner_margin(Margin::symmetric(16, 10));
+        let content = Frame::central_panel(&ctx.style())
+            .fill(deck::BACKGROUND)
+            .inner_margin(Margin::symmetric(20, 16));
         egui::CentralPanel::default()
             .frame(content)
             .show(ctx, |ui| {
@@ -701,17 +773,18 @@ impl eframe::App for Desktop {
 }
 
 fn gesture_active(ctx: &egui::Context) -> bool {
-    ctx.input(|input| {
-        input.pointer.primary_down()
-            || input.pointer.primary_released()
-            || [egui::Key::Enter, egui::Key::Space]
-                .into_iter()
-                .any(|key| input.key_down(key) || input.key_pressed(key))
-            || input
-                .events
-                .iter()
-                .any(|event| matches!(event, egui::Event::AccessKitActionRequest(_)))
-    })
+    egui::Popup::is_any_open(ctx)
+        || ctx.input(|input| {
+            input.pointer.any_down()
+                || input.pointer.any_released()
+                || [egui::Key::Enter, egui::Key::Space].into_iter().any(|key| {
+                    input.key_down(key) || input.key_pressed(key) || input.key_released(key)
+                })
+                || input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::AccessKitActionRequest(_)))
+        })
 }
 
 fn ended(ui: &mut Ui, snapshot: &Snapshot) {
@@ -893,20 +966,33 @@ mod tests {
     #[test]
     fn defers_snapshots_on_pointer_press_and_release() {
         let ctx = egui::Context::default();
-        for pressed in [true, false] {
-            let input = egui::RawInput {
-                events: vec![egui::Event::PointerButton {
-                    pos: egui::pos2(10.0, 10.0),
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                }],
-                ..Default::default()
-            };
-            let _ = ctx.run(input, |ctx| assert!(gesture_active(ctx)));
+        for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
+            for pressed in [true, false] {
+                let input = egui::RawInput {
+                    events: vec![egui::Event::PointerButton {
+                        pos: egui::pos2(10.0, 10.0),
+                        button,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| assert!(gesture_active(ctx)));
+            }
         }
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             assert!(!gesture_active(ctx))
+        });
+    }
+
+    #[test]
+    fn defers_snapshots_while_a_key_menu_is_open() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::Popup::open_id(ctx, egui::Id::new("key-menu"));
+            assert!(gesture_active(ctx));
+            egui::Popup::close_all(ctx);
+            assert!(!gesture_active(ctx));
         });
     }
 }

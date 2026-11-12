@@ -65,6 +65,35 @@ Windows background parity is not claimed for Linux.
 
 ## Slots and queue
 
+The **Deck** view uses square keys with a raised rim and dark inset face. The
+default window fits four columns; resizing adjusts the grid from one to six
+columns. Keys show their number, provider, short run ID, current status, unseen
+alert count, and a **PIN** indicator when pinned. Empty keys are inactive.
+
+Click anywhere on an available key to focus its existing terminal. Hover for
+evidence and request details; right-click for **Pin / Unpin** and **Acknowledge
+alert**. Acknowledging an alert does not answer or resolve a pending question.
+The displayed slot snapshot stays fixed throughout a click or open context menu,
+so compaction cannot change the action's captured target.
+
+Status uses both text and color: blue for working, amber for input or interruption,
+mint for ready or an observed response, and red for errors. Offline, cached, and
+historical keys explicitly show their availability instead of presenting their
+last activity as live. Unverified input requests say **Check terminal**.
+**Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
+views; notification preferences are under **Notifications**.
+
+![Agent Deck with test agents and a pinned input request](images/agent-deck/window.png)
+
+The screenshot uses synthetic agents in an isolated Linux Xvfb session. On
+2026-11-12, that session verified the default and 400-pixel-wide layouts, whole-key
+navigation to the correct Desktop pane, context-menu pinning, and acknowledging
+an alert while its input request remained pending. Windows tests for Agent Deck
+and presentation passed (18 tests, one native-notification test ignored), as did
+Windows Clippy for Desktop and Agent Deck, formatting, and whitespace checks.
+Desktop and Agent Deck built on Windows and Linux. Native Windows GUI interaction
+was not exercised for this redesign.
+
 An agent's work finishing, process exiting, or provider context changing does not
 remove its card. The card remains until its owning pane is removed from the daemon's
 layout by closing that pane, its tab, or its workspace/session in Desktop. Closing

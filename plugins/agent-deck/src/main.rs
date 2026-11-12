@@ -80,7 +80,7 @@ fn main() -> Result<()> {
     };
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([920.0, 650.0])
+            .with_inner_size([880.0, 600.0])
             .with_min_inner_size([400.0, 320.0])
             .with_icon(icon)
             .with_visible(!options.background || !cfg!(windows)),

@@ -240,8 +240,8 @@ to see the daemon's observed Codex and Claude Code activity, including
 **Working**, **Input needed**, and **Response observed**.
 The toolbar keeps the **Agents** label and includes an input-request count when
 needed. Activity lists, notification preferences, and card management stay in
-the separate Agents window. Open **Notifications & settings** there to choose
-notification types, sound, and pauses. Click a live agent's name to open its pane
+the separate Agents window. Open **Notifications** there to choose
+notification types, sound, and pauses. Click a live agent's key to open its pane
 in Desktop. See the
 [provider setup](03_provider_qualification.md) for hook coverage.
 
@@ -493,10 +493,10 @@ The window uses eframe 0.33.3 with the Glow
 renderer and connects directly to the private Protobuf endpoint.
 [eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
 
-When launched from Desktop, click an agent in **Slots** or **Queue** to
+When launched from Desktop, click a key in **Deck** or an agent in **Queue** to
 focus its pane and bring Desktop forward. On Linux, the board minimizes after
 a successful focus. When running Agent Deck directly,
-choose a paired TUI in **Target terminal**, then click **Focus** on a slot.
+choose a paired TUI in **Target terminal**, then click the agent's key.
 The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant
 permissions in the terminal. Completed agents retain their cards until their

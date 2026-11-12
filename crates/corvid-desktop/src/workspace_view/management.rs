@@ -147,7 +147,7 @@ impl WorkspaceView {
             Page::Shortcuts => shortcuts(),
             Page::Agents => settings_page("Agents")
                 .child(description("View agent activity and input requests in a separate window. Select an agent to return to its terminal."))
-                .child(description("In the Agents window, open Notifications & settings to choose notification types, sound, and pauses."))
+                .child(description("In the Agents window, open Notifications to choose notification types, sound, and pauses."))
                 .when(ui.as_ref().is_some_and(|ui| ui.connected), |page| {
                     page.child(button("open-agents-settings", "Open Agents", true).on_click(
                         cx.listener(|view, _, _, _| {
