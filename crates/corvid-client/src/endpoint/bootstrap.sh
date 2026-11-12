@@ -1,4 +1,16 @@
+# Use predictable output for bootstrap validation without changing the locale
+# inherited by the daemon and its interactive shells.
+runtime_lc_all_set=${LC_ALL+x}
+runtime_lc_all=${LC_ALL-}
 export LC_ALL=C
+
+restore_runtime_locale() {
+    if [ "$runtime_lc_all_set" = x ]; then
+        export LC_ALL="$runtime_lc_all"
+    else
+        unset LC_ALL
+    fi
+}
 
 root=${HOME:-}/.corvid
 
@@ -100,6 +112,7 @@ case "$1" in
             host=${3:-}
             set -- upgrade --managed-ssh-from "$version"
             if [ -n "$host" ]; then set -- "$@" --expected-host "$host"; fi
+            restore_runtime_locale
             "$stage" "$@"
         else
             # Publish the verified inode without replacing another installation.
@@ -115,12 +128,14 @@ case "$1" in
             exit 127
         fi
         prepare_runtime
+        restore_runtime_locale
         exec corvid "$@"
         ;;
     managed)
         shift
         safe_home && private_root && managed_binary || exit 71
         prepare_runtime
+        restore_runtime_locale
         exec "$root/corvid" "$@"
         ;;
     *) exit 73 ;;

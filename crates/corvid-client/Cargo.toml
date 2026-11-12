@@ -26,7 +26,7 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
-[target.'cfg(windows)'.dev-dependencies]
+[dev-dependencies]
 tempfile.workspace = true
 
 [lints]
