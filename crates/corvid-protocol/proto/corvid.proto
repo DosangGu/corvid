@@ -3,6 +3,8 @@ syntax = "proto3";
 package corvid.protocol.v1;
 
 message Envelope {
+  reserved 124;
+  reserved "request_writer_handoff";
   uint32 protocol_major = 1;
   uint32 protocol_minor = 2;
   optional string request_id = 3;
@@ -93,7 +95,6 @@ message Envelope {
     AgentDeckOpened agent_deck_opened = 121;
     ReadTerminalHistory read_terminal_history = 122;
     TerminalHistory terminal_history = 123;
-    RequestWriterHandoff request_writer_handoff = 124;
     DisconnectWorkspaceClients disconnect_workspace_clients = 125;
     WorkspaceClientsDisconnected workspace_clients_disconnected = 126;
     RenameView rename_view = 127;
@@ -960,7 +961,8 @@ message ShellAgentRegistered {
 enum AttachRole {
   ATTACH_ROLE_UNSPECIFIED = 0;
   ATTACH_ROLE_WRITER = 1;
-  ATTACH_ROLE_OBSERVER = 2;
+  reserved 2;
+  reserved "ATTACH_ROLE_OBSERVER";
 }
 
 message Viewport {
@@ -1091,10 +1093,6 @@ message RenameView {
 message ViewRenamed {}
 
 message ReadTerminalHistory {
-  optional uint64 expected_view_revision = 1;
-}
-
-message RequestWriterHandoff {
   optional uint64 expected_view_revision = 1;
 }
 

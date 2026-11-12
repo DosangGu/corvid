@@ -1,5 +1,3 @@
-mod observer;
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -39,11 +37,9 @@ use crate::workspaces::{
 const CAPABILITIES: &[&str] = &[
     corvid_protocol::VIEW_TITLES_CAPABILITY,
     "attach.v1",
-    corvid_protocol::OBSERVER_CAPABILITY,
-    corvid_protocol::WRITER_HANDOFF_CAPABILITY,
-    corvid_protocol::WRITER_HANDOFF_REQUEST_CAPABILITY,
     corvid_protocol::PANE_WRITERS_CAPABILITY,
     corvid_protocol::SESSION_CLIENTS_CAPABILITY,
+    corvid_protocol::RESUME_ATTACH_CAPABILITY,
     "render.v1",
     "ping.v1",
     "paste.v1",
@@ -88,19 +84,6 @@ pub(crate) async fn serve(
     let request = timeout(COMMAND_TIMEOUT, reader.next_envelope())
         .await??
         .context("missing Attach request")?;
-    if let Ok(Body::Attach(attach)) = session.validate_request(&request)
-        && attach.requested_role == AttachRole::Observer as i32
-    {
-        return observer::serve(
-            session,
-            reader,
-            writer,
-            workspaces,
-            request.request_id.clone(),
-            attach_target(attach),
-        )
-        .await;
-    }
     let client = Uuid::new_v4();
     let (focus_tx, focuses) = mpsc::channel(1);
     let (disconnect, disconnected) = oneshot::channel();
@@ -319,16 +302,6 @@ impl TuiConnection<'_> {
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
             }
-            Body::RequestWriterHandoff(handoff) => {
-                if let Err(fault) = require_view(
-                    handoff.expected_view_revision,
-                    self.active.route.view_revision,
-                ) {
-                    self.fault(request.request_id, fault).await?;
-                    return Ok(false);
-                }
-                return self.handoff(request.request_id).await;
-            }
             Body::DisconnectWorkspaceClients(disconnect) => {
                 match require_view(
                     disconnect.expected_view_revision,
@@ -423,24 +396,9 @@ impl TuiConnection<'_> {
             Event::Tab(command) => self.switch(Destination::Tab(command), None, true).await?,
             Event::Close(target) => return self.close(target, None, true).await,
             Event::PairController => self.pair(None).await?,
-            Event::HandoffWriter => return self.handoff(None).await,
             Event::DisconnectOthers => self.disconnect_others(None).await?,
         }
         Ok(false)
-    }
-
-    async fn handoff(&mut self, id: Option<String>) -> Result<bool> {
-        match self.workspaces.handoff(&self.active).await {
-            Ok(()) => {
-                self.send(id, Body::Detach(corvid_protocol::wire::Detach {}))
-                    .await?;
-                Ok(true)
-            }
-            Err(fault) => {
-                self.fault(id, fault).await?;
-                Ok(false)
-            }
-        }
     }
 
     async fn disconnect_others(&mut self, id: Option<String>) -> Result<()> {
@@ -917,7 +875,7 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
     }
     if attach.take_over
         && (attach.requested_role != AttachRole::Writer as i32
-            || attach.launch.is_some()
+            || (attach.launch.is_some() && !launch_if_empty)
             || attach.create_workspace.is_some()
             || attach.create_tab.is_some()
             || !attach
@@ -953,10 +911,6 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
                 .terminal_capabilities
                 .iter()
                 .any(|name| name == corvid_protocol::PANE_WRITERS_CAPABILITY),
-            handoff: attach
-                .terminal_capabilities
-                .iter()
-                .any(|name| name == corvid_protocol::WRITER_HANDOFF_CAPABILITY),
             tabs: attach
                 .terminal_capabilities
                 .iter()

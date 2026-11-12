@@ -54,14 +54,8 @@ pub(super) enum Command {
         /// Start a new terminal with the user's shell.
         #[arg(long)]
         new: bool,
-        /// Observe an existing terminal without forwarding input or resizing it.
-        #[arg(long, conflicts_with_all = ["new", "agent", "new_workspace", "new_tab", "argv", "claim_workspace", "move_tab"])]
-        read_only: bool,
-        /// Allow the current writer to hand off input to this read-only view.
-        #[arg(long, requires = "read_only")]
-        accept_writer: bool,
         /// Take the writer lease on an existing pane and disconnect its current writer.
-        #[arg(long = "takeover", conflicts_with_all = ["read_only", "new", "agent", "new_workspace", "new_tab", "argv", "claim_workspace", "move_tab"])]
+        #[arg(long = "takeover", conflicts_with_all = ["new", "agent", "new_workspace", "new_tab", "argv", "claim_workspace", "move_tab"])]
         take_over: bool,
         /// Start the named provider; arguments after -- go to its CLI.
         #[arg(long, value_enum)]
@@ -258,8 +252,6 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
         Command::Upgrade { .. } => start::upgrade(&runtime).await.map(|()| 0),
         Command::Attach {
             new,
-            read_only,
-            accept_writer,
             take_over,
             agent,
             restore_cwd,
@@ -282,8 +274,6 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             .then_some(argv);
             let options = corvid_client::AttachOptions {
                 launch,
-                read_only,
-                accept_writer,
                 take_over,
                 launch_if_empty: false,
                 agent: agent.map(|agent| match agent {

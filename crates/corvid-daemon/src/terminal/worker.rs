@@ -158,7 +158,6 @@ pub(crate) enum Event {
     Tab(TabCommand),
     Close(corvid_core::layout::CloseTarget),
     PairController,
-    HandoffWriter,
     DisconnectOthers,
 }
 
@@ -693,7 +692,7 @@ impl Worker {
             view_revision: spec.revision,
             writer_lease_generation: spec.lease_generation,
         };
-        let mut lease = Lease::new(
+        let lease = Lease::new(
             route,
             spec.events,
             true,
@@ -701,9 +700,6 @@ impl Worker {
             spec.viewport,
             spec.location,
         );
-        // A delayed FrameApplied from the read-only stream belongs to the
-        // lower half of the generation space and cannot acknowledge this view.
-        lease.render_generation = super::PROMOTED_RENDER_GENERATION;
         self.lease = Some(lease);
         terminal.dirty = true;
         Ok((route, previous_events))
@@ -838,11 +834,6 @@ impl Worker {
                     }
                     Some(KeyCommand::PairController) => {
                         if lease.events.try_send(Event::PairController).is_err() {
-                            self.revoke();
-                        }
-                    }
-                    Some(KeyCommand::HandoffWriter) => {
-                        if lease.events.try_send(Event::HandoffWriter).is_err() {
                             self.revoke();
                         }
                     }

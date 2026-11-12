@@ -304,47 +304,29 @@ impl WorkspaceView {
     }
 
     fn choice_actions(&self, choice: Choice, cx: &mut Context<Self>) -> Div {
-        let observation = choice.clone();
-        div()
-            .flex()
-            .gap(px(6.))
-            .pt(px(4.))
-            .child(
-                button("picker-new-tab", "Open in new tab", false).on_click(cx.listener(
-                    move |view, _, window, cx| {
-                        let Some(known) = view.known_sessions.get(&choice.destination) else {
-                            return;
-                        };
-                        let Some(workspace) = known
-                            .inventory
-                            .workspaces
-                            .iter()
-                            .find(|workspace| workspace.workspace_id == choice.workspace)
-                        else {
-                            return;
-                        };
-                        let target = AttachTarget::Workspace {
-                            id: choice.workspace.clone(),
-                            host_id: known.host_id.clone(),
-                            new_tab: Some(format!("Shell {}", workspace.tabs.len() + 1)),
-                        };
-                        view.dismiss_overlay(window, cx);
-                        view.switch_to(choice.destination.clone(), target, window, cx);
-                    },
-                )),
-            )
-            .child(
-                button("picker-observe", "Observe", false).on_click(cx.listener(
-                    move |view, _, window, cx| {
-                        view.dismiss_overlay(window, cx);
-                        view.observe(
-                            observation.destination.clone(),
-                            Some(&observation.workspace),
-                            window,
-                            cx,
-                        );
-                    },
-                )),
-            )
+        div().flex().gap(px(6.)).pt(px(4.)).child(
+            button("picker-new-tab", "Open in new tab", false).on_click(cx.listener(
+                move |view, _, window, cx| {
+                    let Some(known) = view.known_sessions.get(&choice.destination) else {
+                        return;
+                    };
+                    let Some(workspace) = known
+                        .inventory
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.workspace_id == choice.workspace)
+                    else {
+                        return;
+                    };
+                    let target = AttachTarget::Workspace {
+                        id: choice.workspace.clone(),
+                        host_id: known.host_id.clone(),
+                        new_tab: Some(format!("Shell {}", workspace.tabs.len() + 1)),
+                    };
+                    view.dismiss_overlay(window, cx);
+                    view.switch_to(choice.destination.clone(), target, window, cx);
+                },
+            )),
+        )
     }
 }

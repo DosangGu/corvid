@@ -97,7 +97,6 @@ pub struct WorkspaceView {
     management_page: management::Page,
     focus_mode: bool,
     zoom_pane: bool,
-    observe_accept_writer: bool,
     menu_open: bool,
     menu_create: bool,
     menu_index: usize,
@@ -159,7 +158,6 @@ impl WorkspaceView {
             management_page: management::Page::Connections,
             focus_mode: false,
             zoom_pane: false,
-            observe_accept_writer: false,
             menu_open: false,
             menu_create: false,
             menu_index: 0,
@@ -515,6 +513,31 @@ impl WorkspaceView {
         if let Some(session) = &self.session
             && session.ui().connected
         {
+            let ui = session.ui();
+            if ui.changing {
+                return;
+            }
+            if ui.selected.as_ref() != Some(&target)
+                && let Some(inventory) = &ui.inventory
+                && inventory.has_writer(&target)
+                && let Some(terminal) = inventory
+                    .terminals
+                    .iter()
+                    .find(|terminal| terminal.location.as_ref() == Some(&target))
+                && let (Some(destination), Some(host_id)) = (self.destination.clone(), ui.host_id)
+            {
+                self.switch_to(
+                    destination,
+                    AttachTarget::Takeover {
+                        view: target,
+                        host_id,
+                        terminal_id: terminal.terminal_id.clone(),
+                    },
+                    window,
+                    cx,
+                );
+                return;
+            }
             session.select(target, open);
             self.focus_terminal(window, cx);
             cx.notify();
@@ -571,62 +594,6 @@ impl WorkspaceView {
     fn create(&self, target: Target) {
         if let Some(session) = &self.session {
             session.create(target);
-        }
-    }
-
-    fn observe(
-        &mut self,
-        destination: Destination,
-        workspace: Option<&str>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let known = self.known_sessions.get(&destination);
-        let view = workspace.and_then(|id| {
-            self.selected
-                .as_ref()
-                .filter(|selected| {
-                    self.destination.as_ref() == Some(&destination) && selected.workspace_id == id
-                })
-                .cloned()
-                .or_else(|| known?.inventory.observation_target(id))
-        });
-        if workspace.is_some() && view.is_none() {
-            return;
-        }
-        let target = AttachTarget::Observe {
-            view,
-            host_id: known.map(|known| known.host_id.clone()),
-            accept_writer: self.observe_accept_writer,
-        };
-        self.switch_to(destination, target, window, cx);
-    }
-
-    fn take_over(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ui) = self
-            .session
-            .as_ref()
-            .map(Session::ui)
-            .filter(|ui| ui.connected && ui.read_only && ui.session_clients_supported)
-        else {
-            return;
-        };
-        if let (Some(destination), Some(view), Some(host_id), Some(terminal_id)) = (
-            self.destination.clone(),
-            ui.selected,
-            ui.host_id,
-            ui.terminal_id,
-        ) {
-            self.switch_to(
-                destination,
-                AttachTarget::Takeover {
-                    view,
-                    host_id,
-                    terminal_id,
-                },
-                window,
-                cx,
-            );
         }
     }
 
@@ -931,7 +898,6 @@ impl WorkspaceView {
                 };
                 let active = ui.connected && target == *selected;
                 let live = inventory.live(&target);
-                let observed = target.clone();
                 let title = tab.nodes[index].title.clone();
                 let title = if title.is_empty() {
                     format!("Pane {}", *ordinal)
@@ -957,29 +923,6 @@ impl WorkspaceView {
                             .text_color(rgb(if active { ACTIVE } else { MUTED }))
                             .text_size(px(12.))
                             .child(div().flex_1().min_w_0().truncate().child(title))
-                            .when(
-                                ui.connected && !active && inventory.has_writer(&target),
-                                |header| {
-                                    header.child(button("observe-pane", "Observe", false).on_click(
-                                        cx.listener(move |view, _, window, cx| {
-                                            if let Some(destination) = view.destination.clone() {
-                                                view.switch_to(
-                                                    destination,
-                                                    AttachTarget::Observe {
-                                                        view: Some(observed.clone()),
-                                                        host_id: view.session.as_ref().and_then(
-                                                            |session| session.ui().host_id,
-                                                        ),
-                                                        accept_writer: view.observe_accept_writer,
-                                                    },
-                                                    window,
-                                                    cx,
-                                                );
-                                            }
-                                        }),
-                                    ))
-                                },
-                            )
                             .when(ui.connected && ui.close_supported, |header| {
                                 header.child(
                                     div()
@@ -1044,7 +987,7 @@ impl WorkspaceView {
     }
 
     fn terminal_layout(&self, ui: &Ui, inventory: &Inventory, cx: &mut Context<Self>) -> Div {
-        if (ui.read_only || self.zoom_pane) && ui.connected {
+        if self.zoom_pane && ui.connected {
             return div()
                 .flex()
                 .flex_1()

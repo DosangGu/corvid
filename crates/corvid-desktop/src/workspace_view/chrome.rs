@@ -13,9 +13,6 @@ pub(super) enum MenuAction {
     Focus,
     Zoom,
     Settings,
-    Observe,
-    TakeOver,
-    Handoff,
     DisconnectOthers,
     Detach,
     ClosePane,
@@ -81,14 +78,6 @@ impl WorkspaceView {
             if ui.can_write() && ui.naming_supported {
                 items.push((MenuAction::RenamePane, "Rename pane…", "Ctrl+Shift+R"));
                 items.push((MenuAction::RenameTab, "Rename tab…", "Ctrl+Alt+R"));
-            }
-            if ui.read_only && ui.session_clients_supported {
-                items.push((MenuAction::TakeOver, "Take input control", ""));
-            } else if ui.can_write() {
-                items.push((MenuAction::Observe, "Observe current pane", ""));
-            }
-            if ui.can_handoff() {
-                items.push((MenuAction::Handoff, "Hand off input control", ""));
             }
             if ui.can_write() && ui.session_clients_supported {
                 items.push((
@@ -157,26 +146,6 @@ impl WorkspaceView {
             MenuAction::Focus => self.focus_mode = !self.focus_mode,
             MenuAction::Zoom => self.zoom_pane = !self.zoom_pane,
             MenuAction::Settings => self.open_management(management::Page::Connections, window, cx),
-            MenuAction::Observe => {
-                if let Some(destination) = self.destination.clone() {
-                    self.switch_to(
-                        destination,
-                        AttachTarget::Observe {
-                            view: self.selected.clone(),
-                            host_id: ui.and_then(|ui| ui.host_id),
-                            accept_writer: self.observe_accept_writer,
-                        },
-                        window,
-                        cx,
-                    );
-                }
-            }
-            MenuAction::TakeOver => self.take_over(window, cx),
-            MenuAction::Handoff => {
-                if let Some(session) = &self.session {
-                    session.handoff(session.view_revision());
-                }
-            }
             MenuAction::DisconnectOthers => self.disconnect_others(window, cx),
             MenuAction::Detach => {
                 self.lifetime.stop();
@@ -270,14 +239,6 @@ impl WorkspaceView {
                     button("create-menu", "+", self.menu_open && self.menu_create).on_click(
                         cx.listener(|view, _, window, cx| view.toggle_menu(true, window, cx)),
                     ),
-                )
-            })
-            .when(ui.is_some_and(|ui| ui.connected && ui.read_only), |bar| {
-                bar.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(ACTIVE))
-                        .child("Read-only"),
                 )
             })
             .when(ui.is_some_and(|ui| ui.connected), |bar| {
@@ -431,23 +392,8 @@ impl WorkspaceView {
         if ui.changing {
             return Some("Updating terminal view…".into());
         }
-        if !ui.connected
-            || !matches!(
-                ui.message.as_str(),
-                "Attached to Corvid daemon" | "Observing existing terminal"
-            )
-        {
+        if !ui.connected || ui.message != "Attached to Corvid daemon" {
             return Some(ui.message.clone());
-        }
-        if ui.read_only {
-            return Some(
-                if ui.accept_writer {
-                    "Read-only · accepts input handoff"
-                } else {
-                    "Read-only · input is disabled"
-                }
-                .into(),
-            );
         }
         None
     }

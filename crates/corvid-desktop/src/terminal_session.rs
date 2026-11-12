@@ -19,15 +19,14 @@ use corvid_protocol::wire::{
     AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, ClientState, CloseView,
     CreateView, DisconnectWorkspaceClients, FocusViewAgent, FrameApplied, InputChunk,
     LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview, ReadTerminalHistory,
-    RequestWriterHandoff, ResizeViewport, RouteToken, SelectView, TerminalHistory, TerminalState,
-    ViewSelection, Viewport, WorkspaceState,
+    ResizeViewport, RouteToken, SelectView, TerminalHistory, TerminalState, ViewSelection,
+    Viewport, WorkspaceState,
 };
 use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
-    DEFAULT_SHELL_CAPABILITY, Frame, OBSERVER_CAPABILITY, PANE_PREVIEW_CAPABILITY, ProtocolFault,
-    RenderFrame, SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY,
-    TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, WRITER_HANDOFF_CAPABILITY,
-    WRITER_HANDOFF_REQUEST_CAPABILITY, decode_envelope,
+    DEFAULT_SHELL_CAPABILITY, Frame, PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame,
+    SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES,
+    TERMINAL_HISTORY_MAX_ROWS, decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout};
@@ -66,11 +65,6 @@ pub enum AttachTarget {
         view: ViewSelection,
         host_id: String,
         terminal_id: String,
-    },
-    Observe {
-        view: Option<ViewSelection>,
-        host_id: Option<String>,
-        accept_writer: bool,
     },
 }
 
@@ -158,26 +152,6 @@ impl Inventory {
             .any(|terminal| terminal.location.as_ref() == Some(selection))
     }
 
-    pub fn observation_target(&self, workspace: &str) -> Option<ViewSelection> {
-        self.clients
-            .iter()
-            .filter(|client| {
-                client
-                    .active_selection()
-                    .is_some_and(|view| view.workspace_id == workspace && self.live(view))
-            })
-            .max_by_key(|client| client.connection_generation)
-            .and_then(ClientState::active_selection)
-            .cloned()
-            .or_else(|| {
-                self.terminals
-                    .iter()
-                    .filter_map(|terminal| terminal.location.as_ref())
-                    .find(|view| view.workspace_id == workspace)
-                    .cloned()
-            })
-    }
-
     pub fn has_writer(&self, selection: &ViewSelection) -> bool {
         self.clients
             .iter()
@@ -229,9 +203,6 @@ pub struct Ui {
     pub connected: bool,
     pub changing: bool,
     pub close_supported: bool,
-    pub read_only: bool,
-    pub accept_writer: bool,
-    pub handoff_supported: bool,
     pub session_clients_supported: bool,
     pub closed_view: bool,
     pub deck_focus: u64,
@@ -239,15 +210,11 @@ pub struct Ui {
 
 impl Ui {
     pub fn can_write(&self) -> bool {
-        self.connected && !self.read_only
+        self.connected
     }
 
     pub fn can_close(&self) -> bool {
         self.can_write() && self.close_supported && !self.changing
-    }
-
-    pub fn can_handoff(&self) -> bool {
-        self.can_write() && self.handoff_supported && !self.changing
     }
 }
 
@@ -314,7 +281,6 @@ enum Action {
         paste: bool,
     },
     ReadHistory(u64, oneshot::Sender<HistoryReply>),
-    Handoff(u64),
     DisconnectOthers(u64),
     Select(ViewSelection, bool),
     Create(Target),
@@ -357,9 +323,6 @@ impl Session {
                     connected: false,
                     changing: true,
                     close_supported: false,
-                    read_only: false,
-                    accept_writer: false,
-                    handoff_supported: false,
                     session_clients_supported: false,
                     closed_view: false,
                     deck_focus: 0,
@@ -511,12 +474,6 @@ impl Session {
         }));
     }
 
-    pub fn handoff(&self, revision: u64) {
-        if self.ui().can_handoff() {
-            self.change(Action::Handoff(revision));
-        }
-    }
-
     pub fn disconnect_others(&self, revision: u64) {
         if self.ui().session_clients_supported {
             self.change(Action::DisconnectOthers(revision));
@@ -564,7 +521,6 @@ struct Client<'a> {
     history: Option<HistoryRequest>,
     preview_index: usize,
     next_preview: Instant,
-    accept_writer: bool,
 }
 
 struct HistoryRequest {
@@ -588,7 +544,6 @@ enum Operation {
     Close,
     Resize,
     Preview,
-    Handoff,
     DisconnectOthers,
 }
 
@@ -627,13 +582,7 @@ async fn run_reconnecting(
         let Some(selected) = ui.selected else {
             return Err(error);
         };
-        if ui.read_only
-            && let AttachTarget::Observe { view, .. } = &mut target
-        {
-            *view = Some(selected);
-        } else {
-            target = AttachTarget::Pane(selected, false);
-        }
+        target = AttachTarget::Pane(selected, false);
         explicit = false;
         reconnecting = true;
         requests.terminal = ui.terminal_id;
@@ -664,11 +613,6 @@ async fn run(
     shared: &Shared,
     agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
-    let (read_only, accept_writer) = match &target {
-        AttachTarget::Observe { accept_writer, .. } => (true, *accept_writer),
-        _ => (false, false),
-    };
-    let explicit = explicit && !read_only;
     let mut capabilities: Vec<_> = [
         "attach.v1",
         "render.v1",
@@ -682,12 +626,6 @@ async fn run(
     .into_iter()
     .map(str::to_owned)
     .collect();
-    if read_only {
-        capabilities.push(OBSERVER_CAPABILITY.into());
-    }
-    if accept_writer {
-        capabilities.push(WRITER_HANDOFF_CAPABILITY.into());
-    }
     if matches!(target, AttachTarget::Takeover { .. }) {
         capabilities.push(SESSION_CLIENTS_CAPABILITY.into());
         capabilities.push(corvid_protocol::PANE_WRITERS_CAPABILITY.into());
@@ -696,7 +634,6 @@ async fn run(
         AttachTarget::Workspace { host_id, .. } | AttachTarget::Takeover { host_id, .. } => {
             Some(host_id.as_str())
         }
-        AttachTarget::Observe { host_id, .. } => host_id.as_deref(),
         _ => None,
     };
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
@@ -751,35 +688,8 @@ async fn run(
         ui.endpoint = Some(endpoint.clone());
     });
     let grid = sizes.borrow().1;
+    let resume = terminal.is_none();
     let attached = match &target {
-        AttachTarget::Observe { view, host_id, .. } => {
-            ensure!(
-                host_id
-                    .as_ref()
-                    .is_none_or(|host| link.session().host_id == *host),
-                ProtocolFault::new(
-                    "HostMismatch",
-                    "The connection points to a different Corvid host"
-                )
-            );
-            attach(
-                &mut link,
-                grid,
-                Attach {
-                    workspace_id: view.as_ref().map(|view| view.workspace_id.clone()),
-                    tab_id: view.as_ref().map(|view| view.tab_id.clone()),
-                    pane_id: view.as_ref().map(|view| view.pane_id.clone()),
-                    requested_role: AttachRole::Observer as i32,
-                    terminal_capabilities: if accept_writer {
-                        vec![WRITER_HANDOFF_CAPABILITY.into()]
-                    } else {
-                        Vec::new()
-                    },
-                    ..Default::default()
-                },
-            )
-            .await?
-        }
         AttachTarget::Workspace {
             id,
             host_id,
@@ -795,7 +705,7 @@ async fn run(
                 launch: new_tab.as_ref().map(|_| LaunchCommand::default()),
                 ..Default::default()
             };
-            match attach(&mut link, grid, request.clone()).await {
+            match attach(&mut link, grid, resume, request.clone()).await {
                 Err(error)
                     if new_tab.is_none()
                         && error
@@ -809,7 +719,7 @@ async fn run(
                         "The connection points to a different Corvid host"
                     );
                     request.launch = Some(LaunchCommand::default());
-                    attach(&mut link, grid, request).await?
+                    attach(&mut link, grid, resume, request).await?
                 }
                 result => result?,
             }
@@ -826,6 +736,7 @@ async fn run(
             attach(
                 &mut link,
                 grid,
+                resume,
                 Attach {
                     workspace_id: Some(view.workspace_id.clone()),
                     tab_id: Some(view.tab_id.clone()),
@@ -841,6 +752,7 @@ async fn run(
             attach(
                 &mut link,
                 grid,
+                resume,
                 Attach {
                     workspace_id: Some(view.workspace_id.clone()),
                     tab_id: Some(view.tab_id.clone()),
@@ -855,6 +767,7 @@ async fn run(
             attach(
                 &mut link,
                 grid,
+                resume,
                 Attach {
                     terminal_capabilities: vec![DEFAULT_SHELL_CAPABILITY.into()],
                     launch: Some(LaunchCommand::default()),
@@ -880,14 +793,11 @@ async fn run(
             && route.connection_generation == attached.connection_generation
             && route.client_id == attached.client_id
             && valid_route(&route)
-            && (route.writer_lease_generation == 0) == read_only
-            && (!read_only || attached.writer_leases.is_empty())
+            && route.writer_lease_generation > 0
             && match &target {
                 AttachTarget::Default => true,
                 AttachTarget::Pane(view, _) | AttachTarget::Takeover { view, .. } =>
                     *view == selected,
-                AttachTarget::Observe { view, .. } =>
-                    view.as_ref().is_none_or(|view| *view == selected),
                 AttachTarget::Workspace { id, .. } => *id == selected.workspace_id,
             },
         "invalid initial daemon route"
@@ -900,11 +810,6 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == CLOSE_VIEW_CAPABILITY);
-    let handoff_supported = link
-        .session()
-        .capabilities
-        .iter()
-        .any(|name| name == WRITER_HANDOFF_REQUEST_CAPABILITY);
     let session_clients_supported = link
         .session()
         .capabilities
@@ -917,7 +822,6 @@ async fn run(
             .capabilities
             .iter()
             .any(|name| name == corvid_protocol::VIEW_TITLES_CAPABILITY);
-        ui.handoff_supported = handoff_supported;
         ui.session_clients_supported = session_clients_supported;
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
@@ -938,7 +842,6 @@ async fn run(
         history: None,
         preview_index: 0,
         next_preview: Instant::now(),
-        accept_writer,
     };
     client.publish_view();
     let inventory = watch_inventory(endpoint, host, epoch, shared);
@@ -975,8 +878,29 @@ async fn run(
 async fn attach(
     link: &mut InteractiveConnection,
     grid: Grid,
+    resume: bool,
     mut request: Attach,
 ) -> Result<Attached> {
+    let supports_resume = [
+        corvid_protocol::PANE_WRITERS_CAPABILITY,
+        SESSION_CLIENTS_CAPABILITY,
+        corvid_protocol::RESUME_ATTACH_CAPABILITY,
+    ]
+    .iter()
+    .all(|capability| {
+        link.session()
+            .capabilities
+            .iter()
+            .any(|name| name == capability)
+    });
+    let existing = request.create_workspace.is_none()
+        && request.create_tab.is_none()
+        && (request.launch.is_none()
+            || request
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == DEFAULT_SHELL_CAPABILITY));
+    request.take_over |= resume && supports_resume && existing;
     request.viewport = Some(grid.wire());
     request.terminal_capabilities.push("legacy_vt.v1".into());
     if request.create_tab.is_some()
@@ -1080,10 +1004,6 @@ fn validate_selection(view: &ViewSelection) -> Result<()> {
 }
 
 impl Client<'_> {
-    fn read_only(&self) -> bool {
-        self.route.writer_lease_generation == 0
-    }
-
     fn publish_view(&self) {
         {
             let mut buffer = self.shared.buffer();
@@ -1098,14 +1018,8 @@ impl Client<'_> {
             buffer.ui.selected = Some(self.selected.clone());
             buffer.ui.terminal_id = Some(self.route.terminal_id.clone());
             buffer.ui.connected = true;
-            buffer.ui.read_only = self.read_only();
-            buffer.ui.accept_writer = self.read_only() && self.accept_writer;
             buffer.ui.changing = self.pending.is_some();
-            buffer.ui.message = if self.read_only() {
-                "Observing existing terminal".into()
-            } else {
-                "Attached to Corvid daemon".into()
-            };
+            buffer.ui.message = "Attached to Corvid daemon".into();
             buffer.revision = self.route.view_revision;
             buffer.displayed = false;
             buffer.parser = Parser::new(self.grid.rows, self.grid.cols, 0);
@@ -1126,11 +1040,7 @@ impl Client<'_> {
             ensure!(now < pending.deadline, "daemon view change timed out");
         } else if revision == self.route.view_revision && self.grid != grid {
             self.resize(grid).await?;
-        } else if !self.read_only()
-            && self.preview.is_none()
-            && now >= self.next_preview
-            && self.applied.is_some()
-        {
+        } else if self.preview.is_none() && now >= self.next_preview && self.applied.is_some() {
             self.next_preview = now + PREVIEW_INTERVAL;
             self.read_preview().await?;
         }
@@ -1172,22 +1082,11 @@ impl Client<'_> {
 
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
-            Action::Rename(target) if !self.read_only() => {
+            Action::Rename(target) => {
                 self.request(Body::RenameView(target), Operation::Rename)
                     .await?;
             }
-            Action::Rename(_) => {}
-            Action::Handoff(revision) if !self.read_only() => {
-                self.request(
-                    Body::RequestWriterHandoff(RequestWriterHandoff {
-                        expected_view_revision: Some(revision),
-                    }),
-                    Operation::Handoff,
-                )
-                .await?
-            }
-            Action::Handoff(_) => {}
-            Action::DisconnectOthers(revision) if !self.read_only() => {
+            Action::DisconnectOthers(revision) => {
                 self.request(
                     Body::DisconnectWorkspaceClients(DisconnectWorkspaceClients {
                         expected_view_revision: Some(revision),
@@ -1196,7 +1095,6 @@ impl Client<'_> {
                 )
                 .await?;
             }
-            Action::DisconnectOthers(_) => {}
             Action::ReadHistory(revision, reply) => self.read_history(revision, reply).await?,
             Action::OpenAgentDeck(settings) if self.agent_deck.tasks.is_empty() => {
                 let host = self.link.session().host_id.clone();
@@ -1212,8 +1110,7 @@ impl Client<'_> {
                 revision,
                 bytes,
                 paste,
-            } if !self.read_only()
-                && self.pending.is_none()
+            } if self.pending.is_none()
                 && self.applied.is_some()
                 && revision == self.route.view_revision =>
             {
@@ -1282,12 +1179,6 @@ impl Client<'_> {
     }
 
     async fn focus_from_deck(&mut self, request: agent_deck::FocusRequest) -> Result<()> {
-        if self.read_only() {
-            let _ = request
-                .result
-                .send(Err("Desktop is attached read-only.".into()));
-            return Ok(());
-        }
         let run = request.run;
         let session = self.link.session();
         if run.host_id != session.host_id || run.remote_epoch != session.server_epoch {
@@ -1425,12 +1316,6 @@ impl Client<'_> {
             connection_generation: self.route.connection_generation,
             viewport: Some(grid.wire()),
         });
-        if self.read_only() {
-            self.link.send(body).await?;
-            self.grid = grid;
-            self.shared.buffer().parser.set_size(grid.rows, grid.cols);
-            return Ok(());
-        }
         {
             let mut buffer = self.shared.buffer();
             if buffer.ui.changing {
@@ -1539,10 +1424,6 @@ impl Client<'_> {
                     view.view_revision == route.view_revision
                         && valid_route(&route)
                         && route.writer_lease_generation > 0
-                        && (!self.read_only()
-                            || (self.accept_writer
-                                && route.terminal_id == self.route.terminal_id
-                                && selection == self.selected))
                         && self.route.client_id == route.client_id
                         && self.route.connection_generation == route.connection_generation
                         && (route == self.route
@@ -1558,16 +1439,11 @@ impl Client<'_> {
                     self.pending = None;
                 }
                 if route != self.route {
-                    let promoted = self.read_only();
                     self.grid = Grid::read(view.viewport.context("view update has no viewport")?)?;
                     self.route = route;
                     self.selected = selection;
                     self.applied = None;
                     self.publish_view();
-                    if promoted {
-                        self.shared
-                            .update_ui(|ui| ui.message = "Writer handoff accepted.".into());
-                    }
                 } else if pending {
                     self.shared.update_ui(|ui| ui.changing = false);
                 }
@@ -1664,11 +1540,6 @@ impl Client<'_> {
                 });
             }
             Body::Detach(_) => {
-                if self.pending.as_ref().is_some_and(|pending| {
-                    id.as_deref() == Some(&pending.id) && matches!(pending.kind, Operation::Handoff)
-                }) {
-                    return Ok(Some("Writer handed off.".into()));
-                }
                 if self.pending.as_ref().is_some_and(|pending| {
                     id.as_deref() == Some(&pending.id) && matches!(pending.kind, Operation::Close)
                 }) {

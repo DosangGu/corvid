@@ -28,9 +28,6 @@ pub(super) fn paint(
         if keymap.tabs {
             lines.push("1-9  Select tab by position");
         }
-        if keymap.handoff {
-            lines.push("g  Hand off input control to an eligible observer");
-        }
         if keymap.disconnect {
             lines.push("D  Disconnect other clients (keep their terminals running)");
         }

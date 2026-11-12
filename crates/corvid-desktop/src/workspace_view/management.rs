@@ -232,28 +232,12 @@ impl WorkspaceView {
                 cx.notify();
             },
         ));
-        let handoff_label = if self.observe_accept_writer {
-            "☑ Accept writer handoff when observing"
-        } else {
-            "☐ Accept writer handoff when observing"
-        };
-        let handoff = button("accept-writer", handoff_label, self.observe_accept_writer).on_click(
-            cx.listener(|view, _, _, cx| {
-                view.observe_accept_writer = !view.observe_accept_writer;
-                cx.notify();
-            }),
-        );
         settings_page("Terminal")
             .child(focus)
             .child(zoom)
             .child(description(concat!(
                 "Ctrl+Shift+F toggles focus mode. Ctrl+Shift+Z expands the active pane ",
                 "and restores the split layout. These view settings apply to this window.",
-            )))
-            .child(handoff)
-            .child(description(concat!(
-                "The handoff preference applies the next time you open a read-only view. ",
-                "Taking input control always requires an explicit action.",
             )))
     }
 }
