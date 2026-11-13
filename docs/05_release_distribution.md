@@ -138,8 +138,7 @@ error details can be expanded. Release notes open the selected release page.
 
 For installations from Windows Setup, the scripts, or a portable archive,
 **Download update** downloads, verifies, and installs the selected release in
-the background. The panel shows those three
-stages; it does not estimate a percentage. Checking and installation continue when
+the background. The panel shows the current stage. Checking and installation continue when
 Settings is closed. Reopening Settings restores the current result or progress.
 Repeated clicks cannot start concurrent checks or installations.
 
@@ -154,8 +153,8 @@ Terminal jobs remain owned by their existing daemon throughout this flow.
 
 Both clients use `corvid-update`. For script and portable installations, the
 updater selects a release once, validates its manifest, and runs that exact
-tag's verified installer with the expected
-archive digest. The updater downloads that tag's archive, verifies its exact size
+tag's verified installer with the expected archive digest. The updater
+downloads that tag's archive, verifies its exact size
 and SHA-256, and supplies the verified local assets to the installer. The installer
 also checks archive and package integrity before switching the current version.
 A CLI inside a script-installed Desktop distribution updates the entire Desktop
@@ -238,6 +237,9 @@ version becomes active, Desktop offers **Restart to apply**. Setup keeps older
 version directories and running terminal jobs continue through the update.
 `corvid update` also supports forward updates for Setup installations.
 
+![Windows Setup update available in Desktop](images/release-setup-update-available.jpg)
+![Windows Setup update ready for Desktop restart](images/release-setup-update-ready.jpg)
+
 Agent Deck registers its notification shortcut when started
 and offers an opt-in login startup setting. Those shortcuts follow the selected
 version. Use **Settings → Apps → Installed
@@ -264,7 +266,10 @@ then ran the real PowerShell installer successfully with verified local assets
 and an installation path containing spaces. Desktop, updater, and CLI checks
 passed on Windows (30 tests, one WSL-profile test ignored) and Linux (49 tests),
 along with builds, Clippy, formatting, and whitespace checks.
-Native Windows GUI and Setup-download clicks were not exercised in this pass.
+On 2026-11-13, the Windows Settings screenshots above were captured using
+local release fixtures in a separate Setup installation. The app rejected a
+checksum mismatch, then verified and ran the real Setup. Restart opened the
+updated Desktop and restored the existing terminal screen.
 
 `deploy/test_install.py` exercises the actual installers with isolated paths,
 including spaces, a synthetic older version, repeat installation, concurrent
