@@ -96,8 +96,11 @@ workspace builds require the [Desktop system packages](docs/04_companion.md#linu
 
 [Dependabot](.github/dependabot.yml) checks Cargo dependencies and GitHub Actions
 weekly on Monday at 09:00 Asia/Seoul, with up to five open version-update PRs per
-ecosystem. Protobuf dependencies (`prost*` and `protox`) are updated together;
-all other updates, including patches, receive individual PRs for review.
+ecosystem. Version updates wait at least seven days after a release and become
+eligible at the next weekly check. This cooldown does not delay security updates
+and cannot be configured by vulnerability severity. Protobuf dependencies
+(`prost*` and `protox`) are updated together; all other updates, including patches,
+receive individual PRs for review.
 Dependency PRs run the existing packaging and workspace CI and require review
 before manual merging. Dependabot security updates are controlled separately
 in the repository's security settings.
