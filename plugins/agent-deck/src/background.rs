@@ -34,7 +34,6 @@ pub struct View {
     pub status: String,
     pub background: bool,
     pub notifications_open: u64,
-    pub quit: bool,
 }
 
 pub struct Background {
@@ -370,8 +369,7 @@ impl Monitor {
                 self.configure(settings)?;
             }
             Event::Quit => {
-                self.views.send_modify(|view| view.quit = true);
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                crate::window::request_quit(&self.ctx);
             }
             Event::Error(error) => self.error(error),
         }

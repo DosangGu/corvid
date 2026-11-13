@@ -82,15 +82,21 @@ Changing the preset or orientation immediately resizes the window. Its selected
 shape stays fixed as agents arrive and leave; empty keys remain as quiet,
 non-interactive placeholders. Extra agents scroll inside the panel. Portrait
 windows have compact header controls, including an **Always on top** pin button.
-Windows places it near the bottom-right corner of the current monitor's work
-area, clear of the taskbar. Reopening in tray mode uses the cursor's monitor;
-native pixel coordinates account for negative monitor origins and DPI changes.
-Drag the **Agent Deck** title to move it. Linux placement is window-manager dependent.
+The footer's **Move / Fixed** menu controls **Window position**. **Movable** is the
+default: drag the **Agent Deck** title to move the mini deck. Reopening it or
+changing its layout keeps that location during the current Deck session; on
+Windows a larger window is shifted only as needed to fit the monitor's work area.
+**Fixed position** disables title dragging and restores the default placement.
+Windows initially places the deck near the bottom-right corner of the current
+monitor's work area, clear of the taskbar. In Fixed position, reopening in tray
+mode uses the cursor's monitor. Native pixel coordinates account for negative
+monitor origins. Linux placement is window-manager dependent; X11 uses the
+screen center for fixed placement. Window coordinates are not saved across restarts.
 
 **Always on top** defaults to on and is saved per controller in the private
-`agent-deck/window.json`, together with the preset and orientation. Existing saved
-preferences retain their visibility choice and default to the 4 × 2 grid. With
-Always on top off, the tray or Desktop's **Agents** entry opens
+`agent-deck/window.json`, together with the preset, orientation, and position mode.
+Existing saved preferences retain their visibility choice and default to Movable
+and the 4 × 2 grid. With Always on top off, the tray or Desktop's **Agents** entry opens
 the panel temporarily. Clicking elsewhere, successful terminal navigation, or
 Escape hides it. Closing explicitly hides even an always-on-top deck. Without a
 working tray, automatic hiding is disabled and closing exits, preserving access
@@ -133,7 +139,22 @@ views; notification preferences are under **Notifications**.
 
 ![Portrait Agent Deck with fifteen keys](images/agent-deck/floating-portrait.png)
 
-The screenshot uses synthetic agents in an isolated Linux Xvfb session. On
+![Fixed and movable window controls in an isolated Windows test instance](images/agent-deck/window-position.jpg)
+
+On 2026-11-13, native Windows checks verified title dragging in Movable mode and
+its suppression in Fixed position, including saving the selected mode. An
+instrumented test instance reproduced a hidden-window Quit timeout before the
+native wake fix; hidden and minimized instances then exited with code 0 through
+the production Quit request. Quit now bypasses the bounded background event queue
+and takes priority over hiding and reopening. Automated regression tests cover
+the hidden HWND wake messages, retired handles, a full or disconnected event
+queue, persistent Quit intent, drag gating, placement, and saved preferences.
+The scoped Agent Deck/presentation suite passed 29 tests (one native notification
+test remained ignored), together with Clippy, workspace formatting, and whitespace
+checks. Native tray-menu clicking, mixed-DPI dragging, and taskbar relocation
+remain unverified by this pass.
+
+The two earlier grid screenshots use synthetic agents in an isolated Linux Xvfb session. On
 2026-11-12, floating-window checks verified the preset menu, 3 × 2 and 2 × 3
 layouts, portrait controls at 204 pixels wide, and 5 × 3 / 3 × 5 layouts. Whole-key
 navigation, including a queued run beyond the first eight slots, retains the
@@ -148,7 +169,7 @@ Scoped Agent Deck and presentation tests passed on Windows (24 passed, one nativ
 notification test ignored) and Linux (22 passed), along with builds, Clippy,
 workspace formatting, and whitespace checks. Linux UI checks also confirmed that
 turning Always on top off does not hide a window without a tray.
-Native tray-click reopening, dragging, mixed-DPI monitors, and taskbar relocation
+Native tray-click reopening, mixed-DPI monitors, and taskbar relocation
 still require interactive qualification. The earlier larger-key checks verified
 context-menu pinning and acknowledging an alert without resolving its input request.
 

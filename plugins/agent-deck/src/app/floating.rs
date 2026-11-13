@@ -128,6 +128,20 @@ impl Desktop {
         });
     }
 
+    fn position_picker(&mut self, ui: &mut Ui) {
+        ui.strong("Window position");
+        let mut fixed = self.window.fixed_position();
+        ui.radio_value(&mut fixed, false, "Movable — drag the title");
+        ui.radio_value(&mut fixed, true, "Fixed position")
+            .on_hover_text(
+                "Keep the mini deck at its default screen position and disable title dragging.",
+            );
+        if fixed != self.window.fixed_position() {
+            self.window.set_fixed_position(fixed);
+            ui.close();
+        }
+    }
+
     fn layout_picker(&mut self, ui: &mut Ui) {
         ui.set_min_width(164.0);
         ui.strong("Deck layout");
@@ -161,15 +175,32 @@ impl Desktop {
 
     fn floating_header(&mut self, ui: &mut Ui, tray: bool) {
         ui.horizontal(|ui| {
+            let fixed = self.window.fixed_position();
             let title = ui
                 .add(
                     egui::Label::new(RichText::new("Agent Deck").strong().size(13.0))
-                        .sense(egui::Sense::drag()),
+                        .selectable(false)
+                        .sense(if fixed {
+                            egui::Sense::hover()
+                        } else {
+                            egui::Sense::drag()
+                        }),
                 )
-                .on_hover_cursor(egui::CursorIcon::Grab)
-                .on_hover_text("Drag to move the deck");
+                .on_hover_cursor(if fixed {
+                    egui::CursorIcon::Default
+                } else {
+                    egui::CursorIcon::Grab
+                })
+                .on_hover_text(if fixed {
+                    "Position fixed. Open the Fixed menu to enable moving."
+                } else {
+                    "Drag to move the deck"
+                });
             if title.drag_started() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                self.window.start_drag(ui.ctx());
+            }
+            if title.dragged() {
+                self.window.drag(ui.ctx());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let close_hint = if tray {
@@ -243,18 +274,18 @@ impl Desktop {
                 } else {
                     ui.visuals().warn_fg_color
                 });
-            let status_width =
-                (ui.available_width() - 64.0 - if more > 0 { 48.0 } else { 0.0 }).max(20.0);
-            ui.add_sized([status_width, 18.0], egui::Label::new(text).truncate())
-                .on_hover_text(
-                    error
-                        .as_deref()
-                        .unwrap_or_else(|| connection_text(&self.view)),
-                );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button(self.window.layout().label(), |ui| self.layout_picker(ui))
                     .response
                     .on_hover_text("Deck layout · columns × rows");
+                let position = if self.window.fixed_position() {
+                    "Fixed"
+                } else {
+                    "Move"
+                };
+                ui.menu_button(position, |ui| self.position_picker(ui))
+                    .response
+                    .on_hover_text("Window position: fixed or movable");
                 if more > 0
                     && ui
                         .small_button(format!("+{more}"))
@@ -264,6 +295,15 @@ impl Desktop {
                     self.window.expanded = true;
                     self.section = Section::Overflow;
                 }
+                ui.add_sized(
+                    [ui.available_width(), 18.0],
+                    egui::Label::new(text).truncate(),
+                )
+                .on_hover_text(
+                    error
+                        .as_deref()
+                        .unwrap_or_else(|| connection_text(&self.view)),
+                );
             });
         });
     }
