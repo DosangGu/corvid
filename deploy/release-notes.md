@@ -1,14 +1,12 @@
-Corvid v0.1.3 is a patch release for Desktop and TUI on Windows x64 and Linux x86_64.
+Corvid v0.1.4 is a patch release for Desktop and TUI on Windows x64 and Linux x86_64.
 
-- Move Agent Deck’s mini deck and management views to GPUI, the UI framework used by Corvid Desktop. The mini deck supports movable and fixed positions, and the Windows tray menu can quit Deck.
-- Batch Desktop terminal drawing to reduce rendering overhead when repainting terminal output.
-- Refine the Corvid crow icon used across Desktop, the CLI, and Agent Deck.
-- Update checksum verification for downloaded updates and remote daemon payloads.
+- Windows Setup installations can download and install updates directly from Desktop. After Setup completes, choose **Restart to apply** to open the new version. Running terminal jobs continue through the update. The `corvid update` command also supports Windows Setup installations. ([#36](https://github.com/DosangGu/corvid/pull/36))
+- The experimental Windows Stream Deck adapter now handles USB HID reports directly for supported 15-key devices. The adapter is available from source. ([#38](https://github.com/DosangGu/corvid/pull/38))
 
-Use `corvid update --check` to check this release and `corvid update` to update a script installation. Desktop provides **Settings → About & updates → Check for updates**. Windows Setup users should run the new Setup. Application updates leave running daemons unchanged; use `corvid upgrade` separately for an automatically started local daemon. Supervised daemons remain managed by their service manager.
+If you installed v0.1.3 with Windows Setup, run the v0.1.4 Setup executable to get the new updater. For script installations, run `corvid update --check` to check for updates or `corvid update` to install. Desktop also checks for updates under **Settings → About & updates**.
 
-Linux Desktop requires X11 or XWayland, Fontconfig, and a Vulkan driver. The packaged build targets Ubuntu 24.04 or compatible newer systems. Linux TUI and daemon binaries use static musl builds. Windows Setup is unsigned. macOS and ARM64 are not supported in this release.
+Linux Desktop requires X11 or XWayland, Fontconfig, and a Vulkan driver. The packaged build targets Ubuntu 24.04 or compatible newer systems. Linux TUI and daemon binaries use static musl builds. The Windows Setup executable is unsigned.
 
-See the [README](https://github.com/DosangGu/corvid/blob/v0.1.3/README.md) and [distribution guide](https://github.com/DosangGu/corvid/blob/v0.1.3/docs/05_release_distribution.md) for installation paths, platform requirements, and update behavior. Archives and Setup include adjacent SHA-256 checksum files; `release-manifest.json` records asset sizes and checksums.
+The distribution guide covers installation paths, platform requirements, and daemon upgrades. Archives and Setup include SHA-256 checksum files, and `release-manifest.json` lists asset sizes and checksums. [Distribution guide](https://github.com/DosangGu/corvid/blob/v0.1.4/docs/05_release_distribution.md)
 
-[Full changelog](https://github.com/DosangGu/corvid/compare/v0.1.2...v0.1.3)
+[Full changelog](https://github.com/DosangGu/corvid/compare/v0.1.3...v0.1.4)
