@@ -439,6 +439,35 @@ omits older rows. History is read over the attached session using its view
 revision. Opening the view does not resize the PTY or interrupt the program.
 The history controls are currently implemented in Desktop.
 
+### Desktop redraw performance
+
+Desktop batches terminal backgrounds and glyphs into two scene layers, with the
+cursor and IME composition above them. This avoids inserting a separate GPUI
+bounds-tree layer for every short text span on each redraw. Font fallback,
+cell positions, colors, and underline styling still come from the terminal cells.
+
+Run the native, synthetic redraw probe on Windows or an X11 display:
+
+```sh
+cargo test --locked --release -p corvid-desktop native_agent_redraw -- --ignored --nocapture
+```
+
+The probe opens an isolated window with ASCII, Korean, combining text, emoji,
+box-drawing characters, and styled backgrounds. It updates one row for 90 frames
+and reports CPU preparation/paint times after five warm-up frames. Set
+`CORVID_RENDER_PROBE_PREVIEW=1` to leave the window open for visual inspection;
+close it after the updates finish. It never connects to a daemon or sends input.
+
+On 2026-11-13, Windows release-build comparisons of the 3,371-span fixture measured
+median/p95 CPU preparation and paint times of 3.02/3.31 ms before batching and
+1.61/1.91 ms after batching. The native preview verified Korean, combining marks,
+emoji, colored backgrounds, inverse text, bold, italic, underline, and the cursor.
+These measurements exclude GPU presentation and SSH latency; they do not establish
+the cause or resolution of the original Claude Code SSH freeze in
+[issue #23](https://github.com/DosangGu/corvid/issues/23).
+
+![Synthetic native rendering probe](images/desktop-terminal/rendering-probe.png)
+
 The future desktop distribution will include a Stream Deck integration daemon
 that uses companion slots and focus captures, with no authority to own PTYs or
 answer provider requests. The current standalone USB adapter is the prototype

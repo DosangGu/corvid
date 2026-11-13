@@ -13,6 +13,9 @@ const FOREGROUND: u32 = 0xe2e8f0;
 const FONT_SIZE: Pixels = px(15.);
 pub const LINE_HEIGHT: Pixels = px(21.);
 
+#[cfg(test)]
+mod performance;
+
 #[derive(Clone, Copy)]
 pub struct Metrics {
     column: Pixels,
@@ -173,13 +176,23 @@ impl Frame {
         window: &mut Window,
         cx: &mut App,
     ) {
-        for span in self.spans {
-            let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
-            if span.style.bg != BACKGROUND {
-                window.paint_quad(fill(cell, rgb(span.style.bg)));
+        // ShapedLine::paint creates a scene layer per span. A terminal can have
+        // thousands of one-cell spans; inserting each into GPUI's bounds tree
+        // is costly on the UI thread. Batch backgrounds and glyphs in separate layers.
+        window.paint_layer(bounds, |window| {
+            for span in &self.spans {
+                let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
+                if span.style.bg != BACKGROUND {
+                    window.paint_quad(fill(cell, rgb(span.style.bg)));
+                }
             }
-            paint_text(span.text, span.style, cell.origin, window, cx);
-        }
+        });
+        window.paint_layer(bounds, |window| {
+            for span in self.spans {
+                let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
+                paint_text(span.text, span.style, cell.origin, window);
+            }
+        });
         if active && let Some((row, col)) = self.cursor {
             let cell = metrics.cell(bounds.origin, row, col, 1);
             if marked.is_empty() {
@@ -216,19 +229,51 @@ impl Frame {
     }
 }
 
-fn paint_text(
-    text: String,
-    style: Style,
-    origin: Point<Pixels>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    if !text.trim().is_empty() {
-        let run = text_run(text.len(), style);
-        let line = window
-            .text_system()
-            .shape_line(text.into(), FONT_SIZE, &[run], None);
-        let _ = line.paint(origin, LINE_HEIGHT, window, cx);
+fn paint_text(text: String, style: Style, origin: Point<Pixels>, window: &mut Window) {
+    if text.trim().is_empty() {
+        return;
+    }
+    let run = text_run(text.len(), style);
+    let line = window
+        .text_system()
+        .shape_line(text.into(), FONT_SIZE, &[run], None);
+    let baseline = origin
+        + point(
+            px(0.),
+            (LINE_HEIGHT - line.ascent - line.descent) / 2. + line.ascent,
+        );
+    for run in &line.runs {
+        for glyph in &run.glyphs {
+            let position = baseline + point(glyph.position.x, px(0.));
+            if glyph.is_emoji {
+                let _ = window.paint_emoji(position, run.font_id, glyph.id, FONT_SIZE);
+            } else {
+                let _ = window.paint_glyph(
+                    position,
+                    run.font_id,
+                    glyph.id,
+                    FONT_SIZE,
+                    rgb(style.fg).into(),
+                );
+            }
+        }
+    }
+    if style.underline {
+        let first_x = line
+            .runs
+            .iter()
+            .flat_map(|run| &run.glyphs)
+            .next()
+            .map_or(px(0.), |glyph| glyph.position.x);
+        window.paint_underline(
+            baseline + point(first_x, line.descent * 0.618),
+            line.width,
+            &UnderlineStyle {
+                thickness: px(1.),
+                color: Some(rgb(style.fg).into()),
+                wavy: false,
+            },
+        );
     }
 }
 
