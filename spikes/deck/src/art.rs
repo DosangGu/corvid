@@ -1,6 +1,8 @@
 pub fn outline(glyph: &str) -> Option<&'static str> {
     Some(match glyph {
-        "brand" => "M4 17 10 6l9-3-3 6 5 2-6 2-5 8-1-6-5 2Z M12 10l2-1",
+        "brand" => {
+            "M5 19.5 6.6 9.3 9.4 5.5h4.7l3.2 2.6 4 2.5-6 1-.8 3.6-4 4.3.2-3.2Z M12.4 8.9l1.2-.3"
+        }
         "grid" => "M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h6v6h-6z",
         "focus" => {
             "M8 3H5a2 2 0 0 0-2 2v3 M16 3h3a2 2 0 0 1 2 2v3 M3 16v3a2 2 0 0 0 2 2h3 M21 16v3a2 2 0 0 1-2 2h-3 M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"
