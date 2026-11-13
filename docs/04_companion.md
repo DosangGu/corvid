@@ -68,8 +68,10 @@ generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
 from the Windows Desktop ZIP. Desktop uses the sessions, tabs, split panes,
 and Corvid Agent Deck described in the Windows quick start.
 
-The workspace pins `libc` to 0.2.189 while GPUI's HTTP client transitively uses
-`xattr` 0.2.3, which needs the Linux `ENOATTR` constant.
+GPUI's HTTP client transitively uses `xattr` 0.2.3. The workspace applies a local
+compatibility patch so it can build with current `libc` versions on Linux.
+See [the patch notes](../vendor/xattr/README.corvid.md) for its scope and removal
+condition.
 
 ### Windows quick start
 
