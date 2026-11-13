@@ -2,6 +2,11 @@
 
 `corvid.svg` is the canonical application artwork. `corvid.png` is the 256-pixel
 RGBA image; `corvid.ico` contains 16, 20, 24, 32, 48, 64, 128, and 256-pixel images.
+
+The mint outline forms a crow profile with a flat crown, projecting beak, compact
+eye, and short feathered neck. The tray assets share its outline and eye geometry.
+See the [artwork preview](../../docs/images/app-icon-refinement.png).
+
 Regenerate the application and Agent Deck tray assets from the workspace root:
 
 ```sh
