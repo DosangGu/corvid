@@ -1,0 +1,26 @@
+name: TODO to Issue
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  todo-to-issue:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Sync TODO comments with issues
+        uses: alstr/todo-to-issue-action@37bb7b56e58569ef273b60678048030a7f0c261a # v5.1.15
+        with:
+          CLOSE_ISSUES: 'true'
+          INSERT_ISSUE_URLS: 'false'
+          # Documentation examples should not create issues.
+          IGNORE: '.*\.md$'

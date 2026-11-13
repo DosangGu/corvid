@@ -110,6 +110,23 @@ in the repository's security settings.
 - [Release distribution and updates](docs/05_release_distribution.md)
 - [Repository guidelines](AGENTS.md)
 
+### TODO issues
+
+The [TODO to Issue workflow](.github/workflows/todo-to-issue.yml) uses
+[alstr/todo-to-issue-action](https://github.com/alstr/todo-to-issue-action) to create
+GitHub issues from TODO comments added by pushes to `main`, including merged PRs.
+For example:
+
+```rust
+// TODO: Describe the follow-up work with a unique title
+```
+
+Removing a TODO attempts to close its matching issue. Use unique TODO titles:
+without an explicit `Issue URL:` comment, the action matches issues by title.
+The workflow does not insert URLs or commit changes. It ignores Markdown files
+and processes only the pushed diff, so pre-existing TODOs are not backfilled.
+It uses the built-in `GITHUB_TOKEN`; no additional secret is required.
+
 ## License
 
 [Apache License 2.0](LICENSE)

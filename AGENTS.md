@@ -44,6 +44,16 @@ field numbers; reserve them instead.
   line counts; avoid helpers that merely rename trivial expressions.
 - Review readability beyond formatter checks.
 
+## Task Scope & Follow-up Work
+
+Keep changes focused on the current task's objective. When you discover problems
+or improvements outside that objective, leave an actionable TODO comment near
+the relevant code and defer implementation to a follow-up task. Use the file's
+comment syntax with `TODO: <unique, specific title>` so the TODO-to-issue workflow
+can track it. Include enough context to explain why the work is needed and what
+to do next. Complete any changes required for the current task to work correctly
+as part of the current task.
+
 ## Testing Guidelines
 
 Keep Rust unit tests beside modules and integration tests under each
