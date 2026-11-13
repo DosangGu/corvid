@@ -1315,7 +1315,6 @@ dependencies = [
  "corvid-companion",
  "corvid-presentation",
  "corvid-protocol",
- "elgato-streamdeck",
  "embed-resource",
  "gpui",
  "hidapi",
@@ -1776,16 +1775,6 @@ name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
-
-[[package]]
-name = "elgato-streamdeck"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "313b59c90e347b5cff677a52bbe8bdac9ae2f158df4ee1f7fdaa35295bdc4ccb"
-dependencies = [
- "hidapi",
- "image",
-]
 
 [[package]]
 name = "embed-resource"

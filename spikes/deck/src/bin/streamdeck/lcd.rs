@@ -1,10 +1,9 @@
 use anyhow::{Context, Result, anyhow};
 use corvid_deck::{Frame, KEY_COUNT, KeyFace, Tone, art, live::Face};
-use elgato_streamdeck::StreamDeck;
 use image::{DynamicImage, RgbaImage};
 use resvg::{tiny_skia, usvg};
 
-const SIZE: u32 = 72;
+use super::usb::{KEY_IMAGE_SIZE, StreamDeck};
 
 pub struct Renderer {
     options: usvg::Options<'static>,
@@ -23,11 +22,11 @@ impl Renderer {
         previous: Option<&Frame>,
         next: &Frame,
     ) -> Result<()> {
-        for (index, face) in changes(previous, next) {
-            let image = self.render(face)?;
-            device.set_button_image(index as u8, image)?;
-        }
-        device.flush().context("send key images to Stream Deck")
+        let images = changes(previous, next)
+            .map(|(index, face)| self.render(face).map(|image| (index, image)));
+        device
+            .write_key_images(images)
+            .context("send key images to Stream Deck")
     }
 
     fn render(&self, face: KeyFace) -> Result<DynamicImage> {
@@ -47,22 +46,23 @@ impl Renderer {
         previous: Option<&[Face; KEY_COUNT]>,
         next: &[Face; KEY_COUNT],
     ) -> Result<()> {
-        for (index, face) in next.iter().enumerate() {
-            if previous.is_some_and(|previous| previous[index] == *face) {
-                continue;
-            }
-            let image = self.render_tile(
-                face.glyph,
-                &face.label,
-                &face.detail,
-                face.tone,
-                face.attention > 0,
-                (face.attention > 0).then_some(true),
-            )?;
-            device.set_button_image(index as u8, image)?;
-        }
+        let images = next
+            .iter()
+            .enumerate()
+            .filter(|&(index, face)| previous.is_none_or(|previous| previous[index] != *face))
+            .map(|(index, face)| {
+                self.render_tile(
+                    face.glyph,
+                    &face.label,
+                    &face.detail,
+                    face.tone,
+                    face.attention > 0,
+                    (face.attention > 0).then_some(true),
+                )
+                .map(|image| (index, image))
+            });
         device
-            .flush()
+            .write_key_images(images)
             .context("send live key images to Stream Deck")
     }
 
@@ -99,14 +99,14 @@ impl Renderer {
         );
         let tree =
             usvg::Tree::from_str(&svg, &self.options).context("parse Stream Deck key art")?;
-        let mut pixels =
-            tiny_skia::Pixmap::new(SIZE, SIZE).context("allocate Stream Deck key image")?;
+        let mut pixels = tiny_skia::Pixmap::new(KEY_IMAGE_SIZE, KEY_IMAGE_SIZE)
+            .context("allocate Stream Deck key image")?;
         resvg::render(
             &tree,
             tiny_skia::Transform::identity(),
             &mut pixels.as_mut(),
         );
-        let image = RgbaImage::from_raw(SIZE, SIZE, pixels.take())
+        let image = RgbaImage::from_raw(KEY_IMAGE_SIZE, KEY_IMAGE_SIZE, pixels.take())
             .ok_or_else(|| anyhow!("invalid Stream Deck key image buffer"))?;
         Ok(DynamicImage::ImageRgba8(image))
     }
@@ -158,7 +158,7 @@ mod tests {
             .render(Deck::default().frame().keys[0])
             .unwrap()
             .into_rgba8();
-        assert_eq!(image.dimensions(), (SIZE, SIZE));
+        assert_eq!(image.dimensions(), (KEY_IMAGE_SIZE, KEY_IMAGE_SIZE));
         assert!(
             image
                 .enumerate_pixels()
