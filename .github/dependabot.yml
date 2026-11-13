@@ -5,9 +5,9 @@ updates:
     # All workspace members share the root manifest and lockfile.
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
+      # The daily interval excludes weekends, so use cron for every day.
+      interval: "cron"
+      cronjob: "0 9 * * *"
       timezone: "Asia/Seoul"
     # Wait after release for version updates; security updates bypass cooldown.
     cooldown:
@@ -26,9 +26,9 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
+      # The daily interval excludes weekends, so use cron for every day.
+      interval: "cron"
+      cronjob: "0 9 * * *"
       timezone: "Asia/Seoul"
     # Wait after release for version updates; security updates bypass cooldown.
     cooldown:
