@@ -1602,6 +1602,8 @@ impl Client<'_> {
         }
         {
             let mut buffer = self.shared.buffer();
+            // TODO: Isolate Desktop ANSI parsing from the UI lock. Publish a
+            // completed screen snapshot so large frames cannot block UI/input reads.
             buffer.parser.process(&frame.ansi);
             buffer.displayed = true;
         }
