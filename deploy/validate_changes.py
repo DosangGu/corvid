@@ -10,6 +10,18 @@ BUILD = "build"
 PACKAGE = "package"
 # Use the conservative GitHub path-filter limit for the main-push fallback.
 PATH_FILTER_LIMIT = 300
+# Mirror the main-push paths in .github/workflows/package.yml.
+PACKAGE_FILES = {
+    ".gitattributes",
+    ".gitignore",
+    ".github/workflows/build-and-test.yml",
+    ".github/workflows/package.yml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "LICENSE",
+    "rust-toolchain.toml",
+}
+PACKAGE_DIRECTORIES = (".cargo/", "assets/", "crates/", "deploy/", "plugins/", "spikes/")
 
 
 def comparison_base(event, ref, before):
@@ -64,19 +76,25 @@ def rust_source_edit(old_mode, new_mode, path):
     )
 
 
+def is_packaging_input(path):
+    return path in PACKAGE_FILES or path.startswith(PACKAGE_DIRECTORIES)
+
+
 def push_fallback(changes):
     # The native filter may truncate the file list or see only a rename's new
-    # name. It also cannot distinguish documentation from a mode change.
-    non_docs = [change for change in changes if not docs_change(*change)]
-    if not non_docs:
+    # name. Keep the fallback scoped to the same inputs as the native filter.
+    package_inputs = [
+        (old, new) for old, new, path in changes if is_packaging_input(path)
+    ]
+    if not package_inputs:
         return False
-    if len(changes) >= PATH_FILTER_LIMIT or any(
-        is_documentation(path) for _, _, path in non_docs
-    ):
+    if len(changes) >= PATH_FILTER_LIMIT:
         return True
     return (
-        any(new == "000000" for _, new, _ in non_docs)
-        and any(old == "000000" and is_documentation(path) for old, _, path in changes)
+        any(new == "000000" for _, new in package_inputs)
+        and any(
+            old == "000000" and not is_packaging_input(path) for old, _, path in changes
+        )
     )
 
 
@@ -97,10 +115,10 @@ def classify(event, ref, before):
 
     subprocess.run(["git", "diff", "--check", base, "HEAD", "--"], check=True)
     changes = list(changed_paths(diff))
-    if not changes:
-        return PACKAGE
     if event == "push":
         return PACKAGE if push_fallback(changes) else LIGHTWEIGHT
+    if not changes:
+        return PACKAGE
 
     source = False
     for old_mode, new_mode, path in changes:

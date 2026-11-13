@@ -8,7 +8,31 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from validate_changes import BUILD, LIGHTWEIGHT, PACKAGE, PATH_FILTER_LIMIT, classify
+from validate_changes import (
+    BUILD,
+    LIGHTWEIGHT,
+    PACKAGE,
+    PACKAGE_DIRECTORIES,
+    PACKAGE_FILES,
+    PATH_FILTER_LIMIT,
+    classify,
+)
+
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/package.yml"
+
+
+class PackagePathsTests(unittest.TestCase):
+    def test_push_fallback_uses_the_workflow_paths(self):
+        block = WORKFLOW.read_text(encoding="utf-8").split("    paths:\n", 1)[1]
+        workflow_paths = {
+            line.removeprefix("      - ").strip().strip("'\"")
+            for line in block.split("\n\n", 1)[0].splitlines()
+            if line.startswith("      - ")
+        }
+        self.assertSetEqual(
+            workflow_paths,
+            PACKAGE_FILES | {f"{path}**" for path in PACKAGE_DIRECTORIES},
+        )
 
 
 class ValidateChangesTests(unittest.TestCase):
@@ -81,7 +105,7 @@ class ValidateChangesTests(unittest.TestCase):
                 self.write(path, "Fixture\n")
                 self.commit()
                 self.assertEqual(self.check_pr(), PACKAGE)
-                # The path-filtered workflow handles these main pushes.
+                # Main delegates packaging inputs to its path-filtered workflow.
                 self.assertEqual(self.check_push(), LIGHTWEIGHT)
 
     def test_comment_only_source_and_docs_still_run_build_checks(self):
@@ -111,15 +135,16 @@ class ValidateChangesTests(unittest.TestCase):
         self.assertEqual(self.check_pr(), PACKAGE)
         self.assertEqual(self.check_push(), PACKAGE)
 
-    def test_executable_markdown_requires_the_full_pipeline(self):
+    def test_executable_markdown_gets_package_integration_on_prs(self):
         self.git("update-index", "--chmod=+x", "README.md")
         self.git("commit", "--quiet", "-m", "Executable documentation fixture")
         self.assertEqual(self.check_pr(), PACKAGE)
-        self.assertEqual(self.check_push(), PACKAGE)
+        self.assertEqual(self.check_push(), LIGHTWEIGHT)
 
     def test_large_push_falls_back_to_package_integration(self):
         for index in range(PATH_FILTER_LIMIT):
             self.write(f"docs/{index:03}.md", "# Guide\n")
+        self.write("docs/unknown.py", "# Unrelated to packaging\n")
         self.commit()
         self.assertEqual(self.check_push(), LIGHTWEIGHT)
         self.write("crates/example/src/lib.rs", "pub fn changed() {}\n")
@@ -131,11 +156,13 @@ class ValidateChangesTests(unittest.TestCase):
             ("workflow_dispatch", "refs/heads/main", ""),
             ("push", "refs/tags/v0.1.3", self.base),
             ("push", "refs/heads/main", "0" * 40),
-            ("push", "refs/heads/main", self.base),
             ("pull_request", "refs/pull/1/merge", ""),
         ):
             with self.subTest(event=event, ref=ref, before=before):
                 self.assertEqual(classify(event, ref, before), PACKAGE)
+
+    def test_empty_push_diff_stays_lightweight(self):
+        self.assertEqual(self.check_push(), LIGHTWEIGHT)
 
     def test_missing_push_commit_requires_the_full_pipeline(self):
         self.assertEqual(classify("push", "refs/heads/main", "a" * 40), PACKAGE)

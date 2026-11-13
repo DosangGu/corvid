@@ -5,14 +5,22 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-    paths-ignore:
-      - AGENTS.md
-      - README.md
-      - 'docs/**/*.md'
-      - 'docs/images/**/*.jpg'
-      - 'docs/images/**/*.jpeg'
-      - 'docs/images/**/*.png'
-      - 'docs/images/**/*.svg'
+    # Keep these paths in sync with the push fallback in deploy/validate_changes.py.
+    paths:
+      - '.cargo/**'
+      - '.gitattributes'
+      - '.gitignore'
+      - '.github/workflows/build-and-test.yml'
+      - '.github/workflows/package.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'LICENSE'
+      - 'assets/**'
+      - 'crates/**'
+      - 'deploy/**'
+      - 'plugins/**'
+      - 'rust-toolchain.toml'
+      - 'spikes/**'
 
 permissions:
   contents: read
