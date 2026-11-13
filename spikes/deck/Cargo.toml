@@ -11,7 +11,7 @@ default-run = "corvid-deck"
 default = ["desktop"]
 desktop = ["live", "dep:corvid-companion", "dep:gpui", "dep:tokio"]
 live = ["dep:anyhow", "dep:corvid-presentation", "dep:corvid-protocol", "dep:uuid"]
-stream-deck = ["live", "dep:elgato-streamdeck", "dep:hidapi", "dep:image", "dep:resvg"]
+stream-deck = ["live", "dep:hidapi", "dep:image", "dep:resvg"]
 
 [[bin]]
 name = "corvid-deck"
@@ -31,10 +31,9 @@ uuid = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 corvid-companion = { workspace = true, optional = true }
-elgato-streamdeck = { workspace = true, optional = true }
 gpui = { workspace = true, features = ["windows-manifest"], optional = true }
 hidapi = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
+image = { workspace = true, features = ["bmp", "jpeg"], optional = true }
 resvg = { workspace = true, features = ["system-fonts", "text"], optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync"], optional = true }
 

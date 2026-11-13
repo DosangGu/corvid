@@ -575,7 +575,10 @@ deck to an independently managed pipe, or `-- --demo` for the isolated
 virtual button simulator.
 
 The USB adapter uses the same live key model and focus captures without a GPUI
-window. Quit Elgato's Stream Deck app before attaching a supported 15-key unit.
+window. It uses [Elgato's USB HID protocol](https://docs.elgato.com/streamdeck/hid/stream-deck-classic/)
+for the Stream Deck 2019, MK.2, MK.2 Scissor Keys, and 15-Key Module. The 2017
+Stream Deck Original uses a separate legacy report format. Quit Elgato's
+Stream Deck app before attaching a supported 15-key unit.
 Get the exact client ID from `corvid companion slots`, then pass it as the
 target. With no target the adapter displays live slots and accepts page
 navigation. Use `--list` to enumerate devices, `--serial SERIAL` to select
@@ -586,7 +589,7 @@ cargo run --locked -p corvid-deck --no-default-features --features stream-deck -
 ```
 
 The USB adapter reconnects to the same serial after USB loss. Its tests cover
-synthetic HID transitions, stale captures, and 72 × 72 LCD rendering.
+HID report bytes, synthetic key transitions, stale captures, and 72 × 72 LCD rendering.
 Physical image upload, button orientation, and reconnect remain to be qualified.
 
 ## Pair and Focus

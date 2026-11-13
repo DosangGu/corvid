@@ -2,6 +2,8 @@
 mod input;
 #[cfg(windows)]
 mod lcd;
+#[cfg(windows)]
+mod usb;
 
 #[cfg(windows)]
 use std::{thread, time::Duration};
@@ -11,13 +13,13 @@ use anyhow::{Context, Result, bail};
 #[cfg(windows)]
 use corvid_deck::live::{Capture, Face, LiveDeck};
 #[cfg(windows)]
-use corvid_deck::{COLUMNS, Deck, KEY_COUNT, PAGES};
+use corvid_deck::{Deck, KEY_COUNT, PAGES};
 #[cfg(windows)]
 use corvid_presentation::ipc::DesktopClient;
 #[cfg(windows)]
-use elgato_streamdeck::{StreamDeck, StreamDeckError, StreamDeckInput, info::Kind, list_devices};
+use hidapi::{HidApi, HidError};
 #[cfg(windows)]
-use hidapi::HidApi;
+use usb::{StreamDeck, supported_devices};
 #[cfg(windows)]
 use uuid::Uuid;
 
@@ -93,17 +95,6 @@ impl Options {
 }
 
 #[cfg(windows)]
-fn supported_devices(api: &HidApi) -> Vec<(Kind, String)> {
-    let layout = ((KEY_COUNT / COLUMNS) as u8, COLUMNS as u8);
-    let mut devices: Vec<_> = list_devices(api)
-        .into_iter()
-        .filter(|(kind, serial)| kind.key_layout() == layout && !serial.is_empty())
-        .collect();
-    devices.sort_by(|left, right| left.1.cmp(&right.1));
-    devices
-}
-
-#[cfg(windows)]
 fn run(options: Options) -> Result<()> {
     let mut selected = options.serial;
     let mut api = HidApi::new().context("initialize USB HID")?;
@@ -157,11 +148,7 @@ fn run(options: Options) -> Result<()> {
             None => serve(&device, &mut deck, &renderer),
         };
         match result {
-            Err(error)
-                if error
-                    .downcast_ref::<StreamDeckError>()
-                    .is_some_and(|error| matches!(error, StreamDeckError::HidError(_))) =>
-            {
+            Err(error) if error.is::<HidError>() => {
                 eprintln!("USB connection ended. Waiting for the same Stream Deck.");
                 thread::sleep(RESCAN_INTERVAL);
             }
@@ -226,8 +213,7 @@ impl LiveDevice {
                     shown_captures = captures;
                 }
             }
-            let input = device.read_input(Some(Duration::from_millis(200)))?;
-            let StreamDeckInput::ButtonStateChange(levels) = input else {
+            let Some(levels) = device.read_keys(Duration::from_millis(200))? else {
                 continue;
             };
             for (index, down) in edges.transitions(&levels)? {
@@ -250,8 +236,7 @@ fn serve(device: &StreamDeck, deck: &mut Deck, renderer: &lcd::Renderer) -> Resu
     discard_pending_input(device, &mut keys)?;
 
     loop {
-        let input = device.read_input(Some(Duration::from_millis(250)))?;
-        let StreamDeckInput::ButtonStateChange(levels) = input else {
+        let Some(levels) = device.read_keys(Duration::from_millis(250))? else {
             continue;
         };
         let presses = keys.apply(&levels, &shown, deck)?;
@@ -277,11 +262,10 @@ fn serve(device: &StreamDeck, deck: &mut Deck, renderer: &lcd::Renderer) -> Resu
 fn discard_pending_input(device: &StreamDeck, keys: &mut input::KeyEdges) -> Result<()> {
     // Queue entries accumulated during a redraw may refer to the old layout.
     for _ in 0..64 {
-        match device.read_input(Some(Duration::ZERO))? {
-            StreamDeckInput::ButtonStateChange(levels) => keys.seed(&levels)?,
-            StreamDeckInput::NoData => return Ok(()),
-            _ => {}
-        }
+        let Some(levels) = device.read_keys(Duration::ZERO)? else {
+            return Ok(());
+        };
+        keys.seed(&levels)?;
     }
     bail!("Stream Deck input did not settle after updating the display")
 }
