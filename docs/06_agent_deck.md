@@ -96,8 +96,7 @@ screen center for fixed placement. Window coordinates are not saved across resta
 **Always on top** defaults to on and is saved per controller in the private
 `agent-deck/window.json`, together with the preset, orientation, and position mode.
 Existing saved preferences retain their visibility choice and default to Movable
-and the 4 × 2 grid. With
-Always on top off, the tray or Desktop's **Agents** entry opens
+and the 4 × 2 grid. With Always on top off, the tray or Desktop's **Agents** entry opens
 the panel temporarily. Clicking elsewhere, successful terminal navigation, or
 Escape hides it. Closing explicitly hides even an always-on-top deck. Without a
 working tray, automatic hiding is disabled and closing exits, preserving access
@@ -155,7 +154,7 @@ test remained ignored), together with Clippy, workspace formatting, and whitespa
 checks. Native tray-menu clicking, mixed-DPI dragging, and taskbar relocation
 remain unverified by this pass.
 
-The screenshot uses synthetic agents in an isolated Linux Xvfb session. On
+The two earlier grid screenshots use synthetic agents in an isolated Linux Xvfb session. On
 2026-11-12, floating-window checks verified the preset menu, 3 × 2 and 2 × 3
 layouts, portrait controls at 204 pixels wide, and 5 × 3 / 3 × 5 layouts. Whole-key
 navigation, including a queued run beyond the first eight slots, retains the

@@ -274,14 +274,6 @@ impl Desktop {
                 } else {
                     ui.visuals().warn_fg_color
                 });
-            let status_width =
-                (ui.available_width() - 122.0 - if more > 0 { 48.0 } else { 0.0 }).max(20.0);
-            ui.add_sized([status_width, 18.0], egui::Label::new(text).truncate())
-                .on_hover_text(
-                    error
-                        .as_deref()
-                        .unwrap_or_else(|| connection_text(&self.view)),
-                );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button(self.window.layout().label(), |ui| self.layout_picker(ui))
                     .response
@@ -303,6 +295,12 @@ impl Desktop {
                     self.window.expanded = true;
                     self.section = Section::Overflow;
                 }
+                ui.add_sized([ui.available_width(), 18.0], egui::Label::new(text).truncate())
+                    .on_hover_text(
+                        error
+                            .as_deref()
+                            .unwrap_or_else(|| connection_text(&self.view)),
+                    );
             });
         });
     }
