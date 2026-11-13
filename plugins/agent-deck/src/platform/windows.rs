@@ -231,8 +231,7 @@ impl State {
         true
     }
     fn event(&self, event: Event) {
-        let _ = self.events.try_send(event);
-        self.ctx.request_repaint();
+        dispatch_event(&self.events, &self.ctx, event);
     }
     fn commands(&mut self) {
         while let Ok(command) = self.commands.try_recv() {
@@ -359,6 +358,17 @@ unsafe extern "system" fn window_proc(
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
 }
 
+fn dispatch_event(events: &mpsc::Sender<Event>, ctx: &egui::Context, event: Event) {
+    if matches!(event, Event::Quit) {
+        // Quit must reach the UI even while the background worker is busy or
+        // its bounded event queue is full.
+        crate::window::request_quit(ctx);
+        return;
+    }
+    let _ = events.try_send(event);
+    ctx.request_repaint();
+}
+
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
@@ -371,5 +381,30 @@ fn set_text<const N: usize>(buffer: &mut [u16; N], value: &str) {
     buffer.fill(0);
     for (target, value) in buffer[..N - 1].iter_mut().zip(value.encode_utf16()) {
         *target = value;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quit_bypasses_a_full_or_disconnected_background_queue() {
+        let ctx = egui::Context::default();
+        let (events, receiver) = mpsc::channel(1);
+        events.try_send(Event::Open).unwrap();
+        dispatch_event(&events, &ctx, Event::Quit);
+        assert!(crate::window::quit_requested(&ctx));
+
+        let ctx = egui::Context::default();
+        drop(receiver);
+        dispatch_event(&events, &ctx, Event::Quit);
+        assert!(crate::window::quit_requested(&ctx));
+        let output = ctx.run(egui::RawInput::default(), |_| {});
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
     }
 }

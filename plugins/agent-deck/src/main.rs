@@ -102,6 +102,12 @@ fn main() -> Result<()> {
             let identity = Some((config.host_id, config.controller_id));
             let catalog = (state.clone(), config.host_id);
             let window = window::Window::load(&state, options.background)?;
+            #[cfg(windows)]
+            let window = {
+                let mut window = window;
+                window.bind_native(creation);
+                window
+            };
             let background =
                 background::Background::start(state, address.clone(), config, ctx.clone())?;
             if !background.view.borrow().background {

@@ -59,7 +59,6 @@ pub(crate) struct Desktop {
     pending_since: Option<Instant>,
     notifications_seen: u64,
     selected_notice: Option<Notice>,
-    quitting: bool,
     catalog_scope: (PathBuf, Uuid),
     catalog: Option<Result<Catalog, String>>,
     window: crate::window::Window,
@@ -98,7 +97,6 @@ impl Desktop {
             pending_since: None,
             notifications_seen: 0,
             selected_notice: None,
-            quitting: false,
             catalog_scope,
             catalog: None,
             window,
@@ -656,8 +654,7 @@ impl Desktop {
             self.background.test_notification();
         }
         if ui.button("Quit Corvid Agent Deck").clicked() {
-            self.quitting = true;
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            crate::window::request_quit(ui.ctx());
         }
         ui.separator();
         if let Some(notice) = self.selected_notice.clone() {
@@ -708,16 +705,16 @@ impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let background = self.background.view.borrow().clone();
         let opened = crate::window::take_open_request(ctx);
+        if crate::window::quit_requested(ctx) {
+            crate::window::request_quit(ctx);
+            return;
+        }
         if opened {
             self.window.expanded = false;
             self.section = Section::Slots;
             self.set_page(0);
         }
-        if ctx.input(|input| input.viewport().close_requested())
-            && background.background
-            && !background.quit
-            && !self.quitting
-        {
+        if ctx.input(|input| input.viewport().close_requested()) && background.background {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.window.hide(ctx);
         }
