@@ -208,9 +208,29 @@ The **Package Corvid** workflow performs the following stages:
 5. For a pushed version tag, create a draft, upload and check the complete asset
    inventory, then publish. Only this job receives repository write permission.
 
-Pull requests, pushes to `main`, and manual workflow runs validate and upload
-workflow artifacts without publishing a release. Re-running publication may repair
-an unpublished draft; it refuses to overwrite an already published release.
+The workflow starts on every pull request and push to `main`. The `validate` job
+checks the release version, shared icons, change detection, Rust formatting, and
+whitespace in the changed lines when a comparison is available.
+
+| Changes or trigger | Linux and Windows builds, tests, lints, and packaging |
+| --- | --- |
+| Only `AGENTS.md`, `README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG images under `docs/images/` | Skip |
+| Source (including comment-only Rust edits), dependencies, schemas, build scripts, packaging inputs, or CI configuration | Run |
+| Mixed changes, other paths, non-document file modes, or an empty or unavailable comparison | Run |
+| Version tag or manual **Run workflow** | Run |
+
+The pull request comparison uses the checked-out merge commit and its first
+parent. A push to `main` compares the previous tip and the pushed tip, covering
+all changes in the push. Moves check both the old and new paths.
+
+**Package checks** reports the combined result. It requires `validate` to pass
+and checks that the build and packaging jobs passed or were skipped according to
+the change classification. Use **Package checks** if configuring a required
+status check for pull requests.
+
+Full pull request, `main` push, and manual runs upload workflow artifacts.
+Publication runs only on a version tag push. Re-running publication may repair
+an unpublished draft and refuses to overwrite an already published release.
 
 For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
 WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt

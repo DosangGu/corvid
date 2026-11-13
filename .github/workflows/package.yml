@@ -22,17 +22,26 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-24.04
+    outputs:
+      full_pipeline: ${{ steps.changes.outputs.full_pipeline }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Validate changed paths and whitespace
+        id: changes
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: python3 deploy/validate_changes.py
       - run: python3 deploy/release.py validate
       - run: python3 deploy/test_icons.py
+      - run: python3 deploy/test_validate_changes.py
       - run: cargo fmt --all -- --check
-      - run: git diff --check
 
   runtime:
     needs: validate
+    if: needs.validate.outputs.full_pipeline == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -185,6 +194,34 @@ jobs:
           name: release-assets
           path: dist/
           if-no-files-found: error
+
+  package-checks:
+    name: Package checks
+    needs: [validate, runtime, desktop, assemble]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check validation and packaging results
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          FULL_PIPELINE: ${{ needs.validate.outputs.full_pipeline }}
+          RUNTIME_RESULT: ${{ needs.runtime.result }}
+          DESKTOP_RESULT: ${{ needs.desktop.result }}
+          ASSEMBLE_RESULT: ${{ needs.assemble.result }}
+        run: |
+          if [[ "$VALIDATE_RESULT" != success ]]; then
+            echo "::error::Validation finished with $VALIDATE_RESULT"
+            exit 1
+          fi
+          case "$FULL_PIPELINE" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) echo "::error::Missing change classification"; exit 1 ;;
+          esac
+          if [[ "$RUNTIME_RESULT" != "$expected" || "$DESKTOP_RESULT" != "$expected" || "$ASSEMBLE_RESULT" != "$expected" ]]; then
+            echo "::error::Expected $expected for packaging jobs, got runtime=$RUNTIME_RESULT desktop=$DESKTOP_RESULT assemble=$ASSEMBLE_RESULT"
+            exit 1
+          fi
 
   publish:
     needs: assemble
