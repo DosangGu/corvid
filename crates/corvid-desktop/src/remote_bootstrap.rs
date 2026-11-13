@@ -221,7 +221,7 @@ fn read_bundle(platform: HostPlatform) -> Result<(Vec<u8>, String)> {
         binary.len() as u64 == manifest.size,
         "bundled daemon size did not match"
     );
-    let sha256 = format!("{:x}", Sha256::digest(&binary));
+    let sha256 = hex::encode(Sha256::digest(&binary));
     ensure!(
         sha256 == manifest.sha256,
         "bundled daemon SHA-256 did not match"

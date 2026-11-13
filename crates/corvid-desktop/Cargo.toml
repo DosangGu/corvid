@@ -21,6 +21,7 @@ corvid-protocol.workspace = true
 corvid-tui.workspace = true
 corvid-update.workspace = true
 glob.workspace = true
+hex.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

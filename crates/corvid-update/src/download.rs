@@ -68,7 +68,7 @@ pub fn bytes(url: &str, limit: u64) -> Result<Vec<u8>> {
 pub fn verify(bytes: &[u8], size: u64, sha256: &str) -> Result<()> {
     ensure!(bytes.len() as u64 == size, "download size mismatch");
     ensure!(
-        format!("{:x}", Sha256::digest(bytes)) == sha256,
+        hex::encode(Sha256::digest(bytes)) == sha256,
         "download SHA-256 mismatch"
     );
     Ok(())
@@ -77,11 +77,25 @@ pub fn verify(bytes: &[u8], size: u64, sha256: &str) -> Result<()> {
 pub fn verify_file(path: &Path, size: u64, sha256: &str) -> Result<()> {
     let file = fs::File::open(path)?;
     ensure!(file.metadata()?.len() == size, "download size mismatch");
+
+    let mut file = file.take(size.saturating_add(1));
     let mut digest = Sha256::new();
-    let copied = io::copy(&mut file.take(size.saturating_add(1)), &mut digest)?;
-    ensure!(copied == size, "download size mismatch");
+    let mut buffer = [0; 8192];
+    let mut bytes_read = 0;
+    loop {
+        let count = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        digest.update(&buffer[..count]);
+        bytes_read += count as u64;
+    }
+
+    ensure!(bytes_read == size, "download size mismatch");
     ensure!(
-        format!("{:x}", digest.finalize()) == sha256,
+        hex::encode(digest.finalize()) == sha256,
         "download SHA-256 mismatch"
     );
     Ok(())
@@ -98,13 +112,17 @@ mod tests {
     }
 
     #[test]
-    fn verifies_archive_files_before_installation() {
+    fn verifies_archive_checksums_across_multiple_reads() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        std::fs::write(file.path(), b"abc").unwrap();
-        super::verify_file(file.path(), 3, hash).unwrap();
-        assert!(super::verify_file(file.path(), 2, hash).is_err());
-        std::fs::write(file.path(), b"abd").unwrap();
-        assert!(super::verify_file(file.path(), 3, hash).is_err());
+        let mut bytes = vec![b'a'; 1_000_000];
+        let size = bytes.len() as u64;
+        let hash = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
+        std::fs::write(file.path(), &bytes).unwrap();
+        super::verify_file(file.path(), size, hash).unwrap();
+        assert!(super::verify_file(file.path(), size - 1, hash).is_err());
+
+        *bytes.last_mut().unwrap() = b'b';
+        std::fs::write(file.path(), &bytes).unwrap();
+        assert!(super::verify_file(file.path(), size, hash).is_err());
     }
 }
