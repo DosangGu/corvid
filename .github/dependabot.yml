@@ -11,7 +11,7 @@ updates:
       timezone: "Asia/Seoul"
     # Wait after release for version updates; security updates bypass cooldown.
     cooldown:
-      default-days: 7
+      default-days: 14
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore"
@@ -32,7 +32,7 @@ updates:
       timezone: "Asia/Seoul"
     # Wait after release for version updates; security updates bypass cooldown.
     cooldown:
-      default-days: 7
+      default-days: 14
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
