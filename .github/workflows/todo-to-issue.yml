@@ -23,4 +23,4 @@ jobs:
           CLOSE_ISSUES: 'true'
           INSERT_ISSUE_URLS: 'false'
           # Documentation examples should not create issues.
-          IGNORE: '\.md$'
+          IGNORE: '.*\.md$'
