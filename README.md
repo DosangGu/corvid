@@ -94,6 +94,17 @@ and a single `Cargo.lock`. Run `cargo test --locked` for the default packages.
 Use `--workspace` to include Desktop, Deck, and the packaging tool. Full Linux
 workspace builds require the [Desktop system packages](docs/04_companion.md#linux-desktop-quick-start).
 
+[Dependabot](.github/dependabot.yml) checks Cargo dependencies and GitHub Actions
+weekly on Monday at 09:00 Asia/Seoul, with up to five open version-update PRs per
+ecosystem. Version updates wait at least 14 days after a release and become
+eligible at the next weekly check. This cooldown does not delay security updates
+and cannot be configured by vulnerability severity. Protobuf dependencies
+(`prost*` and `protox`) are updated together; all other updates, including patches,
+receive individual PRs for review.
+Dependency PRs run the existing packaging and workspace CI and require review
+before manual merging. Dependabot security updates are controlled separately
+in the repository's security settings.
+
 - [Architecture and roadmap](docs/00_project_design.md)
 - [Agent hook coverage and setup](docs/03_provider_qualification.md)
 - [Release distribution and updates](docs/05_release_distribution.md)
