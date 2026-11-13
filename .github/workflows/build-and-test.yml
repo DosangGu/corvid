@@ -87,11 +87,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-2025
             target: x86_64-pc-windows-msvc
-            extra_binaries: |
-              corvid-launch.exe
-              corvid-desktop-launch.exe
-              corvid-agent-deck-launch.exe
-              corvid-deck.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -125,13 +120,11 @@ jobs:
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: pwsh
-        env:
-          EXTRA_BINARIES: ${{ matrix.extra_binaries }}
         run: |
           $suffix = if ($IsWindows) { '.exe' } else { '' }
           $binaries = @("corvid-desktop$suffix", "corvid-agent-deck$suffix")
-          if ($env:EXTRA_BINARIES) {
-            $binaries += $env:EXTRA_BINARIES.Trim() -split '\r?\n'
+          if ($IsWindows) {
+            $binaries += @('corvid-launch.exe', 'corvid-desktop-launch.exe', 'corvid-agent-deck-launch.exe', 'corvid-deck.exe')
           }
           New-Item -ItemType Directory -Path target/desktop-binaries | Out-Null
           foreach ($binary in $binaries) {
