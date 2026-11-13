@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
@@ -6,7 +7,7 @@ use std::process::Command;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
-pub fn command(program: &str) -> Command {
+pub fn command(program: impl AsRef<OsStr>) -> Command {
     let command = Command::new(program);
     #[cfg(windows)]
     let command = {

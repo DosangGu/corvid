@@ -8,12 +8,15 @@ use serde::Deserialize;
 
 use crate::{Package, Product, RELEASES, Release, download, target, version};
 
+#[cfg(windows)]
+mod windows_setup;
+
 #[derive(Clone, Debug)]
 pub struct Installation {
     pub package: Package,
     pub root: Option<PathBuf>,
     pub bin_dir: Option<PathBuf>,
-    native_package: bool,
+    windows_setup: bool,
 }
 
 #[derive(Deserialize)]
@@ -67,8 +70,33 @@ impl Installation {
         let root = directory
             .parent()
             .filter(|parent| parent.file_name().is_some_and(|name| name == "versions"))
-            .and_then(Path::parent)
-            .filter(|root| root.join("install.json").is_file());
+            .and_then(Path::parent);
+        let marker = directory.join("native-package");
+        if marker.try_exists()? {
+            ensure!(
+                cfg!(windows)
+                    && package.product == Product::Desktop
+                    && fs::read_to_string(marker)?.trim() == "windows-setup",
+                "unsupported native package"
+            );
+            let root = root.context("locating the Windows Setup installation root")?;
+            ensure!(
+                directory
+                    .file_name()
+                    .is_some_and(|name| name == package.version.as_str())
+                    && root.join("current.txt").is_file()
+                    && !root.join("install.json").exists(),
+                "Windows Setup installation layout mismatch"
+            );
+            return Ok(Self {
+                package,
+                root: Some(root.to_owned()),
+                bin_dir: Some(root.join("bin")),
+                windows_setup: true,
+            });
+        }
+
+        let root = root.filter(|root| root.join("install.json").is_file());
         let bin_dir = if let Some(root) = root {
             let receipt: Receipt = serde_json::from_slice(&fs::read(root.join("install.json"))?)?;
             ensure!(
@@ -89,12 +117,12 @@ impl Installation {
             package,
             root: root.map(Path::to_owned),
             bin_dir,
-            native_package: directory.join("native-package").is_file(),
+            windows_setup: false,
         })
     }
 
-    pub fn supports_in_app_update(&self) -> bool {
-        !self.native_package
+    pub fn is_windows_setup(&self) -> bool {
+        self.windows_setup
     }
 
     /// Runs a verified, version-pinned installer. Never contacts or restarts a daemon.
@@ -107,10 +135,11 @@ impl Installation {
         release: &Release,
         mut progress: impl FnMut(InstallProgress),
     ) -> Result<Installed> {
-        ensure!(
-            self.supports_in_app_update(),
-            "Update this installation using its original installer."
-        );
+        #[cfg(windows)]
+        if self.is_windows_setup() {
+            return windows_setup::install(self, release, progress);
+        }
+
         let product = self.package.product;
         let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
         let archive = format!(
@@ -166,7 +195,15 @@ impl Installation {
             .lines()
             .find_map(|line| line.strip_prefix("CORVID_EXECUTABLE="))
             .context("installer did not return its executable")?;
-        let executable = PathBuf::from(installed);
+        self.installed(PathBuf::from(installed), release, message)
+    }
+
+    fn installed(
+        &self,
+        executable: PathBuf,
+        release: &Release,
+        message: String,
+    ) -> Result<Installed> {
         ensure!(
             executable.is_absolute() && executable.is_file(),
             "invalid installed executable"
@@ -174,7 +211,8 @@ impl Installation {
         let installed_package = Self::at(&executable)?;
         ensure!(
             installed_package.package.version == release.version.to_string()
-                && installed_package.package.product == product
+                && installed_package.package.product == self.package.product
+                && installed_package.is_windows_setup() == self.is_windows_setup()
                 && installed_package.package.source_revision == release.manifest.source_revision,
             "installed package mismatch"
         );
@@ -247,7 +285,7 @@ impl Installed {
         } else {
             "corvid-desktop"
         });
-        let mut command = download::command(binary.to_str().context("invalid Desktop path")?);
+        let mut command = download::command(binary);
         command.args(env::args_os().skip(1));
         command.spawn().context("restarting Corvid Desktop")?;
         Ok(())
@@ -261,12 +299,7 @@ pub fn launch(binary: &str, wait: bool) -> Result<ExitCode> {
         .parent()
         .and_then(Path::parent)
         .context("locating installation")?;
-    let current = fs::read_to_string(root.join("current.txt"))?;
-    let selected = version(current.trim())?;
-    ensure!(
-        current.trim() == selected.to_string(),
-        "invalid current version"
-    );
+    let selected = current_windows_version(root)?;
     let mut command = Command::new(
         root.join("versions")
             .join(selected.to_string())
@@ -284,6 +317,15 @@ pub fn launch(binary: &str, wait: bool) -> Result<ExitCode> {
             .and_then(|code| code.try_into().ok())
             .unwrap_or(1),
     ))
+}
+
+fn current_windows_version(root: &Path) -> Result<semver::Version> {
+    let current = fs::read_to_string(root.join("current.txt"))
+        .context("reading the current Windows installation version")?;
+    let current = current.trim();
+    let selected = version(current)?;
+    ensure!(current == selected.to_string(), "invalid current version");
+    Ok(selected)
 }
 
 #[cfg(test)]
@@ -314,10 +356,6 @@ mod tests {
         let installation = Installation::at(&directory.path().join("corvid")).unwrap();
         assert_eq!(installation.package.product, Product::Desktop);
         assert!(installation.root.is_none());
-        assert!(installation.supports_in_app_update());
-
-        fs::write(directory.path().join("native-package"), "native\n").unwrap();
-        let installation = Installation::at(&directory.path().join("corvid")).unwrap();
-        assert!(!installation.supports_in_app_update());
+        assert!(!installation.is_windows_setup());
     }
 }

@@ -136,8 +136,9 @@ panel keeps the running version, installation type, stable channel, and last che
 time visible. Check results and actionable errors stay in that page; technical
 error details can be expanded. Release notes open the selected release page.
 
-For managed and portable installations, **Download update** downloads, verifies,
-and installs the selected release in the background. The panel shows those three
+For installations from Windows Setup, the scripts, or a portable archive,
+**Download update** downloads, verifies, and installs the selected release in
+the background. The panel shows those three
 stages; it does not estimate a percentage. Checking and installation continue when
 Settings is closed. Reopening Settings restores the current result or progress.
 Repeated clicks cannot start concurrent checks or installations.
@@ -151,8 +152,9 @@ Terminal jobs remain owned by their existing daemon throughout this flow.
 ![Available update in Settings](images/release-update-available.png)
 ![Prepared update with a choice of restart time](images/release-update-ready.png)
 
-Both clients use `corvid-update`. The updater selects a release once, verifies
-its manifest, and runs that exact tag's verified installer with the expected
+Both clients use `corvid-update`. For script and portable installations, the
+updater selects a release once, validates its manifest, and runs that exact
+tag's verified installer with the expected
 archive digest. The updater downloads that tag's archive, verifies its exact size
 and SHA-256, and supplies the verified local assets to the installer. The installer
 also checks archive and package integrity before switching the current version.
@@ -228,12 +230,15 @@ Run the x64 Setup executable for a per-user install. The default directory is
 and the Corvid Terminal. For CLI access from your own shells, add its `bin`
 directory to your user PATH. Setup builds are currently unsigned.
 
-Use `corvid update --check` or **Settings → About & updates → Check for updates** to find available
-releases. Desktop identifies Setup installations and offers **Download installer**
-for a release with a matching Setup asset, or **Open release** when it is absent.
-Run the new Setup over the existing installation to update. Setup keeps older
-version directories and switches the launchers to the selected version after
-copying its files. Agent Deck registers its notification shortcut when started
+Use **Settings → About & updates → Check for updates** to find available releases.
+**Download update** downloads the selected release's Windows Setup executable and
+verifies its exact size and SHA-256 against the release manifest. Desktop runs
+Setup in the background in the existing installation directory. When the new
+version becomes active, Desktop offers **Restart to apply**. Setup keeps older
+version directories and running terminal jobs continue through the update.
+`corvid update` also supports forward updates for Setup installations.
+
+Agent Deck registers its notification shortcut when started
 and offers an opt-in login startup setting. Those shortcuts follow the selected
 version. Use **Settings → Apps → Installed
 apps** to uninstall Corvid Desktop. The uninstaller removes Setup's shortcuts
