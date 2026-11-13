@@ -52,6 +52,7 @@ eframe = { version = "=0.33.3", default-features = false }
 elgato-streamdeck = { version = "=0.13.1", default-features = false }
 glob = "0.3"
 gpui = { version = "=0.2.2", default-features = false }
+hex = "=0.4.3"
 hidapi = "2.6"
 image = { version = "0.25", default-features = false }
 # GPUI's Linux HTTP stack uses xattr 0.2.3, which still needs libc::ENOATTR.
@@ -67,7 +68,7 @@ raw-window-handle = "=0.6.2"
 semver = "=1.0.28"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
-sha2 = "=0.10.9"
+sha2 = "=0.11.1"
 signal-hook = "0.3.18"
 socket2 = "=0.6.5"
 tar = { version = "=0.4.46", default-features = false }
