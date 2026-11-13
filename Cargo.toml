@@ -37,7 +37,7 @@ publish = false
 [workspace.dependencies]
 corvid-agent-deck = { path = "plugins/agent-deck", default-features = false }
 anyhow = "1.0"
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 clap = { version = "4.6", features = ["derive"] }
 corvid-client = { path = "crates/corvid-client" }
 corvid-companion = { path = "crates/corvid-companion" }
