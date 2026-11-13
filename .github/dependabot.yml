@@ -1,0 +1,33 @@
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    # All workspace members share the root manifest and lockfile.
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Seoul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      # The schema compiler and generated types must stay compatible.
+      protobuf:
+        patterns:
+          - "prost*"
+          - "protox"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Seoul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
