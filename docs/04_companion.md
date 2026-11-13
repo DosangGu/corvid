@@ -517,13 +517,14 @@ Desktop archives include Agent Deck as a built-in feature. For source builds, ru
 under `plugins/agent-deck/` next to the Desktop executable. You can also launch
 Deck directly using its configured `--state-dir` and `--socket-dir` on Linux
 or `--pipe-instance` on Windows. It starts or reuses the companion service.
-The window uses eframe 0.33.3 with the Glow
-renderer and connects directly to the private Protobuf endpoint.
-[eframe source](https://github.com/emilk/egui/tree/0.33.3/crates/eframe)
+The window uses the workspace GPUI version and connects directly to the private
+Protobuf endpoint. Linux uses the same X11 or XWayland and Vulkan requirements
+as Corvid Desktop.
 
 When launched from Desktop, click a key in **Deck** or an agent in **Queue** to
-focus its pane and bring Desktop forward. On Linux, the board minimizes after
-a successful focus. When running Agent Deck directly,
+focus its pane and bring Desktop forward. With a working tray and Always on top
+disabled, a successful focus hides the Deck. Linux keeps its window available.
+When running Agent Deck directly,
 choose a paired TUI in **Target terminal**, then click the agent's key.
 The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant

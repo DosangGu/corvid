@@ -6,8 +6,8 @@ use std::ptr::{null, null_mut};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
+use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
-use eframe::egui;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -37,7 +37,7 @@ pub struct Native {
 impl Native {
     pub fn start(
         events: mpsc::Sender<Event>,
-        ctx: egui::Context,
+        ctx: UiSignal,
         controller: Uuid,
         state: &Path,
         address: &str,
@@ -62,7 +62,7 @@ impl Native {
                     let message = error.to_string();
                     let _ = ready.try_send(Err(message.clone()));
                     let _ = events.try_send(Event::Error(message));
-                    ctx.request_repaint();
+                    ctx.notify();
                 }
             })?;
         let window = started
@@ -120,7 +120,7 @@ impl Drop for Native {
 struct State {
     commands: Receiver<Command>,
     events: mpsc::Sender<Event>,
-    ctx: egui::Context,
+    ctx: UiSignal,
     tray: NOTIFYICONDATAW,
     restart: u32,
     toast: Option<toast::Sink>,
@@ -129,7 +129,7 @@ struct State {
 fn run(
     commands: Receiver<Command>,
     events: mpsc::Sender<Event>,
-    ctx: egui::Context,
+    ctx: UiSignal,
     controller: Uuid,
     state: std::path::PathBuf,
     address: String,
@@ -358,7 +358,7 @@ unsafe extern "system" fn window_proc(
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
 }
 
-fn dispatch_event(events: &mpsc::Sender<Event>, ctx: &egui::Context, event: Event) {
+fn dispatch_event(events: &mpsc::Sender<Event>, ctx: &UiSignal, event: Event) {
     if matches!(event, Event::Quit) {
         // Quit must reach the UI even while the background worker is busy or
         // its bounded event queue is full.
@@ -366,7 +366,7 @@ fn dispatch_event(events: &mpsc::Sender<Event>, ctx: &egui::Context, event: Even
         return;
     }
     let _ = events.try_send(event);
-    ctx.request_repaint();
+    ctx.notify();
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -390,21 +390,15 @@ mod tests {
 
     #[test]
     fn quit_bypasses_a_full_or_disconnected_background_queue() {
-        let ctx = egui::Context::default();
+        let ctx = UiSignal::default();
         let (events, receiver) = mpsc::channel(1);
         events.try_send(Event::Open).unwrap();
         dispatch_event(&events, &ctx, Event::Quit);
-        assert!(crate::window::quit_requested(&ctx));
+        assert!(ctx.quitting());
 
-        let ctx = egui::Context::default();
+        let ctx = UiSignal::default();
         drop(receiver);
         dispatch_event(&events, &ctx, Event::Quit);
-        assert!(crate::window::quit_requested(&ctx));
-        let output = ctx.run(egui::RawInput::default(), |_| {});
-        assert!(
-            output.viewport_output[&egui::ViewportId::ROOT]
-                .commands
-                .contains(&egui::ViewportCommand::Close)
-        );
+        assert!(ctx.quitting());
     }
 }

@@ -4,17 +4,16 @@ mod app;
 mod background;
 mod catalog;
 mod notifications;
-#[cfg(windows)]
-mod pairing;
 mod parent;
 mod platform;
+mod ui_signal;
 mod window;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::Parser;
 use corvid_companion::Config;
 use corvid_presentation::ipc::DesktopClient;
-use eframe::egui;
+use gpui::{App, AppContext, Application, WindowBounds, WindowOptions};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -73,54 +72,45 @@ fn main() -> Result<()> {
     drop(runtime);
     #[cfg(windows)]
     platform::identify(config.controller_id)?;
-    let image =
-        image::load_from_memory(include_bytes!("../../../assets/icons/corvid.png"))?.into_rgba8();
-    let icon = egui::IconData {
-        width: image.width(),
-        height: image.height(),
-        rgba: image.into_raw(),
-    };
-    let native = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_app_id("corvid-agent-deck")
-            .with_inner_size(window::GridLayout::default().size())
-            .with_min_inner_size([204.0, 140.0])
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_taskbar(!cfg!(windows))
-            .with_active(!options.background)
-            .with_icon(icon)
-            .with_visible(!cfg!(windows)),
-        ..Default::default()
-    };
-    eframe::run_native(
-        corvid_agent_deck::NAME,
-        native,
-        Box::new(move |creation| {
-            app::configure(&creation.egui_ctx);
-            let ctx = creation.egui_ctx.clone();
-            let identity = Some((config.host_id, config.controller_id));
-            let catalog = (state.clone(), config.host_id);
-            let window = window::Window::load(&state, options.background)?;
-            #[cfg(windows)]
-            let window = {
-                let mut window = window;
-                window.bind_native(creation);
-                window
-            };
-            let background =
-                background::Background::start(state, address.clone(), config, ctx.clone())?;
-            if !background.view.borrow().background {
-                parent::show(&ctx);
+    #[cfg(target_os = "linux")]
+    anyhow::ensure!(
+        gpui::guess_compositor() == "X11",
+        "Agent Deck requires an X11 or XWayland display"
+    );
+    let signal = ui_signal::UiSignal::default();
+    let preferences = window::Window::load(&state, options.background)?;
+    let identity = Some((config.host_id, config.controller_id));
+    let catalog = (state.clone(), config.host_id);
+    let background = background::Background::start(state, address.clone(), config, signal.clone())?;
+    let notify = signal.clone();
+    let client = DesktopClient::start_scoped(address, identity, move || notify.notify())?;
+    Application::new().run(move |cx: &mut App| {
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
             }
-            let client =
-                DesktopClient::start_scoped(address, identity, move || ctx.request_repaint())?;
-            Ok(Box::new(app::Desktop::new(
-                client, background, catalog, window,
-            )))
-        }),
-    )
-    .map_err(|error| anyhow!("could not open Corvid Agent Deck: {error}"))
+        })
+        .detach();
+        let options = WindowOptions {
+            app_id: Some("corvid-agent-deck".into()),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some("Corvid Agent Deck".into()),
+                ..Default::default()
+            }),
+            window_bounds: Some(WindowBounds::centered(preferences.layout().size(), cx)),
+            focus: false,
+            show: !cfg!(windows),
+            window_min_size: Some(gpui::size(gpui::px(204.), gpui::px(140.))),
+            ..Default::default()
+        };
+        cx.open_window(options, move |window, cx| {
+            cx.new(|cx| {
+                app::Desktop::new(client, background, catalog, preferences, signal, window, cx)
+            })
+        })
+        .expect("could not open Corvid Agent Deck");
+    });
+    Ok(())
 }
 
 fn default_state() -> Result<PathBuf> {

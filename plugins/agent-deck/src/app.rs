@@ -1,53 +1,46 @@
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{
-    AgentBadge, AgentCollection, AgentProvider, CompanionConnection, EvidenceConfidence,
-    LayoutRecovery, PresentedBinding, PresentedRun, PresentedRunKey, PresentedSlot,
-    RunAvailability,
-};
-use eframe::egui::{self, Color32, FontId, Frame, Margin, RichText, TextStyle, Ui};
-use uuid::Uuid;
-
-use corvid_presentation::ipc::{Command, Completion, DesktopClient, Display, Link};
-use corvid_presentation::model::Snapshot;
-
 use crate::background::Background;
 use crate::catalog::Catalog;
 use crate::notifications::{Notice, now_ms};
 use crate::parent::DesktopLink;
+use crate::ui_signal::UiSignal;
+use corvid_presentation::ipc::{Command, Completion, DesktopClient, Display, Link};
+use corvid_presentation::model::Snapshot;
+use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{
+    AgentBadge, AgentCollection, AgentProvider, CompanionConnection, EvidenceConfidence,
+    PresentedBinding, PresentedRun, PresentedRunKey, PresentedSlot, RunAvailability,
+};
+use gpui::{
+    Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, KeyUpEvent, MouseButton,
+    Render, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb, rgba,
+};
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 mod deck;
 mod floating;
+mod gesture;
+use gesture::{Gesture, Input};
+#[cfg(windows)]
+#[path = "pairing.rs"]
+mod pairing;
+use deck::{BACKGROUND, MINT, PANEL, TEXT, button, column, muted, row};
 
-pub(crate) fn configure(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = deck::PANEL;
-    visuals.window_fill = deck::PANEL;
-    visuals.extreme_bg_color = deck::BACKGROUND;
-    visuals.selection.bg_fill = Color32::from_rgb(38, 72, 65);
-    visuals.selection.stroke.color = Color32::from_rgb(119, 216, 183);
-    ctx.set_visuals(visuals);
-    ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(9.0, 4.0);
-        style
-            .text_styles
-            .insert(TextStyle::Heading, FontId::proportional(23.0));
-        style
-            .text_styles
-            .insert(TextStyle::Body, FontId::proportional(14.0));
-        style
-            .text_styles
-            .insert(TextStyle::Button, FontId::proportional(14.0));
-        let muted = if style.visuals.dark_mode { 155 } else { 85 };
-        style.visuals.weak_text_color = Some(Color32::from_gray(muted));
-    });
+#[derive(Clone)]
+enum FocusAction {
+    Desktop(PresentedRunKey),
+    Companion(std::sync::Arc<Snapshot>, Body),
 }
 
 pub(crate) struct Desktop {
     client: DesktopClient,
+    signal: UiSignal,
+    focus: FocusHandle,
+    held: Gesture,
+    selected: usize,
+    menu: Option<(std::sync::Arc<Snapshot>, PresentedSlot)>,
+    _tasks: Vec<Task<()>>,
     parent: DesktopLink,
     background: Background,
     view: Display,
@@ -62,9 +55,10 @@ pub(crate) struct Desktop {
     catalog_scope: (PathBuf, Uuid),
     catalog: Option<Result<Catalog, String>>,
     window: crate::window::Window,
+    window_ready: bool,
     focus_pending: Option<Uuid>,
     #[cfg(windows)]
-    pairing: crate::pairing::Pairing,
+    pairing: pairing::Pairing,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -82,9 +76,53 @@ impl Desktop {
         client: DesktopClient,
         background: Background,
         catalog_scope: (PathBuf, Uuid),
-        window: crate::window::Window,
+        preferences: crate::window::Window,
+        signal: UiSignal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Self {
-        Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        let mut updates = signal.subscribe();
+        let event_task = cx.spawn_in(window, async move |view, cx| {
+            while updates.changed().await.is_ok() {
+                if view
+                    .update_in(cx, |view, window, cx| view.update(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let clock = cx.spawn_in(window, async move |view, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if view
+                    .update_in(cx, |view, window, cx| view.update(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            weak.update(cx, |view, _| {
+                if view.background.view.borrow().background {
+                    view.window.hide(window);
+                    false
+                } else {
+                    true
+                }
+            })
+            .unwrap_or(true)
+        });
+        let activation = cx.observe_window_activation(window, |view, window, cx| {
+            view.held.cancel();
+            view.update(window, cx);
+        });
+        activation.detach();
+        let mut result = Self {
             client,
             parent: background.desktop.clone(),
             background,
@@ -99,11 +137,34 @@ impl Desktop {
             selected_notice: None,
             catalog_scope,
             catalog: None,
-            window,
+            window: preferences,
+            window_ready: cfg!(windows),
+            signal,
+            focus,
+            held: Gesture::default(),
+            selected: 0,
+            menu: None,
+            _tasks: vec![event_task, clock],
             focus_pending: None,
             #[cfg(windows)]
-            pairing: crate::pairing::Pairing::default(),
+            pairing: pairing::Pairing::default(),
+        };
+        result.refresh_view();
+        // Let X11 present its initial frame before the window manager changes
+        // decorations. Changing them during mapping can suppress that frame.
+        #[cfg(target_os = "linux")]
+        {
+            let view = cx.weak_entity();
+            window.on_next_frame(move |window, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.window_ready = true;
+                    view.update(window, cx);
+                });
+            });
         }
+        #[cfg(windows)]
+        cx.defer_in(window, |view, window, cx| view.update(window, cx));
+        result
     }
 
     fn refresh_view(&mut self) {
@@ -214,379 +275,6 @@ impl Desktop {
             && snapshot.generation().is_some()
     }
 
-    fn header(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Mini deck").clicked() {
-                self.window.expanded = false;
-                self.section = Section::Slots;
-                self.set_page(0);
-            }
-            ui.heading("Agent Deck");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.selectable_value(&mut self.section, Section::Notifications, "Notifications");
-                ui.selectable_value(&mut self.section, Section::Hosts, "Hosts");
-                if matches!(self.section, Section::Hosts | Section::Notifications) {
-                    ui.selectable_value(&mut self.section, Section::Slots, "Deck");
-                }
-            });
-        });
-        ui.horizontal(|ui| {
-            let host = self
-                .view
-                .snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.host.to_string());
-            let label = host.as_deref().map_or_else(
-                || "Corvid".into(),
-                |host| format!("Corvid · {}", short_id(host)),
-            );
-            let response = ui.weak(label);
-            if let Some(host) = host {
-                response.on_hover_text(format!("Host {host}"));
-            }
-            let online = self.view.link == Link::Online
-                && self
-                    .view
-                    .snapshot
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.generation())
-                    .is_some();
-            let color = if online {
-                Color32::from_rgb(119, 216, 183)
-            } else {
-                ui.visuals().warn_fg_color
-            };
-            ui.label(
-                RichText::new(if online {
-                    "Connected"
-                } else {
-                    "Check connection"
-                })
-                .size(12.0)
-                .color(color),
-            )
-            .on_hover_text(connection_text(&self.view));
-        });
-        if self.section == Section::Hosts {
-            return;
-        }
-        if let Some(snapshot) = self.view.snapshot.clone() {
-            if self.view.link != Link::Online || snapshot.generation().is_none() {
-                if let Some(seen) = self.view.last_ready {
-                    ui.label(format!(
-                        "Last ready snapshot seen {}s ago",
-                        seen.elapsed().as_secs()
-                    ));
-                } else {
-                    ui.label("Waiting for the first ready snapshot.");
-                }
-            }
-            if let Some(code) = snapshot
-                .data
-                .issue_code
-                .as_deref()
-                .filter(|code| safe_code(code))
-            {
-                ui.label(format!("Connection issue ({code})"));
-            }
-            match LayoutRecovery::try_from(snapshot.data.layout_recovery) {
-                Ok(LayoutRecovery::Backup) => {
-                    ui.label("Slot layout recovered from its backup.");
-                }
-                Ok(LayoutRecovery::Fresh) => {
-                    ui.label("Slot recovery started a fresh layout.");
-                }
-                _ => {}
-            }
-            if !self.parent.connected() {
-                self.binding_picker(ui, &snapshot);
-            }
-            #[cfg(windows)]
-            if !self.parent.connected()
-                && snapshot.can_pair_wezterm
-                && ui
-                    .add_enabled(self.ready(&snapshot), egui::Button::new("Pair WezTerm…"))
-                    .clicked()
-            {
-                self.pairing.open(ui.ctx());
-            }
-        }
-    }
-
-    fn binding_picker(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Target terminal");
-            let selected = self
-                .binding
-                .as_ref()
-                .map_or_else(|| "Choose a paired terminal".to_owned(), binding_label);
-            ui.add_enabled_ui(self.ready(snapshot), |ui| {
-                egui::ComboBox::from_id_salt("terminal-choice")
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        for binding in &snapshot.data.bindings {
-                            if snapshot.contains_binding(binding) {
-                                ui.selectable_value(
-                                    &mut self.binding,
-                                    Some(binding.clone()),
-                                    binding_label(binding),
-                                );
-                            }
-                        }
-                    });
-            });
-            if snapshot.data.bindings.is_empty() && snapshot.generation().is_some() {
-                ui.weak("Pair an attached TUI with corvid companion pair.");
-            }
-        });
-    }
-
-    fn sections(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.section, Section::Slots, "Deck");
-            ui.selectable_value(
-                &mut self.section,
-                Section::Overflow,
-                format!("Queue ({})", snapshot.data.overflow_count),
-            );
-            ui.selectable_value(&mut self.section, Section::History, "Closed panes");
-        });
-        ui.add_space(12.0);
-    }
-
-    fn board(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
-        let (columns, edge) = deck::grid(ui.available_width());
-        let width = columns as f32 * edge + (columns - 1) as f32 * deck::GAP;
-        let inset = (ui.available_width() - width).max(0.0) / 2.0;
-        for row in snapshot.data.slots.chunks(columns) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = deck::GAP;
-                ui.add_space(inset);
-                for slot in row {
-                    ui.push_id(slot.slot_id, |ui| self.card(ui, snapshot, slot, edge));
-                }
-            });
-            ui.add_space(deck::GAP - ui.spacing().item_spacing.y);
-        }
-    }
-
-    fn card(&mut self, ui: &mut Ui, snapshot: &Snapshot, slot: &PresentedSlot, edge: f32) {
-        let desktop = self.parent.connected();
-        let key = slot
-            .run
-            .as_ref()
-            .and_then(|run| snapshot.live_key(run))
-            .cloned();
-        let focus = self
-            .binding
-            .as_ref()
-            .and_then(|binding| snapshot.focus(slot, binding));
-        let can_focus = self.ready(snapshot)
-            && if desktop {
-                key.is_some()
-            } else {
-                focus.is_some()
-            };
-        let cached = self.view.link != Link::Online || snapshot.generation().is_none();
-        let response = ui.add(deck::Key {
-            number: slot.slot_id,
-            run: slot.run.as_ref(),
-            pinned: slot.pinned,
-            queued: false,
-            edge,
-            cached,
-            can_focus,
-            compact: !self.window.expanded,
-        });
-        if response.clicked() && can_focus {
-            if desktop {
-                self.focus_run(key.expect("focusable agent"));
-            } else {
-                self.submit(snapshot, focus.expect("focusable terminal binding"));
-                self.focus_pending = self.pending;
-            }
-        }
-        let Some(run) = &slot.run else {
-            return;
-        };
-        response.context_menu(|ui| {
-            ui.strong(format!("Key {:02}", slot.slot_id));
-            ui.separator();
-            self.action(
-                ui,
-                snapshot,
-                if slot.pinned { "Unpin" } else { "Pin" },
-                snapshot.pin(slot),
-            );
-            if run.latest_unseen_attention_id.is_some() {
-                self.action(ui, snapshot, "Acknowledge alert", snapshot.acknowledge(run));
-            }
-            if self.pending.is_some() {
-                ui.close();
-            }
-        });
-        response.on_hover_ui(|ui| {
-            describe_run(ui, run, cached, None);
-            ui.separator();
-            ui.weak(if can_focus {
-                "Click to open terminal · Right-click for actions"
-            } else {
-                "Focus unavailable · Right-click for actions"
-            });
-        });
-    }
-
-    fn overflow(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    self.page > 0 && self.pending.is_none(),
-                    egui::Button::new("Previous"),
-                )
-                .clicked()
-            {
-                self.set_page(self.page - 1);
-            }
-            ui.label(format!(
-                "Page {} of {}",
-                self.page + 1,
-                snapshot.page_count()
-            ));
-            if ui
-                .add_enabled(
-                    self.page + 1 < snapshot.page_count() && self.pending.is_none(),
-                    egui::Button::new("Next"),
-                )
-                .clicked()
-            {
-                self.set_page(self.page + 1);
-            }
-        });
-        if snapshot.page != self.page {
-            ui.label("Loading page…");
-            return;
-        }
-        if snapshot.data.overflow.is_empty() && snapshot.data.suppressed.is_empty() {
-            ui.weak("No queued agents on this page.");
-        }
-        for (index, run) in snapshot.data.overflow.iter().enumerate() {
-            ui.push_id(("overflow", index), |ui| {
-                ui.separator();
-                self.run(ui, snapshot, run);
-                ui.horizontal_wrapped(|ui| {
-                    if run.latest_unseen_attention_id.is_some() {
-                        self.action(ui, snapshot, "Acknowledge alert", snapshot.acknowledge(run));
-                    }
-                });
-            });
-        }
-        if !snapshot.data.suppressed.is_empty() {
-            ui.add_space(12.0);
-            ui.heading("Removed runs");
-            for (index, run) in snapshot.data.suppressed.iter().enumerate() {
-                ui.push_id(("removed", index), |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.monospace(short_id(&run.agent_run_id));
-                        self.action(ui, snapshot, "Re-add", snapshot.readd(run));
-                    });
-                });
-            }
-        }
-    }
-
-    fn action(&mut self, ui: &mut Ui, snapshot: &Snapshot, caption: &str, body: Option<Body>) {
-        let enabled = body.is_some() && self.ready(snapshot);
-        if ui
-            .add_enabled(enabled, egui::Button::new(caption))
-            .clicked()
-            && let Some(body) = body
-        {
-            self.submit(snapshot, body);
-        }
-    }
-
-    fn run(&mut self, ui: &mut Ui, snapshot: &Snapshot, run: &PresentedRun) {
-        let key = snapshot.live_key(run);
-        let focus = self
-            .parent
-            .connected()
-            .then(|| key.is_some() && self.ready(snapshot));
-        let cached = self.view.link != Link::Online || snapshot.generation().is_none();
-        if describe_run(ui, run, cached, focus)
-            && let Some(key) = key
-        {
-            self.focus_run(key.clone());
-        }
-    }
-
-    fn hosts(&mut self, ui: &mut Ui) {
-        let (state, current) = &self.catalog_scope;
-        if ui.button("Refresh hosts").clicked() {
-            self.catalog = None;
-        }
-        let catalog = self.catalog.get_or_insert_with(|| {
-            Catalog::start(state.clone(), *current, ui.ctx().clone())
-                .map_err(|error| error.to_string())
-        });
-        let catalog = match catalog {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                ui.label(RichText::new(error.as_str()).color(ui.visuals().error_fg_color));
-                return;
-            }
-        };
-        let view = catalog.views.borrow().clone();
-        if let Some(message) = view.message {
-            ui.label(message);
-        }
-        for (id, host) in view.hosts {
-            ui.push_id(id, |ui| {
-                ui.group(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.strong(&host.label);
-                        ui.monospace(short_id(&id.to_string()));
-                        ui.label(if host.online {
-                            "Live"
-                        } else if host.runs.is_empty() {
-                            "Offline"
-                        } else {
-                            "Cached"
-                        });
-                        if id == *current {
-                            if ui.button("This Deck's slots").clicked() {
-                                self.section = Section::Slots;
-                            }
-                        } else if ui.button("Show host Deck").clicked() {
-                            catalog.open(id);
-                        }
-                    });
-                    if host.online && host.runs.is_empty() {
-                        ui.weak("No observed agents.");
-                    }
-                    for run in &host.runs {
-                        ui.horizontal_wrapped(|ui| {
-                            let provider = match AgentProvider::try_from(run.provider) {
-                                Ok(AgentProvider::Claude) => "Claude",
-                                Ok(AgentProvider::Codex) => "Codex",
-                                _ => "Agent",
-                            };
-                            ui.label(provider);
-                            ui.monospace(short_id(&run.agent_run_id));
-                            let (badge, color) = badge_style(run.badge, ui.visuals());
-                            ui.label(RichText::new(badge).color(color));
-                            if run.pending_requests > 0 {
-                                ui.label(format!("{} pending", run.pending_requests));
-                            }
-                        });
-                    }
-                    if host.omitted > 0 {
-                        ui.weak(format!("{} older runs omitted", host.omitted));
-                    }
-                });
-            });
-        }
-    }
-
     fn focus_run(&mut self, key: PresentedRunKey) {
         let id = Uuid::new_v4();
         if self.parent.focus(id, key) {
@@ -604,289 +292,148 @@ impl Desktop {
         }
     }
 
-    fn notifications(&mut self, ui: &mut Ui) {
-        let background = self.background.view.borrow().clone();
-        let mut settings = background.settings;
-        let mut changed = ui
-            .checkbox(&mut settings.enabled, "Show OS notifications")
-            .changed();
-        ui.horizontal_wrapped(|ui| {
-            changed |= ui
-                .checkbox(&mut settings.input, "Questions and approvals")
-                .changed();
-            changed |= ui
-                .checkbox(&mut settings.responses, "New responses")
-                .changed();
-            changed |= ui.checkbox(&mut settings.failures, "Errors").changed();
-            changed |= ui.checkbox(&mut settings.sound, "Sound").changed();
-        });
-        if background.background {
-            changed |= ui
-                .checkbox(&mut settings.start_at_login, "Start Agent Deck at login")
-                .changed();
-            ui.weak("Closing this window keeps Agent Deck in the system tray.");
-        } else {
-            ui.weak("Keep this window open to receive notifications. A system tray backend is unavailable.");
-        }
-        let paused = settings.paused_until_ms > now_ms();
-        if ui
-            .button(if paused {
-                "Resume notifications"
-            } else {
-                "Pause for 1 hour"
-            })
-            .clicked()
-        {
-            settings.paused_until_ms = if paused {
-                0
-            } else {
-                now_ms().saturating_add(60 * 60 * 1000)
-            };
-            changed = true;
-        }
-        if changed {
-            self.background.configure(settings);
-        }
-        if !background.status.is_empty() {
-            ui.label(RichText::new(background.status).color(ui.visuals().warn_fg_color));
-        }
-        if ui.button("Send test notification").clicked() {
-            self.background.test_notification();
-        }
-        if ui.button("Quit Corvid Agent Deck").clicked() {
-            crate::window::request_quit(ui.ctx());
-        }
-        ui.separator();
-        if let Some(notice) = self.selected_notice.clone() {
-            ui.heading(&notice.title);
-            ui.label(&notice.body);
-            let current = self.view.snapshot.as_ref().is_some_and(|snapshot| {
-                snapshot.host == notice.key.host
-                    && snapshot.data.remote_epoch.as_deref()
-                        == Some(notice.key.epoch.to_string().as_str())
-                    && snapshot.generation().is_some()
-            });
-            if ui
-                .add_enabled(
-                    current && self.parent.connected() && self.pending.is_none(),
-                    egui::Button::new("Open existing terminal in Desktop"),
-                )
-                .clicked()
-            {
-                self.focus_run(notice.key.run());
-            }
-            ui.weak("The current Desktop and daemon revalidate the exact agent. Questions stay pending until answered in the terminal.");
-            ui.separator();
-        }
-        ui.heading("Recent notifications");
-        if background.history.is_empty() {
-            ui.weak("New agent notifications will appear here.");
-        }
-        for notice in background.history {
-            ui.push_id(notice.key.attention, |ui| {
-                if ui
-                    .selectable_label(
-                        self.selected_notice
-                            .as_ref()
-                            .is_some_and(|selected| selected.key == notice.key),
-                        &notice.title,
-                    )
-                    .clicked()
-                {
-                    self.selected_notice = Some(notice.clone());
-                }
-                ui.weak(&notice.body);
-            });
-        }
-    }
-}
-
-impl eframe::App for Desktop {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let background = self.background.view.borrow().clone();
-        let opened = crate::window::take_open_request(ctx);
-        if crate::window::quit_requested(ctx) {
-            crate::window::request_quit(ctx);
+    fn update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.signal.quitting() {
+            cx.quit();
             return;
         }
+        let opened = self.signal.take_open();
         if opened {
             self.window.expanded = false;
             self.section = Section::Slots;
+            self.held.cancel();
+            self.menu = None;
             self.set_page(0);
         }
-        if ctx.input(|input| input.viewport().close_requested()) && background.background {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.window.hide(ctx);
-        }
-        // Widgets process a release against the previous frame. Keep the same
-        // slot and binding visible until the entire gesture has been processed.
-        if !gesture_active(ctx) {
+        if !self.held.active() && self.menu.is_none() {
             self.refresh_view();
         }
+        let tray = self.background.view.borrow().background;
         if let Some(notice) = &self.notice
             && self.focus_pending == Some(notice.id)
         {
             self.focus_pending = None;
-            if !notice.failed && !self.window.always_on_top() && background.background {
-                self.window.hide(ctx);
+            if !notice.failed && !self.window.always_on_top() && tray {
+                self.window.hide(window);
             }
         }
-        self.window
-            .update(ctx, frame, background.background, opened);
-        ctx.request_repaint_after(Duration::from_secs(1));
+        #[cfg(windows)]
+        self.pairing.poll();
+        if self.window_ready {
+            self.window.update(window, tray, opened);
+        }
+        cx.notify();
+    }
 
-        if !self.window.expanded {
-            self.floating(ctx, background.background);
+    fn activate(&mut self, action: FocusAction) {
+        if self.pending.is_some() {
             return;
         }
-
-        let panel = Frame::side_top_panel(&ctx.style()).inner_margin(Margin::symmetric(20, 12));
-        egui::TopBottomPanel::top("connection")
-            .frame(panel)
-            .show(ctx, |ui| self.header(ui));
-        egui::TopBottomPanel::bottom("action-result")
-            .frame(panel)
-            .show(ctx, |ui| {
-                if self.pending.is_some() {
-                    ui.label("Waiting for the action…");
-                } else if let Some(notice) = &self.notice {
-                    let mut text = RichText::new(&notice.message);
-                    if notice.failed {
-                        text = text.color(ui.visuals().error_fg_color);
-                    }
-                    ui.label(text);
-                } else if self.section == Section::Hosts {
-                    ui.weak("Each host keeps its own slots and notifications.");
-                } else if self.section == Section::Slots
-                    && self.view.snapshot.as_ref().is_some_and(|snapshot| {
-                        snapshot.data.slots.iter().all(|slot| slot.run.is_none())
-                    })
-                {
-                    ui.weak("Run Codex or Claude in a Corvid terminal to fill the deck.");
-                } else if self.parent.connected() {
-                    ui.weak("Click a key to open its terminal · Right-click for pin and alerts");
-                } else {
-                    ui.weak("Select a paired terminal to focus a slot.");
-                }
-            });
-        let content = Frame::central_panel(&ctx.style())
-            .fill(deck::BACKGROUND)
-            .inner_margin(Margin::symmetric(20, 16));
-        egui::CentralPanel::default()
-            .frame(content)
-            .show(ctx, |ui| {
-                if self.section == Section::Hosts {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.hosts(ui));
-                    return;
-                }
-                self.catalog = None;
-                if self.section == Section::Notifications {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.notifications(ui));
-                    return;
-                }
-                let Some(snapshot) = self.view.snapshot.clone() else {
-                    ui.label("Start corvid companion run to load slots.");
-                    return;
-                };
-                self.sections(ui, &snapshot);
-                egui::ScrollArea::vertical().show(ui, |ui| match self.section {
-                    Section::Slots => self.board(ui, &snapshot),
-                    Section::Overflow => self.overflow(ui, &snapshot),
-                    Section::History => ended(ui, &snapshot),
-                    Section::Notifications => self.notifications(ui),
-                    Section::Hosts => self.hosts(ui),
-                });
-            });
-        #[cfg(windows)]
-        if let Some(snapshot) = self.view.snapshot.clone()
-            && let Some(generation) = snapshot.generation()
-            && self.ready(&snapshot)
-            && let Some(body) = self.pairing.show(ctx, snapshot.host, generation)
-        {
-            self.submit(&snapshot, body);
-        }
-    }
-}
-
-fn gesture_active(ctx: &egui::Context) -> bool {
-    egui::Popup::is_any_open(ctx)
-        || ctx.input(|input| {
-            input.pointer.any_down()
-                || input.pointer.any_released()
-                || [egui::Key::Enter, egui::Key::Space].into_iter().any(|key| {
-                    input.key_down(key) || input.key_pressed(key) || input.key_released(key)
-                })
-                || input
-                    .events
-                    .iter()
-                    .any(|event| matches!(event, egui::Event::AccessKitActionRequest(_)))
-        })
-}
-
-fn ended(ui: &mut Ui, snapshot: &Snapshot) {
-    if snapshot.data.recent_ended.is_empty() {
-        ui.weak("No agents removed by pane closure yet.");
-    }
-    for run in &snapshot.data.recent_ended {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Ended");
-            ui.monospace(short_id(&run.agent_run_id));
-        });
-    }
-}
-
-fn describe_run(ui: &mut Ui, run: &PresentedRun, cached: bool, focus: Option<bool>) -> bool {
-    let provider = match AgentProvider::try_from(run.provider) {
-        Ok(AgentProvider::Claude) => "Claude Code",
-        Ok(AgentProvider::Codex) => "Codex CLI",
-        _ => "Unknown provider",
-    };
-    let clicked = ui
-        .horizontal_wrapped(|ui| {
-            let clicked = if let Some(enabled) = focus {
-                ui.add_enabled(enabled, egui::Button::new(RichText::new(provider).strong()))
-                    .on_hover_text("Open pane in Corvid Desktop")
-                    .clicked()
-            } else {
-                ui.strong(provider);
-                false
-            };
-            if let Some(key) = &run.key {
-                ui.monospace(short_id(&key.agent_run_id));
+        match action {
+            FocusAction::Desktop(key) => self.focus_run(key),
+            FocusAction::Companion(snapshot, body) => {
+                self.submit(&snapshot, body);
+                self.focus_pending = self.pending;
             }
-            clicked
-        })
-        .inner;
-
-    let availability = RunAvailability::try_from(run.availability).ok();
-    let last_known = cached || availability != Some(RunAvailability::Available);
-    let (badge, color) = badge_style(run.last_badge, ui.visuals());
-    ui.horizontal_wrapped(|ui| {
-        if last_known {
-            ui.weak(format!("Last known: {badge}"));
-        } else {
-            ui.label(RichText::new(badge).strong().color(color));
         }
-        if let Some(label) = availability_label(availability, cached) {
-            ui.weak(label);
-        }
-    });
-    if last_known && let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
-        ui.weak(format!("Observed {age} ago"));
     }
-    ui.horizontal_wrapped(|ui| {
-        ui.weak(evidence_label(run));
-        if run.pending_requests > 0 {
-            ui.label(format!("{} pending", run.pending_requests));
-        }
-        if run.unverified_requests > 0 {
-            ui.label(format!("{} unverified", run.unverified_requests));
-        }
-        if run.unseen_attention > 0 {
-            ui.label(format!("{} unseen", run.unseen_attention));
-        }
-    });
-    clicked
+
+    fn expand(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+        self.held.cancel();
+        self.menu = None;
+        self.section = section;
+        self.window.expanded = true;
+        self.set_page(0);
+        self.update(window, cx);
+    }
+}
+
+impl Render for Desktop {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = if self.window.expanded {
+            self.expanded(window, cx)
+        } else {
+            self.floating(cx)
+        };
+        column()
+            .id("agent-deck")
+            .size_full()
+            .relative()
+            .bg(rgb(BACKGROUND))
+            .text_color(rgb(TEXT))
+            .text_size(px(13.))
+            .line_height(gpui::relative(1.2))
+            .font_family("Segoe UI")
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    view.held.cancel();
+                    #[cfg(windows)]
+                    if view.pairing.is_open() {
+                        view.pairing.close();
+                        cx.notify();
+                        return;
+                    }
+                    if view.menu.take().is_none() && view.background.view.borrow().background {
+                        view.window.hide(window);
+                    }
+                    cx.notify();
+                    return;
+                }
+                #[cfg(windows)]
+                if view.pairing.is_open() {
+                    view.pairing.key(event, cx);
+                    return;
+                }
+                let actions = view.keyboard_actions();
+                if actions.is_empty() || view.menu.is_some() {
+                    return;
+                }
+                view.selected = view.selected.min(actions.len() - 1);
+                match event.keystroke.key.as_str() {
+                    "left" | "up" => {
+                        view.held.cancel();
+                        view.selected = view.selected.saturating_sub(1);
+                    }
+                    "right" | "down" | "tab" => {
+                        view.held.cancel();
+                        view.selected = (view.selected + 1) % actions.len();
+                    }
+                    "enter" | "space" => {
+                        if let Some(Some(action)) = actions.get(view.selected) {
+                            view.held
+                                .press(Input::Keyboard, view.selected, action.clone());
+                        }
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            }))
+            .on_key_up(cx.listener(|view, event: &KeyUpEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    && let Some(action) = view.held.release(Input::Keyboard, view.selected)
+                {
+                    view.activate(action);
+                }
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    view.held.cancel();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    view.held.cancel();
+                    cx.notify();
+                }),
+            )
+            .child(content)
+            .children(self.menu_view(cx))
+    }
 }
 
 fn observation_age(observed_unix_ms: u64) -> Option<String> {
@@ -899,20 +446,6 @@ fn observation_age(observed_unix_ms: u64) -> Option<String> {
         .find(|&(scale, _)| seconds >= scale)
         .unwrap_or((1, "s"));
     Some(format!("{}{unit}", seconds / scale))
-}
-
-fn badge_style(raw: i32, visuals: &egui::Visuals) -> (&'static str, Color32) {
-    let normal = visuals.text_color();
-    match AgentBadge::try_from(raw) {
-        Ok(AgentBadge::Working) => ("Working", visuals.hyperlink_color),
-        Ok(AgentBadge::NeedsInput) => ("Needs input", visuals.warn_fg_color),
-        Ok(AgentBadge::ResponseObserved) => ("Response observed", normal),
-        Ok(AgentBadge::Ready) => ("Ready", normal),
-        Ok(AgentBadge::Interrupted) => ("Interrupted", visuals.warn_fg_color),
-        Ok(AgentBadge::Error) => ("Error", visuals.error_fg_color),
-        Ok(AgentBadge::Ended) => ("Ended", normal),
-        _ => ("Unknown", normal),
-    }
 }
 
 fn availability_label(availability: Option<RunAvailability>, cached: bool) -> Option<&'static str> {
@@ -993,42 +526,4 @@ fn safe_code(code: &str) -> bool {
         && code
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defers_snapshots_on_pointer_press_and_release() {
-        let ctx = egui::Context::default();
-        for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
-            for pressed in [true, false] {
-                let input = egui::RawInput {
-                    events: vec![egui::Event::PointerButton {
-                        pos: egui::pos2(10.0, 10.0),
-                        button,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                    ..Default::default()
-                };
-                let _ = ctx.run(input, |ctx| assert!(gesture_active(ctx)));
-            }
-        }
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            assert!(!gesture_active(ctx))
-        });
-    }
-
-    #[test]
-    fn defers_snapshots_while_a_key_menu_is_open() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::Popup::open_id(ctx, egui::Id::new("key-menu"));
-            assert!(gesture_active(ctx));
-            egui::Popup::close_all(ctx);
-            assert!(!gesture_active(ctx));
-        });
-    }
 }

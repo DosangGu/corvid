@@ -1,24 +1,20 @@
-use std::thread;
-
+use super::*;
 use anyhow::Result;
 use corvid_companion::{WezTermCandidate, discover_wezterm_panes};
-use corvid_protocol::wire::{PairTerminal, envelope::Body};
-use eframe::egui::{self, Context, Ui};
+use corvid_protocol::wire::PairTerminal;
+use std::thread;
 use tokio::runtime::Builder;
 use tokio::sync::oneshot::{self, error::TryRecvError};
-use uuid::Uuid;
 
 #[derive(Default)]
 pub(crate) struct Pairing {
     draft: Option<Draft>,
 }
-
 struct Draft {
     discovery: Discovery,
     selected: Option<usize>,
     code: String,
 }
-
 enum Discovery {
     Loading(oneshot::Receiver<Result<Vec<WezTermCandidate>>>),
     Ready(Vec<WezTermCandidate>),
@@ -26,110 +22,162 @@ enum Discovery {
 }
 
 impl Pairing {
-    pub(crate) fn open(&mut self, ctx: &Context) {
+    pub fn open(&mut self, signal: &UiSignal) {
         self.draft = Some(Draft {
-            discovery: Discovery::start(ctx),
+            discovery: Discovery::start(signal),
             selected: None,
             code: String::new(),
         });
     }
-
-    pub(crate) fn close(&mut self) {
+    pub fn close(&mut self) {
         self.draft = None;
     }
-
-    pub(crate) fn show(&mut self, ctx: &Context, host: Uuid, generation: Uuid) -> Option<Body> {
-        let draft = self.draft.as_mut()?;
-        draft.discovery.poll();
-        let modal = egui::Modal::new(egui::Id::new("wezterm-pairing"))
-            .show(ctx, |ui| draft.form(ui, host, generation));
-        if modal.should_close() || modal.inner.is_some() {
-            self.close();
+    pub fn is_open(&self) -> bool {
+        self.draft.is_some()
+    }
+    pub fn poll(&mut self) {
+        if let Some(draft) = &mut self.draft {
+            draft.discovery.poll();
         }
-        modal.inner
+    }
+    pub fn key(&mut self, event: &KeyDownEvent, cx: &mut Context<Desktop>) {
+        let Some(draft) = &mut self.draft else {
+            return;
+        };
+        if event.keystroke.modifiers.control && event.keystroke.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                draft.code = text
+                    .trim()
+                    .chars()
+                    .filter(|c| c.is_ascii_hexdigit() || *c == '-')
+                    .take(36)
+                    .collect();
+            }
+        } else if event.keystroke.key == "backspace" {
+            draft.code.pop();
+        } else if !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && let Some(text) = &event.keystroke.key_char
+        {
+            for ch in text.chars().filter(|c| c.is_ascii_hexdigit() || *c == '-') {
+                if draft.code.len() < 36 {
+                    draft.code.push(ch);
+                }
+            }
+        }
+        cx.notify();
     }
 }
 
-impl Draft {
-    fn form(&mut self, ui: &mut Ui, host: Uuid, generation: Uuid) -> Option<Body> {
-        ui.set_width(430.0);
-        ui.heading("Pair WezTerm terminal");
-        ui.label(format!("Host {host}"));
-        ui.label("In the attached Corvid TUI, press Ctrl-] then r to show its one-time code.");
-
-        let loading = matches!(self.discovery, Discovery::Loading(_));
-        if ui
-            .add_enabled(!loading, egui::Button::new("Refresh panes"))
-            .clicked()
-        {
-            self.selected = None;
-            self.discovery = Discovery::start(ui.ctx());
-        }
-        let target = match &self.discovery {
+impl Desktop {
+    pub(super) fn pair_form(&self, cx: &mut Context<Self>) -> Div {
+        let Some(draft) = &self.pairing.draft else {
+            return column();
+        };
+        let mut view = column()
+            .child("Pair WezTerm terminal")
+            .child(muted(
+                "In the attached Corvid TUI, press Ctrl-] then r to show its one-time code.",
+            ))
+            .child(
+                button("refresh-panes", "Refresh panes", true).on_click(cx.listener(
+                    |view, _, _, cx| {
+                        view.pairing.open(&view.signal);
+                        cx.notify();
+                    },
+                )),
+            );
+        match &draft.discovery {
             Discovery::Loading(_) => {
-                ui.label("Looking for verified WezTerm panes…");
-                None
-            }
-            Discovery::Ready(panes) if panes.is_empty() => {
-                ui.label("No verified panes found. Open WezTerm and refresh.");
-                None
-            }
-            Discovery::Ready(panes) => {
-                let selected = self.selected.map(|index| pane_label(&panes[index]));
-                egui::ComboBox::from_id_salt("wezterm-pane-choice")
-                    .selected_text(
-                        selected
-                            .as_deref()
-                            .unwrap_or("Choose the pane showing the code"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (index, pane) in panes.iter().enumerate() {
-                            ui.selectable_value(&mut self.selected, Some(index), pane_label(pane));
-                        }
-                    });
-                self.selected.map(|index| panes[index].target())
+                view = view.child(muted("Looking for verified WezTerm panes…"))
             }
             Discovery::Failed => {
-                ui.label("Could not list WezTerm panes. Refresh to try again.");
-                None
+                view = view.child(muted("Could not list WezTerm panes. Refresh to try again."))
             }
-        };
-
-        ui.label("One-time pairing code");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.code)
-                .password(true)
-                .char_limit(36),
-        );
-        let code = Uuid::parse_str(self.code.trim())
+            Discovery::Ready(panes) => {
+                if panes.is_empty() {
+                    view = view.child(muted("No verified panes found. Open WezTerm and refresh."));
+                }
+                view = view.children(panes.iter().enumerate().map(|(index, pane)| {
+                    button(("pane", index), pane_label(pane), true)
+                        .when(draft.selected == Some(index), |button| {
+                            button.text_color(rgb(MINT))
+                        })
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            if let Some(draft) = &mut view.pairing.draft {
+                                draft.selected = Some(index);
+                            }
+                            cx.notify();
+                        }))
+                }));
+            }
+        }
+        let code = Uuid::parse_str(draft.code.trim())
             .ok()
             .filter(|code| !code.is_nil());
-        ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
-                ui.close();
-            }
-            if ui
-                .add_enabled(
-                    target.is_some() && code.is_some(),
-                    egui::Button::new("Pair terminal"),
-                )
-                .clicked()
-            {
-                Some(Body::PairTerminal(PairTerminal {
-                    code: code?.to_string(),
-                    wezterm: target,
-                    control_generation: Some(generation.to_string()),
-                }))
-            } else {
-                None
-            }
-        })
-        .inner
+        let target = match &draft.discovery {
+            Discovery::Ready(panes) => draft
+                .selected
+                .and_then(|index| panes.get(index))
+                .map(|pane| pane.target()),
+            _ => None,
+        };
+        let can_submit = code.is_some()
+            && target.is_some()
+            && self
+                .view
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| self.ready(snapshot));
+        view.child(
+            div()
+                .id("pair-code")
+                .p(px(12.))
+                .border_1()
+                .border_color(rgb(MINT))
+                .child(if draft.code.is_empty() {
+                    "Type or paste the one-time code".to_owned()
+                } else {
+                    "•".repeat(draft.code.len())
+                }),
+        )
+        .child(
+            row()
+                .child(button("cancel-pair", "Cancel", true).on_click(cx.listener(
+                    |view, _, _, cx| {
+                        view.pairing.close();
+                        cx.notify();
+                    },
+                )))
+                .child(button("submit-pair", "Pair terminal", can_submit).when(
+                    can_submit,
+                    |button| {
+                        button.on_click(cx.listener(move |view, _, _, cx| {
+                            if let Some(snapshot) = view.view.snapshot.clone()
+                                && let Some(generation) = snapshot.generation()
+                                && view.ready(&snapshot)
+                            {
+                                view.submit(
+                                    &snapshot,
+                                    Body::PairTerminal(PairTerminal {
+                                        code: code.unwrap().to_string(),
+                                        wezterm: target.clone(),
+                                        control_generation: Some(generation.to_string()),
+                                    }),
+                                );
+                                view.pairing.close();
+                                cx.notify();
+                            }
+                        }))
+                    },
+                )),
+        )
     }
 }
 
 impl Discovery {
-    fn start(ctx: &Context) -> Self {
+    fn start(ctx: &crate::ui_signal::UiSignal) -> Self {
         let (mut send, receive) = oneshot::channel();
         let ctx = ctx.clone();
         let worker = thread::Builder::new()
@@ -147,7 +195,7 @@ impl Discovery {
                         let _ = send.send(Err(error.into()));
                     }
                 }
-                ctx.request_repaint();
+                ctx.notify();
             });
         match worker {
             Ok(_) => Self::Loading(receive),

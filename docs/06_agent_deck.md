@@ -12,6 +12,10 @@ compatibility. This is an internal module boundary, not a user-installable plugi
 or a public plugin API. Desktop and the Windows CLI delegate to that package.
 The daemon remains authoritative for PTYs and agent state; `corvid-companion`
 owns the shared slot policy and presentation service.
+Agent Deck renders its floating grid and management views with GPUI, sharing the
+workspace UI framework with Desktop. Background workers notify the foreground
+executor through a coalesced channel so hidden windows can reopen or quit.
+Linux uses X11 or XWayland with Vulkan.
 The physical Stream Deck/GPUI prototype in `spikes/deck` remains separate.
 
 On 2026-11-12, Linux Xvfb checks verified the Settings → Agents page, opening and
@@ -68,8 +72,8 @@ Windows background parity is not claimed for Linux.
 ## Floating window
 
 The default view is a borderless mini deck with eight keys in a **4 × 2** grid
-(**392 × 256 logical pixels**). The layout button in its footer opens a visual
-preset picker. Dimensions always mean **columns × rows**:
+(**392 × 256 logical pixels**). Open **More (…)** to choose a preset and
+orientation under **Deck layout**. Dimensions always mean **columns × rows**:
 
 | Keys | Landscape | Portrait |
 | --- | --- | --- |
@@ -78,11 +82,11 @@ preset picker. Dimensions always mean **columns × rows**:
 | 12 | 4 × 3 | 3 × 4 |
 | 15 | 5 × 3 | 3 × 5 |
 
-Changing the preset or orientation immediately resizes the window. Its selected
+Returning to **Mini deck** applies the selected preset and orientation. Its
 shape stays fixed as agents arrive and leave; empty keys remain as quiet,
 non-interactive placeholders. Extra agents scroll inside the panel. Portrait
 windows have compact header controls, including an **Always on top** pin button.
-The footer's **Move / Fixed** menu controls **Window position**. **Movable** is the
+**More** also provides **Movable / Fixed position** controls. **Movable** is the
 default: drag the **Agent Deck** title to move the mini deck. Reopening it or
 changing its layout keeps that location during the current Deck session; on
 Windows a larger window is shifted only as needed to fit the monitor's work area.
@@ -110,23 +114,24 @@ visibility and size do not affect daemon-owned work or the slot policy. The mini
 deck shows assigned slots followed by the first 32 queued runs, so larger grids
 can display more agents than the companion's configured slot count. Queued keys
 are marked **Q** and navigate through Desktop using their exact run identity;
-they do not acquire a fabricated slot or pin action. If more queued runs remain,
-the footer's **+N** button opens the paginated queue.
+they do not acquire a fabricated slot or pin action. The footer's **+N** button
+shows the queue count and opens the paginated queue.
 
 ## Slots and queue
 
-The **Deck** view uses keys with a raised rim and dark face. The
+The **Deck** view uses dark cards with a mint selection border. The
 mini deck uses the selected grid of compact keys; the expanded view adjusts its larger
 square keys from one to six columns when resized. Keys show their number, provider,
-short run ID, current status, unseen alert count, and a pin indicator (**P** in the
-mini deck, **PIN** when expanded). Empty keys in the expanded view are inactive.
+short run ID, current status, unseen alert count, and a pin indicator (**P**). Empty keys in the expanded view are inactive.
 
 Click anywhere on an available key to focus its existing terminal. Hover for
 evidence and request details; right-click assigned slots for **Pin / Unpin** and
 unseen alerts for **Acknowledge alert**. Acknowledging an alert does not answer or
 resolve a pending question.
-The displayed slot snapshot stays fixed throughout a click or open context menu,
-so compaction cannot change the action's captured target.
+Arrow keys or Tab select a card; Enter or Space activates its captured target
+on release. Escape cancels a gesture or closes its action menu. The displayed
+slot snapshot stays fixed throughout a mouse or keyboard press and an open
+context menu, so compaction cannot change the action's captured target.
 
 Status uses both text and color: blue for working, amber for input or interruption,
 mint for ready or an observed response, and red for errors. Offline, cached, and
@@ -135,43 +140,24 @@ last activity as live. Unverified input requests say **Check terminal**.
 **Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
 
-![Floating Agent Deck with synthetic agents](images/agent-deck/floating.png)
+![GPUI Agent Deck with ten synthetic cached agents](images/agent-deck/gpui-floating.png)
 
-![Portrait Agent Deck with fifteen keys](images/agent-deck/floating-portrait.png)
+![GPUI portrait Agent Deck with fifteen keys](images/agent-deck/gpui-portrait.png)
 
-![Fixed and movable window controls in an isolated Windows test instance](images/agent-deck/window-position.jpg)
+The screenshots use synthetic cached agents in an isolated Linux Xvfb session.
+On 2026-11-13, GPUI validation covered initial rendering, expansion and return to
+Mini deck, 5 × 3 and 3 × 5 layouts, 2 × 3 controls at 204 pixels wide, title
+dragging, keyboard selection, the action menu, saved notification pause, and Quit.
+Offline cards keep their
+availability label and disable actions that require a live generation.
 
-On 2026-11-13, native Windows checks verified title dragging in Movable mode and
-its suppression in Fixed position, including saving the selected mode. An
-instrumented test instance reproduced a hidden-window Quit timeout before the
-native wake fix; hidden and minimized instances then exited with code 0 through
-the production Quit request. Quit now bypasses the bounded background event queue
-and takes priority over hiding and reopening. Automated regression tests cover
-the hidden HWND wake messages, retired handles, a full or disconnected event
-queue, persistent Quit intent, drag gating, placement, and saved preferences.
-The scoped Agent Deck/presentation suite passed 29 tests (one native notification
-test remained ignored), together with Clippy, workspace formatting, and whitespace
-checks. Native tray-menu clicking, mixed-DPI dragging, and taskbar relocation
-remain unverified by this pass.
-
-The two earlier grid screenshots use synthetic agents in an isolated Linux Xvfb session. On
-2026-11-12, floating-window checks verified the preset menu, 3 × 2 and 2 × 3
-layouts, portrait controls at 204 pixels wide, and 5 × 3 / 3 × 5 layouts. Whole-key
-navigation, including a queued run beyond the first eight slots, retains the
-correct Desktop pane identity while the always-on-top deck stays open. Ten
-synthetic agents were used to verify the larger grids.
-Earlier Windows UI checks exercised the compact empty state, expansion, returning to the
-mini deck, and hiding when Always on top was disabled; its saved setting was
-verified on disk. Policy tests cover focus-loss dismissal, the no-tray fallback,
-preference persistence, all preset orientations, legacy preference migration,
-queued-run projection without slot mutation, and positioning within a monitor work area.
-Scoped Agent Deck and presentation tests passed on Windows (24 passed, one native
-notification test ignored) and Linux (22 passed), along with builds, Clippy,
-workspace formatting, and whitespace checks. Linux UI checks also confirmed that
-turning Always on top off does not hide a window without a tray.
-Native tray-click reopening, mixed-DPI monitors, and taskbar relocation
-still require interactive qualification. The earlier larger-key checks verified
-context-menu pinning and acknowledging an alert without resolving its input request.
+The scoped Agent Deck and presentation suites passed on Windows (25 tests, with
+one native notification test ignored) and Linux (22 tests), together with builds,
+Clippy, workspace formatting, and whitespace checks. Windows Desktop and Deck
+also passed dependency checks. Native Windows GUI interaction, tray-menu clicks,
+login startup, mixed-DPI dragging, and taskbar relocation remain unverified for
+the GPUI migration. Earlier renderer qualification is not evidence for those
+new runtime paths.
 
 An agent's work finishing, process exiting, or provider context changing does not
 remove its card. The card remains until its owning pane is removed from the daemon's
@@ -233,6 +219,7 @@ Unavailable or ended targets remain in history without opening a new terminal.
 - [`src/background.rs`](../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
 - [`src/window.rs`](../plugins/agent-deck/src/window.rs), [`src/app/floating.rs`](../plugins/agent-deck/src/app/floating.rs): floating-window policy, saved topmost preference, native placement, and compact controls.
 - [`src/window/layout.rs`](../plugins/agent-deck/src/window/layout.rs): fixed grid presets, orientation, and window dimensions.
+- [`src/ui_signal.rs`](../plugins/agent-deck/src/ui_signal.rs): coalesced worker updates and latched open/quit requests.
 - [`src/notifications.rs`](../plugins/agent-deck/src/notifications.rs): bounded delivery policy and persistence.
 - [`src/platform`](../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
 - [`assets`](../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../assets/icons/); `cargo run -p corvid-agent-deck --example render-icons` regenerates all raster assets.

@@ -24,7 +24,7 @@ pub struct Native;
 impl Native {
     pub fn start(
         _: tokio::sync::mpsc::Sender<Event>,
-        _: eframe::egui::Context,
+        _: crate::ui_signal::UiSignal,
         _: uuid::Uuid,
         _: &std::path::Path,
         _: &std::path::Path,
