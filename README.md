@@ -115,14 +115,20 @@ in the repository's security settings.
 The [TODO to Issue workflow](.github/workflows/todo-to-issue.yml) uses
 [alstr/todo-to-issue-action](https://github.com/alstr/todo-to-issue-action) to create
 GitHub issues from TODO comments added by pushes to `main`, including merged PRs.
-For example:
+Only the text on the `TODO:` line becomes the issue title; following comment
+lines become its body. Keep a short, unique, self-contained title on one physical
+line. Shorten a long title instead of wrapping it, and start any explanation on
+the next comment line. The explanation may wrap normally. For example:
 
 ```rust
-// TODO: Describe the follow-up work with a unique title
+// TODO: Isolate Desktop ANSI parsing from the UI lock
+// Publish a completed screen snapshot so large frames cannot block UI/input reads.
 ```
 
 Removing a TODO attempts to close its matching issue. Use unique TODO titles:
 without an explicit `Issue URL:` comment, the action matches issues by title.
+Preserve an existing `Issue URL:` line when editing a TODO so a title change
+stays linked to the same issue.
 The workflow does not insert URLs or commit changes. It ignores Markdown files
 and processes only the pushed diff, so pre-existing TODOs are not backfilled.
 It uses the built-in `GITHUB_TOKEN`; no additional secret is required.

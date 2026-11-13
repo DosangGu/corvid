@@ -50,9 +50,13 @@ Keep changes focused on the current task's objective. When you discover problems
 or improvements outside that objective, leave an actionable TODO comment near
 the relevant code and defer implementation to a follow-up task. Use the file's
 comment syntax with `TODO: <unique, specific title>` so the TODO-to-issue workflow
-can track it. Include enough context to explain why the work is needed and what
-to do next. Complete any changes required for the current task to work correctly
-as part of the current task.
+can track it. Keep the complete title on the same physical line as `TODO:`; never
+wrap it or start the description on that line. Shorten long titles instead of
+wrapping them, even when formatting nearby comments. Put the context and next
+steps in separate comment lines immediately below; those lines become the issue
+body and may wrap normally. Preserve any `Issue URL:` line when editing a tracked
+TODO so it stays linked to the existing issue. Complete any changes required for
+the current task to work correctly as part of the current task.
 
 ## Testing Guidelines
 
