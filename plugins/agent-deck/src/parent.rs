@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
+use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
 use corvid_agent_deck::connection::{self, CAPABILITY, Peer};
 use corvid_presentation::ipc::Completion;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{AgentDeckOpened, FocusDesktopAgent, PresentedRunKey};
 use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault, accept_hello};
-use eframe::egui;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
@@ -27,7 +27,7 @@ pub(crate) struct Scope {
     pub controller: Uuid,
     pub epoch: Uuid,
     pub completed: mpsc::Sender<Completion>,
-    pub ctx: egui::Context,
+    pub ctx: UiSignal,
 }
 
 struct Exchange {
@@ -84,7 +84,7 @@ impl DesktopLink {
                 paired: None,
             });
         }
-        exchange.scope.ctx.request_repaint();
+        exchange.scope.ctx.notify();
         result
     }
 
@@ -151,7 +151,7 @@ impl DesktopLink {
                             };
                             *pending = None;
                             let _ = completed.try_send(Completion { id, message, failed, paired: None });
-                            ctx.request_repaint();
+                            ctx.notify();
                         }
                         _ => anyhow::bail!("unsupported plugin message"),
                     }
@@ -185,12 +185,9 @@ impl DesktopLink {
     }
 }
 
-pub(crate) fn show(ctx: &egui::Context) {
+pub(crate) fn show(ctx: &UiSignal) {
     crate::window::request_open(ctx);
-    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-    ctx.request_repaint();
+    ctx.notify();
 }
 
 #[cfg(test)]
@@ -250,7 +247,7 @@ mod tests {
                 controller: Uuid::new_v4(),
                 epoch: Uuid::new_v4(),
                 completed,
-                ctx: egui::Context::default(),
+                ctx: UiSignal::default(),
             },
             result,
         )

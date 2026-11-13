@@ -1,7 +1,8 @@
 use std::path::Path;
 
+use crate::ui_signal::UiSignal;
 use anyhow::Result;
-use eframe::egui::{self, ViewportCommand, WindowLevel};
+use gpui::{px, size};
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
@@ -10,7 +11,6 @@ use corvid_protocol::unix::RuntimeDir as StateDirectory;
 use corvid_protocol::windows::StateDirectory;
 
 mod layout;
-#[cfg(windows)]
 mod native;
 pub(crate) use layout::{BAR_HEIGHT, GAP, GridLayout, KEY_HEIGHT, KEY_WIDTH, Orientation, Preset};
 
@@ -32,6 +32,14 @@ impl Default for Preferences {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Applied {
+    expanded: bool,
+    always_on_top: bool,
+    layout: GridLayout,
+    fixed_position: bool,
+}
+
 pub(crate) struct Window {
     storage: StateDirectory,
     preferences: Preferences,
@@ -40,18 +48,6 @@ pub(crate) struct Window {
     background_start: bool,
     applied: Option<Applied>,
     was_focused: bool,
-    anchor_frames: u8,
-    anchor_at_cursor: bool,
-    #[cfg(windows)]
-    native: Option<native::NativeWindow>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Applied {
-    expanded: bool,
-    topmost: bool,
-    layout: GridLayout,
-    fixed_position: bool,
 }
 
 impl Window {
@@ -70,81 +66,38 @@ impl Window {
             background_start,
             applied: None,
             was_focused: false,
-            anchor_frames: 0,
-            anchor_at_cursor: false,
-            #[cfg(windows)]
-            native: None,
         })
     }
 
     pub fn always_on_top(&self) -> bool {
         self.preferences.always_on_top
     }
-
-    #[cfg(windows)]
-    pub fn bind_native(&mut self, creation: &eframe::CreationContext<'_>) {
-        self.native = native::NativeWindow::bind(creation);
+    pub fn fixed_position(&self) -> bool {
+        self.preferences.fixed_position
     }
-
     pub fn layout(&self) -> GridLayout {
         self.preferences.layout
     }
 
-    pub fn fixed_position(&self) -> bool {
-        self.preferences.fixed_position
-    }
-
     pub fn set_fixed_position(&mut self, fixed_position: bool) {
-        let next = Preferences {
+        self.save(Preferences {
             fixed_position,
             ..self.preferences.clone()
-        };
-        if self.save(next) {
-            self.anchor_frames = if fixed_position { 2 } else { 0 };
-            self.anchor_at_cursor = false;
-        }
-    }
-
-    pub fn start_drag(&mut self, ctx: &egui::Context) {
-        if self.fixed_position() {
-            return;
-        }
-        self.anchor_frames = 0;
-        self.anchor_at_cursor = false;
-        #[cfg(windows)]
-        if self.native.is_some() {
-            return;
-        }
-        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-    }
-
-    pub fn drag(&self, ctx: &egui::Context) {
-        #[cfg(windows)]
-        if !self.fixed_position()
-            && let Some(native) = &self.native
-        {
-            native.drag(ctx);
-        }
-        #[cfg(not(windows))]
-        let _ = ctx;
+        });
     }
 
     pub fn set_layout(&mut self, layout: GridLayout) {
-        let next = Preferences {
+        self.save(Preferences {
             layout,
             ..self.preferences.clone()
-        };
-        self.save(next);
+        });
     }
 
-    pub fn toggle_topmost(&mut self, ctx: &egui::Context, tray: bool) {
-        let next = Preferences {
+    pub fn toggle_topmost(&mut self) {
+        self.save(Preferences {
             always_on_top: !self.always_on_top(),
             ..self.preferences.clone()
-        };
-        if self.save(next) && tray && !self.always_on_top() {
-            self.hide(ctx);
-        }
+        });
     }
 
     fn save(&mut self, next: Preferences) -> bool {
@@ -160,187 +113,81 @@ impl Window {
         true
     }
 
-    pub fn hide(&mut self, ctx: &egui::Context) {
+    pub fn hide(&mut self, window: &gpui::Window) {
         self.was_focused = false;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        if let Err(error) = native::visible(window, false) {
+            self.error = Some(error.to_string());
+        }
     }
 
-    pub fn update(&mut self, ctx: &egui::Context, frame: &eframe::Frame, tray: bool, opened: bool) {
+    pub fn update(&mut self, window: &mut gpui::Window, tray: bool, opened: bool) {
         let first = self.applied.is_none();
         let state = Applied {
             expanded: self.expanded,
-            topmost: self.always_on_top(),
+            always_on_top: self.always_on_top(),
             layout: self.layout(),
             fixed_position: self.fixed_position(),
         };
-        let mode_changed = self
-            .applied
-            .is_none_or(|previous| previous.expanded != self.expanded);
-        let level_changed = self
-            .applied
-            .is_none_or(|previous| previous.topmost != state.topmost);
-        let size_changed = mode_changed
-            || (!self.expanded
-                && self
-                    .applied
-                    .is_none_or(|previous| previous.layout != state.layout));
-        if level_changed {
-            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if self.always_on_top() {
-                WindowLevel::AlwaysOnTop
-            } else {
-                WindowLevel::Normal
-            }));
-        }
         if self.applied != Some(state) {
-            if mode_changed {
-                ctx.send_viewport_cmd(ViewportCommand::Decorations(self.expanded));
-                ctx.send_viewport_cmd(ViewportCommand::Resizable(self.expanded));
-                ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(if self.expanded {
-                    egui::vec2(440.0, 360.0)
-                } else {
-                    egui::vec2(204.0, 140.0)
-                }));
+            let bounds_changed = self
+                .applied
+                .is_none_or(|old| old.expanded != state.expanded || old.layout != state.layout);
+            let result =
+                native::configure(window, self.always_on_top(), self.expanded).and_then(|_| {
+                    if bounds_changed {
+                        let dimensions = if self.expanded {
+                            size(px(800.), px(560.))
+                        } else {
+                            self.layout().size()
+                        };
+                        if window.viewport_size() != dimensions {
+                            window.resize(dimensions);
+                        }
+                    }
+                    native::place(window, first || self.fixed_position(), first)
+                });
+            match result {
+                Ok(()) => {
+                    self.applied = Some(state);
+                    self.error = None;
+                }
+                Err(error) => self.error = Some(error.to_string()),
             }
-            if size_changed {
-                ctx.send_viewport_cmd(ViewportCommand::InnerSize(if self.expanded {
-                    egui::vec2(800.0, 560.0)
-                } else {
-                    self.layout().size()
-                }));
-                self.anchor_frames = 2;
+        }
+        if opened
+            && self.fixed_position()
+            && let Err(error) = native::place(window, true, true)
+        {
+            self.error = Some(error.to_string());
+        }
+        if opened || (first && (!self.background_start || self.always_on_top() || !tray)) {
+            if let Err(error) = native::visible(window, true) {
+                self.error = Some(error.to_string());
             }
-            self.applied = Some(state);
-        } else if self.anchor_frames > 0 {
-            place(ctx, frame, self.fixed_position(), self.anchor_at_cursor);
-            self.anchor_at_cursor = false;
-            self.anchor_frames -= 1;
+            if opened || !self.background_start {
+                window.activate_window();
+            }
         }
         if first || opened {
-            self.was_focused = false;
-            if first || (self.fixed_position() && !self.always_on_top()) {
-                self.anchor_frames = 2;
-                self.anchor_at_cursor = true;
-            }
+            window.refresh();
         }
-        if first {
-            place(ctx, frame, true, true);
-        }
-        if first && (!self.background_start || self.always_on_top() || !tray) {
-            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-            if !self.background_start {
-                ctx.send_viewport_cmd(ViewportCommand::Focus);
-            }
-        }
-        let focused = ctx.input(|input| input.focused);
+        let focused = window.is_window_active();
         if dismiss_on_blur(tray, self.always_on_top(), self.was_focused, focused) && !opened {
-            self.hide(ctx);
+            self.hide(window);
         }
         self.was_focused = focused;
-        if self.anchor_frames > 0 {
-            ctx.request_repaint();
-        }
     }
 }
 
-pub(crate) fn request_quit(ctx: &egui::Context) {
-    let first = ctx.data_mut(|data| {
-        let id = egui::Id::new("quit-agent-deck");
-        let first = !data.get_temp::<bool>(id).unwrap_or(false);
-        data.insert_temp(id, true);
-        first
-    });
-    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close);
-    ctx.request_repaint_of(egui::ViewportId::ROOT);
-    #[cfg(windows)]
-    if first {
-        native::wake_for_quit(ctx);
-    }
-    #[cfg(not(windows))]
-    let _ = first;
+pub(crate) fn request_quit(signal: &UiSignal) {
+    signal.quit();
 }
-
-pub(crate) fn quit_requested(ctx: &egui::Context) -> bool {
-    ctx.data(|data| data.get_temp::<bool>(egui::Id::new("quit-agent-deck")))
-        .unwrap_or(false)
+pub(crate) fn request_open(signal: &UiSignal) {
+    signal.open();
 }
 
 fn dismiss_on_blur(tray: bool, topmost: bool, was_focused: bool, focused: bool) -> bool {
     tray && !topmost && was_focused && !focused
-}
-
-pub(crate) fn request_open(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new("open-agent-deck"), true));
-}
-
-pub(crate) fn take_open_request(ctx: &egui::Context) -> bool {
-    ctx.data_mut(|data| data.remove_temp::<bool>(egui::Id::new("open-agent-deck")))
-        .unwrap_or(false)
-}
-
-#[cfg(target_os = "linux")]
-fn place(ctx: &egui::Context, _: &eframe::Frame, fixed: bool, _: bool) {
-    // Wayland controls placement itself. X11 can honor the current screen size.
-    if fixed && let Some(command) = egui::ViewportCommand::center_on_screen(ctx) {
-        ctx.send_viewport_cmd(command);
-    }
-}
-
-#[cfg(windows)]
-fn place(_: &egui::Context, frame: &eframe::Frame, fixed: bool, at_cursor: bool) {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, MonitorFromWindow,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetWindowRect, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
-    };
-
-    let Ok(handle) = frame.window_handle() else {
-        return;
-    };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return;
-    };
-    let hwnd = handle.hwnd.get() as *mut std::ffi::c_void;
-    // The frame owns this HWND for the duration of the call. Work-area coordinates
-    // and window bounds use native pixels, including negative monitor origins.
-    unsafe {
-        let mut cursor = POINT::default();
-        let monitor = if at_cursor && GetCursorPos(&mut cursor) != 0 {
-            MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
-        } else {
-            MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-        };
-        let mut info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let mut rect = RECT::default();
-        if GetMonitorInfoW(monitor, &mut info) == 0 || GetWindowRect(hwnd, &mut rect) == 0 {
-            return;
-        }
-        let (x, y) = window_position(
-            [
-                info.rcWork.left,
-                info.rcWork.top,
-                info.rcWork.right,
-                info.rcWork.bottom,
-            ],
-            [rect.right - rect.left, rect.bottom - rect.top],
-            fixed,
-            [rect.left, rect.top],
-        );
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            x,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
-        );
-    }
 }
 
 #[cfg(any(windows, test))]
@@ -406,51 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn dragging_requires_movable_mode_and_cancels_pending_placement() -> Result<()> {
-        #[cfg(target_os = "linux")]
-        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))?;
-        #[cfg(windows)]
-        let root = tempfile::tempdir()?;
-        let mut window = Window::load(root.path(), false)?;
-        let ctx = egui::Context::default();
-        window.set_fixed_position(true);
-        let output = ctx.run(egui::RawInput::default(), |ctx| window.start_drag(ctx));
-        assert!(
-            !output.viewport_output[&egui::ViewportId::ROOT]
-                .commands
-                .contains(&ViewportCommand::StartDrag)
-        );
-        window.set_fixed_position(false);
-        window.anchor_frames = 2;
-        let output = ctx.run(egui::RawInput::default(), |ctx| window.start_drag(ctx));
-        assert!(
-            output.viewport_output[&egui::ViewportId::ROOT]
-                .commands
-                .contains(&ViewportCommand::StartDrag)
-        );
-        assert_eq!(window.anchor_frames, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn quit_remains_requested_across_frames_and_reopen_requests() {
-        let ctx = egui::Context::default();
-        request_quit(&ctx);
-        request_open(&ctx);
-        assert!(take_open_request(&ctx));
-        for _ in 0..2 {
-            let output = ctx.run(egui::RawInput::default(), |ctx| {
-                assert!(quit_requested(ctx));
-                request_quit(ctx);
-            });
-            let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
-            assert!(commands.contains(&ViewportCommand::Close));
-            assert!(!commands.contains(&ViewportCommand::CancelClose));
-            assert!(!commands.contains(&ViewportCommand::Focus));
-        }
-    }
-
-    #[test]
     fn layout_and_topmost_choices_survive_restart() -> Result<()> {
         #[cfg(target_os = "linux")]
         let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))?;
@@ -464,7 +266,7 @@ mod tests {
         };
         window.set_layout(layout);
         window.set_fixed_position(true);
-        window.toggle_topmost(&egui::Context::default(), true);
+        window.toggle_topmost();
         assert!(window.error.is_none());
         let saved = Window::load(root.path(), true)?;
         assert!(!saved.always_on_top());

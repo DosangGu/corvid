@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["ui"]
-ui = ["dep:eframe", "dep:image", "dep:windows", "dep:raw-window-handle"]
+ui = ["dep:gpui", "dep:x11rb", "dep:image", "dep:windows", "dep:raw-window-handle"]
 
 [[bin]]
 name = "corvid-agent-deck"
@@ -22,16 +22,18 @@ corvid-client.workspace = true
 corvid-companion.workspace = true
 corvid-presentation.workspace = true
 corvid-protocol.workspace = true
-eframe = { workspace = true, optional = true, features = [
-    "accesskit", "default_fonts", "glow", "wayland", "x11",
-] }
 tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync", "time", "process", "net"] }
 uuid.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 image = { workspace = true, optional = true, features = ["png"] }
+gpui = { workspace = true, optional = true, features = ["x11"] }
+x11rb = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+gpui = { workspace = true, optional = true, features = ["windows-manifest"] }
 raw-window-handle = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Pipes"] }
 windows = { workspace = true, optional = true, features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_WinRT"] }

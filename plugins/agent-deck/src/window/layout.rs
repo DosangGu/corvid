@@ -1,4 +1,4 @@
-use eframe::egui::{self, Vec2};
+use gpui::{Pixels, Size, px, size};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const KEY_WIDTH: f32 = 86.0;
@@ -63,11 +63,11 @@ impl GridLayout {
         format!("{columns} × {rows}")
     }
 
-    pub fn size(self) -> Vec2 {
+    pub fn size(self) -> Size<Pixels> {
         let (columns, rows) = self.dimensions();
-        egui::vec2(
-            24.0 + columns as f32 * KEY_WIDTH + (columns - 1) as f32 * GAP,
-            2.0 * BAR_HEIGHT + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP,
+        size(
+            px(24.0 + columns as f32 * KEY_WIDTH + (columns - 1) as f32 * GAP),
+            px(2.0 * BAR_HEIGHT + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP),
         )
     }
 }
@@ -91,8 +91,8 @@ mod tests {
             assert_eq!(tall.dimensions(), (rows, columns));
             assert_eq!(wide.capacity(), capacity);
             assert_eq!(tall.capacity(), capacity);
-            assert!(wide.size().x > wide.size().y);
-            assert!(tall.size().y > tall.size().x);
+            assert!(wide.size().width > wide.size().height);
+            assert!(tall.size().height > tall.size().width);
         }
     }
 }

@@ -1,132 +1,129 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicIsize, Ordering};
+#[cfg(target_os = "linux")]
+#[path = "x11.rs"]
+mod implementation;
 
-use eframe::egui;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows_sys::Win32::Foundation::POINT;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, PostMessageW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
-    WM_PAINT,
-};
+#[cfg(windows)]
+mod implementation {
+    use anyhow::{Result, ensure};
+    use gpui::Window;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, MonitorFromWindow,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-const ID: &str = "agent-deck-native-window";
-
-pub(super) struct NativeWindow(Arc<AtomicIsize>);
-
-impl NativeWindow {
-    pub fn bind(creation: &eframe::CreationContext<'_>) -> Option<Self> {
-        let handle = creation.window_handle().ok()?;
-        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-            return None;
+    fn handle(window: &Window) -> Result<HWND> {
+        let raw = HasWindowHandle::window_handle(window)
+            .map_err(|error| anyhow::anyhow!("accessing Agent Deck window: {error}"))?;
+        let RawWindowHandle::Win32(raw) = raw.as_raw() else {
+            anyhow::bail!("Agent Deck needs a Win32 window");
         };
-        let window = Arc::new(AtomicIsize::new(handle.hwnd.get()));
-        creation.egui_ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new(ID), window.clone());
-        });
-        Some(Self(window))
+        Ok(raw.hwnd.get() as HWND)
     }
 
-    pub fn drag(&self, ctx: &egui::Context) {
-        let handle = self.0.load(Ordering::Acquire);
-        if handle == 0 {
-            return;
-        }
-        let Some(origin) = ctx.input(|input| input.pointer.press_origin()) else {
-            return;
-        };
-        let scale = ctx.pixels_per_point();
-        let mut point = POINT::default();
-        // Keep the grabbed point under the cursor using native screen pixels.
-        // Local pointer deltas change when the borderless window moves, so they
-        // cannot be added to its position on every frame.
+    pub fn visible(window: &Window, visible: bool) -> Result<()> {
         unsafe {
-            if GetCursorPos(&mut point) == 0 {
-                return;
-            }
-            SetWindowPos(
-                handle as _,
-                std::ptr::null_mut(),
-                point.x - (origin.x * scale).round() as i32,
-                point.y - (origin.y * scale).round() as i32,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+            ShowWindow(
+                handle(window)?,
+                if visible {
+                    if IsIconic(handle(window)?) != 0 {
+                        SW_RESTORE
+                    } else {
+                        SW_SHOWNOACTIVATE
+                    }
+                } else {
+                    SW_HIDE
+                },
             );
         }
+        Ok(())
+    }
+
+    pub fn configure(window: &Window, topmost: bool, expanded: bool) -> Result<()> {
+        let hwnd = handle(window)?;
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            let frame = WS_CAPTION | WS_THICKFRAME | WS_MAXIMIZEBOX;
+            SetWindowLongW(
+                hwnd,
+                GWL_STYLE,
+                (if expanded {
+                    style | frame
+                } else {
+                    style & !frame
+                }) as i32,
+            );
+            let extended = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            SetWindowLongW(
+                hwnd,
+                GWL_EXSTYLE,
+                ((extended | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW) as i32,
+            );
+            ensure!(
+                SetWindowPos(
+                    hwnd,
+                    if topmost {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_NOTOPMOST
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED
+                ) != 0,
+                "updating Agent Deck window style"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn place(window: &Window, fixed: bool, at_cursor: bool) -> Result<()> {
+        let hwnd = handle(window)?;
+        unsafe {
+            let mut cursor = POINT::default();
+            let monitor = if at_cursor && GetCursorPos(&mut cursor) != 0 {
+                MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+            } else {
+                MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+            };
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let mut rect = RECT::default();
+            ensure!(
+                GetMonitorInfoW(monitor, &mut info) != 0 && GetWindowRect(hwnd, &mut rect) != 0,
+                "reading Agent Deck monitor bounds"
+            );
+            let (x, y) = super::super::window_position(
+                [
+                    info.rcWork.left,
+                    info.rcWork.top,
+                    info.rcWork.right,
+                    info.rcWork.bottom,
+                ],
+                [rect.right - rect.left, rect.bottom - rect.top],
+                fixed,
+                [rect.left, rect.top],
+            );
+            ensure!(
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    x,
+                    y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
+                ) != 0,
+                "placing Agent Deck window"
+            );
+        }
+        Ok(())
     }
 }
 
-impl Drop for NativeWindow {
-    fn drop(&mut self) {
-        // The UI owns this guard. Stop background callbacks from targeting the
-        // native handle once the app is being dropped.
-        self.0.store(0, Ordering::Release);
-    }
-}
-
-pub(super) fn wake_for_quit(ctx: &egui::Context) {
-    let window = ctx.data(|data| data.get_temp::<Arc<AtomicIsize>>(egui::Id::new(ID)));
-    let Some(window) = window else { return };
-    let handle = window.load(Ordering::Acquire);
-    if handle == 0 {
-        return;
-    }
-    // Winit 0.30 uses RedrawWindow for request_redraw, which does not wake a
-    // hidden HWND. Post the close event followed by a paint message so eframe
-    // processes the latched Quit and runs its normal shutdown without showing
-    // or focusing the window. Posting avoids blocking the tray thread.
-    unsafe {
-        PostMessageW(handle as _, WM_CLOSE, 0, 0);
-        PostMessageW(handle as _, WM_PAINT, 0, 0);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW,
-    };
-    use windows_sys::w;
-
-    #[test]
-    fn quit_wakes_a_hidden_window_without_showing_it_and_retires_the_handle() {
-        // A system STATIC window supplies an isolated, hidden HWND on this test
-        // thread. No desktop session, tray icon, or notification is created.
-        let hwnd = unsafe {
-            CreateWindowExW(
-                0,
-                w!("STATIC"),
-                w!("Agent Deck quit test"),
-                0,
-                0,
-                0,
-                1,
-                1,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            )
-        };
-        assert!(!hwnd.is_null());
-        let ctx = egui::Context::default();
-        let handle = Arc::new(AtomicIsize::new(hwnd as isize));
-        let guard = NativeWindow(handle.clone());
-        ctx.data_mut(|data| data.insert_temp(egui::Id::new(ID), handle));
-        wake_for_quit(&ctx);
-        let mut message = MSG::default();
-        let close = unsafe { PeekMessageW(&mut message, hwnd, WM_CLOSE, WM_CLOSE, PM_REMOVE) };
-        let paint = unsafe { PeekMessageW(&mut message, hwnd, WM_PAINT, WM_PAINT, PM_REMOVE) };
-        let visible = unsafe { IsWindowVisible(hwnd) };
-        drop(guard);
-        wake_for_quit(&ctx);
-        let retired_close =
-            unsafe { PeekMessageW(&mut message, hwnd, WM_CLOSE, WM_CLOSE, PM_REMOVE) };
-        unsafe { DestroyWindow(hwnd) };
-        assert_ne!(close, 0);
-        assert_ne!(paint, 0);
-        assert_eq!(visible, 0);
-        assert_eq!(retired_close, 0);
-    }
-}
+pub(super) use implementation::{configure, place, visible};

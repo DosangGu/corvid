@@ -2,316 +2,259 @@ use super::*;
 use crate::window::{BAR_HEIGHT, GAP, GridLayout, KEY_WIDTH, Orientation, Preset};
 
 impl Desktop {
-    pub(super) fn floating(&mut self, ctx: &egui::Context, tray: bool) {
-        let escape = ctx.input(|input| input.key_pressed(egui::Key::Escape))
-            && !egui::Popup::is_any_open(ctx);
-        let panel = Frame::side_top_panel(&ctx.style()).inner_margin(Margin::symmetric(12, 6));
-        egui::TopBottomPanel::top("mini-header")
-            .exact_height(BAR_HEIGHT)
-            .frame(panel)
-            .show(ctx, |ui| self.floating_header(ui, tray));
-        egui::TopBottomPanel::bottom("mini-status")
-            .exact_height(BAR_HEIGHT)
-            .frame(panel)
-            .show(ctx, |ui| {
-                self.floating_status(ui);
-            });
-        let content = Frame::central_panel(&ctx.style())
-            .fill(deck::BACKGROUND)
-            .inner_margin(Margin::symmetric(12, 8));
-        egui::CentralPanel::default()
-            .frame(content)
-            .show(ctx, |ui| {
-                let Some(snapshot) = self.view.snapshot.clone() else {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(18.0);
-                        ui.label("Connecting to agents…");
-                        ui.weak("Open More to check the connection.");
-                    });
-                    return;
-                };
-                if snapshot.page != 0 {
-                    ui.label("Loading agents…");
-                    return;
-                }
-                self.floating_board(ui, &snapshot);
-            });
-        if escape && tray && !gesture_active(ctx) {
-            self.window.hide(ctx);
+    pub(super) fn keyboard_actions(&self) -> Vec<Option<FocusAction>> {
+        let Some(snapshot) = &self.view.snapshot else {
+            return Vec::new();
+        };
+        if !self.window.expanded {
+            return tiles(
+                &snapshot.data.slots,
+                &snapshot.data.overflow,
+                self.window.layout().capacity(),
+            )
+            .into_iter()
+            .map(|tile| match tile {
+                Tile::Slot(slot) => self.focus_action(snapshot, Some(slot), slot.run.as_ref()),
+                Tile::Queued(run) => self.focus_action(snapshot, None, Some(run)),
+                Tile::Empty => None,
+            })
+            .collect();
         }
-    }
-
-    fn floating_board(&mut self, ui: &mut Ui, snapshot: &Snapshot) {
-        let layout = self.window.layout();
-        let tiles = tiles(
-            &snapshot.data.slots,
-            &snapshot.data.overflow,
-            layout.capacity(),
-        );
-        let (columns, _) = layout.dimensions();
-        let empty_hint = "Run Codex or Claude in a Corvid terminal to fill the deck.";
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(GAP, GAP);
-                let keys_width = ui.available_width() - GAP * (columns - 1) as f32;
-                let width = KEY_WIDTH.min(keys_width / columns as f32);
-                for (row_index, row) in tiles.chunks(columns).enumerate() {
-                    ui.horizontal(|ui| {
-                        for (column, tile) in row.iter().enumerate() {
-                            let index = row_index * columns + column;
-                            ui.push_id(("mini-key", index), |ui| match tile {
-                                Tile::Slot(slot) => self.card(ui, snapshot, slot, width),
-                                Tile::Queued(number, run) => {
-                                    self.queued_key(ui, snapshot, *number, run, width);
-                                }
-                                Tile::Empty => {
-                                    ui.add(deck::Key {
-                                        number: index as u32 + 1,
-                                        run: None,
-                                        pinned: false,
-                                        queued: false,
-                                        edge: width,
-                                        cached: false,
-                                        can_focus: false,
-                                        compact: true,
-                                    })
-                                    .on_hover_text(empty_hint);
-                                }
-                            });
-                        }
-                    });
-                }
-            });
-    }
-
-    fn queued_key(
-        &mut self,
-        ui: &mut Ui,
-        snapshot: &Snapshot,
-        number: u32,
-        run: &PresentedRun,
-        width: f32,
-    ) {
-        let key = snapshot.live_key(run);
-        let can_focus = self.ready(snapshot) && self.parent.connected() && key.is_some();
-        let cached = self.view.link != Link::Online || snapshot.generation().is_none();
-        let response = ui.add(deck::Key {
-            number,
-            run: Some(run),
-            pinned: false,
-            queued: true,
-            edge: width,
-            cached,
-            can_focus,
-            compact: true,
-        });
-        if response.clicked() && can_focus {
-            self.focus_run(key.expect("focusable queued agent").clone());
-        }
-        if run.latest_unseen_attention_id.is_some() {
-            response.context_menu(|ui| {
-                self.action(ui, snapshot, "Acknowledge alert", snapshot.acknowledge(run));
-                if self.pending.is_some() {
-                    ui.close();
-                }
-            });
-        }
-        response.on_hover_ui(|ui| {
-            ui.weak("Queued agent");
-            describe_run(ui, run, cached, None);
-            ui.weak(if can_focus {
-                "Click to open its terminal"
-            } else {
-                "Terminal focus unavailable"
-            });
-        });
-    }
-
-    fn position_picker(&mut self, ui: &mut Ui) {
-        ui.strong("Window position");
-        let mut fixed = self.window.fixed_position();
-        ui.radio_value(&mut fixed, false, "Movable — drag the title");
-        ui.radio_value(&mut fixed, true, "Fixed position")
-            .on_hover_text(
-                "Keep the mini deck at its default screen position and disable title dragging.",
-            );
-        if fixed != self.window.fixed_position() {
-            self.window.set_fixed_position(fixed);
-            ui.close();
-        }
-    }
-
-    fn layout_picker(&mut self, ui: &mut Ui) {
-        ui.set_min_width(164.0);
-        ui.strong("Deck layout");
-        ui.weak(RichText::new("Columns × rows").size(11.0));
-        let current = self.window.layout();
-        let mut selected = current;
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut selected.orientation,
-                Orientation::Landscape,
-                "Landscape",
-            );
-            ui.selectable_value(&mut selected.orientation, Orientation::Portrait, "Portrait");
-        });
-        ui.separator();
-        for preset in Preset::ALL {
-            let candidate = GridLayout {
-                preset,
-                orientation: selected.orientation,
-            };
-            if layout_option(ui, candidate, selected.preset == preset).clicked() {
-                selected.preset = preset;
-                ui.close();
-            }
-        }
-        if selected != current {
-            self.window.set_layout(selected);
-            ui.close();
-        }
-    }
-
-    fn floating_header(&mut self, ui: &mut Ui, tray: bool) {
-        ui.horizontal(|ui| {
-            let fixed = self.window.fixed_position();
-            let title = ui
-                .add(
-                    egui::Label::new(RichText::new("Agent Deck").strong().size(13.0))
-                        .selectable(false)
-                        .sense(if fixed {
-                            egui::Sense::hover()
-                        } else {
-                            egui::Sense::drag()
-                        }),
-                )
-                .on_hover_cursor(if fixed {
-                    egui::CursorIcon::Default
-                } else {
-                    egui::CursorIcon::Grab
-                })
-                .on_hover_text(if fixed {
-                    "Position fixed. Open the Fixed menu to enable moving."
-                } else {
-                    "Drag to move the deck"
-                });
-            if title.drag_started() {
-                self.window.start_drag(ui.ctx());
-            }
-            if title.dragged() {
-                self.window.drag(ui.ctx());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let close_hint = if tray {
-                    "Hide to tray"
-                } else {
-                    "Quit Agent Deck"
-                };
-                if ui.small_button("×").on_hover_text(close_hint).clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                let more = ui
-                    .small_button("…")
-                    .on_hover_text("Queue, hosts, notifications and settings");
-                more.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More")
-                });
-                if more.clicked() {
-                    self.window.expanded = true;
-                }
-                let hint = if tray {
-                    "On: stays visible. Off: opens from the tray and hides when focus leaves."
-                } else {
-                    "Without a tray, turning this off keeps the window accessible."
-                };
-                let topmost = self.window.always_on_top();
-                let mode = if topmost { "on" } else { "off" };
-                let pin = topmost_button(ui, topmost)
-                    .on_hover_text(format!("Always on top: {mode}\n{hint}"));
-                if pin.clicked() {
-                    self.window.toggle_topmost(ui.ctx(), tray);
-                }
-            });
-        });
-    }
-
-    fn floating_status(&mut self, ui: &mut Ui) {
-        let error = self.window.error.clone().or_else(|| {
-            self.notice
-                .as_ref()
-                .filter(|notice| notice.failed)
-                .map(|notice| notice.message.clone())
-        });
-        let more = self.view.snapshot.as_ref().map_or(0, |snapshot| {
-            snapshot
+        match self.section {
+            Section::Slots => snapshot
                 .data
-                .overflow_count
-                .saturating_sub(snapshot.data.overflow.len() as u32)
-        });
-        ui.horizontal(|ui| {
-            let online = self.view.link == Link::Online
-                && self
-                    .view
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| snapshot.generation().is_some());
-            let status = if self.focus_pending.is_some() && self.pending.is_some() {
-                "Opening…"
-            } else if self.pending.is_some() {
-                "Updating…"
-            } else if online {
-                "Connected"
-            } else {
-                "Offline"
-            };
-            let text = RichText::new(error.as_deref().unwrap_or(status))
-                .size(11.0)
-                .color(if error.is_some() {
-                    ui.visuals().error_fg_color
-                } else if online {
-                    Color32::from_rgb(119, 216, 183)
-                } else {
-                    ui.visuals().warn_fg_color
-                });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.menu_button(self.window.layout().label(), |ui| self.layout_picker(ui))
-                    .response
-                    .on_hover_text("Deck layout · columns × rows");
-                let position = if self.window.fixed_position() {
-                    "Fixed"
-                } else {
-                    "Move"
-                };
-                ui.menu_button(position, |ui| self.position_picker(ui))
-                    .response
-                    .on_hover_text("Window position: fixed or movable");
-                if more > 0
-                    && ui
-                        .small_button(format!("+{more}"))
-                        .on_hover_text("More queued agents")
-                        .clicked()
-                {
-                    self.window.expanded = true;
-                    self.section = Section::Overflow;
-                }
-                ui.add_sized(
-                    [ui.available_width(), 18.0],
-                    egui::Label::new(text).truncate(),
+                .slots
+                .iter()
+                .map(|slot| self.focus_action(snapshot, Some(slot), slot.run.as_ref()))
+                .collect(),
+            Section::Overflow => snapshot
+                .data
+                .overflow
+                .iter()
+                .map(|run| self.focus_action(snapshot, None, Some(run)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(super) fn floating(&self, cx: &mut Context<Self>) -> Div {
+        let title = div()
+            .id("drag-title")
+            .flex_1()
+            .min_w_0()
+            .text_size(px(13.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child("Agent Deck")
+            .when(!self.window.fixed_position(), |title| {
+                title.cursor_grab().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, _| {
+                        if !view.window.fixed_position() {
+                            window.start_window_move();
+                        }
+                    }),
                 )
-                .on_hover_text(
-                    error
-                        .as_deref()
-                        .unwrap_or_else(|| connection_text(&self.view)),
-                );
             });
-        });
+        let header = row()
+            .h(px(BAR_HEIGHT))
+            .flex_shrink_0()
+            .px(px(12.))
+            .bg(rgb(PANEL))
+            .child(title)
+            .child(
+                button(
+                    "topmost",
+                    if self.window.always_on_top() {
+                        "●"
+                    } else {
+                        "○"
+                    },
+                    true,
+                )
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.window.toggle_topmost();
+                    if !view.window.always_on_top() && view.background.view.borrow().background {
+                        view.window.hide(window);
+                    }
+                    view.update(window, cx);
+                })),
+            )
+            .child(button("more", "…", true).on_click(
+                cx.listener(|view, _, window, cx| view.expand(Section::Slots, window, cx)),
+            ))
+            .child(
+                button("hide", "×", true).on_click(cx.listener(|view, _, window, cx| {
+                    if view.background.view.borrow().background {
+                        view.window.hide(window);
+                    } else {
+                        cx.quit();
+                    }
+                })),
+            );
+        let mut grid = column().px(px(12.)).py(px(8.)).gap(px(GAP));
+        if let Some(snapshot) = &self.view.snapshot {
+            if snapshot.page == 0 {
+                let layout = self.window.layout();
+                let tiles = tiles(
+                    &snapshot.data.slots,
+                    &snapshot.data.overflow,
+                    layout.capacity(),
+                );
+                let (columns, _) = layout.dimensions();
+                for (row_index, cells) in tiles.chunks(columns).enumerate() {
+                    let mut line = row().gap(px(GAP));
+                    for (column, tile) in cells.iter().enumerate() {
+                        let index = row_index * columns + column;
+                        line = line.child(match tile {
+                            Tile::Slot(slot) => self.card(snapshot, slot, index, KEY_WIDTH, cx),
+                            Tile::Queued(run) => {
+                                self.run_card(snapshot, Some(run), None, index, KEY_WIDTH, cx)
+                            }
+                            Tile::Empty => {
+                                self.run_card(snapshot, None, None, index, KEY_WIDTH, cx)
+                            }
+                        });
+                    }
+                    grid = grid.child(line);
+                }
+            } else {
+                grid = grid.child(muted("Loading agents…"));
+            }
+        } else {
+            grid = grid.child(muted("Connecting to agents…"));
+        }
+        column()
+            .size_full()
+            .gap_0()
+            .child(header)
+            .child(
+                div()
+                    .id("mini-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(grid),
+            )
+            .child(self.footer(cx))
+    }
+
+    pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
+        let text = if let Some(error) = &self.window.error {
+            error.clone()
+        } else if self.pending.is_some() {
+            "Waiting for the action…".into()
+        } else if let Some(notice) = &self.notice {
+            notice.message.clone()
+        } else {
+            connection_text(&self.view).into()
+        };
+        let overflow = self
+            .view
+            .snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.data.overflow_count);
+        row()
+            .h(px(BAR_HEIGHT))
+            .flex_shrink_0()
+            .px(px(12.))
+            .overflow_hidden()
+            .bg(rgb(PANEL))
+            .child(muted(text).flex_1().min_w_0().overflow_hidden())
+            .when(!self.window.expanded && overflow > 0, |footer| {
+                footer.child(button("open-queue", format!("+{overflow}"), true).on_click(
+                    cx.listener(|view, _, window, cx| view.expand(Section::Overflow, window, cx)),
+                ))
+            })
+    }
+
+    pub(super) fn layout_controls(&self, cx: &mut Context<Self>) -> Div {
+        let current = self.window.layout();
+        column()
+            .child(
+                row()
+                    .flex_wrap()
+                    .child(muted("Deck layout"))
+                    .children(Preset::ALL.into_iter().enumerate().map(|(index, preset)| {
+                        let layout = GridLayout { preset, ..current };
+                        button(("layout", index), layout.label(), true)
+                            .when(current.preset == preset, |button| {
+                                button.text_color(rgb(MINT))
+                            })
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.window.set_layout(layout);
+                                view.update(window, cx);
+                            }))
+                    }))
+                    .child(
+                        button(
+                            "orientation",
+                            if current.orientation == Orientation::Landscape {
+                                "Landscape"
+                            } else {
+                                "Portrait"
+                            },
+                            true,
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            let current = view.window.layout();
+                            let orientation = match current.orientation {
+                                Orientation::Landscape => Orientation::Portrait,
+                                Orientation::Portrait => Orientation::Landscape,
+                            };
+                            view.window.set_layout(GridLayout {
+                                orientation,
+                                ..current
+                            });
+                            view.update(window, cx);
+                        })),
+                    ),
+            )
+            .child(
+                row()
+                    .flex_wrap()
+                    .child(
+                        button(
+                            "position",
+                            if self.window.fixed_position() {
+                                "Fixed position"
+                            } else {
+                                "Movable"
+                            },
+                            true,
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.window
+                                .set_fixed_position(!view.window.fixed_position());
+                            view.update(window, cx);
+                        })),
+                    )
+                    .child(
+                        button(
+                            "always-on-top",
+                            if self.window.always_on_top() {
+                                "Always on top ✓"
+                            } else {
+                                "Always on top"
+                            },
+                            true,
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.window.toggle_topmost();
+                            if !view.window.always_on_top()
+                                && view.background.view.borrow().background
+                            {
+                                view.window.hide(window);
+                            }
+                            view.update(window, cx);
+                        })),
+                    ),
+            )
     }
 }
 
 enum Tile<'a> {
     Slot(&'a PresentedSlot),
-    Queued(u32, &'a PresentedRun),
+    Queued(&'a PresentedRun),
     Empty,
 }
 
@@ -327,93 +270,9 @@ fn tiles<'a>(
         .collect();
     // Queue entries keep their exact run identity. They are never fabricated
     // slot tokens, and changing the visual grid does not edit companion policy.
-    tiles.extend(
-        overflow
-            .iter()
-            .enumerate()
-            .map(|(index, run)| Tile::Queued(index as u32 + 1, run)),
-    );
+    tiles.extend(overflow.iter().map(Tile::Queued));
     tiles.resize_with(tiles.len().max(capacity), || Tile::Empty);
     tiles
-}
-
-fn layout_option(ui: &mut Ui, layout: GridLayout, selected: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(164.0, 29.0), egui::Sense::click());
-    let label = format!("{} · {} keys", layout.label(), layout.capacity());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &label)
-    });
-    if selected || response.hovered() || response.has_focus() {
-        let fill = if selected {
-            ui.visuals().selection.bg_fill
-        } else {
-            ui.visuals().widgets.hovered.bg_fill
-        };
-        ui.painter().rect_filled(rect, 4, fill);
-    }
-    let color = if selected {
-        Color32::from_rgb(119, 216, 183)
-    } else {
-        ui.visuals().text_color()
-    };
-    let (columns, rows) = layout.dimensions();
-    let origin = egui::pos2(
-        rect.left() + 21.0 - columns as f32 * 3.0,
-        rect.center().y - rows as f32 * 2.5,
-    );
-    for row in 0..rows {
-        for column in 0..columns {
-            let cell = egui::Rect::from_min_size(
-                origin + egui::vec2(column as f32 * 6.0, row as f32 * 5.0),
-                egui::vec2(4.0, 3.0),
-            );
-            ui.painter().rect_filled(cell, 1, color);
-        }
-    }
-    ui.painter().text(
-        egui::pos2(rect.left() + 43.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        FontId::proportional(12.0),
-        color,
-    );
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-fn topmost_button(ui: &mut Ui, selected: bool) -> egui::Response {
-    let response = ui.add(
-        egui::Button::new("")
-            .selected(selected)
-            .min_size(egui::vec2(24.0, 18.0)),
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, selected, "Always on top")
-    });
-    let color = if selected {
-        Color32::from_rgb(119, 216, 183)
-    } else {
-        ui.visuals().text_color()
-    };
-    let center = response.rect.center();
-    let stroke = egui::Stroke::new(1.3, color);
-    ui.painter().rect_stroke(
-        egui::Rect::from_center_size(center - egui::vec2(0.0, 2.0), egui::vec2(6.0, 5.0)),
-        1,
-        stroke,
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().line_segment(
-        [
-            center + egui::vec2(-5.0, 1.0),
-            center + egui::vec2(5.0, 1.0),
-        ],
-        stroke,
-    );
-    ui.painter().line_segment(
-        [center + egui::vec2(0.0, 1.0), center + egui::vec2(0.0, 6.0)],
-        stroke,
-    );
-    response
 }
 
 #[cfg(test)]
@@ -434,7 +293,7 @@ mod tests {
         assert!(
             matches!(large[0], Tile::Slot(slot) if std::ptr::eq(slot, &slots[0]) && slot.pinned)
         );
-        assert!(matches!(large[9], Tile::Queued(9, run) if std::ptr::eq(run, &overflow[8])));
+        assert!(matches!(large[9], Tile::Queued(run) if std::ptr::eq(run, &overflow[8])));
         assert!(large[10..].iter().all(|tile| matches!(tile, Tile::Empty)));
         let small = tiles(&slots, &overflow, 6);
         assert_eq!(

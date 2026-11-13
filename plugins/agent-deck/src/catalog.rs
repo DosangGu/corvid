@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::ui_signal::UiSignal;
 use anyhow::{Result, ensure};
 use corvid_agent_deck::connection::Client;
 use corvid_client::ControlEndpoint;
 use corvid_companion::{Config, HostEndpoint};
 use corvid_protocol::wire::AgentInfo;
 use corvid_protocol::wire::snapshot_entity::Body;
-use eframe::egui;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
@@ -36,7 +36,7 @@ pub(crate) struct Host {
 }
 
 impl Catalog {
-    pub fn start(state: PathBuf, current: Uuid, ctx: egui::Context) -> Result<Self> {
+    pub fn start(state: PathBuf, current: Uuid, ctx: UiSignal) -> Result<Self> {
         let profiles = discover(&state, current)?;
         let hosts = profiles
             .iter()
@@ -127,7 +127,7 @@ async fn run(
     profiles: BTreeMap<Uuid, Config>,
     publish: watch::Sender<View>,
     mut requests: mpsc::Receiver<Uuid>,
-    ctx: egui::Context,
+    ctx: UiSignal,
 ) {
     let mut jobs = tokio::task::JoinSet::new();
     for (&id, profile) in &profiles {
@@ -149,17 +149,12 @@ async fn run(
                 Err(_) => Some("Open that host's Agent Deck from Corvid Desktop first.".into()),
             };
             publish.send_modify(|view| view.message = message);
-            ctx.request_repaint();
+            ctx.notify();
         }
     }
 }
 
-async fn monitor(
-    id: Uuid,
-    endpoint: ControlEndpoint,
-    publish: watch::Sender<View>,
-    ctx: egui::Context,
-) {
+async fn monitor(id: Uuid, endpoint: ControlEndpoint, publish: watch::Sender<View>, ctx: UiSignal) {
     let host = id.to_string();
     let controller = Uuid::new_v4().to_string();
     loop {
@@ -194,7 +189,7 @@ async fn monitor(
                     host.runs = runs;
                     host.omitted = omitted;
                 });
-                ctx.request_repaint();
+                ctx.notify();
                 if watcher.next_change().await.is_err() {
                     break;
                 }
@@ -204,7 +199,7 @@ async fn monitor(
             let host = Arc::make_mut(view.hosts.get_mut(&id).expect("configured host"));
             std::mem::replace(&mut host.online, false)
         });
-        ctx.request_repaint();
+        ctx.notify();
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }

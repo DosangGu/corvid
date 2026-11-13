@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 
+use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
-use eframe::egui;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use windows::Data::Xml::Dom::XmlDocument;
@@ -53,7 +53,7 @@ pub struct Sink {
     notifier: ToastNotifier,
     active: VecDeque<(ToastNotification, i64)>,
     events: mpsc::Sender<Event>,
-    ctx: egui::Context,
+    ctx: UiSignal,
     arguments: String,
 }
 
@@ -63,7 +63,7 @@ impl Sink {
         state: &Path,
         address: &str,
         events: mpsc::Sender<Event>,
-        ctx: egui::Context,
+        ctx: UiSignal,
     ) -> Result<Self> {
         let id = identity(controller);
         let arguments = format!(
@@ -324,7 +324,7 @@ mod tests {
                 directory.path(),
                 "agent-deck-test",
                 events,
-                egui::Context::default(),
+                UiSignal::default(),
             )?;
             let notice = Notice {
                 summary: true,

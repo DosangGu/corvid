@@ -3,6 +3,7 @@ use std::process::Stdio;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
 use corvid_agent_deck::connection;
 use corvid_companion::{
@@ -12,7 +13,6 @@ use corvid_presentation::ipc::Completion;
 use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationAttention, PresentationAttention};
-use eframe::egui;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
@@ -51,7 +51,7 @@ impl Background {
         state: PathBuf,
         address: <PresentationAddress as ToOwned>::Owned,
         config: Config,
-        ctx: egui::Context,
+        ctx: UiSignal,
     ) -> Result<Self> {
         let desktop = DesktopLink::default();
         let (completed, completions) = mpsc::channel(8);
@@ -137,7 +137,7 @@ struct Channels {
     views: watch::Sender<View>,
     settings: watch::Receiver<Settings>,
     tests: mpsc::Receiver<()>,
-    ctx: egui::Context,
+    ctx: UiSignal,
     started: std::sync::mpsc::SyncSender<Result<(), String>>,
 }
 
@@ -264,7 +264,7 @@ struct Monitor {
     native: Option<Native>,
     issue: String,
     views: watch::Sender<View>,
-    ctx: egui::Context,
+    ctx: UiSignal,
 }
 
 impl Monitor {
@@ -276,7 +276,7 @@ impl Monitor {
                     native.status("Corvid Agent Deck — companion unavailable", false);
                 }
                 self.views.send_modify(|view| view.status = issue);
-                self.ctx.request_repaint();
+                self.ctx.notify();
                 return Ok(());
             }
         };
@@ -313,7 +313,7 @@ impl Monitor {
         for notice in batch(observation.notices) {
             self.notify(notice).await;
         }
-        self.ctx.request_repaint();
+        self.ctx.notify();
         Ok(())
     }
 
@@ -325,7 +325,7 @@ impl Monitor {
         if let Err(error) = result {
             self.error(error.to_string());
         }
-        self.ctx.request_repaint();
+        self.ctx.notify();
     }
 
     fn configure(&mut self, mut next: Settings) -> Result<()> {
@@ -344,7 +344,7 @@ impl Monitor {
         save(&self.storage, &self.ledger)?;
         self.views
             .send_modify(|view| view.settings = self.ledger.settings.clone());
-        self.ctx.request_repaint();
+        self.ctx.notify();
         Ok(())
     }
 
@@ -373,7 +373,7 @@ impl Monitor {
             }
             Event::Error(error) => self.error(error),
         }
-        self.ctx.request_repaint();
+        self.ctx.notify();
         Ok(())
     }
 
