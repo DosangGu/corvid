@@ -196,41 +196,34 @@ and release manifest generation. It validates runtime version, source revision,
 size, and checksum before including a payload. It rejects dynamic Linux daemon
 binaries and binaries exceeding the existing 32 MiB provisioning limit.
 
-The **Package Corvid** workflow performs the following stages:
+| Changes or trigger | Corvid Checks | Package Corvid |
+| --- | --- | --- |
+| PR limited to `AGENTS.md`, `README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG under `docs/images/` | Run lightweight validation | — |
+| PR editing existing Rust source under `crates/`, `plugins/`, or `spikes/`, optionally with documentation | Run Linux and Windows builds, tests, and lints. This includes comment-only source edits. | — |
+| PR with dependencies, schemas, build scripts, new or removed Rust paths, packaging inputs, CI configuration, other paths, or an uncertain diff | Run builds, tests, lints, and package integration | — |
+| Push to `main` | Run lightweight validation | Run package integration when the path filter sees a change outside documentation |
+| Version tag or manual **Run workflow** | — | Run package integration and upload release assets |
 
-1. Validate the version/ref and formatting.
-2. Build and test Linux and Windows runtimes independently; package and test TUI.
-3. Build Desktop on both platforms, consume both runtime artifacts, run workspace
-   tests and lints, and test packaged installation. Linux also opens Desktop under Xvfb.
-   Build and test Windows Setup from the verified Windows Desktop archive.
-4. Assemble the four archives, Windows Setup, checksums, installation scripts,
-   and manifest.
-5. For a pushed version tag, create a draft, upload and check the complete asset
-   inventory, then publish. Only this job receives repository write permission.
+Lightweight validation checks the version, shared icons, Rust formatting, change
+classification, and whitespace in the event diff. **Corvid Checks** compares the
+checked-out PR merge commit with its first parent.
+On `main` it compares the previous and pushed tips. It checks both sides of a
+move and runs package integration if the push comparison is unavailable or the
+path filter may miss a non-documentation change. Use the always-reported
+**Corvid checks** job as a required PR status check.
 
-The workflow starts on every pull request and push to `main`. The `validate` job
-checks the release version, shared icons, change detection, Rust formatting, and
-whitespace in the changed lines when a comparison is available.
+Both workflows call **Build and Test Corvid** for cross-platform validation.
+After version, icon, and formatting checks, the TUI/daemon and Desktop builds
+and tests run in parallel. TUI integration tests launch a daemon from the binary
+built by Cargo. Desktop packaging uses the Desktop build and both runtime
+artifacts. Its integration checks cover installation with a live daemon,
+Desktop terminal input and reattachment under Xvfb, and Windows Setup.
 
-| Changes or trigger | Linux and Windows builds, tests, lints, and packaging |
-| --- | --- |
-| Only `AGENTS.md`, `README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG images under `docs/images/` | Skip |
-| Source (including comment-only Rust edits), dependencies, schemas, build scripts, packaging inputs, or CI configuration | Run |
-| Mixed changes, other paths, non-document file modes, or an empty or unavailable comparison | Run |
-| Version tag or manual **Run workflow** | Run |
-
-The pull request comparison uses the checked-out merge commit and its first
-parent. A push to `main` compares the previous tip and the pushed tip, covering
-all changes in the push. Moves check both the old and new paths.
-
-**Package checks** reports the combined result. It requires `validate` to pass
-and checks that the build and packaging jobs passed or were skipped according to
-the change classification. Use **Package checks** if configuring a required
-status check for pull requests.
-
-Full pull request, `main` push, and manual runs upload workflow artifacts.
-Publication runs only on a version tag push. Re-running publication may repair
-an unpublished draft and refuses to overwrite an already published release.
+Full packaging runs assemble the archives, Setup, checksums, installation
+scripts, and release manifest. A version tag push then creates a draft, uploads
+and checks the asset inventory, and publishes the release. Only publication
+receives repository write permission. Re-running publication may repair an
+unpublished draft and refuses to overwrite an already published release.
 
 For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
 WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt
