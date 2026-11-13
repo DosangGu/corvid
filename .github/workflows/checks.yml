@@ -1,0 +1,66 @@
+name: Corvid Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      level: ${{ steps.changes.outputs.level }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate changed paths and whitespace
+        id: changes
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: python3 deploy/validate_changes.py
+      - run: python3 deploy/release.py validate
+      - run: python3 deploy/test_icons.py
+      - run: python3 deploy/test_validate_changes.py
+      - run: cargo fmt --all -- --check
+
+  pipeline:
+    needs: validate
+    if: needs.validate.outputs.level == 'build' || needs.validate.outputs.level == 'package'
+    uses: ./.github/workflows/build-and-test.yml
+    with:
+      package: ${{ needs.validate.outputs.level == 'package' }}
+
+  checks:
+    name: Corvid checks
+    needs: [validate, pipeline]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check validation and selected jobs
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          LEVEL: ${{ needs.validate.outputs.level }}
+          PIPELINE_RESULT: ${{ needs.pipeline.result }}
+        run: |
+          if [[ "$VALIDATE_RESULT" != success ]]; then
+            echo "::error::Validation finished with $VALIDATE_RESULT"
+            exit 1
+          fi
+          case "$LEVEL" in
+            lightweight) expected=skipped ;;
+            build|package) expected=success ;;
+            *) echo "::error::Missing change classification"; exit 1 ;;
+          esac
+          if [[ "$PIPELINE_RESULT" != "$expected" ]]; then
+            echo "::error::Expected $expected for $LEVEL, got $PIPELINE_RESULT"
+            exit 1
+          fi
