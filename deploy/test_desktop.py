@@ -32,6 +32,19 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
             time.sleep(0.1)
         else:
             raise AssertionError("Daemon did not start")
+
+        # Openbox starts asynchronously. xdotool needs its EWMH activation
+        # support, even if a Desktop window is already visible on the display.
+        for _ in range(80):
+            if manager.poll() is not None:
+                raise AssertionError(f"Openbox exited with {manager.returncode}")
+            supported = subprocess.check_output(["xprop", "-root", "_NET_SUPPORTED"], text=True)
+            if "_NET_ACTIVE_WINDOW" in supported:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("Openbox did not register window activation support")
+
         desktop = subprocess.Popen([str(root / "corvid-desktop")], env=environment, start_new_session=True)
         def wait_for_icon(title, excluded=()):
             for _ in range(80):
