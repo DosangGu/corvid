@@ -80,7 +80,7 @@ vt100 = { version = "=0.18.1", default-features = false }
 windows-sys = "=0.61.2"
 windows = "=0.61.3"
 embed-resource = "=3.0.12"
-x11rb = "=0.13.2"
+x11rb = "=0.14.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
