@@ -78,12 +78,12 @@ jobs:
         run: python deploy/package.py package --product tui --target ${{ matrix.target }} --runtime target/runtime --build target/${{ matrix.target }}/release --output target/dist
       - name: Validate installation and daemon lifecycle
         run: python deploy/test_install.py --assets target/dist --binary target/${{ matrix.target }}/release/${{ matrix.binary }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runtime-${{ matrix.target }}
           path: target/runtime/
           if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: tui-${{ matrix.target }}
           path: target/dist/
@@ -156,7 +156,7 @@ jobs:
           $setup = (Get-ChildItem target/dist -Filter '*-setup.exe').FullName
           python deploy/test_native.py --archive $archive --package $setup --iscc $compiler
           exit $LASTEXITCODE
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: desktop-${{ matrix.target }}
           path: target/dist/
@@ -180,7 +180,7 @@ jobs:
           path: dist
           merge-multiple: true
       - run: python3 deploy/package.py manifest --output dist
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-assets
           path: dist/
