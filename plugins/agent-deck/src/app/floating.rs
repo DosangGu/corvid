@@ -295,12 +295,15 @@ impl Desktop {
                     self.window.expanded = true;
                     self.section = Section::Overflow;
                 }
-                ui.add_sized([ui.available_width(), 18.0], egui::Label::new(text).truncate())
-                    .on_hover_text(
-                        error
-                            .as_deref()
-                            .unwrap_or_else(|| connection_text(&self.view)),
-                    );
+                ui.add_sized(
+                    [ui.available_width(), 18.0],
+                    egui::Label::new(text).truncate(),
+                )
+                .on_hover_text(
+                    error
+                        .as_deref()
+                        .unwrap_or_else(|| connection_text(&self.view)),
+                );
             });
         });
     }
