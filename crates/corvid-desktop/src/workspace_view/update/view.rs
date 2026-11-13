@@ -136,40 +136,18 @@ impl WorkspaceView {
                     && let Some(release) = &state.release
                 {
                     match &state.installation {
-                        Ok(Some(installation)) if installation.supports_in_app_update() => {
+                        Ok(Some(_)) => {
                             actions = actions.child(
                                 button(
                                     "download-update",
                                     if state.error.is_some() {
-                                        "Retry download"
+                                        "Retry update"
                                     } else {
                                         "Download update"
                                     },
                                     true,
                                 )
                                 .on_click(cx.listener(|view, _, _, cx| view.download_update(cx))),
-                            );
-                        }
-                        Ok(Some(_)) => {
-                            let name = format!(
-                                "corvid-desktop-{}-x86_64-pc-windows-msvc-setup.exe",
-                                release.version
-                            );
-                            let (label, url) = if release.asset(&name).is_ok() {
-                                (
-                                    "Download installer ↗",
-                                    format!(
-                                        "{}/download/v{}/{name}",
-                                        corvid_update::RELEASES,
-                                        release.version
-                                    ),
-                                )
-                            } else {
-                                ("Open release ↗", release.url())
-                            };
-                            actions = actions.child(
-                                button("download-installer", label, true)
-                                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
                             );
                         }
                         _ => {
@@ -242,9 +220,6 @@ fn installation_hint(state: &State) -> &'static str {
         return "Restarting Desktop keeps your terminal jobs running. You can also apply the update the next time you open Corvid.";
     }
     match &state.installation {
-        Ok(Some(install)) if !install.supports_in_app_update() => {
-            "Run the new Setup installer over this installation to update Corvid."
-        }
         Ok(Some(install)) if install.root.is_none() => {
             "Updating installs a managed copy in Corvid's default location. Your portable copy is kept. You choose when to restart."
         }

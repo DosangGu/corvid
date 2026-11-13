@@ -98,9 +98,6 @@ impl State {
             return None;
         }
         let installation = self.installation.as_ref().ok()?.as_ref()?;
-        if !installation.supports_in_app_update() {
-            return None;
-        }
         let release = self.release.clone()?;
         let installation = installation.clone();
         self.phase = Phase::Installing(InstallProgress::Downloading);
@@ -127,7 +124,7 @@ impl State {
 
     pub(super) fn installation_label(&self) -> &'static str {
         match &self.installation {
-            Ok(Some(install)) if !install.supports_in_app_update() => "Setup installation",
+            Ok(Some(install)) if install.is_windows_setup() => "Setup installation",
             Ok(Some(install)) if install.root.is_some() => "Managed installation",
             Ok(Some(_)) => "Portable installation",
             Ok(None) => "Source or externally managed build",

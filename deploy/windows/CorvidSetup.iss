@@ -18,6 +18,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=no
 RestartApplications=no
+SetupMutex=Corvid.WindowsSetup
 SetupIconFile={#Icon}
 UninstallDisplayIcon={app}\corvid.ico
 Compression=lzma2
@@ -42,16 +43,30 @@ Name: "{autodesktop}\Corvid Desktop"; Filename: "{app}\bin\corvid-desktop.exe"; 
 [UninstallDelete]
 Type: files; Name: "{app}\current.txt"
 Type: files; Name: "{app}\current.txt.pending"
+Type: files; Name: "{app}\setup-update.lock"
 
 [Code]
 function MoveFileEx(ExistingFile, NewFile: string; Flags: Cardinal): Boolean;
   external 'MoveFileExW@kernel32.dll stdcall';
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExpectedVersion, CurrentVersion: AnsiString;
 begin
   Result := '';
   if FileExists(ExpandConstant('{app}\install.json')) then
+  begin
     Result := 'This folder belongs to the Corvid script installer. Select a different folder.';
+    exit;
+  end;
+
+  ExpectedVersion := ExpandConstant('{param:CORVIDUPDATEFROM|}');
+  if ExpectedVersion <> '' then
+  begin
+    if not LoadStringFromFile(ExpandConstant('{app}\current.txt'), CurrentVersion) or
+      (Trim(CurrentVersion) <> ExpectedVersion) then
+      Result := 'The active Corvid version changed before the update could be installed.';
+  end;
 end;
 
 procedure CurStepChanged(Step: TSetupStep);

@@ -136,9 +136,9 @@ panel keeps the running version, installation type, stable channel, and last che
 time visible. Check results and actionable errors stay in that page; technical
 error details can be expanded. Release notes open the selected release page.
 
-For managed and portable installations, **Download update** downloads, verifies,
-and installs the selected release in the background. The panel shows those three
-stages; it does not estimate a percentage. Checking and installation continue when
+For installations from Windows Setup, the scripts, or a portable archive,
+**Download update** downloads, verifies, and installs the selected release in
+the background. The panel shows the current stage. Checking and installation continue when
 Settings is closed. Reopening Settings restores the current result or progress.
 Repeated clicks cannot start concurrent checks or installations.
 
@@ -151,9 +151,10 @@ Terminal jobs remain owned by their existing daemon throughout this flow.
 ![Available update in Settings](images/release-update-available.png)
 ![Prepared update with a choice of restart time](images/release-update-ready.png)
 
-Both clients use `corvid-update`. The updater selects a release once, verifies
-its manifest, and runs that exact tag's verified installer with the expected
-archive digest. The updater downloads that tag's archive, verifies its exact size
+Both clients use `corvid-update`. For script and portable installations, the
+updater selects a release once, validates its manifest, and runs that exact
+tag's verified installer with the expected archive digest. The updater
+downloads that tag's archive, verifies its exact size
 and SHA-256, and supplies the verified local assets to the installer. The installer
 also checks archive and package integrity before switching the current version.
 A CLI inside a script-installed Desktop distribution updates the entire Desktop
@@ -228,12 +229,18 @@ Run the x64 Setup executable for a per-user install. The default directory is
 and the Corvid Terminal. For CLI access from your own shells, add its `bin`
 directory to your user PATH. Setup builds are currently unsigned.
 
-Use `corvid update --check` or **Settings → About & updates → Check for updates** to find available
-releases. Desktop identifies Setup installations and offers **Download installer**
-for a release with a matching Setup asset, or **Open release** when it is absent.
-Run the new Setup over the existing installation to update. Setup keeps older
-version directories and switches the launchers to the selected version after
-copying its files. Agent Deck registers its notification shortcut when started
+Use **Settings → About & updates → Check for updates** to find available releases.
+**Download update** downloads the selected release's Windows Setup executable and
+verifies its exact size and SHA-256 against the release manifest. Desktop runs
+Setup in the background in the existing installation directory. When the new
+version becomes active, Desktop offers **Restart to apply**. Setup keeps older
+version directories and running terminal jobs continue through the update.
+`corvid update` also supports forward updates for Setup installations.
+
+![Windows Setup update available in Desktop](images/release-setup-update-available.jpg)
+![Windows Setup update ready for Desktop restart](images/release-setup-update-ready.jpg)
+
+Agent Deck registers its notification shortcut when started
 and offers an opt-in login startup setting. Those shortcuts follow the selected
 version. Use **Settings → Apps → Installed
 apps** to uninstall Corvid Desktop. The uninstaller removes Setup's shortcuts
@@ -259,7 +266,10 @@ then ran the real PowerShell installer successfully with verified local assets
 and an installation path containing spaces. Desktop, updater, and CLI checks
 passed on Windows (30 tests, one WSL-profile test ignored) and Linux (49 tests),
 along with builds, Clippy, formatting, and whitespace checks.
-Native Windows GUI and Setup-download clicks were not exercised in this pass.
+On 2026-11-13, the Windows Settings screenshots above were captured using
+local release fixtures in a separate Setup installation. The app rejected a
+checksum mismatch, then verified and ran the real Setup. Restart opened the
+updated Desktop and restored the existing terminal screen.
 
 `deploy/test_install.py` exercises the actual installers with isolated paths,
 including spaces, a synthetic older version, repeat installation, concurrent

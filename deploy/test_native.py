@@ -89,7 +89,8 @@ def windows(previous, current, fixture):
     except FileNotFoundError:
         pass
     root = fixture / "Corvid Native Fixture"
-    flags = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+    flags = ["/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+             "/NOCLOSEAPPLICATIONS", "/NORESTARTAPPLICATIONS"]
 
     def install(setup):
         command([setup, *flags, "/NOICONS", f"/DIR={root}"])
@@ -100,7 +101,15 @@ def windows(previous, current, fixture):
         check_payload(old, "windows-setup")
         assert (root / "current.txt").read_text().strip() == PREVIOUS
         executable = root / "bin/corvid.exe"
-        sentinel = run_lifecycle(old / "corvid.exe", executable, fixture, lambda: install(current))
+
+        def update():
+            args = [current, *flags, f"/DIR={root}"]
+            stale = subprocess.run([*args, "/CORVIDUPDATEFROM=0.0.0"], timeout=180)
+            assert stale.returncode == 7, stale.returncode
+            assert (root / "current.txt").read_text().strip() == PREVIOUS
+            command([*args, f"/CORVIDUPDATEFROM={PREVIOUS}"])
+
+        sentinel = run_lifecycle(old / "corvid.exe", executable, fixture, update)
         version = (root / "current.txt").read_text().strip()
         assert version != PREVIOUS
         check_payload(root / "versions" / version, "windows-setup")
@@ -108,7 +117,7 @@ def windows(previous, current, fixture):
         result = command([executable, "--version"], capture_output=True)
         assert result.stdout.strip() == f"corvid {version}".encode()
     finally:
-        command([root / "unins000.exe", *flags])
+        command([root / "unins000.exe", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
     assert not (root / "current.txt").exists()
     assert sentinel.read_text() == "retained\n"
 
