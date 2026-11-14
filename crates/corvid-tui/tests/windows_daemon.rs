@@ -24,7 +24,7 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[tokio::test]
-async fn rename_targets_the_tab_or_active_pane_and_restores_automatic_titles() -> Result<()> {
+async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
     ensure_daemon(&runtime, &fixture.path().join("state")).await?;
@@ -60,29 +60,23 @@ async fn rename_targets_the_tab_or_active_pane_and_restores_automatic_titles() -
     tui.send(b"[Console]::Title='SPLIT_AUTO'\r")?;
     wait_for_title(&runtime, "이름 🐦", "SPLIT_AUTO").await?;
     tui.send(b"\x1d.")?;
-    tui.wait_for("Rename pane")?;
-    tui.send(b"\x1b[200~Manual\r\nPane\x1b[201~")?;
-    tui.wait_for("> ManualPane")?;
+    tui.wait_for("Rename tab")?;
+    tui.send(b"\x1b[200~Manual\r\nTab\x1b[201~")?;
+    tui.wait_for("> ManualTab")?;
     tui.send(b"\r")?;
-    tui.wait_without("Rename pane")?;
-    wait_for_title(&runtime, "이름 🐦", "ManualPane").await?;
-    wait_for_title(&runtime, "이름 🐦", "AUTO_TWO").await?;
-
-    tui.send(b"\x1d.")?;
-    tui.wait_for("Rename pane")?;
-    tui.send(b"\r")?;
-    tui.wait_without("Rename pane")?;
-    wait_for_title(&runtime, "이름 🐦", "SPLIT_AUTO").await?;
-    tui.wait_for("SPLIT_AUTO")?;
-
-    tui.send(b"\x1dX")?;
-    tui.wait_without("SPLIT_AUTO")?;
-    wait_for_title(&runtime, "이름 🐦", "AUTO_TWO").await?;
+    tui.wait_without("Rename tab")?;
+    wait_for_title(&runtime, "ManualTab", "SPLIT_AUTO").await?;
+    wait_for_title(&runtime, "ManualTab", "AUTO_TWO").await?;
 
     tui.send(b"\x1d.")?;
     tui.wait_for("Rename tab")?;
     tui.send(b"\r")?;
     tui.wait_without("Rename tab")?;
+    wait_for_title(&runtime, "Tab 1", "SPLIT_AUTO").await?;
+    tui.wait_for("Tab 1")?;
+
+    tui.send(b"\x1dX")?;
+    tui.wait_without("SPLIT_AUTO")?;
     wait_for_title(&runtime, "AUTO_TWO", "AUTO_TWO").await?;
     tui.send(b"exit\r")?;
     tui.expect_exit(0)?;

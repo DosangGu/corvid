@@ -267,7 +267,7 @@ fn shortcuts() -> Div {
         ("Ctrl+Shift+D / Ctrl+Shift+E", "Split right / down"),
         ("Ctrl+Shift+F", "Toggle focus mode"),
         ("Ctrl+Shift+Z", "Expand / restore active pane"),
-        ("Ctrl+Shift+R", "Rename"),
+        ("Ctrl+Shift+R", "Rename tab"),
         ("Ctrl+Shift+C / Ctrl+Shift+V", "Copy / paste"),
         ("Esc", "Close a menu or settings"),
     ];

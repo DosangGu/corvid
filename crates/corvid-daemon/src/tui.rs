@@ -266,8 +266,10 @@ impl TuiConnection<'_> {
                 let result =
                     require_view(view.expected_view_revision, self.active.route.view_revision)
                         .and_then(|_| {
-                            self.workspaces
-                                .rename(&self.active, view.pane, view.name.clone())
+                            if view.pane {
+                                return Err(invalid("pane titles follow the terminal"));
+                            }
+                            self.workspaces.rename_tab(&self.active, view.name.clone())
                         });
                 match result {
                     Ok(()) => {
@@ -358,12 +360,12 @@ impl TuiConnection<'_> {
 
     async fn event(&mut self, event: Event) -> Result<bool> {
         match event {
-            Event::Rename(route, pane, name) if route == self.active.route => {
-                if let Err(fault) = self.workspaces.rename(&self.active, pane, name) {
+            Event::RenameTab(route, name) if route == self.active.route => {
+                if let Err(fault) = self.workspaces.rename_tab(&self.active, name) {
                     self.fault(None, fault).await?;
                 }
             }
-            Event::Rename(_, _, _) => {}
+            Event::RenameTab(_, _) => {}
             Event::Render(render) if render.route == self.active.route => {
                 self.render(render).await?
             }

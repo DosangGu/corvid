@@ -6,7 +6,6 @@ use gpui::{
 use std::ops::Range;
 
 pub(super) struct NameDraft {
-    pane: bool,
     text: String,
     marked: String,
     selected: bool,
@@ -54,25 +53,8 @@ impl WorkspaceView {
         else {
             return;
         };
-        let Some(node) = tab
-            .nodes
-            .iter()
-            .find(|node| matches!(&node.body, Some(Node::PaneId(id)) if *id == selected.pane_id))
-        else {
-            return;
-        };
-        let pane = matches!(
-            tab.nodes.first().and_then(|node| node.body.as_ref()),
-            Some(Node::Split(_))
-        );
-        let text = if pane {
-            node.title.clone()
-        } else {
-            tab.label.clone()
-        };
         self.naming = Some(NameDraft {
-            pane,
-            text,
+            text: tab.label.clone(),
             marked: String::new(),
             selected: true,
             revision,
@@ -87,8 +69,7 @@ impl WorkspaceView {
         if let Some(draft) = self.naming.take()
             && let Some(session) = &self.session
         {
-            session.rename(
-                draft.pane,
+            session.rename_tab(
                 if automatic { String::new() } else { draft.text },
                 draft.revision,
             );
@@ -156,11 +137,7 @@ impl WorkspaceView {
             .border_color(rgb(BORDER))
             .rounded_md()
             .text_color(rgb(TEXT))
-            .child(div().text_size(px(18.)).child(if draft.pane {
-                "Rename pane"
-            } else {
-                "Rename tab"
-            }))
+            .child(div().text_size(px(18.)).child("Rename tab"))
             .child(
                 div()
                     .relative()

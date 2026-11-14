@@ -471,10 +471,10 @@ impl Session {
         self.change(Action::Close(target));
     }
 
-    pub fn rename(&self, pane: bool, name: String, revision: u64) {
+    pub fn rename_tab(&self, name: String, revision: u64) {
         self.change(Action::Rename(corvid_protocol::wire::RenameView {
             expected_view_revision: Some(revision),
-            pane,
+            pane: false,
             name,
         }));
     }

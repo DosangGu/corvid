@@ -75,7 +75,7 @@ impl WorkspaceView {
         ];
         if let Some(ui) = ui.filter(|ui| ui.connected && !ui.changing) {
             if ui.can_write() && ui.naming_supported && ui.inventory_ready {
-                items.push((MenuAction::Rename, "Rename…", "Ctrl+Shift+R"));
+                items.push((MenuAction::Rename, "Rename tab…", "Ctrl+Shift+R"));
             }
             if ui.can_write() && ui.session_clients_supported {
                 items.push((

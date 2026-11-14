@@ -31,7 +31,7 @@ pub(crate) enum TabCommand {
 
 pub(super) enum KeyCommand {
     BeginRename,
-    Rename(bool, String),
+    RenameTab(String),
     Detach,
     Tab(TabCommand),
     Close(CloseKind),

@@ -23,7 +23,7 @@ pub(super) fn paint(
     }
     if expanded {
         if keymap.naming {
-            lines.push(".  Rename current view");
+            lines.push(".  Rename tab");
         }
         if keymap.tabs {
             lines.push("1-9  Select tab by position");

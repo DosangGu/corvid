@@ -157,7 +157,7 @@ struct Slot {
 }
 
 impl Workspaces {
-    pub(crate) fn rename(&self, active: &Active, pane: bool, name: String) -> Reply<()> {
+    pub(crate) fn rename_tab(&self, active: &Active, name: String) -> Reply<()> {
         let mut registry = self.lock_registry();
         registry.require_pane_writer(active.route.client_id, active.location)?;
         if !registry
@@ -170,7 +170,7 @@ impl Workspaces {
         }
         let mut layout = self.metadata.layout();
         Arc::make_mut(&mut layout)
-            .rename(active.location, pane, (!name.is_empty()).then_some(name))
+            .rename_tab(active.location, (!name.is_empty()).then_some(name))
             .map_err(|_| ProtocolFault::new("InvalidMessage", "invalid view name"))?;
         registry.publish_layout(layout, Vec::new());
         Ok(())
@@ -1381,7 +1381,7 @@ fn resolve_switch(
             let result = resolve_switch(registry, layout, old, Destination::CreateTab(label))?;
             if let Some((location, _)) = &result {
                 Arc::make_mut(layout)
-                    .rename(*location, false, None)
+                    .rename_tab(*location, None)
                     .map_err(|_| target_gone())?;
             }
             Ok(result)
@@ -1499,7 +1499,7 @@ fn resolve(
             .add_workspace(label.clone(), tab)
             .map_err(|_| invalid_layout())?;
         Arc::make_mut(layout)
-            .rename(location, false, manual)
+            .rename_tab(location, manual)
             .map_err(|_| invalid_layout())?;
         return Ok(location);
     }
@@ -1525,7 +1525,7 @@ fn resolve(
             .map_err(|_| invalid_layout())?;
         if automatic {
             Arc::make_mut(layout)
-                .rename(location, false, None)
+                .rename_tab(location, None)
                 .map_err(|_| invalid_layout())?;
         }
         return Ok(location);

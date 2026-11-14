@@ -54,7 +54,7 @@ def build(source, reference_compiler=None):
     env.pop(REFERENCE_PROTOC, None)
     if reference_compiler is not None:
         env[REFERENCE_PROTOC] = str(reference_compiler)
-    subprocess.run(["cargo", "build", "--locked", "-p", "corvid"], cwd=source, env=env, check=True)
+    subprocess.run(["cargo", "build", "--locked", "-p", "corvid-tui"], cwd=source, env=env, check=True)
     result = subprocess.run(
         [
             "cargo", "test", "--locked", "-p", "corvid-protocol", "--test", "framing",

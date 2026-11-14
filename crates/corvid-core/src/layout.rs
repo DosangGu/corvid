@@ -38,8 +38,6 @@ pub enum Node {
     Pane {
         id: Uuid,
         last_cwd: Option<CwdObservation>,
-        #[serde(default)]
-        manual_name: Option<String>,
     },
     Split {
         axis: Axis,
@@ -104,10 +102,9 @@ impl CloseTarget {
 pub struct InvalidLayout;
 
 impl Layout {
-    pub fn rename(
+    pub fn rename_tab(
         &mut self,
         location: Location,
-        pane: bool,
         name: Option<String>,
     ) -> Result<(), InvalidLayout> {
         if let Some(name) = &name {
@@ -119,16 +116,7 @@ impl Layout {
             .find(|workspace| workspace.id == location.workspace)
             .and_then(|workspace| workspace.tabs.iter_mut().find(|tab| tab.id == location.tab))
             .ok_or(InvalidLayout)?;
-        if pane {
-            let Node::Pane { manual_name, .. } =
-                tab.root.pane_mut(location.pane, 1).ok_or(InvalidLayout)?
-            else {
-                return Err(InvalidLayout);
-            };
-            *manual_name = name;
-        } else {
-            tab.manual_name = name;
-        }
+        tab.manual_name = name;
         Ok(())
     }
 
@@ -150,13 +138,15 @@ impl Layout {
             .tabs
             .iter()
             .find(|tab| tab.id == location.tab)?;
-        let mut panes = Vec::new();
-        tab.root.named_panes(&mut panes);
-        let (index, (_, manual)) = panes
-            .iter()
-            .enumerate()
-            .find(|(_, (id, _))| *id == location.pane)?;
-        Some(pane_name(location.pane, *manual, index, titles))
+        let mut index = 0;
+        let mut title = None;
+        tab.root.visit_panes(&mut |id| {
+            if id == location.pane {
+                title = Some(pane_name(id, index, titles));
+            }
+            index += 1;
+        });
+        title
     }
 
     pub fn empty_terminal() -> Self {
@@ -171,7 +161,6 @@ impl Layout {
                     root: Node::Pane {
                         id: Uuid::new_v4(),
                         last_cwd: None,
-                        manual_name: None,
                     },
                 }],
             }],
@@ -352,7 +341,6 @@ impl Layout {
                 Node::Pane {
                     id: pane,
                     last_cwd: None,
-                    manual_name: None,
                 },
             ],
         };
@@ -424,7 +412,6 @@ impl Layout {
                 root: Node::Pane {
                     id: pane,
                     last_cwd: None,
-                    manual_name: None,
                 },
             },
             pane,
@@ -466,25 +453,18 @@ impl Tab {
         if let Some(name) = &self.manual_name {
             return name.clone();
         }
-        if let Node::Pane {
-            id, manual_name, ..
-        } = &self.root
-        {
-            return pane_name(*id, manual_name.as_deref(), 0, titles);
+        if let Node::Pane { id, .. } = &self.root {
+            return pane_name(*id, 0, titles);
         }
         format!("Tab {}", index + 1)
     }
 }
 
-pub fn pane_name(
-    id: Uuid,
-    manual_name: Option<&str>,
-    index: usize,
-    titles: &HashMap<Uuid, String>,
-) -> String {
-    manual_name
-        .map(str::to_owned)
-        .or_else(|| titles.get(&id).filter(|title| !title.is_empty()).cloned())
+pub fn pane_name(id: Uuid, index: usize, titles: &HashMap<Uuid, String>) -> String {
+    titles
+        .get(&id)
+        .filter(|title| !title.is_empty())
+        .cloned()
         .unwrap_or_else(|| format!("Pane {}", index + 1))
 }
 
@@ -503,19 +483,6 @@ pub fn clean_title(text: &str) -> String {
 }
 
 impl Node {
-    fn named_panes<'a>(&'a self, panes: &mut Vec<(Uuid, Option<&'a str>)>) {
-        match self {
-            Self::Pane {
-                id, manual_name, ..
-            } => panes.push((*id, manual_name.as_deref())),
-            Self::Split { children, .. } => {
-                for child in children {
-                    child.named_panes(panes);
-                }
-            }
-        }
-    }
-
     fn remove_child_pane(&mut self, pane: Uuid) -> bool {
         let Self::Split { children, .. } = self else {
             return false;
@@ -633,14 +600,7 @@ impl Limits {
             return Err(InvalidLayout);
         }
         match node {
-            Node::Pane {
-                id,
-                last_cwd,
-                manual_name,
-            } => {
-                if let Some(name) = manual_name {
-                    validate_label(name)?;
-                }
+            Node::Pane { id, last_cwd } => {
                 self.id(*id)?;
                 if let Some(cwd) = last_cwd {
                     validate_path(&cwd.path)?;
@@ -694,7 +654,7 @@ mod tests {
             Some("한글; build 🐦")
         );
         let second = layout.add_tab(first.workspace, "temporary".into()).unwrap();
-        layout.rename(second, false, None).unwrap();
+        layout.rename_tab(second, None).unwrap();
         layout.split_pane(second, Axis::Vertical).unwrap();
         assert_eq!(layout.display(&titles).workspaces[0].tabs[1].label, "Tab 2");
         layout.close(CloseTarget::Pane(split)).unwrap();
@@ -712,39 +672,28 @@ mod tests {
     }
 
     #[test]
-    fn manual_names_override_independently_and_reset_to_latest_terminal_title() {
+    fn manual_tab_name_survives_splits_and_each_pane_tracks_its_title() {
         let mut layout = Layout::empty_terminal();
         let location = layout.primary().unwrap();
         let mut titles = HashMap::from([(location.pane, "first".to_owned())]);
         layout
-            .rename(location, true, Some("pane name".into()))
+            .rename_tab(location, Some("tab name".into()))
             .unwrap();
-        assert_eq!(
-            layout.display(&titles).workspaces[0].tabs[0].label,
-            "pane name"
-        );
-        layout
-            .rename(location, false, Some("tab name".into()))
-            .unwrap();
+        let split = layout.split_pane(location, Axis::Horizontal).unwrap();
         titles.insert(location.pane, "latest".into());
-        assert_eq!(
-            layout.pane_title(location, &titles).as_deref(),
-            Some("pane name")
-        );
+        titles.insert(split.pane, "second".into());
+        assert_eq!(layout.pane_title(split, &titles).as_deref(), Some("second"));
         assert_eq!(
             layout.display(&titles).workspaces[0].tabs[0].label,
             "tab name"
         );
-        layout.rename(location, true, None).unwrap();
         assert_eq!(
             layout.pane_title(location, &titles).as_deref(),
             Some("latest")
         );
-        assert_eq!(
-            layout.display(&titles).workspaces[0].tabs[0].label,
-            "tab name"
-        );
-        layout.rename(location, false, None).unwrap();
+        layout.rename_tab(split, None).unwrap();
+        assert_eq!(layout.display(&titles).workspaces[0].tabs[0].label, "Tab 1");
+        layout.close(CloseTarget::Pane(split)).unwrap();
         assert_eq!(
             layout.display(&titles).workspaces[0].tabs[0].label,
             "latest"
