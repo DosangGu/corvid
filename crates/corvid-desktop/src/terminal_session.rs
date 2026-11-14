@@ -46,6 +46,9 @@ type HistoryReply = std::result::Result<TerminalHistory, String>;
 mod wsl_test;
 
 #[cfg(test)]
+mod render_test;
+
+#[cfg(test)]
 mod restore_test;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -250,9 +253,8 @@ impl Ui {
 
 struct Buffer {
     ui: Ui,
-    parser: Parser,
+    screen: Option<Arc<Screen>>,
     revision: u64,
-    displayed: bool,
     previews: HashMap<String, Screen>,
 }
 
@@ -263,6 +265,40 @@ struct Shared {
 }
 
 impl Shared {
+    fn new(destination: &Destination) -> Self {
+        let (screen_changed, _) = watch::channel(());
+        let (ui_changed, _) = watch::channel(());
+        Self {
+            buffer: Mutex::new(Buffer {
+                ui: Ui {
+                    restore_unavailable: false,
+                    naming_supported: false,
+                    host_id: None,
+                    endpoint: None,
+                    terminal_id: None,
+                    selected: None,
+                    inventory: None,
+                    inventory_ready: false,
+                    message: match destination {
+                        Destination::Local => "Opening the local terminal…".into(),
+                        _ => "Connecting to Corvid…".into(),
+                    },
+                    connected: false,
+                    changing: true,
+                    close_supported: false,
+                    session_clients_supported: false,
+                    closed_view: false,
+                    deck_focus: 0,
+                },
+                screen: None,
+                revision: 0,
+                previews: HashMap::new(),
+            }),
+            screen_changed,
+            ui_changed,
+        }
+    }
+
     fn buffer(&self) -> MutexGuard<'_, Buffer> {
         self.buffer
             .lock()
@@ -272,6 +308,14 @@ impl Shared {
     fn update_ui(&self, edit: impl FnOnce(&mut Ui)) {
         edit(&mut self.buffer().ui);
         self.ui_changed.send_replace(());
+    }
+
+    fn apply_ansi(&self, parser: &mut Parser<impl vt100::Callbacks>, ansi: &[u8]) {
+        parser.process(ansi);
+        let screen = Arc::new(parser.screen().clone());
+        let previous = self.buffer().screen.replace(screen);
+        drop(previous);
+        self.screen_changed.send_replace(());
     }
 }
 
@@ -345,38 +389,7 @@ impl Session {
         };
         let restoring = matches!(target, AttachTarget::Restore(_));
         let grid = Grid::new(26, 112);
-        let (screen_changed, _) = watch::channel(());
-        let (ui_changed, _) = watch::channel(());
-        let shared = Arc::new(Shared {
-            buffer: Mutex::new(Buffer {
-                ui: Ui {
-                    restore_unavailable: false,
-                    naming_supported: false,
-                    host_id: None,
-                    endpoint: None,
-                    terminal_id: None,
-                    selected: None,
-                    inventory: None,
-                    inventory_ready: false,
-                    message: match destination {
-                        Destination::Local => "Opening the local terminal…".into(),
-                        _ => "Connecting to Corvid…".into(),
-                    },
-                    connected: false,
-                    changing: true,
-                    close_supported: false,
-                    session_clients_supported: false,
-                    closed_view: false,
-                    deck_focus: 0,
-                },
-                parser: Parser::new(grid.rows, grid.cols, 0),
-                revision: 0,
-                displayed: false,
-                previews: HashMap::new(),
-            }),
-            screen_changed,
-            ui_changed,
-        });
+        let shared = Arc::new(Shared::new(&destination));
         let (actions, incoming) = mpsc::channel(32);
         let (prompt_sender, prompts) = mpsc::unbounded_channel();
         let (size, sizes) = watch::channel((0, grid));
@@ -453,8 +466,14 @@ impl Session {
     }
 
     pub fn screen<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
-        let buffer = self.shared.buffer();
-        (buffer.displayed && in_pane(&buffer.ui, pane)).then(|| read(buffer.parser.screen()))
+        let screen = {
+            let buffer = self.shared.buffer();
+            if !in_pane(&buffer.ui, pane) {
+                return None;
+            }
+            Arc::clone(buffer.screen.as_ref()?)
+        };
+        Some(read(&screen))
     }
 
     pub fn preview<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
@@ -463,7 +482,7 @@ impl Session {
 
     pub fn history(&self, pane: &str) -> Option<oneshot::Receiver<HistoryReply>> {
         let buffer = self.shared.buffer();
-        if !buffer.ui.can_write() || !buffer.displayed || !in_pane(&buffer.ui, pane) {
+        if !buffer.ui.can_write() || buffer.screen.is_none() || !in_pane(&buffer.ui, pane) {
             return None;
         }
         let (send, receive) = oneshot::channel();
@@ -491,7 +510,7 @@ impl Session {
         let buffer = self.shared.buffer();
         if !buffer.ui.can_write()
             || buffer.ui.changing
-            || !buffer.displayed
+            || buffer.screen.is_none()
             || !in_pane(&buffer.ui, pane)
             || bytes.is_empty()
             || bytes.len() > MAX_INPUT
@@ -573,6 +592,7 @@ struct Client<'a> {
     selected: ViewSelection,
     route: RouteToken,
     grid: Grid,
+    parser: Parser,
     applied: Option<(u64, u64)>,
     sequence: u64,
     pending: Option<Pending>,
@@ -910,6 +930,7 @@ async fn run(
         selected,
         route,
         grid,
+        parser: Parser::new(grid.rows, grid.cols, 0),
         applied: None,
         sequence: 0,
         pending: None,
@@ -1087,7 +1108,7 @@ impl Client<'_> {
                 &self.selected,
             );
         }
-        {
+        let previous = {
             let mut buffer = self.shared.buffer();
             if buffer
                 .ui
@@ -1103,9 +1124,9 @@ impl Client<'_> {
             buffer.ui.changing = self.pending.is_some();
             buffer.ui.message = "Attached to Corvid daemon".into();
             buffer.revision = self.route.view_revision;
-            buffer.displayed = false;
-            buffer.parser = Parser::new(self.grid.rows, self.grid.cols, 0);
-        }
+            buffer.screen.take()
+        };
+        drop(previous);
         self.shared.ui_changed.send_replace(());
         self.shared.screen_changed.send_replace(());
     }
@@ -1521,7 +1542,9 @@ impl Client<'_> {
                     self.pending = None;
                 }
                 if route != self.route {
-                    self.grid = Grid::read(view.viewport.context("view update has no viewport")?)?;
+                    let grid = Grid::read(view.viewport.context("view update has no viewport")?)?;
+                    self.grid = grid;
+                    self.parser = Parser::new(grid.rows, grid.cols, 0);
                     self.route = route;
                     self.selected = selection;
                     self.applied = None;
@@ -1682,15 +1705,7 @@ impl Client<'_> {
             }
             _ => bail!("daemon must start with a full render"),
         }
-        {
-            let mut buffer = self.shared.buffer();
-            // TODO: Isolate Desktop ANSI parsing from the UI lock
-            // Publish a completed screen snapshot so large frames cannot block UI/input reads.
-            // Issue URL: https://github.com/DosangGu/corvid/issues/31
-            buffer.parser.process(&frame.ansi);
-            buffer.displayed = true;
-        }
-        self.shared.screen_changed.send_replace(());
+        self.shared.apply_ansi(&mut self.parser, &frame.ansi);
         self.applied = Some((header.render_generation, header.frame_id));
         self.link
             .send(Body::FrameApplied(FrameApplied {
