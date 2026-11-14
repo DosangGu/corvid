@@ -62,6 +62,12 @@ peers support it.
 Use `corvid attach -- program arg` to start an explicit command on the running
 daemon. When starting a daemon directly, install the terminfo entry with
 `tic -x -o "$HOME/.terminfo" spikes/terminal/corvid.terminfo` first.
+
+New Linux PTYs use `TERM=xterm-corvid-256color`. The name enables title output
+in shells that recognize the `xterm*` prefix, while the bundled entry advertises
+Corvid's own VT profile. The `corvid` terminfo name remains available for older
+PTYs. To pick up the new `TERM` after a daemon upgrade, open a new terminal.
+
 Ctrl-] enters command mode for the next complete key. Ctrl-] twice sends one
 literal Ctrl-]. An unmapped key sends the leader and the key as terminal input.
 The daemon returns an idle leader to the current PTY after two seconds.

@@ -269,6 +269,8 @@ impl StartingDaemon {
         let terminfo = runtime.path().join("terminfo");
         let entries = RuntimeDir::create_all(&terminfo.join("c"))?;
         entries.replace_private_file("corvid", TERMINFO)?;
+        let entries = RuntimeDir::create_all(&terminfo.join("x"))?;
+        entries.replace_private_file("xterm-corvid-256color", TERMINFO)?;
 
         let diagnostics = tempfile::tempfile()?;
         let mut command = Command::new(executable);

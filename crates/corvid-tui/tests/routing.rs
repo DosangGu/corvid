@@ -39,6 +39,71 @@ const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
 #[tokio::test]
+async fn automatic_titles_follow_bash_prompts_and_application_updates_on_one_watch() {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let runtime = fixture.path().join("run");
+    let rc = fixture.path().join("bashrc");
+    // Ubuntu's Bash prompt only sets the title for xterm or rxvt TERM names.
+    std::fs::write(
+        &rc,
+        r#"PS1='TITLE-TEST> '
+case "$TERM" in
+    xterm*|rxvt*) PS1='\[\e]0;\w\a\]TITLE-TEST> ' ;;
+esac
+"#,
+    )
+    .unwrap();
+    let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    let mut watch = corvid_client::watch_snapshot(&runtime).await.unwrap();
+    let mut tui = Tui::attach_command(
+        &runtime,
+        Some(LaunchCommand {
+            argv: [
+                b"/bin/bash".as_slice(),
+                b"--noprofile",
+                b"--rcfile",
+                rc.as_os_str().as_encoded_bytes(),
+                b"-i",
+            ]
+            .map(<[u8]>::to_vec)
+            .into(),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let route = tui.route.clone();
+
+    for (sequence, input, title) in [
+        (1, b"cd /usr\n".as_slice(), "/usr"),
+        // Hold the application open so the next shell prompt cannot overwrite its title.
+        (
+            2,
+            b"printf '\\033]0;%s%s\\007' Agent_ Working; read -r finish\n",
+            "Agent_Working",
+        ),
+        (3, b"done\n", "/usr"),
+    ] {
+        tui.input(route.clone(), sequence, input).await;
+        timeout(WAIT, async {
+            loop {
+                if watch.state().snapshot().entities().any(|entity| {
+                    matches!(&entity.body, Some(EntityBody::Workspace(workspace))
+                        if workspace.tabs.iter().any(|tab| tab.tab_id == tui.selection.tab_id
+                            && tab.label == title
+                            && tab.nodes.iter().any(|node| node.title == title)))
+                }) {
+                    break;
+                }
+                watch.next_change().await.unwrap();
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("did not observe automatic pane and tab title {title:?}"));
+    }
+    assert_eq!(tui.route, route);
+}
+
+#[tokio::test]
 async fn titles_and_manual_names_share_authoritative_state_without_changing_input_routes() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
