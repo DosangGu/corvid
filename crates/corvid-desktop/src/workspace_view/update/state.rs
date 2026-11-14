@@ -9,7 +9,7 @@ pub(super) enum Phase {
     Checking,
     Current,
     Available,
-    Installing(InstallProgress),
+    Installing,
     Ready,
 }
 
@@ -54,7 +54,7 @@ impl Default for State {
 
 impl State {
     pub(super) fn busy(&self) -> bool {
-        matches!(self.phase, Phase::Checking | Phase::Installing(_))
+        matches!(self.phase, Phase::Checking | Phase::Installing)
     }
 
     pub(super) fn start_check(&mut self) -> bool {
@@ -100,7 +100,7 @@ impl State {
         let installation = self.installation.as_ref().ok()?.as_ref()?;
         let release = self.release.clone()?;
         let installation = installation.clone();
-        self.phase = Phase::Installing(InstallProgress::Downloading);
+        self.phase = Phase::Installing;
         self.error = None;
         self.details_open = false;
         Some((installation, release))
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn prepared_updates_are_retained_until_restart() {
         let mut state = State {
-            phase: Phase::Installing(InstallProgress::Installing),
+            phase: Phase::Installing,
             ..State::default()
         };
         assert!(!state.start_check());
