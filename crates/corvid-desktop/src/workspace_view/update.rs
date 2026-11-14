@@ -1,5 +1,5 @@
 use super::*;
-use corvid_update::{InstallProgress, Installation, Installed, Release};
+use corvid_update::{Installation, Installed, Release};
 
 mod state;
 mod view;
@@ -31,20 +31,10 @@ impl WorkspaceView {
         let Some((installation, release)) = self.update.start_install() else {
             return;
         };
-        // There are only three progress events per installation.
-        let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
-        let install = cx.background_executor().spawn(async move {
-            installation.install_with_progress(&release, |stage| {
-                let _ = send.send(stage);
-            })
-        });
+        let install = cx
+            .background_executor()
+            .spawn(async move { installation.install(&release) });
         self.release_update = Some(cx.spawn(async move |view, cx| {
-            while let Some(stage) = receive.recv().await {
-                let _ = view.update(cx, |view, cx| {
-                    view.update.phase = Phase::Installing(stage);
-                    cx.notify();
-                });
-            }
             let result = install.await;
             let _ = view.update(cx, |view, cx| {
                 view.update.installed(result);

@@ -1,6 +1,7 @@
 use std::time::UNIX_EPOCH;
 
 use super::*;
+use gpui::{Animation, AnimationExt};
 
 impl WorkspaceView {
     pub(in crate::workspace_view) fn update_menu(&self, cx: &mut Context<Self>) -> Div {
@@ -40,11 +41,15 @@ impl WorkspaceView {
             )))
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
                     .text_color(rgb(if state.error.is_some() {
                         0xeeb47b
                     } else {
                         TEXT
                     }))
+                    .when(state.busy(), |row| row.child(loading_indicator()))
                     .child(status(state)),
             );
 
@@ -58,11 +63,11 @@ impl WorkspaceView {
                 (seconds / 60) % 60,
             )));
         }
-        if let Phase::Installing(stage) = state.phase {
-            card = card.child(installation_steps(stage));
+        if !state.busy() {
+            card = card.child(self.update_actions(cx));
         }
-        card = card.child(self.update_actions(cx));
-        if let Some(release) = &state.release
+        if !state.busy()
+            && let Some(release) = &state.release
             && (state.phase == Phase::Current
                 || state
                     .installation
@@ -116,9 +121,7 @@ impl WorkspaceView {
         let state = &self.update;
         let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
         match state.phase {
-            Phase::Checking | Phase::Installing(_) => {
-                actions.child(hint("You can close Settings and keep working."))
-            }
+            Phase::Checking | Phase::Installing => actions,
             Phase::Ready => {
                 actions
                     .child(button("restart-update", "Restart to apply", true).on_click(
@@ -194,14 +197,9 @@ fn status(state: &State) -> String {
         .unwrap_or_default();
     match state.phase {
         Phase::Idle => "Check for a new version when you are ready.".into(),
-        Phase::Checking => "Checking for updates…".into(),
+        Phase::Checking | Phase::Installing => "Working…".into(),
         Phase::Current => "You are up to date.".into(),
         Phase::Available => format!("Version {version} is available."),
-        Phase::Installing(InstallProgress::Downloading) => {
-            format!("Downloading version {version}…")
-        }
-        Phase::Installing(InstallProgress::Verifying) => "Verifying the downloaded files…".into(),
-        Phase::Installing(InstallProgress::Installing) => "Installing the update…".into(),
         Phase::Ready => format!("Version {version} is ready. Restart when it suits you."),
     }
 }
@@ -233,29 +231,30 @@ fn installation_hint(state: &State) -> &'static str {
     }
 }
 
-fn installation_steps(current: InstallProgress) -> Div {
-    div().flex().flex_wrap().gap(px(8.)).children(
-        [
-            (InstallProgress::Downloading, "1  Download"),
-            (InstallProgress::Verifying, "2  Verify"),
-            (InstallProgress::Installing, "3  Install"),
-        ]
-        .into_iter()
-        .map(|(stage, label)| {
+fn loading_indicator() -> Div {
+    let track = px(72.);
+    let segment = px(24.);
+    div()
+        .relative()
+        .flex_none()
+        .w(track)
+        .h(px(4.))
+        .overflow_hidden()
+        .rounded_full()
+        .bg(rgb(BORDER))
+        .child(
             div()
-                .px(px(8.))
-                .py(px(4.))
-                .rounded_md()
-                .text_size(px(12.))
-                .bg(rgb(if current == stage {
-                    ACTIVE_FILL
-                } else {
-                    BACKGROUND
-                }))
-                .text_color(rgb(if current == stage { ACTIVE } else { MUTED }))
-                .child(label)
-        }),
-    )
+                .absolute()
+                .w(segment)
+                .h_full()
+                .rounded_full()
+                .bg(rgb(ACTIVE))
+                .with_animation(
+                    "update-loading",
+                    Animation::new(Duration::from_millis(1100)).repeat(),
+                    move |bar, progress| bar.left((track + segment) * progress - segment),
+                ),
+        )
 }
 
 fn wrap_detail(detail: &str) -> String {
