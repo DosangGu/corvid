@@ -32,6 +32,8 @@ const SAVE_DELAY: Duration = Duration::from_millis(250);
 #[cfg(test)]
 mod tests;
 
+pub mod windows;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Target {
@@ -140,9 +142,6 @@ impl SavedView {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     schema_version: u32,
-    // TODO: Restore independent client windows and profiles
-    // Introduce a stable client profile identity before persisting separate window views.
-    // Until then the latest saved selection wins within each presentation and target.
     /// Most recently selected target first; at most one view per connection target.
     views: Vec<SavedView>,
 }

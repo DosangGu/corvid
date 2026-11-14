@@ -55,33 +55,20 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn restart_updated_desktop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn restart_updated_desktop(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.update.phase != Phase::Ready {
             return;
         }
         let Some(installed) = &self.update.installed else {
             return;
         };
-        let target = self.session.as_ref().map(|_| {
-            self.selected.clone().map_or(AttachTarget::Default, |view| {
-                AttachTarget::Pane(view, false)
-            })
-        });
-        // Release the writer before the new process attaches. Restore this
-        // connection if spawning fails, keeping the prepared update retryable.
-        self.lifetime.shutdown();
-        match installed.start_desktop() {
-            Ok(()) => cx.quit(),
+        match self.windows.restart(installed, cx) {
+            Ok(()) => {}
             Err(error) => {
                 self.update.error = Some(Failure {
                     summary: "Could not restart Desktop. Try again or reopen Corvid.",
                     detail: format!("{error:#}"),
                 });
-                if let Some(destination) = self.destination.clone()
-                    && let Some(target) = target
-                {
-                    self.switch_to(destination, target, window, cx);
-                }
                 cx.notify();
             }
         }

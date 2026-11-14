@@ -1488,7 +1488,7 @@ the explicit handoff record and private protocol identity.
 |---|---|---|
 | Remote identity | HostId, identity schema version | A past epoch or peer authentication |
 | Remote state | Layout IDs/tree, settings, last known CWD with source/time, sanitized labels, AgentSessionKey/parent/resume links, historical run IDs, last observation/time/confidence, request-kind/status metadata, attention acknowledgment, schema version | Live PTYs/process handles, current clients/leases, unresolved approvals as actionable current prompts |
-| Desktop / TUI navigation | Separate private JSON files with connection target, expected HostId, and last workspace/tab/pane IDs per target | ClientId, input routes, writer leases, queued input, process identity, or terminal content |
+| Desktop / TUI navigation | Separate private JSON files with connection target, expected HostId, and last workspace/tab/pane IDs per target; Desktop additionally stores an automatic window list and independent navigation per internal window ID | ClientId, input routes, writer leases, queued input, process identity, or terminal content |
 | Local companion | ControllerId, configured SSH aliases and expected HostId, slots/pins/suppressed runs, stale status cache, schema version | Window/PID/TTY associations without fresh instance/connection validation; queued focus/input |
 
 Do not persist full prompts, questions, answers, output, tool arguments, environment,
@@ -1698,7 +1698,7 @@ negative assertions (including no unexpected process/window/input creation).
 | A22 | Collector gap followed by full control resync | Cache consistent but affected activity/request remains Unknown/Unverified until actual evidence | P2 |
 | A23 | Kill PTY-owning daemon mid-work, restart with saved layout | New epoch and empty PTY slots; historical state labeled; no process continuity claim or automatic resume | P1 |
 | A24 | Unauthorized UID, unsafe runtime path, oversized/partial frames, malformed Protobuf, missing capability | Reject safely, bound memory, preserve daemon and existing work; no automatic upgrade/restart | P1 |
-| A25 | Restart desktop, companion, PC, and relay separately | Apply distinct recovery matrix; preserve slots through connection loss; revalidate/re-pair runtime terminal identifiers | P2, P3 |
+| A25 | Restart desktop, companion, PC, and relay separately | Apply distinct recovery matrix; preserve slots through connection loss; revalidate/re-pair runtime terminal identifiers. Desktop restores open windows independently without taking over occupied panes; explicitly closed windows stay closed | P2, P3 |
 | A26 | Resume same provider conversation; compact current conversation | Resume creates new run; pure compaction retains current run; old requests never migrate | P2, P3 |
 | A27 | Silent shell exec/foreground transition with no PTY output or useful SIGCHLD | Periodic probe eventually detects incarnation/group change within documented budget; no activity inference | P2 |
 | A28 | More runs than slots; completion, pin, pane closure, and page changes | Completed runs stay in place or queue. Pane closure packs remaining cards and the FIFO queue forward; pins follow their agents and old revisions cannot retarget | P3 |
