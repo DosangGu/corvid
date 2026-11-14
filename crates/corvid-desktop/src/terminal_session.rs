@@ -375,10 +375,10 @@ impl Session {
     pub fn start(
         destination: Destination,
         state_dir: PathBuf,
+        store: ViewStore,
         target: AttachTarget,
         explicit: bool,
     ) -> Result<(Self, Job, mpsc::UnboundedReceiver<Prompt>)> {
-        let store = ViewStore::new(state_dir.join("desktop-view"));
         let target = if matches!(target, AttachTarget::Default) {
             store
                 .for_target(&destination.saved_target())
@@ -424,7 +424,7 @@ impl Session {
             state.update_ui(|ui| {
                 ui.restore_unavailable = restoring && result.as_ref().err()
                     .and_then(|error| error.downcast_ref::<ProtocolFault>())
-                    .is_some_and(|fault| matches!(fault.code.as_str(), "NoTerminal" | "TargetGone" | "SavedWorkspaceGone"));
+                    .is_some_and(|fault| matches!(fault.code.as_str(), "NoTerminal" | "TargetGone" | "SavedWorkspaceGone" | "WorkspaceBusy"));
                 ui.connected = false;
                 ui.inventory_ready = false;
                 ui.changing = false;
@@ -768,6 +768,7 @@ async fn run(
         ui.host_id = host.clone();
         ui.endpoint = Some(endpoint.clone());
     });
+    let restoring = matches!(target, AttachTarget::Restore(_));
     if let AttachTarget::Restore(saved) = &target {
         let snapshot = endpoint
             .view_snapshot(&link.session().host_id, &link.session().server_epoch)
@@ -779,7 +780,7 @@ async fn run(
         target = AttachTarget::Pane(saved.resolve(&snapshot)?, false);
     }
     let grid = sizes.borrow().1;
-    let resume = terminal.is_none();
+    let resume = terminal.is_none() && !restoring;
     let attached = match &target {
         AttachTarget::Restore(_) => unreachable!("saved view resolved before attach"),
         AttachTarget::Workspace {

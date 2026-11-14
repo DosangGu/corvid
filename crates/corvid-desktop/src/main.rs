@@ -5,6 +5,8 @@ mod app_icon;
 #[cfg(any(windows, target_os = "linux"))]
 mod daemon_prompt;
 #[cfg(any(windows, target_os = "linux"))]
+mod desktop_windows;
+#[cfg(any(windows, target_os = "linux"))]
 mod local_bootstrap;
 #[cfg(any(windows, target_os = "linux"))]
 mod platform;
@@ -38,11 +40,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     use std::path::PathBuf;
 
     use clap::Parser;
-    use gpui::{
-        App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px,
-        size,
-    };
-    use workspace_view::{Lifetime, WorkspaceView};
+    use desktop_windows::DesktopWindows;
+    use gpui::Application;
 
     #[derive(Parser)]
     #[command(about = "Attach to a Corvid multiplexer daemon")]
@@ -88,44 +87,23 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         #[cfg(windows)]
         pipe_instance: options.pipe_instance,
     };
-    let lifetime = Lifetime::default();
-    let app_lifetime = lifetime.clone();
+    let windows = DesktopWindows::new(agent_deck);
+    let app_windows = windows.clone();
 
-    Application::new().run(move |cx: &mut App| {
-        // GPUI's X11 backend stops its event loop after dropping the last window.
-        #[cfg(windows)]
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
+    Application::new().run(move |cx| {
+        let quitting = app_windows.clone();
+        cx.on_app_quit(move |_| {
+            quitting.shutdown();
+            async {}
         })
         .detach();
-
-        // TODO: Restore Desktop window placement
-        // Persist bounds separately from workspace navigation and validate them against
-        // the current monitor layout before applying them.
-        let bounds = Bounds::centered(None, size(px(1080.), px(680.)), cx);
-        let options = WindowOptions {
-            app_id: Some(app_icon::APP_ID.into()),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Corvid Desktop".into()),
-                ..Default::default()
-            }),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(900.), px(620.))),
-            ..Default::default()
-        };
-        cx.open_window(options, move |window, cx| {
-            #[cfg(target_os = "linux")]
-            if let Err(error) = app_icon::set_window_icons() {
-                eprintln!("Could not set Corvid Desktop icon: {error}");
-            }
-            cx.new(|cx| WorkspaceView::new(destination, app_lifetime, agent_deck, window, cx))
-        })
-        .expect("could not open Corvid Desktop");
+        if let Err(error) = app_windows.restore(destination, cx) {
+            eprintln!("Could not restore Desktop windows: {error:#}");
+            app_windows.quit(cx);
+        }
         cx.activate(true);
     });
 
-    lifetime.shutdown();
+    windows.shutdown();
     Ok(std::process::ExitCode::SUCCESS)
 }

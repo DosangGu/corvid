@@ -4,6 +4,8 @@ use gpui::MouseButton;
 
 #[derive(Clone, Copy)]
 pub(super) enum MenuAction {
+    NewWindow,
+    Quit,
     Rename,
     NewTab,
     NewWorkspace,
@@ -53,6 +55,7 @@ impl WorkspaceView {
             };
         }
         let mut items = vec![
+            (MenuAction::NewWindow, "New window", ""),
             (
                 MenuAction::Focus,
                 if self.focus_mode {
@@ -93,6 +96,7 @@ impl WorkspaceView {
                 ]);
             }
         }
+        items.push((MenuAction::Quit, "Quit Corvid Desktop", "Ctrl+Shift+Q"));
         items
     }
 
@@ -130,6 +134,8 @@ impl WorkspaceView {
             })
         });
         match action {
+            MenuAction::NewWindow => self.new_window(cx),
+            MenuAction::Quit => self.windows.quit(cx),
             MenuAction::Rename => self.open_naming(window, cx),
             MenuAction::NewTab => self.create(Target::TabLabel(format!(
                 "Shell {}",

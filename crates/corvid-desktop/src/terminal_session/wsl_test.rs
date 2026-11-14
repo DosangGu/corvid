@@ -73,6 +73,7 @@ async fn wsl_session_installs_and_reconnects_to_the_same_shell() -> Result<()> {
         Session::start(
             Destination::Wsl(distro.clone()),
             state.path().join("desktop"),
+            ViewStore::new(state.path().join("desktop/desktop-view")),
             AttachTarget::Default,
             true,
         )

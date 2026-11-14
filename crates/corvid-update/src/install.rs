@@ -279,6 +279,13 @@ impl Installation {
 
 impl Installed {
     pub fn start_desktop(&self) -> Result<()> {
+        self.start_desktop_with_args(env::args_os().skip(1))
+    }
+
+    pub fn start_desktop_with_args(
+        &self,
+        args: impl IntoIterator<Item = std::ffi::OsString>,
+    ) -> Result<()> {
         let directory = self.executable.parent().context("locating Desktop")?;
         let binary = directory.join(if cfg!(windows) {
             "corvid-desktop.exe"
@@ -286,7 +293,7 @@ impl Installed {
             "corvid-desktop"
         });
         let mut command = download::command(binary);
-        command.args(env::args_os().skip(1));
+        command.args(args);
         command.spawn().context("restarting Corvid Desktop")?;
         Ok(())
     }

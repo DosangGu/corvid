@@ -23,9 +23,11 @@ use gpui::{
 };
 
 use crate::agent_deck;
+use crate::desktop_windows::{DesktopWindows, WindowLaunch};
 use crate::ssh_hosts;
 use crate::terminal_session::{AttachTarget, Destination, Inventory, Job, Session, Ui};
 use crate::terminal_view::{TerminalView, preview};
+use corvid_client::view_state::ViewStore;
 
 const BACKGROUND: u32 = 0x101318;
 const PANEL: u32 = 0x191c23;
@@ -50,7 +52,7 @@ impl Lifetime {
         self.0.borrow().as_ref().is_none_or(Job::finished)
     }
 
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         if let Some(job) = self.0.borrow_mut().as_mut() {
             job.stop();
         }
@@ -65,6 +67,8 @@ impl Lifetime {
 }
 
 pub struct WorkspaceView {
+    windows: DesktopWindows,
+    store: ViewStore,
     restore_picker_shown: bool,
     naming: Option<naming::NameDraft>,
     lifetime: Lifetime,
@@ -116,20 +120,28 @@ struct KnownSessions {
 
 impl WorkspaceView {
     pub fn new(
-        destination: Option<Destination>,
-        lifetime: Lifetime,
-        agent_deck: agent_deck::Settings,
+        launch: WindowLaunch,
+        windows: DesktopWindows,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let WindowLaunch {
+            lifetime,
+            store,
+            destination,
+            picker,
+        } = launch;
         let destination = destination.or_else(|| {
-            corvid_client::view_state::ViewStore::new(agent_deck.state.join("desktop-view"))
+            store
                 .last()
                 .and_then(|saved| Destination::from_saved(saved.target).ok())
         });
+        let agent_deck = windows.settings();
         let setup_focus = cx.focus_handle();
         window.focus(&setup_focus);
         let mut view = Self {
+            windows,
+            store,
             restore_picker_shown: false,
             naming: None,
             lifetime,
@@ -174,13 +186,36 @@ impl WorkspaceView {
             update: update::State::default(),
         };
         cx.on_release(|view, _| view.lifetime.stop()).detach();
-        view.switch_to(
-            destination.unwrap_or(Destination::Local),
-            AttachTarget::Default,
-            window,
-            cx,
-        );
+        if picker {
+            view.show_switcher(window, cx);
+        } else {
+            view.switch_to(
+                destination.unwrap_or(Destination::Local),
+                AttachTarget::Default,
+                window,
+                cx,
+            );
+        }
         view
+    }
+
+    pub(crate) fn resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(destination) = self.destination.clone() {
+            self.connect(destination, AttachTarget::Default, false, window, cx);
+        }
+    }
+
+    fn new_window(&mut self, cx: &mut Context<Self>) {
+        let windows = self.windows.clone();
+        let owner = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            if let Err(error) = windows.new_window(cx) {
+                let _ = owner.update(cx, |view, cx| {
+                    view.error = Some(format!("{error:#}"));
+                    cx.notify();
+                });
+            }
+        });
     }
 
     fn refresh_hosts(&mut self, cx: &mut Context<Self>) {
@@ -312,6 +347,7 @@ impl WorkspaceView {
         let result = Session::start(
             destination.clone(),
             self.agent_deck.state.clone(),
+            self.store.clone(),
             target,
             explicit,
         );
@@ -730,11 +766,24 @@ impl WorkspaceView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke;
+        let modifiers = key.modifiers;
+        if modifiers.control
+            && modifiers.shift
+            && !modifiers.alt
+            && !modifiers.platform
+            && key.key.eq_ignore_ascii_case("q")
+        {
+            if !event.is_held {
+                self.windows.quit(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if self.naming.is_some() {
             self.naming_key(event, window, cx);
             return;
         }
-        let key = &event.keystroke;
         let ui = self.session.as_ref().map(Session::ui);
         if self.switcher_open {
             self.switcher_key(event, window, cx);
@@ -744,7 +793,6 @@ impl WorkspaceView {
             self.menu_key(event, window, cx);
             return;
         }
-        let modifiers = key.modifiers;
         if !modifiers.control || modifiers.alt || modifiers.platform {
             return;
         }

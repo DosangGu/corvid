@@ -174,31 +174,43 @@ to open a separate tab while another client is writing. **⋯ → Detach** and w
 release the writer and keep PTYs running while the daemon survives.
 Use `exit` in a shell to end that PTY.
 
-Desktop remembers the last successful Local, SSH, or WSL connection and the selected
-workspace, tab, and pane for each connection. Relaunching Desktop reconnects to that
-target and selects the saved view. An explicit `--ssh-alias` or `--wsl-distribution`
-overrides the remembered connection; that target's saved view is still used if present.
+Desktop automatically restores its terminal windows. Each window remembers its last
+successful Local, SSH, or WSL connection and the selected workspace, tab, and pane
+for each connection. **⋯ → New window** opens a workspace picker without changing
+another window's selection. **⋯ → Quit Corvid Desktop** (Ctrl+Shift+Q) exits the current
+Desktop process and preserves all its terminal windows. Closing an individual window
+removes it from restoration; closing the last terminal window exits and preserves it.
+Settings windows are not restored. No named profile or extra workspace concept is needed.
+
+Relaunching Desktop reopens saved windows that are not already open in another process.
+Launching again while all saved windows are open creates a new picker window. An explicit
+`--ssh-alias` or `--wsl-distribution` opens only that destination, using an available saved
+window for it when possible. Other saved windows remain available for the next normal launch.
 The saved host ID must match the new authenticated daemon connection. A failed remote
 connection remains selected so it can be retried or changed through Settings.
 
 Restoration reads a fresh layout snapshot. If the pane was deleted, Desktop chooses
 the first remaining pane in its tab; if the tab was deleted, it chooses the first tab
-in the same workspace. A removed workspace or an empty terminal opens the workspace
-picker. Selecting a workspace there explicitly may open a shell, but restoration
+in the same workspace. A removed workspace, an empty terminal, or an occupied pane opens
+the workspace picker. Restoration never takes input away from another writer.
+Selecting a workspace there explicitly may open a shell, but restoration
 itself never launches a shell or agent. Live terminals keep their existing processes
 and receive fresh client identities and input routes on reattach.
 
 These preferences are independent of TUI navigation and daemon metadata. Desktop
-stores private, schema-versioned JSON in `desktop-view/view.json` below its `--state-dir`
+stores a private, schema-versioned window list in `desktop-view/windows.json` and
+navigation in `desktop-view/windows/<internal-id>/view.json` below its `--state-dir`
 (by default `%LOCALAPPDATA%\Corvid\companion` on Windows or
 `$XDG_STATE_HOME/corvid/companion`, falling back to `~/.local/state/corvid/companion`,
 on Linux). Writes are coalesced for 250 ms off the UI thread and flushed on clean
 disconnect or exit. The previous valid file is retained as `view.json.bak`; corrupt
 files recover from that backup, and unsupported schemas remain untouched. Only
 connection labels, host identity, and layout IDs are stored, never terminal content
-or input routes. Up to 64 connection targets are retained. Concurrent Desktop instances
-share the last saved view per target; window placement and independent window profiles
-remain deferred.
+or input routes. Up to 32 windows and 64 connection targets per window are retained.
+The previous shared `desktop-view/view.json` is imported into the first window once
+and left intact. Per-window process locks prevent simultaneous launches from restoring
+the same window. An interrupted process leaves its windows available for the next launch.
+Window size, position, and monitor restoration remain deferred to #49.
 
 Ctrl+Shift+N creates a workspace, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in

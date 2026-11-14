@@ -53,13 +53,19 @@ async fn run_fixture(root: &Path) -> Result<()> {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         })
-        .await?;
-        verify_restore(&root.join("desktop")).await
+        .await
+        .context("starting the fixture daemon")?;
+        verify_restore(&root.join("desktop")).await?;
+        verify_window_restore(&root.join("windows")).await
     }
     .await;
     let _ = stop.send(());
-    timeout(Duration::from_secs(15), server).await???;
-    result
+    let stopped = timeout(Duration::from_secs(15), server)
+        .await
+        .context("stopping the fixture daemon");
+    result?;
+    stopped???;
+    Ok(())
 }
 
 struct AttachedSession {
@@ -69,9 +75,14 @@ struct AttachedSession {
 
 impl AttachedSession {
     fn start(state: &Path) -> Result<Self> {
+        Self::with_store(state, ViewStore::new(state.join("desktop-view")))
+    }
+
+    fn with_store(state: &Path, store: ViewStore) -> Result<Self> {
         let (session, job, _prompts) = Session::start(
             Destination::Local,
             state.to_owned(),
+            store,
             AttachTarget::Default,
             false,
         )?;
@@ -252,5 +263,72 @@ async fn verify_restore(state: &Path) -> Result<()> {
         "failed restoration overwrote the saved view"
     );
     drop(empty);
+    Ok(())
+}
+
+async fn verify_window_restore(state: &Path) -> Result<()> {
+    use corvid_client::view_state::windows::WindowRegistry;
+
+    let registry = WindowRegistry::new(state.join("desktop-view"));
+    let mut windows = registry.restore()?;
+    windows.push(registry.create()?);
+    let mut sessions = Vec::new();
+    let mut expected = Vec::new();
+    for (index, window) in windows.iter().enumerate() {
+        let attached = AttachedSession::with_store(state, window.store.clone())?;
+        let initial = wait_view(&attached.session, |_| true)
+            .await?
+            .selected
+            .unwrap();
+        attached
+            .session
+            .create(Target::WorkspaceLabel(format!("Window {index}")));
+        let selected = wait_view(&attached.session, |ui| {
+            ui.selected
+                .as_ref()
+                .is_some_and(|view| view.workspace_id != initial.workspace_id)
+        })
+        .await?;
+        wait_screen(
+            &attached.session,
+            &selected.selected.as_ref().unwrap().pane_id,
+            "",
+        )
+        .await?;
+        expected.push((selected.selected, selected.terminal_id));
+        sessions.push(attached);
+    }
+    drop(sessions);
+    drop(windows);
+
+    let windows = registry.restore()?;
+    ensure!(windows.len() == 2, "missing restored windows");
+    let mut sessions = Vec::new();
+    for (window, (selection, terminal)) in windows.iter().zip(&expected) {
+        let attached = AttachedSession::with_store(state, window.store.clone())?;
+        let restored = wait_view(&attached.session, |_| true).await?;
+        ensure!(&restored.selected == selection && &restored.terminal_id == terminal);
+        sessions.push(attached);
+    }
+
+    // A duplicate saved selection must not displace an active restored window.
+    let duplicate = AttachedSession::with_store(state, windows[0].store.clone())?;
+    let rejected = wait_disconnected(&duplicate.session).await?;
+    ensure!(
+        rejected.restore_unavailable,
+        "occupied restoration did not offer selection"
+    );
+    ensure!(
+        sessions[0].session.ui().connected,
+        "restoration displaced the existing writer"
+    );
+    drop(duplicate);
+    drop(sessions);
+    let mut windows = windows;
+    registry.close(windows.remove(0))?;
+    let remaining_id = windows[0].id;
+    drop(windows);
+    let restored = registry.restore()?;
+    ensure!(restored.len() == 1 && restored[0].id == remaining_id);
     Ok(())
 }
