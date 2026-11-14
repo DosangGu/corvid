@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+mod chrome;
 mod deck;
 mod floating;
 mod gesture;
@@ -25,6 +26,7 @@ use gesture::{Gesture, Input};
 #[cfg(windows)]
 #[path = "pairing.rs"]
 mod pairing;
+pub(crate) use chrome::DeckAssets;
 use deck::{BACKGROUND, MINT, PANEL, TEXT, button, column, muted, row};
 
 #[derive(Clone)]
@@ -56,7 +58,6 @@ pub(crate) struct Desktop {
     catalog: Option<Result<Catalog, String>>,
     window: crate::window::Window,
     window_ready: bool,
-    focus_pending: Option<Uuid>,
     #[cfg(windows)]
     pairing: pairing::Pairing,
 }
@@ -145,7 +146,6 @@ impl Desktop {
             selected: 0,
             menu: None,
             _tasks: vec![event_task, clock],
-            focus_pending: None,
             #[cfg(windows)]
             pairing: pairing::Pairing::default(),
         };
@@ -279,7 +279,6 @@ impl Desktop {
         let id = Uuid::new_v4();
         if self.parent.focus(id, key) {
             self.pending = Some(id);
-            self.focus_pending = Some(id);
             self.pending_since = Some(Instant::now());
             self.notice = None;
         } else {
@@ -309,14 +308,6 @@ impl Desktop {
             self.refresh_view();
         }
         let tray = self.background.view.borrow().background;
-        if let Some(notice) = &self.notice
-            && self.focus_pending == Some(notice.id)
-        {
-            self.focus_pending = None;
-            if !notice.failed && !self.window.always_on_top() && tray {
-                self.window.hide(window);
-            }
-        }
         #[cfg(windows)]
         self.pairing.poll();
         if self.window_ready {
@@ -333,16 +324,25 @@ impl Desktop {
             FocusAction::Desktop(key) => self.focus_run(key),
             FocusAction::Companion(snapshot, body) => {
                 self.submit(&snapshot, body);
-                self.focus_pending = self.pending;
             }
         }
     }
 
     fn expand(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+        self.switch_view(true, section, window, cx);
+    }
+
+    fn switch_view(
+        &mut self,
+        expanded: bool,
+        section: Section,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.held.cancel();
         self.menu = None;
         self.section = section;
-        self.window.expanded = true;
+        self.window.expanded = expanded;
         self.set_page(0);
         self.update(window, cx);
     }
@@ -365,7 +365,7 @@ impl Render for Desktop {
             .line_height(gpui::relative(1.2))
             .font_family("Segoe UI")
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     view.held.cancel();
                     #[cfg(windows)]
@@ -374,9 +374,7 @@ impl Render for Desktop {
                         cx.notify();
                         return;
                     }
-                    if view.menu.take().is_none() && view.background.view.borrow().background {
-                        view.window.hide(window);
-                    }
+                    view.menu = None;
                     cx.notify();
                     return;
                 }

@@ -84,32 +84,35 @@ fn main() -> Result<()> {
     let background = background::Background::start(state, address.clone(), config, signal.clone())?;
     let notify = signal.clone();
     let client = DesktopClient::start_scoped(address, identity, move || notify.notify())?;
-    Application::new().run(move |cx: &mut App| {
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let options = WindowOptions {
-            app_id: Some("corvid-agent-deck".into()),
-            titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Corvid Agent Deck".into()),
-                ..Default::default()
-            }),
-            window_bounds: Some(WindowBounds::centered(preferences.layout().size(), cx)),
-            focus: false,
-            show: !cfg!(windows),
-            window_min_size: Some(gpui::size(gpui::px(204.), gpui::px(140.))),
-            ..Default::default()
-        };
-        cx.open_window(options, move |window, cx| {
-            cx.new(|cx| {
-                app::Desktop::new(client, background, catalog, preferences, signal, window, cx)
+    Application::new()
+        .with_assets(app::DeckAssets)
+        .run(move |cx: &mut App| {
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
             })
-        })
-        .expect("could not open Corvid Agent Deck");
-    });
+            .detach();
+            let options = WindowOptions {
+                app_id: Some("corvid-agent-deck".into()),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("Corvid Agent Deck".into()),
+                    appears_transparent: true,
+                    ..Default::default()
+                }),
+                window_bounds: Some(WindowBounds::centered(preferences.layout().size(), cx)),
+                focus: false,
+                show: !cfg!(windows),
+                window_min_size: Some(gpui::size(gpui::px(204.), gpui::px(140.))),
+                ..Default::default()
+            };
+            cx.open_window(options, move |window, cx| {
+                cx.new(|cx| {
+                    app::Desktop::new(client, background, catalog, preferences, signal, window, cx)
+                })
+            })
+            .expect("could not open Corvid Agent Deck");
+        });
     Ok(())
 }
 

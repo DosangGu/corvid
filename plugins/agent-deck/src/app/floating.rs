@@ -38,59 +38,6 @@ impl Desktop {
     }
 
     pub(super) fn floating(&self, cx: &mut Context<Self>) -> Div {
-        let title = div()
-            .id("drag-title")
-            .flex_1()
-            .min_w_0()
-            .text_size(px(13.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child("Agent Deck")
-            .when(!self.window.fixed_position(), |title| {
-                title.cursor_grab().on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, window, _| {
-                        if !view.window.fixed_position() {
-                            window.start_window_move();
-                        }
-                    }),
-                )
-            });
-        let header = row()
-            .h(px(BAR_HEIGHT))
-            .flex_shrink_0()
-            .px(px(12.))
-            .bg(rgb(PANEL))
-            .child(title)
-            .child(
-                button(
-                    "topmost",
-                    if self.window.always_on_top() {
-                        "●"
-                    } else {
-                        "○"
-                    },
-                    true,
-                )
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.window.toggle_topmost();
-                    if !view.window.always_on_top() && view.background.view.borrow().background {
-                        view.window.hide(window);
-                    }
-                    view.update(window, cx);
-                })),
-            )
-            .child(button("more", "…", true).on_click(
-                cx.listener(|view, _, window, cx| view.expand(Section::Slots, window, cx)),
-            ))
-            .child(
-                button("hide", "×", true).on_click(cx.listener(|view, _, window, cx| {
-                    if view.background.view.borrow().background {
-                        view.window.hide(window);
-                    } else {
-                        cx.quit();
-                    }
-                })),
-            );
         let mut grid = column().px(px(12.)).py(px(8.)).gap(px(GAP));
         if let Some(snapshot) = &self.view.snapshot {
             if snapshot.page == 0 {
@@ -126,7 +73,7 @@ impl Desktop {
         column()
             .size_full()
             .gap_0()
-            .child(header)
+            .child(self.window_header(cx))
             .child(
                 div()
                     .id("mini-scroll")
@@ -169,86 +116,45 @@ impl Desktop {
 
     pub(super) fn layout_controls(&self, cx: &mut Context<Self>) -> Div {
         let current = self.window.layout();
-        column()
-            .child(
-                row()
-                    .flex_wrap()
-                    .child(muted("Deck layout"))
-                    .children(Preset::ALL.into_iter().enumerate().map(|(index, preset)| {
-                        let layout = GridLayout { preset, ..current };
-                        button(("layout", index), layout.label(), true)
-                            .when(current.preset == preset, |button| {
-                                button.text_color(rgb(MINT))
-                            })
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.window.set_layout(layout);
-                                view.update(window, cx);
-                            }))
-                    }))
-                    .child(
-                        button(
-                            "orientation",
-                            if current.orientation == Orientation::Landscape {
-                                "Landscape"
-                            } else {
-                                "Portrait"
-                            },
-                            true,
-                        )
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            let current = view.window.layout();
-                            let orientation = match current.orientation {
-                                Orientation::Landscape => Orientation::Portrait,
-                                Orientation::Portrait => Orientation::Landscape,
-                            };
-                            view.window.set_layout(GridLayout {
-                                orientation,
-                                ..current
-                            });
+        column().child(
+            row()
+                .flex_wrap()
+                .child(muted("Deck layout"))
+                .children(Preset::ALL.into_iter().enumerate().map(|(index, preset)| {
+                    let layout = GridLayout { preset, ..current };
+                    button(("layout", index), layout.label(), true)
+                        .when(current.preset == preset, |button| {
+                            button.text_color(rgb(MINT))
+                        })
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.window.set_layout(layout);
                             view.update(window, cx);
-                        })),
-                    ),
-            )
-            .child(
-                row()
-                    .flex_wrap()
-                    .child(
-                        button(
-                            "position",
-                            if self.window.fixed_position() {
-                                "Fixed position"
-                            } else {
-                                "Movable"
-                            },
-                            true,
-                        )
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.window
-                                .set_fixed_position(!view.window.fixed_position());
-                            view.update(window, cx);
-                        })),
+                        }))
+                }))
+                .child(
+                    button(
+                        "orientation",
+                        if current.orientation == Orientation::Landscape {
+                            "Landscape"
+                        } else {
+                            "Portrait"
+                        },
+                        true,
                     )
-                    .child(
-                        button(
-                            "always-on-top",
-                            if self.window.always_on_top() {
-                                "Always on top ✓"
-                            } else {
-                                "Always on top"
-                            },
-                            true,
-                        )
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.window.toggle_topmost();
-                            if !view.window.always_on_top()
-                                && view.background.view.borrow().background
-                            {
-                                view.window.hide(window);
-                            }
-                            view.update(window, cx);
-                        })),
-                    ),
-            )
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        let current = view.window.layout();
+                        let orientation = match current.orientation {
+                            Orientation::Landscape => Orientation::Portrait,
+                            Orientation::Portrait => Orientation::Landscape,
+                        };
+                        view.window.set_layout(GridLayout {
+                            orientation,
+                            ..current
+                        });
+                        view.update(window, cx);
+                    })),
+                ),
+        )
     }
 }
 
