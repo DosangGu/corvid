@@ -114,6 +114,7 @@ pub struct Session {
     pub controller_id: Option<String>,
     pub capabilities: Vec<String>,
     pub provider_profiles: Vec<ProviderProfile>,
+    pub daemon_version: Option<String>,
 }
 
 impl Session {
@@ -126,6 +127,7 @@ impl Session {
             }),
             writer_policy: WRITER_POLICY.to_owned(),
             provider_profiles: self.provider_profiles.clone(),
+            daemon_version: self.daemon_version.clone(),
         }
     }
 
@@ -269,7 +271,15 @@ pub fn accept_hello(
     server_epoch: &str,
     capabilities: &[&str],
 ) -> Result<(Session, Envelope), ProtocolFault> {
-    accept_hello_with_profiles(request, role, host_id, server_epoch, capabilities, &[])
+    accept_hello_with_profiles(
+        request,
+        role,
+        host_id,
+        server_epoch,
+        capabilities,
+        &[],
+        None,
+    )
 }
 
 pub fn accept_hello_with_profiles(
@@ -279,6 +289,7 @@ pub fn accept_hello_with_profiles(
     server_epoch: &str,
     capabilities: &[&str],
     provider_profiles: &[ProviderProfile],
+    daemon_version: Option<&str>,
 ) -> Result<(Session, Envelope), ProtocolFault> {
     let request_id = require_request_id(request)?;
     let hello = validate_hello(request, role)?;
@@ -293,6 +304,7 @@ pub fn accept_hello_with_profiles(
         controller_id: hello.controller_id.clone(),
         capabilities: capabilities.iter().map(ToString::to_string).collect(),
         provider_profiles: provider_profiles.to_vec(),
+        daemon_version: daemon_version.map(str::to_owned),
     };
     let reply = session.envelope(
         Some(request_id.to_owned()),
@@ -324,6 +336,10 @@ pub fn check_hello_result(
     };
     if !valid_capabilities(&result.capabilities)
         || !valid_profiles(&result.provider_profiles)
+        || result
+            .daemon_version
+            .as_deref()
+            .is_some_and(|version| !valid_id(version))
         || result.writer_policy != WRITER_POLICY
         || !valid_limits(result.limits.as_ref())
         || reply.sequence.is_some()
@@ -347,6 +363,7 @@ pub fn check_hello_result(
         controller_id: hello.controller_id.clone(),
         capabilities: result.capabilities.clone(),
         provider_profiles: result.provider_profiles.clone(),
+        daemon_version: result.daemon_version.clone(),
     })
 }
 

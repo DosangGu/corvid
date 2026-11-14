@@ -127,9 +127,11 @@ fn hello_preserves_an_additive_profile_and_rejects_duplicate_profile_identity() 
         "epoch",
         &[],
         std::slice::from_ref(&profile),
+        Some("1.2.3"),
     )
     .unwrap();
     let session = check_hello_result(&request, &reply, PeerRole::Control).unwrap();
+    assert_eq!(session.daemon_version.as_deref(), Some("1.2.3"));
     assert_eq!(
         session.provider_profiles.as_slice(),
         std::slice::from_ref(&profile)

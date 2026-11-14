@@ -291,6 +291,7 @@ pub(crate) async fn handshake(
         &identity.epoch,
         capabilities,
         profiles,
+        Some(env!("CARGO_PKG_VERSION")),
     ) {
         Ok((session, reply)) => {
             writer.envelope(&reply).await?;

@@ -761,7 +761,14 @@ async fn run(
         );
         (remote.endpoint(), link)
     } else {
-        local_bootstrap::connect(capabilities.clone(), explicit, prompts, progress).await?
+        local_bootstrap::connect(
+            capabilities.clone(),
+            explicit,
+            host.as_deref().or(known_host.as_deref()),
+            prompts,
+            progress,
+        )
+        .await?
     };
     ensure!(
         host.as_deref()

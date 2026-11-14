@@ -55,6 +55,14 @@ enum Command {
         #[arg(long)]
         retry: bool,
     },
+    #[cfg(any(target_os = "linux", windows))]
+    #[command(hide = true)]
+    DesktopHandoff {
+        #[arg(long)]
+        host: Uuid,
+        #[arg(long)]
+        epoch: Uuid,
+    },
     /// Check for or install a GitHub release without restarting the daemon.
     Update(update::Options),
     /// Run or use the local controller companion.
@@ -152,7 +160,7 @@ pub fn run_daemon_helper() -> Option<ExitCode> {
     }
 
     match std::env::args_os().nth(1)?.to_str()? {
-        "daemon" | "terminal-host" => Some(run()),
+        "daemon" | "terminal-host" | "desktop-handoff" => Some(run()),
         "observe" => Some(run()),
         _ => None,
     }
@@ -230,6 +238,15 @@ pub fn run() -> ExitCode {
                 );
             }
             Ok(u32::from(failed))
+        }),
+        #[cfg(any(target_os = "linux", windows))]
+        Some(Command::DesktopHandoff { host, epoch }) => execute(async move {
+            let runtime = runtime_path(daemon_runtime)?;
+            #[cfg(target_os = "linux")]
+            linux::desktop_handoff(&runtime, host, epoch).await?;
+            #[cfg(windows)]
+            windows::desktop_handoff(&runtime, host, epoch).await?;
+            Ok(0)
         }),
         Some(Command::Update(options)) => update::run(options),
         Some(Command::Companion(companion)) => execute(async move {

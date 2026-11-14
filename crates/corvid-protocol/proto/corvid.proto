@@ -152,6 +152,8 @@ message HelloResult {
   // Profiles describe exact releases qualified by this daemon build.
   // Each run reports its own adapter and live collection state separately.
   repeated ProviderProfile provider_profiles = 4;
+  // Version of the running daemon. Older daemons omit this field.
+  optional string daemon_version = 5;
 }
 
 message Limits {

@@ -38,6 +38,23 @@ pub async fn prepare_daemon_upgrade(
     runtime: &Path,
     expected_host: Option<Uuid>,
 ) -> Result<UpgradeTarget> {
+    request_upgrade(runtime, expected_host, None).await
+}
+
+/// Approve replacement only for the daemon observed by Desktop and only with handoff.
+pub async fn prepare_daemon_handoff(
+    runtime: &Path,
+    expected_host: Uuid,
+    expected_epoch: Uuid,
+) -> Result<UpgradeTarget> {
+    request_upgrade(runtime, Some(expected_host), Some(expected_epoch)).await
+}
+
+async fn request_upgrade(
+    runtime: &Path,
+    expected_host: Option<Uuid>,
+    handoff_epoch: Option<Uuid>,
+) -> Result<UpgradeTarget> {
     let stream = match open(runtime, SocketRole::Upgrade).await {
         Ok(stream) => stream,
         Err(error)
@@ -55,18 +72,21 @@ pub async fn prepare_daemon_upgrade(
         }
         Err(error) => return Err(error),
     };
-    let mut connection = LocalConnection::establish(
-        stream,
-        PeerRole::Upgrade,
-        vec![DAEMON_UPGRADE_CAPABILITY.into()],
-    )
-    .await?;
+    let mut required = vec![DAEMON_UPGRADE_CAPABILITY.into()];
+    if handoff_epoch.is_some() {
+        required.push(DAEMON_HANDOFF_CAPABILITY.into());
+    }
+    let mut connection = LocalConnection::establish(stream, PeerRole::Upgrade, required).await?;
     ensure!(
         expected_host.is_none_or(|host| connection.session.host_id == host.to_string()),
         ProtocolFault::new(
             "HostMismatch",
-            "SSH alias points to a different Corvid host"
+            "the connection points to a different Corvid host"
         )
+    );
+    ensure!(
+        handoff_epoch.is_none_or(|epoch| connection.session.server_epoch == epoch.to_string()),
+        ProtocolFault::new("EpochMismatch", "the daemon changed before the handoff")
     );
     let target = timeout(COMMAND_TIMEOUT, async {
         let request = connection.session.envelope(

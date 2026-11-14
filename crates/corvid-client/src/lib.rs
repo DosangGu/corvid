@@ -47,7 +47,7 @@ pub use snapshot::SnapshotWatch;
 pub use snapshot::{snapshot, watch_snapshot};
 #[cfg(windows)]
 pub use upgrade::UpgradeTarget;
-#[cfg(any(target_os = "linux", windows))]
-pub use upgrade::prepare_daemon_upgrade;
 #[cfg(target_os = "linux")]
 pub use upgrade::{UpgradeTarget, prepare_upgrade, prepare_upgrade_for};
+#[cfg(any(target_os = "linux", windows))]
+pub use upgrade::{prepare_daemon_handoff, prepare_daemon_upgrade};

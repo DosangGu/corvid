@@ -100,45 +100,49 @@ async fn verify_attach_without_agent_restore(runtime: &Path, state: &Path) -> Re
 
     let desktop = AttachedSession::start(state)?;
     timeout(COMMAND_TIMEOUT, async {
-        #[cfg(windows)]
-        let stream = listener.accept().await?;
-        #[cfg(target_os = "linux")]
-        let stream = listener.accept().await?.context("rejected fixture peer")?;
+        let host = Uuid::new_v4().to_string();
+        let epoch = Uuid::new_v4().to_string();
+        // The fixture exposes no upgrade socket. Desktop retries with the same daemon.
+        for _ in 0..2 {
+            #[cfg(windows)]
+            let stream = listener.accept().await?;
+            #[cfg(target_os = "linux")]
+            let stream = listener.accept().await?.context("rejected fixture peer")?;
 
-        let (read, write) = tokio::io::split(stream);
-        let mut writer = FrameWriter::start(write, FrameRole::TuiOutput).await?;
-        let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
-        let hello = reader
-            .next_envelope()
-            .await?
-            .context("missing Desktop Hello")?;
-        let (session, reply) = accept_hello(
-            &hello,
-            PeerRole::Tui,
-            &Uuid::new_v4().to_string(),
-            &Uuid::new_v4().to_string(),
-            &[
-                "attach.v1",
-                "render.v1",
-                "paste.v1",
-                "select_view.v1",
-                CREATE_VIEW_CAPABILITY,
-                CLAIM_WORKSPACE_CAPABILITY,
-                PANE_PREVIEW_CAPABILITY,
-                DEFAULT_SHELL_CAPABILITY,
-            ],
-        )?;
-        writer.envelope(&reply).await?;
-        let request = reader
-            .next_envelope()
-            .await?
-            .context("missing Desktop Attach")?;
-        ensure!(matches!(
-            session.validate_request(&request)?,
-            Body::Attach(_)
-        ));
-        ensure!(!desktop.session.ui().restore_supported);
-        Ok(())
+            let (read, write) = tokio::io::split(stream);
+            let mut writer = FrameWriter::start(write, FrameRole::TuiOutput).await?;
+            let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
+            let hello = reader
+                .next_envelope()
+                .await?
+                .context("missing Desktop Hello")?;
+            let (session, reply) = accept_hello(
+                &hello,
+                PeerRole::Tui,
+                &host,
+                &epoch,
+                &[
+                    "attach.v1",
+                    "render.v1",
+                    "paste.v1",
+                    "select_view.v1",
+                    CREATE_VIEW_CAPABILITY,
+                    CLAIM_WORKSPACE_CAPABILITY,
+                    PANE_PREVIEW_CAPABILITY,
+                    DEFAULT_SHELL_CAPABILITY,
+                ],
+            )?;
+            writer.envelope(&reply).await?;
+            if let Some(request) = reader.next_envelope().await? {
+                ensure!(matches!(
+                    session.validate_request(&request)?,
+                    Body::Attach(_)
+                ));
+                ensure!(!desktop.session.ui().restore_supported);
+                return Ok(());
+            }
+        }
+        bail!("Desktop did not attach")
     })
     .await
     .context("waiting for Desktop to attach without agent restoration")?

@@ -277,6 +277,33 @@ pub(super) async fn upgrade_local_daemon(runtime: &Path, desktop: bool) -> Resul
     verify_replacement(runtime, target.as_ref()).await
 }
 
+pub(super) async fn desktop_handoff(runtime: &Path, host_id: Uuid, epoch: Uuid) -> Result<()> {
+    let directory = StateDirectory::open(runtime)?;
+    let _startup = lock_startup(&directory).await?;
+    let executable = crate::local_daemon_executable()?;
+    let image = std::fs::read(executable).context("reading the Desktop daemon image")?;
+    let previous = DaemonProcess::open(runtime).await?;
+    let previous_image = previous.image_path()?;
+    // Stage in the other slot so the running executable stays available for rollback.
+    let alternate = "desktop-daemon-replacement.exe";
+    let name = if previous_image.file_name() == Some(std::ffi::OsStr::new(alternate)) {
+        "desktop-daemon.exe"
+    } else {
+        alternate
+    };
+    directory.replace_private_file(name, &image)?;
+    let target = corvid_client::prepare_daemon_handoff(runtime, host_id, epoch).await?;
+    wait_for_upgrade_shutdown(&directory, &previous).await?;
+    let state = &target.state_directory;
+    if let Err(error) = start_image(&runtime.join(name), runtime, state, false).await {
+        start_image(&previous_image, runtime, state, false)
+            .await
+            .context("restarting the previous daemon after the Desktop update failed")?;
+        return Err(error);
+    }
+    verify_replacement(runtime, Some(&target)).await
+}
+
 async fn stop_for_upgrade(
     runtime: &Path,
     directory: &StateDirectory,
@@ -298,6 +325,14 @@ async fn stop_for_upgrade(
     }
     let previous = DaemonProcess::open(runtime).await?;
     let target = corvid_client::prepare_daemon_upgrade(runtime, expected_host).await?;
+    wait_for_upgrade_shutdown(directory, &previous).await?;
+    Ok(Some(target))
+}
+
+async fn wait_for_upgrade_shutdown(
+    directory: &StateDirectory,
+    previous: &DaemonProcess,
+) -> Result<()> {
     tokio::time::timeout(COMMAND_TIMEOUT, async {
         loop {
             if previous.exit_code()?.is_none() {
@@ -315,8 +350,7 @@ async fn stop_for_upgrade(
         }
     })
     .await
-    .context("waiting for the previous Windows daemon to stop")??;
-    Ok(Some(target))
+    .context("waiting for the previous Windows daemon to stop")?
 }
 
 fn sharing_violation(error: &anyhow::Error) -> bool {
