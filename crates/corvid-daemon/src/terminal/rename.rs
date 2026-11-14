@@ -1,7 +1,6 @@
 use corvid_core::Viewport;
 
 pub(super) struct NameEditor {
-    pub(super) pane: bool,
     name: String,
     pub(super) dirty: bool,
 }
@@ -13,9 +12,8 @@ pub(super) enum Edit {
 }
 
 impl NameEditor {
-    pub(super) fn new(pane: bool) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            pane,
             name: String::new(),
             dirty: true,
         }
@@ -47,13 +45,12 @@ impl NameEditor {
     }
 
     pub(super) fn paint(&mut self, viewport: Viewport) -> String {
-        let kind = if self.pane { "pane" } else { "tab" };
         let width = usize::from(viewport.cols.get().saturating_sub(1));
         let rows = viewport.rows.get();
         let row = rows.saturating_sub(2).max(1);
         self.dirty = false;
         let lines = [
-            format!("Rename {kind} | Enter save | Esc cancel"),
+            "Rename tab | Enter save | Esc cancel".to_owned(),
             format!("> {}", self.name),
             "Empty name: automatic title | Ctrl-U: clear".to_owned(),
         ];
@@ -78,7 +75,7 @@ mod tests {
 
     #[test]
     fn editor_ignores_terminal_keys_and_saves_unicode_paste_as_text() {
-        let mut editor = NameEditor::new(true);
+        let mut editor = NameEditor::new();
         editor.key(b"\x1b[D");
         editor.append("한글; build\r\n🐦");
         editor.key(b"\x7f");

@@ -137,7 +137,7 @@ pub(crate) enum Action {
 }
 
 pub(crate) enum Event {
-    Rename(InputRoute, bool, String),
+    RenameTab(InputRoute, String),
     Render(Render),
     ViewChanged {
         route: InputRoute,
@@ -799,13 +799,13 @@ impl Worker {
             } => {
                 lease.check_input(route, sequence, terminal)?;
                 match lease.keys(sequence, bytes, &mut terminal.session)? {
-                    Some(KeyCommand::BeginRename(pane)) => {
-                        lease.naming = Some(super::rename::NameEditor::new(pane));
+                    Some(KeyCommand::BeginRename) => {
+                        lease.naming = Some(super::rename::NameEditor::new());
                     }
-                    Some(KeyCommand::Rename(pane, name)) => {
+                    Some(KeyCommand::RenameTab(name)) => {
                         if lease
                             .events
-                            .try_send(Event::Rename(lease.route, pane, name))
+                            .try_send(Event::RenameTab(lease.route, name))
                             .is_err()
                         {
                             self.revoke();
@@ -1595,9 +1595,8 @@ impl Lease {
                     None
                 }
                 super::rename::Edit::Save(name) => {
-                    let pane = editor.pane;
                     self.naming = None;
-                    Some(KeyCommand::Rename(pane, name))
+                    Some(KeyCommand::RenameTab(name))
                 }
             });
         }

@@ -66,12 +66,8 @@ fn flatten(
     let index = nodes.len();
     nodes.push(LayoutNodeState::default());
     let body = match node {
-        Node::Pane {
-            id, manual_name, ..
-        } => {
-            nodes[index].title =
-                corvid_core::layout::pane_name(*id, manual_name.as_deref(), *ordinal, titles);
-            nodes[index].manual_name = manual_name.clone();
+        Node::Pane { id, .. } => {
+            nodes[index].title = corvid_core::layout::pane_name(*id, *ordinal, titles);
             *ordinal += 1;
             NodeBody::PaneId(id.to_string())
         }

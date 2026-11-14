@@ -104,12 +104,36 @@ esac
 }
 
 #[tokio::test]
-async fn titles_and_manual_names_share_authoritative_state_without_changing_input_routes() {
+async fn tab_names_and_terminal_titles_share_state_without_changing_input_routes() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
     let state = fixture.path().join("state");
+    let legacy = serde_json::json!({
+        "schema_version": 4,
+        "layout": {"workspaces": [{
+            "id": Uuid::new_v4(),
+            "label": "Main",
+            "tabs": [{
+                "id": Uuid::new_v4(),
+                "label": "Shell",
+                "manual_name": null,
+                "root": {
+                    "kind": "pane",
+                    "id": Uuid::new_v4(),
+                    "last_cwd": null,
+                    "manual_name": "legacy pane override",
+                },
+            }],
+        }]},
+        "history": [],
+    });
+    RuntimeDir::create(&state)
+        .unwrap()
+        .replace_private_file("state.json", &serde_json::to_vec(&legacy).unwrap())
+        .unwrap();
     let _daemon = daemon(&runtime, &state).await;
     timeout(WAIT, async {
+        wait_for_names(&runtime, "Pane 1", "Pane 1").await;
         let mut tui = Tui::attach_command(&runtime, Some(LaunchCommand {
             argv: ["/bin/sh", "-c", r#"stty -echo; printf '\033]0;first;한글\007READY\n'; while IFS= read -r title; do printf '\033]2;%s\033\\' "$title"; done"#]
                 .map(|arg| arg.as_bytes().to_vec()).into(),
@@ -120,39 +144,37 @@ async fn titles_and_manual_names_share_authoritative_state_without_changing_inpu
         let route = tui.route.clone();
         wait_for_names(&runtime, "first;한글", "first;한글").await;
         tui.send(Body::RenameView(corvid_protocol::wire::RenameView {
-            expected_view_revision: Some(route.view_revision + 1), pane: true, name: "stale".into(),
+            expected_view_revision: Some(route.view_revision + 1), pane: false, name: "stale".into(),
         })).await;
         assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "StaleRoute"));
-        for (pane, name) in [(true, "manual pane"), (false, "manual tab")] {
-            tui.send(Body::RenameView(corvid_protocol::wire::RenameView {
-                expected_view_revision: Some(route.view_revision), pane, name: name.into(),
-            })).await;
-            assert!(matches!(tui.next_body(&mut output).await, Body::ViewRenamed(_)));
-        }
-        tui.input(route.clone(), 1, "latest;🐦\n".as_bytes()).await;
-        wait_for_names(&runtime, "manual tab", "manual pane").await;
-        for (pane, expected_tab, expected_pane) in [(true, "manual tab", "latest;🐦"), (false, "latest;🐦", "latest;🐦")] {
-            tui.send(Body::RenameView(corvid_protocol::wire::RenameView {
-                expected_view_revision: Some(route.view_revision), pane, name: String::new(),
-            })).await;
-            assert!(matches!(tui.next_body(&mut output).await, Body::ViewRenamed(_)));
-            wait_for_names(&runtime, expected_tab, expected_pane).await;
-        }
         tui.send(Body::RenameView(corvid_protocol::wire::RenameView {
-            expected_view_revision: Some(route.view_revision), pane: true, name: "saved pane".into(),
+            expected_view_revision: Some(route.view_revision), pane: true, name: "legacy pane rename".into(),
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "InvalidMessage"));
+        wait_for_names(&runtime, "first;한글", "first;한글").await;
+        tui.send(Body::RenameView(corvid_protocol::wire::RenameView {
+            expected_view_revision: Some(route.view_revision), pane: false, name: "manual tab".into(),
         })).await;
         assert!(matches!(tui.next_body(&mut output).await, Body::ViewRenamed(_)));
-        wait_for_names(&runtime, "saved pane", "saved pane").await;
+        tui.input(route.clone(), 1, "latest;🐦\n".as_bytes()).await;
+        wait_for_names(&runtime, "manual tab", "latest;🐦").await;
         loop {
             let bytes = std::fs::read(state.join("state.json")).unwrap();
             let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            if stored["layout"]["workspaces"][0]["tabs"][0]["root"]["manual_name"] == "saved pane" {
+            let tab = &stored["layout"]["workspaces"][0]["tabs"][0];
+            if tab["manual_name"] == "manual tab" {
+                assert!(tab["root"].get("manual_name").is_none());
                 assert!(!String::from_utf8_lossy(&bytes).contains("latest;🐦"));
                 assert_eq!(stored["schema_version"], 4);
                 break;
             }
             sleep(Duration::from_millis(25)).await;
         }
+        tui.send(Body::RenameView(corvid_protocol::wire::RenameView {
+            expected_view_revision: Some(route.view_revision), pane: false, name: String::new(),
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::ViewRenamed(_)));
+        wait_for_names(&runtime, "latest;🐦", "latest;🐦").await;
         assert_eq!(tui.route, route);
         tui.send(Body::Detach(corvid_protocol::wire::Detach {})).await;
         while tui.reader.next_frame().await.unwrap().is_some() {}

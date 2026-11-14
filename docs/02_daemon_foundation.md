@@ -229,7 +229,8 @@ The state directory lock allows one writer. A successful save retains the preced
 valid state in `state.json.bak`. Startup upgrades validated schema 1, 2, and 3 files
 to schema 4 and keeps the original as the backup. Schema 1 starts with an empty
 archive. Schema 3 adds a process-directory observation source. Schema 4 stores
-optional manual pane and tab names. Legacy `Shell` and `Shell N` tab labels become
+optional manual tab names and accepts older files containing pane name overrides.
+The daemon ignores those overrides. Legacy `Shell` and `Shell N` tab labels become
 automatic; other labels remain manual. Older schemas did not distinguish an
 explicitly chosen `Shell` label from the generated default. Startup
 preserves bounded corrupt primary bytes in
@@ -422,20 +423,20 @@ incremental redraws strip Unicode `Bidi_Control` characters from cell output
 and preserve visible Unicode and cell positions.
 [Unicode character properties](https://www.unicode.org/Public/17.0.0/ucd/PropList.txt)
 
-Pane titles follow the latest terminal title unless the pane has a manual name.
-An automatic tab with one pane follows that pane's effective title; a split tab
-uses `Tab N`, where N is its position in the workspace. Manual tab names take
-precedence independently. Until a terminal supplies a nonempty title, a pane
+Pane titles follow the latest title from their respective terminals. An
+automatic tab with one pane follows that pane's title. An automatic split tab
+uses `Tab N`, where N is its position in the workspace. A manual tab name takes
+precedence and survives splits. Until a terminal supplies a nonempty title, a pane
 uses `Pane N`. Printable Unicode, spaces, and semicolons are preserved; control
 and bidi-control characters are removed, and titles are bounded to 1,024 UTF-8
 bytes. Terminal titles are transient; only manual names are written to state.
 Retained terminal hosts report their latest title again after daemon replacement.
 
-The TUI shortcuts are Ctrl-] then `.` to rename the pane and Ctrl-] then `,` to
-rename the tab. Enter saves, Escape cancels, Ctrl-U clears, and saving an empty
-name restores automatic naming. The editor consumes input and bracketed paste
-without sending it to the child process. Split tabs show the active pane title
-beside the tab strip; the tab picker updates names while open.
+Press Ctrl-] then `.` to rename the current tab. Enter saves, Escape cancels,
+Ctrl-U clears, and saving an empty name restores automatic naming. The editor
+consumes input and bracketed paste without sending it to the child process.
+Split tabs show the active pane title beside the tab strip. The tab picker
+updates names while open.
 Clients negotiate `view_titles.v1`; `RenameView` requires the current view
 revision and writer ownership. A rename preserves the input route and PTY.
 

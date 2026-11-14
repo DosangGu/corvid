@@ -729,17 +729,6 @@ impl WorkspaceView {
             return;
         }
         let modifiers = key.modifiers;
-        if modifiers.control
-            && !modifiers.platform
-            && key.key.eq_ignore_ascii_case("r")
-            && (modifiers.shift ^ modifiers.alt)
-        {
-            if !event.is_held {
-                self.open_naming(modifiers.shift, window, cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
         if !modifiers.control || modifiers.alt || modifiers.platform {
             return;
         }
@@ -748,7 +737,7 @@ impl WorkspaceView {
         if event.is_held
             && matches!(
                 shortcut,
-                (true, "n" | "t" | "d" | "e" | "p" | "f" | "z") | (_, "tab" | ",")
+                (true, "n" | "t" | "d" | "e" | "p" | "f" | "r" | "z") | (_, "tab" | ",")
             )
         {
             cx.stop_propagation();
@@ -756,6 +745,7 @@ impl WorkspaceView {
         }
         match shortcut {
             (true, "p") => self.toggle_switcher(window, cx),
+            (true, "r") => self.open_naming(window, cx),
             (false, ",") => self.open_management(management::Page::Connections, window, cx),
             (true, "f") => {
                 self.focus_mode = !self.focus_mode;

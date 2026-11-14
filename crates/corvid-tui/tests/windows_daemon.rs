@@ -24,7 +24,7 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[tokio::test]
-async fn terminal_titles_follow_shells_and_manual_names_restore_latest_title() -> Result<()> {
+async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
     ensure_daemon(&runtime, &fixture.path().join("state")).await?;
@@ -46,38 +46,37 @@ async fn terminal_titles_follow_shells_and_manual_names_restore_latest_title() -
     wait_for_title(&runtime, "AUTO_ONE", "AUTO_ONE").await?;
 
     tui.send(b"\x1d.")?;
-    tui.wait_for("Rename pane")?;
-    tui.send(b"\x1b[200~Manual\r\nPane\x1b[201~")?;
-    tui.wait_for("> ManualPane")?;
-    tui.send(b"\r")?;
-    tui.wait_without("Rename pane")?;
-    wait_for_title(&runtime, "ManualPane", "ManualPane").await?;
-    tui.send(b"[Console]::Title='AUTO_TWO'; [Console]::WriteLine(('TITLE_' + 'UPDATED'))\r")?;
-    tui.wait_for("TITLE_UPDATED")?;
-    wait_for_title(&runtime, "ManualPane", "ManualPane").await?;
-
-    tui.send(b"\x1d,")?;
     tui.wait_for("Rename tab")?;
     tui.send("이름 🐦".as_bytes())?;
     tui.send(b"\r")?;
     tui.wait_without("Rename tab")?;
-    wait_for_title(&runtime, "이름 🐦", "ManualPane").await?;
-    tui.send(b"\x1d.")?;
-    tui.wait_for("Rename pane")?;
-    tui.send(b"\r")?;
-    tui.wait_without("Rename pane")?;
+
+    tui.send(b"[Console]::Title='AUTO_TWO'; [Console]::WriteLine(('TITLE_' + 'UPDATED'))\r")?;
+    tui.wait_for("TITLE_UPDATED")?;
     wait_for_title(&runtime, "이름 🐦", "AUTO_TWO").await?;
-    tui.send(b"\x1d,")?;
+
+    tui.send(b"\x1d%")?;
+    tui.wait_without("TITLE_UPDATED")?;
+    tui.send(b"[Console]::Title='SPLIT_AUTO'\r")?;
+    wait_for_title(&runtime, "이름 🐦", "SPLIT_AUTO").await?;
+    tui.send(b"\x1d.")?;
+    tui.wait_for("Rename tab")?;
+    tui.send(b"\x1b[200~Manual\r\nTab\x1b[201~")?;
+    tui.wait_for("> ManualTab")?;
+    tui.send(b"\r")?;
+    tui.wait_without("Rename tab")?;
+    wait_for_title(&runtime, "ManualTab", "SPLIT_AUTO").await?;
+    wait_for_title(&runtime, "ManualTab", "AUTO_TWO").await?;
+
+    tui.send(b"\x1d.")?;
     tui.wait_for("Rename tab")?;
     tui.send(b"\r")?;
     tui.wait_without("Rename tab")?;
-    wait_for_title(&runtime, "AUTO_TWO", "AUTO_TWO").await?;
-
-    tui.send(b"\x1d%")?;
+    wait_for_title(&runtime, "Tab 1", "SPLIT_AUTO").await?;
     tui.wait_for("Tab 1")?;
-    wait_for_title(&runtime, "Tab 1", "AUTO_TWO").await?;
+
     tui.send(b"\x1dX")?;
-    tui.wait_without("Tab 1")?;
+    tui.wait_without("SPLIT_AUTO")?;
     wait_for_title(&runtime, "AUTO_TWO", "AUTO_TWO").await?;
     tui.send(b"exit\r")?;
     tui.expect_exit(0)?;
@@ -647,7 +646,7 @@ async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
     first.wait_for("BEFORE_")?;
     first.send(b"[Console]::Title='RETAINED_TITLE'\r")?;
     wait_for_title(&runtime, "RETAINED_TITLE", "RETAINED_TITLE").await?;
-    first.send(b"\x1d,")?;
+    first.send(b"\x1d.")?;
     first.wait_for("Rename tab")?;
     first.send(b"Retained tab\r")?;
     first.wait_without("Rename tab")?;

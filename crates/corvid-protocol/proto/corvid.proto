@@ -646,6 +646,7 @@ message TabState {
 
 message LayoutNodeState {
   string title = 3;
+  // Legacy pane override, omitted by daemons that synchronize all pane titles.
   optional string manual_name = 4;
   oneof body {
     string pane_id = 1;
@@ -1085,8 +1086,9 @@ message ReadPanePreview {
 message RenameView {
   // Requires view_titles.v1 and the writer's current selected view.
   optional uint64 expected_view_revision = 1;
+  // Legacy pane target. Daemons that synchronize all pane titles reject true.
   bool pane = 2;
-  // Empty restores automatic naming for the selected pane or tab.
+  // Empty restores automatic naming for the selected tab.
   string name = 3;
 }
 

@@ -172,16 +172,15 @@ Ctrl+Shift+N creates a workspace, Ctrl+Shift+T creates a tab, Ctrl+Shift+D split
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected workspace.
 
-Pane titles follow terminal OSC 0/2 titles in real time. An automatic tab follows
-its only pane's effective title, or uses `Tab N` when it contains multiple panes.
-N is the tab's workspace position. Manual pane and tab names override automatic
-names independently and persist across restarts. Ctrl+Shift+R renames the active
-pane; Ctrl+Alt+R renames the tab. Both actions are also in the terminal menu.
-Save an empty name or choose **Use automatic title** to resume synchronization
-with the latest terminal title. Before a terminal supplies a title, panes use
-`Pane N`. These actions require a daemon advertising `view_titles.v1`.
+Each pane follows its terminal's OSC 0/2 title in real time and uses `Pane N`
+until the terminal supplies a title. An automatic tab follows its only pane's
+title, or uses `Tab N` for a split tab, where N is the tab's workspace position.
+Ctrl+Shift+R and **⋯ → Rename tab…** set the current tab's name. That name
+survives splits and restarts. Save an empty name or choose **Use automatic title**
+to restore the tab's automatic name. Renaming requires a daemon advertising
+`view_titles.v1`.
 
-On 2026-11-12, isolated Linux Desktop GUI checks verified both rename shortcuts,
+On 2026-11-12, isolated Linux Desktop GUI checks verified the previous rename shortcuts,
 manual-name precedence during subsequent OSC changes, split-tab numbering,
 single-pane title restoration after closing a split, and the automatic-title
 button. Opening the editor preserved the PTY dimensions. Native Windows ConPTY
