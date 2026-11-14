@@ -51,12 +51,12 @@ identity, slots, and pins across the rename.
 | --- | --- |
 | Close the Deck window | Hide it; tray and notifications continue. |
 | Click the tray icon | Open the existing instance as a mini deck. |
-| Turn Always on top on | Keep the deck visible above other windows, including after focusing a terminal. |
-| Turn Always on top off | Hide to the tray immediately. Reopened popups hide when focus leaves or terminal navigation succeeds. |
+| Pin the Deck window | Lock its current position and keep it above other windows, including after focusing a terminal. |
+| Unpin the Deck window | Restore dragging and ordinary window stacking. The window stays open. |
 | Open tray menu | Open Deck, notifications/settings, pause/resume, or quit. |
 | Click a notification | Show its captured event in Deck; batch notices open history. |
 | Choose Quit | Exit Deck and clear its Windows notification-center entries. |
-| Enable Start at login | Create a per-user background-launch shortcut. Always on top shows the deck without taking focus; tray mode starts hidden. Login startup defaults to off. |
+| Enable Start at login | Create a per-user background-launch shortcut. A pinned deck opens without taking focus. An unpinned deck starts hidden. Login startup defaults to off. |
 
 If native tray setup fails, the window stays available and closing it exits.
 Windows uses an AppUserModelID per controller, a Start Menu shortcut, native WinRT
@@ -72,7 +72,7 @@ Windows background parity is not claimed for Linux.
 ## Floating window
 
 The default view is a borderless mini deck with eight keys in a **4 × 2** grid
-(**392 × 256 logical pixels**). Open **More (…)** to choose a preset and
+(**392 × 256 logical pixels**). Use **Expand Deck** to choose a preset and
 orientation under **Deck layout**. Dimensions always mean **columns × rows**:
 
 | Keys | Landscape | Portrait |
@@ -84,31 +84,29 @@ orientation under **Deck layout**. Dimensions always mean **columns × rows**:
 
 Returning to **Mini deck** applies the selected preset and orientation. Its
 shape stays fixed as agents arrive and leave; empty keys remain as quiet,
-non-interactive placeholders. Extra agents scroll inside the panel. Portrait
-windows have compact header controls, including an **Always on top** pin button.
-**More** also provides **Movable / Fixed position** controls. **Movable** is the
-default: drag the **Agent Deck** title to move the mini deck. Reopening it or
-changing its layout keeps that location during the current Deck session; on
-Windows a larger window is shifted only as needed to fit the monitor's work area.
-**Fixed position** disables title dragging and restores the default placement.
-Windows initially places the deck near the bottom-right corner of the current
-monitor's work area, clear of the taskbar. In Fixed position, reopening in tray
-mode uses the cursor's monitor. Native pixel coordinates account for negative
-monitor origins. Linux placement is window-manager dependent; X11 uses the
-screen center for fixed placement. Window coordinates are not saved across restarts.
+non-interactive placeholders. Extra agents scroll inside the panel.
 
-**Always on top** defaults to on and is saved per controller in the private
-`agent-deck/window.json`, together with the preset, orientation, and position mode.
-Existing saved preferences retain their visibility choice and default to Movable
-and the 4 × 2 grid. With Always on top off, the tray or Desktop's **Agents** entry opens
-the panel temporarily. Clicking elsewhere, successful terminal navigation, or
-Escape hides it. Closing explicitly hides even an always-on-top deck. Without a
-working tray, automatic hiding is disabled and closing exits, preserving access
-on Linux and after Windows tray setup failure. Incoming agent notifications do
-not open the deck or take focus.
+Both views have the same header with a title, window pin, expand or shrink
+button, and close button. In a portrait mini deck the title reads **Agents**.
+Drag the title to move an unpinned deck. The upright mint pin locks the current
+position and keeps the window above other windows. Click it again to restore
+movement and ordinary stacking. Pinning does not move the deck.
 
-**More** (the **…** button) expands the same window for the queue, closed panes, hosts, terminal
-selection, and notification preferences. **Mini deck** returns to the compact
+Reopening the deck or switching layouts keeps its location within the current
+session. When the window grows, it shifts only as needed to fit the screen or
+monitor work area. Windows initially places the deck near the bottom-right
+corner of the cursor's monitor, clear of the taskbar. X11 placement and stacking
+depend on the window manager. Window coordinates are not saved across restarts.
+
+The deck defaults to unpinned. The pin state, preset, and orientation are saved
+per controller in the private `agent-deck/window.json`. A legacy fixed-position
+preference becomes pinned, while a legacy movable deck starts unpinned.
+Unpinning, clicking elsewhere, or focusing a terminal leaves the deck open.
+Closing hides it when the tray is available and exits otherwise. Incoming agent
+notifications do not open the deck or take focus.
+
+**Expand Deck** expands the same window for the queue, closed panes, hosts,
+terminal selection, and notification preferences. **Mini deck** returns to the compact
 view. Notification activation opens its history in the expanded view. Window
 visibility and size do not affect daemon-owned work or the slot policy. The mini
 deck shows assigned slots followed by the first 32 queued runs, so larger grids
@@ -140,11 +138,16 @@ last activity as live. Unverified input requests say **Check terminal**.
 **Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
 
-![GPUI Agent Deck with ten synthetic cached agents](images/agent-deck/gpui-floating.png)
+![Pinned mini Agent Deck with synthetic cached agents](images/agent-deck/window-pin-mini.png)
+
+![The same window pin in expanded Agent Deck](images/agent-deck/window-pin-expanded.png)
 
 ![GPUI portrait Agent Deck with fifteen keys](images/agent-deck/gpui-portrait.png)
 
 The screenshots use synthetic cached agents in an isolated Linux Xvfb session.
+The window pin was verified under Xvfb with Openbox: dragging worked while
+unpinned, pinning locked the current origin and enabled above-window stacking,
+and the pin survived expansion, shrinking, and restart.
 On 2026-11-13, GPUI validation covered initial rendering, expansion and return to
 Mini deck, 5 × 3 and 3 × 5 layouts, 2 × 3 controls at 204 pixels wide, title
 dragging, keyboard selection, the action menu, saved notification pause, and Quit.
@@ -217,7 +220,7 @@ Unavailable or ended targets remain in history without opening a new terminal.
 - [`src/desktop.rs`](../plugins/agent-deck/src/desktop.rs): Desktop launch and focus adapter.
 - [`src/connection.rs`](../plugins/agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
 - [`src/background.rs`](../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
-- [`src/window.rs`](../plugins/agent-deck/src/window.rs), [`src/app/floating.rs`](../plugins/agent-deck/src/app/floating.rs): floating-window policy, saved topmost preference, native placement, and compact controls.
+- [`src/window.rs`](../plugins/agent-deck/src/window.rs), [`src/app/chrome.rs`](../plugins/agent-deck/src/app/chrome.rs): saved window pin, native placement, and shared header controls.
 - [`src/window/layout.rs`](../plugins/agent-deck/src/window/layout.rs): fixed grid presets, orientation, and window dimensions.
 - [`src/ui_signal.rs`](../plugins/agent-deck/src/ui_signal.rs): coalesced worker updates and latched open/quit requests.
 - [`src/notifications.rs`](../plugins/agent-deck/src/notifications.rs): bounded delivery policy and persistence.

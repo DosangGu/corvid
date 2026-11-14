@@ -63,7 +63,13 @@ pub fn visible(_: &gpui::Window, visible: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn configure(_: &gpui::Window, topmost: bool, expanded: bool) -> Result<()> {
+pub fn configure(_: &gpui::Window, pinned: bool, expanded: bool) -> Result<()> {
+    const HINT_FUNCTIONS: u32 = 1;
+    const HINT_DECORATIONS: u32 = 2;
+    const FUNC_RESIZE: u32 = 2;
+    const FUNC_MOVE: u32 = 4;
+    const FUNC_CLOSE: u32 = 32;
+
     let (connection, root, windows) = connect()?;
     let state = connection
         .intern_atom(false, b"_NET_WM_STATE")?
@@ -89,6 +95,13 @@ pub fn configure(_: &gpui::Window, topmost: bool, expanded: bool) -> Result<()> 
         let [r, g, b, a] = pixel.0;
         u32::from_be_bytes([a, r, g, b])
     }));
+    let mut functions = FUNC_CLOSE;
+    if !pinned {
+        functions |= FUNC_MOVE;
+        if expanded {
+            functions |= FUNC_RESIZE;
+        }
+    }
     for window in windows {
         connection
             .change_property32(
@@ -96,7 +109,7 @@ pub fn configure(_: &gpui::Window, topmost: bool, expanded: bool) -> Result<()> 
                 window,
                 hints,
                 hints,
-                &[2, 0, u32::from(expanded), 0, 0],
+                &[HINT_FUNCTIONS | HINT_DECORATIONS, functions, 0, 0, 0],
             )?
             .check()?;
         connection
@@ -108,8 +121,7 @@ pub fn configure(_: &gpui::Window, topmost: bool, expanded: bool) -> Result<()> 
                 &pixels,
             )?
             .check()?;
-        let event =
-            ClientMessageEvent::new(32, window, state, [u32::from(topmost), above, 0, 1, 0]);
+        let event = ClientMessageEvent::new(32, window, state, [u32::from(pinned), above, 0, 1, 0]);
         connection
             .send_event(
                 false,
@@ -123,18 +135,37 @@ pub fn configure(_: &gpui::Window, topmost: bool, expanded: bool) -> Result<()> 
     Ok(())
 }
 
-pub fn place(_: &gpui::Window, fixed: bool, _: bool) -> Result<()> {
-    if !fixed {
-        return Ok(());
-    }
+pub fn set_bounds(
+    window: &mut gpui::Window,
+    size: gpui::Size<gpui::Pixels>,
+    initial: bool,
+) -> Result<()> {
+    let scale = window.scale_factor();
+    let width = (f32::from(size.width) * scale).round() as i32;
+    let height = (f32::from(size.height) * scale).round() as i32;
     let (connection, root, windows) = connect()?;
     let screen = connection.get_geometry(root)?.reply()?;
+    let work = [0, 0, i32::from(screen.width), i32::from(screen.height)];
     for window in windows {
-        let geometry = connection.get_geometry(window)?.reply()?;
-        let x = (i32::from(screen.width) - i32::from(geometry.width)).max(0) / 2;
-        let y = (i32::from(screen.height) - i32::from(geometry.height)).max(0) / 2;
+        let origin = connection
+            .translate_coordinates(window, root, 0, 0)?
+            .reply()?;
+        let current = if initial {
+            ((work[2] - width) / 2, (work[3] - height) / 2)
+        } else {
+            (i32::from(origin.dst_x), i32::from(origin.dst_y))
+        };
+        let (x, y) =
+            super::super::window_position(work, [width, height], false, [current.0, current.1]);
         connection
-            .configure_window(window, &ConfigureWindowAux::new().x(x).y(y))?
+            .configure_window(
+                window,
+                &ConfigureWindowAux::new()
+                    .x(x)
+                    .y(y)
+                    .width(width as u32)
+                    .height(height as u32),
+            )?
             .check()?;
     }
     connection.flush()?;

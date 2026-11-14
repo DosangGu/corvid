@@ -339,6 +339,7 @@ impl Desktop {
         column()
             .size_full()
             .gap_0()
+            .child(self.window_header(cx))
             .child(self.header(cx))
             .child(
                 div()
@@ -359,20 +360,6 @@ impl Desktop {
             .child(
                 row()
                     .flex_wrap()
-                    .child(button("mini", "Mini deck", true).on_click(cx.listener(
-                        |view, _, window, cx| {
-                            view.window.expanded = false;
-                            view.section = Section::Slots;
-                            view.set_page(0);
-                            view.update(window, cx);
-                        },
-                    )))
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Agent Deck"),
-                    )
                     .child(button("hosts", "Hosts", true).on_click(
                         cx.listener(|view, _, window, cx| view.expand(Section::Hosts, window, cx)),
                     ))
@@ -380,16 +367,7 @@ impl Desktop {
                         button("notifications", "Notifications", true).on_click(cx.listener(
                             |view, _, window, cx| view.expand(Section::Notifications, window, cx),
                         )),
-                    )
-                    .child(button("close", "Close", true).on_click(cx.listener(
-                        |view, _, window, cx| {
-                            if view.background.view.borrow().background {
-                                view.window.hide(window);
-                            } else {
-                                cx.quit();
-                            }
-                        },
-                    ))),
+                    ),
             )
             .child(muted(connection_text(&self.view)));
         if let Some(snapshot) = &self.view.snapshot {

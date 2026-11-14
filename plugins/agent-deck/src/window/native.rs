@@ -5,7 +5,7 @@ mod implementation;
 #[cfg(windows)]
 mod implementation {
     use anyhow::{Result, ensure};
-    use gpui::Window;
+    use gpui::{Pixels, Size, Window};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
@@ -40,20 +40,17 @@ mod implementation {
         Ok(())
     }
 
-    pub fn configure(window: &Window, topmost: bool, expanded: bool) -> Result<()> {
+    pub fn configure(window: &Window, pinned: bool, expanded: bool) -> Result<()> {
         let hwnd = handle(window)?;
         unsafe {
-            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-            let frame = WS_CAPTION | WS_THICKFRAME | WS_MAXIMIZEBOX;
-            SetWindowLongW(
-                hwnd,
-                GWL_STYLE,
-                (if expanded {
-                    style | frame
-                } else {
-                    style & !frame
-                }) as i32,
-            );
+            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32
+                & !(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
+            let resize = if expanded && !pinned {
+                WS_THICKFRAME
+            } else {
+                0
+            };
+            SetWindowLongW(hwnd, GWL_STYLE, (style | resize) as i32);
             let extended = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             SetWindowLongW(
                 hwnd,
@@ -63,11 +60,7 @@ mod implementation {
             ensure!(
                 SetWindowPos(
                     hwnd,
-                    if topmost {
-                        HWND_TOPMOST
-                    } else {
-                        HWND_NOTOPMOST
-                    },
+                    if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
                     0,
                     0,
                     0,
@@ -80,11 +73,12 @@ mod implementation {
         Ok(())
     }
 
-    pub fn place(window: &Window, fixed: bool, at_cursor: bool) -> Result<()> {
+    pub fn set_bounds(window: &mut Window, size: Size<Pixels>, initial: bool) -> Result<()> {
         let hwnd = handle(window)?;
+        let scale = window.scale_factor();
         unsafe {
             let mut cursor = POINT::default();
-            let monitor = if at_cursor && GetCursorPos(&mut cursor) != 0 {
+            let monitor = if initial && GetCursorPos(&mut cursor) != 0 {
                 MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
             } else {
                 MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
@@ -94,10 +88,19 @@ mod implementation {
                 ..Default::default()
             };
             let mut rect = RECT::default();
+            let mut client = RECT::default();
             ensure!(
-                GetMonitorInfoW(monitor, &mut info) != 0 && GetWindowRect(hwnd, &mut rect) != 0,
+                GetMonitorInfoW(monitor, &mut info) != 0
+                    && GetWindowRect(hwnd, &mut rect) != 0
+                    && GetClientRect(hwnd, &mut client) != 0,
                 "reading Agent Deck monitor bounds"
             );
+            // Use the requested dimensions for clamping, since GPUI queues
+            // the resize on the foreground executor.
+            let width = (f32::from(size.width) * scale).round() as i32
+                + (rect.right - rect.left - client.right);
+            let height = (f32::from(size.height) * scale).round() as i32
+                + (rect.bottom - rect.top - client.bottom);
             let (x, y) = super::super::window_position(
                 [
                     info.rcWork.left,
@@ -105,8 +108,8 @@ mod implementation {
                     info.rcWork.right,
                     info.rcWork.bottom,
                 ],
-                [rect.right - rect.left, rect.bottom - rect.top],
-                fixed,
+                [width, height],
+                initial,
                 [rect.left, rect.top],
             );
             ensure!(
@@ -122,8 +125,11 @@ mod implementation {
                 "placing Agent Deck window"
             );
         }
+        if window.viewport_size() != size {
+            window.resize(size);
+        }
         Ok(())
     }
 }
 
-pub(super) use implementation::{configure, place, visible};
+pub(super) use implementation::{configure, set_bounds, visible};

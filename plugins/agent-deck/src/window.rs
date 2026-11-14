@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::ui_signal::UiSignal;
 use anyhow::Result;
 use gpui::{px, size};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(target_os = "linux")]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
@@ -14,30 +14,36 @@ mod layout;
 mod native;
 pub(crate) use layout::{BAR_HEIGHT, GAP, GridLayout, KEY_HEIGHT, KEY_WIDTH, Orientation, Preset};
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[derive(Clone, Default, Serialize)]
 struct Preferences {
-    always_on_top: bool,
-    fixed_position: bool,
+    pinned: bool,
     layout: GridLayout,
 }
 
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            always_on_top: true,
-            fixed_position: false,
-            layout: GridLayout::default(),
+impl<'de> Deserialize<'de> for Preferences {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Saved {
+            pinned: Option<bool>,
+            fixed_position: bool,
+            layout: GridLayout,
         }
+
+        let saved = Saved::deserialize(deserializer)?;
+        Ok(Self {
+            // Honor explicit position locks. The legacy default was movable and topmost.
+            pinned: saved.pinned.unwrap_or(saved.fixed_position),
+            layout: saved.layout,
+        })
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Applied {
     expanded: bool,
-    always_on_top: bool,
+    pinned: bool,
     layout: GridLayout,
-    fixed_position: bool,
 }
 
 pub(crate) struct Window {
@@ -47,7 +53,6 @@ pub(crate) struct Window {
     pub error: Option<String>,
     background_start: bool,
     applied: Option<Applied>,
-    was_focused: bool,
 }
 
 impl Window {
@@ -65,25 +70,14 @@ impl Window {
             error: None,
             background_start,
             applied: None,
-            was_focused: false,
         })
     }
 
-    pub fn always_on_top(&self) -> bool {
-        self.preferences.always_on_top
-    }
-    pub fn fixed_position(&self) -> bool {
-        self.preferences.fixed_position
+    pub fn pinned(&self) -> bool {
+        self.preferences.pinned
     }
     pub fn layout(&self) -> GridLayout {
         self.preferences.layout
-    }
-
-    pub fn set_fixed_position(&mut self, fixed_position: bool) {
-        self.save(Preferences {
-            fixed_position,
-            ..self.preferences.clone()
-        });
     }
 
     pub fn set_layout(&mut self, layout: GridLayout) {
@@ -93,28 +87,26 @@ impl Window {
         });
     }
 
-    pub fn toggle_topmost(&mut self) {
+    pub fn toggle_pin(&mut self) {
         self.save(Preferences {
-            always_on_top: !self.always_on_top(),
+            pinned: !self.pinned(),
             ..self.preferences.clone()
         });
     }
 
-    fn save(&mut self, next: Preferences) -> bool {
+    fn save(&mut self, next: Preferences) {
         let result = serde_json::to_vec(&next)
             .map_err(anyhow::Error::from)
             .and_then(|bytes| self.storage.replace_private_file("window.json", &bytes));
         if let Err(error) = result {
             self.error = Some(format!("Could not save window preference: {error}"));
-            return false;
+            return;
         }
         self.preferences = next;
         self.error = None;
-        true
     }
 
     pub fn hide(&mut self, window: &gpui::Window) {
-        self.was_focused = false;
         if let Err(error) = native::visible(window, false) {
             self.error = Some(error.to_string());
         }
@@ -124,28 +116,11 @@ impl Window {
         let first = self.applied.is_none();
         let state = Applied {
             expanded: self.expanded,
-            always_on_top: self.always_on_top(),
+            pinned: self.pinned(),
             layout: self.layout(),
-            fixed_position: self.fixed_position(),
         };
         if self.applied != Some(state) {
-            let bounds_changed = self
-                .applied
-                .is_none_or(|old| old.expanded != state.expanded || old.layout != state.layout);
-            let result =
-                native::configure(window, self.always_on_top(), self.expanded).and_then(|_| {
-                    if bounds_changed {
-                        let dimensions = if self.expanded {
-                            size(px(800.), px(560.))
-                        } else {
-                            self.layout().size()
-                        };
-                        if window.viewport_size() != dimensions {
-                            window.resize(dimensions);
-                        }
-                    }
-                    native::place(window, first || self.fixed_position(), first)
-                });
+            let result = self.apply(window, state);
             match result {
                 Ok(()) => {
                     self.applied = Some(state);
@@ -154,13 +129,7 @@ impl Window {
                 Err(error) => self.error = Some(error.to_string()),
             }
         }
-        if opened
-            && self.fixed_position()
-            && let Err(error) = native::place(window, true, true)
-        {
-            self.error = Some(error.to_string());
-        }
-        if opened || (first && (!self.background_start || self.always_on_top() || !tray)) {
+        if opened || (first && (!self.background_start || self.pinned() || !tray)) {
             if let Err(error) = native::visible(window, true) {
                 self.error = Some(error.to_string());
             }
@@ -171,11 +140,26 @@ impl Window {
         if first || opened {
             window.refresh();
         }
-        let focused = window.is_window_active();
-        if dismiss_on_blur(tray, self.always_on_top(), self.was_focused, focused) && !opened {
-            self.hide(window);
+    }
+
+    fn apply(&self, window: &mut gpui::Window, state: Applied) -> Result<()> {
+        if self
+            .applied
+            .is_none_or(|old| old.pinned != state.pinned || old.expanded != state.expanded)
+        {
+            native::configure(window, state.pinned, state.expanded)?;
         }
-        self.was_focused = focused;
+        if self.applied.is_none_or(|old| {
+            old.expanded != state.expanded || (!state.expanded && old.layout != state.layout)
+        }) {
+            let dimensions = if state.expanded {
+                size(px(800.), px(560.))
+            } else {
+                state.layout.size()
+            };
+            native::set_bounds(window, dimensions, self.applied.is_none())?;
+        }
+        Ok(())
     }
 }
 
@@ -186,11 +170,6 @@ pub(crate) fn request_open(signal: &UiSignal) {
     signal.open();
 }
 
-fn dismiss_on_blur(tray: bool, topmost: bool, was_focused: bool, focused: bool) -> bool {
-    tray && !topmost && was_focused && !focused
-}
-
-#[cfg(any(windows, test))]
 fn bottom_right(work: [i32; 4], size: [i32; 2], gap: i32) -> (i32, i32) {
     (
         (work[2] - size[0] - gap).max(work[0]),
@@ -198,9 +177,8 @@ fn bottom_right(work: [i32; 4], size: [i32; 2], gap: i32) -> (i32, i32) {
     )
 }
 
-#[cfg(any(windows, test))]
-fn window_position(work: [i32; 4], size: [i32; 2], fixed: bool, current: [i32; 2]) -> (i32, i32) {
-    if fixed {
+fn window_position(work: [i32; 4], size: [i32; 2], initial: bool, current: [i32; 2]) -> (i32, i32) {
+    if initial {
         return bottom_right(work, size, 12);
     }
     (
@@ -214,15 +192,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn popup_hides_only_after_focus_leaves_with_a_working_tray() {
-        assert!(dismiss_on_blur(true, false, true, false));
-        assert!(!dismiss_on_blur(true, true, true, false));
-        assert!(!dismiss_on_blur(false, false, true, false));
-        assert!(!dismiss_on_blur(true, false, false, false));
-        assert!(!dismiss_on_blur(true, false, true, true));
-    }
-
-    #[test]
     fn anchors_inside_work_area_with_negative_monitor_coordinates() {
         assert_eq!(
             bottom_right([-1920, 0, 0, 1040], [392, 244], 12),
@@ -232,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn movable_window_keeps_its_location_and_only_shifts_to_fit() {
+    fn resizing_keeps_the_origin_and_only_shifts_to_fit() {
         let work = [-1920, 0, 0, 1040];
         assert_eq!(
             window_position(work, [392, 244], false, [-1500, 200]),
@@ -253,34 +222,37 @@ mod tests {
     }
 
     #[test]
-    fn layout_and_topmost_choices_survive_restart() -> Result<()> {
+    fn layout_and_pin_choices_survive_restart() -> Result<()> {
         #[cfg(target_os = "linux")]
         let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))?;
         #[cfg(windows)]
         let root = tempfile::tempdir()?;
         let mut window = Window::load(root.path(), false)?;
-        assert!(window.always_on_top());
+        assert!(!window.pinned());
         let layout = GridLayout {
             preset: Preset::Fifteen,
             orientation: Orientation::Portrait,
         };
         window.set_layout(layout);
-        window.set_fixed_position(true);
-        window.toggle_topmost();
+        window.toggle_pin();
         assert!(window.error.is_none());
         let saved = Window::load(root.path(), true)?;
-        assert!(!saved.always_on_top());
-        assert!(saved.fixed_position());
+        assert!(saved.pinned());
         assert!(saved.layout() == layout);
         Ok(())
     }
 
     #[test]
-    fn existing_preferences_keep_visibility_and_default_to_eight_landscape_keys() -> Result<()> {
-        let preferences: Preferences = serde_json::from_str(r#"{"always_on_top":false}"#)?;
-        assert!(!preferences.always_on_top);
-        assert!(!preferences.fixed_position);
-        assert_eq!(preferences.layout.dimensions(), (4, 2));
+    fn legacy_position_lock_is_migrated_without_locking_movable_windows() -> Result<()> {
+        for (json, pinned) in [
+            (r#"{"always_on_top":true}"#, false),
+            (r#"{"always_on_top":false,"fixed_position":true}"#, true),
+            (r#"{"pinned":false,"fixed_position":true}"#, false),
+        ] {
+            let preferences: Preferences = serde_json::from_str(json)?;
+            assert_eq!(preferences.pinned, pinned);
+            assert_eq!(preferences.layout.dimensions(), (4, 2));
+        }
         Ok(())
     }
 }
