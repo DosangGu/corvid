@@ -2,10 +2,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::collector::SHELL_AGENT_CAPABILITY;
 use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY, NESTED_SUBAGENT_CAPABILITY};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::wire::RegisterShellAgent;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{CollectHook, HookEvent};
@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::connection::{LocalConnection, SocketRole, open};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 type Stream = tokio::net::UnixStream;
 #[cfg(windows)]
 type Stream = tokio::net::windows::named_pipe::NamedPipeClient;
@@ -70,7 +70,7 @@ async fn send_hook(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn register_shell_agent(
     runtime: &Path,
     host_id: &str,

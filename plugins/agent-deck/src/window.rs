@@ -5,7 +5,7 @@ use anyhow::Result;
 use gpui::{px, size};
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory;
@@ -170,6 +170,7 @@ pub(crate) fn request_open(signal: &UiSignal) {
     signal.open();
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn bottom_right(work: [i32; 4], size: [i32; 2], gap: i32) -> (i32, i32) {
     (
         (work[2] - size[0] - gap).max(work[0]),
@@ -177,6 +178,7 @@ fn bottom_right(work: [i32; 4], size: [i32; 2], gap: i32) -> (i32, i32) {
     )
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn window_position(work: [i32; 4], size: [i32; 2], initial: bool, current: [i32; 2]) -> (i32, i32) {
     if initial {
         return bottom_right(work, size, 12);
@@ -223,8 +225,8 @@ mod tests {
 
     #[test]
     fn layout_and_pin_choices_survive_restart() -> Result<()> {
-        #[cfg(target_os = "linux")]
-        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let root = tempfile::tempdir()?;
         #[cfg(windows)]
         let root = tempfile::tempdir()?;
         let mut window = Window::load(root.path(), false)?;

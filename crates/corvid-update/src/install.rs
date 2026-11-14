@@ -67,7 +67,18 @@ impl Installation {
             package.target == target(package.product)?,
             "package platform mismatch"
         );
-        let root = directory
+        let package_directory = if cfg!(target_os = "macos")
+            && package.product == Product::Desktop
+            && directory.ends_with("Corvid.app/Contents/MacOS")
+        {
+            directory
+                .ancestors()
+                .nth(3)
+                .context("locating macOS package")?
+        } else {
+            directory
+        };
+        let root = package_directory
             .parent()
             .filter(|parent| parent.file_name().is_some_and(|name| name == "versions"))
             .and_then(Path::parent);

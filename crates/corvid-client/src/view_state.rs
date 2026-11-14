@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{SshAlias, WslDistribution};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as Directory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory as Directory;
@@ -349,6 +349,12 @@ pub fn tui_store() -> Option<ViewStore> {
                 env::var_os("LOCALAPPDATA")
                     .filter(|base| !base.is_empty())
                     .map(|base| PathBuf::from(base).join("Corvid/clients"))
+            }
+            #[cfg(target_os = "macos")]
+            {
+                corvid_protocol::macos::state_directory()
+                    .ok()
+                    .map(|base| base.join("clients"))
             }
             #[cfg(target_os = "linux")]
             {

@@ -90,7 +90,7 @@ pub fn invoked_provider(argv0: &OsStr) -> Option<Provider> {
 }
 
 pub fn resolve(provider: Provider) -> Option<PathBuf> {
-    let helper = Executable::read(Path::new("/proc/self/exe"))?;
+    let helper = Executable::read(&env::current_exe().ok()?)?;
     find_on_path(program(provider), Some(helper))
 }
 

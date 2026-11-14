@@ -14,6 +14,7 @@ env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
+  MACOSX_DEPLOYMENT_TARGET: '15.0'
 
 jobs:
   runtime:
@@ -27,6 +28,9 @@ jobs:
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             binary: corvid.exe
+          - os: macos-15
+            target: aarch64-apple-darwin
+            binary: corvid
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -41,6 +45,9 @@ jobs:
           chmod 700 "$HOME/.corvid-tests"
           echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
       - run: rustup target add ${{ matrix.target }}
+      - name: macOS build environment
+        if: runner.os == 'macOS'
+        run: bash deploy/macos/prepare-build.sh
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -87,6 +94,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-2025
             target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -100,6 +109,9 @@ jobs:
           mkdir -p "$HOME/.corvid-tests"
           chmod 700 "$HOME/.corvid-tests"
           echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
+      - name: macOS build environment
+        if: runner.os == 'macOS'
+        run: bash deploy/macos/prepare-build.sh
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -112,11 +124,11 @@ jobs:
             desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             desktop-${{ runner.os }}-${{ matrix.target }}-v1-
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update ${{ runner.os == 'macOS' && '--features corvid-deck/stream-deck' || '' }}
       - name: Workspace tests
-        run: cargo test --locked --release --target ${{ matrix.target }} --workspace
+        run: cargo test --locked --release --target ${{ matrix.target }} --workspace ${{ runner.os == 'macOS' && '--features corvid-deck/stream-deck' || '' }}
       - name: Workspace lints
-        run: cargo clippy --locked --release --target ${{ matrix.target }} --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --release --target ${{ matrix.target }} --workspace --all-targets ${{ runner.os == 'macOS' && '--features corvid-deck/stream-deck' || '' }} -- -D warnings
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: pwsh
@@ -126,6 +138,7 @@ jobs:
           if ($IsWindows) {
             $binaries += @('corvid-launch.exe', 'corvid-desktop-launch.exe', 'corvid-agent-deck-launch.exe', 'corvid-deck.exe')
           }
+          if ($IsMacOS) { $binaries += @('corvid-deck', 'corvid-streamdeck') }
           New-Item -ItemType Directory -Path target/desktop-binaries | Out-Null
           foreach ($binary in $binaries) {
             Copy-Item -LiteralPath "target/${{ matrix.target }}/release/$binary" -Destination target/desktop-binaries
@@ -150,6 +163,9 @@ jobs:
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             native: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+            native: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -174,10 +190,15 @@ jobs:
       - name: Verify Windows executable icons
         if: runner.os == 'Windows'
         run: python deploy/test_icons.py --build target/desktop-binaries --runtime target/runtimes/runtime-x86_64-pc-windows-msvc/corvid.exe
-      - name: Package Desktop with both runtimes
-        run: python deploy/package.py package --product desktop --target ${{ matrix.target }} --runtime target/runtimes/runtime-${{ matrix.native }} --linux-runtime target/runtimes/runtime-x86_64-unknown-linux-musl --windows-runtime target/runtimes/runtime-x86_64-pc-windows-msvc --build target/desktop-binaries --output target/dist
+      - name: Package Desktop with all runtimes
+        run: python deploy/package.py package --product desktop --target ${{ matrix.target }} --runtime target/runtimes/runtime-${{ matrix.native }} --linux-runtime target/runtimes/runtime-x86_64-unknown-linux-musl --windows-runtime target/runtimes/runtime-x86_64-pc-windows-msvc --macos-runtime target/runtimes/runtime-aarch64-apple-darwin --build target/desktop-binaries --output target/dist
       - name: Desktop package installation
         run: python deploy/test_install.py --assets target/dist --binary target/runtimes/runtime-${{ matrix.native }}/${{ runner.os == 'Windows' && 'corvid.exe' || 'corvid' }} --product desktop
+      - name: Build and verify unsigned macOS DMG
+        if: runner.os == 'macOS'
+        run: |
+          python3 deploy/macos_package.py --archive target/dist/corvid-desktop-*-aarch64-apple-darwin.tar.gz --output target/dist
+          python3 deploy/test_macos.py --assets target/dist
       - name: Linux Desktop display smoke test
         if: runner.os == 'Linux'
         run: xvfb-run -a python3 deploy/test_desktop.py target/dist

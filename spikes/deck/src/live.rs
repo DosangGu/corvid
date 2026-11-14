@@ -97,6 +97,11 @@ impl LiveDeck {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn can_pair(&self) -> bool {
+        self.scope().is_some() && self.pending.is_none()
+    }
+
     #[cfg(windows)]
     pub fn can_pair(&self) -> bool {
         self.scope().is_some()
@@ -108,7 +113,7 @@ impl LiveDeck {
             && self.pending.is_none()
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn terminal_hint(&self) -> &'static str {
         if self.display.link != Link::Online {
             return "Waiting for the local companion.";

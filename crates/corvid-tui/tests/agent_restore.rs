@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory;

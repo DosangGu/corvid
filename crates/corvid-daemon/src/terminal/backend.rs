@@ -189,7 +189,7 @@ impl Backend {
         matches!(self, Self::Hosted(client) if client.retained)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn pid(&self) -> Option<u32> {
         match self {
             Self::Local(session) => session.pid(),

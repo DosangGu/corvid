@@ -1,3 +1,4 @@
+#[cfg(any(windows, target_os = "linux"))]
 use std::env;
 use std::future::Future;
 use std::path::PathBuf;
@@ -19,13 +20,15 @@ use corvid_protocol::wire::{
 };
 #[cfg(windows)]
 use corvid_protocol::wire::{WezTermLocation, WezTermTarget};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
 
 use super::read_pairing_code;
 #[cfg(target_os = "linux")]
-use crate::{linux::state_path, runtime_path};
+use crate::linux::state_path;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::runtime_path;
 
 #[cfg(windows)]
 mod desktop;
@@ -35,7 +38,7 @@ const DEFAULT_SLOTS: u32 = 8;
 #[derive(Args)]
 pub(super) struct Options {
     /// Override the private local companion socket directory.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[arg(long, global = true)]
     socket_dir: Option<PathBuf>,
     /// Choose a named-pipe instance under the current Windows user.
@@ -167,7 +170,7 @@ pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -
         return Ok(());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let address = companion_socket(options.socket_dir)?;
     #[cfg(windows)]
     let address = options.pipe_instance;
@@ -217,7 +220,7 @@ fn host_endpoint(alias: Option<String>, _daemon_runtime: Option<PathBuf>) -> Res
     if let Some(alias) = alias {
         return Ok(HostEndpoint::Ssh { alias });
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     return Ok(HostEndpoint::Local {
         runtime_dir: runtime_path(_daemon_runtime)?,
     });
@@ -231,24 +234,28 @@ fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
     }
     #[cfg(target_os = "linux")]
     return Ok(state_path(None)?.join("companion"));
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     return corvid_companion::launch::default_state_dir();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn companion_socket(path: Option<PathBuf>) -> Result<PathBuf> {
     path.map_or_else(
         || {
+            #[cfg(target_os = "macos")]
+            let base = runtime_path(None)?;
+            #[cfg(target_os = "linux")]
             let base = env::var_os("XDG_RUNTIME_DIR")
                 .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
                 .context("set XDG_RUNTIME_DIR or companion --socket-dir")?;
-            Ok(PathBuf::from(base).join("corvid-companion"))
+            Ok(base.join("corvid-companion"))
         },
         Ok,
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn shutdown() -> Result<impl Future<Output = ()>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;

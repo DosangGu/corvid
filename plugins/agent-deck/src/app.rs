@@ -152,7 +152,7 @@ impl Desktop {
         result.refresh_view();
         // Let X11 present its initial frame before the window manager changes
         // decorations. Changing them during mapping can suppress that frame.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let view = cx.weak_entity();
             window.on_next_frame(move |window, cx| {

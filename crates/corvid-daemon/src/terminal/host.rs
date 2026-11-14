@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use corvid_core::Viewport;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 #[cfg(windows)]
 use corvid_protocol::windows::{DaemonPipe, StateDirectory};
@@ -26,7 +26,7 @@ pub const COMMAND: &str = "terminal-host";
 const TICK: Duration = Duration::from_millis(8);
 const VERSION: u32 = 1;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 type Connection = tokio::net::UnixStream;
 #[cfg(windows)]
 type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
@@ -200,7 +200,7 @@ impl Client {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use std::os::unix::process::CommandExt;
 
@@ -371,7 +371,7 @@ fn directory(root: &Path, id: Uuid) -> PathBuf {
     root.join(format!("p-{:012x}", id.as_u128() >> 80))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn open(path: &Path) -> Result<Connection> {
     RuntimeDir::open(path)?
         .connect(SocketRole::TerminalHost)
@@ -412,7 +412,7 @@ fn numeric_arg<T: std::str::FromStr>(args: &mut impl Iterator<Item = OsString>) 
         .context("invalid terminal host argument")
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn serve(path: &Path, id: Uuid, command: CommandBuilder, size: Viewport) -> Result<()> {
     let runtime = RuntimeDir::create(path)?;
     let instance = runtime.lock_instance()?;
@@ -524,7 +524,7 @@ impl Host {
         self.retain = false;
         let mut response = self.response();
         response.version = VERSION;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             response.pid = self.session.pid();
         }

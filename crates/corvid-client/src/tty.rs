@@ -31,14 +31,23 @@ impl Tty {
 
     pub(crate) fn enter() -> Result<Self> {
         // Reopen the devices so nonblocking mode does not affect the inherited descriptors.
+        #[cfg(target_os = "linux")]
+        let (input_path, output_path) = ("/proc/self/fd/0".into(), "/proc/self/fd/1".into());
+        #[cfg(target_os = "macos")]
+        let (input_path, output_path) = (
+            nix::unistd::ttyname(std::io::stdin())?,
+            nix::unistd::ttyname(std::io::stdout())?,
+        );
+        let input_path: std::path::PathBuf = input_path;
+        let output_path: std::path::PathBuf = output_path;
         let input = OpenOptions::new()
             .read(true)
             .custom_flags(O_NOCTTY | O_NONBLOCK)
-            .open("/proc/self/fd/0")?;
+            .open(input_path)?;
         let output = OpenOptions::new()
             .write(true)
             .custom_flags(O_NOCTTY | O_NONBLOCK)
-            .open("/proc/self/fd/1")?;
+            .open(output_path)?;
         let input = register(input, Interest::READABLE)?;
         let output = register(output, Interest::WRITABLE)?;
         enable_raw_mode()?;

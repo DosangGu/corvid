@@ -284,7 +284,7 @@ impl Registry {
                 .verify(target.client, controller, *revision)?;
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let terminal = self
             .agents
             .focus_terminal(target.run)
@@ -348,7 +348,7 @@ impl Registry {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;

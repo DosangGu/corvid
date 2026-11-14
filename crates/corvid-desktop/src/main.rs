@@ -1,37 +1,39 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod app_icon;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod daemon_prompt;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod desktop_windows;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod local_bootstrap;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod platform;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod remote_bootstrap;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use corvid_agent_deck::desktop as agent_deck;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod ssh_hosts;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod terminal_paint;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod terminal_session;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod terminal_view;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod workspace_view;
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn main() {
     eprintln!("The Corvid Desktop terminal workspace requires Windows or Linux.");
     std::process::exit(1);
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn main() -> anyhow::Result<std::process::ExitCode> {
     if let Some(code) = corvid_tui::run_daemon_helper() {
         return Ok(code);
@@ -59,6 +61,11 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     }
 
     let options = Options::parse();
+    #[cfg(target_os = "macos")]
+    // No GPUI or Tokio threads have been started at this point.
+    unsafe {
+        macos::initialize_environment()
+    };
     #[cfg(windows)]
     app_icon::identify()?;
     #[cfg(target_os = "linux")]
@@ -90,7 +97,22 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let windows = DesktopWindows::new(agent_deck);
     let app_windows = windows.clone();
 
-    Application::new().run(move |cx| {
+    let application = Application::new();
+    #[cfg(target_os = "macos")]
+    {
+        let reopened = windows.clone();
+        application.on_reopen(move |cx| {
+            if cx.windows().is_empty()
+                && let Err(error) = reopened.new_window(cx)
+            {
+                eprintln!("Could not reopen Corvid: {error:#}");
+            }
+            cx.activate(true);
+        });
+    }
+    application.run(move |cx| {
+        #[cfg(target_os = "macos")]
+        macos::menus(&app_windows, cx);
         let quitting = app_windows.clone();
         cx.on_app_quit(move |_| {
             quitting.shutdown();

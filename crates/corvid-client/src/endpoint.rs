@@ -1,9 +1,9 @@
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::connection::SocketRole;
 use anyhow::{Context, Result, ensure};
 use corvid_protocol::wire::envelope::Body;
@@ -16,7 +16,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::connection::Connection;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::connection::open;
 
 mod bootstrap;
@@ -30,7 +30,7 @@ const MAX_DIAGNOSTIC: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub enum ControlEndpoint {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Local(PathBuf),
     Ssh(SshAlias),
     Wsl(WslDistribution),
@@ -152,7 +152,7 @@ impl SshAlias {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn ssh_command() -> Result<Command> {
     Ok(Command::new("ssh"))
 }
@@ -199,10 +199,10 @@ fn system_directory() -> Result<PathBuf> {
 type Input = Box<dyn AsyncRead + Send + Unpin>;
 type Output = Box<dyn AsyncWrite + Send + Unpin>;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 async fn local_halves(path: &Path, role: SocketRole) -> Result<(Input, Output)> {
     let stream = open(path, role).await?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let (read, write) = stream.into_split();
     #[cfg(windows)]
     let (read, write) = tokio::io::split(stream);
@@ -282,7 +282,7 @@ impl Drop for InteractiveConnection {
 impl ControlEndpoint {
     pub async fn interactive(&self, capabilities: Vec<String>) -> Result<InteractiveConnection> {
         match self {
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Local(path) => {
                 let (read, write) = local_halves(path, SocketRole::Client).await?;
                 let wire = timeout(
@@ -311,7 +311,7 @@ impl ControlEndpoint {
         controller: Option<String>,
     ) -> Result<ControlConnection> {
         let (read, write, mut relay): (Input, Output, _) = match self {
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Local(path) => {
                 let (read, write) = local_halves(path, SocketRole::Control).await?;
                 (read, write, None)

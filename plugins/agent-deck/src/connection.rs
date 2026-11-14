@@ -113,15 +113,24 @@ async fn connect(controller: Uuid) -> Result<Stream> {
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn runtime_path(controller: Uuid) -> Result<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    let base = corvid_client::runtime_path(None)?;
+    #[cfg(target_os = "linux")]
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
         .context("set XDG_RUNTIME_DIR for Agent Deck")?;
-    Ok(std::path::PathBuf::from(base).join(format!("cv-deck-{}", controller.simple())))
+    let name = if cfg!(target_os = "macos") {
+        format!("d-{}", controller.simple())
+    } else {
+        format!("cv-deck-{}", controller.simple())
+    };
+    Ok(base.join(name))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn connect(controller: Uuid) -> Result<Stream> {
     use corvid_protocol::unix::{RuntimeDir, SocketRole};
     Ok(Box::new(
@@ -141,11 +150,11 @@ pub async fn listen(
         "corvid-agent-deck-v1",
         &controller.simple().to_string(),
     )?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let directory = corvid_protocol::unix::RuntimeDir::create_all(&runtime_path(controller)?)?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let instance = directory.lock_instance()?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let listener = instance
         .bind(corvid_protocol::unix::SocketRole::Presentation)
         .await?;
@@ -168,11 +177,11 @@ pub async fn listen(
             );
             pid
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let Some(stream) = listener.accept().await? else {
             continue;
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let pid = stream
             .peer_cred()?
             .pid()

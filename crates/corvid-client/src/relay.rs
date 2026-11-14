@@ -44,7 +44,7 @@ async fn relay_role(runtime: &Path, socket: SocketRole, output: FrameRole) -> Re
             return Err(error);
         }
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let (read, write) = stream.into_split();
     #[cfg(windows)]
     let (read, write) = tokio::io::split(stream);

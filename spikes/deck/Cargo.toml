@@ -39,3 +39,11 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"], optional = true
 
 [build-dependencies]
 embed-resource.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+corvid-companion = { workspace = true, optional = true }
+gpui = { workspace = true, optional = true }
+hidapi = { workspace = true, optional = true }
+image = { workspace = true, features = ["bmp", "jpeg"], optional = true }
+resvg = { workspace = true, features = ["system-fonts", "text"], optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync"], optional = true }

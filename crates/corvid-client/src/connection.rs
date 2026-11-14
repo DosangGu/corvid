@@ -6,15 +6,15 @@ use corvid_protocol::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod local;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use corvid_protocol::unix::SocketRole;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use local::{UnixConnection, open};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use tokio::net::unix::{OwnedReadHalf as LocalRead, OwnedWriteHalf as LocalWrite};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) type LocalConnection = UnixConnection;
 
 #[cfg(windows)]

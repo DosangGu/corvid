@@ -8,29 +8,29 @@ use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY};
 use corvid_protocol::collector::{
     HOST_ID, LAUNCH_ASSOCIATION, RUNTIME_DIR, SERVER_EPOCH, SHELL_TERMINAL,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::collector::{NESTED_SUBAGENT_CAPABILITY, SHELL_AGENT_CAPABILITY};
 use corvid_protocol::wire::CollectorTraffic;
 use corvid_protocol::wire::HookCollected;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::wire::ShellAgentRegistered;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{PeerRole, ProtocolFault};
 use portable_pty::CommandBuilder;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::time::sleep;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::agents::HookBinding;
 use crate::control::handshake;
 use crate::hook_data::Hook;
 use crate::identity::Identity;
 use crate::platform::Stream;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::process::ProcessImage;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::provider::shell::Commands;
 use crate::workspaces::Workspaces;
 
@@ -80,12 +80,12 @@ fn increment(counter: &AtomicU64) {
 pub(crate) struct HookEnvironment {
     pub(crate) runtime: PathBuf,
     pub(crate) identity: Arc<Identity>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) shell_commands: Option<Commands>,
 }
 
 impl HookEnvironment {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn configure(
         &self,
         command: &mut CommandBuilder,
@@ -158,9 +158,9 @@ async fn collect(stream: Stream, identity: &Identity, workspaces: &Workspaces) -
         &[
             CAPABILITY,
             INPUT_BATCH_CAPABILITY,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             NESTED_SUBAGENT_CAPABILITY,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             SHELL_AGENT_CAPABILITY,
         ],
     )
@@ -182,7 +182,7 @@ async fn collect(stream: Stream, identity: &Identity, workspaces: &Workspaces) -
             workspaces.collector.submission(result.is_ok());
             result.map(|()| Body::HookCollected(HookCollected {}))
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Ok(Body::RegisterShellAgent(registration)) => workspaces
             .register_shell_agent(registration, pid)
             .await
@@ -207,7 +207,7 @@ async fn collect(stream: Stream, identity: &Identity, workspaces: &Workspaces) -
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), ProtocolFault> {
     let unauthorized = || ProtocolFault::new("Unauthorized", "hook has no verified launch owner");
     let owner = find_owner(workspaces, hook.association)
@@ -222,7 +222,7 @@ async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), Pro
     workspaces.apply_hook(hook, owner, producer)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<ProcessImage> {
     loop {
         match workspaces.hook_binding(association) {
@@ -233,9 +233,9 @@ async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<Proces
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn peer_pid(stream: &Stream) -> Option<u32> {
-    stream.peer_cred().ok()?.pid()?.try_into().ok()
+    corvid_protocol::unix::peer_pid(stream).ok()
 }
 
 #[cfg(windows)]

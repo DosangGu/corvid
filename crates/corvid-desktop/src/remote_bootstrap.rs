@@ -182,6 +182,7 @@ fn read_bundle(platform: HostPlatform) -> Result<(Vec<u8>, String)> {
     let (target, binary_name) = match platform {
         HostPlatform::Linux => ("x86_64-unknown-linux-musl", "corvid"),
         HostPlatform::Windows => ("x86_64-pc-windows-msvc", "corvid.exe"),
+        HostPlatform::Macos => ("aarch64-apple-darwin", "corvid"),
     };
     let exe = std::env::current_exe()?;
     let directory = exe

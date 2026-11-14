@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir;
 use corvid_protocol::upgrade::decode_state_path;
 use corvid_protocol::wire::UpgradeDaemon;
@@ -21,12 +21,12 @@ pub struct UpgradeTarget {
     pub server_epoch: String,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn prepare_upgrade(runtime: &RuntimeDir) -> Result<UpgradeTarget> {
     prepare_upgrade_for(runtime, None).await
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn prepare_upgrade_for(
     runtime: &RuntimeDir,
     expected_host: Option<Uuid>,

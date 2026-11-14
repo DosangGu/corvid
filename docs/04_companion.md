@@ -1,5 +1,8 @@
 # Local Companion
 
+For Apple Silicon paths, native behavior, building, and distribution, see
+[macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
+
 The companion connects to one configured Linux Corvid daemon and maintains
 virtual slots. It serves framed Protobuf to the local CLI and desktop board
 over a private Unix socket on Linux or a current-user named pipe on Windows.

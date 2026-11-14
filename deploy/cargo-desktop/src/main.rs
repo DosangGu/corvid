@@ -16,7 +16,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     if !cfg!(windows) {
-        return Err("Build the Desktop distribution on Windows with WSL installed".into());
+        return Err("Use bash deploy/macos/package-corvid.sh LINUX_RUNTIME WINDOWS_RUNTIME on macOS; use Windows with WSL for Windows packaging".into());
     }
 
     let packager = Path::new(env!("CARGO_MANIFEST_DIR")).join("../windows/Package-Corvid.ps1");
@@ -25,6 +25,10 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         .env_remove("PSModulePath")
         .args(["-NoProfile", "-File"])
         .arg(packager)
+        .arg("-MacosDaemonDirectory")
+        .arg(env::var_os("CORVID_MACOS_RUNTIME").ok_or(
+            "Set CORVID_MACOS_RUNTIME to the revision-matched macOS runtime artifact directory",
+        )?)
         .arg("-WslDistribution")
         .arg(distribution)
         .status()?;

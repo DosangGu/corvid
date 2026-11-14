@@ -15,17 +15,22 @@ other text (for example, `v0.1.2`, not `Corvid v0.1.2`).
 | Windows TUI | `x86_64-pc-windows-msvc` | `corvid-tui-VERSION-x86_64-pc-windows-msvc.zip` |
 | Linux Desktop | `x86_64-unknown-linux-gnu` | `corvid-desktop-VERSION-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows Desktop | `x86_64-pc-windows-msvc` | `corvid-desktop-VERSION-x86_64-pc-windows-msvc.zip` |
+| macOS TUI | `aarch64-apple-darwin` | `corvid-tui-VERSION-aarch64-apple-darwin.tar.gz` |
+| macOS Desktop | `aarch64-apple-darwin` | `corvid-desktop-VERSION-aarch64-apple-darwin.tar.gz` |
+| macOS Desktop installer | Apple Silicon, macOS 15+ | `corvid-desktop-VERSION-aarch64-apple-darwin.dmg` (unsigned) |
 | Windows Desktop Setup | Windows x64 | `corvid-desktop-VERSION-x86_64-pc-windows-msvc-setup.exe` |
 
 Linux TUI and daemon binaries are statically linked. Linux Desktop is built on
 Ubuntu 24.04 and requires X11 or XWayland, Fontconfig, and a Vulkan driver.
 Other distributions require separate runtime qualification. WSL uses the Linux
-TUI and daemon package. macOS and ARM64 are outside this release's support scope.
+TUI and daemon package. macOS 15+ supports Apple Silicon; Intel Macs and other
+ARM64 operating systems are outside the release scope. See the [macOS guide](07_macos.md)
+for Gatekeeper, app layout, installation paths, and validation limitations.
 
 The `corvid` executable contains the TUI, daemon, terminal host, and relays.
 Actions builds this runtime once for each execution platform. TUI packages reuse
-it directly. Both Desktop packages include both runtime payloads under
-`daemon/TARGET/`, each with its own identity and integrity manifest. Packaged
+it directly. All Desktop packages include Linux, Windows, and macOS runtime payloads under
+`daemon/TARGET/` (inside `Contents/MacOS` on macOS), each with its own identity and integrity manifest. Packaged
 Desktop starts its adjacent native `corvid` for local daemon use; development
 builds retain their executable-based helper path.
 

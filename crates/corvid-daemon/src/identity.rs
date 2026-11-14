@@ -1,23 +1,23 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::File;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::{ErrorKind, Read, Write};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::fd::AsFd;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::MetadataExt;
 
 use anyhow::{Context, Result, ensure};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::errno::Errno;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::fcntl::{OFlag, openat};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::sys::stat::Mode;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::unistd::geteuid;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
@@ -51,7 +51,7 @@ impl Identity {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn read(state: &StateDirectory) -> Result<Option<Uuid>> {
     let fd = match openat(
         state,
@@ -97,7 +97,7 @@ fn decode(bytes: &[u8]) -> Result<Uuid> {
     Ok(stored.host_id)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn create(state: &StateDirectory) -> Result<Uuid> {
     let host_id = Uuid::new_v4();
     let stored = StoredIdentity {

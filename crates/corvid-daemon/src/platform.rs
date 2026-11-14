@@ -1,13 +1,13 @@
 use std::ffi::OsString;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use corvid_protocol::unix::RuntimeDir as StateDirectory;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use tokio::net::{
     UnixStream as Stream,
     unix::{OwnedReadHalf as ReadHalf, OwnedWriteHalf as WriteHalf},
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) type StateLock = nix::fcntl::Flock<std::fs::File>;
 
 #[cfg(windows)]
@@ -22,14 +22,14 @@ pub(crate) type WriteHalf = tokio::io::WriteHalf<Stream>;
 pub(crate) type StateLock = std::fs::File;
 
 pub(crate) fn split(stream: Stream) -> (ReadHalf, WriteHalf) {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     return stream.into_split();
     #[cfg(windows)]
     tokio::io::split(stream)
 }
 
 pub(crate) fn decode_os_string(bytes: &[u8]) -> Option<OsString> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::unix::ffi::OsStringExt;
 

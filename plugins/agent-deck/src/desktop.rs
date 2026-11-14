@@ -73,6 +73,14 @@ struct Scope {
 pub fn executable() -> Result<PathBuf> {
     let current = std::env::current_exe()?;
     let directory = current.parent().context("locating Corvid installation")?;
+    #[cfg(target_os = "macos")]
+    {
+        let helper =
+            directory.join("../Helpers/Corvid Agent Deck.app/Contents/MacOS/corvid-agent-deck");
+        if helper.is_file() {
+            return Ok(helper);
+        }
+    }
     let binary = format!("corvid-agent-deck{}", std::env::consts::EXE_SUFFIX);
     let packaged = directory.join("plugins/agent-deck").join(&binary);
     if packaged.is_file() {
@@ -110,7 +118,7 @@ async fn open(
             child.arg("--state-dir").arg(&scope.state);
             #[cfg(windows)]
             child.arg("--pipe-instance").arg(&scope.address);
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             child.arg("--socket-dir").arg(&scope.address);
             child
                 .stdin(Stdio::null())
@@ -202,17 +210,23 @@ impl Settings {
         } else {
             config.controller_id.simple().to_string()
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let address = {
+            #[cfg(target_os = "macos")]
+            let runtime = corvid_client::runtime_path(None)?;
+            #[cfg(target_os = "linux")]
             let runtime = std::env::var_os("XDG_RUNTIME_DIR")
                 .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
                 .context("set XDG_RUNTIME_DIR to open Corvid Agent Deck")?;
             let directory = if shared {
                 "corvid-companion".to_owned()
+            } else if cfg!(target_os = "macos") {
+                format!("s-{}", config.controller_id.simple())
             } else {
                 format!("cv-slot-{}", config.controller_id.simple())
             };
-            PathBuf::from(runtime).join(directory)
+            runtime.join(directory)
         };
         Ok((Scope { address, state }, config))
     }
@@ -245,8 +259,8 @@ mod tests {
 
     #[test]
     fn reuses_the_controller_and_refuses_a_different_host() -> Result<()> {
-        #[cfg(target_os = "linux")]
-        let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let directory = tempfile::tempdir()?;
         #[cfg(windows)]
         let directory = tempfile::tempdir()?;
         let state = directory.path().join("slot-board");

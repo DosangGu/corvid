@@ -4,22 +4,23 @@ Corvid is a terminal multiplexer for coding agents. A daemon manages
 workspaces, tabs, and split panes and keeps shells running when clients detach.
 Corvid Desktop opens a local terminal and connects to remote hosts over SSH.
 Its built-in Agents window (Corvid Agent Deck) shows observed Codex and Claude Code
-activity and opens the corresponding pane in Desktop. On Windows, Agent Deck stays in the system tray
-and delivers OS notifications. Completed agents remain until their panes close;
+activity and opens the corresponding pane in Desktop. Agent Deck provides a Windows system tray
+and macOS menu-bar item with native notifications. Completed agents remain until their panes close;
 additional agents queue and fill slots in order. See [Agent Deck](docs/06_agent_deck.md).
 
 | Component | Supported platform |
 | --- | --- |
-| Daemon and TUI | Linux and Windows x64 |
-| Corvid Desktop | Windows x64 and Linux with X11 or XWayland |
-| Bundled remote daemon | Linux x86_64 and Windows x64 |
+| Daemon and TUI | Linux and Windows x64; macOS 15+ Apple Silicon |
+| Corvid Desktop | Windows x64; Linux with X11 or XWayland; macOS 15+ Apple Silicon |
+| Bundled remote daemon | Linux x86_64, Windows x64, macOS Apple Silicon |
 
 ## Install a release
 
-Download Windows and Linux Desktop or TUI packages from
+Download Windows, Linux, and macOS Desktop or TUI packages from
 [GitHub Releases](https://github.com/DosangGu/corvid/releases).
-Desktop offers [Windows Setup](docs/05_release_distribution.md#windows-setup).
-On Linux x86_64 or WSL, install the TUI with:
+Desktop offers [Windows Setup](docs/05_release_distribution.md#windows-setup) and an
+[unsigned macOS DMG](docs/07_macos.md).
+On Linux x86_64, WSL, or macOS Apple Silicon, install the TUI with:
 
 ```sh
 curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.sh | sh
@@ -70,7 +71,8 @@ for local state paths and validation.
 ## Run Corvid Desktop
 
 Follow the [Windows quick start](docs/04_companion.md#windows-quick-start)
-or [Linux Desktop quick start](docs/04_companion.md#linux-desktop-quick-start)
+[Linux Desktop quick start](docs/04_companion.md#linux-desktop-quick-start),
+or [macOS guide](docs/07_macos.md)
 for build requirements. Build the Agents window and run Desktop from the repository root.
 
 ```sh

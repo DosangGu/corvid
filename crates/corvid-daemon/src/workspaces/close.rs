@@ -9,7 +9,7 @@ use super::{
     target_gone, writer_required,
 };
 use crate::publication::Group;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::ProcessLiveness;
 
 pub(crate) enum Closed {
@@ -195,7 +195,7 @@ impl Registry {
             if !panes.contains(&location.pane) {
                 return true;
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 if let Some(agent) = self.shells.remove(*id) {
                     self.agents.retire_shell(agent, ProcessLiveness::Unknown);

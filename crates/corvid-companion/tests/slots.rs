@@ -30,8 +30,8 @@ fn endpoint() -> HostEndpoint {
 }
 
 fn private_parent() -> tempfile::TempDir {
-    #[cfg(target_os = "linux")]
-    return tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    return tempfile::tempdir().unwrap();
     #[cfg(windows)]
     tempfile::tempdir().unwrap()
 }

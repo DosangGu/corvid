@@ -1,5 +1,8 @@
 # Corvid Agent Deck
 
+For Apple Silicon paths, native behavior, building, and distribution, see
+[macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
+
 Corvid Agent Deck is Corvid Desktop's built-in **Agents** window. It ships and
 updates with Desktop and extends the former Agent Board. Agent status, cards,
 notifications, and navigation live in this separate window; the terminal toolbar

@@ -73,7 +73,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows daemon and TUI | Windows x64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
 | WSL connections | Windows Desktop to an installed Linux distribution's default user | `wsl.exe` stdio carries terminal and control relays. Linux owns PTYs and metadata. Setup and planned replacement share the remote connection implementation |
-| Native macOS daemon | Deferred | Independent process, IPC, permission, service, input, and VT validation required |
+| Native macOS | macOS 15+ Apple Silicon | Unix PTYs and private sockets; libproc process identity; native Desktop/Agent Deck; unsigned app and DMG packaging. See [macOS support](07_macos.md) for validation boundaries |
 
 This is not a replacement for every terminal emulator feature. Zellij and tmux are
 design references, not execution dependencies. There is no public TCP daemon, TLS

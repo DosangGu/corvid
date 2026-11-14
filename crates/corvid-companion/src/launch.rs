@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -8,7 +9,7 @@ use corvid_protocol::COMMAND_TIMEOUT;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-use crate::{Config, HostEndpoint, PresentationClient};
+use crate::{Config, HostEndpoint, PresentationAddress, PresentationClient};
 
 pub const DEFAULT_SLOT_COUNT: u32 = 8;
 const PIPE_POLL: Duration = Duration::from_millis(50);
@@ -20,14 +21,19 @@ pub enum DesktopStartup {
 }
 
 pub fn default_state_dir() -> Result<PathBuf> {
-    let base = env::var_os("LOCALAPPDATA")
-        .filter(|path| !path.is_empty())
-        .context("set LOCALAPPDATA or choose a companion state directory")?;
-    Ok(PathBuf::from(base).join("Corvid").join("companion"))
+    #[cfg(target_os = "macos")]
+    return Ok(corvid_protocol::macos::state_directory()?.join("companion"));
+    #[cfg(windows)]
+    {
+        let base = env::var_os("LOCALAPPDATA")
+            .filter(|path| !path.is_empty())
+            .context("set LOCALAPPDATA or choose a companion state directory")?;
+        Ok(PathBuf::from(base).join("Corvid").join("companion"))
+    }
 }
 
 pub async fn prepare_desktop(
-    instance: &str,
+    instance: &PresentationAddress,
     state: &Path,
     alias: Option<&str>,
 ) -> Result<DesktopStartup> {
@@ -61,7 +67,7 @@ pub async fn prepare_desktop(
     Ok(DesktopStartup::Start(config))
 }
 
-pub async fn wait_for_desktop(instance: &str, config: &Config) -> Result<()> {
+pub async fn wait_for_desktop(instance: &PresentationAddress, config: &Config) -> Result<()> {
     let mut client = timeout(COMMAND_TIMEOUT, async {
         loop {
             if let Some(client) = connect(instance).await? {
@@ -92,7 +98,7 @@ async fn initialize(state: &Path, alias: &str) -> Result<Config> {
     Config::read_if_present(state)?.context("new companion configuration is missing")
 }
 
-async fn connect(instance: &str) -> Result<Option<PresentationClient>> {
+async fn connect(instance: &PresentationAddress) -> Result<Option<PresentationClient>> {
     PresentationClient::connect_if_present(instance)
         .await
         .context("checking the companion pipe")

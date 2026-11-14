@@ -1,6 +1,7 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory=$true)][string]$MacosDaemonDirectory,
     [string]$LinuxDaemonDirectory,
     [string]$WindowsDaemonDirectory,
     [string]$WslDistribution,
@@ -45,7 +46,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'TUI packaging failed' }
     $options = @()
     if ($WithoutAgentDeck) { $options += '--without-agent-deck' }
-    python deploy/package.py package --product desktop --target $target --runtime $WindowsDaemonDirectory --linux-runtime $LinuxDaemonDirectory --windows-runtime $WindowsDaemonDirectory --build $build --output $output @options
+    python deploy/package.py package --product desktop --target $target --runtime $WindowsDaemonDirectory --linux-runtime $LinuxDaemonDirectory --windows-runtime $WindowsDaemonDirectory --macos-runtime $MacosDaemonDirectory --build $build --output $output @options
     if ($LASTEXITCODE -ne 0) { throw 'Desktop packaging failed' }
     Get-ChildItem -LiteralPath $output -Filter '*.zip'
 } finally { Pop-Location }

@@ -60,7 +60,7 @@ impl Desktop {
                 let title = title.cursor_grab();
                 #[cfg(windows)]
                 let title = title.window_control_area(gpui::WindowControlArea::Drag);
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 let title = title.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|view, _, window, _| {

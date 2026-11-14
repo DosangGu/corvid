@@ -20,7 +20,7 @@ use corvid_protocol::{
     FrameWriter, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
     RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session, decode_envelope,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -99,12 +99,12 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         required.push(PANE_WRITERS_CAPABILITY.into());
     }
     if options.agent.is_some() {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         required.push("agent_launch.v1".into());
         #[cfg(windows)]
         required.push(corvid_protocol::PROCESS_AGENT_LAUNCH_CAPABILITY.into());
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if options.agent == Some(AgentProvider::Codex) {
         required.push(corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY.into());
     }
@@ -179,7 +179,7 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
             &selection,
         );
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let (mut terminate, mut hangup, mut interrupt) = (
         signal(SignalKind::terminate())?,
         signal(SignalKind::hangup())?,
@@ -200,7 +200,7 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         // A signal can interrupt a partially written frame. Drop the stream so
         // the daemon fences the route on EOF.
         _ = async {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             tokio::select! {
                 _ = terminate.recv() => {},
                 _ = hangup.recv() => {},

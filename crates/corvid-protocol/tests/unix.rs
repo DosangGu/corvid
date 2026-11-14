@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -10,7 +10,7 @@ use tokio::net::UnixListener;
 
 fn test_parent() -> TempDir {
     // Keep paths short and avoid a world-writable ancestor.
-    tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
+    tempfile::tempdir().unwrap()
 }
 
 fn path(parent: &TempDir) -> PathBuf {
@@ -21,6 +21,7 @@ fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn terminal_host_sockets_support_long_private_runtime_paths() {
     let parent = test_parent();
@@ -101,4 +102,26 @@ async fn preserves_live_socket_and_replaces_only_stale_owned_socket() {
     fs::write(&socket_path, "retain this file").unwrap();
     assert!(instance.bind(SocketRole::Control).await.is_err());
     assert_eq!(fs::read_to_string(socket_path).unwrap(), "retain this file");
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn rejects_overlong_socket_paths_and_authenticates_peer_pid() {
+    let parent = test_parent();
+    let long = RuntimeDir::create(&parent.path().join("x".repeat(120))).unwrap();
+    let instance = long.lock_instance().unwrap();
+    assert!(instance.bind(SocketRole::TerminalHost).await.is_err());
+    let runtime = RuntimeDir::create(&parent.path().join("short")).unwrap();
+    let instance = runtime.lock_instance().unwrap();
+    let server = instance.bind(SocketRole::TerminalHost).await.unwrap();
+    let client = runtime.connect(SocketRole::TerminalHost).await.unwrap();
+    let peer = server.accept().await.unwrap().unwrap();
+    assert_eq!(
+        corvid_protocol::unix::peer_pid(&peer).unwrap(),
+        std::process::id()
+    );
+    assert_eq!(
+        corvid_protocol::unix::peer_pid(&client).unwrap(),
+        std::process::id()
+    );
 }

@@ -1,5 +1,5 @@
 #[cfg_attr(windows, path = "agents/windows.rs")]
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod agents;
 mod collector;
 mod control;
@@ -12,10 +12,10 @@ mod metadata;
 #[cfg(windows)]
 mod native_process;
 mod platform;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod process;
 mod projection;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod provider;
 mod publication;
 mod snapshot;
@@ -26,38 +26,38 @@ mod upgrade;
 mod windows;
 mod workspaces;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::future::Future;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::COMMAND_TIMEOUT;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::task::JoinSet;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::collector::HookEnvironment;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::identity::Identity;
 use crate::publication::MAX_WATCHES;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::workspaces::Workspaces;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use provider::hooks::observer_settings;
 #[cfg(windows)]
 #[path = "provider/windows_hooks.rs"]
 mod windows_hooks;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use provider::shell as shell_agent;
 #[cfg(windows)]
 pub use windows::run;
@@ -67,7 +67,7 @@ pub use windows::run_with_options;
 pub use windows_hooks::observer_settings;
 
 /// Read an existing daemon identity without creating state.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn stored_host_id(state_path: &std::path::Path) -> anyhow::Result<Option<uuid::Uuid>> {
     identity::read(&platform::StateDirectory::open(state_path)?)
 }
@@ -75,10 +75,10 @@ pub fn stored_host_id(state_path: &std::path::Path) -> anyhow::Result<Option<uui
 // Keep room for ordinary requests when the snapshot watch limit is full.
 const MAX_CONTROL_CONNECTIONS: usize = MAX_WATCHES + 8;
 const MAX_TUI_CONNECTIONS: usize = 8;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const MAX_COLLECTOR_CONNECTIONS: usize = 32;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn run(
     runtime_path: &Path,
     state_path: &Path,

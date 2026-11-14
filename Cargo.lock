@@ -1224,6 +1224,7 @@ name = "corvid-agent-deck"
 version = "0.1.5"
 dependencies = [
  "anyhow",
+ "cc",
  "clap",
  "corvid-client",
  "corvid-companion",

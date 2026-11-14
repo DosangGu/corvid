@@ -10,7 +10,7 @@ const MAX_WINDOWS: usize = 32;
 
 #[cfg(windows)]
 type Lease = std::fs::File;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 type Lease = nix::fcntl::Flock<std::fs::File>;
 
 #[derive(Serialize, Deserialize)]
@@ -148,7 +148,7 @@ fn locked(error: &anyhow::Error) -> bool {
             .downcast_ref::<std::io::Error>()
             .is_some_and(|error| error.raw_os_error() == Some(32))
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         error
             .downcast_ref::<nix::errno::Errno>()

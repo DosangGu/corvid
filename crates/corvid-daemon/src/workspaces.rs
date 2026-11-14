@@ -2,7 +2,7 @@ mod close;
 mod controllers;
 mod focus;
 mod restore;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod shell;
 
 use std::collections::HashMap;
@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::ProcessLiveness;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, CwdObservation, CwdSource, Layout, Location};
 use corvid_core::{InputRoute, Viewport};
@@ -29,11 +29,11 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::agents::Agents;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::agents::{Hook, HookBinding};
 use crate::collector::{CollectorDiagnostics, HookEnvironment};
 use crate::metadata::MetadataUpdates;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::process::{self, HookProducer, Incarnation, ProbeBudget, ProcessImage};
 use crate::projection;
 use crate::publication::{Capture, Group, Projection, Publication};
@@ -46,7 +46,7 @@ pub(crate) use close::Closed;
 pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
 pub(crate) use focus::{FocusDispatch, FocusRecovery};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use shell::Shells;
 
 pub(crate) const MAX_PTY_WORKERS: usize = 32;
@@ -101,9 +101,9 @@ pub(crate) struct Workspaces {
     pub(crate) collector: Arc<CollectorDiagnostics>,
     registry: Arc<Mutex<Registry>>,
     metadata: MetadataUpdates,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     boot_id: Option<Uuid>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     probes: Arc<ProbeBudget>,
     hook_environment: Arc<HookEnvironment>,
     host: Option<HostConfig>,
@@ -112,11 +112,11 @@ pub(crate) struct Workspaces {
 pub(crate) struct Registry {
     pub(crate) agents: Agents,
     metadata: MetadataUpdates,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     epoch: Uuid,
     publication: Publication,
     terminals: HashMap<Uuid, Location>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     shells: Shells,
     clients: HashMap<Uuid, Client>,
     controllers: Controllers,
@@ -135,7 +135,7 @@ struct Client {
     view: Option<ClientView>,
     focuses: mpsc::Sender<FocusDispatch>,
     disconnect: Option<oneshot::Sender<()>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     notices: Option<mpsc::Sender<Provider>>,
 }
 
@@ -180,18 +180,18 @@ impl Workspaces {
     }
     pub(crate) fn new(metadata: MetadataUpdates, hook_environment: Arc<HookEnvironment>) -> Self {
         let publication = Publication::seed(projection::layout(&metadata.layout()));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let epoch = Uuid::parse_str(&hook_environment.identity.epoch).expect("valid daemon epoch");
         Self {
             collector: Arc::default(),
             registry: Arc::new(Mutex::new(Registry {
                 agents: Agents::default(),
                 metadata: metadata.clone(),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 epoch,
                 publication,
                 terminals: HashMap::new(),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 shells: Shells::default(),
                 clients: HashMap::new(),
                 controllers: Controllers::default(),
@@ -204,9 +204,9 @@ impl Workspaces {
                 restores: HashMap::new(),
             })),
             metadata,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             boot_id: process::boot_id(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             probes: Arc::new(ProbeBudget::default()),
             hook_environment,
             host: None,
@@ -299,9 +299,9 @@ impl Workspaces {
             location,
             metadata: self.metadata.clone(),
             registry: Arc::downgrade(&self.registry),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             boot_id: self.boot_id,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             probes: Arc::clone(&self.probes),
             hook_environment: Arc::clone(&self.hook_environment),
             host: self.host.clone(),
@@ -387,7 +387,7 @@ impl Workspaces {
         self.lock_registry().publication.sequence()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn tick_agents(&self) {
         self.poll_shell_agents();
         let mut registry = self.lock_registry();
@@ -395,12 +395,12 @@ impl Workspaces {
         registry.publish(Vec::new());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn hook_binding(&self, association: Uuid) -> HookBinding {
         self.lock_registry().agents.binding(association)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn apply_hook(
         &self,
         hook: Hook,
@@ -427,7 +427,7 @@ impl Workspaces {
             .slots
             .values()
             .any(|slot| slot.terminal.has_live_terminal());
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let mut collector = registry.agents.collector_status();
         #[cfg(windows)]
         let mut collector = CollectorStatus::default();
@@ -441,7 +441,9 @@ impl Workspaces {
         mut target: AttachTarget,
         focuses: mpsc::Sender<FocusDispatch>,
         disconnect: Option<oneshot::Sender<()>>,
-        #[cfg(target_os = "linux")] notices: Option<mpsc::Sender<Provider>>,
+        #[cfg(any(target_os = "linux", target_os = "macos"))] notices: Option<
+            mpsc::Sender<Provider>,
+        >,
     ) -> Reply<Active> {
         let (location, generation, terminal, previous) = self.reserve(client, &mut target)?;
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
@@ -504,7 +506,7 @@ impl Workspaces {
                         view: None,
                         focuses,
                         disconnect,
-                        #[cfg(target_os = "linux")]
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
                         notices,
                     },
                 );
@@ -892,7 +894,7 @@ impl Workspaces {
 }
 
 fn terminal_host_ended(error: &anyhow::Error) -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) {
         return true;
     }
@@ -936,7 +938,7 @@ impl Registry {
                 self.metadata.observe_session(location, key);
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.metadata
             .update(layout, self.agents.changed_history(self.epoch));
         #[cfg(windows)]
@@ -962,7 +964,7 @@ impl Registry {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn shell_started(&mut self, id: Uuid, root: Incarnation) {
         self.shells.add(id, root);
     }
@@ -1002,11 +1004,11 @@ impl Registry {
             let _ = association;
             self.agents.retire_terminal(id);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(association) = association {
             self.agents.retire_launch(association);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(agent) = self.shells.remove(id) {
             self.agents.retire_shell(agent, ProcessLiveness::Unknown);
         }

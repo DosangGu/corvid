@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 mod common;
 
@@ -262,7 +262,7 @@ async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_e
 
 #[tokio::test]
 async fn takeover_checks_the_terminal_identity_and_refuses_a_pending_paste() {
-    let fixture = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let fixture = tempfile::tempdir().unwrap();
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     let mut owner = Tui::attach_target(
@@ -624,8 +624,9 @@ impl Tui {
     }
 
     async fn moved(&mut self, output: &mut Vec<u8>, destination: &ViewSelection) {
-        let Body::ViewChanged(view) = self.next_body(output).await else {
-            panic!("expected view change")
+        let body = self.next_body(output).await;
+        let Body::ViewChanged(view) = body else {
+            panic!("expected view change, got {body:?}")
         };
         assert_eq!(view.selection.as_ref(), Some(destination));
         self.route = view.route_token.unwrap();
@@ -691,7 +692,7 @@ async fn control(runtime: &Path, request: &str) -> String {
 
 #[tokio::test]
 async fn daemon_owns_split_panes_previews_and_exact_reattach() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let mut daemon = daemon(&runtime, &state).await;
@@ -791,7 +792,7 @@ async fn daemon_owns_split_panes_previews_and_exact_reattach() {
 
 #[tokio::test]
 async fn closes_views_and_preserves_other_writers() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let mut daemon = daemon(&runtime, &state).await;
@@ -893,7 +894,7 @@ async fn closes_views_and_preserves_other_writers() {
 
 #[tokio::test]
 async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let launch_dir = temporary.path().join("launch-directory");
@@ -960,7 +961,7 @@ async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
 
 #[tokio::test]
 async fn layout_recovery_preserves_evidence_and_future_schema() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let primary = state.join("state.json");
@@ -1048,7 +1049,7 @@ fn echo_fixture(label: &str) -> LaunchCommand {
 
 #[tokio::test]
 async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let fixture = temporary.path().join("claude");
     std::fs::write(
@@ -1205,7 +1206,7 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
 
 #[tokio::test]
 async fn silent_foreground_and_exec_changes_cannot_retarget_a_managed_run() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let fixture = temporary.path().join("claude");
     std::fs::write(
@@ -1273,7 +1274,7 @@ exec /bin/sleep 30
         })
         .await;
         let job_group = job.process_identity.unwrap().foreground_group.unwrap();
-        let job_image = std::fs::read_link(format!("/proc/{job_group}/exe")).unwrap();
+        let job_image = process_image(job_group as u32).unwrap();
         assert!(job_image.ends_with("cat"));
         assert_eq!(job.agent_run_id, run.agent_run_id);
         assert_eq!(job.badge, AgentBadge::Unknown as i32);
@@ -1284,8 +1285,7 @@ exec /bin/sleep 30
         })
         .await;
         tui.input(tui.route.clone(), 3, b"\n").await;
-        let proc_image = format!("/proc/{}/exe", shell.pid);
-        while !std::fs::read_link(&proc_image).is_ok_and(|image| image.ends_with("sleep")) {
+        while !process_image(shell.pid).is_ok_and(|image| image.ends_with("sleep")) {
             sleep(Duration::from_millis(5)).await;
         }
         let cached = corvid_client::agents(&runtime).await.unwrap();
@@ -1354,7 +1354,7 @@ async fn start_companion(
 
 #[tokio::test]
 async fn companion_hosts_reports_configured_identity_when_daemon_identity_differs() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let _daemon = daemon(&runtime, &state).await;
@@ -1525,11 +1525,12 @@ async fn focus(
 
 #[tokio::test]
 async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
-        let argv = shell("stty raw -echo; printf 'READY'; head -c 4 | od -An -tx1; sleep 4");
+        let argv =
+            shell("stty raw -echo; printf 'READY'; head -c 4 | od -An -tx1 | tr -s ' '; sleep 4");
         let mut tui = Tui::attach(&runtime, Some(argv)).await;
         let mut output = Vec::new();
         wait_for_text(&mut tui, &mut output, "READY").await;
@@ -1560,7 +1561,7 @@ async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
 
 #[tokio::test]
 async fn registered_focus_fences_input_and_changes_only_the_named_client() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let fixture = temporary.path().join("claude");
     std::fs::write(
@@ -1938,7 +1939,7 @@ fn assert_moved_entities(
 
 #[tokio::test]
 async fn pairing_code_is_single_use_and_rpc_replay_preserves_the_first_revision() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2061,7 +2062,7 @@ async fn pairing_code_is_single_use_and_rpc_replay_preserves_the_first_revision(
 
 #[tokio::test]
 async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2200,7 +2201,7 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
 
 #[tokio::test]
 async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let mut original = daemon(&runtime, &state).await;
@@ -2242,7 +2243,7 @@ async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
 
 #[tokio::test]
 async fn separate_workspace_writers_and_tab_transitions_preserve_exact_routes() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2393,7 +2394,7 @@ async fn wait_for_text(tui: &mut Tui, output: &mut Vec<u8>, needle: &str) {
 
 #[tokio::test]
 async fn incomplete_and_oversized_pastes_cannot_write_across_resize() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2448,7 +2449,7 @@ async fn incomplete_and_oversized_pastes_cannot_write_across_resize() {
 
 #[tokio::test]
 async fn accepted_paste_blocks_resize_until_its_full_batch_is_written() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2481,7 +2482,7 @@ async fn accepted_paste_blocks_resize_until_its_full_batch_is_written() {
 
 #[tokio::test]
 async fn stalled_partial_paste_reports_failure_and_fences_the_writer() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2512,7 +2513,7 @@ async fn stalled_partial_paste_reports_failure_and_fences_the_writer() {
 
 #[tokio::test]
 async fn resize_fences_previous_route_before_any_pty_write() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2555,7 +2556,7 @@ async fn resize_fences_previous_route_before_any_pty_write() {
 
 #[tokio::test]
 async fn malformed_and_stalled_frames_leave_the_existing_pty_usable() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
 
@@ -2668,7 +2669,7 @@ async fn reject_required_capability(runtime: &Path) {
 
 #[tokio::test]
 async fn stalled_render_and_snapshot_consumers_release_their_connections() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let layout = PressureLayout::seed(&state);
@@ -2717,8 +2718,15 @@ async fn stalled_render_and_snapshot_consumers_release_their_connections() {
         let mut redraw = frame.ansi;
         wait_for_text(&mut reattached, &mut redraw, "ORDERED-OUTPUT").await;
 
-        let status = std::fs::read_to_string(format!("/proc/{daemon_pid}/status")).unwrap();
-        let high_water = status.lines().find(|line| line.starts_with("VmHWM:")).unwrap();
+        #[cfg(target_os = "linux")]
+        let memory = std::fs::read_to_string(format!("/proc/{daemon_pid}/status")).unwrap();
+        #[cfg(target_os = "linux")]
+        let high_water = memory.lines().find(|line| line.starts_with("VmHWM:")).unwrap();
+        #[cfg(target_os = "macos")]
+        let memory = std::process::Command::new("ps").args(["-o", "rss=", "-p", &daemon_pid.to_string()]).output().unwrap();
+        #[cfg(target_os = "macos")]
+        let high_water = String::from_utf8_lossy(&memory.stdout);
+
         eprintln!("pressure moves={PRESSURE_MOVES} watch_count={PRESSURE_WATCHES} churn={:?} ping_max={:?} input_max={:?} render_disconnect={render_timeout:?} pty_queries={queries} {high_water}",
             pressure.elapsed, pressure.ping_max, pressure.input_max);
     }).await.unwrap();
@@ -2974,4 +2982,15 @@ async fn assert_watch_disconnected(watch: &mut ControlWire) {
         }
         assert!(last_sequence.is_some(), "watch closed before receiving any deltas");
     }).await.unwrap();
+}
+
+fn process_image(pid: u32) -> std::io::Result<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/exe"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        corvid_protocol::macos::process_path(pid)
+    }
 }

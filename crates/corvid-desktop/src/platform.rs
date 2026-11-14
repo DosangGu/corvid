@@ -19,3 +19,8 @@ pub fn default_state_dir() -> anyhow::Result<std::path::PathBuf> {
     };
     Ok(base.join("corvid/companion"))
 }
+
+#[cfg(target_os = "macos")]
+pub fn default_state_dir() -> anyhow::Result<std::path::PathBuf> {
+    Ok(corvid_protocol::macos::state_directory()?.join("companion"))
+}

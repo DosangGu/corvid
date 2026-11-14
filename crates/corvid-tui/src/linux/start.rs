@@ -16,7 +16,7 @@ use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-const TERMINFO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/terminfo/c/corvid"));
+const TERMINFO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/corvid.terminfo"));
 const STARTUP_POLL: Duration = Duration::from_millis(25);
 
 pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
@@ -99,14 +99,12 @@ pub(crate) async fn desktop_handoff(path: &Path, host: Uuid, epoch: Uuid) -> Res
 }
 
 async fn running_image(runtime: &RuntimeDir) -> Option<PathBuf> {
-    let peer = runtime
-        .connect(SocketRole::Control)
-        .await
-        .ok()?
-        .peer_cred()
-        .ok()?;
-    let pid = peer.pid()?;
+    let stream = runtime.connect(SocketRole::Control).await.ok()?;
+    let pid = corvid_protocol::unix::peer_pid(&stream).ok()?;
+    #[cfg(target_os = "linux")]
     let path = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    #[cfg(target_os = "macos")]
+    let path = corvid_protocol::macos::process_path(pid).ok()?;
     path.is_file().then_some(path)
 }
 
@@ -307,9 +305,17 @@ impl StartingDaemon {
         executable: &Path,
     ) -> Result<Self> {
         let terminfo = runtime.path().join("terminfo");
-        let entries = RuntimeDir::create_all(&terminfo.join("c"))?;
+        let entries = RuntimeDir::create_all(&terminfo.join(if cfg!(target_os = "macos") {
+            "63"
+        } else {
+            "c"
+        }))?;
         entries.replace_private_file("corvid", TERMINFO)?;
-        let entries = RuntimeDir::create_all(&terminfo.join("x"))?;
+        let entries = RuntimeDir::create_all(&terminfo.join(if cfg!(target_os = "macos") {
+            "78"
+        } else {
+            "x"
+        }))?;
         entries.replace_private_file("xterm-corvid-256color", TERMINFO)?;
 
         let diagnostics = tempfile::tempfile()?;

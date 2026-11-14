@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::Source;
 use corvid_core::agent::{ProcessLiveness, Provider};
 use corvid_core::layout::{CwdSource, Layout, Location};
@@ -18,15 +18,15 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::agents::ManagedLaunch;
 use crate::collector::HookEnvironment;
 use crate::metadata::MetadataUpdates;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::process::{
     self, Executable, Incarnation, Probe, ProbeBudget, ProbeResult, ProcessImage,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::provider;
 use crate::workspaces::Registry;
 
@@ -58,9 +58,9 @@ pub(crate) struct LaunchScope {
     pub(crate) location: Location,
     pub(crate) metadata: MetadataUpdates,
     pub(crate) registry: Weak<Mutex<Registry>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) boot_id: Option<Uuid>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) probes: Arc<ProbeBudget>,
     pub(crate) hook_environment: Arc<HookEnvironment>,
     pub(crate) host: Option<HostConfig>,
@@ -1154,13 +1154,13 @@ struct Running {
     shell: bool,
     dirty: bool,
     exit: Option<ExitStatus>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     process: TerminalProcess,
     #[cfg(windows)]
     provider: Option<Provider>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct TerminalProcess {
     managed: Option<ManagedLaunch>,
     probe: Option<Probe>,
@@ -1174,10 +1174,10 @@ impl Running {
     fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
         let id = Uuid::new_v4();
         let cwd = launch.cwd.clone();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let (session, process, shell, identity) =
             TerminalProcess::spawn(launch, viewport, scope, id)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let unmanaged = process.managed.is_none();
         #[cfg(windows)]
         let provider = launch.provider;
@@ -1209,7 +1209,7 @@ impl Running {
                 } else if let Some(root) = session.process_key() {
                     registry.agents.track_shell(id, root);
                 }
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 if shell && let Some(root) = identity {
                     registry.shell_started(id, root);
                 }
@@ -1226,7 +1226,7 @@ impl Running {
             shell,
             dirty: true,
             exit: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             process,
             #[cfg(windows)]
             provider,
@@ -1240,12 +1240,12 @@ impl Running {
     fn recover(saved: RetainedTerminal, scope: &LaunchScope) -> Result<Self> {
         let root = &scope.host.as_ref().ok_or_else(terminal_fault)?.root;
         let mut session = Backend::recover(root, saved.id)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let (process, identity) =
             TerminalProcess::started(None, &mut session, scope, saved.id, None);
         let registry = scope.registry.upgrade().ok_or_else(terminal_fault)?;
         let mut registry = registry.lock().expect("workspace registry lock poisoned");
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if saved.shell
             && let Some(root) = identity
         {
@@ -1275,7 +1275,7 @@ impl Running {
             shell: saved.shell,
             dirty: true,
             exit: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             process,
             #[cfg(windows)]
             provider: saved.provider,
@@ -1295,7 +1295,7 @@ impl Running {
         }
         self.dirty |= tick.output;
         if let Some(status) = tick.exit {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 self.process.probe = None;
                 if let Some(managed) = &self.process.managed {
@@ -1306,7 +1306,7 @@ impl Running {
             self.observe(exited(&status));
             self.exit = Some(status);
         } else {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             if let Some(cwd) = self.process.sample(tick.output)
                 && let Some(registry) = self.registry.upgrade()
             {
@@ -1338,7 +1338,7 @@ impl Drop for Running {
             let status = self.session.stop();
             self.observe(status.as_ref().map_or(ProcessLiveness::Unknown, exited));
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.exit.is_none()
             && !self.session.is_retained()
             && let Some(managed) = &self.process.managed
@@ -1351,7 +1351,7 @@ impl Drop for Running {
             managed.observe(liveness, None, source);
         }
         if let Some(registry) = self.registry.upgrade() {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let association = self
                 .process
                 .managed
@@ -1367,7 +1367,7 @@ impl Drop for Running {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TerminalProcess {
     fn spawn(
         launch: Launch,
@@ -1422,7 +1422,7 @@ impl TerminalProcess {
         let owner = managed
             .as_ref()
             .and(identity)
-            .and_then(|incarnation| ProcessImage::capture(incarnation, executable));
+            .and_then(|incarnation| ProcessImage::capture_started(incarnation, executable));
         let expected = executable.or(owner.map(|owner| owner.executable));
         let probe = process.map(|(pid, boot)| {
             Probe::new(
@@ -1455,7 +1455,7 @@ impl TerminalProcess {
 }
 
 impl Launch {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn into_command(self, program: Option<PathBuf>, qualified: bool) -> CommandBuilder {
         let qualified_provider = self.provider.filter(|_| qualified);
         let mut argv = self.argv.into_iter();

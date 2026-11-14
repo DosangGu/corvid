@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 mod common;
 
@@ -32,7 +32,7 @@ use common::{WAIT, command, daemon, start_daemon};
 
 #[tokio::test]
 async fn relays_daemon_terminal_frames_without_an_outer_tty() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
 
@@ -126,7 +126,7 @@ async fn local_host(runtime: &Path) -> String {
 
 #[tokio::test]
 async fn daemon_restart_preserves_host_identity_and_changes_epoch() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state/corvid");
     let mut first = daemon(&runtime, &state).await;
@@ -172,7 +172,7 @@ async fn daemon_restart_preserves_host_identity_and_changes_epoch() {
 
 #[tokio::test]
 async fn relays_real_control_session_over_binary_stdio() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let probe = temporary.path().join("provider-launched");
     for provider in ["claude", "codex"] {
@@ -290,7 +290,7 @@ fn verify_qualified_profiles(profiles: &[corvid_protocol::wire::ProviderProfile]
 
 #[tokio::test]
 async fn collector_status_separates_rejected_submissions_from_connection_failures() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let mut first = daemon(&runtime, &state).await;
@@ -393,7 +393,7 @@ async fn reject_unowned_hook(directory: &RuntimeDir) {
 
 #[tokio::test]
 async fn relays_a_complete_watch_setup_and_heartbeat_over_stdio() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
 
@@ -454,7 +454,7 @@ async fn relays_a_complete_watch_setup_and_heartbeat_over_stdio() {
 
 #[tokio::test]
 async fn relay_reports_unavailable_without_creating_runtime_directory() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("missing");
     timeout(WAIT, async {
         let mut relay = command(&runtime)
@@ -489,7 +489,7 @@ async fn relay_reports_unavailable_without_creating_runtime_directory() {
 
 #[tokio::test]
 async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("runtime");
     let directory = RuntimeDir::create(&runtime).unwrap();
     let instance = directory.lock_instance().unwrap();
@@ -547,7 +547,7 @@ async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay()
 
 #[tokio::test]
 async fn observers_exit_neutrally_with_missing_daemon_and_bad_or_stalled_input() {
-    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
     let runtime = temporary.path().join("missing");
     let valid = br#"{"hook_event_name":"SessionStart","source":"startup","session_id":"session"}"#;
     let oversized = vec![b'x'; 65 * 1024];

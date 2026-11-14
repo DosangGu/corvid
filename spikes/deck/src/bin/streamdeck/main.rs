@@ -1,38 +1,38 @@
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod input;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod lcd;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod usb;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::{thread, time::Duration};
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use anyhow::{Context, Result, bail};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use corvid_deck::live::{Capture, Face, LiveDeck};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use corvid_deck::{Deck, KEY_COUNT, PAGES};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use corvid_presentation::ipc::DesktopClient;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use hidapi::{HidApi, HidError};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use usb::{StreamDeck, supported_devices};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use uuid::Uuid;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
     eprintln!("The Corvid Stream Deck USB adapter currently targets Windows.");
     std::process::exit(1);
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 struct Options {
     serial: Option<String>,
     target: Option<Uuid>,
@@ -67,13 +67,25 @@ struct Options {
     demo: bool,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 impl Options {
     fn parse(args: Vec<String>) -> Result<Self> {
         let mut options = Self {
             serial: None,
             target: None,
-            instance: "main".into(),
+            instance: {
+                #[cfg(windows)]
+                {
+                    "main".into()
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    corvid_protocol::macos::runtime_directory()?
+                        .join("corvid-companion")
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            },
             demo: false,
         };
         let mut args = args.into_iter();
@@ -83,7 +95,7 @@ impl Options {
                 "--target" => {
                     options.target = Some(args.next().context("missing target client ID")?.parse()?)
                 }
-                "--pipe-instance" => {
+                "--pipe-instance" | "--socket-dir" => {
                     options.instance = args.next().context("missing pipe instance")?
                 }
                 "--demo" => options.demo = true,
@@ -94,7 +106,7 @@ impl Options {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn run(options: Options) -> Result<()> {
     let mut selected = options.serial;
     let mut api = HidApi::new().context("initialize USB HID")?;
@@ -106,7 +118,7 @@ fn run(options: Options) -> Result<()> {
             println!("Live display only. Set --target CLIENT_ID to enable focus.");
         }
         Some(LiveDevice {
-            client: DesktopClient::start(options.instance, || {})?,
+            client: DesktopClient::start(options.instance.into(), || {})?,
             deck: LiveDeck::default(),
             target: options.target,
         })
@@ -157,14 +169,14 @@ fn run(options: Options) -> Result<()> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 struct LiveDevice {
     client: DesktopClient,
     deck: LiveDeck,
     target: Option<Uuid>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 impl LiveDevice {
     fn refresh(&mut self) {
         let display = self.client.display.borrow_and_update().clone();
@@ -227,7 +239,7 @@ impl LiveDevice {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn serve(device: &StreamDeck, deck: &mut Deck, renderer: &lcd::Renderer) -> Result<()> {
     let mut shown = deck.frame();
     renderer.present(device, None, &shown)?;
@@ -258,7 +270,7 @@ fn serve(device: &StreamDeck, deck: &mut Deck, renderer: &lcd::Renderer) -> Resu
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn discard_pending_input(device: &StreamDeck, keys: &mut input::KeyEdges) -> Result<()> {
     // Queue entries accumulated during a redraw may refer to the old layout.
     for _ in 0..64 {

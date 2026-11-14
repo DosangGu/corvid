@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .manifest_required()?;
     }
-    if env::var("CARGO_CFG_TARGET_OS")? != "linux" {
+    if !matches!(env::var("CARGO_CFG_TARGET_OS")?.as_str(), "linux" | "macos") {
         return Ok(());
     }
 
@@ -37,5 +37,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             io::Error::other(format!("compiling Corvid terminfo failed ({status})")).into(),
         );
     }
+    // macOS tic uses hexadecimal directory names; embed one stable build path.
+    let compiled = ["c/corvid", "63/corvid"]
+        .into_iter()
+        .map(|name| output.join("terminfo").join(name))
+        .find(|path| path.is_file())
+        .ok_or("tic did not generate the corvid profile")?;
+    std::fs::copy(compiled, output.join("corvid.terminfo"))?;
     Ok(())
 }

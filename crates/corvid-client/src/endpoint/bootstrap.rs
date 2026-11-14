@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::{RemoteHost, drain_diagnostic, relay_failure};
 
+const MACOS_SCRIPT: &str = include_str!("bootstrap_macos.sh");
 const LINUX_SCRIPT: &str = include_str!("bootstrap.sh");
 const WINDOWS_SCRIPT: &str = include_str!("bootstrap_windows.ps1");
 const WINDOWS_INSTALL: &str = include_str!("install_windows.ps1");
@@ -35,6 +36,7 @@ pub enum DaemonInstallation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HostPlatform {
     Linux,
+    Macos,
     Windows,
 }
 
@@ -57,9 +59,10 @@ impl RemoteHost {
             return Ok(HostPlatform::Linux);
         }
         // Start with a single shell-neutral read-only command. Never send the
-        // POSIX bootstrap to a host that has not identified itself as Linux.
+        // POSIX bootstrap to a host that has not identified itself as Linux or Darwin.
         match self.bootstrap("uname -s", None).await {
             Ok(output) if response(&output) == b"Linux" => return Ok(HostPlatform::Linux),
+            Ok(output) if response(&output) == b"Darwin" => return Ok(HostPlatform::Macos),
             Err(error) if !setup_unavailable(&error) => return Err(error),
             _ => {}
         }
@@ -74,6 +77,7 @@ impl RemoteHost {
     pub async fn probe_daemon(&self, platform: HostPlatform) -> Result<Option<DaemonInstallation>> {
         let command = match platform {
             HostPlatform::Linux => linux_command("probe"),
+            HostPlatform::Macos => macos_command("probe"),
             HostPlatform::Windows => windows_setup(WINDOWS_PROBE),
         };
         match response(&self.bootstrap(&command, None).await?) {
@@ -94,10 +98,13 @@ impl RemoteHost {
     ) -> Result<()> {
         validate_payload(binary, sha256)?;
         match platform {
-            HostPlatform::Linux => {
+            HostPlatform::Linux | HostPlatform::Macos => {
                 let header = format!("{} {sha256}\n", binary.len());
-                self.bootstrap(&linux_command("install"), Some((header.as_bytes(), binary)))
-                    .await?;
+                self.bootstrap(
+                    &unix_command(platform, "install"),
+                    Some((header.as_bytes(), binary)),
+                )
+                .await?;
             }
             HostPlatform::Windows => {
                 let archive = windows_archive(binary)?;
@@ -143,8 +150,8 @@ impl RemoteHost {
             .map(|host| host.to_string())
             .unwrap_or_default();
         match platform {
-            HostPlatform::Linux => {
-                let command = linux_command(&format!("upgrade {previous_version} {host}"));
+            HostPlatform::Linux | HostPlatform::Macos => {
+                let command = unix_command(platform, &format!("upgrade {previous_version} {host}"));
                 let header = format!("{} {sha256}\n", binary.len());
                 self.bootstrap(&command, Some((header.as_bytes(), binary)))
                     .await?;
@@ -165,7 +172,7 @@ impl RemoteHost {
         daemon: DaemonInstallation,
     ) -> Result<()> {
         let arguments = match platform {
-            HostPlatform::Linux => "ensure-daemon",
+            HostPlatform::Linux | HostPlatform::Macos => "ensure-daemon",
             HostPlatform::Windows => "ensure-daemon --ssh",
         };
         self.bootstrap(&daemon_command(platform, daemon, arguments), None)
@@ -236,12 +243,12 @@ pub(super) fn daemon_command(
     arguments: &str,
 ) -> String {
     match platform {
-        HostPlatform::Linux => {
+        HostPlatform::Linux | HostPlatform::Macos => {
             let mode = match daemon {
                 DaemonInstallation::Path => "path",
                 DaemonInstallation::Managed => "managed",
             };
-            linux_command(&format!("{mode} {arguments}"))
+            unix_command(platform, &format!("{mode} {arguments}"))
         }
         HostPlatform::Windows => {
             let resolve = match daemon {
@@ -256,6 +263,19 @@ pub(super) fn daemon_command(
 pub(super) fn linux_command(arguments: &str) -> String {
     // The command and arguments are fixed. The artifact header and bytes travel over stdin.
     let script = LINUX_SCRIPT.replace('\'', "'\\''");
+    format!("sh -c '{script}' corvid-ssh {arguments}")
+}
+
+fn unix_command(platform: HostPlatform, arguments: &str) -> String {
+    match platform {
+        HostPlatform::Macos => macos_command(arguments),
+        HostPlatform::Linux => linux_command(arguments),
+        HostPlatform::Windows => unreachable!("Windows uses PowerShell"),
+    }
+}
+
+fn macos_command(arguments: &str) -> String {
+    let script = MACOS_SCRIPT.replace('\'', "'\\''");
     format!("sh -c '{script}' corvid-ssh {arguments}")
 }
 
@@ -307,7 +327,7 @@ fn setup_unavailable(error: &anyhow::Error) -> bool {
 fn unsupported_host() -> ProtocolFault {
     ProtocolFault::new(
         "UnsupportedHost",
-        "automatic installation requires a Linux x86_64 or Windows x64 host",
+        "automatic installation requires a Linux x86_64, Windows x64, or macOS Apple Silicon host",
     )
 }
 
@@ -380,9 +400,9 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn linux_bootstrap_preserves_runtime_locale() {
+    fn unix_bootstrap_preserves_runtime_locale() {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
         use std::process::{Command, Stdio};
@@ -399,10 +419,15 @@ mod tests {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let path = format!("{}:/usr/bin:/bin", home.display());
-        let checksum = Command::new("sha256sum")
-            .arg(home.join("corvid"))
-            .output()
-            .unwrap();
+        let mut checksum = Command::new(if cfg!(target_os = "macos") {
+            "shasum"
+        } else {
+            "sha256sum"
+        });
+        if cfg!(target_os = "macos") {
+            checksum.args(["-a", "256"]);
+        }
+        let checksum = checksum.arg(home.join("corvid")).output().unwrap();
         assert!(checksum.status.success());
         let checksum = String::from_utf8(checksum.stdout).unwrap();
         let checksum = checksum.split_whitespace().next().unwrap();
@@ -422,7 +447,17 @@ mod tests {
             for locale in [None, Some(""), Some("C"), Some("C.UTF-8")] {
                 let mut command = Command::new("sh");
                 command
-                    .args(["-c", &linux_command(arguments)])
+                    .args([
+                        "-c",
+                        &unix_command(
+                            if cfg!(target_os = "macos") {
+                                HostPlatform::Macos
+                            } else {
+                                HostPlatform::Linux
+                            },
+                            arguments,
+                        ),
+                    ])
                     .env("HOME", home)
                     .env("PATH", path)
                     .env("CORVID_RUNTIME_DIR", home.join("runtime"))

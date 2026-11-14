@@ -1,5 +1,8 @@
 # Daemon Foundation
 
+For Apple Silicon paths, native behavior, building, and distribution, see
+[macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
+
 The daemon service owns PTYs and their screens. Automatically started daemons
 delegate each terminal to a private terminal-host process. The attach process owns the outer TTY.
 The control socket supports host identity, health, workspace inventory, and ping

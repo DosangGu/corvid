@@ -346,7 +346,7 @@ impl Registry {
                 }))
             }
             ControllerCommand::Acknowledge { run, attention } => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 let acknowledged = self.agents.acknowledge(run, attention);
                 #[cfg(windows)]
                 let acknowledged = None;

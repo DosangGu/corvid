@@ -1,12 +1,14 @@
 mod frame;
+#[cfg(target_os = "macos")]
+pub mod macos;
 mod preflight;
 mod provider;
 mod session;
 pub mod snapshot;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod upgrade;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod unix;
 #[cfg(windows)]
 pub mod windows;
