@@ -105,12 +105,13 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
             subprocess.run(["xdotool", "key", "--clearmodifiers", chord], check=True, timeout=10)
 
         # The overflow menu is in the top-right of the 1080px client area.
-        subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
+        key(window, "Escape")  # Dismiss the picker before opening the menu.
+        time.sleep(0.1)
         subprocess.run(["xdotool", "mousemove", "--window", window, "1055", "20", "click", "1"], check=True, timeout=10)
         time.sleep(0.3)
         if screenshot := os.environ.get("CORVID_DESKTOP_SCREENSHOT"):
             # Capture the empty window's menu, never a user's terminal content.
-            subprocess.run(["scrot", "--focused", screenshot], check=True, timeout=10)
+            subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
         key(window, "Return")  # New window is the first menu entry.
         extra = wait_for_icon("Corvid Desktop", excluded=(first_window, window))
         manifest = root / "state/corvid/companion/desktop-view/windows.json"
@@ -126,11 +127,11 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
         key(extra, "alt+F4")
         wait_for_saved_windows(2)
         key(window, "ctrl+shift+q")
-        desktop.wait(timeout=15)
+        assert desktop.wait(timeout=15) == 0, "Desktop failed while quitting"
         assert previous.poll() is None, "Quitting one Desktop process closed another"
         assert wait_for_writer() == retired
         key(first_window, "ctrl+shift+q")
-        previous.wait(timeout=15)
+        assert previous.wait(timeout=15) == 0, "The original Desktop failed while quitting"
 
         desktop = subprocess.Popen([str(root / "corvid-desktop")], env=environment, start_new_session=True)
         restored = wait_for_icon("Corvid Desktop")
@@ -147,7 +148,7 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
         key(picker, "alt+F4")
         wait_for_saved_windows(1)
         key(window, "alt+F4")  # Closing the final terminal window preserves it.
-        desktop.wait(timeout=15)
+        assert desktop.wait(timeout=15) == 0, "Desktop failed while closing its last window"
         wait_for_saved_windows(1)
         desktop = subprocess.Popen([str(root / "corvid-desktop")], env=environment, start_new_session=True)
         window = wait_for_icon("Corvid Desktop")

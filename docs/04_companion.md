@@ -212,6 +212,8 @@ and left intact. Per-window process locks prevent simultaneous launches from res
 the same window. An interrupted process leaves its windows available for the next launch.
 Window size, position, and monitor restoration remain deferred to #49.
 
+![Desktop's New window and Quit menu](images/desktop-window-menu.png)
+
 Ctrl+Shift+N creates a workspace, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected workspace.

@@ -134,7 +134,12 @@ impl DesktopWindows {
             return true;
         }
         if self.0.entries.borrow().len() == 1 {
-            self.quit(cx);
+            // X11 invokes this callback while borrowing its platform state.
+            let windows = self.clone();
+            cx.spawn(async move |cx| {
+                let _ = cx.update(|cx| windows.quit(cx));
+            })
+            .detach();
             return false;
         }
         let Some(mut entry) = self.0.entries.borrow_mut().remove(&id) else {
