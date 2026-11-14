@@ -24,6 +24,74 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[tokio::test]
+async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shell() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    let mut first = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--new-workspace",
+            "Restore test",
+            "--",
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+        ]
+        .map(OsString::from),
+    )?;
+    first.wait_for("PS ")?;
+    first.send(b"\x1dt")?;
+    first.wait_for("[2:")?;
+    first.send(b"[Console]::WriteLine(('BEFORE_' + 'SPLIT'))\r")?;
+    first.wait_for("BEFORE_SPLIT")?;
+    first.send(b"\x1d%")?;
+    first.wait_without("BEFORE_SPLIT")?;
+    // Observe the newly selected pane before sending input through its fresh route.
+    let selected = tokio::time::timeout(WAIT, async {
+        loop {
+            let snapshot = corvid_client::snapshot(&runtime).await?;
+            if let Some((view, terminal)) = snapshot.snapshot().entities().find_map(|entity| {
+                if let Some(Body::Client(client)) = &entity.body {
+                    Some((client.active_selection()?.clone(), client.active_terminal()?.to_owned()))
+                } else { None }
+            }) {
+                let split = snapshot.snapshot().entities().any(|entity| {
+                    matches!(&entity.body, Some(Body::Workspace(workspace)) if workspace.tabs.iter().any(|tab| tab.tab_id == view.tab_id && tab.nodes.len() == 3))
+                });
+                if split { break Ok::<_, anyhow::Error>((view, terminal)); }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await??;
+    first.wait_for("Windows PowerShell")?;
+    first.send(b"$restoreValue=('RESTORE_' + 'ALIVE'); [Console]::WriteLine($restoreValue)\r")?;
+    first.wait_for("RESTORE_ALIVE")?;
+    first.send(b"\x1dd")?;
+    first.expect_exit(0)?;
+    let store = corvid_client::view_state::ViewStore::new(runtime.join("client-views/tui"));
+    let saved = store.last().context("TUI did not save its view")?;
+    ensure!(
+        saved.location.pane.to_string() == selected.0.pane_id,
+        "saved the wrong pane"
+    );
+
+    let mut reopened = Tui::open_sized_target(&runtime, None, Vec::<OsString>::new(), COLS, ROWS)?;
+    reopened.wait_for("RESTORE_ALIVE")?;
+    let snapshot = corvid_client::snapshot(&runtime).await?;
+    ensure!(snapshot.snapshot().entities().any(|entity| {
+        matches!(&entity.body, Some(Body::Client(client)) if client.active_selection() == Some(&selected.0) && client.active_terminal() == Some(selected.1.as_str()))
+    }), "reopened another pane or replaced the terminal");
+    reopened.send(b"[Console]::WriteLine(('CHECK_' + $restoreValue))\r")?;
+    reopened.wait_for("CHECK_RESTORE_ALIVE")?;
+    reopened.send(b"\x1dd")?;
+    reopened.expect_exit(0)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -1100,6 +1168,16 @@ impl Tui {
         cols: u16,
         rows: u16,
     ) -> Result<Self> {
+        Self::open_sized_target(runtime, Some(runtime), args, cols, rows)
+    }
+
+    fn open_sized_target(
+        state_runtime: &Path,
+        runtime: Option<&Path>,
+        args: impl IntoIterator<Item = OsString>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
             cols,
@@ -1119,8 +1197,12 @@ impl Tui {
             }
         });
         let mut command = CommandBuilder::new(CORVID);
-        command.arg("--runtime-dir");
-        command.arg(runtime);
+        command.env("CORVID_VIEW_STATE_DIR", state_runtime.join("client-views"));
+        command.env_remove("CORVID_RUNTIME_DIR");
+        if let Some(runtime) = runtime {
+            command.arg("--runtime-dir");
+            command.arg(runtime);
+        }
         command.args(args);
         let child = pair.slave.spawn_command(command)?;
         let mut tui = Self {

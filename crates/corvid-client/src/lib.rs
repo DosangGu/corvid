@@ -19,6 +19,8 @@ mod tty;
 mod tty;
 #[cfg(any(target_os = "linux", windows))]
 mod upgrade;
+#[cfg(any(target_os = "linux", windows))]
+pub mod view_state;
 
 #[cfg(any(target_os = "linux", windows))]
 pub use attach::{AttachOptions, attach, check_tty};

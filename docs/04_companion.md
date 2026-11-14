@@ -168,6 +168,32 @@ to open a separate tab while another client is writing. **⋯ → Detach** and w
 release the writer and keep PTYs running while the daemon survives.
 Use `exit` in a shell to end that PTY.
 
+Desktop remembers the last successful Local, SSH, or WSL connection and the selected
+workspace, tab, and pane for each connection. Relaunching Desktop reconnects to that
+target and selects the saved view. An explicit `--ssh-alias` or `--wsl-distribution`
+overrides the remembered connection; that target's saved view is still used if present.
+The saved host ID must match the new authenticated daemon connection. A failed remote
+connection remains selected so it can be retried or changed through Settings.
+
+Restoration reads a fresh layout snapshot. If the pane was deleted, Desktop chooses
+the first remaining pane in its tab; if the tab was deleted, it chooses the first tab
+in the same workspace. A removed workspace or an empty terminal opens the workspace
+picker. Selecting a workspace there explicitly may open a shell, but restoration
+itself never launches a shell or agent. Live terminals keep their existing processes
+and receive fresh client identities and input routes on reattach.
+
+These preferences are independent of TUI navigation and daemon metadata. Desktop
+stores private, schema-versioned JSON in `desktop-view/view.json` below its `--state-dir`
+(by default `%LOCALAPPDATA%\Corvid\companion` on Windows or
+`$XDG_STATE_HOME/corvid/companion`, falling back to `~/.local/state/corvid/companion`,
+on Linux). Writes are coalesced for 250 ms off the UI thread and flushed on clean
+disconnect or exit. The previous valid file is retained as `view.json.bak`; corrupt
+files recover from that backup, and unsupported schemas remain untouched. Only
+connection labels, host identity, and layout IDs are stored, never terminal content
+or input routes. Up to 64 connection targets are retained. Concurrent Desktop instances
+share the last saved view per target; window placement and independent window profiles
+remain deferred.
+
 Ctrl+Shift+N creates a workspace, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected workspace.

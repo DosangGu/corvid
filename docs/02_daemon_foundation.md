@@ -53,6 +53,30 @@ the current daemon epoch. Existing provider processes retain their original obse
 environment and may need a fresh invocation to restore qualified hook monitoring.
 
 Press Ctrl-] then d to detach and run `corvid` again to return to the shell.
+The TUI remembers its last successful daemon endpoint and workspace/tab/pane selection
+separately from Desktop. Plain `corvid` or `corvid attach` restores that view after
+verifying the host identity and reading a fresh layout snapshot. `--runtime-dir` and
+`CORVID_RUNTIME_DIR` override the saved endpoint; explicit workspace/tab/pane selectors,
+new-terminal commands, and layout commands override the saved selection. A TUI launched
+through SSH remembers the daemon on that execution host; it does not launch SSH or WSL.
+
+If a saved pane or tab was removed, restoration chooses the first remaining pane in
+that tab or the first tab in the same workspace. If the workspace no longer exists,
+choose a target explicitly with `corvid attach --workspace ID --tab ID --pane ID`.
+If the saved terminal is no longer running, use an explicit launch such as
+`corvid attach --new --workspace ID --tab ID --pane ID`. Restoration never starts a
+replacement process; first use without a saved view retains the default-shell behavior.
+
+TUI preferences use private JSON at `%LOCALAPPDATA%\Corvid\clients\tui\view.json`
+on Windows and `$XDG_STATE_HOME/corvid/clients/tui/view.json` (or
+`~/.local/state/corvid/clients/tui/view.json`) on Linux. `CORVID_VIEW_STATE_DIR`
+overrides the parent of the `tui` directory, including in isolated test fixtures.
+Changes are coalesced for 250 ms by a separate writer and flushed on clean exit.
+An atomic replacement retains `view.json.bak`; malformed state falls back to the
+backup or default startup, while unsupported schemas and oversized files are preserved.
+Each target has one last saved selection, so concurrent TUIs use the most recently
+saved selection for their next startup. Failed connections do not overwrite it.
+
 The bottom status bar shows **CORVID**, the current workspace, and tab numbers
 and names, such as **[1:Shell]** and **2:Tests**. Brackets and highlighting
 identify the active tab. Press Ctrl-] to show command mode and available keys.

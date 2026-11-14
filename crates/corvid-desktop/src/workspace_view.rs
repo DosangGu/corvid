@@ -65,6 +65,7 @@ impl Lifetime {
 }
 
 pub struct WorkspaceView {
+    restore_picker_shown: bool,
     naming: Option<naming::NameDraft>,
     lifetime: Lifetime,
     alias: String,
@@ -120,9 +121,15 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let destination = destination.or_else(|| {
+            corvid_client::view_state::ViewStore::new(agent_deck.state.join("desktop-view"))
+                .last()
+                .and_then(|saved| Destination::from_saved(saved.target).ok())
+        });
         let setup_focus = cx.focus_handle();
         window.focus(&setup_focus);
         let mut view = Self {
+            restore_picker_shown: false,
             naming: None,
             lifetime,
             alias: match &destination {
@@ -315,6 +322,7 @@ impl WorkspaceView {
             }
         };
         self.lifetime.replace(job);
+        self.restore_picker_shown = false;
         self.error = None;
         self.terminal = None;
         self.selected = None;
@@ -430,6 +438,11 @@ impl WorkspaceView {
         let Some(ui) = self.session.as_ref().map(Session::ui) else {
             return;
         };
+        if ui.restore_unavailable && !self.restore_picker_shown {
+            self.restore_picker_shown = true;
+            self.switcher_open = true;
+            window.focus(&self.setup_focus);
+        }
         if ui.closed_view {
             self.naming = None;
             self.selected = None;

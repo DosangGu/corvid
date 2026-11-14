@@ -101,6 +101,9 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         })
         .detach();
 
+        // TODO: Restore Desktop window placement
+        // Persist bounds separately from workspace navigation and validate them against
+        // the current monitor layout before applying them.
         let bounds = Bounds::centered(None, size(px(1080.), px(680.)), cx);
         let options = WindowOptions {
             app_id: Some(app_icon::APP_ID.into()),
