@@ -9,6 +9,7 @@ mod endpoint;
 mod keys;
 #[cfg(any(target_os = "linux", windows))]
 mod relay;
+mod restore;
 #[cfg(any(target_os = "linux", windows))]
 mod runtime;
 mod snapshot;

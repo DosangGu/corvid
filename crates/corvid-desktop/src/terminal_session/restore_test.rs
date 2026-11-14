@@ -79,13 +79,12 @@ impl AttachedSession {
     }
 
     fn with_store(state: &Path, store: ViewStore) -> Result<Self> {
-        let (session, job, _prompts) = Session::start(
-            Destination::Local,
-            state.to_owned(),
-            store,
-            AttachTarget::Default,
-            false,
-        )?;
+        Self::with_target(state, store, AttachTarget::Default)
+    }
+
+    fn with_target(state: &Path, store: ViewStore, target: AttachTarget) -> Result<Self> {
+        let (session, job, _prompts) =
+            Session::start(Destination::Local, state.to_owned(), store, target, false)?;
         Ok(Self {
             session,
             job: Some(job),
@@ -263,6 +262,25 @@ async fn verify_restore(state: &Path) -> Result<()> {
         "failed restoration overwrote the saved view"
     );
     drop(empty);
+    let empty = AttachedSession::with_target(
+        state,
+        store,
+        AttachTarget::ResumeAgents {
+            view: view.clone(),
+            host_id: selected.host_id.clone().unwrap(),
+            pane_only: true,
+        },
+    )?;
+    let ui = wait_disconnected(&empty.session).await?;
+    ensure!(ui.restore_supported && ui.selected.as_ref() == Some(view));
+    ensure!(
+        ui.restore_results
+            .iter()
+            .any(|result| result.location.as_ref() == Some(view)
+                && result.status() == corvid_protocol::wire::PaneRestoreStatus::Empty),
+        "explicit restore did not preserve the empty shell pane"
+    );
+    drop(empty);
     Ok(())
 }
 
@@ -321,6 +339,25 @@ async fn verify_window_restore(state: &Path) -> Result<()> {
     ensure!(
         sessions[0].session.ui().connected,
         "restoration displaced the existing writer"
+    );
+    drop(duplicate);
+    let occupied = sessions[0].session.ui();
+    let duplicate = AttachedSession::with_target(
+        state,
+        windows[0].store.clone(),
+        AttachTarget::ResumeAgents {
+            view: occupied.selected.clone().unwrap(),
+            host_id: occupied.host_id.clone().unwrap(),
+            pane_only: false,
+        },
+    )?;
+    let rejected = wait_disconnected(&duplicate.session).await?;
+    ensure!(
+        rejected.restore_results.iter().any(|result| {
+            result.terminal_id == occupied.terminal_id
+                && result.status() == corvid_protocol::wire::PaneRestoreStatus::Existing
+        }) && sessions[0].session.ui().connected,
+        "agent restore displaced an existing writer"
     );
     drop(duplicate);
     drop(sessions);

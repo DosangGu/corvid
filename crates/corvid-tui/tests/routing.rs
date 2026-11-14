@@ -165,7 +165,7 @@ async fn tab_names_and_terminal_titles_share_state_without_changing_input_routes
             if tab["manual_name"] == "manual tab" {
                 assert!(tab["root"].get("manual_name").is_none());
                 assert!(!String::from_utf8_lossy(&bytes).contains("latest;🐦"));
-                assert_eq!(stored["schema_version"], 4);
+                assert_eq!(stored["schema_version"], 5);
                 break;
             }
             sleep(Duration::from_millis(25)).await;
@@ -432,6 +432,23 @@ async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     drop(client);
     let mut client = Tui::attach(&runtime, None).await;
     assert_eq!(client.route.terminal_id, terminal_id);
+    let mut restore = corvid_client::ControlEndpoint::Local(runtime.clone())
+        .interactive(vec![corvid_protocol::RESTORE_AGENTS_CAPABILITY.into()])
+        .await
+        .unwrap();
+    let result = restore
+        .restore_workspace(corvid_protocol::wire::RestoreWorkspace {
+            workspace_id: client.selection.workspace_id.clone(),
+            pane_id: Some(client.selection.pane_id.clone()),
+            mode: corvid_protocol::wire::AgentRestoreMode::Retry as i32,
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.panes[0].terminal_id.as_ref(), Some(&terminal_id));
+    assert_eq!(
+        result.panes[0].status(),
+        corvid_protocol::wire::PaneRestoreStatus::Existing
+    );
     let mut output = Vec::new();
     wait_for_text(&mut client, &mut output, "BEFORE_").await;
     client
@@ -966,7 +983,7 @@ async fn layout_recovery_preserves_evidence_and_future_schema() {
         assert_eq!(control(&runtime, "workspaces").await, original);
         let updated: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&primary).unwrap()).unwrap();
-        assert_eq!(updated["schema_version"], 4);
+        assert_eq!(updated["schema_version"], 5);
         assert_eq!(updated["history"], serde_json::json!([]));
         assert_eq!(std::fs::read(&backup).unwrap(), bytes);
         migrated.kill().await.unwrap();

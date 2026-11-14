@@ -52,14 +52,14 @@ pub enum Axis {
     Vertical,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CwdObservation {
     pub path: Vec<u8>,
     pub observed_unix_ms: u64,
     pub source: CwdSource,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CwdSource {
     LaunchDirectory,
@@ -102,6 +102,15 @@ impl CloseTarget {
 pub struct InvalidLayout;
 
 impl Layout {
+    pub fn locations(&self) -> impl Iterator<Item = Location> + '_ {
+        self.workspaces.iter().flat_map(|workspace| {
+            workspace
+                .tabs
+                .iter()
+                .flat_map(|tab| self.panes(workspace.id, tab.id))
+        })
+    }
+
     pub fn rename_tab(
         &mut self,
         location: Location,
@@ -627,7 +636,17 @@ fn validate_label(label: &str) -> Result<(), InvalidLayout> {
 }
 
 fn validate_path(path: &[u8]) -> Result<(), InvalidLayout> {
-    if path.first() != Some(&b'/') || path.len() > MAX_PATH || path.contains(&0) {
+    // Metadata also stores native Windows launch directories. Keep validation
+    // portable; the execution host performs the filesystem check before launch.
+    let drive_path = path.strip_prefix(br"\\?\").unwrap_or(path);
+    let windows_absolute = drive_path.len() >= 3
+        && drive_path[0].is_ascii_alphabetic()
+        && drive_path[1] == b':'
+        && matches!(drive_path[2], b'/' | b'\\');
+    if !(path.first() == Some(&b'/') || windows_absolute)
+        || path.len() > MAX_PATH
+        || path.contains(&0)
+    {
         return Err(InvalidLayout);
     }
     Ok(())
@@ -636,6 +655,26 @@ fn validate_path(path: &[u8]) -> Result<(), InvalidLayout> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_directories_accept_absolute_unix_and_windows_paths() {
+        for path in [
+            b"/project".as_slice(),
+            br"C:\project",
+            br"\\?\C:\project",
+            b"C:/project",
+        ] {
+            assert!(validate_path(path).is_ok());
+        }
+        for path in [
+            b"relative".as_slice(),
+            br"C:project",
+            br"\project",
+            b"/bad\0path",
+        ] {
+            assert!(validate_path(path).is_err());
+        }
+    }
 
     #[test]
     fn automatic_titles_follow_panes_and_tab_positions() {

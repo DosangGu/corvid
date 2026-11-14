@@ -18,6 +18,25 @@ pub enum Provider {
     Codex,
 }
 
+/// A provider conversation, independent of a process, pane, or daemon epoch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionKey {
+    pub provider: Provider,
+    pub provider_session_id: String,
+}
+
+impl AgentSessionKey {
+    pub fn is_valid(&self) -> bool {
+        let id = &self.provider_session_id;
+        !id.is_empty()
+            && id.len() <= 256
+            && !id.starts_with('-')
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {

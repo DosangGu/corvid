@@ -191,11 +191,20 @@ connection remains selected so it can be retried or changed through Settings.
 
 Restoration reads a fresh layout snapshot. If the pane was deleted, Desktop chooses
 the first remaining pane in its tab; if the tab was deleted, it chooses the first tab
-in the same workspace. A removed workspace, an empty terminal, or an occupied pane opens
-the workspace picker. Restoration never takes input away from another writer.
+in the same workspace. A removed workspace opens the workspace picker. An empty or
+occupied saved pane remains visible with explicit recovery controls. Restoration never
+takes input away from another writer.
 Selecting a workspace there explicitly may open a shell, but restoration
 itself never launches a shell or agent. Live terminals keep their existing processes
 and receive fresh client identities and input routes on reattach.
+
+Choose **⋯ → Restore workspace agent sessions** to explicitly resume the last verified
+conversation in each empty pane. Each empty pane also offers **Restore / retry agent
+session** and **Open shell**. Errors appear on the affected pane while other sessions
+recover. Existing terminals are reused without taking their writer. This action is
+separate from automatic window restoration and requires a daemon advertising
+`workspace.restore_agents.v1`. See [saved conversation restoration](02_daemon_foundation.md#restore-saved-agent-conversations)
+for provider setup, identity rules, and unsupported conversation transitions.
 
 These preferences are independent of TUI navigation and daemon metadata. Desktop
 stores a private, schema-versioned window list in `desktop-view/windows.json` and

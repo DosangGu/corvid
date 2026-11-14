@@ -1464,7 +1464,7 @@ actual deployment, including service/cgroup policy and runtime-directory lifetim
 | D. SSH connection loss | Preserved remotely | Working-channel loss detaches TUI; control-only loss merely disconnects watch | Reattach/full redraw for working channel; full snapshot for control; register new TUI client if applicable |
 | E. Remote control relay restart | Preserved | Daemon and working client unchanged | Reconnect background stdio SSH and full snapshot; retain/revalidate existing binding |
 | F. PTY-owning daemon crash/restart | **Not preserved/recoverable by contract**; an orphan process might survive, but PTY ownership/screen continuity is lost | New epoch; saved layout only, old runs historical/Unknown; old focus rejected | Reconcile stale slots; explicitly create new PTYs/runs; no silent process adoption |
-| G. Remote OS reboot | Old processes/PTYs do not survive | HostId/layout may survive; new epoch, no old Live run | Restore layout/CWD/labels; explicit new shell/agent, optional future conversation resume |
+| G. Remote OS reboot | Old processes/PTYs do not survive | HostId/layout may survive; new epoch, no old Live run | Restore layout/CWD/labels; explicit new shell/agent or saved conversation resume |
 | H. Agent process exits | That run ends; shell/PTY may remain | Record exit evidence and cancel its pending requests with reason | Retain its card until pane closure; next agent gets a distinct run ID and queues even in the same pane |
 
 Planned replacement of an automatically started daemon is implemented on Linux and Windows.
@@ -1533,8 +1533,14 @@ reinterpret incompatible fields using current Rust defaults.
 After daemon restart, persisted Live/Working/Pending values are **last-known historical**
 facts. Current run/process state is Unknown (or confirmed exited with separate reboot
 proof), and old requests are Unverified/nonactionable. Agent-native conversation resume
-is a later explicit opt-in action creating a new AgentRunId. No old approval is answered,
-no resume command is auto-executed, and a stored CWD is validated before use.
+is an explicit opt-in action creating a new TerminalId and AgentRunId for an empty pane.
+The daemon stores the last verified AgentSessionKey and directory per PaneId, updates
+verified context changes, and removes associations with deleted panes. Restore reuses
+surviving terminals and reserves empty panes before spawning. Provider confirmation must
+match the exact saved session; failures remain pane-specific and explicitly retryable.
+No old approval is answered, no resume command is executed by automatic window recovery,
+and a stored CWD is validated before use. See the
+[implemented restore contract](02_daemon_foundation.md#restore-saved-agent-conversations).
 
 ## 13. Dependency decisions and evidence
 

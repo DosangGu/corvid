@@ -333,6 +333,37 @@ impl WorkspaceView {
         }
     }
 
+    fn restore_agents(
+        &mut self,
+        view: ViewSelection,
+        pane_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ui) = self
+            .session
+            .as_ref()
+            .map(Session::ui)
+            .filter(|ui| ui.restore_supported && !ui.changing)
+        else {
+            return;
+        };
+        let Some(host_id) = ui.host_id else { return };
+        let Some(destination) = self.destination.clone() else {
+            return;
+        };
+        self.switch_to(
+            destination,
+            AttachTarget::ResumeAgents {
+                view,
+                host_id,
+                pane_only,
+            },
+            window,
+            cx,
+        );
+    }
+
     fn connect(
         &mut self,
         destination: Destination,
@@ -519,7 +550,7 @@ impl WorkspaceView {
             }
             self.watch_host(destination.clone(), cx);
         }
-        if ui.restore_unavailable && !self.restore_picker_shown {
+        if ui.restore_unavailable && ui.selected.is_none() && !self.restore_picker_shown {
             self.restore_picker_shown = true;
             self.show_switcher(window, cx);
         }
@@ -1020,19 +1051,61 @@ impl WorkspaceView {
                         )
                     })
                     .when(!active && preview_session.is_none(), |region| {
+                        let restore_target = target.clone();
+                        let restore_error = ui
+                            .restore_results
+                            .iter()
+                            .find(|result| result.location.as_ref() == Some(&target))
+                            .and_then(|result| result.error.as_ref())
+                            .map(|error| error.message.clone());
                         region.child(
-                            div().flex().flex_1().items_center().justify_center().child(
-                                button(
-                                    SharedString::from(pane.clone()),
-                                    if live { "Focus pane" } else { "Open shell" },
-                                    false,
-                                )
-                                .on_click(cx.listener(
-                                    move |view, _, window, cx| {
-                                        view.select(target.clone(), !live, window, cx)
-                                    },
-                                )),
-                            ),
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.))
+                                .p(px(12.))
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .when_some(restore_error, |panel, error| {
+                                    panel.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(rgb(MUTED))
+                                            .child(error),
+                                    )
+                                })
+                                .when(!live && ui.restore_supported && !ui.changing, |panel| {
+                                    panel.child(
+                                        button(
+                                            SharedString::from(format!("resume-{pane}")),
+                                            "Restore / retry agent session",
+                                            false,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |view, _, window, cx| {
+                                                view.restore_agents(
+                                                    restore_target.clone(),
+                                                    true,
+                                                    window,
+                                                    cx,
+                                                )
+                                            }),
+                                        ),
+                                    )
+                                })
+                                .child(
+                                    button(
+                                        SharedString::from(pane.clone()),
+                                        if live { "Focus pane" } else { "Open shell" },
+                                        false,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |view, _, window, cx| {
+                                            view.select(target.clone(), !live, window, cx)
+                                        },
+                                    )),
+                                ),
                         )
                     })
             }

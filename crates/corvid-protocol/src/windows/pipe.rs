@@ -84,7 +84,9 @@ pub async fn open_scoped(prefix: &str, instance: &str) -> Result<NamedPipeClient
         match options.open(&name) {
             Ok(pipe) => break pipe,
             Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
-                sleep(Duration::from_millis(25)).await;
+                // Collector helpers have a 20 ms connection budget. A busy instance
+                // must be retried within it when several restored agents start together.
+                sleep(Duration::from_millis(2)).await;
             }
             Err(error) => return Err(error).context("connecting to private pipe"),
         }
