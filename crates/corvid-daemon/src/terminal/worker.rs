@@ -170,6 +170,8 @@ pub(crate) struct Render {
 }
 
 enum Command {
+    Restore(Launch, oneshot::Sender<Reply<Uuid>>),
+    CancelRestore(Uuid, oneshot::Sender<Reply<()>>),
     Transfer(
         InputRoute,
         AttachSpec,
@@ -203,6 +205,22 @@ pub(crate) struct TerminalHandle {
 }
 
 impl TerminalHandle {
+    pub(crate) async fn restore(&self, launch: Launch) -> Reply<Uuid> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::Restore(launch, send))
+            .map_err(|_| overloaded())?;
+        receive.await.map_err(|_| terminal_fault())?
+    }
+
+    pub(crate) async fn cancel_restore(&self, terminal: Uuid) -> Reply<()> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::CancelRestore(terminal, send))
+            .map_err(|_| overloaded())?;
+        receive.await.map_err(|_| terminal_fault())?
+    }
+
     pub(crate) fn start(scope: LaunchScope) -> (Self, JoinHandle<()>) {
         Self::start_worker(scope, None)
     }
@@ -415,6 +433,42 @@ impl Worker {
         self.revoke_if_disconnected();
         let mode = self.input_mode();
         match command {
+            Command::Restore(launch, reply) => {
+                if !reply.is_closed() {
+                    let result = if self.terminal.is_some() || self.lease.is_some() {
+                        Err(ProtocolFault::new(
+                            "TerminalExists",
+                            "pane already has a terminal",
+                        ))
+                    } else {
+                        Running::spawn(launch, Viewport::new(112, 26).expect("valid restore size"), &self.scope)
+                            .map(|terminal| {
+                                let id = terminal.id;
+                                self.terminal = Some(terminal);
+                                self.live.store(true, Ordering::Release);
+                                id
+                            })
+                            .map_err(|_| ProtocolFault::new("TerminalStartFailed", "could not launch the provider; check its installation on the daemon host"))
+                    };
+                    let _ = reply.send(result);
+                }
+            }
+            Command::CancelRestore(id, reply) => {
+                let result = if self.lease.is_some() {
+                    Err(input_busy())
+                } else {
+                    if self
+                        .terminal
+                        .as_ref()
+                        .is_some_and(|terminal| terminal.id == id)
+                    {
+                        self.terminal = None;
+                        self.live.store(false, Ordering::Release);
+                    }
+                    Ok(())
+                };
+                let _ = reply.send(result);
+            }
             Command::Attach(spec, reply) if !reply.is_closed() => {
                 let _ = reply.send(self.attach(spec));
             }

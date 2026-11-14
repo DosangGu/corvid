@@ -99,7 +99,44 @@ message Envelope {
     WorkspaceClientsDisconnected workspace_clients_disconnected = 126;
     RenameView rename_view = 127;
     ViewRenamed view_renamed = 128;
+    RestoreWorkspace restore_workspace = 129;
+    WorkspaceRestored workspace_restored = 130;
   }
+}
+
+// Interactive client socket only. Inspection never launches a process.
+message RestoreWorkspace {
+  string workspace_id = 1;
+  optional string pane_id = 2;
+  AgentRestoreMode mode = 3;
+}
+
+enum AgentRestoreMode {
+  AGENT_RESTORE_MODE_UNSPECIFIED = 0;
+  AGENT_RESTORE_MODE_INSPECT = 1;
+  AGENT_RESTORE_MODE_RESUME = 2;
+  AGENT_RESTORE_MODE_RETRY = 3;
+}
+
+message WorkspaceRestored {
+  repeated PaneRestoreResult panes = 1;
+}
+
+message PaneRestoreResult {
+  ViewSelection location = 1;
+  PaneRestoreStatus status = 2;
+  optional string terminal_id = 3;
+  RpcError error = 4;
+}
+
+enum PaneRestoreStatus {
+  PANE_RESTORE_STATUS_UNSPECIFIED = 0;
+  PANE_RESTORE_STATUS_EMPTY = 1;
+  PANE_RESTORE_STATUS_AVAILABLE = 2;
+  PANE_RESTORE_STATUS_STARTING = 3;
+  PANE_RESTORE_STATUS_RESUMED = 4;
+  PANE_RESTORE_STATUS_EXISTING = 5;
+  PANE_RESTORE_STATUS_FAILED = 6;
 }
 
 message Hello {

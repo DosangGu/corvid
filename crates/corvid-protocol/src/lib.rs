@@ -37,6 +37,8 @@ pub const PANE_WRITERS_CAPABILITY: &str = "pane_writers.v1";
 pub const SESSION_CLIENTS_CAPABILITY: &str = "session_clients.v1";
 /// User-initiated attaches may resume a writer, including default-shell attaches.
 pub const RESUME_ATTACH_CAPABILITY: &str = "attach.resume.v1";
+/// Explicitly restore saved provider conversations through the interactive socket.
+pub const RESTORE_AGENTS_CAPABILITY: &str = "workspace.restore_agents.v1";
 pub const TERMINAL_HISTORY_MAX_ROWS: usize = 2048;
 pub const TERMINAL_HISTORY_MAX_BYTES: usize = 192 * 1024;
 pub const MOVE_TAB_CAPABILITY: &str = "move_tab.v1";

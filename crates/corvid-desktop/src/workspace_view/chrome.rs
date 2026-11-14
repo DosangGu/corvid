@@ -4,6 +4,7 @@ use gpui::MouseButton;
 
 #[derive(Clone, Copy)]
 pub(super) enum MenuAction {
+    RestoreAgents,
     NewWindow,
     Quit,
     Rename,
@@ -76,6 +77,16 @@ impl WorkspaceView {
             ),
             (MenuAction::Settings, "Settings…", "Ctrl+,"),
         ];
+        if ui
+            .as_ref()
+            .is_some_and(|ui| ui.restore_supported && !ui.changing && ui.selected.is_some())
+        {
+            items.push((
+                MenuAction::RestoreAgents,
+                "Restore workspace agent sessions",
+                "",
+            ));
+        }
         if let Some(ui) = ui.filter(|ui| ui.connected && !ui.changing) {
             if ui.can_write() && ui.naming_supported && ui.inventory_ready {
                 items.push((MenuAction::Rename, "Rename tab…", "Ctrl+Shift+R"));
@@ -134,6 +145,11 @@ impl WorkspaceView {
             })
         });
         match action {
+            MenuAction::RestoreAgents => {
+                if let Some(selected) = ui.as_ref().and_then(|ui| ui.selected.clone()) {
+                    self.restore_agents(selected, false, window, cx);
+                }
+            }
             MenuAction::NewWindow => self.new_window(cx),
             MenuAction::Quit => self.windows.quit(cx),
             MenuAction::Rename => self.open_naming(window, cx),
@@ -400,6 +416,85 @@ impl WorkspaceView {
         }
         None
     }
+
+    fn restore_errors(&self, ui: &Ui, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let inventory = ui.inventory.as_ref()?;
+        let errors: Vec<_> = ui
+            .restore_results
+            .iter()
+            .filter_map(|result| {
+                let target = result.location.as_ref()?;
+                let error = result.error.as_ref()?;
+                if inventory.live(target) {
+                    return None;
+                }
+                let tab = inventory
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == target.workspace_id)?
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tab_id == target.tab_id)?;
+                let ordinal = tab
+                    .nodes
+                    .iter()
+                    .filter_map(|node| match &node.body {
+                        Some(Node::PaneId(id)) => Some(id),
+                        _ => None,
+                    })
+                    .position(|id| id == &target.pane_id)?
+                    + 1;
+                Some((
+                    target.clone(),
+                    format!("{} · Pane {ordinal}: {}", tab.label, error.message),
+                ))
+            })
+            .collect();
+        if errors.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .id("restore-errors")
+                .flex()
+                .flex_col()
+                .flex_none()
+                .max_h(px(160.))
+                .overflow_y_scroll()
+                .bg(rgb(PANEL))
+                .p(px(8.))
+                .gap(px(6.))
+                .children(errors.into_iter().map(|(target, message)| {
+                    let retry = target.clone();
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(12.))
+                                .text_color(rgb(MUTED))
+                                .child(message),
+                        )
+                        .when(!ui.changing, |row| {
+                            row.child(
+                                button(format!("retry-{}", target.pane_id), "Retry", false)
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.restore_agents(retry.clone(), true, window, cx);
+                                    })),
+                            )
+                            .child(
+                                button(format!("shell-{}", target.pane_id), "Open shell", false)
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.select(target.clone(), true, window, cx);
+                                    })),
+                            )
+                        })
+                })),
+        )
+    }
 }
 
 impl Render for WorkspaceView {
@@ -440,6 +535,10 @@ impl Render for WorkspaceView {
             .when(!self.focus_mode, |root| {
                 root.child(self.toolbar(ui.as_ref(), workspace, cx))
             })
+            .when_some(
+                ui.as_ref().and_then(|ui| self.restore_errors(ui, cx)),
+                |root, errors| root.child(errors),
+            )
             .child(
                 div()
                     .flex()

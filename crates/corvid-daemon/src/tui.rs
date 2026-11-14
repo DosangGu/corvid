@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::platform::{ReadHalf, Stream, WriteHalf, decode_os_string};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, Location};
 use corvid_core::{InputRoute, Viewport};
@@ -35,6 +35,7 @@ use crate::workspaces::{
 };
 
 const CAPABILITIES: &[&str] = &[
+    corvid_protocol::RESTORE_AGENTS_CAPABILITY,
     corvid_protocol::VIEW_TITLES_CAPABILITY,
     "attach.v1",
     corvid_protocol::PANE_WRITERS_CAPABILITY,
@@ -81,9 +82,29 @@ pub(crate) async fn serve(
     else {
         return Ok(());
     };
-    let request = timeout(COMMAND_TIMEOUT, reader.next_envelope())
-        .await??
-        .context("missing Attach request")?;
+    let request = loop {
+        let Some(request) = timeout(COMMAND_TIMEOUT, reader.next_envelope()).await?? else {
+            return Ok(());
+        };
+        if let Some(Body::RestoreWorkspace(_)) = &request.body {
+            let result = session.validate_request(&request).and_then(|body| {
+                let Body::RestoreWorkspace(restore) = body else {
+                    unreachable!()
+                };
+                workspaces.restore_workspace(
+                    restore,
+                    request.request_id.as_deref().expect("validated request ID"),
+                )
+            });
+            let body = match result {
+                Ok(result) => Body::WorkspaceRestored(result),
+                Err(error) => Body::Error(error.into_wire()),
+            };
+            send(&session, &mut writer, request.request_id, body).await?;
+            continue;
+        }
+        break request;
+    };
     let client = Uuid::new_v4();
     let (focus_tx, focuses) = mpsc::channel(1);
     let (disconnect, disconnected) = oneshot::channel();

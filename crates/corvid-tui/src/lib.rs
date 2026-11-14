@@ -41,6 +41,20 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Restore the saved agent conversation in each empty pane, without attaching.
+    #[cfg(any(target_os = "linux", windows))]
+    Restore {
+        #[arg(long)]
+        workspace: Uuid,
+        #[arg(long)]
+        pane: Option<Uuid>,
+        /// Inspect saved sessions and restore outcomes without starting agents.
+        #[arg(long, conflicts_with = "retry")]
+        inspect: bool,
+        /// Retry failed panes as well as restoring available sessions.
+        #[arg(long)]
+        retry: bool,
+    },
     /// Check for or install a GitHub release without restarting the daemon.
     Update(update::Options),
     /// Run or use the local controller companion.
@@ -172,6 +186,51 @@ pub fn run() -> ExitCode {
     let daemon_runtime = options.runtime_dir;
 
     let result = match options.command {
+        #[cfg(any(target_os = "linux", windows))]
+        Some(Command::Restore {
+            workspace,
+            pane,
+            inspect,
+            retry,
+        }) => execute(async move {
+            use corvid_protocol::wire::{AgentRestoreMode, PaneRestoreStatus, RestoreWorkspace};
+            let runtime = runtime_path(daemon_runtime)?;
+            ensure_local_daemon(&runtime).await?;
+            let endpoint = corvid_client::ControlEndpoint::Local(runtime);
+            let mut connection = endpoint
+                .interactive(vec![corvid_protocol::RESTORE_AGENTS_CAPABILITY.into()])
+                .await?;
+            let mode = if inspect {
+                AgentRestoreMode::Inspect
+            } else if retry {
+                AgentRestoreMode::Retry
+            } else {
+                AgentRestoreMode::Resume
+            };
+            let result = connection
+                .restore_workspace(RestoreWorkspace {
+                    workspace_id: workspace.to_string(),
+                    pane_id: pane.map(|pane| pane.to_string()),
+                    mode: mode as i32,
+                })
+                .await?;
+            let mut failed = false;
+            for pane in result.panes {
+                let status = pane.status();
+                failed |= status == PaneRestoreStatus::Failed;
+                let location = pane.location.context("missing restored pane")?;
+                println!(
+                    "{}: {:?}{}",
+                    location.pane_id,
+                    status,
+                    pane.error.map_or_else(String::new, |error| format!(
+                        " — {}: {}",
+                        error.code, error.message
+                    ))
+                );
+            }
+            Ok(u32::from(failed))
+        }),
         Some(Command::Update(options)) => update::run(options),
         Some(Command::Companion(companion)) => execute(async move {
             companion::execute(companion, daemon_runtime).await?;

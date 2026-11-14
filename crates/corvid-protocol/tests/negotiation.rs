@@ -11,6 +11,59 @@ use prost::Message;
 use prost::encoding::{WireType, encode_key, encode_varint};
 
 #[test]
+fn agent_restore_requires_interactive_role_capability_and_current_epoch() {
+    let greeting = hello("hello".into(), Some("controller".into()), vec![]);
+    let body = Body::RestoreWorkspace(corvid_protocol::wire::RestoreWorkspace {
+        workspace_id: "workspace".into(),
+        mode: corvid_protocol::wire::AgentRestoreMode::Resume as i32,
+        ..Default::default()
+    });
+    for role in [
+        PeerRole::Control,
+        PeerRole::Presentation,
+        PeerRole::Collector,
+        PeerRole::Upgrade,
+    ] {
+        let (session, _) = accept_hello(
+            &greeting,
+            role,
+            "host",
+            "epoch",
+            &[corvid_protocol::RESTORE_AGENTS_CAPABILITY],
+        )
+        .unwrap();
+        assert_eq!(
+            session
+                .validate_request(&session.envelope(Some("restore".into()), body.clone()))
+                .unwrap_err()
+                .code,
+            "UnsupportedCapability"
+        );
+    }
+    let (session, _) = accept_hello(&greeting, PeerRole::Tui, "host", "epoch", &[]).unwrap();
+    assert!(
+        session
+            .validate_request(&session.envelope(Some("restore".into()), body.clone()))
+            .is_err()
+    );
+    let (session, _) = accept_hello(
+        &greeting,
+        PeerRole::Tui,
+        "host",
+        "epoch",
+        &[corvid_protocol::RESTORE_AGENTS_CAPABILITY],
+    )
+    .unwrap();
+    let mut request = session.envelope(Some("restore".into()), body);
+    assert!(session.validate_request(&request).is_ok());
+    request.server_epoch = Some("previous".into());
+    assert_eq!(
+        session.validate_request(&request).unwrap_err().code,
+        "EpochMismatch"
+    );
+}
+
+#[test]
 fn newer_client_negotiates_supported_version_and_capabilities() {
     let mut request = hello(
         "req".into(),

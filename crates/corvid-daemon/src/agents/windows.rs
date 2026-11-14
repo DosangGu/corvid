@@ -43,6 +43,49 @@ struct Run {
 }
 
 impl Agents {
+    pub(crate) fn resume_observations(
+        &self,
+    ) -> Vec<(Location, Option<corvid_core::agent::AgentSessionKey>)> {
+        self.active
+            .values()
+            .copied()
+            .chain(self.shell.values().map(|(id, _)| *id))
+            .filter(|id| self.dirty.contains(id))
+            .filter_map(|id| {
+                let run = self.runs.get(&id)?;
+                (run.producer.is_some() && run.state.process.value == ProcessLiveness::Running)
+                    .then(|| {
+                        (
+                            run.location,
+                            self.confirmed_session(run.state.identity.terminal_id),
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    pub(crate) fn confirmed_session(
+        &self,
+        terminal: Uuid,
+    ) -> Option<corvid_core::agent::AgentSessionKey> {
+        self.active
+            .values()
+            .copied()
+            .chain(self.shell.values().map(|(id, _)| *id))
+            .find_map(|id| {
+                let run = self.runs.get(&id)?;
+                let session = run.state.identity.provider_session.clone()?;
+                (run.state.identity.terminal_id == terminal
+                    && run.producer.is_some()
+                    && run.state.process.value == ProcessLiveness::Running
+                    && run.state.collection.value == Collection::Healthy)
+                    .then_some(corvid_core::agent::AgentSessionKey {
+                        provider: run.state.identity.provider,
+                        provider_session_id: session,
+                    })
+            })
+    }
+
     pub(crate) fn track_shell(&mut self, terminal: Uuid, root: ProcessKey) {
         self.roots.insert(root, terminal);
     }
@@ -208,9 +251,11 @@ impl Agents {
     ) -> Result<(), ProtocolFault> {
         let session = hook.session.as_deref().expect("context has session");
         let run = &self.runs[&id];
-        if run.state.identity.provider_session.as_deref() == Some(session)
-            || run.sessions.contains(session)
-        {
+        if run.state.identity.provider_session.as_deref() == Some(session) {
+            return Ok(());
+        }
+        if run.sessions.contains(session) {
+            self.gap(id, &hook, "session switch reused an uncorrelated context");
             return Ok(());
         }
         if hook.event == HookEvent::Compact

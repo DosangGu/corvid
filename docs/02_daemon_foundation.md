@@ -250,10 +250,13 @@ run history in `state.json`. It publishes changes to a separate writer and
 debounces disk writes by one second. The archive retains up to 128 runs and
 keeps current top-level running agents ahead of older records when evicting.
 The state directory lock allows one writer. A successful save retains the preceding
-valid state in `state.json.bak`. Startup upgrades validated schema 1, 2, and 3 files
-to schema 4 and keeps the original as the backup. Schema 1 starts with an empty
+valid state in `state.json.bak`. Startup upgrades validated schema 1 through 4 files
+to schema 5 and keeps the original as the backup. Schema 1 starts with an empty
 archive. Schema 3 adds a process-directory observation source. Schema 4 stores
 optional manual tab names and accepts older files containing pane name overrides.
+Schema 5 adds a bounded pane-to-conversation map with the provider, exact session ID,
+verified directory, and eligibility for explicit resume. Older files start with an
+empty map; historical rows are not used to guess a pane's current conversation.
 The daemon ignores those overrides. Legacy `Shell` and `Shell N` tab labels become
 automatic; other labels remain manual. Older schemas did not distinguish an
 explicitly chosen `Shell` label from the generated default. Startup
@@ -276,6 +279,49 @@ observed path names the same directory in the daemon's namespace. A valid change
 is stored with its observation time on the pane's current tab. If a sample is
 unavailable, Corvid keeps the last valid directory.
 [Linux `/proc/<pid>/cwd` reference](https://man7.org/linux/man-pages/man5/proc_pid_cwd.5.html)
+
+### Restore saved agent conversations
+
+After losing terminals, explicitly restore a workspace's saved conversations:
+
+```sh
+corvid restore --workspace WORKSPACE_ID --inspect
+corvid restore --workspace WORKSPACE_ID
+corvid restore --workspace WORKSPACE_ID --pane PANE_ID --retry
+```
+
+Run these commands on the daemon host. Desktop provides the same action over its
+Local, SSH, or WSL interactive connection. The protocol capability is
+`workspace.restore_agents.v1`; the read-only control and external presentation
+roles cannot start restoration. Inspection never launches a process.
+
+The daemon retains the last verified top-level conversation for each pane, including
+correlated conversation changes, independently of the bounded run archive. Two panes
+in the same directory remain distinct. Deleting a pane deletes its saved association.
+Agent content, prompts, credentials, environment variables, and launch options are
+not saved for resume. Current provider configuration and authentication still apply.
+
+Live terminals are reused, including terminal hosts recovered through planned daemon
+replacement. Empty panes with verified metadata launch `codex resume SESSION_ID` or
+`claude --resume SESSION_ID` directly in the saved directory. Missing directories
+produce a pane error instead of falling back to another directory. Empty shell-only
+panes remain empty. A new terminal gets new terminal/run IDs and input routes; old
+questions and approvals never become active in the new epoch.
+
+Pane reservations prevent concurrent clients from launching duplicate terminals.
+Accepted attempts continue if the requesting client disconnects. Each new provider
+must report the exact requested session through an authenticated hook within 30 seconds.
+An early exit, different session, or missing confirmation stops that attempt and leaves
+a pane-specific error. Other panes continue. A normal repeat does not retry failures;
+`--retry` explicitly retries them. An ordinary shell can still be opened in a failed
+pane. A running terminal is never replaced by restore or retry.
+
+Use the qualified provider versions and observation setup documented above. The
+current Linux Codex adapter cannot verify an in-process `/resume` boundary, and Windows
+cannot correlate every return to an earlier context. Those transitions invalidate
+automatic resume eligibility; use a shell to choose the conversation explicitly.
+Fresh native resume and correlated Claude boundaries have deterministic synthetic
+coverage; real-provider compatibility still follows the recorded qualification versions.
 
 ## Response Notifications over SSH
 

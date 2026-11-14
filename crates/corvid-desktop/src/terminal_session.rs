@@ -61,6 +61,11 @@ pub enum Destination {
 
 #[derive(Clone)]
 pub enum AttachTarget {
+    ResumeAgents {
+        view: ViewSelection,
+        host_id: String,
+        pane_only: bool,
+    },
     Default,
     FreshDefault,
     Restore(SavedView),
@@ -224,6 +229,8 @@ impl Inventory {
 
 #[derive(Clone)]
 pub struct Ui {
+    pub restore_supported: bool,
+    pub restore_results: Vec<corvid_protocol::wire::PaneRestoreResult>,
     pub restore_unavailable: bool,
     pub naming_supported: bool,
     pub host_id: Option<String>,
@@ -271,6 +278,8 @@ impl Shared {
         Self {
             buffer: Mutex::new(Buffer {
                 ui: Ui {
+                    restore_supported: false,
+                    restore_results: Vec::new(),
                     restore_unavailable: false,
                     naming_supported: false,
                     host_id: None,
@@ -702,6 +711,7 @@ async fn run(
         CLAIM_WORKSPACE_CAPABILITY,
         PANE_PREVIEW_CAPABILITY,
         DEFAULT_SHELL_CAPABILITY,
+        corvid_protocol::RESTORE_AGENTS_CAPABILITY,
     ]
     .into_iter()
     .map(str::to_owned)
@@ -711,9 +721,9 @@ async fn run(
         capabilities.push(corvid_protocol::PANE_WRITERS_CAPABILITY.into());
     }
     let known_host = match &target {
-        AttachTarget::Workspace { host_id, .. } | AttachTarget::Takeover { host_id, .. } => {
-            Some(host_id.clone())
-        }
+        AttachTarget::Workspace { host_id, .. }
+        | AttachTarget::Takeover { host_id, .. }
+        | AttachTarget::ResumeAgents { host_id, .. } => Some(host_id.clone()),
         AttachTarget::Restore(saved) => Some(saved.host_id.to_string()),
         _ => None,
     };
@@ -767,6 +777,11 @@ async fn run(
     shared.update_ui(|ui| {
         ui.host_id = host.clone();
         ui.endpoint = Some(endpoint.clone());
+        ui.restore_supported = link
+            .session()
+            .capabilities
+            .iter()
+            .any(|cap| cap == corvid_protocol::RESTORE_AGENTS_CAPABILITY);
     });
     let restoring = matches!(target, AttachTarget::Restore(_));
     if let AttachTarget::Restore(saved) = &target {
@@ -777,12 +792,62 @@ async fn run(
             ui.inventory = Some(Arc::new(Inventory::read(&snapshot)));
             ui.inventory_ready = true;
         });
-        target = AttachTarget::Pane(saved.resolve(&snapshot)?, false);
+        let view = saved.resolve(&snapshot)?;
+        shared.update_ui(|ui| ui.selected = Some(view.clone()));
+        target = AttachTarget::Pane(view, false);
+    }
+    if let AttachTarget::ResumeAgents {
+        view, pane_only, ..
+    } = &target
+    {
+        let view = view.clone();
+        let snapshot = endpoint
+            .view_snapshot(&link.session().host_id, &link.session().server_epoch)
+            .await?;
+        shared.update_ui(|ui| {
+            ui.inventory = Some(Arc::new(Inventory::read(&snapshot)));
+            ui.inventory_ready = true;
+            ui.selected = Some(view.clone());
+            ui.message = "Restoring saved agent sessions…".into();
+        });
+        let mut result = link
+            .restore_workspace(corvid_protocol::wire::RestoreWorkspace {
+                workspace_id: view.workspace_id.clone(),
+                pane_id: pane_only.then(|| view.pane_id.clone()),
+                mode: corvid_protocol::wire::AgentRestoreMode::Retry as i32,
+            })
+            .await?;
+        if *pane_only {
+            result = link
+                .restore_workspace(corvid_protocol::wire::RestoreWorkspace {
+                    workspace_id: view.workspace_id.clone(),
+                    pane_id: None,
+                    mode: corvid_protocol::wire::AgentRestoreMode::Inspect as i32,
+                })
+                .await?;
+        }
+        shared.update_ui(|ui| ui.restore_results = result.panes.clone());
+        // A workspace can recover partially. Prefer the requested pane, then a live sibling.
+        let restored = result.panes.iter().filter(|pane| {
+            matches!(
+                pane.status(),
+                corvid_protocol::wire::PaneRestoreStatus::Resumed
+                    | corvid_protocol::wire::PaneRestoreStatus::Existing
+            )
+        });
+        let selected = restored
+            .clone()
+            .find(|pane| pane.location.as_ref() == Some(&view))
+            .or_else(|| (!*pane_only).then(|| restored.into_iter().next()).flatten())
+            .and_then(|pane| pane.location.clone())
+            .unwrap_or(view);
+        target = AttachTarget::Pane(selected, false);
     }
     let grid = sizes.borrow().1;
-    let resume = terminal.is_none() && !restoring;
+    let resume = terminal.is_none() && !restoring && shared.buffer().ui.restore_results.is_empty();
     let attached = match &target {
         AttachTarget::Restore(_) => unreachable!("saved view resolved before attach"),
+        AttachTarget::ResumeAgents { .. } => unreachable!("agent restore resolved before attach"),
         AttachTarget::Workspace {
             id,
             host_id,
@@ -889,6 +954,7 @@ async fn run(
             && route.writer_lease_generation > 0
             && match &target {
                 AttachTarget::Restore(_) => false,
+                AttachTarget::ResumeAgents { .. } => false,
                 AttachTarget::Default | AttachTarget::FreshDefault => true,
                 AttachTarget::Pane(view, _) | AttachTarget::Takeover { view, .. } =>
                     *view == selected,

@@ -38,6 +38,7 @@ pub(crate) struct Agents {
 }
 
 struct Launch {
+    resume_key: Option<corvid_core::agent::AgentSessionKey>,
     current: Uuid,
     qualified: bool,
     owner: Option<ProcessImage>,
@@ -74,6 +75,35 @@ struct ManagedRun {
 }
 
 impl Agents {
+    pub(crate) fn resume_observations(
+        &self,
+    ) -> Vec<(Location, Option<corvid_core::agent::AgentSessionKey>)> {
+        self.launches
+            .values()
+            .filter_map(|launch| {
+                let record = self.runs.get(&launch.current)?;
+                (record.published
+                    && launch.producer.is_some()
+                    && self.dirty.contains(&launch.current)
+                    && record.run.process.value == ProcessLiveness::Running)
+                    .then(|| (record.location, launch.resume_key.clone()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn confirmed_session(
+        &self,
+        terminal: Uuid,
+    ) -> Option<corvid_core::agent::AgentSessionKey> {
+        self.launches.values().find_map(|launch| {
+            let record = self.runs.get(&launch.current)?;
+            (record.run.identity.terminal_id == terminal
+                && record.run.process.value == ProcessLiveness::Running)
+                .then(|| launch.resume_key.clone())
+                .flatten()
+        })
+    }
+
     pub(crate) fn terminal_unavailable(&mut self, terminal: Uuid) {
         for (id, record) in &mut self.runs {
             if record.run.identity.terminal_id == terminal && record.terminal_available {
@@ -144,6 +174,7 @@ impl Agents {
         self.launches.insert(
             association,
             Launch {
+                resume_key: None,
                 current: id,
                 qualified,
                 owner: None,
@@ -526,6 +557,7 @@ impl ManagedLaunch {
                 return;
             };
             launch.owner = None;
+            launch.resume_key = None;
             let current_id = launch.current;
             let Some(current) = agents.runs.get_mut(&current_id) else {
                 return;

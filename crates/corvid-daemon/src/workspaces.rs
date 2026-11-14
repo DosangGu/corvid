@@ -1,6 +1,7 @@
 mod close;
 mod controllers;
 mod focus;
+mod restore;
 #[cfg(target_os = "linux")]
 mod shell;
 
@@ -95,8 +96,9 @@ struct ReservedSwitch {
     events: mpsc::Receiver<Event>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Workspaces {
-    pub(crate) collector: CollectorDiagnostics,
+    pub(crate) collector: Arc<CollectorDiagnostics>,
     registry: Arc<Mutex<Registry>>,
     metadata: MetadataUpdates,
     #[cfg(target_os = "linux")]
@@ -124,6 +126,7 @@ pub(crate) struct Registry {
     closing: Vec<CloseTarget>,
     slots: HashMap<Uuid, Slot>,
     retired: Vec<JoinHandle<()>>,
+    restores: HashMap<Uuid, restore::Attempt>,
 }
 
 struct Client {
@@ -180,7 +183,7 @@ impl Workspaces {
         #[cfg(target_os = "linux")]
         let epoch = Uuid::parse_str(&hook_environment.identity.epoch).expect("valid daemon epoch");
         Self {
-            collector: CollectorDiagnostics::default(),
+            collector: Arc::default(),
             registry: Arc::new(Mutex::new(Registry {
                 agents: Agents::default(),
                 metadata: metadata.clone(),
@@ -198,6 +201,7 @@ impl Workspaces {
                 closing: Vec::new(),
                 slots: HashMap::new(),
                 retired: Vec::new(),
+                restores: HashMap::new(),
             })),
             metadata,
             #[cfg(target_os = "linux")]
@@ -230,6 +234,10 @@ impl Workspaces {
     ) -> Result<Vec<(Location, RetainedTerminal)>> {
         let terminals: Vec<_> = {
             let registry = self.lock_registry();
+            anyhow::ensure!(
+                !registry.slots.values().any(|slot| slot.reserved),
+                "terminal restoration or transition is in progress"
+            );
             registry
                 .slots
                 .iter()
@@ -911,11 +919,23 @@ impl Registry {
     }
 
     fn publish_layout(&mut self, layout: Arc<Layout>, mut projections: Vec<Projection>) {
+        self.restores
+            .retain(|pane, _| layout.locations().any(|location| location.pane == *pane));
         projections.push(projection::named_layout(&layout, &self.metadata.titles()));
         self.commit(projections, Some(layout));
     }
 
     fn commit(&mut self, mut projections: Vec<Projection>, layout: Option<Arc<Layout>>) {
+        for (location, key) in self.agents.resume_observations() {
+            // A failed native resume must not replace the requested conversation.
+            if !self
+                .restores
+                .get(&location.pane)
+                .is_some_and(|attempt| attempt.is_starting())
+            {
+                self.metadata.observe_session(location, key);
+            }
+        }
         #[cfg(target_os = "linux")]
         self.metadata
             .update(layout, self.agents.changed_history(self.epoch));

@@ -159,6 +159,20 @@ impl Session {
 
         let body = known_body(request)?;
         match (self.role, body) {
+            (PeerRole::Tui, Body::RestoreWorkspace(_)) => {
+                if self
+                    .capabilities
+                    .iter()
+                    .any(|cap| cap == crate::RESTORE_AGENTS_CAPABILITY)
+                {
+                    Ok(body)
+                } else {
+                    Err(ProtocolFault::new(
+                        "UnsupportedCapability",
+                        "agent session restoration was not negotiated",
+                    ))
+                }
+            }
             (PeerRole::Tui | PeerRole::Control | PeerRole::Presentation, Body::Ping(_))
             | (PeerRole::Collector, Body::CollectHook(_) | Body::RegisterShellAgent(_))
             | (PeerRole::Upgrade, Body::UpgradeDaemon(_))

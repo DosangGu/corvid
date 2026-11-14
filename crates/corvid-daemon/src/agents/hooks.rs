@@ -183,6 +183,7 @@ impl Launch {
             return;
         }
         current.terminal_available = false;
+        self.resume_key = None;
         let Some(turn) = turn else {
             self.abandon_resume(current, "resume context end lacks a prompt ID");
             return;
@@ -226,6 +227,7 @@ impl Launch {
     }
 
     fn abandon_resume(&mut self, current: &mut ManagedRun, reason: &str) {
+        self.resume_key = None;
         self.resume = None;
         self.ambiguous = true;
         current.terminal_available = false;
@@ -320,8 +322,12 @@ impl Launch {
         Some(next)
     }
 
-    fn establish_context(&self, record: &mut ManagedRun, delivery: Uuid, session: &str) {
+    fn establish_context(&mut self, record: &mut ManagedRun, delivery: Uuid, session: &str) {
         record.run.identity.provider_session = Some(session.to_owned());
+        self.resume_key = Some(corvid_core::agent::AgentSessionKey {
+            provider: record.run.identity.provider,
+            provider_session_id: session.to_owned(),
+        });
         let evidence = hook_evidence(record.run.identity.provider, Confidence::Confirmed);
         record.apply(delivery, ObservationKind::ContextObserved, evidence.clone());
         if self.ambiguous {
@@ -338,6 +344,7 @@ impl Launch {
     }
 
     fn record_gap(&mut self, record: &mut ManagedRun, reason: &str) {
+        self.resume_key = None;
         self.gap = true;
         mark_gap(record, reason);
     }
@@ -360,6 +367,48 @@ mod tests {
 
     use super::*;
     use crate::process::{Executable, Incarnation};
+
+    #[test]
+    fn saved_resume_identity_tracks_correlated_switches_but_not_ambiguous_codex_switches() {
+        let mut fixture = Fixture::new(Provider::Claude);
+        fixture.apply("first", HookEvent::Startup);
+        let terminal = fixture.current().run.identity.terminal_id;
+        assert_eq!(
+            fixture
+                .agents
+                .confirmed_session(terminal)
+                .unwrap()
+                .provider_session_id,
+            "first"
+        );
+        fixture.resume_boundary("first", HookEvent::ResumeContextEnded, "switch");
+        assert!(fixture.agents.confirmed_session(terminal).is_none());
+        fixture.resume_boundary("second", HookEvent::Resume, "switch");
+        assert_eq!(
+            fixture
+                .agents
+                .confirmed_session(terminal)
+                .unwrap()
+                .provider_session_id,
+            "second"
+        );
+        fixture.resume_boundary("second", HookEvent::ResumeContextEnded, "return");
+        fixture.resume_boundary("first", HookEvent::Resume, "return");
+        assert_eq!(
+            fixture
+                .agents
+                .confirmed_session(terminal)
+                .unwrap()
+                .provider_session_id,
+            "first"
+        );
+
+        let mut codex = Fixture::new(Provider::Codex);
+        codex.apply("first", HookEvent::Startup);
+        let terminal = codex.current().run.identity.terminal_id;
+        codex.apply("second", HookEvent::Resume);
+        assert!(codex.agents.confirmed_session(terminal).is_none());
+    }
 
     struct Fixture {
         agents: Agents,
