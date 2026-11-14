@@ -1,28 +1,44 @@
 use super::*;
+use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, accept_hello};
 use std::path::Path;
 
-const TEST: &str = "terminal_session::restore_test::desktop_relaunch_restores_the_same_terminal";
-
-// Run the backend in a subprocess so environment overrides never affect other tests.
 #[test]
 fn desktop_relaunch_restores_the_same_terminal() -> Result<()> {
+    isolated_fixture(
+        "terminal_session::restore_test::desktop_relaunch_restores_the_same_terminal",
+        run_fixture,
+    )
+}
+
+#[test]
+fn desktop_attaches_without_agent_restore_support() -> Result<()> {
+    isolated_fixture(
+        "terminal_session::restore_test::desktop_attaches_without_agent_restore_support",
+        async |root| {
+            verify_attach_without_agent_restore(&root.join("runtime"), &root.join("desktop")).await
+        },
+    )
+}
+
+// Run the backend in a subprocess so environment overrides never affect other tests.
+fn isolated_fixture(test: &str, run: impl AsyncFnOnce(&Path) -> Result<()>) -> Result<()> {
     if let Some(root) = std::env::var_os("CORVID_DESKTOP_RESTORE_FIXTURE") {
         return tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(run_fixture(Path::new(&root)));
+            .block_on(run(Path::new(&root)));
     }
     let fixture = tempfile::Builder::new()
         .prefix("corvid-desktop-view-test-")
         .tempdir()?;
     let output = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", TEST, "--nocapture"])
+        .args(["--exact", test, "--nocapture"])
         .env("CORVID_DESKTOP_RESTORE_FIXTURE", fixture.path())
         .env("CORVID_RUNTIME_DIR", fixture.path().join("runtime"))
         .output()?;
     ensure!(
         output.status.success(),
-        "Desktop restore fixture failed:\n{}\n{}",
+        "Desktop fixture failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -66,6 +82,66 @@ async fn run_fixture(root: &Path) -> Result<()> {
     result?;
     stopped???;
     Ok(())
+}
+
+async fn verify_attach_without_agent_restore(runtime: &Path, state: &Path) -> Result<()> {
+    #[cfg(windows)]
+    let mut listener = corvid_protocol::windows::DaemonPipe::Client.bind(
+        &corvid_protocol::windows::StateDirectory::create_all(runtime)?,
+    )?;
+    #[cfg(target_os = "linux")]
+    let directory = corvid_protocol::unix::RuntimeDir::create_all(runtime)?;
+    #[cfg(target_os = "linux")]
+    let instance = directory.lock_instance()?;
+    #[cfg(target_os = "linux")]
+    let listener = instance
+        .bind(corvid_protocol::unix::SocketRole::Client)
+        .await?;
+
+    let desktop = AttachedSession::start(state)?;
+    timeout(COMMAND_TIMEOUT, async {
+        #[cfg(windows)]
+        let stream = listener.accept().await?;
+        #[cfg(target_os = "linux")]
+        let stream = listener.accept().await?.context("rejected fixture peer")?;
+
+        let (read, write) = tokio::io::split(stream);
+        let mut writer = FrameWriter::start(write, FrameRole::TuiOutput).await?;
+        let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
+        let hello = reader
+            .next_envelope()
+            .await?
+            .context("missing Desktop Hello")?;
+        let (session, reply) = accept_hello(
+            &hello,
+            PeerRole::Tui,
+            &Uuid::new_v4().to_string(),
+            &Uuid::new_v4().to_string(),
+            &[
+                "attach.v1",
+                "render.v1",
+                "paste.v1",
+                "select_view.v1",
+                CREATE_VIEW_CAPABILITY,
+                CLAIM_WORKSPACE_CAPABILITY,
+                PANE_PREVIEW_CAPABILITY,
+                DEFAULT_SHELL_CAPABILITY,
+            ],
+        )?;
+        writer.envelope(&reply).await?;
+        let request = reader
+            .next_envelope()
+            .await?
+            .context("missing Desktop Attach")?;
+        ensure!(matches!(
+            session.validate_request(&request)?,
+            Body::Attach(_)
+        ));
+        ensure!(!desktop.session.ui().restore_supported);
+        Ok(())
+    })
+    .await
+    .context("waiting for Desktop to attach without agent restoration")?
 }
 
 struct AttachedSession {
