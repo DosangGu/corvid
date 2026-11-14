@@ -78,7 +78,7 @@ async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shel
         "saved the wrong pane"
     );
 
-    let mut reopened = Tui::open(&runtime, Vec::<OsString>::new())?;
+    let mut reopened = Tui::open_sized_target(&runtime, None, Vec::<OsString>::new(), COLS, ROWS)?;
     reopened.wait_for("RESTORE_ALIVE")?;
     let snapshot = corvid_client::snapshot(&runtime).await?;
     ensure!(snapshot.snapshot().entities().any(|entity| {
@@ -1168,6 +1168,16 @@ impl Tui {
         cols: u16,
         rows: u16,
     ) -> Result<Self> {
+        Self::open_sized_target(runtime, Some(runtime), args, cols, rows)
+    }
+
+    fn open_sized_target(
+        state_runtime: &Path,
+        runtime: Option<&Path>,
+        args: impl IntoIterator<Item = OsString>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
             cols,
@@ -1187,9 +1197,12 @@ impl Tui {
             }
         });
         let mut command = CommandBuilder::new(CORVID);
-        command.env("CORVID_VIEW_STATE_DIR", runtime.join("client-views"));
-        command.arg("--runtime-dir");
-        command.arg(runtime);
+        command.env("CORVID_VIEW_STATE_DIR", state_runtime.join("client-views"));
+        command.env_remove("CORVID_RUNTIME_DIR");
+        if let Some(runtime) = runtime {
+            command.arg("--runtime-dir");
+            command.arg(runtime);
+        }
         command.args(args);
         let child = pair.slave.spawn_command(command)?;
         let mut tui = Self {

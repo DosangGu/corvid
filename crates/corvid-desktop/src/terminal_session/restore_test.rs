@@ -121,6 +121,21 @@ async fn wait_screen(session: &Session, pane: &str, marker: &str) -> Result<()> 
     .context("waiting for Desktop terminal output")?
 }
 
+async fn wait_disconnected(session: &Session) -> Result<Ui> {
+    let mut changes = session.changes();
+    timeout(Duration::from_secs(20), async {
+        loop {
+            let ui = session.ui();
+            if !ui.connected && !ui.changing {
+                return Ok(ui);
+            }
+            changes.changed().await?;
+        }
+    })
+    .await
+    .context("waiting for Desktop detach")?
+}
+
 async fn verify_restore(state: &Path) -> Result<()> {
     let first = AttachedSession::start(state)?;
     let initial = wait_view(&first.session, |_| true).await?.selected.unwrap();
@@ -187,6 +202,33 @@ async fn verify_restore(state: &Path) -> Result<()> {
     let command = b"printf 'CHECK_%s\\n' \"$restore_value\"\n".to_vec();
     ensure!(second.session.send(&view.pane_id, command, false));
     wait_screen(&second.session, &view.pane_id, "CHECK_kept").await?;
+    ensure!(
+        second
+            .session
+            .send(&view.pane_id, b"exit\r".to_vec(), false)
+    );
+    wait_disconnected(&second.session).await?;
     drop(second);
+
+    let empty = AttachedSession::start(state)?;
+    let ui = wait_disconnected(&empty.session).await?;
+    ensure!(
+        ui.restore_unavailable,
+        "restoration unexpectedly opened a new terminal: {}",
+        ui.message
+    );
+    ensure!(
+        ui.inventory
+            .as_ref()
+            .is_some_and(|inventory| !inventory.live(view)),
+        "the ended terminal was restarted"
+    );
+    ensure!(
+        store
+            .last()
+            .is_some_and(|saved| saved.location.pane.to_string() == view.pane_id),
+        "failed restoration overwrote the saved view"
+    );
+    drop(empty);
     Ok(())
 }

@@ -16,8 +16,6 @@ use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-use super::runtime_path;
-
 const TERMINFO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/terminfo/c/corvid"));
 const STARTUP_POLL: Duration = Duration::from_millis(25);
 
