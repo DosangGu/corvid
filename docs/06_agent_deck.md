@@ -73,7 +73,8 @@ Windows background parity is not claimed for Linux.
 
 The default view is a borderless mini deck with eight keys in a **4 × 2** grid
 (**392 × 256 logical pixels**). Use **Expand Deck** to choose a preset and
-orientation under **Deck layout**. Dimensions always mean **columns × rows**:
+orientation in the **Columns × rows** controls. The preset labels update when
+the orientation changes:
 
 | Keys | Landscape | Portrait |
 | --- | --- | --- |
@@ -82,8 +83,9 @@ orientation under **Deck layout**. Dimensions always mean **columns × rows**:
 | 12 | 4 × 3 | 3 × 4 |
 | 15 | 5 × 3 | 3 × 5 |
 
-Returning to **Mini deck** applies the selected preset and orientation. Its
-shape stays fixed as agents arrive and leave; empty keys remain as quiet,
+Returning to **Mini deck** applies the selected preset and orientation. The
+mini header shows the resulting columns × rows next to its title. Its shape
+stays fixed as agents arrive and leave; empty keys remain as quiet,
 non-interactive placeholders. Extra agents scroll inside the panel.
 
 Both views have the same header with a title, window pin, expand or shrink

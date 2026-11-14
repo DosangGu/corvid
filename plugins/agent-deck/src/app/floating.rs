@@ -119,7 +119,7 @@ impl Desktop {
         column().child(
             row()
                 .flex_wrap()
-                .child(muted("Deck layout"))
+                .child(muted("Columns × rows"))
                 .children(Preset::ALL.into_iter().enumerate().map(|(index, preset)| {
                     let layout = GridLayout { preset, ..current };
                     button(("layout", index), layout.label(), true)
@@ -127,7 +127,10 @@ impl Desktop {
                             button.text_color(rgb(MINT))
                         })
                         .on_click(cx.listener(move |view, _, window, cx| {
-                            view.window.set_layout(layout);
+                            view.window.set_layout(GridLayout {
+                                preset,
+                                ..view.window.layout()
+                            });
                             view.update(window, cx);
                         }))
                 }))

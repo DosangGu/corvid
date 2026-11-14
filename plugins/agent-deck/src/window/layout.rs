@@ -78,7 +78,12 @@ mod tests {
 
     #[test]
     fn rotating_preserves_capacity_and_swaps_axes() {
-        for (preset, capacity) in Preset::ALL.into_iter().zip([6, 8, 12, 15]) {
+        for (preset, (capacity, landscape, portrait)) in Preset::ALL.into_iter().zip([
+            (6, "3 × 2", "2 × 3"),
+            (8, "4 × 2", "2 × 4"),
+            (12, "4 × 3", "3 × 4"),
+            (15, "5 × 3", "3 × 5"),
+        ]) {
             let wide = GridLayout {
                 preset,
                 orientation: Orientation::Landscape,
@@ -91,6 +96,8 @@ mod tests {
             assert_eq!(tall.dimensions(), (rows, columns));
             assert_eq!(wide.capacity(), capacity);
             assert_eq!(tall.capacity(), capacity);
+            assert_eq!(wide.label(), landscape);
+            assert_eq!(tall.label(), portrait);
             assert!(wide.size().width > wide.size().height);
             assert!(tall.size().height > tall.size().width);
         }

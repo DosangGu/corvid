@@ -35,7 +35,8 @@ impl Desktop {
     pub(super) fn window_header(&self, cx: &mut Context<Self>) -> Div {
         let pinned = self.window.pinned();
         let expanded = self.window.expanded;
-        let portrait = !expanded && self.window.layout().orientation == Orientation::Portrait;
+        let layout = self.window.layout();
+        let portrait = !expanded && layout.orientation == Orientation::Portrait;
         let tray = self.background.view.borrow().background;
         let title = div()
             .id("drag-title")
@@ -44,10 +45,17 @@ impl Desktop {
             .h_full()
             .flex()
             .items_center()
+            .gap(px(6.))
             .overflow_hidden()
             .whitespace_nowrap()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(if portrait { "Agents" } else { "Agent Deck" })
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(if portrait {
+                "Agents"
+            } else {
+                "Agent Deck"
+            }))
+            .when(!expanded, |title| {
+                title.child(muted(layout.label()).flex_shrink_0())
+            })
             .when(!pinned, |title| {
                 let title = title.cursor_grab();
                 #[cfg(windows)]
