@@ -138,8 +138,8 @@ error details can be expanded. Release notes open the selected release page.
 
 For installations from Windows Setup, the scripts, or a portable archive,
 **Download update** downloads, verifies, and installs the selected release in
-the background. The panel shows the current stage. Checking and installation continue when
-Settings is closed. Reopening Settings restores the current result or progress.
+the background. The panel shows a loading indicator during checks and installation.
+Work continues when Settings is closed. Reopening Settings shows the current status.
 Repeated clicks cannot start concurrent checks or installations.
 
 Once prepared, the update offers **Restart to apply** and **Later**. Later closes
@@ -149,6 +149,7 @@ failure leaves the app open, restores its terminal connection, and permits a ret
 Terminal jobs remain owned by their existing daemon throughout this flow.
 
 ![Available update in Settings](images/release-update-available.png)
+![Loading indicator during an update check](images/release-update-loading.jpg)
 ![Prepared update with a choice of restart time](images/release-update-ready.png)
 
 Both clients use `corvid-update`. For script and portable installations, the
