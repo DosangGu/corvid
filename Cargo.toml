@@ -54,7 +54,7 @@ hex = "=0.4.3"
 hidapi = "2.6"
 image = { version = "0.25", default-features = false }
 # GPUI's Linux HTTP stack uses xattr 0.2.3, which still needs libc::ENOATTR.
-libc = "=0.2.189"
+libc = "=0.2.191"
 nix = { version = "0.31.3", default-features = false }
 portable-pty = "=0.9.0"
 prost = "=0.14.4"
