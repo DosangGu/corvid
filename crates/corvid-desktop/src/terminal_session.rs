@@ -702,6 +702,7 @@ async fn run(
     shared: &Shared,
     agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
+    // Older daemons can attach without supporting agent conversation restoration.
     let mut capabilities: Vec<_> = [
         "attach.v1",
         "render.v1",
@@ -711,7 +712,6 @@ async fn run(
         CLAIM_WORKSPACE_CAPABILITY,
         PANE_PREVIEW_CAPABILITY,
         DEFAULT_SHELL_CAPABILITY,
-        corvid_protocol::RESTORE_AGENTS_CAPABILITY,
     ]
     .into_iter()
     .map(str::to_owned)
@@ -761,7 +761,14 @@ async fn run(
         );
         (remote.endpoint(), link)
     } else {
-        local_bootstrap::connect(capabilities.clone(), explicit, prompts, progress).await?
+        local_bootstrap::connect(
+            capabilities.clone(),
+            explicit,
+            host.as_deref().or(known_host.as_deref()),
+            prompts,
+            progress,
+        )
+        .await?
     };
     ensure!(
         host.as_deref()

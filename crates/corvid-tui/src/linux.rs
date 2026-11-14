@@ -28,7 +28,7 @@ use crate::runtime_path;
 
 use crate::{hooks, read_pairing_code};
 
-pub(super) use start::{ensure, start, upgrade};
+pub(super) use start::{desktop_handoff, ensure, start, upgrade};
 
 #[derive(Subcommand)]
 pub(super) enum Command {

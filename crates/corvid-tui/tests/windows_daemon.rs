@@ -686,6 +686,15 @@ async fn native_agent(
 
 #[tokio::test]
 async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
+    verify_windows_shell_handoff(false).await
+}
+
+#[tokio::test]
+async fn desktop_handoff_preserves_the_windows_shell_and_rejects_a_stale_epoch() -> Result<()> {
+    verify_windows_shell_handoff(true).await
+}
+
+async fn verify_windows_shell_handoff(desktop: bool) -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
     let state = fixture.path().join("state");
@@ -720,12 +729,29 @@ async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
     first.wait_without("Rename tab")?;
     wait_for_title(&runtime, "Retained tab", "RETAINED_TITLE").await?;
     let original_terminal = terminal_id(&runtime).await?;
-    let output = tokio::process::Command::new(CORVID)
-        .arg("--runtime-dir")
-        .arg(&runtime)
-        .arg("upgrade")
-        .output()
-        .await?;
+    let handoff = |epoch: &str| {
+        let mut command = tokio::process::Command::new(CORVID);
+        command.arg("--runtime-dir").arg(&runtime);
+        if desktop {
+            command.args([
+                "desktop-handoff",
+                "--host",
+                &original.host_id,
+                "--epoch",
+                epoch,
+            ]);
+        } else {
+            command.arg("upgrade");
+        }
+        command
+    };
+    if desktop {
+        let stale = handoff(&uuid::Uuid::new_v4().to_string()).output().await?;
+        ensure!(!stale.status.success());
+        ensure!(String::from_utf8_lossy(&stale.stderr).contains("EpochMismatch"));
+        ensure!(corvid_client::host(&runtime).await? == original);
+    }
+    let output = handoff(&original.server_epoch).output().await?;
     ensure!(
         output.status.success(),
         "{}",

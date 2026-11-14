@@ -175,8 +175,10 @@ the archive and its `.sha256` file from the same trusted release.
 
 ## Daemon lifecycle
 
-Package installation does not start, stop, or replace a daemon. Installed and
-running versions can differ while their protocol remains compatible.
+Package installation changes the installed files. When Desktop connects to an
+older local daemon, it attempts an automatic upgrade through the authenticated
+terminal handoff protocol. If the daemon declines the handoff or requires a
+service manager, Desktop connects using the capabilities that daemon supports.
 
 `corvid upgrade`, invoked through the newly installed executable, separately
 replaces an automatically started local daemon. The existing authenticated
@@ -185,9 +187,8 @@ and establishes a new daemon epoch and new client input routes. Unsupported old
 terminal hosts retain the existing idle-only/manual-upgrade restriction.
 
 Foreground and systemd-managed daemons use their existing supervisor procedure.
-The updater never forces a supervisor restart. SSH and WSL daemon provisioning
-retains Desktop's explicit host-specific installation and upgrade prompts.
-An app update does not update all connected hosts.
+SSH and WSL daemon provisioning retains Desktop's explicit host-specific
+installation and upgrade prompts.
 
 ## Build and publish
 

@@ -979,11 +979,17 @@ negotiate a compatible subset or return ProtocolMismatch. It must never kill/res
 daemon or corrupt work to force an upgrade. The error includes supported versions and
 manual upgrade guidance. Installation equality does not imply running-version equality.
 
-An explicit `corvid upgrade` uses an authenticated local upgrade socket, separate
-from the control relay. An automatically started daemon advertises
-`daemon_upgrade.v1` there. It pauses TUI admission, rejects the request while a
-terminal or attach is active, and waits for its metadata to be saved before
-approving shutdown. The launcher serializes replacement under the startup lock,
+Desktop uses the version reported by the running daemon to detect an older local
+daemon before attaching. Automatic replacement requires authenticated live
+terminal handoff for the same host and epoch. Desktop may fall back to a
+compatible attachment when handoff is unavailable.
+
+Daemon replacement uses an authenticated local upgrade socket, separate from
+the control relay. An automatically started daemon advertises
+`daemon_upgrade.v1` there. It pauses TUI admission, prepares terminal handoff
+when supported, and saves metadata before approving shutdown. On older daemons
+without terminal handoff, an explicit `corvid upgrade` may use the idle-only
+upgrade path. The launcher serializes replacement under the startup lock,
 reopens the same state directory, and verifies the same host in a new epoch.
 Externally managed daemons are upgraded through their supervisor.
 

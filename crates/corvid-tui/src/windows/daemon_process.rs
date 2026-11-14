@@ -1,7 +1,9 @@
+use std::ffi::OsString;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::null;
 
 use anyhow::{Result, ensure};
@@ -10,7 +12,8 @@ use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
     GetExitCodeProcess, OpenProcess, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW, STARTUPINFOW, TerminateProcess,
+    WaitForSingleObject,
 };
 
 pub(super) struct DaemonProcess(OwnedHandle);
@@ -99,6 +102,20 @@ impl DaemonProcess {
             }
             _ => Err(io::Error::last_os_error()),
         }
+    }
+
+    pub(super) fn image_path(&self) -> io::Result<PathBuf> {
+        let mut units = vec![0; 32768];
+        let mut length = units.len() as u32;
+        let result = unsafe {
+            QueryFullProcessImageNameW(self.0.as_raw_handle(), 0, units.as_mut_ptr(), &mut length)
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(PathBuf::from(OsString::from_wide(
+            &units[..length as usize],
+        )))
     }
 
     pub(super) fn terminate(&self) {

@@ -78,6 +78,38 @@ pub(crate) async fn upgrade(path: &Path) -> Result<()> {
     .await
 }
 
+pub(crate) async fn desktop_handoff(path: &Path, host: Uuid, epoch: Uuid) -> Result<()> {
+    let executable = crate::local_daemon_executable()?;
+    let runtime = RuntimeDir::open(path)?;
+    let _startup = upgrade_lock(&runtime).await?;
+    let previous_image = running_image(&runtime).await;
+    let target = corvid_client::prepare_daemon_handoff(runtime.path(), host, epoch).await?;
+    wait_for_upgrade_shutdown(&runtime).await?;
+    if let Err(error) = finish_upgrade(&runtime, Some(&target), &executable).await {
+        if let Some(previous_image) = previous_image
+            && try_lock(runtime.lock_instance())?.is_some()
+        {
+            start_replacement(&runtime, &target, &previous_image)
+                .await
+                .context("restarting the previous daemon after the Desktop update failed")?;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn running_image(runtime: &RuntimeDir) -> Option<PathBuf> {
+    let peer = runtime
+        .connect(SocketRole::Control)
+        .await
+        .ok()?
+        .peer_cred()
+        .ok()?;
+    let pid = peer.pid()?;
+    let path = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    path.is_file().then_some(path)
+}
+
 pub(super) async fn upgrade_managed(
     path: &Path,
     previous_version: &str,
@@ -155,10 +187,14 @@ async fn stop_for_upgrade(
         Err(error) => return Err(error),
     }
     let target = corvid_client::prepare_upgrade_for(runtime, expected_host).await?;
+    wait_for_upgrade_shutdown(runtime).await?;
+    Ok(Some(target))
+}
+
+async fn wait_for_upgrade_shutdown(runtime: &RuntimeDir) -> Result<()> {
     timeout(COMMAND_TIMEOUT, wait_for_shutdown(runtime))
         .await
-        .context("waiting for the previous Corvid daemon to shut down")??;
-    Ok(Some(target))
+        .context("waiting for the previous Corvid daemon to shut down")?
 }
 
 async fn finish_upgrade(

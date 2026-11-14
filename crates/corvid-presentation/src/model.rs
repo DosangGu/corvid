@@ -217,6 +217,7 @@ pub(crate) mod tests {
             controller_id: None,
             capabilities: Vec::new(),
             provider_profiles: Vec::new(),
+            daemon_version: None,
         }
     }
 
