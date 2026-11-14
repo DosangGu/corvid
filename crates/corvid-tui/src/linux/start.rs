@@ -23,11 +23,12 @@ const STARTUP_POLL: Duration = Duration::from_millis(25);
 
 pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
     corvid_client::check_tty()?;
-    let path = runtime_path(override_path)?;
+    let path = corvid_client::view_state::tui_runtime(override_path)?;
     let runtime = RuntimeDir::create(&path)?;
     ensure_daemon(&runtime).await?;
 
     let options = AttachOptions {
+        remember_view: true,
         launch_if_empty: true,
         ..AttachOptions::default()
     };
@@ -36,9 +37,14 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
         .as_ref()
         .err()
         .and_then(|error| error.downcast_ref::<ProtocolFault>());
-    if fault.is_some_and(|fault| fault.code == "NoTerminal") {
+    if fault.is_some_and(|fault| fault.code == "NoTerminal")
+        && corvid_client::view_state::tui_store()
+            .and_then(|store| store.for_target(&corvid_client::view_state::tui_target(&path).ok()?))
+            .is_none()
+    {
         // Older daemons only support a separate, explicit shell launch.
         let options = AttachOptions {
+            remember_view: true,
             launch: Some(Vec::new()),
             ..AttachOptions::default()
         };

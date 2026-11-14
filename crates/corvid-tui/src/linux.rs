@@ -221,7 +221,11 @@ pub(super) fn execute(
 }
 
 async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
-    let runtime = runtime_path(runtime_dir)?;
+    let runtime = if matches!(command, Command::Attach { .. }) {
+        corvid_client::view_state::tui_runtime(runtime_dir)?
+    } else {
+        runtime_path(runtime_dir)?
+    };
     match command {
         Command::Hooks { .. } | Command::Observe { .. } => {
             unreachable!("handled before daemon runtime")
@@ -273,6 +277,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 || new_tab.is_some())
             .then_some(argv);
             let options = corvid_client::AttachOptions {
+                remember_view: true,
                 launch,
                 take_over,
                 launch_if_empty: false,

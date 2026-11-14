@@ -45,4 +45,5 @@ x11rb.workspace = true
 embed-resource.workspace = true
 
 [target.'cfg(any(windows, target_os = "linux"))'.dev-dependencies]
+corvid-daemon.workspace = true
 tempfile.workspace = true

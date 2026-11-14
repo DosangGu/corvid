@@ -11,6 +11,7 @@ pub const WAIT: Duration = Duration::from_secs(8);
 pub fn command(runtime: &Path) -> Command {
     let mut command = Command::new(BINARY);
     command.arg("--runtime-dir").arg(runtime).kill_on_drop(true);
+    command.env("CORVID_VIEW_STATE_DIR", runtime.join("client-views"));
     command
 }
 

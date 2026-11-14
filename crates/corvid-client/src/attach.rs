@@ -30,12 +30,15 @@ use uuid::Uuid;
 use crate::connection::{LocalConnection as Connection, LocalRead, LocalWrite, SocketRole, open};
 use crate::keys::{Decoder, Input};
 use crate::tty::Tty;
+use crate::view_state::{self, Recorder, Target};
 
 const INPUT_CHUNK: usize = 8192;
 const LEGACY_MAX_COLS: u16 = 300;
 const LEGACY_MAX_ROWS: u16 = 120;
 
 pub struct AttachOptions {
+    /// Persist TUI navigation separately from Desktop. Explicit targets override restoration.
+    pub remember_view: bool,
     pub launch: Option<Vec<OsString>>,
     pub take_over: bool,
     /// Open a shell only when there is no live terminal to join.
@@ -56,6 +59,7 @@ pub struct AttachOptions {
 impl Default for AttachOptions {
     fn default() -> Self {
         Self {
+            remember_view: false,
             launch: None,
             take_over: false,
             launch_if_empty: false,
@@ -104,6 +108,22 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     if options.agent == Some(AgentProvider::Codex) {
         required.push(corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY.into());
     }
+    let store = options.remember_view.then(view_state::tui_store).flatten();
+    let saved_target = view_state::tui_target(runtime)?;
+    let restore = can_restore(&options)
+        .then(|| {
+            store
+                .as_ref()
+                .and_then(|store| store.for_target(&saved_target))
+        })
+        .flatten();
+    let recorder = store.and_then(|store| match store.recorder() {
+        Ok(recorder) => Some(recorder),
+        Err(error) => {
+            eprintln!("corvid: could not save TUI views: {error:#}");
+            None
+        }
+    });
     let claims = std::mem::take(&mut options.claim_workspaces);
     let move_tab = options.move_tab;
     let pane_writer = claims.is_empty() && move_tab.is_none();
@@ -113,13 +133,35 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     if move_tab.is_some() {
         required.push(MOVE_TAB_CAPABILITY.into());
     }
-    if options.pane.is_some() {
+    if options.pane.is_some() || restore.is_some() {
         required.push(CREATE_VIEW_CAPABILITY.into());
     }
     let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
+    if let Some(saved) = restore {
+        ensure!(
+            connection.session.host_id == saved.host_id.to_string(),
+            ProtocolFault::new(
+                "HostMismatch",
+                "the saved TUI connection points to a different host"
+            )
+        );
+        let snapshot = crate::ControlEndpoint::Local(runtime.to_owned())
+            .view_snapshot(
+                &connection.session.host_id,
+                &connection.session.server_epoch,
+            )
+            .await?;
+        let view = saved.resolve(&snapshot).context(
+            "Cannot restore the TUI view; use corvid attach --workspace ID --tab ID --pane ID to select a view"
+        )?;
+        options.workspace = Some(view.workspace_id);
+        options.tab = Some(view.tab_id);
+        options.pane = Some(view.pane_id);
+        options.launch_if_empty = false;
+    }
     let notification = ResponseNotification::negotiate(&connection.session);
     let escape_delay = options.escape_delay;
-    let (connection, route) = timeout(
+    let (connection, route, selection) = timeout(
         COMMAND_TIMEOUT,
         request_attach(
             connection,
@@ -130,6 +172,13 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         ),
     )
     .await??;
+    if let (Some(recorder), Some(selection)) = (&recorder, selection) {
+        recorder.record(
+            saved_target.clone(),
+            &connection.session.host_id,
+            &selection,
+        );
+    }
     #[cfg(target_os = "linux")]
     let (mut terminate, mut hangup, mut interrupt) = (
         signal(SignalKind::terminate())?,
@@ -142,6 +191,7 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let tty = Tty::enter()?;
     timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
     let mut client = Interactive::new(connection, viewport, route, escape_delay, notification);
+    client.saved_view = recorder.map(|recorder| (recorder, saved_target));
     tokio::select! {
         result = async {
             client.configure_layout(&tty, claims, move_tab).await?;
@@ -162,13 +212,32 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     }
 }
 
+fn can_restore(options: &AttachOptions) -> bool {
+    options.remember_view
+        && options.workspace.is_none()
+        && options.tab.is_none()
+        && options.pane.is_none()
+        && options.launch.is_none()
+        && options.agent.is_none()
+        && !options.take_over
+        && !options.restore_cwd
+        && options.new_workspace.is_none()
+        && options.new_tab.is_none()
+        && options.claim_workspaces.is_empty()
+        && options.move_tab.is_none()
+}
+
 async fn request_attach(
     mut connection: Connection,
     viewport: Viewport,
     options: AttachOptions,
     notifications: bool,
     pane_writer: bool,
-) -> Result<(Connection, RouteToken)> {
+) -> Result<(
+    Connection,
+    RouteToken,
+    Option<corvid_protocol::wire::ViewSelection>,
+)> {
     check_viewport_support(&connection.session, viewport)?;
     let mut terminal_capabilities = vec!["legacy_vt.v1".into(), "tabs.v1".into()];
     for capability in [
@@ -304,7 +373,7 @@ async fn request_attach(
             && Uuid::parse_str(&route.terminal_id).is_ok(),
         "invalid initial input route"
     );
-    Ok((connection, route))
+    Ok((connection, route, attached.selection))
 }
 
 struct Incoming {
@@ -341,6 +410,7 @@ impl Drop for Incoming {
 }
 
 struct Interactive {
+    saved_view: Option<(Recorder, Target)>,
     session: Session,
     writer: FrameWriter<LocalWrite>,
     incoming: Incoming,
@@ -416,6 +486,7 @@ impl Interactive {
         notification: Option<ResponseNotification>,
     ) -> Self {
         Self {
+            saved_view: None,
             session: connection.session,
             writer: connection.writer,
             incoming: Incoming::start(connection.reader),
@@ -686,6 +757,9 @@ impl Interactive {
             None => pending.context("view update has no viewport")?.viewport,
         };
         self.drain_retired_input(tty)?;
+        if let (Some((recorder, target)), Some(selection)) = (&self.saved_view, &view.selection) {
+            recorder.record(target.clone(), &self.session.host_id, selection);
+        }
         self.route = route;
         self.applied = None;
         Ok(())
@@ -892,5 +966,56 @@ fn wire_viewport(viewport: Viewport) -> WireViewport {
     WireViewport {
         cols: viewport.cols.get().into(),
         rows: viewport.rows.get().into(),
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_selection_launch_and_layout_commands_override_saved_views() {
+        let remembered = || AttachOptions {
+            remember_view: true,
+            ..Default::default()
+        };
+        assert!(can_restore(&remembered()));
+        assert!(!can_restore(&AttachOptions::default()));
+        for options in [
+            AttachOptions {
+                workspace: Some(Uuid::new_v4().to_string()),
+                ..remembered()
+            },
+            AttachOptions {
+                tab: Some(Uuid::new_v4().to_string()),
+                ..remembered()
+            },
+            AttachOptions {
+                pane: Some(Uuid::new_v4().to_string()),
+                ..remembered()
+            },
+            AttachOptions {
+                launch: Some(Vec::new()),
+                ..remembered()
+            },
+            AttachOptions {
+                take_over: true,
+                ..remembered()
+            },
+            AttachOptions {
+                new_workspace: Some("Example".into()),
+                ..remembered()
+            },
+            AttachOptions {
+                new_tab: Some("Example".into()),
+                ..remembered()
+            },
+            AttachOptions {
+                claim_workspaces: vec![Uuid::new_v4()],
+                ..remembered()
+            },
+        ] {
+            assert!(!can_restore(&options));
+        }
     }
 }

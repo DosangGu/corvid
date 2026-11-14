@@ -1458,7 +1458,7 @@ actual deployment, including service/cgroup policy and runtime-directory lifetim
 
 | Failure | PTY / agent process guarantee | Remote state and client | Local restoration / required action |
 |---|---|---|---|
-| A. Desktop restart | Preserved | Daemon and working TUI unchanged | Load current slots from the companion and choose the paired terminal again |
+| A. Desktop restart | Preserved | Daemon and working TUI unchanged | Restore the Desktop connection and workspace/tab/pane from client preferences, verify the host and current layout, and attach with fresh input routes; companion pairing remains separate |
 | B. Companion restart | Preserved | Working SSH/TUI can remain attached | Load slots/pins as stale, full snapshot, revalidate surviving terminal instance and binding |
 | C. Local PC reboot | Preserved remotely | Working TUI disconnects; its ClientId/lease/binding retired | Restore slots, reconnect control; user opens working SSH/TUI and registers its new client; no automatic window creation |
 | D. SSH connection loss | Preserved remotely | Working-channel loss detaches TUI; control-only loss merely disconnects watch | Reattach/full redraw for working channel; full snapshot for control; register new TUI client if applicable |
@@ -1488,6 +1488,7 @@ the explicit handoff record and private protocol identity.
 |---|---|---|
 | Remote identity | HostId, identity schema version | A past epoch or peer authentication |
 | Remote state | Layout IDs/tree, settings, last known CWD with source/time, sanitized labels, AgentSessionKey/parent/resume links, historical run IDs, last observation/time/confidence, request-kind/status metadata, attention acknowledgment, schema version | Live PTYs/process handles, current clients/leases, unresolved approvals as actionable current prompts |
+| Desktop / TUI navigation | Separate private JSON files with connection target, expected HostId, and last workspace/tab/pane IDs per target | ClientId, input routes, writer leases, queued input, process identity, or terminal content |
 | Local companion | ControllerId, configured SSH aliases and expected HostId, slots/pins/suppressed runs, stale status cache, schema version | Window/PID/TTY associations without fresh instance/connection validation; queued focus/input |
 
 Do not persist full prompts, questions, answers, output, tool arguments, environment,

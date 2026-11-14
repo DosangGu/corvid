@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 #[cfg(windows)]
 use corvid_client::WslDistribution;
+use corvid_client::view_state::{Recorder, SavedView, Target as SavedTarget, ViewStore};
 use corvid_client::{ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias};
 use corvid_companion::{Config, HostEndpoint};
 use corvid_protocol::snapshot::SynchronizedSnapshot;
@@ -44,6 +45,9 @@ type HistoryReply = std::result::Result<TerminalHistory, String>;
 #[cfg(all(test, windows))]
 mod wsl_test;
 
+#[cfg(test)]
+mod restore_test;
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Destination {
     Local,
@@ -55,6 +59,7 @@ pub enum Destination {
 #[derive(Clone)]
 pub enum AttachTarget {
     Default,
+    Restore(SavedView),
     Pane(ViewSelection, bool),
     Workspace {
         id: String,
@@ -69,6 +74,29 @@ pub enum AttachTarget {
 }
 
 impl Destination {
+    pub fn saved_target(&self) -> SavedTarget {
+        match self {
+            Self::Local => SavedTarget::Local,
+            Self::Ssh(alias) => SavedTarget::Ssh {
+                alias: alias.as_str().to_owned(),
+            },
+            #[cfg(windows)]
+            Self::Wsl(distribution) => SavedTarget::Wsl {
+                distribution: distribution.as_str().to_owned(),
+            },
+        }
+    }
+
+    pub fn from_saved(target: SavedTarget) -> Result<Self> {
+        match target {
+            SavedTarget::Local => Ok(Self::Local),
+            SavedTarget::Ssh { alias } => Ok(Self::Ssh(SshAlias::new(alias)?)),
+            #[cfg(windows)]
+            SavedTarget::Wsl { distribution } => Ok(Self::Wsl(WslDistribution::new(distribution)?)),
+            _ => bail!("saved connection is unavailable on this platform"),
+        }
+    }
+
     pub fn label(&self) -> &str {
         match self {
             Self::Local => "Local",
@@ -192,6 +220,7 @@ impl Inventory {
 
 #[derive(Clone)]
 pub struct Ui {
+    pub restore_unavailable: bool,
     pub naming_supported: bool,
     pub host_id: Option<String>,
     pub endpoint: Option<ControlEndpoint>,
@@ -289,6 +318,7 @@ enum Action {
 }
 
 struct Requests {
+    recorder: Option<Recorder>,
     actions: mpsc::Receiver<Action>,
     sizes: watch::Receiver<(u64, Grid)>,
     prompts: Prompts,
@@ -303,12 +333,23 @@ impl Session {
         target: AttachTarget,
         explicit: bool,
     ) -> Result<(Self, Job, mpsc::UnboundedReceiver<Prompt>)> {
+        let store = ViewStore::new(state_dir.join("desktop-view"));
+        let target = if matches!(target, AttachTarget::Default) {
+            store
+                .for_target(&destination.saved_target())
+                .map(AttachTarget::Restore)
+                .unwrap_or(target)
+        } else {
+            target
+        };
+        let restoring = matches!(target, AttachTarget::Restore(_));
         let grid = Grid::new(26, 112);
         let (screen_changed, _) = watch::channel(());
         let (ui_changed, _) = watch::channel(());
         let shared = Arc::new(Shared {
             buffer: Mutex::new(Buffer {
                 ui: Ui {
+                    restore_unavailable: false,
                     naming_supported: false,
                     host_id: None,
                     endpoint: None,
@@ -339,6 +380,13 @@ impl Session {
         let (prompt_sender, prompts) = mpsc::unbounded_channel();
         let (size, sizes) = watch::channel((0, grid));
         let requests = Requests {
+            recorder: match store.recorder() {
+                Ok(recorder) => Some(recorder),
+                Err(error) => {
+                    eprintln!("corvid: could not save Desktop views: {error:#}");
+                    None
+                }
+            },
             actions: incoming,
             sizes,
             prompts: Prompts(prompt_sender),
@@ -360,6 +408,9 @@ impl Session {
                     result
                 }));
             state.update_ui(|ui| {
+                ui.restore_unavailable = restoring && result.as_ref().err()
+                    .and_then(|error| error.downcast_ref::<ProtocolFault>())
+                    .is_some_and(|fault| matches!(fault.code.as_str(), "NoTerminal" | "TargetGone" | "SavedWorkspaceGone"));
                 ui.connected = false;
                 ui.inventory_ready = false;
                 ui.changing = false;
@@ -510,6 +561,8 @@ fn in_pane(ui: &Ui, pane: &str) -> bool {
 }
 
 struct Client<'a> {
+    recorder: Option<&'a Recorder>,
+    saved_target: SavedTarget,
     link: InteractiveConnection,
     endpoint: ControlEndpoint,
     agent_deck: &'a mut agent_deck::Job,
@@ -606,9 +659,10 @@ async fn run_reconnecting(
 async fn run(
     destination: Destination,
     state_dir: PathBuf,
-    target: AttachTarget,
+    mut target: AttachTarget,
     explicit: bool,
     Requests {
+        recorder,
         actions,
         sizes,
         prompts,
@@ -637,8 +691,9 @@ async fn run(
     }
     let known_host = match &target {
         AttachTarget::Workspace { host_id, .. } | AttachTarget::Takeover { host_id, .. } => {
-            Some(host_id.as_str())
+            Some(host_id.clone())
         }
+        AttachTarget::Restore(saved) => Some(saved.host_id.to_string()),
         _ => None,
     };
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
@@ -656,7 +711,7 @@ async fn run(
         let expected_host = host
             .as_deref()
             .or(configured_host.as_deref())
-            .or(known_host);
+            .or(known_host.as_deref());
         let (remote, link) = remote_bootstrap::connect(
             remote,
             capabilities.clone(),
@@ -679,7 +734,7 @@ async fn run(
     };
     ensure!(
         host.as_deref()
-            .or(known_host)
+            .or(known_host.as_deref())
             .is_none_or(|host| host == link.session().host_id),
         ProtocolFault::new(
             "HostMismatch",
@@ -692,9 +747,20 @@ async fn run(
         ui.host_id = host.clone();
         ui.endpoint = Some(endpoint.clone());
     });
+    if let AttachTarget::Restore(saved) = &target {
+        let snapshot = endpoint
+            .view_snapshot(&link.session().host_id, &link.session().server_epoch)
+            .await?;
+        shared.update_ui(|ui| {
+            ui.inventory = Some(Arc::new(Inventory::read(&snapshot)));
+            ui.inventory_ready = true;
+        });
+        target = AttachTarget::Pane(saved.resolve(&snapshot)?, false);
+    }
     let grid = sizes.borrow().1;
     let resume = terminal.is_none();
     let attached = match &target {
+        AttachTarget::Restore(_) => unreachable!("saved view resolved before attach"),
         AttachTarget::Workspace {
             id,
             host_id,
@@ -800,6 +866,7 @@ async fn run(
             && valid_route(&route)
             && route.writer_lease_generation > 0
             && match &target {
+                AttachTarget::Restore(_) => false,
                 AttachTarget::Default => true,
                 AttachTarget::Pane(view, _) | AttachTarget::Takeover { view, .. } =>
                     *view == selected,
@@ -831,6 +898,8 @@ async fn run(
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
     let mut client = Client {
+        recorder: recorder.as_ref(),
+        saved_target: destination.saved_target(),
         link,
         endpoint: endpoint.clone(),
         agent_deck,
@@ -1010,6 +1079,13 @@ fn validate_selection(view: &ViewSelection) -> Result<()> {
 
 impl Client<'_> {
     fn publish_view(&self) {
+        if let Some(recorder) = self.recorder {
+            recorder.record(
+                self.saved_target.clone(),
+                &self.link.session().host_id,
+                &self.selected,
+            );
+        }
         {
             let mut buffer = self.shared.buffer();
             if buffer

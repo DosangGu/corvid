@@ -42,6 +42,15 @@ pub async fn watch_snapshot(runtime: &Path) -> Result<SnapshotWatch> {
 }
 
 impl ControlEndpoint {
+    pub async fn view_snapshot(&self, host: &str, epoch: &str) -> Result<SynchronizedSnapshot> {
+        let (_, state) = connect(self, false, false, None, Some(host), || {}).await?;
+        ensure!(
+            state.session().server_epoch == epoch,
+            ProtocolFault::new("EpochMismatch", "daemon restarted while restoring the view")
+        );
+        Ok(state)
+    }
+
     pub async fn watch(
         &self,
         controller: &str,

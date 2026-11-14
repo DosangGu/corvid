@@ -106,7 +106,7 @@ pub(super) enum ManagedAgent {
 
 pub(super) async fn start(runtime: Option<PathBuf>) -> Result<u32> {
     start_attach(
-        runtime_path(runtime)?,
+        corvid_client::view_state::tui_runtime(runtime)?,
         AttachOptions {
             launch_if_empty: true,
             ..AttachOptions::default()
@@ -140,7 +140,11 @@ pub(super) fn dispatch(
 }
 
 async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
-    let runtime = runtime_path(runtime)?;
+    let runtime = if matches!(command, Command::Attach { .. }) {
+        corvid_client::view_state::tui_runtime(runtime)?
+    } else {
+        runtime_path(runtime)?
+    };
     match command {
         Command::Daemon {
             state_dir,
@@ -235,7 +239,8 @@ fn local_app_data() -> Result<PathBuf> {
         .context("LOCALAPPDATA is unavailable")
 }
 
-async fn start_attach(runtime: PathBuf, options: AttachOptions) -> Result<u32> {
+async fn start_attach(runtime: PathBuf, mut options: AttachOptions) -> Result<u32> {
+    options.remember_view = true;
     check_tty()?;
     if !daemon_running(&runtime).await? {
         ensure_daemon(&runtime, &state_path(None)?, false, None).await?;
