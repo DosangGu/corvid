@@ -1,6 +1,35 @@
 use super::*;
+use std::collections::HashSet;
 
 impl WorkspaceView {
+    pub(super) fn ssh_destinations(&self) -> Vec<Destination> {
+        let mut hosts = self.destinations(|destination| matches!(destination, Destination::Ssh(_)));
+        hosts.extend(self.hosts.iter().flatten().cloned().map(Destination::Ssh));
+        sorted_destinations(hosts)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn wsl_destinations(&self) -> Vec<Destination> {
+        let mut hosts = self.destinations(|destination| matches!(destination, Destination::Wsl(_)));
+        hosts.extend(
+            self.distributions
+                .iter()
+                .flatten()
+                .cloned()
+                .map(Destination::Wsl),
+        );
+        sorted_destinations(hosts)
+    }
+
+    fn destinations(&self, matches: impl Fn(&Destination) -> bool) -> HashSet<Destination> {
+        self.known_sessions
+            .keys()
+            .chain(self.destination.iter())
+            .filter(|destination| matches(destination))
+            .cloned()
+            .collect()
+    }
+
     pub(super) fn connections_panel(&self, ui: Option<&Ui>, cx: &mut Context<Self>) -> Div {
         let changing = self.connecting(ui);
         div()
@@ -80,21 +109,7 @@ impl WorkspaceView {
     }
 
     fn host_list(&self, ui: Option<&Ui>, changing: bool, cx: &mut Context<Self>) -> Div {
-        let mut hosts: Vec<_> = self.hosts.as_ref().into_iter().flatten().cloned().collect();
-        let mut extra: Vec<_> = self
-            .known_sessions
-            .keys()
-            .chain(self.destination.iter())
-            .filter_map(|destination| match destination {
-                Destination::Ssh(alias) => Some(alias),
-                _ => None,
-            })
-            .filter(|alias| !hosts.contains(alias))
-            .cloned()
-            .collect();
-        extra.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
-        extra.dedup();
-        hosts.extend(extra);
+        let hosts = self.ssh_destinations();
         let note = if self.host_scan.is_some() {
             Some("Reading SSH configuration…")
         } else {
@@ -138,29 +153,15 @@ impl WorkspaceView {
                 )
             })
             .children(
-                hosts.into_iter().map(|alias| {
-                    self.connection_branch(&Destination::Ssh(alias), ui, changing, cx)
-                }),
+                hosts
+                    .iter()
+                    .map(|host| self.connection_branch(host, ui, changing, cx)),
             )
     }
 
     #[cfg(windows)]
     fn wsl_list(&self, ui: Option<&Ui>, changing: bool, cx: &mut Context<Self>) -> Div {
-        let mut distributions: Vec<_> = self
-            .distributions
-            .as_ref()
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect();
-        for destination in self.known_sessions.keys().chain(self.destination.iter()) {
-            if let Destination::Wsl(distribution) = destination
-                && !distributions.contains(distribution)
-            {
-                distributions.push(distribution.clone());
-            }
-        }
-        distributions.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let distributions = self.wsl_destinations();
         let note = if self.wsl_scan.is_some() {
             Some("Reading WSL distributions…".to_owned())
         } else {
@@ -198,9 +199,11 @@ impl WorkspaceView {
                         .child(message),
                 )
             })
-            .children(distributions.into_iter().map(|distribution| {
-                self.connection_branch(&Destination::Wsl(distribution), ui, changing, cx)
-            }))
+            .children(
+                distributions
+                    .iter()
+                    .map(|host| self.connection_branch(host, ui, changing, cx)),
+            )
     }
 
     fn connection_branch(
@@ -256,22 +259,26 @@ impl WorkspaceView {
                     .text_color(rgb(TEXT))
                     .text_size(px(13.))
                     .child(div().flex_1().min_w_0().truncate().child(label))
-                    .when_some(known.filter(|known| known.live), |row, known| {
-                        let agents = known
-                            .inventory
-                            .agents
-                            .iter()
-                            .filter(|agent| agent.terminal_available)
-                            .count();
-                        row.when(agents > 0, |row| {
-                            row.child(div().flex_none().text_xs().text_color(rgb(MUTED)).child(
-                                format!(
-                                    "{agents} {}",
-                                    if agents == 1 { "agent" } else { "agents" }
-                                ),
-                            ))
-                        })
-                    })
+                    .when_some(
+                        known
+                            .filter(|known| known.live)
+                            .and_then(|known| known.inventory.as_ref()),
+                        |row, inventory| {
+                            let agents = inventory
+                                .agents
+                                .iter()
+                                .filter(|agent| agent.terminal_available)
+                                .count();
+                            row.when(agents > 0, |row| {
+                                row.child(div().flex_none().text_xs().text_color(rgb(MUTED)).child(
+                                    format!(
+                                        "{agents} {}",
+                                        if agents == 1 { "agent" } else { "agents" }
+                                    ),
+                                ))
+                            })
+                        },
+                    )
                     .child(
                         div()
                             .flex_none()
@@ -293,4 +300,10 @@ impl WorkspaceView {
                     }),
             )
     }
+}
+
+fn sorted_destinations(destinations: HashSet<Destination>) -> Vec<Destination> {
+    let mut destinations: Vec<_> = destinations.into_iter().collect();
+    destinations.sort_unstable_by(|left, right| left.label().cmp(right.label()));
+    destinations
 }

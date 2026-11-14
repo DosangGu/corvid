@@ -397,7 +397,7 @@ impl WorkspaceView {
 }
 
 impl Render for WorkspaceView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.session.as_ref().map(Session::ui);
         let inventory = ui.as_ref().and_then(|ui| ui.inventory.as_ref());
         let workspace = ui
@@ -468,7 +468,9 @@ impl Render for WorkspaceView {
                         .child(message),
                 )
             })
-            .when(self.switcher_open, |root| root.child(self.switcher(cx)))
+            .when(self.switcher_open, |root| {
+                root.child(self.switcher(window, cx))
+            })
             .when(self.menu_open, |root| root.child(self.action_menu(cx)))
             .when(self.naming.is_some(), |root| {
                 root.child(self.naming_panel(cx))

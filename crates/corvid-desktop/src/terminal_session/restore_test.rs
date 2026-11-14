@@ -180,6 +180,28 @@ async fn verify_restore(state: &Path) -> Result<()> {
         "input was not accepted"
     );
     wait_screen(&first.session, &view.pane_id, "DESKTOP_kept").await?;
+    let endpoint = selected
+        .endpoint
+        .as_ref()
+        .context("missing control endpoint")?;
+    let snapshot = endpoint.current_snapshot(None).await?;
+    let inventory = Inventory::read(&snapshot);
+    ensure!(
+        Some(&snapshot.session().host_id) == selected.host_id.as_ref()
+            && inventory.live(view)
+            && inventory.has_writer(view)
+            && inventory.clients.len() == 1,
+        "reading the workspace list changed the terminal or its writer"
+    );
+    let different_host = uuid::Uuid::new_v4().to_string();
+    let mismatch = endpoint.current_snapshot(Some(&different_host)).await;
+    ensure!(
+        mismatch
+            .err()
+            .and_then(|error| error.downcast::<ProtocolFault>().ok())
+            .is_some_and(|fault| fault.code == "HostMismatch"),
+        "inventory lookup accepted an unexpected daemon"
+    );
     drop(first);
 
     let store = ViewStore::new(state.join("desktop-view"));

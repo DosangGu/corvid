@@ -42,8 +42,17 @@ pub async fn watch_snapshot(runtime: &Path) -> Result<SnapshotWatch> {
 }
 
 impl ControlEndpoint {
+    /// Read the current layout, negotiating the host identity on first contact.
+    pub async fn current_snapshot(
+        &self,
+        expected_host: Option<&str>,
+    ) -> Result<SynchronizedSnapshot> {
+        let (_, state) = connect(self, false, false, None, expected_host, || {}).await?;
+        Ok(state)
+    }
+
     pub async fn view_snapshot(&self, host: &str, epoch: &str) -> Result<SynchronizedSnapshot> {
-        let (_, state) = connect(self, false, false, None, Some(host), || {}).await?;
+        let state = self.current_snapshot(Some(host)).await?;
         ensure!(
             state.session().server_epoch == epoch,
             ProtocolFault::new("EpochMismatch", "daemon restarted while restoring the view")

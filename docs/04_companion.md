@@ -87,14 +87,20 @@ Open **Settings → Connections** (Ctrl+,) to browse **Local Terminal**, SSH hos
 and WSL distributions in a separate window. The list shows concrete
 `Host` aliases from `%USERPROFILE%\.ssh\config` and static, unconditional
 `Include` files. Use **Refresh** after editing the config, or enter an alias
-manually. While Desktop is open, the workspace picker keeps verified inventories
-for visited connections. Open it with the host/workspace button or Ctrl+Shift+P.
-Desktop continues to watch up to eight detached hosts for
-session and agent changes, with the status **Live · detached**. If a watch loses
-the connection, Desktop marks the retained inventory **Cached**. A detached
-watch checks the previously verified host ID and holds no writer lease.
-Select a workspace in the picker to open it directly. Switching connections
-detaches the current view and keeps its daemon's terminals running.
+manually.
+
+Open the workspace picker with the host/workspace button or Ctrl+Shift+P. It
+groups workspaces under Local, configured SSH aliases, and installed WSL
+distributions. Connections already known to Desktop appear alongside configured
+ones. Expand a machine to look up its workspaces through a read-only connection
+to its running Corvid daemon. **Open terminal…** uses the normal connection and
+setup flow when there are no workspaces to select.
+
+Desktop watches up to eight detached hosts for session and agent changes. If a
+watch loses the connection, Desktop marks its last workspace list **Cached**.
+The watch checks the previously verified host ID and holds no writer lease.
+Select a workspace to open it directly. Switching connections detaches the
+current view and keeps its daemon's terminals running.
 You can also launch with `--ssh-alias work-host` or use `corvid companion open work-host`.
 
 On Windows, **Settings → Connections → WSL** lists installed distributions.
@@ -218,8 +224,9 @@ Desktop keeps navigation in one compact row. A single pane has no extra title
 bar or border, and normal attachment does not add a bottom status bar.
 Reconnection, synchronization, and error states remain visible. The workspace
 picker and action menus overlay the terminal without resizing its PTY; Escape
-returns focus to the terminal. Type to filter workspaces by host and label, then
-use Up/Down and Enter. Cached workspaces are identified explicitly.
+returns focus to the terminal. Type to filter by machine and workspace name.
+Use Up/Down to move, Left/Right to collapse or expand a machine, and Enter to
+activate a row. The list also scrolls with the mouse.
 
 Ctrl+Shift+F hides/restores the tab bar; **Show tabs** also exits focus mode.
 Ctrl+Shift+Z expands the selected pane and restores its split layout without
