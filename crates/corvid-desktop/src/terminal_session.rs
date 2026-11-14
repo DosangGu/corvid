@@ -59,6 +59,7 @@ pub enum Destination {
 #[derive(Clone)]
 pub enum AttachTarget {
     Default,
+    FreshDefault,
     Restore(SavedView),
     Pane(ViewSelection, bool),
     Workspace {
@@ -106,7 +107,7 @@ impl Destination {
         }
     }
 
-    fn remote(&self) -> Option<RemoteHost> {
+    pub(crate) fn remote(&self) -> Option<RemoteHost> {
         match self {
             Self::Local => None,
             Self::Ssh(alias) => Some(RemoteHost::Ssh(alias.clone())),
@@ -834,7 +835,7 @@ async fn run(
             )
             .await?
         }
-        AttachTarget::Default => {
+        AttachTarget::Default | AttachTarget::FreshDefault => {
             attach(
                 &mut link,
                 grid,
@@ -867,7 +868,7 @@ async fn run(
             && route.writer_lease_generation > 0
             && match &target {
                 AttachTarget::Restore(_) => false,
-                AttachTarget::Default => true,
+                AttachTarget::Default | AttachTarget::FreshDefault => true,
                 AttachTarget::Pane(view, _) | AttachTarget::Takeover { view, .. } =>
                     *view == selected,
                 AttachTarget::Workspace { id, .. } => *id == selected.workspace_id,

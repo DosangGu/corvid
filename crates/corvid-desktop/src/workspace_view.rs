@@ -82,6 +82,8 @@ pub struct WorkspaceView {
     session: Option<Session>,
     destination: Option<Destination>,
     known_sessions: HashMap<Destination, KnownSessions>,
+    host_lookups: HashMap<Destination, Task<()>>,
+    lookup_errors: HashMap<Destination, &'static str>,
     terminal: Option<Entity<TerminalView>>,
     selected: Option<ViewSelection>,
     preferred_tabs: HashMap<String, String>,
@@ -91,8 +93,7 @@ pub struct WorkspaceView {
     deck_focus: u64,
     agent_deck: agent_deck::Settings,
     switcher_open: bool,
-    switcher_query: String,
-    switcher_index: usize,
+    switcher: switcher::Picker,
     terminal_window: WindowHandle<Self>,
     management_window: Option<WindowHandle<management::ManagementView>>,
     management_page: management::Page,
@@ -108,7 +109,7 @@ pub struct WorkspaceView {
 struct KnownSessions {
     host_id: String,
     endpoint: ControlEndpoint,
-    inventory: Arc<Inventory>,
+    inventory: Option<Arc<Inventory>>,
     live: bool,
     watch: Option<(Instant, Task<()>)>,
 }
@@ -149,6 +150,8 @@ impl WorkspaceView {
             session: None,
             destination: None,
             known_sessions: HashMap::new(),
+            host_lookups: HashMap::new(),
+            lookup_errors: HashMap::new(),
             terminal: None,
             selected: None,
             preferred_tabs: HashMap::new(),
@@ -158,8 +161,7 @@ impl WorkspaceView {
             deck_focus: 0,
             agent_deck,
             switcher_open: false,
-            switcher_query: String::new(),
-            switcher_index: 0,
+            switcher: switcher::Picker::default(),
             terminal_window: window.window_handle().downcast().expect("workspace window"),
             management_window: None,
             management_page: management::Page::Connections,
@@ -332,6 +334,8 @@ impl WorkspaceView {
             self.preferred_panes.clear();
         }
         let previous = self.destination.replace(destination.clone());
+        self.host_lookups.remove(&destination);
+        self.lookup_errors.remove(&destination);
         if let Some(known) = self.known_sessions.get_mut(&destination) {
             known.watch = None;
             known.live = false;
@@ -415,7 +419,7 @@ impl WorkspaceView {
                         if let Some(known) = view.known_sessions.get_mut(&target) {
                             known.live = inventory.is_some();
                             if let Some(inventory) = inventory {
-                                known.inventory = inventory;
+                                known.inventory = Some(inventory);
                             }
                             cx.notify();
                         }
@@ -430,7 +434,6 @@ impl WorkspaceView {
             .known_sessions
             .get_mut(&destination)
             .expect("known host");
-        known.live = false;
         known.watch = Some((Instant::now(), task));
     }
 
@@ -438,11 +441,6 @@ impl WorkspaceView {
         let Some(ui) = self.session.as_ref().map(Session::ui) else {
             return;
         };
-        if ui.restore_unavailable && !self.restore_picker_shown {
-            self.restore_picker_shown = true;
-            self.switcher_open = true;
-            window.focus(&self.setup_focus);
-        }
         if ui.closed_view {
             self.naming = None;
             self.selected = None;
@@ -454,14 +452,15 @@ impl WorkspaceView {
             && self
                 .known_sessions
                 .get(destination)
-                .is_none_or(|known| !Arc::ptr_eq(&known.inventory, inventory))
+                .and_then(|known| known.inventory.as_ref())
+                .is_none_or(|cached| !Arc::ptr_eq(cached, inventory))
         {
             self.known_sessions.insert(
                 destination.clone(),
                 KnownSessions {
                     host_id: host_id.clone(),
                     endpoint: endpoint.clone(),
-                    inventory: Arc::clone(inventory),
+                    inventory: Some(Arc::clone(inventory)),
                     live: true,
                     watch: None,
                 },
@@ -477,12 +476,16 @@ impl WorkspaceView {
                     .or_insert_with(|| KnownSessions {
                         host_id,
                         endpoint,
-                        inventory: Arc::default(),
+                        inventory: None,
                         live: false,
                         watch: None,
                     });
             }
             self.watch_host(destination.clone(), cx);
+        }
+        if ui.restore_unavailable && !self.restore_picker_shown {
+            self.restore_picker_shown = true;
+            self.show_switcher(window, cx);
         }
         if ui.connected
             && let Some(selected) = ui.selected
@@ -570,6 +573,7 @@ impl WorkspaceView {
     fn open_workspace(
         &mut self,
         destination: Destination,
+        host_id: String,
         id: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -577,7 +581,8 @@ impl WorkspaceView {
         if self.destination.as_ref() == Some(&destination)
             && let Some(ui) = self.session.as_ref().map(Session::ui).filter(Ui::can_write)
         {
-            if ui.inventory_ready
+            if ui.host_id.as_ref() == Some(&host_id)
+                && ui.inventory_ready
                 && let Some(inventory) = ui.inventory
                 && let Some(workspace) = inventory
                     .workspaces
@@ -594,14 +599,12 @@ impl WorkspaceView {
             }
             return;
         }
-        if let Some(known) = self.known_sessions.get(&destination) {
-            let target = AttachTarget::Workspace {
-                id,
-                host_id: known.host_id.clone(),
-                new_tab: None,
-            };
-            self.switch_to(destination, target, window, cx);
-        }
+        let target = AttachTarget::Workspace {
+            id,
+            host_id,
+            new_tab: None,
+        };
+        self.switch_to(destination, target, window, cx);
     }
 
     fn create(&self, target: Target) {
