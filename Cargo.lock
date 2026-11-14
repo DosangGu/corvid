@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-agent-deck"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-client"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-companion"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "corvid-client",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-daemon"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "corvid-core",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-deck"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "corvid-companion",
@@ -1328,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-desktop"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1361,11 +1361,11 @@ dependencies = [
 
 [[package]]
 name = "corvid-package-desktop"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "corvid-presentation"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "corvid-companion",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-protocol"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "nix 0.31.3",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-terminal-spike"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "corvid-core",
@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-tui"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-update"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "embed-resource",
