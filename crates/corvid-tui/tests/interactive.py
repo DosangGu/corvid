@@ -463,7 +463,7 @@ def verify_default_start(binary, directory):
     def shell_pid(terminal):
         terminal.expect(b"CORVID-PROMPT>")
         terminal.send(
-            b"infocmp corvid >/dev/null && "
+            b"infocmp \"$TERM\" >/dev/null && "
             b"printf 'CORVID-SHELL=%s SIZE=%s\\n' \"$$\" \"$(stty size)\"\n"
         )
         return terminal.expect(rb"CORVID-SHELL=(\d+) SIZE=79 319")[1]

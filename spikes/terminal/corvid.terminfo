@@ -1,5 +1,5 @@
 # Initial Linux terminal profile for the Phase 0 compatibility spike.
-corvid|Corvid bounded VT profile,
+corvid|xterm-corvid-256color|Corvid bounded VT profile,
     am, bce, Tc,
     colors#256, cols#80, lines#24, pairs#32767,
     cr=^M, ind=^J,

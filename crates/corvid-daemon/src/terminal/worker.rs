@@ -1425,7 +1425,9 @@ impl Launch {
         if let Some(cwd) = self.cwd {
             command.cwd(cwd);
         }
-        command.env("TERM", "corvid");
+        // Bash and other prompt scripts check the TERM name before emitting
+        // OSC titles. The matching terminfo entry describes Corvid's VT subset.
+        command.env("TERM", "xterm-corvid-256color");
         command.env("COLORTERM", "truecolor");
         command
     }

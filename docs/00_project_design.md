@@ -713,12 +713,12 @@ alternate-screen entry/exit; cursor visibility/movement; indexed/true color; era
 scroll regions; resize at boundaries; bracketed paste; Ctrl-C; Esc/Alt ambiguity and split
 key sequences; child terminal queries/responses; and attach/redraw after output continues.
 
-Use a proposed `corvid` terminfo/capability profile for child PTYs and advertise only
-qualified features. Until that entry is installed, an existing TERM may be used in a
-spike only after testing the capabilities it advertises; never claim full xterm support
-because common colors render. The outer client's TERM and the inner PTY's TERM are
-separate. IME composition belongs to the outer terminal; Corvid still must preserve its
-committed UTF-8. Images, arbitrary clipboard passthrough, and full emulator parity are
+Use the bundled Corvid terminfo profile for Linux child PTYs and advertise only
+qualified features. The `xterm-corvid-256color` name lets shells recognize the
+terminal for title updates and refers to Corvid's profile. The outer client's
+TERM and the inner PTY's TERM are separate. IME composition belongs to the outer
+terminal; Corvid still must preserve its committed UTF-8. Images, arbitrary
+clipboard passthrough, and full emulator parity are
 outside the initial profile.
 
 ### 7.7 Shared TUI and GUI behavior
