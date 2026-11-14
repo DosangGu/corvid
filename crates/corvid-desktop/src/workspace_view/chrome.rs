@@ -4,8 +4,7 @@ use gpui::MouseButton;
 
 #[derive(Clone, Copy)]
 pub(super) enum MenuAction {
-    RenamePane,
-    RenameTab,
+    Rename,
     NewTab,
     NewWorkspace,
     SplitRight,
@@ -75,9 +74,8 @@ impl WorkspaceView {
             (MenuAction::Settings, "Settings…", "Ctrl+,"),
         ];
         if let Some(ui) = ui.filter(|ui| ui.connected && !ui.changing) {
-            if ui.can_write() && ui.naming_supported {
-                items.push((MenuAction::RenamePane, "Rename pane…", "Ctrl+Shift+R"));
-                items.push((MenuAction::RenameTab, "Rename tab…", "Ctrl+Alt+R"));
+            if ui.can_write() && ui.naming_supported && ui.inventory_ready {
+                items.push((MenuAction::Rename, "Rename…", "Ctrl+Shift+R"));
             }
             if ui.can_write() && ui.session_clients_supported {
                 items.push((
@@ -132,8 +130,7 @@ impl WorkspaceView {
             })
         });
         match action {
-            MenuAction::RenamePane => self.open_naming(true, window, cx),
-            MenuAction::RenameTab => self.open_naming(false, window, cx),
+            MenuAction::Rename => self.open_naming(window, cx),
             MenuAction::NewTab => self.create(Target::TabLabel(format!(
                 "Shell {}",
                 workspace.map_or(1, |workspace| workspace.tabs.len() + 1)

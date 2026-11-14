@@ -25,18 +25,18 @@ impl NameDraft {
 }
 
 impl WorkspaceView {
-    pub(super) fn open_naming(&mut self, pane: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let ui = session.ui();
-        if !ui.can_write() || !ui.naming_supported || ui.changing {
+        let (ui, revision) = session.ui_with_revision();
+        if !ui.can_write() || !ui.naming_supported || ui.changing || !ui.inventory_ready {
             return;
         }
         let Some(selected) = ui.selected.as_ref() else {
             return;
         };
-        let tab = ui
+        let Some(tab) = ui
             .inventory
             .as_ref()
             .and_then(|inventory| {
@@ -50,24 +50,32 @@ impl WorkspaceView {
                     .tabs
                     .iter()
                     .find(|tab| tab.tab_id == selected.tab_id)
-            });
-        let text = if pane {
-            tab.and_then(|tab| {
-                tab.nodes.iter().find(
-                    |node| matches!(&node.body, Some(Node::PaneId(id)) if *id == selected.pane_id),
-                )
             })
-            .map(|node| node.title.clone())
-            .unwrap_or_default()
+        else {
+            return;
+        };
+        let Some(node) = tab
+            .nodes
+            .iter()
+            .find(|node| matches!(&node.body, Some(Node::PaneId(id)) if *id == selected.pane_id))
+        else {
+            return;
+        };
+        let pane = matches!(
+            tab.nodes.first().and_then(|node| node.body.as_ref()),
+            Some(Node::Split(_))
+        );
+        let text = if pane {
+            node.title.clone()
         } else {
-            tab.map(|tab| tab.label.clone()).unwrap_or_default()
+            tab.label.clone()
         };
         self.naming = Some(NameDraft {
             pane,
             text,
             marked: String::new(),
             selected: true,
-            revision: session.view_revision(),
+            revision,
         });
         self.menu_open = false;
         self.switcher_open = false;

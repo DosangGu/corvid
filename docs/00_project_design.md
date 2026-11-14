@@ -734,6 +734,7 @@ authority for accepted state changes and terminal lifetimes.
 | Tabs | Creation, ordering, selection, cycling, and closure have the same meaning; graphical tab controls and the TUI tab picker address the same operations |
 | Panes | Split direction, pane selection, resize, and closure use common layout rules, including the next selection after a close and handling of the last pane/tab |
 | Focus and input | Selection targets an exact pane in one client; writer ownership, route fencing, and literal terminal input follow the same contract |
+| Names | Rename targets the current tab when it has one pane, or the focused pane when the tab is split |
 | Session lifetime | Hiding a tab, closing a presentation window, or detaching is distinct from explicitly closing a terminal; daemon-owned sessions survive client loss |
 | Capabilities and limits | Unsupported operations and resource limits are explicit; temporary platform gaps do not define a second set of workspace semantics |
 

@@ -30,7 +30,7 @@ pub(crate) enum TabCommand {
 }
 
 pub(super) enum KeyCommand {
-    BeginRename(bool),
+    BeginRename,
     Rename(bool, String),
     Detach,
     Tab(TabCommand),
@@ -62,8 +62,7 @@ impl CloseKind {
 impl Keymap {
     pub(super) fn command(self, bytes: &[u8]) -> Option<KeyCommand> {
         match bytes {
-            b"." if self.naming => Some(KeyCommand::BeginRename(true)),
-            b"," if self.naming => Some(KeyCommand::BeginRename(false)),
+            b"." if self.naming => Some(KeyCommand::BeginRename),
             b"d" => Some(KeyCommand::Detach),
             b"n" if self.tabs => Some(KeyCommand::Tab(TabCommand::Next)),
             b"p" if self.tabs => Some(KeyCommand::Tab(TabCommand::Previous)),

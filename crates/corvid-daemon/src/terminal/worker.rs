@@ -799,7 +799,10 @@ impl Worker {
             } => {
                 lease.check_input(route, sequence, terminal)?;
                 match lease.keys(sequence, bytes, &mut terminal.session)? {
-                    Some(KeyCommand::BeginRename(pane)) => {
+                    Some(KeyCommand::BeginRename) => {
+                        let location = lease.location;
+                        let layout = self.scope.metadata.layout();
+                        let pane = layout.panes(location.workspace, location.tab).len() > 1;
                         lease.naming = Some(super::rename::NameEditor::new(pane));
                     }
                     Some(KeyCommand::Rename(pane, name)) => {

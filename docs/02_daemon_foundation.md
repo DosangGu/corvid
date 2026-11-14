@@ -431,11 +431,11 @@ and bidi-control characters are removed, and titles are bounded to 1,024 UTF-8
 bytes. Terminal titles are transient; only manual names are written to state.
 Retained terminal hosts report their latest title again after daemon replacement.
 
-The TUI shortcuts are Ctrl-] then `.` to rename the pane and Ctrl-] then `,` to
-rename the tab. Enter saves, Escape cancels, Ctrl-U clears, and saving an empty
-name restores automatic naming. The editor consumes input and bracketed paste
-without sending it to the child process. Split tabs show the active pane title
-beside the tab strip; the tab picker updates names while open.
+Press Ctrl-] then `.` to rename the current tab when it has one pane, or the
+focused pane when the tab is split. Enter saves, Escape cancels, Ctrl-U clears,
+and saving an empty name restores automatic naming. The editor consumes input
+and bracketed paste without sending it to the child process. Split tabs show the
+active pane title beside the tab strip; the tab picker updates names while open.
 Clients negotiate `view_titles.v1`; `RenameView` requires the current view
 revision and writer ownership. A rename preserves the input route and PTY.
 

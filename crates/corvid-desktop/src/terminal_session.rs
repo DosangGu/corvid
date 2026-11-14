@@ -387,6 +387,11 @@ impl Session {
         self.shared.buffer().ui.clone()
     }
 
+    pub fn ui_with_revision(&self) -> (Ui, u64) {
+        let buffer = self.shared.buffer();
+        (buffer.ui.clone(), buffer.revision)
+    }
+
     pub fn changes(&self) -> watch::Receiver<()> {
         self.shared.ui_changed.subscribe()
     }
