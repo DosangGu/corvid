@@ -45,10 +45,12 @@ def previous_fixture(assets, archive, temporary):
         with tarfile.open(archive) as stream:
             stream.extractall(stage, filter="data")
     package_binary = stage / ("Corvid.app/Contents/MacOS" if MACOS and (stage / "Corvid.app").is_dir() else "")
+    metadata = json.loads((stage / "package.json").read_text())
     source = temporary / "previous.rs"
     source.write_text('fn main() { println!("corvid 0.0.0"); }\n')
-    run(["rustc", "--crate-name", "previous", source, "-o", package_binary / ("corvid.exe" if WINDOWS else "corvid")])
-    metadata = json.loads((stage / "package.json").read_text())
+    linker = ["-C", "linker=musl-gcc"] if metadata["target"].endswith("-linux-musl") else []
+    run(["rustc", "--target", metadata["target"], *linker, "--crate-name", "previous", source,
+         "-o", package_binary / ("corvid.exe" if WINDOWS else "corvid")])
     metadata["version"] = "0.0.0"
     (stage / "package.json").write_text(json.dumps(metadata, indent=2) + "\n")
     if package_binary != stage:

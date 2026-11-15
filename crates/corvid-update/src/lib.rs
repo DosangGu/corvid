@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn selects_release_packages_for_both_architectures() {
-        for (arch, prefix) in [("x86_64", "x86_64"), ("aarch64", "aarch64")] {
+        for arch in ["x86_64", "aarch64"] {
             for product in [Product::Tui, Product::Desktop] {
                 let abi = if product == Product::Tui {
                     "musl"
@@ -214,11 +214,11 @@ mod tests {
                 };
                 assert_eq!(
                     target_for("linux", arch, product).unwrap(),
-                    format!("{prefix}-unknown-linux-{abi}")
+                    format!("{arch}-unknown-linux-{abi}")
                 );
                 assert_eq!(
                     target_for("windows", arch, product).unwrap(),
-                    format!("{prefix}-pc-windows-msvc")
+                    format!("{arch}-pc-windows-msvc")
                 );
             }
         }

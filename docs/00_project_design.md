@@ -71,7 +71,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Desktop | `corvid-desktop` on Windows, Linux (X11 or XWayland), and macOS Apple Silicon, with daemon sessions, tabs, split panes, and a built-in Agents window | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
 | Deck | `corvid-deck` on Windows and macOS Apple Silicon, with an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
-| Native Windows daemon and TUI | Windows x64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
+| Native Windows daemon and TUI | Windows x64/ARM64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
 | WSL connections | Windows Desktop to an installed Linux distribution's default user | `wsl.exe` stdio carries terminal and control relays. Linux owns PTYs and metadata. Setup and planned replacement share the remote connection implementation |
 | Native macOS | macOS 15+ Apple Silicon | Unix PTYs and private sockets; libproc process identity; native Desktop/Agent Deck; unsigned app and DMG packaging. See [macOS support](07_macos.md) for validation boundaries |
 
@@ -800,8 +800,9 @@ The control SSH channel can reconnect independently of the working SSH terminal.
 
 An explicit Desktop connection may prepare the daemon before opening its
 writer and control relays. It probes through SSH, starts an installed binary
-when needed, and can transfer a packaged Linux x86_64 binary to the SSH user's
-private installation directory. The client verifies the bundle locally and
+when needed, and can transfer a packaged binary matching the remote OS and CPU
+to the SSH user's private installation directory. Linux and Windows support
+x64 and ARM64; macOS supports Apple Silicon. The client verifies the bundle locally and
 the remote installer verifies size and SHA-256 before publishing the file
 without replacement. The startup lock serializes daemon startup.
 

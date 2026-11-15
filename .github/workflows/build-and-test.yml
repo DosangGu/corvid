@@ -251,6 +251,8 @@ jobs:
         run: python deploy/test_icons.py --build target/desktop-binaries --runtime target/runtimes/runtime-${{ matrix.native }}/corvid.exe
       - name: Package Desktop with all runtimes
         run: python deploy/package.py package --product desktop --target ${{ matrix.target }} --runtime target/runtimes/runtime-${{ matrix.native }} --linux-runtime target/runtimes/runtime-x86_64-unknown-linux-musl --windows-runtime target/runtimes/runtime-x86_64-pc-windows-msvc --linux-arm64-runtime target/runtimes/runtime-aarch64-unknown-linux-musl --windows-arm64-runtime target/runtimes/runtime-aarch64-pc-windows-msvc --macos-runtime target/runtimes/runtime-aarch64-apple-darwin --build target/desktop-binaries --output target/dist
+      - name: Install Rust target for installer fixtures
+        run: rustup target add ${{ matrix.target }}
       - name: Desktop package installation
         run: python deploy/test_install.py --assets target/dist --binary target/runtimes/runtime-${{ matrix.native }}/${{ runner.os == 'Windows' && 'corvid.exe' || 'corvid' }} --product desktop
       - name: Build and verify unsigned macOS DMG

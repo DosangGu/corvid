@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import time
 
-from package import MACOS, LINUX, WINDOWS, digest
+from package import MACOS, RUNTIME_TARGETS, WINDOWS_TARGETS, digest
 
 
 def run(*arguments):
@@ -74,10 +74,10 @@ def check(assets):
             assert info["LSMinimumSystemVersion"] == "15.0"
             assert info["CFBundleIdentifier"] == "org.corvid.desktop"
             binaries = app / "Contents/MacOS"
-            for target in [LINUX, WINDOWS, MACOS]:
+            for target in RUNTIME_TARGETS:
                 runtime = app / "Contents/Resources/daemon" / target
                 metadata = json.loads((runtime / "manifest.json").read_text())
-                binary = runtime / ("corvid.exe" if target == WINDOWS else "corvid")
+                binary = runtime / ("corvid.exe" if target in WINDOWS_TARGETS else "corvid")
                 assert metadata["sha256"] == digest(binary)
             for binary in [binaries / "corvid", binaries / "corvid-desktop",
                            app / "Contents/Helpers/Corvid Agent Deck.app/Contents/MacOS/corvid-agent-deck"]:
