@@ -93,10 +93,15 @@ pub async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
 fn local_daemon_executable() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
     let directory = executable.parent().context("locating the Corvid runtime")?;
+    let metadata = if cfg!(target_os = "macos") && directory.ends_with("Contents/MacOS") {
+        directory.join("../Resources/package.json")
+    } else {
+        directory.join("package.json")
+    };
     if executable
         .file_stem()
         .is_some_and(|name| name == "corvid-desktop")
-        && directory.join("package.json").is_file()
+        && metadata.is_file()
     {
         let runtime = directory.join(if cfg!(windows) {
             "corvid.exe"
