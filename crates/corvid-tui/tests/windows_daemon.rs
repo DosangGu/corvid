@@ -195,13 +195,15 @@ async fn command_menu_consumes_input_and_paste_without_resizing_the_terminal() -
     tui.wait_for("BEFORE_29x100")?;
     tui.send(b"\x1d?")?;
     tui.wait_for("CORVID COMMANDS")?;
+    tui.wait_for("CORVID CMD  Main")?;
     tui.send(b"QQQ")?;
     tui.send(b"\x1b[200~$env:CORVID_MENU_LEAK='yes'\r\x1b[201~")?;
     tokio::time::sleep(Duration::from_millis(2200)).await;
     tui.send(b"?")?;
     tui.wait_for("CORVID COMMANDS")?;
     tui.send(b"\x1b")?;
-    tui.wait_without("CORVID COMMANDS")?;
+    // A ConPTY repaint can erase the menu before it finishes redrawing it.
+    tui.wait_for("CORVID  Main")?;
     tui.send(b"if (!$env:CORVID_MENU_LEAK) { [Console]::WriteLine(('MENU_' + 'CLEAN')) }; [Console]::WriteLine(('AFTER_' + [Console]::WindowHeight + 'x' + [Console]::WindowWidth))\r")?;
     tui.wait_for("MENU_CLEAN")?;
     tui.wait_for("AFTER_29x100")?;
