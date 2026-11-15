@@ -22,6 +22,13 @@ It uses a private home/state directory, temporary daemon, and separate X11 displ
 The SSH fixture generates temporary keys and pins its loopback server's host key;
 it does not need repository secrets or an external host.
 
+Title regressions exercise a paused consumer, a 256-update burst, a blocked
+Desktop render thread, injected delivery delay, subscription recovery, and daemon
+epoch rejection. Native PTY tests cover title publication and reattachment without
+new output. Linux Desktop additionally runs the title path over real loopback SSH
+with hosted PTYs. These tests exercise Desktop's state delivery, not screen paint
+latency or a comparison against another terminal multiplexer.
+
 TTY restoration compares every mode, speed, and control character. On macOS,
 only the kernel-managed `PENDIN` state bit is excluded: Darwin sets it when
 canonical input is restored, independently of the saved configuration.
@@ -63,6 +70,21 @@ xvfb-run -a python3 deploy/test_desktop.py --build target/debug
 # Or validate an extracted release workflow's archive directory:
 xvfb-run -a python3 deploy/test_desktop.py target/dist
 ```
+
+To run the Linux Desktop title test over isolated loopback SSH, install OpenSSH
+client/server and ensure `/run/sshd` exists, then run:
+
+```sh
+cargo build --locked -p corvid-tui
+python3 deploy/test_title_ssh.py --binary target/debug/corvid
+```
+
+Pass `--release` and/or `--target <triple>` when using those Cargo build options.
+The fixture creates private keys, client configuration, a temporary daemon and a
+localhost-only SSH server under a temporary home subdirectory, then removes them.
+It does not modify the user's SSH configuration or use an external SSH account.
+The test prints input-to-title p50/p95/max latency for 32 changes. WAN latency,
+packet loss, and the user's SSH configuration require separate environment checks.
 
 ## Remaining device qualification
 

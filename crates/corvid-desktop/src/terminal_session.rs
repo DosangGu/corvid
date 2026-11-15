@@ -42,6 +42,10 @@ const INPUT_CHUNK: usize = 8192;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
 type HistoryReply = std::result::Result<TerminalHistory, String>;
 
+mod inventory_watch;
+
+use inventory_watch::InventoryWatch;
+
 #[cfg(all(test, windows))]
 mod wsl_test;
 
@@ -641,7 +645,7 @@ async fn run_reconnecting(
     mut target: AttachTarget,
     mut explicit: bool,
     mut requests: Requests,
-    shared: &Shared,
+    shared: &Arc<Shared>,
     agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
     let mut reconnecting = false;
@@ -699,7 +703,7 @@ async fn run(
         host,
         terminal,
     }: &mut Requests,
-    shared: &Shared,
+    shared: &Arc<Shared>,
     agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
     // Older daemons can attach without supporting agent conversation restoration.
@@ -1014,8 +1018,7 @@ async fn run(
         next_preview: Instant::now(),
     };
     client.publish_view();
-    let inventory = watch_inventory(endpoint, host, epoch, shared);
-    tokio::pin!(inventory);
+    let mut inventory = InventoryWatch::start(endpoint, host, epoch, Arc::clone(shared))?;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         tokio::select! {
@@ -1040,7 +1043,7 @@ async fn run(
                 let size = *sizes.borrow();
                 client.tick(size).await?;
             }
-            _ = &mut inventory => unreachable!("inventory watcher retries until detached"),
+            _ = &mut inventory.finished => bail!("workspace synchronization stopped"),
         }
     }
 }
@@ -1106,47 +1109,6 @@ async fn attach(
         Body::Attached(attached) => Ok(attached),
         Body::Error(error) => Err(ProtocolFault::from_wire(&error).into()),
         _ => bail!("unexpected attach response"),
-    }
-}
-
-async fn watch_inventory(endpoint: ControlEndpoint, host: String, epoch: String, shared: &Shared) {
-    let controller = Uuid::new_v4().to_string();
-    loop {
-        let _ = watch_inventory_once(&endpoint, &controller, &host, &epoch, shared).await;
-        shared.update_ui(|ui| ui.inventory_ready = false);
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-}
-
-async fn watch_inventory_once(
-    endpoint: &ControlEndpoint,
-    controller: &str,
-    host: &str,
-    epoch: &str,
-    shared: &Shared,
-) -> Result<()> {
-    let mut watch = endpoint.watch(controller, host, || {}).await?;
-    ensure!(
-        watch.state().session().server_epoch == epoch,
-        "daemon restarted during attach"
-    );
-    loop {
-        let inventory = Inventory::read(watch.state());
-        {
-            let mut buffer = shared.buffer();
-            buffer.previews.retain(|pane, _| {
-                inventory.terminals.iter().any(|terminal| {
-                    terminal
-                        .location
-                        .as_ref()
-                        .is_some_and(|location| &location.pane_id == pane)
-                })
-            });
-            buffer.ui.inventory = Some(Arc::new(inventory));
-            buffer.ui.inventory_ready = true;
-        }
-        shared.ui_changed.send_replace(());
-        watch.next_change().await?;
     }
 }
 
