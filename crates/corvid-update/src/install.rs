@@ -47,7 +47,7 @@ impl Installation {
     pub fn detect() -> Result<Option<Self>> {
         let executable = env::current_exe()?;
         let directory = executable.parent().context("locating the installation")?;
-        if !directory.join("package.json").try_exists()? {
+        if !package_metadata(directory).try_exists()? {
             return Ok(None);
         }
         Self::at(&executable).map(Some)
@@ -55,7 +55,7 @@ impl Installation {
 
     pub fn at(executable: &Path) -> Result<Self> {
         let directory = executable.parent().context("locating the installation")?;
-        let metadata = directory.join("package.json");
+        let metadata = package_metadata(directory);
         ensure!(
             metadata.is_file(),
             "This is a source build or an externally managed installation. Update it using its original installation method."
@@ -69,7 +69,7 @@ impl Installation {
         );
         let package_directory = if cfg!(target_os = "macos")
             && package.product == Product::Desktop
-            && directory.ends_with("Corvid.app/Contents/MacOS")
+            && directory.ends_with("Contents/MacOS")
         {
             directory
                 .ancestors()
@@ -288,6 +288,17 @@ impl Installation {
     }
 }
 
+fn package_metadata(directory: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") && directory.ends_with("Contents/MacOS") {
+        directory
+            .parent()
+            .expect("MacOS has a parent")
+            .join("Resources/package.json")
+    } else {
+        directory.join("package.json")
+    }
+}
+
 impl Installed {
     pub fn start_desktop(&self) -> Result<()> {
         self.start_desktop_with_args(env::args_os().skip(1))
@@ -349,6 +360,40 @@ fn current_windows_version(root: &Path) -> Result<semver::Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_bundle_resources_and_preserves_managed_installation_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let contents = root.join("versions/0.2.0/Corvid.app/Contents");
+        fs::create_dir_all(contents.join("MacOS")).unwrap();
+        fs::create_dir_all(contents.join("Resources")).unwrap();
+        let package = Package {
+            schema_version: 1,
+            version: "0.2.0".into(),
+            source_revision: "a".repeat(40),
+            product: Product::Desktop,
+            target: target(Product::Desktop).unwrap().into(),
+        };
+        fs::write(
+            contents.join("Resources/package.json"),
+            serde_json::to_vec(&package).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("install.json"),
+            r#"{"schema_version":1,"product":"desktop"}"#,
+        )
+        .unwrap();
+        fs::write(root.join("bin-dir"), root.join("bin").to_str().unwrap()).unwrap();
+        for binary in ["corvid", "corvid-desktop"] {
+            let installation = Installation::at(&contents.join("MacOS").join(binary)).unwrap();
+            assert_eq!(installation.root.as_deref(), Some(root));
+            assert_eq!(installation.bin_dir, Some(root.join("bin")));
+            assert_eq!(installation.package.product, Product::Desktop);
+        }
+    }
 
     #[test]
     fn source_builds_cannot_be_overwritten() {

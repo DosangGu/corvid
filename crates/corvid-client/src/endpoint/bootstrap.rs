@@ -400,6 +400,61 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_install_verifies_payload_before_atomic_publication() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+
+        let directory = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let payload = b"#!/bin/sh\nprintf 'corvid fixture\\n'\n";
+        let source = directory.path().join("payload");
+        std::fs::write(&source, payload).unwrap();
+        let checksum = Command::new("shasum")
+            .args(["-a", "256"])
+            .arg(source)
+            .output()
+            .unwrap();
+        assert!(checksum.status.success());
+        let checksum = String::from_utf8(checksum.stdout).unwrap();
+        let checksum = checksum.split_whitespace().next().unwrap();
+        let installed = directory.path().join(".corvid/corvid");
+        for valid in [false, true, true] {
+            let mut child = Command::new("sh")
+                .args(["-c", &macos_command("install")])
+                .env("HOME", directory.path())
+                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap();
+            let mut input = child.stdin.take().unwrap();
+            writeln!(
+                input,
+                "{} {}",
+                payload.len(),
+                if valid {
+                    checksum.to_owned()
+                } else {
+                    "0".repeat(64)
+                }
+            )
+            .unwrap();
+            input.write_all(payload).unwrap();
+            drop(input);
+            assert_eq!(child.wait().unwrap().success(), valid);
+            assert_eq!(installed.exists(), valid);
+            if valid {
+                assert_eq!(std::fs::read(&installed).unwrap(), payload);
+                assert_eq!(
+                    installed.metadata().unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+        }
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn unix_bootstrap_preserves_runtime_locale() {

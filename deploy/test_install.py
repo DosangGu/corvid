@@ -51,7 +51,7 @@ def previous_fixture(assets, archive, temporary):
     metadata["version"] = "0.0.0"
     (stage / "package.json").write_text(json.dumps(metadata, indent=2) + "\n")
     if package_binary != stage:
-        (package_binary / "package.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        (stage / "Corvid.app/Contents/Resources/package.json").write_text(json.dumps(metadata, indent=2) + "\n")
         run(["codesign", "--force", "--sign", "-", stage / "Corvid.app"])
     files = sorted(path for path in stage.rglob("*") if path.is_file() and path.name != "files.sha256")
     (stage / "files.sha256").write_text("".join(f"{sha256(path)}  {path.relative_to(stage).as_posix()}\n" for path in files), newline="\n")

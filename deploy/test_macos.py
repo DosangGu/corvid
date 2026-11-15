@@ -32,7 +32,7 @@ def check(assets):
             assert info["CFBundleIdentifier"] == "org.corvid.desktop"
             binaries = app / "Contents/MacOS"
             for target in [LINUX, WINDOWS, MACOS]:
-                runtime = binaries / "daemon" / target
+                runtime = app / "Contents/Resources/daemon" / target
                 metadata = json.loads((runtime / "manifest.json").read_text())
                 binary = runtime / ("corvid.exe" if target == WINDOWS else "corvid")
                 assert metadata["sha256"] == digest(binary)

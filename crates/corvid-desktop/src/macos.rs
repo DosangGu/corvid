@@ -61,7 +61,10 @@ fn login_path(shell: &std::path::Path) -> Option<std::ffi::OsString> {
     // login shell, bounded in time and output; ignore profile banners.
     let mut output = tempfile::tempfile().ok()?;
     let mut child = Command::new(shell)
-        .args(["-ilc", "printf '\\0CORVID_PATH\\0%s\\0' \"$PATH\""])
+        .args([
+            "-ilc",
+            "exec /bin/sh -c 'printf \"\\0CORVID_PATH\\0%s\\0\" \"$PATH\"'",
+        ])
         .stdin(Stdio::null())
         .stdout(output.try_clone().ok()?)
         .stderr(Stdio::null())

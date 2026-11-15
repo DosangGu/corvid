@@ -30,7 +30,7 @@ for Gatekeeper, app layout, installation paths, and validation limitations.
 The `corvid` executable contains the TUI, daemon, terminal host, and relays.
 Actions builds this runtime once for each execution platform. TUI packages reuse
 it directly. All Desktop packages include Linux, Windows, and macOS runtime payloads under
-`daemon/TARGET/` (inside `Contents/MacOS` on macOS), each with its own identity and integrity manifest. Packaged
+`daemon/TARGET/` (inside `Contents/Resources` on macOS), each with its own identity and integrity manifest. Packaged
 Desktop starts its adjacent native `corvid` for local daemon use; development
 builds retain their executable-based helper path.
 

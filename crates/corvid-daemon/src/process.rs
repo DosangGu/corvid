@@ -263,10 +263,15 @@ fn codex_broker(pid: u32, launcher: u32) -> Option<HookProducer> {
     if args.len() > 4096 || !codex_broker_args(&args) {
         return None;
     }
-    let executable = Executable {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    };
+    let executable = process.executable()?;
+    if executable
+        != (Executable {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    {
+        return None;
+    }
     let after = read_stat(pid)?;
     if after.exited
         || after.start_ticks != stat.start_ticks
