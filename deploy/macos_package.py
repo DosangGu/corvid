@@ -3,12 +3,13 @@
 import argparse
 import json
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from package import MACOS, ROOT, copy, digest, write_json
 
@@ -93,18 +94,36 @@ def build(archive, output):
     with tempfile.TemporaryDirectory(prefix="corvid-dmg-") as temporary:
         stage = Path(temporary)
         with tarfile.open(archive) as stream:
+            seen = set()
+            total = 0
             for member in stream.getmembers():
-                if not member.isfile():
-                    raise ValueError("Expected regular archive files")
+                path = PurePosixPath(member.name)
+                if (not member.isfile() or path.is_absolute() or ".." in path.parts
+                        or member.name != path.as_posix() or member.name in seen
+                        or any(not re.fullmatch(r"[a-zA-Z0-9_. -]+", part) for part in path.parts)):
+                    raise ValueError("Invalid macOS archive member")
+                seen.add(member.name)
+                total += member.size
+                if len(seen) > 1024 or total > 1024 * 1024 * 1024:
+                    raise ValueError("macOS archive exceeds payload limits")
             stream.extractall(stage, filter="data")
         metadata = json.loads((stage / "package.json").read_text())
         version, revision = metadata["version"], metadata["source_revision"]
-        if metadata["product"] != "desktop" or metadata["target"] != MACOS:
-            raise ValueError("Expected an Apple Silicon Desktop archive")
+        if (metadata.get("schema_version") != 1 or metadata["product"] != "desktop"
+                or metadata["target"] != MACOS or not re.fullmatch(r"[a-f0-9]{40}", revision)
+                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?", version)
+                or archive.name != f"corvid-desktop-{version}-{MACOS}.tar.gz"):
+            raise ValueError("Expected an identified Apple Silicon Desktop archive")
+        checksums = {}
         for line in (stage / "files.sha256").read_text().splitlines():
             checksum, name = line.split("  ", 1)
-            if digest(stage / name) != checksum:
-                raise ValueError("Desktop payload checksum mismatch")
+            if name in checksums:
+                raise ValueError("Duplicate macOS payload checksum")
+            checksums[name] = checksum
+        actual = {path.relative_to(stage).as_posix(): digest(path)
+                  for path in stage.rglob("*") if path.is_file() and path != stage / "files.sha256"}
+        if checksums != actual:
+            raise ValueError("Desktop payload checksum mismatch")
         app = stage / "Corvid.app"
         run("codesign", "--verify", "--deep", "--strict", app)
         volume = stage / "volume"
