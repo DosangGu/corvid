@@ -103,17 +103,28 @@ void corvid_window_configure(void *view, bool pinned, bool expanded) {
         [window standardWindowButton:button].hidden = YES;
 }
 
-void corvid_window_position(void *view, double width, double height, bool initial) {
+void corvid_window_bounds(void *view, double width, double height, bool initial) {
     NSWindow *window = [(__bridge NSView *)view window];
-    NSScreen *screen = window.screen ?: [NSScreen mainScreen];
-    if (initial) {
-        NSPoint mouse = [NSEvent mouseLocation];
-        for (NSScreen *candidate in [NSScreen screens]) if (NSPointInRect(mouse, candidate.frame)) screen = candidate;
-    }
-    NSRect work = screen.visibleFrame;
-    NSPoint origin = window.frame.origin;
-    if (initial) origin = NSMakePoint(NSMaxX(work) - width - 16, NSMinY(work) + 16);
-    origin.x = MAX(NSMinX(work), MIN(origin.x, NSMaxX(work) - width));
-    origin.y = MAX(NSMinY(work), MIN(origin.y, NSMaxY(work) - height));
-    [window setFrameOrigin:origin];
+    // Defer resize callbacks until GPUI releases its current app update. Resize
+    // and clamp together: AppKit preserves the top edge when changing size, so
+    // clamping before a queued resize can push an expanded deck off the screen.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSScreen *screen = window.screen ?: [NSScreen mainScreen];
+        if (initial) {
+            NSPoint mouse = [NSEvent mouseLocation];
+            for (NSScreen *candidate in [NSScreen screens]) {
+                if (NSPointInRect(mouse, candidate.frame)) screen = candidate;
+            }
+        }
+        NSSize size = NSMakeSize(width, height);
+        if (!NSEqualSizes(window.contentView.bounds.size, size)) [window setContentSize:size];
+
+        NSRect work = screen.visibleFrame;
+        NSRect frame = window.frame;
+        NSPoint origin = frame.origin;
+        if (initial) origin = NSMakePoint(NSMaxX(work) - frame.size.width - 16, NSMinY(work) + 16);
+        origin.x = MAX(NSMinX(work), MIN(origin.x, NSMaxX(work) - frame.size.width));
+        origin.y = MAX(NSMinY(work), MIN(origin.y, NSMaxY(work) - frame.size.height));
+        [window setFrameOrigin:origin];
+    });
 }

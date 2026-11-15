@@ -6,7 +6,7 @@ use std::ffi::c_void;
 unsafe extern "C" {
     fn corvid_window_visible(view: *mut c_void, visible: bool);
     fn corvid_window_configure(view: *mut c_void, pinned: bool, expanded: bool);
-    fn corvid_window_position(view: *mut c_void, width: f64, height: f64, initial: bool);
+    fn corvid_window_bounds(view: *mut c_void, width: f64, height: f64, initial: bool);
 }
 
 fn view(window: &Window) -> Result<*mut c_void> {
@@ -31,15 +31,12 @@ pub fn configure(window: &Window, pinned: bool, expanded: bool) -> Result<()> {
 
 pub fn set_bounds(window: &mut Window, size: Size<Pixels>, initial: bool) -> Result<()> {
     unsafe {
-        corvid_window_position(
+        corvid_window_bounds(
             view(window)?,
             f32::from(size.width) as f64,
             f32::from(size.height) as f64,
             initial,
         );
-    }
-    if window.viewport_size() != size {
-        window.resize(size);
     }
     Ok(())
 }

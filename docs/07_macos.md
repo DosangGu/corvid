@@ -82,6 +82,11 @@ require `xcodebuild -downloadComponent MetalToolchain`. `/usr/bin/tic` compiles 
 bundled terminfo, including Darwin's hexadecimal directory layout. Python 3.11+
 is required for packaging and package tests.
 
+All macOS GPUI applications enable the `font-kit` feature. Without it, GPUI
+uses a placeholder text backend that opens windows but draws no glyphs. Desktop
+uses the system-provided Menlo font for terminal cells. The `macos_text` test
+checks native font metrics on the process main thread, as required by AppKit.
+
 ```sh
 export MACOSX_DEPLOYMENT_TARGET=15.0
 mkdir -p "$HOME/.corvid-tests"
@@ -113,3 +118,24 @@ version switching and corruption rejection, nested code-signature checks, DMG
 mounting, and a real Desktop window smoke test. Physical USB devices, OS permission
 prompts, multi-monitor behavior, and non-Latin IME interaction require manual
 qualification; successful compilation does not establish those checks.
+
+## Interactive validation
+
+On Apple Silicon with macOS 27, the packaged application was exercised with the
+local GUI fixes applied. Desktop rendered ANSI colors and Korean, Japanese, and
+accented Latin output; keyboard input, paste, Command-F search, and window creation
+worked. Quitting and reopening Desktop reattached to the daemon-owned terminal.
+The screenshots below contain synthetic terminal output and an empty controller.
+
+![Desktop terminal on macOS](images/macos/desktop.png)
+
+Desktop's **Agents** button launched the nested Agent Deck application. Compact
+and expanded views rendered, pin/unpin controls worked, and the expanded window
+stayed inside the display's visible area after resizing near its bottom edge.
+Hiding the window and reopening it from Desktop preserved the running controller.
+Physical USB devices, notification permission prompts, multiple displays, and
+non-Latin IME composition were not exercised by this session.
+
+![Agent Deck compact view on macOS](images/macos/agent-deck.png)
+
+![Agent Deck expanded view on macOS](images/macos/agent-deck-expanded.png)

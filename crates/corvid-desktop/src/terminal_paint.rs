@@ -278,7 +278,12 @@ fn paint_text(text: String, style: Style, origin: Point<Pixels>, window: &mut Wi
 }
 
 fn text_run(len: usize, style: Style) -> TextRun {
-    let mut font = font("Consolas");
+    let family = if cfg!(target_os = "macos") {
+        "Menlo"
+    } else {
+        "Consolas"
+    };
+    let mut font = font(family);
     if style.bold {
         font.weight = FontWeight::BOLD;
     }
