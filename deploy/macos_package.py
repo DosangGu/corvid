@@ -2,6 +2,7 @@
 """Build an ad-hoc signed Apple Silicon app and an unsigned drag-to-install DMG."""
 import argparse
 import json
+import os
 import plistlib
 import re
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 
 from package import MACOS, ROOT, copy, digest, write_json
@@ -85,6 +87,28 @@ def asset_name(version):
     return f"corvid-desktop-{version}-{MACOS}.dmg"
 
 
+def create_dmg(volume, artifact):
+    command = [
+        "hdiutil", "create", "-ov", "-volname", "Corvid", "-srcfolder", str(volume),
+        "-format", "UDZO", str(artifact),
+    ]
+    # DiskImages can briefly fail to obtain exclusive access on hosted macOS runners.
+    for attempt in range(3):
+        result = subprocess.run(
+            command, stderr=subprocess.PIPE, text=True, env=dict(os.environ, LC_ALL="C"),
+        )
+        print(result.stderr, end="", file=sys.stderr, flush=True)
+        if result.returncode == 0:
+            return
+        if "hdiutil: create failed - Resource busy" not in result.stderr or attempt == 2:
+            result.check_returncode()
+        artifact.unlink(missing_ok=True)
+        delay = 5 * (attempt + 1)
+        print(f"Retrying DMG creation in {delay}s (attempt {attempt + 2}/3)",
+              file=sys.stderr, flush=True)
+        time.sleep(delay)
+
+
 def build(archive, output):
     if sys.platform != "darwin":
         raise ValueError("Build DMGs on macOS")
@@ -131,8 +155,7 @@ def build(archive, output):
         shutil.move(app, volume / app.name)
         (volume / "Applications").symlink_to("/Applications")
         artifact = output / asset_name(version)
-        run("hdiutil", "create", "-ov", "-volname", "Corvid", "-srcfolder", volume,
-            "-format", "UDZO", artifact)
+        create_dmg(volume, artifact)
     checksum = digest(artifact)
     artifact.with_name(artifact.name + ".sha256").write_text(f"{checksum}  {artifact.name}\n")
     write_json(artifact.with_name(artifact.name + ".provenance.json"), {
