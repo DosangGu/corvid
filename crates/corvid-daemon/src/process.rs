@@ -130,12 +130,14 @@ impl ProcessImage {
         // /bin/sh may then exec the selected system shell as well.
         // Qualified native providers must reach the expected inode. For an
         // unqualified script, require two stable image samples at startup.
+        let helper = helper_image()?;
         let deadline = Instant::now() + Duration::from_millis(250);
         let mut candidate = None;
         let mut sampled = Instant::now();
         loop {
-            let image = Self::capture(incarnation, None)?;
-            if Some(image.executable) != helper_image() {
+            if let Some(image) = Self::capture(incarnation, None)
+                && image.executable != helper
+            {
                 if expected == Some(image.executable) {
                     return Some(image);
                 }
@@ -149,6 +151,10 @@ impl ProcessImage {
                         sampled = Instant::now();
                     }
                 }
+            } else {
+                // exec can interrupt a process query. Retry only within this
+                // startup bound; capture still checks the original birth time.
+                candidate = None;
             }
             if Instant::now() >= deadline {
                 return None;
@@ -509,7 +515,12 @@ mod tests {
         use std::process::{Command, Stdio};
 
         let executable = Executable::read(Path::new("/bin/sleep")).unwrap();
-        for expected in [Some(executable), None] {
+        let different = Executable::read(Path::new("/bin/cat")).unwrap();
+        for (expected, should_bind) in [
+            (Some(executable), true),
+            (None, true),
+            (Some(different), false),
+        ] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -547,9 +558,16 @@ mod tests {
             release.join().unwrap();
             let _ = child.kill();
             child.wait().unwrap();
-            let image = captured.expect("startup must wait for the launched image");
-            assert!(image.executable == executable);
-            assert_eq!(image.incarnation.start_ticks, identity.start_ticks);
+            if should_bind {
+                let image = captured.expect("startup must wait for the launched image");
+                assert!(image.executable == executable);
+                assert_eq!(image.incarnation.start_ticks, identity.start_ticks);
+            } else {
+                assert!(
+                    captured.is_none(),
+                    "a different executable must not be bound"
+                );
+            }
         }
     }
 
