@@ -71,8 +71,8 @@ async fn run_fixture(root: &Path) -> Result<()> {
         })
         .await
         .context("starting the fixture daemon")?;
-        verify_restore(&root.join("desktop")).await?;
-        verify_window_restore(&root.join("windows")).await
+        verify_restore(&runtime, &root.join("desktop")).await?;
+        verify_window_restore(&runtime, &root.join("windows")).await
     }
     .await;
     let _ = stop.send(());
@@ -226,7 +226,23 @@ async fn wait_disconnected(session: &Session) -> Result<Ui> {
     .context("waiting for Desktop detach")?
 }
 
-async fn verify_restore(state: &Path) -> Result<()> {
+// TODO: Make a rapid Desktop relaunch wait for its previous writer to detach
+// Consider acknowledging graceful detach after the daemon releases the writer so a relaunch can restore the same view without displacing an active writer.
+// Issue URL: https://github.com/DosangGu/corvid/issues/79
+async fn wait_for_client_release(runtime: &Path) -> Result<()> {
+    timeout(COMMAND_TIMEOUT, async {
+        loop {
+            if corvid_client::clients(runtime).await?.clients.is_empty() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("waiting for the fixture daemon to release Desktop clients")?
+}
+
+async fn verify_restore(runtime: &Path, state: &Path) -> Result<()> {
     let first = AttachedSession::start(state)?;
     let initial = wait_view(&first.session, |_| true).await?.selected.unwrap();
     first
@@ -293,6 +309,7 @@ async fn verify_restore(state: &Path) -> Result<()> {
         "inventory lookup accepted an unexpected daemon"
     );
     drop(first);
+    wait_for_client_release(runtime).await?;
 
     let store = ViewStore::new(state.join("desktop-view"));
     let saved = store.last().context("Desktop did not save its view")?;
@@ -321,6 +338,7 @@ async fn verify_restore(state: &Path) -> Result<()> {
     );
     wait_disconnected(&second.session).await?;
     drop(second);
+    wait_for_client_release(runtime).await?;
 
     let empty = AttachedSession::start(state)?;
     let ui = wait_disconnected(&empty.session).await?;
@@ -364,7 +382,7 @@ async fn verify_restore(state: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn verify_window_restore(state: &Path) -> Result<()> {
+async fn verify_window_restore(runtime: &Path, state: &Path) -> Result<()> {
     use corvid_client::view_state::windows::WindowRegistry;
 
     let registry = WindowRegistry::new(state.join("desktop-view"));
@@ -397,6 +415,7 @@ async fn verify_window_restore(state: &Path) -> Result<()> {
         sessions.push(attached);
     }
     drop(sessions);
+    wait_for_client_release(runtime).await?;
     drop(windows);
 
     let windows = registry.restore()?;
