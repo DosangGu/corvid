@@ -1,10 +1,14 @@
-Corvid v0.1.6 is a patch release for Desktop and TUI on Windows x64 and Linux x86_64.
+Corvid now runs natively on Apple Silicon Macs, Linux ARM64, and Windows 11 on ARM64. Desktop also gains terminal font selection, clearer terminal artwork, and more responsive tab titles.
 
-- Desktop fixes the `UnsupportedCapability` connection error after updating while an older daemon is still running. When Desktop connects to an older local daemon that supports live terminal handoff, it upgrades the daemon and preserves running shells. If handoff is unavailable, Desktop can still connect using the daemon's supported capabilities. SSH and WSL updates follow the host-specific setup flow. [#59](https://github.com/DosangGu/corvid/pull/59)
-- Desktop uses a single animated loading indicator while checking for or preparing an update. The panel shows success, retry, or restart actions when the operation finishes. [#60](https://github.com/DosangGu/corvid/pull/60)
+- **macOS 15+ on Apple Silicon:** Install Corvid Desktop from the DMG or install the TUI with `install.sh`. Desktop includes Agent Deck, with a menu bar item and native notifications. Intel Macs are outside this release's support scope. [#62](https://github.com/DosangGu/corvid/pull/62)
+- **Linux and Windows ARM64:** Desktop and TUI ship as native ARM64 packages, alongside the existing x64 builds. Windows 11 on ARM64 has its own Setup executable. Desktop can also provision matching daemons on supported ARM64 hosts over SSH, and in ARM64 WSL distributions. [#73](https://github.com/DosangGu/corvid/pull/73)
+- **Desktop terminal fonts and artwork:** Choose an installed monospaced font in **Settings → Terminal**. The choice persists across launches. Box drawing, block elements, and Braille art draw directly on the terminal grid, so adjacent shapes line up. [#64](https://github.com/DosangGu/corvid/pull/64)
+- **More responsive tab titles:** Desktop keeps automatic titles up to date during bursts of terminal output and restores the last title when reconnecting. [#72](https://github.com/DosangGu/corvid/pull/72)
 
-Open **Settings → About & updates** to update Desktop. Windows Setup installations from v0.1.4 onward can install the update there. For Windows Setup v0.1.3 or earlier, run the v0.1.6 Setup executable. Script installations can update with `corvid update`.
+### Install or update
 
-Linux Desktop requires X11 or XWayland, Fontconfig, and a Vulkan driver. The packaged build targets Ubuntu 24.04 or compatible newer systems. Linux TUI and daemon binaries use static musl builds. The Windows Setup executable is unsigned. Archives and Setup include SHA-256 checksum files. [Distribution guide](https://github.com/DosangGu/corvid/blob/v0.1.6/docs/05_release_distribution.md)
+- **macOS:** Open the DMG and drag **Corvid.app** to Applications. The app is ad-hoc signed and is not notarized. If Gatekeeper blocks the first launch, see the [macOS installation guide](https://github.com/DosangGu/corvid/blob/v0.2.0/docs/07_macos.md#install).
+- **Existing installations:** Open **Settings → About & updates** in Desktop, or run `corvid update` for a script installation. If you installed Windows Desktop with Setup v0.1.3 or earlier, run the new Setup executable for your architecture. Windows Setup is unsigned.
+- **Linux Desktop:** The package targets Ubuntu 24.04 or compatible newer systems and requires X11 or XWayland, Fontconfig, and a Vulkan driver.
 
-[Full changelog](https://github.com/DosangGu/corvid/compare/v0.1.5...v0.1.6)
+[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.2.0/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.1.6...v0.2.0)
