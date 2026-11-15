@@ -1,12 +1,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
     eprintln!("Corvid Deck is a Windows prototype.");
     std::process::exit(1);
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn main() -> anyhow::Result<()> {
     use std::path::PathBuf;
 
@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
         Demo,
         Connect(DesktopClient),
         Managed {
-            instance: String,
+            instance: <corvid_companion::PresentationAddress as ToOwned>::Owned,
             state: PathBuf,
             alias: Option<String>,
         },
@@ -29,7 +29,10 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args_os().skip(1);
     let mut demo = false;
     let mut connect_only = false;
+    #[cfg(windows)]
     let mut instance = "main".to_owned();
+    #[cfg(target_os = "macos")]
+    let mut instance = corvid_protocol::macos::runtime_directory()?.join("corvid-companion");
     let mut state = None;
     let mut alias = None;
     while let Some(flag) = args.next() {
@@ -42,7 +45,10 @@ fn main() -> anyhow::Result<()> {
             }
             Some("--demo") => demo = true,
             Some("--connect-only") => connect_only = true,
+            #[cfg(windows)]
             Some("--pipe-instance") => instance = next_text(&mut args, "--pipe-instance")?,
+            #[cfg(target_os = "macos")]
+            Some("--socket-dir") => instance = PathBuf::from(next_text(&mut args, "--socket-dir")?),
             Some("--state-dir") => {
                 state =
                     Some(PathBuf::from(args.next().ok_or_else(|| {
@@ -129,7 +135,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn next_text(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     flag: &str,

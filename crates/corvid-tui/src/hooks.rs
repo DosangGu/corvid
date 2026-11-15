@@ -3,7 +3,7 @@ mod codex;
 use std::collections::BTreeSet;
 use std::env;
 use std::io::{self, Write};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -13,11 +13,11 @@ use clap::ValueEnum;
 use corvid_core::agent::Provider;
 use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, MAX_BATCH_INPUTS, SERVER_EPOCH};
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::errno::Errno;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::unistd::read;
 use serde::Deserialize;
 use serde_json::Value;
@@ -86,7 +86,7 @@ fn observe_inner(
         ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_hook(deadline: Instant) -> Result<Vec<u8>> {
     let input = io::stdin();
     let mut bytes = Vec::new();

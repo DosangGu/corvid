@@ -1,5 +1,8 @@
 # Corvid Agent Deck
 
+For Apple Silicon paths, native behavior, building, and distribution, see
+[macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
+
 Corvid Agent Deck is Corvid Desktop's built-in **Agents** window. It ships and
 updates with Desktop and extends the former Agent Board. Agent status, cards,
 notifications, and navigation live in this separate window; the terminal toolbar
@@ -67,7 +70,9 @@ before removing an installation.
 
 Linux currently sends notifications through `notify-send` when available. It has
 no tray or login-startup backend: its window remains visible, and closing it exits.
-Windows background parity is not claimed for Linux.
+Windows background parity is not claimed for Linux. macOS uses an AppKit menu-bar
+item, UserNotifications, and an opt-in per-controller LaunchAgent; see the
+[macOS guide](07_macos.md) for its installed app and permission requirements.
 
 ## Floating window
 

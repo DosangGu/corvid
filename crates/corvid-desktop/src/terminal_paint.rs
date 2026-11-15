@@ -6,18 +6,15 @@ use gpui::{
 };
 use vt100::{Cell, Color, Screen};
 
+#[cfg(test)]
+use crate::terminal_fonts::DEFAULT_FONT;
+use crate::terminal_fonts::FONT_SIZE;
 use crate::terminal_session::Grid;
 
 mod graphic;
 
 pub const BACKGROUND: u32 = 0x12151a;
 const FOREGROUND: u32 = 0xe2e8f0;
-pub const FONT_SIZE: Pixels = px(15.);
-pub const DEFAULT_FONT: &str = if cfg!(windows) {
-    "Consolas"
-} else {
-    "DejaVu Sans Mono"
-};
 
 #[cfg(test)]
 mod performance;

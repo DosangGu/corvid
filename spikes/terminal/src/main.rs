@@ -1,15 +1,15 @@
 use std::process::ExitCode;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() -> ExitCode {
     linux::run_main()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn main() -> ExitCode {
-    eprintln!("the terminal qualification spike requires Linux");
+    eprintln!("the terminal qualification spike requires Linux or macOS");
     ExitCode::FAILURE
 }

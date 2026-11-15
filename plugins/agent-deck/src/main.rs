@@ -22,9 +22,12 @@ struct Options {
     /// Existing companion configuration; Desktop supplies its verified host scope.
     #[arg(long)]
     state_dir: Option<PathBuf>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[arg(long)]
     socket_dir: Option<PathBuf>,
+    #[cfg(target_os = "macos")]
+    #[arg(long, hide = true, conflicts_with = "socket_dir")]
+    socket_name: Option<String>,
     #[cfg(windows)]
     #[arg(long, default_value = "main")]
     pipe_instance: String,
@@ -41,14 +44,33 @@ fn main() -> Result<()> {
     let config = Config::read_if_present(&state)?.context("Agent Deck needs a configured companion. Open it from Corvid Desktop or initialize corvid companion first.")?;
     #[cfg(windows)]
     let address = options.pipe_instance;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let address = options
         .socket_dir
         .or_else(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|base| PathBuf::from(base).join("corvid-companion"))
+            #[cfg(target_os = "macos")]
+            {
+                corvid_client::runtime_path(None)
+                    .ok()
+                    .map(|base| base.join("corvid-companion"))
+            }
+            #[cfg(target_os = "linux")]
+            {
+                std::env::var_os("XDG_RUNTIME_DIR")
+                    .map(|base| PathBuf::from(base).join("corvid-companion"))
+            }
         })
         .context("set XDG_RUNTIME_DIR or pass --socket-dir")?;
+    #[cfg(target_os = "macos")]
+    let address = if let Some(name) = options.socket_name {
+        anyhow::ensure!(
+            PathBuf::from(&name).file_name() == Some(name.as_ref()),
+            "invalid socket name"
+        );
+        corvid_client::runtime_path(None)?.join(name)
+    } else {
+        address
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -119,6 +141,8 @@ fn main() -> Result<()> {
 fn default_state() -> Result<PathBuf> {
     #[cfg(windows)]
     return corvid_companion::launch::default_state_dir();
+    #[cfg(target_os = "macos")]
+    return Ok(corvid_protocol::macos::state_directory()?.join("companion"));
     #[cfg(target_os = "linux")]
     {
         let base = std::env::var_os("XDG_STATE_HOME")

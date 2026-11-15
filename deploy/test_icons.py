@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 from types import SimpleNamespace
@@ -44,7 +45,7 @@ def desktop_packages():
         base = Path(temporary)
         version, revision = "0.0.0-icon-test", "a" * 40
         runtimes = {}
-        for target in [package.LINUX, package.WINDOWS]:
+        for target in [package.LINUX, package.WINDOWS, package.MACOS]:
             directory = base / target
             directory.mkdir()
             binary = directory / ("corvid.exe" if target == package.WINDOWS else "corvid")
@@ -66,7 +67,7 @@ def desktop_packages():
                 product="desktop", target=target, runtime=runtimes[
                     package.WINDOWS if target == package.WINDOWS else package.LINUX
                 ], linux_runtime=runtimes[package.LINUX], windows_runtime=runtimes[package.WINDOWS],
-                build=build, output=output, without_agent_deck=False,
+                macos_runtime=runtimes[package.MACOS], build=build, output=output, without_agent_deck=False,
             )
             with patch.object(package, "identity", return_value=(version, revision)):
                 package.package(args)
@@ -196,7 +197,7 @@ if __name__ == "__main__":
     images = artwork()
     print("PASS shared PNG and eight ICO sizes")
     desktop_packages()
-    if os.name != "nt":
+    if sys.platform.startswith("linux"):
         linux_menu()
     if args.build:
         windows_resources(args.build, images, args.runtime)

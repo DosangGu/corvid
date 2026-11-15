@@ -232,7 +232,12 @@ impl TerminalView {
         let Some(history) = &mut self.history else {
             return false;
         };
-        match (key.key.as_str(), key.modifiers.control, key.modifiers.shift) {
+        let command = cfg!(target_os = "macos") && key.modifiers.platform;
+        match (
+            key.key.as_str(),
+            key.modifiers.control || command,
+            key.modifiers.shift || command,
+        ) {
             ("c", true, true) => {
                 let contents = self.selection.as_ref().map(Selection::text).or_else(|| {
                     let (bounds, metrics) = self.surface.get()?;
@@ -276,15 +281,26 @@ impl TerminalView {
                 // Let the platform input handler deliver printable and composed text.
                 return;
             }
-        } else if modifiers.control && modifiers.shift && !modifiers.alt && key.key == "f" {
+        } else if ((modifiers.control && modifiers.shift)
+            || (cfg!(target_os = "macos") && modifiers.platform))
+            && !modifiers.alt
+            && key.key == "f"
+        {
             self.open_history(true, 0, cx);
         } else if modifiers.shift && !modifiers.control && !modifiers.alt && key.key == "pageup" {
             self.open_history(false, self.visible_rows() as isize, cx);
-        } else if modifiers.control && !modifiers.alt && key.key == "v" {
+        } else if (modifiers.control || (cfg!(target_os = "macos") && modifiers.platform))
+            && !modifiers.alt
+            && key.key == "v"
+        {
             self.selection = None;
             self.paste(cx);
             cx.notify();
-        } else if modifiers.control && modifiers.shift && !modifiers.alt && key.key == "c" {
+        } else if ((modifiers.control && modifiers.shift)
+            || (cfg!(target_os = "macos") && modifiers.platform))
+            && !modifiers.alt
+            && key.key == "c"
+        {
             let contents = self
                 .selection
                 .as_ref()
@@ -507,6 +523,9 @@ impl EntityInputHandler for TerminalView {
 }
 
 fn encode_key(key: &Keystroke, application: bool) -> Option<Vec<u8>> {
+    if key.modifiers.platform {
+        return None;
+    }
     let name = key.key.as_str();
     let modifiers = key.modifiers;
     let arrow = match name {

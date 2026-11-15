@@ -1,6 +1,8 @@
 use std::fs::{self, File, Metadata, Permissions};
 use std::io::{self, ErrorKind, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -192,6 +194,7 @@ impl RuntimeDir {
     }
 
     fn socket_path(&self, role: SocketRole) -> PathBuf {
+        #[cfg(target_os = "linux")]
         if matches!(role, SocketRole::TerminalHost) {
             // Address the open private directory without extending the runtime pathname.
             return PathBuf::from(format!(
@@ -202,6 +205,18 @@ impl RuntimeDir {
         }
         self.path.join(role.name())
     }
+}
+
+/// Obtain the kernel-authenticated process ID, never a client-provided label.
+pub fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
+    let pid = stream
+        .peer_cred()?
+        .pid()
+        .ok_or_else(|| io::Error::other("peer PID unavailable"))?;
+    u32::try_from(pid)
+        .ok()
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| io::Error::other("invalid peer PID"))
 }
 
 impl AsFd for RuntimeDir {

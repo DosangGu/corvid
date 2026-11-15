@@ -133,3 +133,7 @@ mod implementation {
 }
 
 pub(super) use implementation::{configure, set_bounds, visible};
+
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod implementation;

@@ -39,7 +39,7 @@ impl DesktopLifetime {
 }
 
 pub struct SetupView {
-    instance: String,
+    instance: <corvid_companion::PresentationAddress as ToOwned>::Owned,
     state: PathBuf,
     alias: String,
     message: Option<String>,
@@ -59,7 +59,7 @@ impl SetupView {
     }
 
     pub fn new(
-        instance: String,
+        instance: <corvid_companion::PresentationAddress as ToOwned>::Owned,
         state: PathBuf,
         alias: Option<String>,
         lifetime: DesktopLifetime,
@@ -255,7 +255,7 @@ impl Render for SetupView {
 }
 
 async fn launch_companion(
-    instance: &str,
+    instance: &corvid_companion::PresentationAddress,
     state: &Path,
     alias: Option<String>,
     mut stop: oneshot::Receiver<()>,

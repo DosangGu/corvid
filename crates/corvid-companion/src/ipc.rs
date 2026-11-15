@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::ControlEndpoint;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::{BoundSocket, RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, GetPresentationSlots, Pong, PresentationSlots};
@@ -13,7 +13,7 @@ use corvid_protocol::{
     ProtocolFault, Session, accept_hello, check_hello_result, hello,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::net::UnixStream as ClientStream;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeClient as ClientStream, NamedPipeServer};
@@ -56,7 +56,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(windows)]
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type PresentationAddress = Path;
 #[cfg(windows)]
 pub type PresentationAddress = str;
@@ -97,9 +97,9 @@ async fn run_service(
     let epoch = Uuid::new_v4().to_string();
     let mut service = Service::new(store, endpoint);
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let (directory, instance);
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let mut listener = {
         directory = RuntimeDir::create_all(runtime)?;
         instance = directory.lock_instance()?;
@@ -123,7 +123,7 @@ trait Listener {
     fn next_peer(&mut self) -> impl Future<Output = Result<Option<Self::Stream>>> + Send;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Listener for BoundSocket<'_> {
     type Stream = ClientStream;
 
@@ -335,17 +335,18 @@ impl PresentationClient {
 fn presentation_absent(error: &anyhow::Error) -> bool {
     use std::io::{Error, ErrorKind};
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) {
         return true;
     }
     error.downcast_ref::<Error>().is_some_and(|error| {
         error.kind() == ErrorKind::NotFound
-            || (cfg!(target_os = "linux") && error.kind() == ErrorKind::ConnectionRefused)
+            || (cfg!(any(target_os = "linux", target_os = "macos"))
+                && error.kind() == ErrorKind::ConnectionRefused)
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn open_local(runtime: &PresentationAddress) -> Result<ClientStream> {
     RuntimeDir::open(runtime)?
         .connect(SocketRole::Presentation)

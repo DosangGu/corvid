@@ -133,7 +133,7 @@ impl DesktopWindows {
         if self.0.quitting.get() {
             return true;
         }
-        if self.0.entries.borrow().len() == 1 {
+        if !cfg!(target_os = "macos") && self.0.entries.borrow().len() == 1 {
             // X11 invokes this callback while borrowing its platform state.
             let windows = self.clone();
             cx.spawn(async move |cx| {
@@ -157,6 +157,25 @@ impl DesktopWindows {
     pub fn quit(&self, cx: &mut App) {
         self.shutdown();
         cx.quit();
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn close_active(&self, cx: &mut App) {
+        let Some(active) = cx.active_window() else {
+            return;
+        };
+        let id = self
+            .0
+            .entries
+            .borrow()
+            .iter()
+            .find(|(_, entry)| entry.handle.window_id() == active.window_id())
+            .map(|(id, _)| *id);
+        if let Some(id) = id
+            && self.close(id, cx)
+        {
+            let _ = active.update(cx, |_, window, _| window.remove_window());
+        }
     }
 
     pub fn shutdown(&self) {

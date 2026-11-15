@@ -21,7 +21,7 @@ use crate::notifications::{Ledger, Notice, Settings, now_ms};
 use crate::parent::{self, DesktopLink};
 use crate::platform::{Event, Native};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory;
@@ -455,7 +455,7 @@ async fn poll_connected(
                 .arg("--pipe-instance")
                 .arg(address)
                 .creation_flags(0x0800_0000);
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             child.arg("--socket-dir").arg(address).process_group(0);
             let mut process = child
                 .stdin(Stdio::null())

@@ -58,7 +58,7 @@ async fn run_fixture(root: &Path) -> Result<()> {
         {
             corvid_daemon::run(&server_runtime, &state, shutdown).await
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             corvid_daemon::run(&server_runtime, &state, false, shutdown).await
         }
@@ -89,11 +89,11 @@ async fn verify_attach_without_agent_restore(runtime: &Path, state: &Path) -> Re
     let mut listener = corvid_protocol::windows::DaemonPipe::Client.bind(
         &corvid_protocol::windows::StateDirectory::create_all(runtime)?,
     )?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let directory = corvid_protocol::unix::RuntimeDir::create_all(runtime)?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let instance = directory.lock_instance()?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let listener = instance
         .bind(corvid_protocol::unix::SocketRole::Client)
         .await?;
@@ -106,7 +106,7 @@ async fn verify_attach_without_agent_restore(runtime: &Path, state: &Path) -> Re
         for _ in 0..2 {
             #[cfg(windows)]
             let stream = listener.accept().await?;
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let stream = listener.accept().await?.context("rejected fixture peer")?;
 
             let (read, write) = tokio::io::split(stream);
@@ -263,7 +263,7 @@ async fn verify_restore(state: &Path) -> Result<()> {
     #[cfg(windows)]
     let command =
         b"$restoreValue='kept'; [Console]::WriteLine(('DESKTOP_' + $restoreValue))\r".to_vec();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let command = b"restore_value=kept; printf 'DESKTOP_%s\\n' \"$restore_value\"\n".to_vec();
     ensure!(
         first.session.send(&view.pane_id, command, false),
@@ -310,7 +310,7 @@ async fn verify_restore(state: &Path) -> Result<()> {
     wait_screen(&second.session, &view.pane_id, "DESKTOP_kept").await?;
     #[cfg(windows)]
     let command = b"[Console]::WriteLine(('CHECK_' + $restoreValue))\r".to_vec();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let command = b"printf 'CHECK_%s\\n' \"$restore_value\"\n".to_vec();
     ensure!(second.session.send(&view.pane_id, command, false));
     wait_screen(&second.session, &view.pane_id, "CHECK_kept").await?;

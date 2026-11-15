@@ -52,19 +52,19 @@ const CAPABILITIES: &[&str] = &[
     PANE_PREVIEW_CAPABILITY,
     TERMINAL_HISTORY_CAPABILITY,
     MOVE_TAB_CAPABILITY,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     PAIR_CAPABILITY,
     STATUS_BAR_CAPABILITY,
     ADAPTIVE_VIEWPORT_CAPABILITY,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     RESPONSE_NOTIFICATION_CAPABILITY,
     DEFAULT_SHELL_CAPABILITY,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     "agent_launch.v1",
     #[cfg(windows)]
     corvid_protocol::PROCESS_AGENT_LAUNCH_CAPABILITY,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
@@ -130,7 +130,7 @@ pub(crate) async fn serve(
                     target,
                     focus_tx,
                     Some(disconnect),
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     enabled.then_some(notice_tx),
                 )
                 .await

@@ -1,7 +1,7 @@
 pub mod art;
-#[cfg(all(windows, feature = "desktop"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "desktop"))]
 pub mod deck;
-#[cfg(all(windows, feature = "desktop"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "desktop"))]
 pub mod icons;
 mod keys;
 #[cfg(feature = "live")]

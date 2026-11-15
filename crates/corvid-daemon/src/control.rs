@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::platform::{ReadHalf, Stream, WriteHalf};
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::snapshot::{HISTORY_CAPABILITY, SNAPSHOT_CAPABILITY, WATCH_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
@@ -20,7 +20,7 @@ use tokio::time::{Instant, sleep_until, timeout};
 use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::metadata::{MetadataView, Recovery, SaveState};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::provider::qualified_profiles;
 use crate::snapshot::{self, LiveWatch};
 use crate::workspaces::{ControllerCommand, Workspaces};
@@ -37,11 +37,11 @@ const CAPABILITIES: &[&str] = &[
     SNAPSHOT_CAPABILITY,
     WATCH_CAPABILITY,
     HISTORY_CAPABILITY,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     PAIR_CAPABILITY,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     ACK_CAPABILITY,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     FOCUS_CAPABILITY,
 ];
 
@@ -277,7 +277,7 @@ pub(crate) async fn handshake(
         .next_envelope()
         .await?
         .context("missing control Hello")?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let profiles = match role {
         PeerRole::Control | PeerRole::Tui => qualified_profiles(),
         PeerRole::Collector | PeerRole::Presentation | PeerRole::Upgrade => &[],

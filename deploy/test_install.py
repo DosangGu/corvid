@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -16,6 +17,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
+MACOS = sys.platform == "darwin"
 FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if WINDOWS else {}
 
 
@@ -41,12 +43,16 @@ def previous_fixture(assets, archive, temporary):
     else:
         with tarfile.open(archive) as stream:
             stream.extractall(stage, filter="data")
+    package_binary = stage / ("Corvid.app/Contents/MacOS" if MACOS and (stage / "Corvid.app").is_dir() else "")
     source = temporary / "previous.rs"
     source.write_text('fn main() { println!("corvid 0.0.0"); }\n')
-    run(["rustc", "--crate-name", "previous", source, "-o", stage / ("corvid.exe" if WINDOWS else "corvid")])
+    run(["rustc", "--crate-name", "previous", source, "-o", package_binary / ("corvid.exe" if WINDOWS else "corvid")])
     metadata = json.loads((stage / "package.json").read_text())
     metadata["version"] = "0.0.0"
     (stage / "package.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    if package_binary != stage:
+        (stage / "Corvid.app/Contents/Resources/package.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        run(["codesign", "--force", "--sign", "-", stage / "Corvid.app"])
     files = sorted(path for path in stage.rglob("*") if path.is_file() and path.name != "files.sha256")
     (stage / "files.sha256").write_text("".join(f"{sha256(path)}  {path.relative_to(stage).as_posix()}\n" for path in files), newline="\n")
     files.append(stage / "files.sha256")
@@ -96,6 +102,9 @@ def main():
         args.binary.chmod(0o755)
     assert run([args.binary.resolve(), "--version"]).stdout.strip() == f"corvid {version}"
     target = "x86_64-pc-windows-msvc" if WINDOWS else "x86_64-unknown-linux-" + ("musl" if args.product == "tui" else "gnu")
+    if MACOS:
+        target = "aarch64-apple-darwin"
+    payload = "Corvid.app/Contents/MacOS" if MACOS and args.product == "desktop" else ""
     name = f"corvid-{args.product}-{version}-{target}.{'zip' if WINDOWS else 'tar.gz'}"
     # Unix runtime validation deliberately rejects world-writable ancestors such as /tmp.
     with tempfile.TemporaryDirectory(prefix=".corvid-install-test-", dir=None if WINDOWS else Path.home()) as temporary:
@@ -129,7 +138,7 @@ def main():
         assert (root / "versions/0.0.0").is_dir(), "Previous executables must be retained"
         if WINDOWS:
             assert (root / "corvid.ico").read_bytes() == (ROOT / "assets/icons/corvid.ico").read_bytes()
-        elif args.product == "desktop":
+        elif args.product == "desktop" and not MACOS:
             entry = data_home / "applications/Corvid.Desktop.desktop"
             contents = entry.read_text()
             assert f'Exec="{root}/current/corvid-desktop"' in contents
@@ -138,12 +147,15 @@ def main():
             assert (data_home / "icons/hicolor/scalable/apps/corvid.svg").resolve() == root / "versions" / version / "icons/corvid.svg"
             if shutil.which("desktop-file-validate"):
                 run(["desktop-file-validate", entry])
+        if MACOS and args.product == "desktop":
+            assert (root / "Corvid.app").resolve() == root / "versions" / version / "Corvid.app"
+            run(["codesign", "--verify", "--deep", "--strict", root / "Corvid.app"])
         install()
         with installer_lock(root):
             install(success=False)
         assert installed_version() == f"corvid {version}"
 
-        installed = root / "versions" / version / ("corvid.exe" if WINDOWS else "corvid")
+        installed = root / "versions" / version / payload / ("corvid.exe" if WINDOWS else "corvid")
         runtime = temporary / "run"
         state = temporary / "state"
         daemon = subprocess.Popen([str(installed), "--runtime-dir", str(runtime), "daemon", "--state-dir", str(state)],

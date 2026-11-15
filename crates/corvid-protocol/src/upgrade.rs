@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// Encode a path for the authenticated local upgrade connection.
 pub fn encode_state_path(path: &Path) -> Vec<u8> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         path.as_os_str().as_bytes().to_vec()
     }
@@ -22,7 +22,7 @@ pub fn encode_state_path(path: &Path) -> Vec<u8> {
 
 /// Decode the host's native path without requiring valid Unicode.
 pub fn decode_state_path(bytes: Vec<u8>) -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let path = {
         if bytes.contains(&0) {
             return None;
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn upgrade_state_path_round_trips_native_characters() {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let path = PathBuf::from(OsString::from_vec(b"/state/\xff".to_vec()));
         #[cfg(windows)]
         let path = {

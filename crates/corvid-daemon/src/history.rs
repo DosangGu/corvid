@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::AgentRun;
 use corvid_core::agent::{
     Activity, Attention, Evidence, Lifecycle, ProcessLiveness, Provider, RequestKind, RequestStatus,
@@ -80,7 +80,7 @@ impl RunRecord {
             && self.process == ProcessLiveness::Running
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn capture(epoch: Uuid, run: &AgentRun, location: Location) -> Self {
         let mut evidence = [
             &run.lifecycle.evidence,

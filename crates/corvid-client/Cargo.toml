@@ -17,7 +17,7 @@ tar.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 uuid.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 crossterm.workspace = true
 nix = { workspace = true, features = ["term"] }
 

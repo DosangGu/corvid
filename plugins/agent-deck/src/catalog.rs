@@ -210,8 +210,8 @@ mod tests {
 
     #[test]
     fn finds_shared_and_scoped_hosts_without_adopting_mismatched_directories() -> Result<()> {
-        #[cfg(target_os = "linux")]
-        let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
         #[cfg(windows)]
         let temporary = tempfile::tempdir()?;
         let root = temporary.path().join("companion");

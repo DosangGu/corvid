@@ -78,7 +78,7 @@ impl TerminalSession {
         self.pty.try_wait()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn pid(&self) -> Option<u32> {
         self.pty.pid()
     }

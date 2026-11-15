@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::BoundSocket;
 use corvid_protocol::upgrade::encode_state_path;
 #[cfg(windows)]
@@ -27,7 +27,7 @@ pub(crate) struct Request {
     pub(crate) preserve_terminals: bool,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn listen(socket: Option<&BoundSocket<'_>>, identity: &Identity) -> Request {
     let Some(socket) = socket else {
         return pending().await;

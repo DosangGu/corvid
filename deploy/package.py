@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LINUX = "x86_64-unknown-linux-musl"
 WINDOWS = "x86_64-pc-windows-msvc"
 DESKTOP_LINUX = "x86_64-unknown-linux-gnu"
+MACOS = "aarch64-apple-darwin"
 
 
 def identity():
@@ -81,7 +82,9 @@ def verify_runtime(directory, target, version, revision):
 def package(args):
     version, revision = identity()
     windows = args.target == WINDOWS
-    native = verify_runtime(args.runtime, WINDOWS if windows else LINUX, version, revision)
+    macos = args.target == MACOS
+    native_target = MACOS if macos else WINDOWS if windows else LINUX
+    native = verify_runtime(args.runtime, native_target, version, revision)
     suffix = ".exe" if windows else ""
     extension = "zip" if windows else "tar.gz"
     args.output.mkdir(parents=True, exist_ok=True)
@@ -95,7 +98,7 @@ def package(args):
         if args.product == "desktop":
             for icon_extension in ["svg", "png"]:
                 copy(ROOT / f"assets/icons/corvid.{icon_extension}", stage / f"icons/corvid.{icon_extension}")
-            if not windows:
+            if not windows and not macos:
                 copy(ROOT / "deploy/linux/install-desktop.sh", stage / "install-desktop.sh")
             copy(args.build / f"corvid-desktop{suffix}", stage / f"corvid-desktop{suffix}", True)
             if not args.without_agent_deck:
@@ -106,7 +109,7 @@ def package(args):
                     copy(args.build / "corvid-agent-deck-launch.exe", stage / "corvid-agent-deck-launch.exe", True)
                 copy(args.build / "corvid-deck.exe", stage / "corvid-deck.exe", True)
                 copy(ROOT / "deploy/windows/Set-CorvidStartup.ps1", stage / "Set-CorvidStartup.ps1")
-            for target, directory in [(LINUX, args.linux_runtime), (WINDOWS, args.windows_runtime)]:
+            for target, directory in [(LINUX, args.linux_runtime), (WINDOWS, args.windows_runtime), (MACOS, args.macos_runtime)]:
                 if directory is None:
                     raise ValueError(f"Desktop requires the {target} runtime")
                 binary = verify_runtime(directory, target, version, revision)
@@ -116,6 +119,9 @@ def package(args):
             "schema_version": 1, "version": version, "source_revision": revision,
             "product": args.product, "target": args.target,
         })
+        if macos and args.product == "desktop":
+            import macos_package
+            macos_package.app_bundle(stage, args.build, version)
         files = sorted(path for path in stage.rglob("*") if path.is_file())
         (stage / "files.sha256").write_text("".join(f"{digest(path)}  {path.relative_to(stage).as_posix()}\n" for path in files), encoding="utf-8", newline="\n")
         archive = args.output / f"corvid-{args.product}-{version}-{args.target}.{extension}"
@@ -141,6 +147,8 @@ def manifest(args):
         f"corvid-tui-{version}-{WINDOWS}.zip",
         f"corvid-desktop-{version}-{DESKTOP_LINUX}.tar.gz",
         f"corvid-desktop-{version}-{WINDOWS}.zip",
+        f"corvid-tui-{version}-{MACOS}.tar.gz",
+        f"corvid-desktop-{version}-{MACOS}.tar.gz",
     ]
     assets = []
     for name in required:
@@ -158,10 +166,13 @@ def manifest(args):
         if metadata["version"] != version or metadata["source_revision"] != revision or not name.startswith(expected_name + "."):
             raise ValueError(f"Package identity mismatch: {name}")
     required.append(native_package.verify(args.output, version, revision))
-    for name in ["install.sh", "install.ps1"]:
+    import macos_package
+    required.append(macos_package.verify(args.output, version, revision))
+    installers = ["install.sh", "install.ps1"]
+    for name in installers:
         copy(ROOT / "deploy" / name, args.output / name)
     for path in sorted(args.output.iterdir()):
-        if path.name in required or path.name in ["install.sh", "install.ps1"]:
+        if path.name in required or path.name in installers:
             assets.append({"name": path.name, "size": path.stat().st_size, "sha256": digest(path)})
     write_json(args.output / "release-manifest.json", {
         "schema_version": 1, "version": version, "source_revision": revision, "assets": assets,
@@ -172,16 +183,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     command = sub.add_parser("runtime")
-    command.add_argument("--target", choices=[LINUX, WINDOWS], required=True)
+    command.add_argument("--target", choices=[LINUX, WINDOWS, MACOS], required=True)
     command.add_argument("--binary", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(run=runtime)
     command = sub.add_parser("package")
     command.add_argument("--product", choices=["tui", "desktop"], required=True)
-    command.add_argument("--target", choices=[LINUX, WINDOWS, DESKTOP_LINUX], required=True)
+    command.add_argument("--target", choices=[LINUX, WINDOWS, DESKTOP_LINUX, MACOS], required=True)
     command.add_argument("--runtime", type=Path, required=True)
     command.add_argument("--linux-runtime", type=Path)
     command.add_argument("--windows-runtime", type=Path)
+    command.add_argument("--macos-runtime", type=Path)
     command.add_argument("--build", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(run=package)

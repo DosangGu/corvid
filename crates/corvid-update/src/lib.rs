@@ -186,6 +186,7 @@ pub fn target(product: Product) -> Result<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH, product) {
         ("linux", "x86_64", Product::Tui) => Ok("x86_64-unknown-linux-musl"),
         ("linux", "x86_64", Product::Desktop) => Ok("x86_64-unknown-linux-gnu"),
+        ("macos", "aarch64", _) => Ok("aarch64-apple-darwin"),
         ("windows", "x86_64", _) => Ok("x86_64-pc-windows-msvc"),
         _ => anyhow::bail!("this platform has no Corvid release package"),
     }

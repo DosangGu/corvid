@@ -1,7 +1,7 @@
 mod companion;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod hooks;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux;
 mod update;
 #[cfg(windows)]
@@ -9,19 +9,19 @@ mod windows;
 
 use std::future::Future;
 use std::io::{self, BufRead, Read};
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) use corvid_client::runtime_path;
 
 #[derive(Parser)]
@@ -42,7 +42,7 @@ struct Options {
 #[derive(Subcommand)]
 enum Command {
     /// Restore the saved agent conversation in each empty pane, without attaching.
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Restore {
         #[arg(long)]
         workspace: Uuid,
@@ -55,7 +55,7 @@ enum Command {
         #[arg(long)]
         retry: bool,
     },
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[command(hide = true)]
     DesktopHandoff {
         #[arg(long)]
@@ -67,7 +67,7 @@ enum Command {
     Update(update::Options),
     /// Run or use the local controller companion.
     Companion(companion::Options),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[command(flatten)]
     Linux(linux::Command),
     #[cfg(windows)]
@@ -76,9 +76,9 @@ enum Command {
 }
 
 /// Start the daemon for this runtime using the same executable as the caller.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         linux::ensure(runtime).await
     }
@@ -89,14 +89,19 @@ pub async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
 }
 
 /// Use the shared runtime payload when starting a daemon from packaged Desktop.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn local_daemon_executable() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
     let directory = executable.parent().context("locating the Corvid runtime")?;
+    let metadata = if cfg!(target_os = "macos") && directory.ends_with("Contents/MacOS") {
+        directory.join("../Resources/package.json")
+    } else {
+        directory.join("package.json")
+    };
     if executable
         .file_stem()
         .is_some_and(|name| name == "corvid-desktop")
-        && directory.join("package.json").is_file()
+        && metadata.is_file()
     {
         let runtime = directory.join(if cfg!(windows) {
             "corvid.exe"
@@ -110,9 +115,9 @@ fn local_daemon_executable() -> Result<PathBuf> {
 }
 
 /// Replace an automatically started daemon while preserving its hosted terminals.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub async fn upgrade_local_daemon(runtime: &Path) -> Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         linux::upgrade(runtime).await
     }
@@ -122,7 +127,7 @@ pub async fn upgrade_local_daemon(runtime: &Path) -> Result<()> {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 async fn verify_installed_version(executable: &Path, previous_version: &str) -> Result<()> {
     use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 
@@ -147,9 +152,9 @@ async fn verify_installed_version(executable: &Path, previous_version: &str) -> 
 }
 
 /// Dispatch daemon subprocesses and Linux agent helpers before opening a GUI.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn run_daemon_helper() -> Option<ExitCode> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if std::env::args_os()
         .next()
         .as_deref()
@@ -167,7 +172,7 @@ pub fn run_daemon_helper() -> Option<ExitCode> {
 }
 
 pub fn run() -> ExitCode {
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("terminal-host")) {
         return match corvid_daemon::terminal::run_helper(std::env::args_os().skip(2)) {
             Ok(()) => ExitCode::SUCCESS,
@@ -177,7 +182,7 @@ pub fn run() -> ExitCode {
             }
         };
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let mut args = std::env::args_os();
         if let Some(provider) = args
@@ -188,13 +193,13 @@ pub fn run() -> ExitCode {
             return ExitCode::from(linux::shell_agent::execute(provider, args.collect()));
         }
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let started = Instant::now();
     let options = Options::parse();
     let daemon_runtime = options.runtime_dir;
 
     let result = match options.command {
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         Some(Command::Restore {
             workspace,
             pane,
@@ -239,10 +244,10 @@ pub fn run() -> ExitCode {
             }
             Ok(u32::from(failed))
         }),
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         Some(Command::DesktopHandoff { host, epoch }) => execute(async move {
             let runtime = runtime_path(daemon_runtime)?;
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             linux::desktop_handoff(&runtime, host, epoch).await?;
             #[cfg(windows)]
             windows::desktop_handoff(&runtime, host, epoch).await?;
@@ -253,9 +258,9 @@ pub fn run() -> ExitCode {
             companion::execute(companion, daemon_runtime).await?;
             Ok(0)
         }),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Some(Command::Linux(command)) => linux::execute(command, daemon_runtime, started),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         None => execute(linux::start(daemon_runtime)),
         #[cfg(windows)]
         Some(Command::Windows(command)) => windows::dispatch(command, daemon_runtime, started),

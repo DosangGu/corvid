@@ -262,7 +262,7 @@ fn is_child_event(event: HookEvent) -> bool {
 
 pub(crate) fn hook_evidence(provider: Provider, confidence: Confidence) -> Evidence {
     let mut evidence = evidence(Source::ProviderHook, confidence);
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         evidence.source_version = crate::provider::qualified_version(provider).to_owned();
     }

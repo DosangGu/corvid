@@ -1,14 +1,21 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, ensure};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use corvid_protocol::unix::RuntimeDir as Directory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory as Directory;
-use gpui::{Global, SharedString, TextSystem, font, px};
+use gpui::{Global, Pixels, SharedString, TextSystem, font, px};
 use serde::{Deserialize, Serialize};
 
-use crate::terminal_paint::{DEFAULT_FONT, FONT_SIZE};
+pub const FONT_SIZE: Pixels = px(15.);
+pub const DEFAULT_FONT: &str = if cfg!(target_os = "macos") {
+    "Menlo"
+} else if cfg!(windows) {
+    "Consolas"
+} else {
+    "DejaVu Sans Mono"
+};
 
 const FILE: &str = "terminal.json";
 const MAX_BYTES: u64 = 4096;
@@ -118,10 +125,10 @@ fn is_monospaced(text: &TextSystem, family: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn saves_font_choice_and_restores_default() -> Result<()> {
+    fn saves_font_choice_and_restores_default() -> anyhow::Result<()> {
+        use super::*;
+
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("desktop-preferences");
         let mut fonts = TerminalFonts {

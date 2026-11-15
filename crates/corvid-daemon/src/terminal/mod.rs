@@ -4,7 +4,7 @@ mod host;
 mod input;
 mod keys;
 mod paste;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod pty;
 #[cfg(windows)]
 #[path = "pty/windows.rs"]

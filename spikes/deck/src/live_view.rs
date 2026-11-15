@@ -5,7 +5,8 @@ use gpui::{KeyUpEvent, MouseButton, Subscription, Task};
 
 use super::*;
 
-#[path = "pair_view.rs"]
+#[cfg_attr(windows, path = "pair_view.rs")]
+#[cfg_attr(target_os = "macos", path = "pair_unix.rs")]
 mod pair;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -255,12 +256,19 @@ impl LiveView {
             .child(kicker("TARGET TERMINAL"))
             .when(self.deck.can_pair() && !self.pairing.waiting(), |panel| {
                 panel.child(
-                    form_button("start-pairing", "Pair WezTerm…", true).on_click(cx.listener(
-                        |view, _, window, cx| {
-                            window.focus(&view.focus);
-                            view.open_pairing(cx);
+                    form_button(
+                        "start-pairing",
+                        if cfg!(windows) {
+                            "Pair WezTerm…"
+                        } else {
+                            "Pair terminal…"
                         },
-                    )),
+                        true,
+                    )
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        window.focus(&view.focus);
+                        view.open_pairing(cx);
+                    })),
                 )
             })
             .when_some(self.pairing.notice.clone(), |panel, notice| {

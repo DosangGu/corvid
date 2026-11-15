@@ -52,7 +52,7 @@ impl Config {
             Err(error) => error,
         };
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let missing = error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT);
         #[cfg(windows)]
         let missing = error

@@ -1,9 +1,9 @@
 #[cfg(windows)]
 mod windows;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use corvid_protocol::unix::RuntimeDir as StateDirectory;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) type StateLock = nix::fcntl::Flock<std::fs::File>;
 
 #[cfg(windows)]

@@ -32,9 +32,24 @@ while [ "$#" -gt 0 ]; do
         *) fail "Unknown option: $1" ;;
     esac
 done
-[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || fail 'Supported platform: Linux x86_64 (including WSL).'
-case "$product" in tui) target=x86_64-unknown-linux-musl ;; desktop) target=x86_64-unknown-linux-gnu ;; *) fail 'Unknown product' ;; esac
-for tool in tar sha256sum mktemp awk sed grep; do command -v "$tool" >/dev/null || fail "Install $tool first"; done
+platform=$(uname -s)
+case "$platform:$(uname -m):$product" in
+    Linux:x86_64:tui) target=x86_64-unknown-linux-musl ;;
+    Linux:x86_64:desktop) target=x86_64-unknown-linux-gnu ;;
+    Darwin:arm64:tui|Darwin:arm64:desktop) target=aarch64-apple-darwin ;;
+    *) fail 'Supported platforms: Linux x86_64 and macOS Apple Silicon; products: tui, desktop.' ;;
+esac
+hash_tool=sha256sum
+if [ "$platform" = Darwin ]; then hash_tool=shasum; fi
+for tool in tar "$hash_tool" mktemp awk sed grep; do command -v "$tool" >/dev/null || fail "Install $tool first"; done
+verify() {
+    if [ "$platform" = Darwin ]; then shasum -a 256 -c "$1" >/dev/null; else sha256sum --status -c "$1"; fi
+}
+replace_link() {
+    if [ "$platform" = Darwin ]; then mv -fh "$1" "$2"; else mv -Tf -- "$1" "$2"; fi
+}
+payload=
+if [ "$platform:$product" = Darwin:desktop ]; then payload=Corvid.app/Contents/MacOS/; fi
 if [ -z "$source_dir" ]; then command -v curl >/dev/null || fail 'Install curl first'; fi
 fetch() {
     if [ -n "$source_dir" ]; then
@@ -53,7 +68,9 @@ if [ -z "$release_version" ]; then
 fi
 printf '%s\n' "$release_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$' || fail 'Invalid release version'
 base="https://github.com/$repository/releases/download/v$release_version"
-install_root=${install_root:-${XDG_DATA_HOME:-$HOME/.local/share}/corvid/$product}
+default_root=${XDG_DATA_HOME:-$HOME/.local/share}/corvid/$product
+if [ "$platform" = Darwin ]; then default_root="$HOME/Library/Application Support/Corvid/install/$product"; fi
+install_root=${install_root:-$default_root}
 bin_dir=${bin_dir:-$HOME/.local/bin}
 for path in "$install_root" "$bin_dir"; do
     case "$path" in /*) ;; *) fail 'Installation paths must be absolute' ;; esac
@@ -84,7 +101,7 @@ if [ "$product" = desktop ]; then commands='corvid corvid-desktop'; fi
 for name in $commands; do
     destination="$bin_dir/$name"
     if [ -e "$destination" ] || [ -L "$destination" ]; then
-        [ -L "$destination" ] && [ "$(readlink "$destination")" = "$install_root/current/$name" ] || fail "$destination is managed by another installation. Choose another --bin-dir."
+        [ -L "$destination" ] && [ "$(readlink "$destination")" = "$install_root/current/$payload$name" ] || fail "$destination is managed by another installation. Choose another --bin-dir."
     fi
 done
 stage=$(mktemp -d "$install_root/.stage.XXXXXXXX")
@@ -95,30 +112,34 @@ printf '%s\n' "$digest" | grep -Eq '^[0-9a-f]{64}$' || fail 'Invalid archive che
 [ -z "$expected_hash" ] || [ "$digest" = "$expected_hash" ] || fail 'Release manifest and archive checksum disagree'
 fetch "$archive" "$stage/archive.tar.gz"
 printf '%s  %s\n' "$digest" archive.tar.gz > "$stage/check"
-(cd -- "$stage" && sha256sum --status -c check) || fail 'Archive SHA-256 mismatch'
+(cd -- "$stage" && verify check) || fail 'Archive SHA-256 mismatch'
 tar -tzf "$stage/archive.tar.gz" > "$stage/entries"
 if grep -Eq '(^/|(^|/)\.\.(/|$))' "$stage/entries"; then fail 'Unsafe archive path'; fi
 tar -tvzf "$stage/archive.tar.gz" > "$stage/types"
 awk 'substr($0,1,1) != "-" && substr($0,1,1) != "d" {exit 1}' "$stage/types" || fail 'Archive links are not supported'
 mkdir -- "$stage/package"
 tar -xzf "$stage/archive.tar.gz" --no-same-owner --no-same-permissions -C "$stage/package"
-(cd -- "$stage/package" && sha256sum --status -c files.sha256) || fail 'Package file checksum mismatch'
+(cd -- "$stage/package" && verify files.sha256) || fail 'Package file checksum mismatch'
 field() { sed -n "s/.*\"$1\":[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$stage/package/package.json"; }
 [ "$(field version)" = "$release_version" ] && [ "$(field product)" = "$product" ] && [ "$(field target)" = "$target" ] || fail 'Package metadata mismatch'
-chmod 755 "$stage/package/corvid"
-[ "$("$stage/package/corvid" --version)" = "corvid $release_version" ] || fail 'Executable version mismatch'
+chmod 755 "$stage/package/${payload}corvid"
+[ "$("$stage/package/${payload}corvid" --version)" = "corvid $release_version" ] || fail 'Executable version mismatch'
 if [ "$product" = desktop ]; then
-    chmod 755 "$stage/package/corvid-desktop"
-    if [ -f "$stage/package/plugins/agent-deck/corvid-agent-deck" ]; then
-        chmod 755 "$stage/package/plugins/agent-deck/corvid-agent-deck"
+    chmod 755 "$stage/package/${payload}corvid-desktop"
+    if [ "$platform" = Darwin ]; then
+        codesign --verify --deep --strict "$stage/package/Corvid.app" || fail 'App signature mismatch'
+    else
+        if [ -f "$stage/package/plugins/agent-deck/corvid-agent-deck" ]; then
+            chmod 755 "$stage/package/plugins/agent-deck/corvid-agent-deck"
+        fi
+        chmod 755 "$stage/package/daemon/x86_64-unknown-linux-musl/corvid"
     fi
-    chmod 755 "$stage/package/daemon/x86_64-unknown-linux-musl/corvid"
 fi
 mkdir -p -- "$install_root/versions"
 destination="$install_root/versions/$release_version"
 if [ -e "$destination" ]; then
     cmp "$destination/files.sha256" "$stage/package/files.sha256" >/dev/null || fail 'An installed version has different contents; refusing to replace it'
-    (cd -- "$destination" && sha256sum --status -c files.sha256) || fail 'The installed version is damaged; move it aside before reinstalling'
+    (cd -- "$destination" && verify files.sha256) || fail 'The installed version is damaged; move it aside before reinstalling'
 else
     mv -- "$stage/package" "$destination"
 fi
@@ -127,14 +148,26 @@ printf '%s\n' "$bin_dir" > "$stage/bin-dir"
 mv -f -- "$stage/install.json" "$install_root/install.json"
 mv -f -- "$stage/bin-dir" "$install_root/bin-dir"
 ln -s "versions/$release_version" "$stage/current"
-mv -Tf -- "$stage/current" "$install_root/current"
+replace_link "$stage/current" "$install_root/current"
 for name in $commands; do
-    if [ ! -L "$bin_dir/$name" ]; then ln -s "$install_root/current/$name" "$bin_dir/$name"; fi
+    if [ ! -L "$bin_dir/$name" ]; then ln -s "$install_root/current/$payload$name" "$bin_dir/$name"; fi
 done
 if [ "$product" = desktop ] && [ -f "$destination/install-desktop.sh" ]; then
     sh "$destination/install-desktop.sh" "$install_root"
 fi
 printf 'Installed Corvid %s (%s).\n' "$release_version" "$product"
-printf 'CORVID_EXECUTABLE=%s/corvid\n' "$destination"
+if [ "$platform:$product" = Darwin:desktop ]; then
+    # Explicit installation roots stay self-contained (CI and portable installs).
+    applications="$install_root"
+    if [ "$install_root" = "$default_root" ]; then applications="$HOME/Applications"; fi
+    mkdir -p "$applications"
+    app="$applications/Corvid.app"
+    if [ ! -e "$app" ] && [ ! -L "$app" ]; then
+        ln -s "$install_root/current/Corvid.app" "$app"
+    elif [ ! -L "$app" ] || [ "$(readlink "$app")" != "$install_root/current/Corvid.app" ]; then
+        printf 'Open the updated app at %s/current/Corvid.app. Existing %s was preserved.\n' "$install_root" "$app"
+    fi
+fi
+printf 'CORVID_EXECUTABLE=%s/%scorvid\n' "$destination" "$payload"
 case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add %s to PATH to run Corvid.\n' "$bin_dir" ;; esac
 printf 'Running daemons were left unchanged. Use corvid upgrade for an automatically started daemon; use the service manager for a supervised daemon.\n'

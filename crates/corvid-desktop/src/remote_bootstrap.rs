@@ -182,13 +182,19 @@ fn read_bundle(platform: HostPlatform) -> Result<(Vec<u8>, String)> {
     let (target, binary_name) = match platform {
         HostPlatform::Linux => ("x86_64-unknown-linux-musl", "corvid"),
         HostPlatform::Windows => ("x86_64-pc-windows-msvc", "corvid.exe"),
+        HostPlatform::Macos => ("aarch64-apple-darwin", "corvid"),
     };
     let exe = std::env::current_exe()?;
-    let directory = exe
-        .parent()
-        .context("locating the Desktop installation")?
-        .join("daemon")
-        .join(target);
+    let binaries = exe.parent().context("locating the Desktop installation")?;
+    let resources = if cfg!(target_os = "macos") && binaries.ends_with("Contents/MacOS") {
+        binaries
+            .parent()
+            .expect("MacOS has a parent")
+            .join("Resources")
+    } else {
+        binaries.to_owned()
+    };
+    let directory = resources.join("daemon").join(target);
     let file = File::open(directory.join("manifest.json")).with_context(|| {
         format!("The {target} daemon bundle is unavailable. Extract the matching daemon bundle beside Corvid Desktop")
     })?;

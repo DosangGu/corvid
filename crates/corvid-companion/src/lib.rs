@@ -2,7 +2,7 @@
 mod doctor;
 mod ipc;
 mod last_known;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod launch;
 mod platform;
 mod remote;
