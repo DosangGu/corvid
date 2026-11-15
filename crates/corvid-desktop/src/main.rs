@@ -17,6 +17,8 @@ use corvid_agent_deck::desktop as agent_deck;
 #[cfg(any(windows, target_os = "linux"))]
 mod ssh_hosts;
 #[cfg(any(windows, target_os = "linux"))]
+mod terminal_fonts;
+#[cfg(any(windows, target_os = "linux"))]
 mod terminal_paint;
 #[cfg(any(windows, target_os = "linux"))]
 mod terminal_session;
@@ -82,6 +84,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let state = options
         .state_dir
         .map_or_else(platform::default_state_dir, Ok)?;
+    let preferences_state = state.clone();
     let agent_deck = agent_deck::Settings {
         state,
         #[cfg(windows)]
@@ -91,6 +94,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let app_windows = windows.clone();
 
     Application::new().run(move |cx| {
+        cx.set_global(terminal_fonts::TerminalFonts::load(
+            &preferences_state,
+            cx.text_system(),
+        ));
         let quitting = app_windows.clone();
         cx.on_app_quit(move |_| {
             quitting.shutdown();
