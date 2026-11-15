@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
-"""Launch the packaged Linux Desktop under an isolated X11 display."""
+"""Exercise Linux Desktop UI interactions under an isolated X11 display."""
+import argparse
 import os
 import json
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import subprocess
-import sys
 import tarfile
 import tempfile
 import time
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("assets", type=Path, nargs="?", help="directory containing the Desktop archive")
+parser.add_argument("--build", type=Path, help="directory containing built Desktop and runtime binaries")
+args = parser.parse_args()
+if (args.assets is None) == (args.build is None):
+    parser.error("provide either an assets directory or --build")
+
 with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home()) as directory:
     root = Path(directory)
-    archive = next(Path(sys.argv[1]).glob("corvid-desktop-*-x86_64-unknown-linux-gnu.tar.gz"))
-    with tarfile.open(archive) as stream:
-        stream.extractall(root, filter="data")
+    if args.build:
+        for binary in ("corvid", "corvid-desktop", "corvid-agent-deck"):
+            shutil.copy2(args.build / binary, root / binary)
+    else:
+        archive, = args.assets.glob("corvid-desktop-*-x86_64-unknown-linux-gnu.tar.gz")
+        with tarfile.open(archive) as stream:
+            stream.extractall(root, filter="data")
     runtime = root / "runtime"
     runtime.mkdir(mode=0o700)
-    environment = dict(os.environ, CORVID_RUNTIME_DIR=str(runtime / "corvid"), XDG_STATE_HOME=str(root / "state"), SHELL="/bin/sh")
+    environment = dict(os.environ, HOME=str(root), CORVID_RUNTIME_DIR=str(runtime / "corvid"),
+                       CORVID_VIEW_STATE_DIR=str(root / "views"), XDG_STATE_HOME=str(root / "state"),
+                       SHELL="/bin/sh")
     # A foreground daemon keeps this test in control of its process lifecycle.
     daemon = subprocess.Popen([str(root / "corvid"), "daemon"], env=environment, start_new_session=True)
     manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -66,16 +80,37 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
             raise AssertionError(f"{title} did not open with its app identity and icon:\n{windows}")
 
         window = wait_for_icon("Corvid Desktop")
+        def writers():
+            clients = subprocess.check_output(
+                [str(root / "corvid"), "control", "clients"], env=environment, text=True, timeout=5,
+            ).splitlines()
+            return [line for line in clients if "pane-writer=" in line]
+
         def wait_for_writer(retired=None):
             for _ in range(80):
-                clients = subprocess.check_output(
-                    [str(root / "corvid"), "control", "clients"], env=environment, text=True,
-                ).splitlines()
-                writers = [line.split()[0] for line in clients if "pane-writer=" in line]
-                if len(writers) == 1 and writers[0] != retired:
-                    return writers[0]
+                active = writers()
+                if len(active) == 1 and active[0].split()[0] != retired:
+                    return active[0].split()[0]
                 time.sleep(0.1)
             raise AssertionError("Desktop did not acquire the pane's input route")
+
+        def wait_for_terminal(*, previous=None, expected=None):
+            for _ in range(80):
+                active = writers()
+                if len(active) == 1 and (match := re.search(r" terminal=(\S+)", active[0])):
+                    terminal = match[1]
+                    if terminal != previous and (expected is None or terminal == expected):
+                        return terminal
+                time.sleep(0.1)
+            raise AssertionError("Desktop did not select the expected tab's terminal")
+
+        def wait_for_marker(marker, expected):
+            for _ in range(80):
+                if marker.exists() and marker.read_text(encoding="utf-8") == expected:
+                    return
+                assert desktop.poll() is None, "Desktop exited while forwarding input"
+                time.sleep(0.1)
+            raise AssertionError(f"Desktop did not produce {expected!r} in {marker.name}")
 
         def write_marker(window, marker, command):
             subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
@@ -83,26 +118,40 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
             time.sleep(0.5)
             subprocess.run(["xdotool", "type", "--clearmodifiers", "--", command], check=True, timeout=10)
             subprocess.run(["xdotool", "key", "Return"], check=True, timeout=10)
-            for _ in range(80):
-                if marker.exists():
-                    assert marker.read_text() == "preserved", "Desktop replaced the existing shell"
-                    return
-                time.sleep(0.1)
-            raise AssertionError("Desktop did not forward input to the terminal")
+            wait_for_marker(marker, "preserved")
+
+        def key(window, chord):
+            subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
+            subprocess.run(["xdotool", "key", "--clearmodifiers", chord], check=True, timeout=10)
 
         retired = wait_for_writer()
         first_marker = root / "first"
         write_marker(window, first_marker, f"kept=preserved; printf %s \"$kept\" > {shlex.quote(str(first_marker))}")
+        # Use the real clipboard and keyboard path, with synthetic Unicode data.
+        pasted = "한글 e\u0301 🐦"
+        paste_marker = root / "pasted"
+        paste_command = f"printf %s {shlex.quote(pasted)} > {shlex.quote(str(paste_marker))}"
+        subprocess.run(["xclip", "-selection", "clipboard"], input=paste_command.encode("utf-8"),
+                       check=True, timeout=10)
+        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"], check=True, timeout=10)
+        subprocess.run(["xdotool", "key", "Return"], check=True, timeout=10)
+        wait_for_marker(paste_marker, pasted)
+        first_terminal = wait_for_terminal()
+        key(window, "ctrl+shift+t")
+        wait_for_terminal(previous=first_terminal)
+        second_tab_marker = root / "second-tab"
+        write_marker(window, second_tab_marker,
+                     f"second=preserved; printf %s \"$second\" > {shlex.quote(str(second_tab_marker))}")
+        key(window, "ctrl+shift+Tab")
+        wait_for_terminal(expected=first_terminal)
+        selected_marker = root / "selected-tab"
+        write_marker(window, selected_marker, f"printf %s \"$kept\" > {shlex.quote(str(selected_marker))}")
         first_window = window
         previous = desktop
         desktop = subprocess.Popen([str(root / "corvid-desktop")], env=environment, start_new_session=True)
         window = wait_for_icon("Corvid Desktop", excluded=(window,))
         time.sleep(0.5)
         assert wait_for_writer() == retired, "A new window displaced the existing writer"
-
-        def key(window, chord):
-            subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
-            subprocess.run(["xdotool", "key", "--clearmodifiers", chord], check=True, timeout=10)
 
         # The overflow menu is in the top-right of the 1080px client area.
         key(window, "Escape")  # Dismiss the picker before opening the menu.
@@ -155,7 +204,7 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
         wait_for_writer(current)
         final_marker = root / "final"
         write_marker(window, final_marker, f"printf %s \"$kept\" > {shlex.quote(str(final_marker))}")
-        print("PASS independent Desktop windows, new-window menu, close/quit/relaunch, shell continuity, and X11 icons")
+        print("PASS Desktop keyboard input, Unicode clipboard paste, tab creation/switching, independent windows, new-window menu, close/quit/relaunch, shell continuity, settings, and X11 icons")
     finally:
         for process in [desktop, previous, daemon, manager]:
             if process is not None and process.poll() is None:

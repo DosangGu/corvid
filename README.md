@@ -96,6 +96,9 @@ and a single `Cargo.lock`. Run `cargo test --locked` for the default packages.
 Use `--workspace` to include Desktop, Deck, and the packaging tool. Full Linux
 workspace builds require the [Desktop system packages](docs/04_companion.md#linux-desktop-quick-start).
 
+See [CI validation](docs/08_ci_validation.md) for platform coverage, real TTY/SSH
+and Desktop UI tests, local reproduction commands, and remaining device checks.
+
 [Dependabot](.github/dependabot.yml) checks Cargo dependencies and GitHub Actions
 every day (including weekends) at 09:00 Asia/Seoul, with up to five open
 version-update PRs per ecosystem. Version updates wait at least 14 days after a

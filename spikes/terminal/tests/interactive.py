@@ -1,4 +1,4 @@
-"""Run the spike through real Linux PTYs with controlled byte boundaries."""
+"""Run the spike through real Unix PTYs with controlled byte boundaries."""
 
 import curses
 import fcntl
@@ -31,6 +31,15 @@ QUERY = b"\x1b[5n\x1b[6n\x1b[c\x1b[18t"
 REPLY = b"\x1b[0n\x1b[3;5R\x1b[?6c\x1b[8;24;80t"
 
 
+def terminal_attributes(fd):
+    attributes = termios.tcgetattr(fd)
+    if sys.platform == "darwin":
+        # Darwin sets PENDIN when canonical mode is restored. It is pending-input
+        # state, not a mode setting: xnu/bsd/kern/tty.c handles it in TIOCSETA.
+        attributes[3] &= ~termios.PENDIN
+    return attributes
+
+
 def read_exact(fd, length):
     deadline = time.monotonic() + 5
     output = bytearray()
@@ -52,7 +61,8 @@ def child():
     cooked = termios.tcgetattr(0)
     tty.setraw(0)
     os.write(1, b"\x1b[3;5H" + QUERY)
-    assert read_exact(0, len(REPLY)) == REPLY
+    reply = read_exact(0, len(REPLY))
+    assert reply == REPLY, reply
 
     os.write(1, b"\x1b[H\x1b[2J\x1b[?2004h")
     for byte in "한글 e\u0301".encode():
@@ -122,7 +132,8 @@ def verify_session(process, master, slave, cooked):
     final = read_until(master, b"\x1b[?1049l")
     assert b"INTERRUPTED" in final, final
     assert process.wait(timeout=5) == 7
-    assert termios.tcgetattr(slave) == cooked, "outer TTY attributes changed"
+    restored = terminal_attributes(slave)
+    assert restored == cooked, ("outer TTY attributes changed", cooked, restored)
 
 
 def run(binary):
@@ -130,9 +141,11 @@ def run(binary):
     with tempfile.TemporaryDirectory(prefix="corvid-terminfo-") as database:
         subprocess.run(["tic", "-x", "-o", database, terminfo], check=True)
         env = os.environ | {"TERM": "xterm-256color", "TERMINFO": database}
+        env.pop("COLUMNS", None)
+        env.pop("LINES", None)
         master, slave = pty.openpty()
         try:
-            cooked = termios.tcgetattr(slave)
+            cooked = terminal_attributes(slave)
             resize(slave, 80, 24)
             command = [binary, sys.executable, __file__, "--child"]
             with subprocess.Popen(
@@ -141,6 +154,7 @@ def run(binary):
                 stdout=slave,
                 stderr=slave,
                 env=env,
+                start_new_session=True,
             ) as process:
                 try:
                     verify_session(process, master, slave, cooked)
