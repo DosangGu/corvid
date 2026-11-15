@@ -1,5 +1,6 @@
 // Synthetic native provider used only by the workspace restoration integration test.
 use std::env;
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -80,16 +81,27 @@ fn main() {
 }
 
 fn observe(provider: &str, session: &str, fields: &str) {
-    let mut child = Command::new(env::var_os("CORVID_FIXTURE_BINARY").unwrap())
-        .args(["observe", "--provider", provider])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
+    // Every fixture provider runs in the same private directory. Keep their
+    // short-lived observers from competing for the production hook deadline.
+    let observer_slot = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open("fixture-observer.lock")
         .unwrap();
-    writeln!(
-        child.stdin.take().unwrap(),
-        r#"{{"session_id":"{session}",{fields}}}"#
-    )
-    .unwrap();
-    assert!(child.wait().unwrap().success());
+    observer_slot.lock().unwrap();
+
+    // Have the synthetic payload and EOF ready when the observer's input deadline starts.
+    let (input, mut writer) = io::pipe().unwrap();
+    writeln!(writer, r#"{{"session_id":"{session}",{fields}}}"#).unwrap();
+    drop(writer);
+
+    let status = Command::new(env::var_os("CORVID_FIXTURE_BINARY").unwrap())
+        .args(["observe", "--provider", provider])
+        .stdin(input)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
 }

@@ -177,7 +177,8 @@ impl Fixture {
 
 #[tokio::test]
 // TODO: Diagnose intermittent resume confirmation in the agent restore fixture
-// The Linux x64 musl job in Actions run 43716270389 returned ResumeUnconfirmed after this unchanged test passed in run 43714951588. Capture fixture hook delivery and daemon observations around restart to isolate the timing failure without relaxing provider confirmation or idempotence assertions.
+// The fixture now supplies hook input before starting the observer. If confirmation still fails, use the reported collector counters to distinguish transport timeouts from rejected or missing hooks and trace the corresponding path.
+// Issue URL: https://github.com/DosangGu/corvid/issues/74
 async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_clients()
 -> Result<()> {
     let fixture = Fixture::new()?;
@@ -257,13 +258,17 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
         for (index, pane) in result.panes.iter().enumerate() {
             match index {
                 0..=2 => {
-                    ensure!(
-                        matches!(
-                            pane.status(),
-                            PaneRestoreStatus::Resumed | PaneRestoreStatus::Existing
-                        ),
-                        "resume failed: {pane:?}"
-                    );
+                    if !matches!(
+                        pane.status(),
+                        PaneRestoreStatus::Resumed | PaneRestoreStatus::Existing
+                    ) {
+                        let collector = corvid_client::status(&fixture.runtime)
+                            .await
+                            .map(|status| status.collector);
+                        anyhow::bail!(
+                            "resume failed for pane {index}: {pane:?}; collector: {collector:?}"
+                        );
+                    }
                     ensure!(
                         !old_terminals.contains(pane.terminal_id.as_ref().unwrap()),
                         "terminal identity reused"
