@@ -4,7 +4,8 @@ pub mod shell;
 
 use std::env;
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,6 +24,7 @@ use crate::projection;
 pub(crate) use profile::adapter;
 
 const VERSION_TIMEOUT: Duration = Duration::from_millis(350);
+const VERSION_OUTPUT_LIMIT: usize = 128;
 
 pub(crate) fn qualify(provider: Provider, path: &Path) -> Option<Executable> {
     let expected = match provider {
@@ -115,10 +117,62 @@ fn version_output(path: &Path) -> Option<String> {
             }
         }
     }
-    let output = child.stdout.take()?;
+    read_version_output(child.stdout.take()?)
+}
+
+fn read_version_output(output: impl Read + AsFd) -> Option<String> {
     let flags = OFlag::from_bits_retain(fcntl(&output, FcntlArg::F_GETFL).ok()?);
     fcntl(&output, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).ok()?;
-    let mut version = String::new();
-    output.take(128).read_to_string(&mut version).ok()?;
-    Some(version)
+    let mut bytes = Vec::new();
+    let read = output
+        .take(VERSION_OUTPUT_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes);
+    match read {
+        Ok(_) => {}
+        // A concurrent fork can keep a copy of the write end until exec.
+        // The probe has exited, so a complete line need not wait for pipe EOF.
+        Err(error) if error.kind() == ErrorKind::WouldBlock && bytes.ends_with(b"\n") => {}
+        Err(_) => return None,
+    }
+    if bytes.len() > VERSION_OUTPUT_LIMIT {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Write};
+
+    #[test]
+    fn reads_complete_version_while_another_process_keeps_stdout_open() -> io::Result<()> {
+        let (reader, mut writer) = io::pipe()?;
+        writer.write_all(b"codex-cli 1.2.3\n")?;
+
+        assert_eq!(
+            read_version_output(reader).as_deref(),
+            Some("codex-cli 1.2.3\n")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn requires_a_complete_line_when_the_stdout_pipe_is_still_open() -> io::Result<()> {
+        let (reader, mut writer) = io::pipe()?;
+        writer.write_all(b"codex-cli 1.2.3")?;
+
+        assert_eq!(read_version_output(reader), None);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_oversized_version_output() -> io::Result<()> {
+        let (reader, mut writer) = io::pipe()?;
+        writer.write_all(&[b' '; VERSION_OUTPUT_LIMIT + 1])?;
+        drop(writer);
+
+        assert_eq!(read_version_output(reader), None);
+        Ok(())
+    }
 }
