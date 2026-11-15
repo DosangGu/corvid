@@ -39,14 +39,14 @@ impl Render for Probe {
             canvas(
                 move |bounds, window, _| {
                     let started = Instant::now();
-                    let metrics = Metrics::measure(window);
+                    let metrics = Metrics::measure(window, &DEFAULT_FONT.into());
                     let frame = Frame::new(&screen, metrics.grid(bounds));
                     (frame, metrics, started.elapsed())
                 },
                 move |bounds, (frame, metrics, prepare), window, cx| {
                     let spans = frame.spans.len();
                     let started = Instant::now();
-                    frame.paint(bounds, metrics, true, String::new(), window, cx);
+                    frame.paint(bounds, metrics, Some(""), &DEFAULT_FONT.into(), window, cx);
                     let mut samples = samples.borrow_mut();
                     if samples.len() < FRAMES {
                         samples.push(Sample {
