@@ -50,10 +50,12 @@ async fn collect() -> Result<()> {
         ("PreToolUse", _, _) => HookEvent::QuestionStarted,
         _ => bail!("unknown synthetic hook event"),
     };
+    let launch_association = env::var(LAUNCH_ASSOCIATION)
+        .context("synthetic provider launched without an observation association")?;
     let runtime = PathBuf::from(env::var_os(RUNTIME_DIR).context("missing fixture runtime")?);
     let directory = RuntimeDir::open(&runtime)?;
     let hook = CollectHook {
-        launch_association: env::var(LAUNCH_ASSOCIATION)?,
+        launch_association,
         provider: provider as i32,
         event: event as i32,
         session_id: Some(input.session_id),

@@ -181,6 +181,10 @@ impl Fixture {
             mode: mode as i32,
         }
     }
+
+    fn observer_log(&self) -> String {
+        std::fs::read_to_string(self.root.join("fixture-observer.log")).unwrap_or_default()
+    }
 }
 
 #[tokio::test]
@@ -221,7 +225,7 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
             }) { break Ok::<_, anyhow::Error>(()); }
             sleep(Duration::from_millis(50)).await;
         }
-    }).await.context("waiting for verified saved conversations")??;
+    }).await.with_context(|| format!("waiting for verified saved conversations; fixture observer log: {}", fixture.observer_log()))??;
     let before = corvid_client::agents(&fixture.runtime).await?;
     ensure!(
         before.agents.iter().any(|agent| agent.pending_requests > 0),
@@ -274,7 +278,8 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
                             .await
                             .map(|status| status.collector);
                         anyhow::bail!(
-                            "resume failed for pane {index}: {pane:?}; collector: {collector:?}"
+                            "resume failed for pane {index}: {pane:?}; collector: {collector:?}\nfixture observer log: {}",
+                            fixture.observer_log()
                         );
                     }
                     ensure!(

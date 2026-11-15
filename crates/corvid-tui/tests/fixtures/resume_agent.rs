@@ -3,7 +3,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 fn main() {
     let argv: Vec<_> = env::args().collect();
@@ -104,10 +104,21 @@ fn observe(provider: &str, session: &str, fields: &str) {
     observer
         .args(["--ignored", "--exact", "fixture_observer::collect"])
         .env("CORVID_FIXTURE_PROVIDER", provider);
-    let status = observer
-        .stdin(input)
-        .stdout(Stdio::null())
-        .status()
+    let result = observer.stdin(input).output().unwrap();
+    if !result.status.success() {
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("fixture-observer.log")
+            .unwrap();
+        writeln!(
+            log,
+            "{provider} {session} {fields}: {}\n{}\n{}",
+            result.status,
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        )
         .unwrap();
-    assert!(status.success());
+        panic!("fixture observer failed for {provider} {session}");
+    }
 }
