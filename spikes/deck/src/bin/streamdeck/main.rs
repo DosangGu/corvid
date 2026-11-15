@@ -117,8 +117,12 @@ fn run(options: Options) -> Result<()> {
         if options.target.is_none() {
             println!("Live display only. Set --target CLIENT_ID to enable focus.");
         }
+        #[cfg(windows)]
+        let address = options.instance;
+        #[cfg(target_os = "macos")]
+        let address = std::path::PathBuf::from(options.instance);
         Some(LiveDevice {
-            client: DesktopClient::start(options.instance.into(), || {})?,
+            client: DesktopClient::start(address, || {})?,
             deck: LiveDeck::default(),
             target: options.target,
         })

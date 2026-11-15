@@ -45,9 +45,10 @@ fn main() -> anyhow::Result<()> {
             }
             Some("--demo") => demo = true,
             Some("--connect-only") => connect_only = true,
-            Some("--pipe-instance" | "--socket-dir") => {
-                instance = next_text(&mut args, "--socket-dir")?.into()
-            }
+            #[cfg(windows)]
+            Some("--pipe-instance") => instance = next_text(&mut args, "--pipe-instance")?,
+            #[cfg(target_os = "macos")]
+            Some("--socket-dir") => instance = PathBuf::from(next_text(&mut args, "--socket-dir")?),
             Some("--state-dir") => {
                 state =
                     Some(PathBuf::from(args.next().ok_or_else(|| {

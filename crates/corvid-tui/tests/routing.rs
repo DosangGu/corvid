@@ -2676,7 +2676,7 @@ async fn stalled_render_and_snapshot_consumers_release_their_connections() {
     let daemon = daemon(&runtime, &state).await;
     let daemon_pid = daemon.id().unwrap();
 
-    timeout(Duration::from_secs(15), async {
+    timeout(Duration::from_secs(20), async {
         let mut independent = layout.open_views(&runtime).await;
         let mut watchers = stall_watchers(&runtime).await;
         let mut control = ControlWire::connect(&runtime, "ping.v1").await;
@@ -2698,8 +2698,16 @@ async fn stalled_render_and_snapshot_consumers_release_their_connections() {
 
         assert!(stalled.reader.next_frame().await.unwrap().is_none());
         let render_timeout = stalled_since.elapsed();
-        let queries = std::fs::read_to_string(progress).unwrap().lines().count();
-        assert!(queries > 20, "PTY stopped parsing output or replying to queries");
+        let queries_before = std::fs::read_to_string(&progress).unwrap().lines().count();
+        // BSD utilities and loaded CI hosts have different fork costs. Verify
+        // continuing PTY progress after disconnection, not an elapsed-time count.
+        let queries = timeout(Duration::from_secs(3), async {
+            loop {
+                let queries = std::fs::read_to_string(&progress).unwrap().lines().count();
+                if queries > 20 && queries >= queries_before + 2 { break queries; }
+                sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("PTY stopped parsing output or replying to queries");
 
         let mut reattached = Tui::attach_target(&runtime, Attach {
             workspace_id: Some(layout.flood.workspace_id.clone()),
