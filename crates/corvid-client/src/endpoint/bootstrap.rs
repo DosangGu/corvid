@@ -17,7 +17,7 @@ const WINDOWS_INSTALL: &str = include_str!("install_windows.ps1");
 const WINDOWS_PROBE: &str = r#"
 if (PathDaemon) { [Console]::WriteLine('path') }
 elseif (ManagedDaemon) { [Console]::WriteLine('managed') }
-else { RequireX64; [Console]::WriteLine('missing') }
+else { $null = RequireArchitecture; [Console]::WriteLine('missing') }
 "#;
 const WINDOWS_PLATFORM: &str = r#"
 if ($env:OS -ne 'Windows_NT') { exit 70 }
@@ -88,6 +88,15 @@ impl RemoteHost {
                 ProtocolFault::new("BootstrapFailed", "unexpected daemon probe response").into(),
             ),
         }
+    }
+
+    pub async fn probe_daemon_target(&self, platform: HostPlatform) -> Result<&'static str> {
+        let command = match platform {
+            HostPlatform::Linux | HostPlatform::Macos => "uname -m".to_owned(),
+            HostPlatform::Windows => windows_setup("[Console]::WriteLine((RequireArchitecture))"),
+        };
+        let output = self.bootstrap(&command, None).await?;
+        daemon_target(platform, response(&output))
     }
 
     pub async fn install_daemon(
@@ -327,8 +336,19 @@ fn setup_unavailable(error: &anyhow::Error) -> bool {
 fn unsupported_host() -> ProtocolFault {
     ProtocolFault::new(
         "UnsupportedHost",
-        "automatic installation requires a Linux x86_64, Windows x64, or macOS Apple Silicon host",
+        "automatic installation requires Linux or Windows on x64/ARM64, or macOS Apple Silicon",
     )
+}
+
+fn daemon_target(platform: HostPlatform, architecture: &[u8]) -> Result<&'static str> {
+    match (platform, architecture) {
+        (HostPlatform::Linux, b"x86_64") => Ok("x86_64-unknown-linux-musl"),
+        (HostPlatform::Linux, b"aarch64" | b"arm64") => Ok("aarch64-unknown-linux-musl"),
+        (HostPlatform::Windows, b"AMD64") => Ok("x86_64-pc-windows-msvc"),
+        (HostPlatform::Windows, b"ARM64") => Ok("aarch64-pc-windows-msvc"),
+        (HostPlatform::Macos, b"arm64") => Ok("aarch64-apple-darwin"),
+        _ => Err(unsupported_host().into()),
+    }
 }
 
 fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
@@ -399,6 +419,33 @@ fn bootstrap_failure(code: Option<i32>, diagnostic: &[u8]) -> ProtocolFault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_daemon_for_the_remote_architecture() {
+        for (platform, architecture, expected) in [
+            (HostPlatform::Linux, "x86_64", "x86_64-unknown-linux-musl"),
+            (HostPlatform::Linux, "aarch64", "aarch64-unknown-linux-musl"),
+            (HostPlatform::Linux, "arm64", "aarch64-unknown-linux-musl"),
+            (HostPlatform::Windows, "AMD64", "x86_64-pc-windows-msvc"),
+            (HostPlatform::Windows, "ARM64", "aarch64-pc-windows-msvc"),
+            (HostPlatform::Macos, "arm64", "aarch64-apple-darwin"),
+        ] {
+            assert_eq!(
+                daemon_target(platform, architecture.as_bytes()).unwrap(),
+                expected
+            );
+        }
+        for platform in [
+            HostPlatform::Linux,
+            HostPlatform::Windows,
+            HostPlatform::Macos,
+        ] {
+            for architecture in [b"i686".as_slice(), b"armv7l", b"", b"aarch64\nextra"] {
+                assert!(daemon_target(platform, architecture).is_err());
+            }
+        }
+        assert!(daemon_target(HostPlatform::Macos, b"x86_64").is_err());
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

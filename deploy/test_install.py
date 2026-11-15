@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -44,10 +45,12 @@ def previous_fixture(assets, archive, temporary):
         with tarfile.open(archive) as stream:
             stream.extractall(stage, filter="data")
     package_binary = stage / ("Corvid.app/Contents/MacOS" if MACOS and (stage / "Corvid.app").is_dir() else "")
+    metadata = json.loads((stage / "package.json").read_text())
     source = temporary / "previous.rs"
     source.write_text('fn main() { println!("corvid 0.0.0"); }\n')
-    run(["rustc", "--crate-name", "previous", source, "-o", package_binary / ("corvid.exe" if WINDOWS else "corvid")])
-    metadata = json.loads((stage / "package.json").read_text())
+    linker = ["-C", "linker=musl-gcc"] if metadata["target"].endswith("-linux-musl") else []
+    run(["rustc", "--target", metadata["target"], *linker, "--crate-name", "previous", source,
+         "-o", package_binary / ("corvid.exe" if WINDOWS else "corvid")])
     metadata["version"] = "0.0.0"
     (stage / "package.json").write_text(json.dumps(metadata, indent=2) + "\n")
     if package_binary != stage:
@@ -101,7 +104,14 @@ def main():
     if not WINDOWS:
         args.binary.chmod(0o755)
     assert run([args.binary.resolve(), "--version"]).stdout.strip() == f"corvid {version}"
-    target = "x86_64-pc-windows-msvc" if WINDOWS else "x86_64-unknown-linux-" + ("musl" if args.product == "tui" else "gnu")
+    machine = platform.machine().lower()
+    if WINDOWS:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+            machine = winreg.QueryValueEx(key, "PROCESSOR_ARCHITECTURE")[0].lower()
+    assert machine in ("amd64", "x86_64", "aarch64", "arm64"), machine
+    arch = "aarch64" if machine in ("aarch64", "arm64") else "x86_64"
+    target = f"{arch}-pc-windows-msvc" if WINDOWS else f"{arch}-unknown-linux-" + ("musl" if args.product == "tui" else "gnu")
     if MACOS:
         target = "aarch64-apple-darwin"
     payload = "Corvid.app/Contents/MacOS" if MACOS and args.product == "desktop" else ""

@@ -36,8 +36,10 @@ platform=$(uname -s)
 case "$platform:$(uname -m):$product" in
     Linux:x86_64:tui) target=x86_64-unknown-linux-musl ;;
     Linux:x86_64:desktop) target=x86_64-unknown-linux-gnu ;;
+    Linux:aarch64:tui|Linux:arm64:tui) target=aarch64-unknown-linux-musl ;;
+    Linux:aarch64:desktop|Linux:arm64:desktop) target=aarch64-unknown-linux-gnu ;;
     Darwin:arm64:tui|Darwin:arm64:desktop) target=aarch64-apple-darwin ;;
-    *) fail 'Supported platforms: Linux x86_64 and macOS Apple Silicon; products: tui, desktop.' ;;
+    *) fail 'Supported platforms: Linux x86_64/ARM64 and macOS Apple Silicon; products: tui, desktop.' ;;
 esac
 hash_tool=sha256sum
 if [ "$platform" = Darwin ]; then hash_tool=shasum; fi
@@ -132,7 +134,9 @@ if [ "$product" = desktop ]; then
         if [ -f "$stage/package/plugins/agent-deck/corvid-agent-deck" ]; then
             chmod 755 "$stage/package/plugins/agent-deck/corvid-agent-deck"
         fi
-        chmod 755 "$stage/package/daemon/x86_64-unknown-linux-musl/corvid"
+        for daemon in "$stage/package"/daemon/*-unknown-linux-musl/corvid; do
+            chmod 755 "$daemon"
+        done
     fi
 fi
 mkdir -p -- "$install_root/versions"

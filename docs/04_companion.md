@@ -357,7 +357,10 @@ SDK for the GUI. Cargo builds the Protobuf schema using `protox`. Set
 cannot find it.
 
 Set `$env:CORVID_MACOS_RUNTIME` to a macOS runtime artifact directory from the same
-revision. From the repository root on Windows x64, run `cargo build-desktop` to
+revision. Supply the other architecture's Linux and Windows runtimes via
+`CORVID_LINUX_ARM64_RUNTIME` and `CORVID_WINDOWS_ARM64_RUNTIME` on x64, or
+`CORVID_LINUX_X64_RUNTIME` and `CORVID_WINDOWS_X64_RUNTIME` on ARM64.
+From the repository root on Windows x64 or ARM64, run `cargo build-desktop` to
 build the Linux and Windows runtimes and assemble the Windows packages. Python 3.11 or later must be
 available as `python`; the Linux runtime is built in the `Ubuntu` WSL
 distribution by default. Select another distribution with
@@ -392,8 +395,8 @@ from the same source revision. Pass the resulting
 `Package-Corvid.ps1 -LinuxDaemonDirectory PATH`. An already built Windows
 runtime can also be supplied with `-WindowsDaemonDirectory PATH`.
 
-The **Package Corvid** workflow builds all three runtimes before assembling the
-six Desktop/TUI archives, Windows Setup, and the unsigned macOS DMG. Main-branch and manual runs produce the
+The **Package Corvid** workflow builds all five runtimes before assembling the
+ten Desktop/TUI archives, x64 and ARM64 Windows Setup, and the unsigned macOS DMG. Main-branch and manual runs produce the
 `release-assets` workflow artifact. Version tags publish a GitHub Release only
 after all platform checks and package assembly succeed. See the
 [distribution guide](05_release_distribution.md#build-and-publish) for details.

@@ -33,10 +33,10 @@ function ManagedPath {
     Join-Path $base 'Corvid-SSH'
 }
 
-function RequireX64 {
-    $arch = $env:PROCESSOR_ARCHITECTURE
-    if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
-    if ($arch -ne 'AMD64') { exit 70 }
+function RequireArchitecture {
+    $arch = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE', 'Machine')
+    if ($arch -notin @('AMD64', 'ARM64')) { exit 70 }
+    $arch
 }
 
 function PathDaemon {

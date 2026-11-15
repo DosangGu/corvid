@@ -45,10 +45,10 @@ def desktop_packages():
         base = Path(temporary)
         version, revision = "0.0.0-icon-test", "a" * 40
         runtimes = {}
-        for target in [package.LINUX, package.WINDOWS, package.MACOS]:
+        for target in package.RUNTIME_TARGETS:
             directory = base / target
             directory.mkdir()
-            binary = directory / ("corvid.exe" if target == package.WINDOWS else "corvid")
+            binary = directory / ("corvid.exe" if target in package.WINDOWS_TARGETS else "corvid")
             binary.write_bytes(b"fixture runtime")
             package.write_json(directory / "manifest.json", {
                 "schema_version": 1, "target": target, "version": version,
@@ -62,19 +62,20 @@ def desktop_packages():
             for suffix in ["", ".exe"]:
                 (build / (name + suffix)).write_bytes(b"fixture application")
         output = base / "dist"
-        for target in [package.WINDOWS, package.DESKTOP_LINUX]:
+        for target in [*package.WINDOWS_TARGETS, package.DESKTOP_LINUX, package.DESKTOP_LINUX_ARM64]:
             args = SimpleNamespace(
                 product="desktop", target=target, runtime=runtimes[
-                    package.WINDOWS if target == package.WINDOWS else package.LINUX
+                    target.replace("-linux-gnu", "-linux-musl")
                 ], linux_runtime=runtimes[package.LINUX], windows_runtime=runtimes[package.WINDOWS],
+                linux_arm64_runtime=runtimes[package.LINUX_ARM64], windows_arm64_runtime=runtimes[package.WINDOWS_ARM64],
                 macos_runtime=runtimes[package.MACOS], build=build, output=output, without_agent_deck=False,
             )
             with patch.object(package, "identity", return_value=(version, revision)):
                 package.package(args)
-            extension = "zip" if target == package.WINDOWS else "tar.gz"
+            extension = "zip" if target in package.WINDOWS_TARGETS else "tar.gz"
             archive = output / f"corvid-desktop-{version}-{target}.{extension}"
             assert archive.is_file(), f"Desktop archive must retain its {extension} extension"
-            if target == package.WINDOWS:
+            if target in package.WINDOWS_TARGETS:
                 with zipfile.ZipFile(archive) as stream:
                     names = stream.namelist()
                     assert stream.read("corvid.ico") == (ROOT / "assets/icons/corvid.ico").read_bytes()

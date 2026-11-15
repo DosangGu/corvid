@@ -11,15 +11,17 @@ import subprocess
 import tempfile
 import zipfile
 
-from package import ROOT, WINDOWS, digest, write_json
+from package import ROOT, WINDOWS, WINDOWS_ARM64, WINDOWS_TARGETS, digest, write_json
 
 ICON = ROOT / "assets/icons/corvid.ico"
 MAX_PAYLOAD_BYTES = 512 * 1024 * 1024
 MAX_MEMBERS = 256
 
 
-def asset_name(version):
-    return f"corvid-desktop-{version}-{WINDOWS}-setup.exe"
+def asset_name(version, target=WINDOWS):
+    if target not in WINDOWS_TARGETS:
+        raise ValueError(f"Unsupported Windows target: {target}")
+    return f"corvid-desktop-{version}-{target}-setup.exe"
 
 
 def unpack(archive, payload):
@@ -79,7 +81,7 @@ def stamp(payload):
         sums.write(f"{digest(payload / 'native-package')}  native-package\n")
 
 
-def windows_package(payload, version, output, compiler):
+def windows_package(payload, version, output, compiler, target):
     if os.name != "nt":
         raise ValueError("Build Windows Setup on Windows")
     if compiler is None:
@@ -92,9 +94,10 @@ def windows_package(payload, version, output, compiler):
             raise ValueError(f"Desktop archive is missing {file}")
     stamp(payload)
 
+    architecture = "arm64" if target == WINDOWS_ARM64 else "x64compatible"
     subprocess.run([
         str(compiler), f"/DRelease={version}", f"/DPayload={payload}",
-        f"/DIcon={ICON}", f"/O{output}", ROOT / "deploy/windows/CorvidSetup.iss",
+        f"/DIcon={ICON}", f"/DTarget={target}", f"/DArchitecture={architecture}", f"/O{output}", ROOT / "deploy/windows/CorvidSetup.iss",
     ], check=True)
 
 
@@ -103,35 +106,36 @@ def build(archive, output, compiler):
     with tempfile.TemporaryDirectory(prefix="corvid-native-") as temporary:
         payload = Path(temporary) / "payload"
         metadata = unpack(archive, payload)
+        target = metadata.get("target")
         version, revision = (metadata[key] for key in ("version", "source_revision"))
         if (metadata.get("schema_version") != 1 or metadata.get("product") != "desktop"
-                or metadata.get("target") != WINDOWS
+                or target not in WINDOWS_TARGETS
                 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?", version)
                 or not re.fullmatch(r"[a-f0-9]{40}", revision)
-                or archive.name != f"corvid-desktop-{version}-{WINDOWS}.zip"):
+                or archive.name != f"corvid-desktop-{version}-{target}.zip"):
             raise ValueError("Desktop archive identity mismatch")
-        artifact = output / asset_name(version)
-        windows_package(payload, version, output, compiler)
+        artifact = output / asset_name(version, target)
+        windows_package(payload, version, output, compiler, target)
     checksum = digest(artifact)
     artifact.with_name(artifact.name + ".sha256").write_text(
         f"{checksum}  {artifact.name}\n", encoding="utf-8", newline="\n"
     )
     write_json(artifact.with_name(artifact.name + ".provenance.json"), {
         "schema_version": 1, "source_revision": revision, "version": version,
-        "target": WINDOWS, "archive": archive.name, "archive_sha256": digest(archive),
+        "target": target, "archive": archive.name, "archive_sha256": digest(archive),
         "sha256": checksum, "size": artifact.stat().st_size,
     })
     print(artifact)
 
 
-def verify(directory, version, revision):
-    name = asset_name(version)
+def verify(directory, version, revision, target=WINDOWS):
+    name = asset_name(version, target)
     artifact = directory / name
-    archive = f"corvid-desktop-{version}-{WINDOWS}.zip"
+    archive = f"corvid-desktop-{version}-{target}.zip"
     checksum = digest(artifact)
     expected = {
         "schema_version": 1, "source_revision": revision, "version": version,
-        "target": WINDOWS, "archive": archive, "archive_sha256": digest(directory / archive),
+        "target": target, "archive": archive, "archive_sha256": digest(directory / archive),
         "sha256": checksum, "size": artifact.stat().st_size,
     }
     provenance = json.loads(artifact.with_name(name + ".provenance.json").read_text())

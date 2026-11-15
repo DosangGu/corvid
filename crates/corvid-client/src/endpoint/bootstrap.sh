@@ -82,14 +82,13 @@ case "$1" in
         elif [ -e "$root/corvid" ] || [ -L "$root/corvid" ]; then
             safe_home && private_root && managed_binary || exit 71
             printf 'managed\n'
-        elif [ "$(uname -m)" = x86_64 ]; then
-            printf 'missing\n'
         else
-            exit 70
+            case "$(uname -m)" in x86_64|aarch64|arm64) printf 'missing\n' ;; *) exit 70 ;; esac
         fi
         ;;
     install|upgrade)
-        [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || exit 70
+        [ "$(uname -s)" = Linux ] || exit 70
+        case "$(uname -m)" in x86_64|aarch64|arm64) ;; *) exit 70 ;; esac
         if command -v corvid >/dev/null 2>&1; then exit 74; fi
         safe_home || exit 71
         umask 077

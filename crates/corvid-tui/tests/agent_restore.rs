@@ -176,6 +176,8 @@ impl Fixture {
 }
 
 #[tokio::test]
+// TODO: Diagnose intermittent resume confirmation in the agent restore fixture
+// The Linux x64 musl job in Actions run 43716270389 returned ResumeUnconfirmed after this unchanged test passed in run 43714951588. Capture fixture hook delivery and daemon observations around restart to isolate the timing failure without relaxing provider confirmation or idempotence assertions.
 async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_clients()
 -> Result<()> {
     let fixture = Fixture::new()?;

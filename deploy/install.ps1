@@ -5,6 +5,7 @@ param(
     [ValidateSet('tui', 'desktop')][string]$Product = 'tui',
     [string]$InstallRoot,
     [string]$SourceDirectory,
+    [ValidateSet('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')][string]$Target,
     [string]$ArchiveSha256
 )
 $ErrorActionPreference = 'Stop'
@@ -12,8 +13,16 @@ $ErrorActionPreference = 'Stop'
 $env:PSModulePath = Join-Path $PSHOME 'Modules'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $repository = 'DosangGu/corvid'
-if (![Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
-    throw 'Corvid requires Windows x64.'
+# Machine architecture stays native even under an emulated PowerShell process.
+$architecture = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE', 'Machine')
+$nativeTarget = switch ($architecture) {
+    'AMD64' { 'x86_64-pc-windows-msvc' }
+    'ARM64' { 'aarch64-pc-windows-msvc' }
+    default { throw 'Corvid requires Windows x64 or ARM64.' }
+}
+if (!$Target) { $Target = $nativeTarget }
+if ($Target -eq 'aarch64-pc-windows-msvc' -and $architecture -ne 'ARM64') {
+    throw 'The ARM64 package requires Windows ARM64.'
 }
 if (!$Version) {
     if ($SourceDirectory) { throw '-SourceDirectory requires -Version' }
@@ -76,7 +85,7 @@ try {
     }
     $stage = Join-Path $InstallRoot ('.stage-' + [guid]::NewGuid())
     New-Item -ItemType Directory -Path $stage | Out-Null
-    $archiveName = "corvid-$Product-$Version-x86_64-pc-windows-msvc.zip"
+    $archiveName = "corvid-$Product-$Version-$Target.zip"
     $archive = Join-Path $stage 'archive.zip'
     $checksum = Join-Path $stage 'checksum'
     Get-Asset "$archiveName.sha256" $checksum
@@ -100,7 +109,7 @@ try {
     [IO.Compression.ZipFile]::ExtractToDirectory($archive, $package)
     Assert-Package $package
     $metadata = Get-Content -LiteralPath (Join-Path $package 'package.json') -Raw | ConvertFrom-Json
-    if ($metadata.schema_version -ne 1 -or $metadata.version -cne $Version -or $metadata.product -cne $Product -or $metadata.target -cne 'x86_64-pc-windows-msvc') { throw 'Package metadata mismatch' }
+    if ($metadata.schema_version -ne 1 -or $metadata.version -cne $Version -or $metadata.product -cne $Product -or $metadata.target -cne $Target) { throw 'Package metadata mismatch' }
     $binaryVersion = & (Join-Path $package 'corvid.exe') --version
     if ($LASTEXITCODE -ne 0 -or $binaryVersion -cne "corvid $Version") { throw 'Executable version mismatch' }
     $versions = Join-Path $InstallRoot 'versions'

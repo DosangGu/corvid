@@ -2,6 +2,7 @@
 """Exercise Linux Desktop UI interactions under an isolated X11 display."""
 import argparse
 import os
+import platform
 import json
 from pathlib import Path
 import re
@@ -26,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
         for binary in ("corvid", "corvid-desktop", "corvid-agent-deck"):
             shutil.copy2(args.build / binary, root / binary)
     else:
-        archive, = args.assets.glob("corvid-desktop-*-x86_64-unknown-linux-gnu.tar.gz")
+        archive, = args.assets.glob(f"corvid-desktop-*-{platform.machine()}-unknown-linux-gnu.tar.gz")
         with tarfile.open(archive) as stream:
             stream.extractall(root, filter="data")
     runtime = root / "runtime"

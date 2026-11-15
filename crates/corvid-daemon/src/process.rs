@@ -252,6 +252,8 @@ fn codex_broker(pid: u32, launcher: u32) -> Option<HookProducer> {
     let installed = image.clone();
     let target = if cfg!(target_os = "macos") {
         "aarch64-apple-darwin"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64-unknown-linux-musl"
     } else {
         "x86_64-unknown-linux-musl"
     };

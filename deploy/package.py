@@ -16,6 +16,13 @@ LINUX = "x86_64-unknown-linux-musl"
 WINDOWS = "x86_64-pc-windows-msvc"
 DESKTOP_LINUX = "x86_64-unknown-linux-gnu"
 MACOS = "aarch64-apple-darwin"
+LINUX_ARM64 = "aarch64-unknown-linux-musl"
+WINDOWS_ARM64 = "aarch64-pc-windows-msvc"
+DESKTOP_LINUX_ARM64 = "aarch64-unknown-linux-gnu"
+LINUX_TARGETS = (LINUX, LINUX_ARM64)
+WINDOWS_TARGETS = (WINDOWS, WINDOWS_ARM64)
+RUNTIME_TARGETS = (*LINUX_TARGETS, *WINDOWS_TARGETS, MACOS)
+DESKTOP_TARGETS = (DESKTOP_LINUX, DESKTOP_LINUX_ARM64, *WINDOWS_TARGETS, MACOS)
 
 
 def identity():
@@ -54,13 +61,13 @@ def runtime(args):
         raise ValueError("Runtime version differs from the workspace")
     if not 0 < binary.stat().st_size <= 32 * 1024 * 1024:
         raise ValueError("Runtime exceeds the daemon transfer limit")
-    if args.target == LINUX:
+    if args.target in LINUX_TARGETS:
         headers = subprocess.check_output(["readelf", "--wide", "--program-headers", str(binary)], text=True)
         dynamic = subprocess.check_output(["readelf", "--wide", "--dynamic", str(binary)], text=True)
         if " INTERP " in headers or "(NEEDED)" in dynamic:
             raise ValueError("Linux runtime must be statically linked")
     args.output.mkdir(parents=True, exist_ok=True)
-    name = "corvid.exe" if args.target == WINDOWS else "corvid"
+    name = "corvid.exe" if args.target in WINDOWS_TARGETS else "corvid"
     copy(binary, args.output / name, True)
     write_json(args.output / "manifest.json", {
         "schema_version": 1, "target": args.target, "version": version,
@@ -70,7 +77,7 @@ def runtime(args):
 
 def verify_runtime(directory, target, version, revision):
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    binary = directory / ("corvid.exe" if target == WINDOWS else "corvid")
+    binary = directory / ("corvid.exe" if target in WINDOWS_TARGETS else "corvid")
     expected = {"schema_version": 1, "target": target, "version": version, "source_revision": revision}
     if any(manifest.get(key) != value for key, value in expected.items()):
         raise ValueError(f"Runtime identity mismatch: {directory}")
@@ -81,9 +88,12 @@ def verify_runtime(directory, target, version, revision):
 
 def package(args):
     version, revision = identity()
-    windows = args.target == WINDOWS
+    windows = args.target in WINDOWS_TARGETS
     macos = args.target == MACOS
-    native_target = MACOS if macos else WINDOWS if windows else LINUX
+    valid_targets = RUNTIME_TARGETS if args.product == "tui" else DESKTOP_TARGETS
+    if args.target not in valid_targets:
+        raise ValueError(f"Unsupported {args.product} target: {args.target}")
+    native_target = args.target.replace("-linux-gnu", "-linux-musl")
     native = verify_runtime(args.runtime, native_target, version, revision)
     suffix = ".exe" if windows else ""
     extension = "zip" if windows else "tar.gz"
@@ -109,7 +119,11 @@ def package(args):
                     copy(args.build / "corvid-agent-deck-launch.exe", stage / "corvid-agent-deck-launch.exe", True)
                 copy(args.build / "corvid-deck.exe", stage / "corvid-deck.exe", True)
                 copy(ROOT / "deploy/windows/Set-CorvidStartup.ps1", stage / "Set-CorvidStartup.ps1")
-            for target, directory in [(LINUX, args.linux_runtime), (WINDOWS, args.windows_runtime), (MACOS, args.macos_runtime)]:
+            for target, directory in [
+                (LINUX, args.linux_runtime), (LINUX_ARM64, args.linux_arm64_runtime),
+                (WINDOWS, args.windows_runtime), (WINDOWS_ARM64, args.windows_arm64_runtime),
+                (MACOS, args.macos_runtime),
+            ]:
                 if directory is None:
                     raise ValueError(f"Desktop requires the {target} runtime")
                 binary = verify_runtime(directory, target, version, revision)
@@ -143,12 +157,9 @@ def manifest(args):
 
     version, revision = identity()
     required = [
-        f"corvid-tui-{version}-{LINUX}.tar.gz",
-        f"corvid-tui-{version}-{WINDOWS}.zip",
-        f"corvid-desktop-{version}-{DESKTOP_LINUX}.tar.gz",
-        f"corvid-desktop-{version}-{WINDOWS}.zip",
-        f"corvid-tui-{version}-{MACOS}.tar.gz",
-        f"corvid-desktop-{version}-{MACOS}.tar.gz",
+        f"corvid-{product}-{version}-{target}.{'zip' if target in WINDOWS_TARGETS else 'tar.gz'}"
+        for product, targets in [("tui", RUNTIME_TARGETS), ("desktop", DESKTOP_TARGETS)]
+        for target in targets
     ]
     assets = []
     for name in required:
@@ -165,7 +176,8 @@ def manifest(args):
         expected_name = f"corvid-{metadata['product']}-{metadata['version']}-{metadata['target']}"
         if metadata["version"] != version or metadata["source_revision"] != revision or not name.startswith(expected_name + "."):
             raise ValueError(f"Package identity mismatch: {name}")
-    required.append(native_package.verify(args.output, version, revision))
+    for target in WINDOWS_TARGETS:
+        required.append(native_package.verify(args.output, version, revision, target))
     import macos_package
     required.append(macos_package.verify(args.output, version, revision))
     installers = ["install.sh", "install.ps1"]
@@ -183,17 +195,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     command = sub.add_parser("runtime")
-    command.add_argument("--target", choices=[LINUX, WINDOWS, MACOS], required=True)
+    command.add_argument("--target", choices=RUNTIME_TARGETS, required=True)
     command.add_argument("--binary", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(run=runtime)
     command = sub.add_parser("package")
     command.add_argument("--product", choices=["tui", "desktop"], required=True)
-    command.add_argument("--target", choices=[LINUX, WINDOWS, DESKTOP_LINUX, MACOS], required=True)
+    command.add_argument("--target", choices=sorted(set(RUNTIME_TARGETS + DESKTOP_TARGETS)), required=True)
     command.add_argument("--runtime", type=Path, required=True)
     command.add_argument("--linux-runtime", type=Path)
     command.add_argument("--windows-runtime", type=Path)
     command.add_argument("--macos-runtime", type=Path)
+    command.add_argument("--linux-arm64-runtime", type=Path)
+    command.add_argument("--windows-arm64-runtime", type=Path)
     command.add_argument("--build", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(run=package)

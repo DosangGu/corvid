@@ -26,8 +26,14 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             binary: corvid
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            binary: corvid
           - os: windows-2025
             target: x86_64-pc-windows-msvc
+            binary: corvid.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
             binary: corvid.exe
           - os: macos-15
             target: aarch64-apple-darwin
@@ -45,6 +51,12 @@ jobs:
           mkdir -p "$HOME/.corvid-tests"
           chmod 700 "$HOME/.corvid-tests"
           echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
+      - name: Linux musl linker
+        if: runner.os == 'Linux'
+        run: |
+          echo "CC=musl-gcc" >> "$GITHUB_ENV"
+          target_key=$(echo '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')
+          echo "CARGO_TARGET_${target_key}_LINKER=musl-gcc" >> "$GITHUB_ENV"
       - run: rustup target add ${{ matrix.target }}
       - name: macOS build environment
         if: runner.os == 'macOS'
@@ -119,8 +131,12 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: windows-2025
             target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
           - os: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
@@ -151,6 +167,7 @@ jobs:
           restore-keys: |
             desktop-${{ runner.os }}-${{ matrix.target }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             desktop-${{ runner.os }}-${{ matrix.target }}-v1-
+      - run: rustup target add ${{ matrix.target }}
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.target }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update ${{ runner.os == 'macOS' && '--features corvid-deck/stream-deck' || '' }}
       - name: Workspace tests
@@ -196,9 +213,15 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             native: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            native: aarch64-unknown-linux-musl
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             native: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            native: aarch64-pc-windows-msvc
           - os: macos-15
             target: aarch64-apple-darwin
             native: aarch64-apple-darwin
@@ -225,9 +248,11 @@ jobs:
           path: target/desktop-binaries
       - name: Verify Windows executable icons
         if: runner.os == 'Windows'
-        run: python deploy/test_icons.py --build target/desktop-binaries --runtime target/runtimes/runtime-x86_64-pc-windows-msvc/corvid.exe
+        run: python deploy/test_icons.py --build target/desktop-binaries --runtime target/runtimes/runtime-${{ matrix.native }}/corvid.exe
       - name: Package Desktop with all runtimes
-        run: python deploy/package.py package --product desktop --target ${{ matrix.target }} --runtime target/runtimes/runtime-${{ matrix.native }} --linux-runtime target/runtimes/runtime-x86_64-unknown-linux-musl --windows-runtime target/runtimes/runtime-x86_64-pc-windows-msvc --macos-runtime target/runtimes/runtime-aarch64-apple-darwin --build target/desktop-binaries --output target/dist
+        run: python deploy/package.py package --product desktop --target ${{ matrix.target }} --runtime target/runtimes/runtime-${{ matrix.native }} --linux-runtime target/runtimes/runtime-x86_64-unknown-linux-musl --windows-runtime target/runtimes/runtime-x86_64-pc-windows-msvc --linux-arm64-runtime target/runtimes/runtime-aarch64-unknown-linux-musl --windows-arm64-runtime target/runtimes/runtime-aarch64-pc-windows-msvc --macos-runtime target/runtimes/runtime-aarch64-apple-darwin --build target/desktop-binaries --output target/dist
+      - name: Install Rust target for installer fixtures
+        run: rustup target add ${{ matrix.target }}
       - name: Desktop package installation
         run: python deploy/test_install.py --assets target/dist --binary target/runtimes/runtime-${{ matrix.native }}/${{ runner.os == 'Windows' && 'corvid.exe' || 'corvid' }} --product desktop
       - name: Build and verify unsigned macOS DMG

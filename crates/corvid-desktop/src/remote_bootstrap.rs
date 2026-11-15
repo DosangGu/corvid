@@ -50,7 +50,7 @@ pub async fn connect(
                 expected_host.is_none(),
                 "Corvid is missing on a previously configured host. Verify the connection before reinstalling"
             );
-            let (binary, sha256) = read_bundle(platform)?;
+            let (binary, sha256) = read_bundle(&host, platform).await?;
             prompts
                 .confirm(
                     Operation::Install,
@@ -160,7 +160,7 @@ async fn prepare_upgrade(
         current.cmp_precedence(&bundled).is_lt(),
         "The execution host has Corvid {installed} and this Desktop build is {bundled}. Use a compatible Desktop build or update the execution host manually."
     );
-    let (binary, sha256) = read_bundle(platform)?;
+    let (binary, sha256) = read_bundle(host, platform).await?;
     Ok(Upgrade {
         installed,
         binary,
@@ -178,11 +178,11 @@ struct Manifest {
     sha256: String,
 }
 
-fn read_bundle(platform: HostPlatform) -> Result<(Vec<u8>, String)> {
-    let (target, binary_name) = match platform {
-        HostPlatform::Linux => ("x86_64-unknown-linux-musl", "corvid"),
-        HostPlatform::Windows => ("x86_64-pc-windows-msvc", "corvid.exe"),
-        HostPlatform::Macos => ("aarch64-apple-darwin", "corvid"),
+async fn read_bundle(host: &RemoteHost, platform: HostPlatform) -> Result<(Vec<u8>, String)> {
+    let target = host.probe_daemon_target(platform).await?;
+    let binary_name = match platform {
+        HostPlatform::Windows => "corvid.exe",
+        HostPlatform::Linux | HostPlatform::Macos => "corvid",
     };
     let exe = std::env::current_exe()?;
     let binaries = exe.parent().context("locating the Desktop installation")?;

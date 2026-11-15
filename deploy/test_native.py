@@ -7,8 +7,8 @@ import tempfile
 import time
 import zipfile
 
-from native_package import asset_name, build, unpack
-from package import WINDOWS, digest, write_json
+from native_package import build, unpack
+from package import digest, write_json
 
 PREVIOUS = "0.0.0-native-test"
 
@@ -28,7 +28,7 @@ def previous_archive(archive, fixture):
         f"{digest(file)}  {file.relative_to(payload).as_posix()}\n" for file in files
     ), encoding="utf-8", newline="\n")
     files.append(sums)
-    previous = fixture / f"corvid-desktop-{PREVIOUS}-{WINDOWS}.zip"
+    previous = fixture / f"corvid-desktop-{PREVIOUS}-{metadata['target']}.zip"
     with zipfile.ZipFile(previous, "w", compression=zipfile.ZIP_DEFLATED) as stream:
         for file in files:
             stream.write(file, file.relative_to(payload).as_posix())
@@ -118,6 +118,14 @@ def windows(previous, current, fixture):
         assert result.stdout.strip() == f"corvid {version}".encode()
     finally:
         command([root / "unins000.exe", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+        # Inno's self-removal helper can outlive the process we waited for,
+        # particularly under Windows ARM64 emulation. Do not race its EXE lock
+        # when TemporaryDirectory removes this fixture.
+        deadline = time.monotonic() + 30
+        while (root / "unins000.exe").exists():
+            if time.monotonic() >= deadline:
+                raise AssertionError("Uninstaller did not finish removing itself")
+            time.sleep(0.1)
     assert not (root / "current.txt").exists()
     assert sentinel.read_text() == "retained\n"
 
@@ -132,6 +140,6 @@ if __name__ == "__main__":
         fixture = Path(directory)
         archive = previous_archive(args.archive, fixture)
         build(archive, fixture, args.iscc)
-        previous = fixture / asset_name(PREVIOUS)
+        previous, = fixture.glob("corvid-desktop-*-setup.exe")
         windows(previous, args.package.resolve(), fixture)
     print("PASS native install, upgrade with live daemon, and uninstall")
