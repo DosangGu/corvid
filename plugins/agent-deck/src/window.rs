@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn layout_and_pin_choices_survive_restart() -> Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let root = tempfile::tempdir()?;
+        let root = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
         #[cfg(windows)]
         let root = tempfile::tempdir()?;
         let mut window = Window::load(root.path(), false)?;

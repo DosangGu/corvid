@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn reuses_the_controller_and_refuses_a_different_host() -> Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let directory = tempfile::tempdir()?;
+        let directory = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
         #[cfg(windows)]
         let directory = tempfile::tempdir()?;
         let state = directory.path().join("slot-board");

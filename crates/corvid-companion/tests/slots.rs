@@ -31,7 +31,7 @@ fn endpoint() -> HostEndpoint {
 
 fn private_parent() -> tempfile::TempDir {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    return tempfile::tempdir().unwrap();
+    return tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     #[cfg(windows)]
     tempfile::tempdir().unwrap()
 }

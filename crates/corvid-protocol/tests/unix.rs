@@ -10,7 +10,7 @@ use tokio::net::UnixListener;
 
 fn test_parent() -> TempDir {
     // Keep paths short and avoid a world-writable ancestor.
-    tempfile::tempdir().unwrap()
+    tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap()
 }
 
 fn path(parent: &TempDir) -> PathBuf {
