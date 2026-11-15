@@ -97,8 +97,14 @@ fn observe(provider: &str, session: &str, fields: &str) {
     writeln!(writer, r#"{{"session_id":"{session}",{fields}}}"#).unwrap();
     drop(writer);
 
-    let status = Command::new(env::var_os("CORVID_FIXTURE_BINARY").unwrap())
-        .args(["observe", "--provider", provider])
+    let mut observer = Command::new(env::var_os("CORVID_FIXTURE_OBSERVER").unwrap());
+    #[cfg(windows)]
+    observer.args(["observe", "--provider", provider]);
+    #[cfg(unix)]
+    observer
+        .args(["--ignored", "--exact", "fixture_observer::collect"])
+        .env("CORVID_FIXTURE_PROVIDER", provider);
+    let status = observer
         .stdin(input)
         .stdout(Stdio::null())
         .status()

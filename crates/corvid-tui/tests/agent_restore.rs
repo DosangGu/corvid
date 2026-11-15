@@ -18,6 +18,10 @@ use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "fixtures/collect_resume_hook.rs"]
+mod fixture_observer;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory;
@@ -103,16 +107,20 @@ impl Fixture {
         paths.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
-        let mut daemon = Command::new(BINARY)
+        let mut command = Command::new(BINARY);
+        command
             .arg("--runtime-dir")
             .arg(&self.runtime)
             .arg("daemon")
             .arg("--state-dir")
             .arg(&self.state)
             .env("PATH", std::env::join_paths(paths)?)
-            .env("CORVID_FIXTURE_BINARY", BINARY)
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.env("CORVID_FIXTURE_OBSERVER", BINARY);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        command.env("CORVID_FIXTURE_OBSERVER", std::env::current_exe()?);
+        let mut daemon = command.spawn()?;
         timeout(WAIT, async {
             while corvid_client::ping(&self.runtime).await.is_err() {
                 ensure!(daemon.try_wait()?.is_none(), "fixture daemon exited");
@@ -177,7 +185,7 @@ impl Fixture {
 
 #[tokio::test]
 // TODO: Diagnose intermittent resume confirmation in the agent restore fixture
-// The fixture now supplies hook input before starting the observer. If confirmation still fails, use the reported collector counters to distinguish transport timeouts from rejected or missing hooks and trace the corresponding path.
+// The Unix restore fixture now sends acknowledged observations directly to the collector. Diagnose production observer deadline losses separately while retaining owner checks and the fail-open hook contract.
 // Issue URL: https://github.com/DosangGu/corvid/issues/74
 async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_clients()
 -> Result<()> {
