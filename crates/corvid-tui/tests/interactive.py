@@ -642,6 +642,10 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
         shell.chmod(0o700)
     else:
         shell = shutil.which(shell_name)
+        if shell_name == "zsh":
+            # Keep the real zsh integration and this fixture's .zshrc, without
+            # runner-wide completion setup prompting about unrelated directories.
+            (home / ".zshenv").write_text("unsetopt GLOBAL_RCS\n")
         profile = ".bash_profile" if shell_name == "bash" else ".zshrc"
         (home / profile).write_text(
             f'export PATH={shlex.quote(str(programs))}:"$PATH"\n'

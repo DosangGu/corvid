@@ -2701,13 +2701,16 @@ async fn stalled_render_and_snapshot_consumers_release_their_connections() {
         let queries_before = std::fs::read_to_string(&progress).unwrap().lines().count();
         // BSD utilities and loaded CI hosts have different fork costs. Verify
         // continuing PTY progress after disconnection, not an elapsed-time count.
-        let queries = timeout(Duration::from_secs(3), async {
+        let mut queries = queries_before;
+        timeout(Duration::from_secs(3), async {
             loop {
-                let queries = std::fs::read_to_string(&progress).unwrap().lines().count();
-                if queries > 20 && queries >= queries_before + 2 { break queries; }
+                queries = std::fs::read_to_string(&progress).unwrap().lines().count();
+                if queries >= queries_before + 2 { break; }
                 sleep(Duration::from_millis(20)).await;
             }
-        }).await.expect("PTY stopped parsing output or replying to queries");
+        }).await.unwrap_or_else(|_| {
+            panic!("PTY stopped parsing output or replying to queries: before={queries_before}, after={queries}")
+        });
 
         let mut reattached = Tui::attach_target(&runtime, Attach {
             workspace_id: Some(layout.flood.workspace_id.clone()),
