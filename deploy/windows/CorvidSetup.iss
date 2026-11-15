@@ -5,6 +5,13 @@
   #error Release must be the Desktop package version
 #endif
 
+#ifndef Target
+  #error Target must identify the Windows package
+#endif
+#ifndef Architecture
+  #error Architecture must match the Windows package
+#endif
+
 [Setup]
 AppId={{6F92E7F9-5DFB-41BF-8CCD-2B746106A7D9}
 AppName=Corvid Desktop
@@ -14,8 +21,8 @@ DefaultDirName={localappdata}\Programs\Corvid
 DefaultGroupName=Corvid
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#Architecture}
+ArchitecturesInstallIn64BitMode={#Architecture}
 CloseApplications=no
 RestartApplications=no
 SetupMutex=Corvid.WindowsSetup
@@ -23,7 +30,7 @@ SetupIconFile={#Icon}
 UninstallDisplayIcon={app}\corvid.ico
 Compression=lzma2
 SolidCompression=yes
-OutputBaseFilename=corvid-desktop-{#Release}-x86_64-pc-windows-msvc-setup
+OutputBaseFilename=corvid-desktop-{#Release}-{#Target}-setup
 
 [Files]
 Source: "{#Payload}\*"; DestDir: "{app}\versions\{#Release}"; Flags: ignoreversion recursesubdirs createallsubdirs

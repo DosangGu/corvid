@@ -1,5 +1,5 @@
 if (PathDaemon) { exit 74 }
-RequireX64
+$null = RequireArchitecture
 
 function Restrict($acl) {
     $acl.SetOwner($sid)

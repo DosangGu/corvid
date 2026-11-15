@@ -259,6 +259,8 @@ impl Installation {
                 .arg(release.version.to_string())
                 .arg("-Product")
                 .arg(product.as_str())
+                .arg("-Target")
+                .arg(&self.package.target)
                 .arg("-ArchiveSha256")
                 .arg(&asset.sha256);
             if let Some(root) = &self.root {

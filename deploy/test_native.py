@@ -7,8 +7,8 @@ import tempfile
 import time
 import zipfile
 
-from native_package import asset_name, build, unpack
-from package import WINDOWS, digest, write_json
+from native_package import build, unpack
+from package import digest, write_json
 
 PREVIOUS = "0.0.0-native-test"
 
@@ -28,7 +28,7 @@ def previous_archive(archive, fixture):
         f"{digest(file)}  {file.relative_to(payload).as_posix()}\n" for file in files
     ), encoding="utf-8", newline="\n")
     files.append(sums)
-    previous = fixture / f"corvid-desktop-{PREVIOUS}-{WINDOWS}.zip"
+    previous = fixture / f"corvid-desktop-{PREVIOUS}-{metadata['target']}.zip"
     with zipfile.ZipFile(previous, "w", compression=zipfile.ZIP_DEFLATED) as stream:
         for file in files:
             stream.write(file, file.relative_to(payload).as_posix())
@@ -132,6 +132,6 @@ if __name__ == "__main__":
         fixture = Path(directory)
         archive = previous_archive(args.archive, fixture)
         build(archive, fixture, args.iscc)
-        previous = fixture / asset_name(PREVIOUS)
+        previous, = fixture.glob("corvid-desktop-*-setup.exe")
         windows(previous, args.package.resolve(), fixture)
     print("PASS native install, upgrade with live daemon, and uninstall")

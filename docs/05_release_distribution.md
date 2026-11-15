@@ -19,12 +19,18 @@ other text (for example, `v0.1.2`, not `Corvid v0.1.2`).
 | macOS Desktop | `aarch64-apple-darwin` | `corvid-desktop-VERSION-aarch64-apple-darwin.tar.gz` |
 | macOS Desktop installer | Apple Silicon, macOS 15+ | `corvid-desktop-VERSION-aarch64-apple-darwin.dmg` (unsigned) |
 | Windows Desktop Setup | Windows x64 | `corvid-desktop-VERSION-x86_64-pc-windows-msvc-setup.exe` |
+| Linux ARM64 TUI | `aarch64-unknown-linux-musl` | `corvid-tui-VERSION-aarch64-unknown-linux-musl.tar.gz` |
+| Linux ARM64 Desktop | `aarch64-unknown-linux-gnu` | `corvid-desktop-VERSION-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows ARM64 TUI | `aarch64-pc-windows-msvc` | `corvid-tui-VERSION-aarch64-pc-windows-msvc.zip` |
+| Windows ARM64 Desktop | `aarch64-pc-windows-msvc` | `corvid-desktop-VERSION-aarch64-pc-windows-msvc.zip` |
+| Windows ARM64 Desktop Setup | Windows 11 ARM64 | `corvid-desktop-VERSION-aarch64-pc-windows-msvc-setup.exe` |
 
 Linux TUI and daemon binaries are statically linked. Linux Desktop is built on
 Ubuntu 24.04 and requires X11 or XWayland, Fontconfig, and a Vulkan driver.
 Other distributions require separate runtime qualification. WSL uses the Linux
-TUI and daemon package. macOS 15+ supports Apple Silicon; Intel Macs and other
-ARM64 operating systems are outside the release scope. See the [macOS guide](07_macos.md)
+TUI and daemon package for its architecture. Linux and Windows support x64 and
+ARM64; Windows ARM64 targets Windows 11. macOS 15+ supports Apple Silicon; Intel
+Macs are outside the release scope. See the [macOS guide](07_macos.md)
 for Gatekeeper, app layout, installation paths, and validation limitations.
 
 The `corvid` executable contains the TUI, daemon, terminal host, and relays.
@@ -53,7 +59,7 @@ be immutable after publication. Corrections require a new version.
 
 ## Install on Linux or WSL
 
-The installer requires a Linux x86_64 environment with `curl`, GNU `tar`, and
+The installer requires a Linux x64 or ARM64 environment with `curl`, GNU `tar`, and
 standard core utilities including `sha256sum`.
 
 ```sh
@@ -224,7 +230,7 @@ the always-reported **Corvid checks** job as a required PR status check.
 Both workflows call **Build and Test Corvid** for cross-platform validation.
 After version, icon, and formatting checks, the TUI/daemon and Desktop builds
 and tests run in parallel. TUI integration tests launch a daemon from the binary
-built by Cargo. Desktop packaging uses the Desktop build and all three runtime
+built by Cargo. Desktop packaging uses the Desktop build and all five runtime
 artifacts. Its integration checks cover installation with a live daemon,
 Desktop terminal input and reattachment under Xvfb, and Windows Setup.
 
@@ -236,7 +242,13 @@ unpublished draft and refuses to overwrite an already published release.
 
 For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
 WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt
-`-LinuxDaemonDirectory` and `-WindowsDaemonDirectory` inputs. Python 3.11 or later
+`-LinuxDaemonDirectory`, `-WindowsDaemonDirectory`, `-LinuxArm64DaemonDirectory`,
+and `-WindowsArm64DaemonDirectory` inputs. It builds native Windows and WSL runtimes;
+supply the other architecture and macOS as revision-matched artifacts.
+`cargo build-desktop` forwards `CORVID_LINUX_X64_RUNTIME`, `CORVID_WINDOWS_X64_RUNTIME`,
+`CORVID_LINUX_ARM64_RUNTIME`, `CORVID_WINDOWS_ARM64_RUNTIME`, and `CORVID_MACOS_RUNTIME`.
+The macOS helper takes Linux x64, Windows x64, Linux ARM64, and Windows ARM64 runtime
+directories in that order. Python 3.11 or later
 must be available as `python`. The optional `-WithoutAgentDeck` is for local
 packaging; official release packages include Corvid Agent Deck.
 Commit build inputs before packaging so a source revision identifies the actual
@@ -246,7 +258,8 @@ inputs.
 ## Windows Setup
 
 Setup includes Desktop, the Corvid CLI, Agent Deck, and remote daemon payloads.
-Run the x64 Setup executable for a per-user install. The default directory is
+Run the Setup executable matching your CPU (x64 or ARM64) for a per-user install.
+The default directory is
 `%LOCALAPPDATA%\Programs\Corvid`. Start menu entries open Corvid Desktop
 and the Corvid Terminal. For CLI access from your own shells, add its `bin`
 directory to your user PATH. Setup builds are currently unsigned.
@@ -272,6 +285,24 @@ settings and daemon state.
 Run `python deploy/native_package.py --archive PATH --output DIRECTORY` with
 the Windows Desktop ZIP and adjacent SHA-256 file. Pass `--iscc PATH` with
 the path to the Inno Setup compiler.
+
+## ARM64 validation
+
+Linux and Windows ARM64 assets are produced by `ubuntu-24.04-arm` and
+`windows-11-arm` runners. They run runtime and workspace tests, Clippy,
+installer lifecycle checks, and native package assembly. Linux ARM64 also runs
+the PTY, SSH reconnect, and Xvfb Desktop checks. Release assembly requires both
+architectures and checks daemon manifests and Setup provenance.
+
+Desktop probes the execution host's architecture before selecting a daemon for
+installation or upgrade, including ARM64 WSL. Existing working connections do not
+need a new architecture probe. Windows installers detect the native OS architecture
+even from an emulated PowerShell process. Updates preserve the installed package's
+architecture; `install.ps1 -Target` supports that choice explicitly.
+
+This support applies to builds from this revision and future releases. It does not
+add assets to already published releases. Physical ARM64 GPU rendering, interactive
+Windows ConPTY behavior, and Stream Deck hardware still need device qualification.
 
 ## Validation boundary
 

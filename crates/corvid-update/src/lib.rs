@@ -183,11 +183,18 @@ impl Release {
 }
 
 pub fn target(product: Product) -> Result<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH, product) {
+    target_for(std::env::consts::OS, std::env::consts::ARCH, product)
+}
+
+fn target_for(os: &str, arch: &str, product: Product) -> Result<&'static str> {
+    match (os, arch, product) {
         ("linux", "x86_64", Product::Tui) => Ok("x86_64-unknown-linux-musl"),
         ("linux", "x86_64", Product::Desktop) => Ok("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64", Product::Tui) => Ok("aarch64-unknown-linux-musl"),
+        ("linux", "aarch64", Product::Desktop) => Ok("aarch64-unknown-linux-gnu"),
         ("macos", "aarch64", _) => Ok("aarch64-apple-darwin"),
         ("windows", "x86_64", _) => Ok("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64", _) => Ok("aarch64-pc-windows-msvc"),
         _ => anyhow::bail!("this platform has no Corvid release package"),
     }
 }
@@ -195,6 +202,28 @@ pub fn target(product: Product) -> Result<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_release_packages_for_both_architectures() {
+        for (arch, prefix) in [("x86_64", "x86_64"), ("aarch64", "aarch64")] {
+            for product in [Product::Tui, Product::Desktop] {
+                let abi = if product == Product::Tui {
+                    "musl"
+                } else {
+                    "gnu"
+                };
+                assert_eq!(
+                    target_for("linux", arch, product).unwrap(),
+                    format!("{prefix}-unknown-linux-{abi}")
+                );
+                assert_eq!(
+                    target_for("windows", arch, product).unwrap(),
+                    format!("{prefix}-pc-windows-msvc")
+                );
+            }
+        }
+        assert!(target_for("linux", "arm", Product::Tui).is_err());
+    }
 
     fn manifest() -> Manifest {
         Manifest {

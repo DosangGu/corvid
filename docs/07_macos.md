@@ -114,7 +114,7 @@ Commit the build inputs before making a release package. Obtain Linux and Window
 runtime artifacts built from **the same revision**, then run:
 
 ```sh
-cargo build-desktop /path/to/linux-runtime /path/to/windows-runtime
+cargo build-desktop /path/to/linux-x64 /path/to/windows-x64 /path/to/linux-arm64 /path/to/windows-arm64
 ```
 
 CI uses `macos-15` ARM runners for runtime tests, workspace tests/lints, installer

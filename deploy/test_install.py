@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -101,7 +102,14 @@ def main():
     if not WINDOWS:
         args.binary.chmod(0o755)
     assert run([args.binary.resolve(), "--version"]).stdout.strip() == f"corvid {version}"
-    target = "x86_64-pc-windows-msvc" if WINDOWS else "x86_64-unknown-linux-" + ("musl" if args.product == "tui" else "gnu")
+    machine = platform.machine().lower()
+    if WINDOWS:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+            machine = winreg.QueryValueEx(key, "PROCESSOR_ARCHITECTURE")[0].lower()
+    assert machine in ("amd64", "x86_64", "aarch64", "arm64"), machine
+    arch = "aarch64" if machine in ("aarch64", "arm64") else "x86_64"
+    target = f"{arch}-pc-windows-msvc" if WINDOWS else f"{arch}-unknown-linux-" + ("musl" if args.product == "tui" else "gnu")
     if MACOS:
         target = "aarch64-apple-darwin"
     payload = "Corvid.app/Contents/MacOS" if MACOS and args.product == "desktop" else ""

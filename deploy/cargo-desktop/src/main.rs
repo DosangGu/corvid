@@ -3,7 +3,7 @@ use std::error::Error;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "Usage: cargo build-desktop [WSL-DISTRIBUTION] (Windows; set CORVID_MACOS_RUNTIME), or cargo build-desktop LINUX_RUNTIME WINDOWS_RUNTIME (macOS)";
+const USAGE: &str = "Usage: cargo build-desktop [WSL-DISTRIBUTION] (Windows; set CORVID_*_RUNTIME for other architectures), or cargo build-desktop LINUX_X64_RUNTIME WINDOWS_X64_RUNTIME LINUX_ARM64_RUNTIME WINDOWS_ARM64_RUNTIME (macOS)";
 
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -16,7 +16,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     }
     let deploy = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut command = if cfg!(target_os = "macos") {
-        if args.len() != 2 {
+        if args.len() != 4 {
             return Err(USAGE.into());
         }
         let mut command = Command::new("bash");
@@ -39,9 +39,23 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             .args(["-NoProfile", "-File"])
             .arg(deploy.join("windows/Package-Corvid.ps1"))
             .arg("-MacosDaemonDirectory")
-            .arg(macos)
-            .arg("-WslDistribution")
-            .arg(distribution);
+            .arg(macos);
+        if !args.is_empty() {
+            command.arg("-WslDistribution").arg(distribution);
+        }
+        for (variable, parameter) in [
+            ("CORVID_LINUX_X64_RUNTIME", "-LinuxDaemonDirectory"),
+            ("CORVID_WINDOWS_X64_RUNTIME", "-WindowsDaemonDirectory"),
+            ("CORVID_LINUX_ARM64_RUNTIME", "-LinuxArm64DaemonDirectory"),
+            (
+                "CORVID_WINDOWS_ARM64_RUNTIME",
+                "-WindowsArm64DaemonDirectory",
+            ),
+        ] {
+            if let Some(directory) = env::var_os(variable) {
+                command.arg(parameter).arg(directory);
+            }
+        }
         command
     } else {
         return Err("Build the Desktop distribution on macOS or Windows with WSL installed".into());

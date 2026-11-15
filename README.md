@@ -10,9 +10,13 @@ additional agents queue and fill slots in order. See [Agent Deck](docs/06_agent_
 
 | Component | Supported platform |
 | --- | --- |
-| Daemon and TUI | Linux and Windows x64; macOS 15+ Apple Silicon |
-| Corvid Desktop | Windows x64; Linux with X11 or XWayland; macOS 15+ Apple Silicon |
-| Bundled remote daemon | Linux x86_64, Windows x64, macOS Apple Silicon |
+| Daemon and TUI | Linux and Windows x64/ARM64; macOS 15+ Apple Silicon |
+| Corvid Desktop | Windows x64/ARM64; Linux x64/ARM64 with X11 or XWayland; macOS 15+ Apple Silicon |
+| Bundled remote daemon | Linux x64/ARM64, Windows x64/ARM64, macOS Apple Silicon |
+
+Linux and Windows ARM64 assets are available from builds of this revision and
+future releases. Older releases do not contain these assets. Physical ARM64 GPU,
+interactive ConPTY, and Stream Deck qualification remains separate from CI.
 
 ## Install a release
 
@@ -20,7 +24,7 @@ Download Windows, Linux, and macOS Desktop or TUI packages from
 [GitHub Releases](https://github.com/DosangGu/corvid/releases).
 Desktop offers [Windows Setup](docs/05_release_distribution.md#windows-setup) and an
 [unsigned macOS DMG](docs/07_macos.md).
-On Linux x86_64, WSL, or macOS Apple Silicon, install the TUI with:
+On Linux x64/ARM64, WSL, or macOS Apple Silicon, install the TUI with:
 
 ```sh
 curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.sh | sh
