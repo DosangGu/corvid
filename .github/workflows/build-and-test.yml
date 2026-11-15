@@ -132,7 +132,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ncurses-bin libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev libvulkan1 mesa-vulkan-drivers xvfb xauth x11-utils xdotool xclip openbox
+          sudo apt-get install -y build-essential ncurses-bin libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev libvulkan1 mesa-vulkan-drivers xvfb xauth x11-utils xdotool xclip openbox openssh-server
+          sudo mkdir -p /run/sshd
           mkdir -p "$HOME/.corvid-tests"
           chmod 700 "$HOME/.corvid-tests"
           echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
@@ -156,6 +157,10 @@ jobs:
         run: cargo test --locked --release --target ${{ matrix.target }} --workspace ${{ runner.os == 'macOS' && '--features corvid-deck/stream-deck' || '' }}
       - name: Workspace lints
         run: cargo clippy --locked --release --target ${{ matrix.target }} --workspace --all-targets ${{ runner.os == 'macOS' && '--features corvid-deck/stream-deck' || '' }} -- -D warnings
+      - name: Linux Desktop title synchronization over SSH
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: python3 deploy/test_title_ssh.py --binary target/${{ matrix.target }}/release/corvid --target ${{ matrix.target }} --release
       - name: Linux Desktop UI interactions
         if: runner.os == 'Linux'
         timeout-minutes: 10

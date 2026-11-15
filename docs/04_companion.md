@@ -238,6 +238,14 @@ survives splits and restarts. Save an empty name or choose **Use automatic title
 to restore the tab's automatic name. Renaming requires a daemon advertising
 `view_titles.v1`.
 
+The daemon records terminal titles and publishes them through the workspace
+subscription. Desktop receives that subscription on a dedicated thread, so ANSI
+parsing and writer I/O cannot stall title delivery. The bounded client queue
+applies backpressure during short bursts; a persistently stalled consumer still
+requires a fresh snapshot. Failed subscriptions retry after 100 ms with exponential
+backoff capped at three seconds, preserving host and daemon-epoch validation.
+Reattachment restores the recorded title without waiting for another OSC sequence.
+
 On 2026-11-12, isolated Linux Desktop GUI checks verified the previous rename shortcuts,
 manual-name precedence during subsequent OSC changes, split-tab numbering,
 single-pane title restoration after closing a split, and the automatic-title

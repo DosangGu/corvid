@@ -10,12 +10,17 @@ use corvid_protocol::snapshot::{
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, GetSnapshot, Ping, SnapshotWatch as WatchRequest};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until, timeout};
 use uuid::Uuid;
 
+use crate::connection::Connection;
 use crate::endpoint::{ControlConnection, ControlEndpoint};
+
+#[cfg(test)]
+mod tests;
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 const PING_INTERVAL: Duration = Duration::from_secs(10);
@@ -93,7 +98,9 @@ async fn watch(
     let (sender, incoming) = mpsc::channel(CACHE_QUEUE);
     let (failed, failure) = watch::channel(None);
     let task = tokio::spawn(async move {
-        let error = pump(connection, &subscription, sender).await;
+        // Capture the entire connection so its SSH/WSL relay lives with the pump.
+        let mut connection = connection;
+        let error = pump(&mut connection.wire, &subscription, sender).await;
         let fault = error
             .err()
             .map(|error| {
@@ -220,7 +227,7 @@ async fn receive_initial(
 }
 
 async fn pump(
-    mut connection: ControlConnection,
+    connection: &mut Connection<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
     subscription: &str,
     sender: mpsc::Sender<Envelope>,
 ) -> Result<()> {
@@ -231,8 +238,8 @@ async fn pump(
         idle: now + IDLE_TIMEOUT,
     };
     loop {
-        let frame = heartbeat.read(&mut connection).await?;
-        connection.wire.session.validate_scope(&frame)?;
+        let frame = heartbeat.read(connection).await?;
+        connection.session.validate_scope(&frame)?;
         if let Some(Body::Error(fault)) = &frame.body {
             ensure!(
                 frame.subscription_id.as_deref() == Some(subscription)
@@ -252,7 +259,13 @@ async fn pump(
                 "unexpected watch heartbeat response"
             );
         } else {
-            sender.try_send(frame).map_err(|_| resync())?;
+            // A network burst or a briefly busy consumer must not tear down the
+            // subscription. Keep the queue bounded and let the transport apply
+            // backpressure; a persistently stalled consumer still has to resync.
+            timeout(COMMAND_TIMEOUT, sender.send(frame))
+                .await
+                .map_err(|_| resync())?
+                .map_err(|_| offline())?;
         }
         heartbeat.idle = Instant::now() + IDLE_TIMEOUT;
     }
@@ -265,8 +278,10 @@ struct Heartbeat {
 }
 
 impl Heartbeat {
-    async fn read(&mut self, connection: &mut ControlConnection) -> Result<Envelope> {
-        let connection = &mut connection.wire;
+    async fn read(
+        &mut self,
+        connection: &mut Connection<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
+    ) -> Result<Envelope> {
         let pending_read = connection.reader.next_envelope();
         tokio::pin!(pending_read);
         loop {
