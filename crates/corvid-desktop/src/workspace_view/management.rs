@@ -1,5 +1,7 @@
 use super::*;
-use gpui::{Bounds, TitlebarOptions, WeakEntity, WindowBounds, WindowOptions, size};
+use gpui::{App, Bounds, TitlebarOptions, WeakEntity, WindowBounds, WindowOptions, size};
+
+use crate::terminal_fonts::TerminalFonts;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
@@ -233,12 +235,66 @@ impl WorkspaceView {
             },
         ));
         settings_page("Terminal")
+            .child(Self::terminal_font_settings(cx))
             .child(focus)
             .child(zoom)
             .child(description(concat!(
                 "Ctrl+Shift+F toggles focus mode. Ctrl+Shift+Z expands the active pane ",
                 "and restores the split layout. These view settings apply to this window.",
             )))
+    }
+
+    fn terminal_font_settings(cx: &mut Context<Self>) -> Div {
+        let fonts = cx.global::<TerminalFonts>();
+        let default = fonts.default_family().clone();
+        let selected = fonts.selected().cloned();
+        let available = fonts.available().to_vec();
+        let use_default = button(
+            "terminal-font-default",
+            format!("Default ({default})"),
+            selected.is_none(),
+        )
+        .on_click(cx.listener(|_, _, window, cx| set_terminal_font(None, window, cx)));
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(8.))
+            .child(div().text_size(px(14.)).child("Terminal font"))
+            .child(description("Applies to all terminal panes."))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .child(use_default)
+                    .children(available.into_iter().map(|family| {
+                        button(
+                            format!("terminal-font-{family}"),
+                            family.clone(),
+                            selected.as_ref() == Some(&family),
+                        )
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            set_terminal_font(Some(family.clone()), window, cx);
+                        }))
+                    })),
+            )
+    }
+}
+
+fn set_terminal_font(family: Option<SharedString>, window: &mut Window, cx: &mut App) {
+    match cx.global_mut::<TerminalFonts>().select(family) {
+        Ok(()) => cx.refresh_windows(),
+        Err(error) => {
+            drop(window.prompt(
+                PromptLevel::Warning,
+                "Could not save the terminal font",
+                Some(&format!("{error:#}")),
+                &["OK"],
+                cx,
+            ));
+        }
     }
 }
 

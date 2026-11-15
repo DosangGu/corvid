@@ -7,6 +7,7 @@ use gpui::{
 };
 use vt100::Screen;
 
+use crate::terminal_fonts::TerminalFonts;
 use crate::terminal_paint::{self as paint, Frame, Metrics};
 use crate::terminal_session::{MAX_INPUT, Session};
 
@@ -201,13 +202,16 @@ impl TerminalView {
     }
 
     fn scroll_history(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let delta = f32::from(event.delta.pixel_delta(paint::LINE_HEIGHT).y);
-        let rows = (delta / f32::from(paint::LINE_HEIGHT)).abs().ceil() as isize;
+        let Some((_, metrics)) = self.surface.get() else {
+            return;
+        };
+        let delta = event.delta.pixel_delta(metrics.row).y;
+        let rows = (delta / metrics.row).abs().ceil() as isize;
         let height = self.visible_rows();
-        if delta > 0. && self.history.is_none() {
+        if delta > px(0.) && self.history.is_none() {
             self.open_history(false, rows, cx);
         } else if let Some(history) = &mut self.history {
-            history.scroll(if delta > 0. { -rows } else { rows }, height);
+            history.scroll(if delta > px(0.) { -rows } else { rows }, height);
             self.selection = None;
             cx.notify();
         }
@@ -329,7 +333,8 @@ impl Render for TerminalView {
         let focus = self.focus.clone();
         let surface = canvas(
             move |bounds, window, cx| {
-                let metrics = Metrics::measure(window);
+                let family = cx.global::<TerminalFonts>().current().clone();
+                let metrics = Metrics::measure(window, &family);
                 let grid = metrics.grid(bounds);
                 let terminal = view.read(cx);
                 terminal.surface.set(Some((bounds, metrics)));
@@ -349,12 +354,19 @@ impl Render for TerminalView {
                         .screen(&terminal.pane, |screen| Frame::new(screen, grid))
                         .unwrap_or_default()
                 };
-                (view, metrics, frame, terminal.marked.clone())
+                (view, metrics, frame, terminal.marked.clone(), family)
             },
-            move |bounds, (view, metrics, frame, marked), window, cx| {
+            move |bounds, (view, metrics, frame, marked, family), window, cx| {
                 let active = focus.is_focused(window) && window.is_window_active();
                 window.handle_input(&focus, ElementInputHandler::new(bounds, view), cx);
-                frame.paint(bounds, metrics, active, marked, window, cx);
+                frame.paint(
+                    bounds,
+                    metrics,
+                    active.then_some(marked.as_str()),
+                    &family,
+                    window,
+                    cx,
+                );
             },
         )
         .size_full();
@@ -398,16 +410,17 @@ impl Render for TerminalView {
 
 pub fn preview(session: Session, pane: String) -> impl IntoElement {
     canvas(
-        move |bounds, window, _| {
-            let metrics = Metrics::measure(window);
+        move |bounds, window, cx| {
+            let family = cx.global::<TerminalFonts>().current().clone();
+            let metrics = Metrics::measure(window, &family);
             let grid = metrics.grid(bounds);
             let frame = session
                 .preview(&pane, |screen| Frame::new(screen, grid))
                 .unwrap_or_default();
-            (metrics, frame)
+            (metrics, frame, family)
         },
-        move |bounds, (metrics, frame), window, cx| {
-            frame.paint(bounds, metrics, false, String::new(), window, cx);
+        move |bounds, (metrics, frame, family), window, cx| {
+            frame.paint(bounds, metrics, None, &family, window, cx);
         },
     )
     .size_full()
@@ -486,15 +499,17 @@ impl EntityInputHandler for TerminalView {
     fn bounds_for_range(
         &mut self,
         _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        window: &mut Window,
+        _: Bounds<Pixels>,
+        _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        if self.history.is_some() {
-            return Some(Metrics::measure(window).cell(bounds.origin, 0, 0, 1));
-        }
-        let (row, col) = self.session.screen(&self.pane, Screen::cursor_position)?;
-        Some(Metrics::measure(window).cell(bounds.origin, row, col, 1))
+        let (bounds, metrics) = self.surface.get()?;
+        let (row, col) = if self.history.is_some() {
+            (0, 0)
+        } else {
+            self.session.screen(&self.pane, Screen::cursor_position)?
+        };
+        Some(metrics.cell(bounds.origin, row, col, 1))
     }
 
     fn character_index_for_point(

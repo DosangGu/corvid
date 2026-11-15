@@ -1,17 +1,20 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, FontStyle, FontWeight, Pixels, Point, TextRun, UnderlineStyle, Window, fill, font,
-    point, px, rgb, size,
+    App, Bounds, FontStyle, FontWeight, Pixels, Point, SharedString, TextRun, UnderlineStyle,
+    Window, fill, font, point, px, rgb, size,
 };
 use vt100::{Cell, Color, Screen};
 
+#[cfg(test)]
+use crate::terminal_fonts::DEFAULT_FONT;
+use crate::terminal_fonts::FONT_SIZE;
 use crate::terminal_session::Grid;
+
+mod graphic;
 
 pub const BACKGROUND: u32 = 0x12151a;
 const FOREGROUND: u32 = 0xe2e8f0;
-const FONT_SIZE: Pixels = px(15.);
-pub const LINE_HEIGHT: Pixels = px(21.);
 
 #[cfg(test)]
 mod performance;
@@ -19,39 +22,41 @@ mod performance;
 #[derive(Clone, Copy)]
 pub struct Metrics {
     column: Pixels,
+    pub row: Pixels,
 }
 
 impl Metrics {
-    pub fn measure(window: &Window) -> Self {
+    pub fn measure(window: &Window, family: &SharedString) -> Self {
         let line = window.text_system().shape_line(
             "M".into(),
             FONT_SIZE,
-            &[text_run(1, Style::default())],
+            &[text_run(1, Style::default(), family)],
             None,
         );
         Self {
             column: line.width.max(px(1.)),
+            row: (line.ascent + line.descent).max(FONT_SIZE),
         }
     }
 
     pub fn grid(self, bounds: Bounds<Pixels>) -> Grid {
         Grid::new(
-            (f32::from(bounds.size.height) / f32::from(LINE_HEIGHT)) as u16,
+            (f32::from(bounds.size.height) / f32::from(self.row)) as u16,
             (f32::from(bounds.size.width) / f32::from(self.column)) as u16,
         )
     }
 
     pub fn cell(self, origin: Point<Pixels>, row: u16, col: u16, count: u16) -> Bounds<Pixels> {
         Bounds {
-            origin: origin + point(self.column * f32::from(col), LINE_HEIGHT * f32::from(row)),
-            size: size(self.column * f32::from(count), LINE_HEIGHT),
+            origin: origin + point(self.column * f32::from(col), self.row * f32::from(row)),
+            size: size(self.column * f32::from(count), self.row),
         }
     }
 
     pub fn position(self, bounds: Bounds<Pixels>, point: Point<Pixels>) -> (u16, u16) {
         let grid = self.grid(bounds);
         let relative = point - bounds.origin;
-        let row = ((relative.y / LINE_HEIGHT) as u16).min(grid.rows.get() - 1);
+        let row = ((relative.y / self.row) as u16).min(grid.rows.get() - 1);
         let col = ((relative.x / self.column) as u16).min(grid.cols.get() - 1);
         (row, col)
     }
@@ -171,8 +176,8 @@ impl Frame {
         self,
         bounds: Bounds<Pixels>,
         metrics: Metrics,
-        active: bool,
-        marked: String,
+        marked: Option<&str>,
+        family: &SharedString,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -183,23 +188,40 @@ impl Frame {
             for span in &self.spans {
                 let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
                 if span.style.bg != BACKGROUND {
-                    window.paint_quad(fill(cell, rgb(span.style.bg)));
+                    window.paint_quad(fill(
+                        graphic::snap(cell, window.scale_factor()),
+                        rgb(span.style.bg),
+                    ));
                 }
             }
         });
         window.paint_layer(bounds, |window| {
             for span in self.spans {
                 let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
-                paint_text(span.text, span.style, cell.origin, window);
+                if graphic::paint(&span.text, cell, rgb(span.style.fg), window) {
+                    if span.style.underline {
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                cell.origin + point(px(0.), metrics.row - px(2.)),
+                                size(cell.size.width, px(1.)),
+                            ),
+                            rgb(span.style.fg),
+                        ));
+                    }
+                } else {
+                    paint_text(span.text, span.style, cell, family, window);
+                }
             }
         });
-        if active && let Some((row, col)) = self.cursor {
+        if let Some(marked) = marked
+            && let Some((row, col)) = self.cursor
+        {
             let cell = metrics.cell(bounds.origin, row, col, 1);
             if marked.is_empty() {
                 window.paint_quad(fill(
                     Bounds {
                         origin: cell.origin,
-                        size: size(px(2.), LINE_HEIGHT),
+                        size: size(px(2.), metrics.row),
                     },
                     rgb(0x8ae3c4),
                 ));
@@ -211,36 +233,42 @@ impl Frame {
                     ..Style::default()
                 };
                 let marked = window.text_system().shape_line(
-                    marked.clone().into(),
+                    marked.to_owned().into(),
                     FONT_SIZE,
-                    &[text_run(marked.len(), style)],
+                    &[text_run(marked.len(), style, family)],
                     None,
                 );
                 window.paint_quad(fill(
                     Bounds {
                         origin: cell.origin,
-                        size: size(marked.width, LINE_HEIGHT),
+                        size: size(marked.width, metrics.row),
                     },
                     rgb(style.bg),
                 ));
-                let _ = marked.paint(cell.origin, LINE_HEIGHT, window, cx);
+                let _ = marked.paint(cell.origin, metrics.row, window, cx);
             }
         }
     }
 }
 
-fn paint_text(text: String, style: Style, origin: Point<Pixels>, window: &mut Window) {
+fn paint_text(
+    text: String,
+    style: Style,
+    cell: Bounds<Pixels>,
+    family: &SharedString,
+    window: &mut Window,
+) {
     if text.trim().is_empty() {
         return;
     }
-    let run = text_run(text.len(), style);
+    let run = text_run(text.len(), style, family);
     let line = window
         .text_system()
         .shape_line(text.into(), FONT_SIZE, &[run], None);
-    let baseline = origin
+    let baseline = cell.origin
         + point(
             px(0.),
-            (LINE_HEIGHT - line.ascent - line.descent) / 2. + line.ascent,
+            (cell.size.height - line.ascent - line.descent) / 2. + line.ascent,
         );
     for run in &line.runs {
         for glyph in &run.glyphs {
@@ -277,13 +305,8 @@ fn paint_text(text: String, style: Style, origin: Point<Pixels>, window: &mut Wi
     }
 }
 
-fn text_run(len: usize, style: Style) -> TextRun {
-    let family = if cfg!(target_os = "macos") {
-        "Menlo"
-    } else {
-        "Consolas"
-    };
-    let mut font = font(family);
+fn text_run(len: usize, style: Style, family: &SharedString) -> TextRun {
+    let mut font = font(family.clone());
     if style.bold {
         font.weight = FontWeight::BOLD;
     }

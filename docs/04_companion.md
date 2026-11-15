@@ -478,6 +478,14 @@ Both clients create tabs and split or select panes on the daemon. Use the
 [shared behavior contract](00_project_design.md#77-shared-tui-and-gui-behavior)
 and acceptance case A32 to verify parity across the full operation set.
 
+### Desktop terminal font
+
+Open **Settings → Terminal** to choose an installed monospaced font or restore
+the default. The choice applies to all Desktop terminal panes and is saved for
+the next launch. Desktop uses the default if the saved font is unavailable.
+
+![Terminal font choices in Corvid Desktop Settings](images/desktop-terminal-font.jpg)
+
 ### Desktop terminal selection and history
 
 Drag across terminal cells and press **Ctrl+Shift+C** to copy the selection.

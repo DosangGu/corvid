@@ -84,8 +84,12 @@ is required for packaging and package tests.
 
 All macOS GPUI applications enable the `font-kit` feature. Without it, GPUI
 uses a placeholder text backend that opens windows but draws no glyphs. Desktop
-uses the system-provided Menlo font for terminal cells. The `macos_text` test
-checks native font metrics on the process main thread, as required by AppKit.
+defaults to the system-provided Menlo font for terminal cells. **Settings →
+Terminal** lists installed monospaced fonts; the choice is saved privately in
+`desktop-preferences/terminal.json` under the Desktop state directory. An
+unavailable saved font falls back to Menlo. The `macos_text` test checks native
+font metrics, font discovery, preference persistence, and fallback on the process
+main thread, as required by AppKit.
 
 ```sh
 export MACOSX_DEPLOYMENT_TARGET=15.0
@@ -139,3 +143,16 @@ non-Latin IME composition were not exercised by this session.
 ![Agent Deck compact view on macOS](images/macos/agent-deck.png)
 
 ![Agent Deck expanded view on macOS](images/macos/agent-deck-expanded.png)
+
+After integrating the terminal font and artwork changes from #64, local workspace
+tests and lints passed with the Stream Deck feature enabled. Native tests verified
+the Menlo default, selecting and reloading an installed font, restoring the
+default, and recovering from an unavailable font. GUI checks exercised Monaco
+selection, private preference storage and restoration across an app restart,
+joined solid blocks, Braille dots, and Unicode output. Captures in this session
+required a window resize to refresh; they establish the rendered result rather
+than continuous redraw behavior.
+
+![Terminal font selection on macOS](images/macos/terminal-font.png)
+
+![Terminal block and Braille rendering on macOS](images/macos/terminal-art.png)
