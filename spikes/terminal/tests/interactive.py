@@ -31,6 +31,15 @@ QUERY = b"\x1b[5n\x1b[6n\x1b[c\x1b[18t"
 REPLY = b"\x1b[0n\x1b[3;5R\x1b[?6c\x1b[8;24;80t"
 
 
+def terminal_attributes(fd):
+    attributes = termios.tcgetattr(fd)
+    if sys.platform == "darwin":
+        # Darwin sets PENDIN when canonical mode is restored. It is pending-input
+        # state, not a mode setting: xnu/bsd/kern/tty.c handles it in TIOCSETA.
+        attributes[3] &= ~termios.PENDIN
+    return attributes
+
+
 def read_exact(fd, length):
     deadline = time.monotonic() + 5
     output = bytearray()
@@ -123,7 +132,7 @@ def verify_session(process, master, slave, cooked):
     final = read_until(master, b"\x1b[?1049l")
     assert b"INTERRUPTED" in final, final
     assert process.wait(timeout=5) == 7
-    restored = termios.tcgetattr(slave)
+    restored = terminal_attributes(slave)
     assert restored == cooked, ("outer TTY attributes changed", cooked, restored)
 
 
@@ -136,7 +145,7 @@ def run(binary):
         env.pop("LINES", None)
         master, slave = pty.openpty()
         try:
-            cooked = termios.tcgetattr(slave)
+            cooked = terminal_attributes(slave)
             resize(slave, 80, 24)
             command = [binary, sys.executable, __file__, "--child"]
             with subprocess.Popen(

@@ -25,6 +25,15 @@ PASTE = "한글".encode() + b"\x1dd\x1b[20X\n"
 KEYS = b"\x1b\x1bx\x1b[A" + "한글".encode() + b"\x1d\x03"
 
 
+def terminal_attributes(fd):
+    attributes = termios.tcgetattr(fd)
+    if sys.platform == "darwin":
+        # Darwin sets PENDIN when canonical mode is restored. It is pending-input
+        # state, not a mode setting: xnu/bsd/kern/tty.c handles it in TIOCSETA.
+        attributes[3] &= ~termios.PENDIN
+    return attributes
+
+
 def child(progress):
     tty.setraw(0)
     ticks = 0
@@ -79,7 +88,7 @@ def paste_child():
 class OuterTerminal:
     def __init__(self, command, cols=80, rows=24, env=None):
         self.master, self.slave = pty.openpty()
-        self.original = termios.tcgetattr(self.slave)
+        self.original = terminal_attributes(self.slave)
         self.output = bytearray()
         self.resize(cols, rows)
         env = dict(os.environ if env is None else env)
@@ -111,7 +120,7 @@ class OuterTerminal:
 
     def wait(self, code):
         assert self.process.wait(timeout=5) == code, self.output[-500:]
-        restored = termios.tcgetattr(self.slave)
+        restored = terminal_attributes(self.slave)
         assert restored == self.original, ("outer TTY was not restored", self.original, restored)
 
     def __enter__(self):

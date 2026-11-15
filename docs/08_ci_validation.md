@@ -22,6 +22,11 @@ It uses a private home/state directory, temporary daemon, and separate X11 displ
 The SSH fixture generates temporary keys and pins its loopback server's host key;
 it does not need repository secrets or an external host.
 
+TTY restoration compares every mode, speed, and control character. On macOS,
+only the kernel-managed `PENDIN` state bit is excluded: Darwin sets it when
+canonical input is restored, independently of the saved configuration.
+See [Darwin's terminal attribute handling](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/tty.c).
+
 These checks provide portions of A19 (terminal compatibility), A20 (input
 isolation), A21 (disconnect survival), A25 (Desktop recovery), and A32 (shared
 workspace actions). They do not establish every acceptance case in those rows.
