@@ -1,5 +1,6 @@
-"""Exercise a live daemon through separate Linux client TTYs."""
+"""Exercise a live daemon through separate Unix client TTYs."""
 
+import argparse
 import fcntl
 import os
 from pathlib import Path
@@ -81,8 +82,13 @@ class OuterTerminal:
         self.original = termios.tcgetattr(self.slave)
         self.output = bytearray()
         self.resize(cols, rows)
+        env = dict(os.environ if env is None else env)
+        # Crossterm must measure this PTY, not an inherited terminal's dimensions.
+        env.pop("COLUMNS", None)
+        env.pop("LINES", None)
         self.process = subprocess.Popen(
             command, stdin=self.slave, stdout=self.slave, stderr=self.slave, env=env,
+            start_new_session=True,
         )
 
     def resize(self, cols, rows):
@@ -526,7 +532,8 @@ def verify_default_start(binary, directory):
             daemon = background_daemon_pid(runtime)
 
         verify_upgrade(command, runtime, home, env, daemon)
-        with OuterTerminal(command, cols=319, rows=80, env=env) as updated:
+        # Both saved shells exited above. Reopening a closed pane is explicit.
+        with OuterTerminal([*command, "attach", "--new"], cols=319, rows=80, env=env) as updated:
             shell_pid(updated)
             updated.send(b"exit\n")
             updated.wait(0)
@@ -695,11 +702,14 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
         stop(daemon)
 
 
-def run(binary):
+def run(binary, *, tty_only=False):
+    binary = str(Path(binary).resolve())
+    os.environ["TERM"] = "xterm-256color"
     root = Path(__file__).resolve().parents[3]
     profile = root / "spikes/terminal/corvid.terminfo"
     with tempfile.TemporaryDirectory(prefix="corvid-test-", dir=root) as temporary:
         directory = Path(temporary)
+        os.environ["CORVID_VIEW_STATE_DIR"] = str(directory / "views")
         database = directory / "terminfo"
         subprocess.run(["tic", "-x", "-o", database, profile], check=True)
         command = [binary, "--runtime-dir", directory / "runtime"]
@@ -719,6 +729,9 @@ def run(binary):
         finally:
             stop(daemon)
         verify_resume(binary, directory)
+        print("PASS live TTY input, paste, resize, redraw, pairing, menu isolation, tabs, detach, resume, and TTY restoration.", flush=True)
+        if tty_only:
+            return
         verify_default_start(binary, directory)
         for providers in [("claude",), ("codex",), ("claude", "codex")]:
             verify_shell_with_agents(binary, directory, database, providers)
@@ -730,8 +743,15 @@ def run(binary):
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "--child":
+    if sys.argv[1:2] == ["--child"]:
         sys.exit(child(Path(sys.argv[2])))
-    if sys.argv[1] == "--paste-child":
+    if sys.argv[1:2] == ["--paste-child"]:
         sys.exit(paste_child())
-    run(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("--tty-only", action="store_true",
+                        help="run the portable Linux/macOS TTY suite without Linux process and provider checks")
+    args = parser.parse_args()
+    if not args.tty_only and sys.platform != "linux":
+        parser.error("the full suite requires Linux; use --tty-only on macOS")
+    run(args.binary, tty_only=args.tty_only)

@@ -1,0 +1,71 @@
+# Continuous integration coverage
+
+Corvid Checks runs native Linux x64, Windows x64, and Apple Silicon macOS jobs
+for Rust source changes. Documentation-only changes use lightweight validation.
+Changes to build inputs, test drivers, or packaging run the full package pipeline.
+The required `Corvid checks` result includes failures from the selected jobs.
+
+## Checks on source pull requests
+
+| Platform | Automated behavior |
+| --- | --- |
+| All three | Runtime and workspace Rust tests, Clippy, and native builds. Tests cover protocol framing, identities, input fencing, and restoration through the daemon/client boundary. |
+| Windows | `windows_daemon.rs` runs real ConPTY sessions and private named pipes, including input/paste isolation, tab naming, detach/resume, multiple writers, provider observations, and daemon handoff. |
+| Linux and macOS | The terminal spike and `interactive.py --tty-only` exercise real PTYs: fragmented UTF-8, escape sequences, bracketed paste, terminal queries, resize, Ctrl-C, exit status, TTY restoration, pairing, tabs, and reattachment to the same child. Linux runs the full interactive suite instead of the TTY-only subset. |
+| Linux | The full interactive suite also checks automatic daemon startup, shell continuity across replacement, and synthetic agent notifications. The loopback OpenSSH fixture checks abrupt disconnects, companion resynchronization, and same-PTY reattachment under a transient systemd user service. |
+| Linux Desktop | Xvfb/Openbox tests drive the real application with keyboard and clipboard events. They check Unicode paste, tab creation and selection, independent windows, the new-window menu, settings, close/quit/relaunch, saved window count, and retained shell variables. |
+
+The Python integration drivers are explicit workflow steps; `cargo test` alone
+does not run them. They have ten-minute step limits. The UI test checks observable
+state and exact synthetic output instead of comparing font-dependent pixels.
+It uses a private home/state directory, temporary daemon, and separate X11 display.
+The SSH fixture generates temporary keys and pins its loopback server's host key;
+it does not need repository secrets or an external host.
+
+These checks provide portions of A19 (terminal compatibility), A20 (input
+isolation), A21 (disconnect survival), A25 (Desktop recovery), and A32 (shared
+workspace actions). They do not establish every acceptance case in those rows.
+
+## Additional packaging checks
+
+Package integration tests installation, corruption rejection, version switching,
+and daemon lifecycle on all three platforms. Linux repeats the Desktop UI suite
+against the archive. Windows validates executable icons and Setup
+install/upgrade/uninstall. macOS validates the DMG, signatures, architectures,
+bundled runtimes, and a real Desktop window.
+
+## Reproduce locally
+
+From a checkout in a trusted directory, build the runtime and terminal spike:
+
+```sh
+cargo build --locked -p corvid-tui -p corvid-terminal-spike
+python3 spikes/terminal/tests/interactive.py target/debug/corvid-terminal-spike
+python3 crates/corvid-tui/tests/interactive.py --tty-only target/debug/corvid
+```
+
+On Linux, run `interactive.py` without `--tty-only` for the additional process
+and provider cases. `ssh_lifecycle.py target/debug/corvid` also needs `sshd`,
+`ssh-keygen`, `protoc`, `tic`, and a working `systemctl --user` session. The CI job
+starts the runner's user manager before invoking that fixture.
+
+For Linux UI tests, install the Desktop build dependencies plus `xvfb`, `xauth`,
+`x11-utils`, `xdotool`, `xclip`, `openbox`, and Mesa Vulkan drivers:
+
+```sh
+cargo build --locked -p corvid-tui -p corvid-desktop -p corvid-agent-deck
+xvfb-run -a python3 deploy/test_desktop.py --build target/debug
+# Or validate an extracted release workflow's archive directory:
+xvfb-run -a python3 deploy/test_desktop.py target/dist
+```
+
+## Remaining device qualification
+
+Windows and macOS do not yet run the Linux Desktop keyboard/clipboard scenario.
+Their native Rust tests and macOS window smoke test are narrower evidence.
+WSL installation/reconnection still requires the explicitly ignored isolated-WSL
+fixture. Real reboot and last-login tests need dedicated machines/accounts.
+IME composition, accessibility permissions, notifications, multiple displays,
+hardware GPU behavior, and physical Stream Deck USB input require separate
+device qualification. Synthetic Unicode input does not validate an OS input
+method editor.

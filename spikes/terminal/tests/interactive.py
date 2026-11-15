@@ -1,4 +1,4 @@
-"""Run the spike through real Linux PTYs with controlled byte boundaries."""
+"""Run the spike through real Unix PTYs with controlled byte boundaries."""
 
 import curses
 import fcntl
@@ -52,7 +52,8 @@ def child():
     cooked = termios.tcgetattr(0)
     tty.setraw(0)
     os.write(1, b"\x1b[3;5H" + QUERY)
-    assert read_exact(0, len(REPLY)) == REPLY
+    reply = read_exact(0, len(REPLY))
+    assert reply == REPLY, reply
 
     os.write(1, b"\x1b[H\x1b[2J\x1b[?2004h")
     for byte in "한글 e\u0301".encode():
@@ -130,6 +131,8 @@ def run(binary):
     with tempfile.TemporaryDirectory(prefix="corvid-terminfo-") as database:
         subprocess.run(["tic", "-x", "-o", database, terminfo], check=True)
         env = os.environ | {"TERM": "xterm-256color", "TERMINFO": database}
+        env.pop("COLUMNS", None)
+        env.pop("LINES", None)
         master, slave = pty.openpty()
         try:
             cooked = termios.tcgetattr(slave)
@@ -141,6 +144,7 @@ def run(binary):
                 stdout=slave,
                 stderr=slave,
                 env=env,
+                start_new_session=True,
             ) as process:
                 try:
                     verify_session(process, master, slave, cooked)
