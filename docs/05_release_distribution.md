@@ -224,7 +224,7 @@ the always-reported **Corvid checks** job as a required PR status check.
 Both workflows call **Build and Test Corvid** for cross-platform validation.
 After version, icon, and formatting checks, the TUI/daemon and Desktop builds
 and tests run in parallel. TUI integration tests launch a daemon from the binary
-built by Cargo. Desktop packaging uses the Desktop build and both runtime
+built by Cargo. Desktop packaging uses the Desktop build and all three runtime
 artifacts. Its integration checks cover installation with a live daemon,
 Desktop terminal input and reattachment under Xvfb, and Windows Setup.
 

@@ -70,7 +70,9 @@ before removing an installation.
 
 Linux currently sends notifications through `notify-send` when available. It has
 no tray or login-startup backend: its window remains visible, and closing it exits.
-Windows background parity is not claimed for Linux.
+Windows background parity is not claimed for Linux. macOS uses an AppKit menu-bar
+item, UserNotifications, and an opt-in per-controller LaunchAgent; see the
+[macOS guide](07_macos.md) for its installed app and permission requirements.
 
 ## Floating window
 

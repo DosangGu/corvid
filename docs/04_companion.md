@@ -348,8 +348,9 @@ SDK for the GUI. Cargo builds the Protobuf schema using `protox`. Set
 `$env:GPUI_FXC_PATH` to the full path of the SDK's `fxc.exe` if GPUI
 cannot find it.
 
-From the repository root on Windows x64, run `cargo build-desktop` to build
-both runtime payloads and the Windows packages. Python 3.11 or later must be
+Set `$env:CORVID_MACOS_RUNTIME` to a macOS runtime artifact directory from the same
+revision. From the repository root on Windows x64, run `cargo build-desktop` to
+build the Linux and Windows runtimes and assemble the Windows packages. Python 3.11 or later must be
 available as `python`; the Linux runtime is built in the `Ubuntu` WSL
 distribution by default. Select another distribution with
 `cargo build-desktop Ubuntu-24.04`.
@@ -371,7 +372,7 @@ license, launchers, package metadata, and `Set-CorvidStartup.ps1`. Corvid Agent 
 is under `plugins/agent-deck/`; `-WithoutAgentDeck` is available for local
 packaging through `Package-Corvid.ps1`.
 
-Both Linux and Windows daemon bundles are under `daemon/TARGET/`, with manifests
+Linux, Windows, and macOS daemon bundles are under `daemon/TARGET/`, with manifests
 containing version, target, source revision, size, and SHA-256. Keep these
 directories beside Desktop for SSH and WSL provisioning. Packaged Desktop
 starts its adjacent native `corvid` runtime when a local daemon is needed.
@@ -383,8 +384,8 @@ from the same source revision. Pass the resulting
 `Package-Corvid.ps1 -LinuxDaemonDirectory PATH`. An already built Windows
 runtime can also be supplied with `-WindowsDaemonDirectory PATH`.
 
-The **Package Corvid** workflow builds both runtimes before assembling the
-four Desktop/TUI packages. Main-branch and manual runs produce the
+The **Package Corvid** workflow builds all three runtimes before assembling the
+six Desktop/TUI archives, Windows Setup, and the unsigned macOS DMG. Main-branch and manual runs produce the
 `release-assets` workflow artifact. Version tags publish a GitHub Release only
 after all platform checks and package assembly succeed. See the
 [distribution guide](05_release_distribution.md#build-and-publish) for details.
@@ -924,10 +925,9 @@ restores slots and requires a new pairing.
 
 ### macOS
 
-When the separate macOS execution work is scheduled, record the OS build,
-CPU architecture, terminal emulator, and SSH version. Exercise the pinned
-terminal compatibility suite (A19) on that combination. Qualify private
-local IPC and peer identity (A24), SSH loss and last logout with the chosen
-service manager (A21), and input fencing across resize and reattach (A20).
-Run the local companion, desktop, and recovery suites on macOS after their
-platform paths are implemented.
+macOS 15+ Apple Silicon now has runtime, workspace, installer, and app/DMG CI.
+See [macOS support](07_macos.md) for commands and default paths. Manual
+qualification should record the OS build, CPU architecture, terminal emulator,
+and SSH version, and exercise the terminal compatibility suite (A19). Native
+permission prompts, login/reboot behavior, multiple displays, non-Latin IME
+interaction, and physical USB Deck hardware remain separate manual checks.
