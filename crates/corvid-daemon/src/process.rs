@@ -125,11 +125,9 @@ impl ProcessImage {
         incarnation: Incarnation,
         expected: Option<Executable>,
     ) -> Option<Self> {
-        if !cfg!(target_os = "macos") {
-            return Self::capture(incarnation, expected);
-        }
-        // portable-pty closes the spawn error pipe in pre_exec. Darwin can
-        // return before exec, and /bin/sh then execs the selected system shell.
+        // portable-pty closes the spawn error pipe in pre_exec on Unix, so
+        // spawn can return before exec on both Linux and macOS. On Darwin,
+        // /bin/sh may then exec the selected system shell as well.
         // Qualified native providers must reach the expected inode. For an
         // unqualified script, require two stable image samples at startup.
         let deadline = Instant::now() + Duration::from_millis(250);
@@ -503,6 +501,71 @@ mod tests {
         };
         assert!(!stale.is_current());
         assert!(ProcessImage::capture(stale.incarnation, Some(image.executable)).is_none());
+    }
+
+    #[test]
+    fn startup_capture_waits_for_exec_before_binding_process_image() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Command, Stdio};
+
+        let executable = Executable::read(Path::new("/bin/sleep")).unwrap();
+        for expected in [Some(executable), None] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "process::tests::delayed_exec_child",
+                    "--nocapture",
+                ])
+                .env("CORVID_TEST_DELAYED_EXEC", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut output = BufReader::new(child.stdout.take().unwrap());
+            loop {
+                let mut line = String::new();
+                assert!(
+                    output.read_line(&mut line).unwrap() > 0,
+                    "child exited before ready"
+                );
+                if line.trim_end().ends_with("CORVID_EXEC_READY") {
+                    break;
+                }
+            }
+            let identity = incarnation(child.id(), boot_id().unwrap()).unwrap();
+            assert!(
+                ProcessImage::capture(identity, None).unwrap().executable
+                    == helper_image().unwrap()
+            );
+            let mut input = child.stdin.take().unwrap();
+            let release = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                input.write_all(b"x").unwrap();
+            });
+
+            let captured = ProcessImage::capture_started(identity, expected);
+            release.join().unwrap();
+            let _ = child.kill();
+            child.wait().unwrap();
+            let image = captured.expect("startup must wait for the launched image");
+            assert!(image.executable == executable);
+            assert_eq!(image.incarnation.start_ticks, identity.start_ticks);
+        }
+    }
+
+    #[test]
+    fn delayed_exec_child() {
+        use std::io::{Read, Write};
+        use std::os::unix::process::CommandExt;
+
+        if std::env::var_os("CORVID_TEST_DELAYED_EXEC").is_none() {
+            return;
+        }
+        println!("CORVID_EXEC_READY");
+        std::io::stdout().flush().unwrap();
+        std::io::stdin().read_exact(&mut [0]).unwrap();
+        let error = std::process::Command::new("/bin/sleep").arg("1").exec();
+        panic!("fixture exec failed: {error}");
     }
 
     #[cfg(target_os = "linux")]
