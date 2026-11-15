@@ -111,7 +111,8 @@ class OuterTerminal:
 
     def wait(self, code):
         assert self.process.wait(timeout=5) == code, self.output[-500:]
-        assert termios.tcgetattr(self.slave) == self.original, "outer TTY was not restored"
+        restored = termios.tcgetattr(self.slave)
+        assert restored == self.original, ("outer TTY was not restored", self.original, restored)
 
     def __enter__(self):
         return self

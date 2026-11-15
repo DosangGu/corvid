@@ -123,7 +123,8 @@ def verify_session(process, master, slave, cooked):
     final = read_until(master, b"\x1b[?1049l")
     assert b"INTERRUPTED" in final, final
     assert process.wait(timeout=5) == 7
-    assert termios.tcgetattr(slave) == cooked, "outer TTY attributes changed"
+    restored = termios.tcgetattr(slave)
+    assert restored == cooked, ("outer TTY attributes changed", cooked, restored)
 
 
 def run(binary):
