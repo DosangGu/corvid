@@ -118,6 +118,14 @@ def windows(previous, current, fixture):
         assert result.stdout.strip() == f"corvid {version}".encode()
     finally:
         command([root / "unins000.exe", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+        # Inno's self-removal helper can outlive the process we waited for,
+        # particularly under Windows ARM64 emulation. Do not race its EXE lock
+        # when TemporaryDirectory removes this fixture.
+        deadline = time.monotonic() + 30
+        while (root / "unins000.exe").exists():
+            if time.monotonic() >= deadline:
+                raise AssertionError("Uninstaller did not finish removing itself")
+            time.sleep(0.1)
     assert not (root / "current.txt").exists()
     assert sentinel.read_text() == "retained\n"
 
