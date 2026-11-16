@@ -21,10 +21,10 @@ if [[ -o interactive ]]; then
         fi
     }
 
-    if (( ! ${+functions[claude]} )); then
-        functions[claude]='_corvid_shell_agent claude "$@"'
-    fi
-    if (( ! ${+functions[codex]} )); then
-        functions[codex]='_corvid_shell_agent codex "$@"'
-    fi
+    for _corvid_provider in @CORVID_PROVIDERS@; do
+        if (( ! ${+functions[$_corvid_provider]} )); then
+            functions[$_corvid_provider]="_corvid_shell_agent $_corvid_provider \"\$@\""
+        fi
+    done
+    unset _corvid_provider
 fi

@@ -23,6 +23,11 @@ PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 PASTE = "한글".encode() + b"\x1dd\x1b[20X\n"
 KEYS = b"\x1b\x1bx\x1b[A" + "한글".encode() + b"\x1d\x03"
+PROVIDER_RELEASES = {
+    "baseline": {},
+    "older": {"CLAUDE": "2.1.300", "CODEX": "0.166.0"},
+    "newer": {"CLAUDE": "2.1.325", "CODEX": "0.168.0"},
+}
 
 
 def terminal_attributes(fd):
@@ -639,8 +644,10 @@ def verify_resume(binary, directory):
         stop(daemon)
 
 
-def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shell_name="sh"):
-    root = directory / f"notify-{shell_name}"
+def verify_shell_agent_notifications(
+    binary, directory, terminfo, ssh=None, shell_name="sh", *, release="baseline", broker=False,
+):
+    root = directory / f"notify-{shell_name}-{release}{'-broker' if broker else ''}"
     root.mkdir()
     programs = root / "bin"
     programs.mkdir()
@@ -668,7 +675,9 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
         build_env[f"CORVID_FIXTURE_{name}"] = re.search(
             rf'{name}_VERSION: &str = "([^"]+)"', versions.read_text(),
         )[1]
-    subprocess.run(["rustc", fixture, "-o", programs / "claude"], env=build_env, check=True)
+    for name, version in PROVIDER_RELEASES[release].items():
+        build_env[f"CORVID_FIXTURE_{name}"] = version
+    subprocess.run(["rustc", "--edition=2024", fixture, "-o", programs / "claude"], env=build_env, check=True)
     (programs / "codex").hardlink_to(programs / "claude")
 
     env = os.environ | {
@@ -676,6 +685,14 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
         "PATH": str(programs), "CORVID_FIXTURE_BINARY": str(Path(binary).resolve()),
         "CLAUDE_CONFIG_DIR": str(root / "claude-config"), "CODEX_HOME": str(root / "codex-home"),
     }
+    env.pop("CORVID_FIXTURE_BROKER", None)
+    if broker:
+        target = f"{os.uname().machine}-unknown-linux-musl"
+        version = build_env["CORVID_FIXTURE_CODEX"]
+        executable = root / "packages/app-server-daemon/releases" / f"{version}-{target}/bin/codex"
+        executable.parent.mkdir(parents=True)
+        shutil.copy2(programs / "codex", executable)
+        env["CORVID_FIXTURE_BROKER"] = str(executable)
     for key in ("ENV", "BASH_ENV", "ZDOTDIR"):
         env.pop(key, None)
     client_env = os.environ.copy()
@@ -696,9 +713,10 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
             terminal.expect(build_env["CORVID_FIXTURE_CLAUDE"].encode() + rb" \(Claude Code\)")
 
             # A nested process cannot register its own run in the shell's PTY.
-            terminal.send(b"/bin/sh -c 'claude; :'\n")
-            terminal.expect(b"NO-OBSERVERS-claude")
-            assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
+            for provider in ("claude", "codex"):
+                terminal.send(f"/bin/sh -c '{provider}; :'\n".encode())
+                terminal.expect(f"NO-OBSERVERS-{provider}".encode())
+                assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
             for provider in ("claude", "codex"):
                 terminal.output.clear()
                 terminal.send(f"{provider}\n".encode())
@@ -710,6 +728,18 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
                 terminal.expect(f"DONE-{provider}".encode())
                 terminal.expect(rb"DONE-" + provider.encode() + rb"[\s\S]*NOTIFY-SHELL>")
                 assert terminal.output.count(b"\x07") == 1, terminal.output
+                # Deck consumes this same daemon attention through the companion.
+                run_ids = [
+                    line.split()[0] for line in agents.splitlines()
+                    if b"provider=" + provider.title().encode() + b" " in line
+                ]
+                assert len(run_ids) == 1, agents
+                attention = subprocess.check_output([*command, "control", "attention"], timeout=3)
+                responses = [
+                    line for line in attention.splitlines()
+                    if b"run_id=" + run_ids[0] + b" " in line and b"reason=Response " in line
+                ]
+                assert responses, attention
             terminal.send(b"exit\n")
             terminal.wait(0)
     finally:
@@ -750,9 +780,16 @@ def run(binary, *, tty_only=False):
         for providers in [("claude",), ("codex",), ("claude", "codex")]:
             verify_shell_with_agents(binary, directory, database, providers)
         verify_shell_agent_notifications(binary, directory, database)
+        for release in ("older", "newer"):
+            for broker in (False, True):
+                verify_shell_agent_notifications(
+                    binary, directory, database, release=release, broker=broker,
+                )
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
-                verify_shell_agent_notifications(binary, directory, database, shell_name=shell)
+                verify_shell_agent_notifications(
+                    binary, directory, database, shell_name=shell, release="newer",
+                )
     print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, command-menu isolation, detach, tab switching, tab search, and daemon replacement with a retained shell.")
 
 

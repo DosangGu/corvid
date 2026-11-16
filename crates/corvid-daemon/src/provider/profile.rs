@@ -52,10 +52,15 @@ const CAPABILITIES: &[Kind] = &[
 ];
 
 pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
-    let (mode, schema_revision, events) = match (provider, qualified) {
-        (Provider::Claude, true) => (Mode::InteractiveCli, 3, CLAUDE_EVENTS),
-        (Provider::Codex, true) => (Mode::InteractiveCli, 1, CODEX_EVENTS),
-        (_, false) => (Mode::ProcessOnly, 1, &[][..]),
+    let (mode, events) = match (provider, qualified) {
+        (Provider::Claude, true) => (Mode::InteractiveCli, CLAUDE_EVENTS),
+        (Provider::Codex, true) => (Mode::InteractiveCli, CODEX_EVENTS),
+        (_, false) => (Mode::ProcessOnly, &[][..]),
+    };
+    let schema_revision = if qualified {
+        super::contract(provider).schema_revision
+    } else {
+        1
     };
     let mut correlation = vec![Field::ProcessIncarnation as i32];
     if qualified {
@@ -81,7 +86,7 @@ pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
                 } else {
                     (
                         Level::Unavailable,
-                        "provider release did not pass the hook version check",
+                        "provider executable or version banner was not recognized",
                     )
                 };
                 ProviderCapability {

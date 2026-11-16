@@ -17,12 +17,23 @@ fn main() {
         println!("{version}");
         return;
     }
+    let broker = args.first().is_some_and(|arg| arg == "app-server");
     let injected = args
         .iter()
         .any(|arg| arg == "--settings" || arg == "features.daemon_auto_start=false");
-    if !injected {
+    if !broker && !injected {
         println!("NO-OBSERVERS-{provider}");
         return;
+    }
+    if provider == "codex"
+        && !broker
+        && let Some(path) = env::var_os("CORVID_FIXTURE_BROKER")
+    {
+        let status = Command::new(path)
+            .args(["app-server", "--listen", "unix://", "--managed-daemon"])
+            .status()
+            .unwrap();
+        std::process::exit(status.code().unwrap_or(1));
     }
 
     observe(
@@ -39,6 +50,8 @@ fn main() {
     );
     let stop = format!(r#""hook_event_name":"Stop","stop_hook_active":false,{turn}"#);
     observe(provider, &stop);
+    // TODO: Coalesce response attention for repeated Stop hooks within one turn
+    // These repeated hooks produce one terminal bell but multiple response attention records consumed by Deck. Deduplicate attention by run and turn while preserving notifications for later turns.
     observe(provider, &stop);
     println!("DONE-{provider}");
 }

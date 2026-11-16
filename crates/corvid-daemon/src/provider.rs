@@ -1,3 +1,4 @@
+mod contracts;
 pub(crate) mod hooks;
 mod profile;
 pub mod shell;
@@ -14,36 +15,31 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::Provider;
-use corvid_protocol::collector::{CLAUDE_VERSION, CODEX_VERSION};
 use corvid_protocol::wire::ProviderProfile;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
 
 use crate::process::Executable;
 use crate::projection;
 
+pub(crate) use contracts::{CONTRACTS, contract};
 pub(crate) use profile::adapter;
 
 const VERSION_TIMEOUT: Duration = Duration::from_millis(350);
 const VERSION_OUTPUT_LIMIT: usize = 128;
 
 pub(crate) fn qualify(provider: Provider, path: &Path) -> Option<Executable> {
-    let expected = match provider {
-        Provider::Claude => format!("{CLAUDE_VERSION} (Claude Code)"),
-        Provider::Codex => format!("codex-cli {CODEX_VERSION}"),
-    };
     let executable = Executable::read(path)?;
     let version = version_output(path)?;
-    if version.trim() != expected || Executable::read(path) != Some(executable) {
+    if !contract(provider).recognizes_version(&version)
+        || Executable::read(path) != Some(executable)
+    {
         return None;
     }
     Some(executable)
 }
 
 pub(crate) fn program(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Claude => "claude",
-        Provider::Codex => "codex",
-    }
+    contract(provider).program
 }
 
 pub(crate) fn installed_program(provider: Provider) -> Option<PathBuf> {
@@ -64,20 +60,20 @@ pub(crate) fn observer_arguments(provider: Provider, argv: &[OsString]) -> Vec<O
 }
 
 pub(crate) fn qualified_version(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Claude => CLAUDE_VERSION,
-        Provider::Codex => CODEX_VERSION,
-    }
+    contract(provider).fixture_version
 }
 
 pub(crate) fn qualified_profiles() -> &'static [ProviderProfile] {
-    static PROFILES: OnceLock<[ProviderProfile; 2]> = OnceLock::new();
+    static PROFILES: OnceLock<Vec<ProviderProfile>> = OnceLock::new();
     PROFILES.get_or_init(|| {
-        [Provider::Claude, Provider::Codex].map(|provider| ProviderProfile {
-            provider: projection::provider(provider) as i32,
-            version: qualified_version(provider).to_owned(),
-            adapter: Some(adapter(provider, true)),
-        })
+        CONTRACTS
+            .iter()
+            .map(|contract| ProviderProfile {
+                provider: projection::provider(contract.provider) as i32,
+                version: contract.fixture_version.to_owned(),
+                adapter: Some(adapter(contract.provider, true)),
+            })
+            .collect()
     })
 }
 

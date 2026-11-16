@@ -1300,6 +1300,7 @@ dependencies = [
  "nix 0.31.3",
  "portable-pty",
  "prost",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
