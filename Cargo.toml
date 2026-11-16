@@ -76,6 +76,7 @@ tokio = "=1.54.1"
 unicode-width = "0.2"
 uuid = { version = "1.29", features = ["v4", "serde"] }
 vt100 = { version = "=0.18.1", default-features = false }
+vte = { version = "=0.15.0", default-features = false }
 windows-sys = "=0.61.2"
 windows = "=0.62.2"
 embed-resource = "=3.0.12"

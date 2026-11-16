@@ -104,6 +104,9 @@ impl Style {
         if cell.inverse() {
             std::mem::swap(&mut fg, &mut bg);
         }
+        if cell.dim() {
+            fg = dim_foreground(fg, bg);
+        }
         Self {
             fg,
             bg,
@@ -112,6 +115,12 @@ impl Style {
             underline: cell.underline(),
         }
     }
+}
+
+fn dim_foreground(fg: u32, bg: u32) -> u32 {
+    let [_, fr, fg, fb] = fg.to_be_bytes();
+    let [_, br, bg, bb] = bg.to_be_bytes();
+    u32::from_be_bytes([0, fr.midpoint(br), fg.midpoint(bg), fb.midpoint(bb)])
 }
 
 impl Frame {
@@ -346,5 +355,33 @@ fn color(color: Color, default: u32) -> u32 {
             let gray = 8 + (index - 232) * 10;
             rgb(gray, gray, gray)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dims_text_against_the_displayed_background_until_intensity_resets() {
+        let grid = Grid::new(1, 6);
+        let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+        parser.process(b"\x1b[2mA\x1b[38;2;240;200;160;48;2;32;64;96mB\x1b[7mC\x1b[22mD");
+
+        let frame = Frame::new(parser.screen(), grid);
+        let colors: Vec<_> = frame
+            .spans
+            .iter()
+            .map(|span| (span.text.as_str(), span.style.fg, span.style.bg))
+            .collect();
+        assert_eq!(
+            colors,
+            [
+                ("A", 0x7a7e85, BACKGROUND),
+                ("B", 0x888480, 0x204060),
+                ("C", 0x888480, 0xf0c8a0),
+                ("D", 0x204060, 0xf0c8a0),
+            ]
+        );
     }
 }

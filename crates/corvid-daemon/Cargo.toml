@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 unicode-width.workspace = true
 uuid.workspace = true
 vt100.workspace = true
+vte.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 nix = { workspace = true, features = ["fs", "user"] }
