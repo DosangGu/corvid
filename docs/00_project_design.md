@@ -1319,6 +1319,9 @@ host. Each companion watches every workspace on that host, independently of
 Agent Deck visibility or attached terminal views. It remains running after the
 launching client exits. Starting Agent Deck later reads the existing snapshot
 and persistent slots; it does not start observation or open its own SSH watch.
+Deck continues discovering verified host scopes while open, imports their existing
+runs and unread attention on attachment, and polls each local companion feed.
+Notification attempts are deduplicated across Deck windows sharing the same root.
 
 The companion owns host connections, caches, resynchronization, terminal bindings,
 and persistent slot layouts. Initially enable one host and retain the same

@@ -3,6 +3,8 @@
 mod app;
 mod background;
 mod catalog;
+mod delivery;
+mod hosts;
 mod notifications;
 mod parent;
 mod platform;

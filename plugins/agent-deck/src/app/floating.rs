@@ -93,7 +93,7 @@ impl Desktop {
         } else if let Some(notice) = &self.notice {
             notice.message.clone()
         } else {
-            connection_text(&self.view).into()
+            connection_text(&self.view).unwrap_or_default().into()
         };
         let overflow = self
             .view
