@@ -1225,6 +1225,8 @@ impl Tui {
             }
         });
         let mut command = CommandBuilder::new(CORVID);
+        // These PTY fixtures have their own daemon lifetime; the monitor fixture covers autostart.
+        command.env("CORVID_AGENT_MONITOR", "0");
         command.env("CORVID_VIEW_STATE_DIR", state_runtime.join("client-views"));
         command.env_remove("CORVID_RUNTIME_DIR");
         if let Some(runtime) = runtime {

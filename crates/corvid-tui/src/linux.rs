@@ -296,7 +296,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 claim_workspaces: claim_workspace,
                 move_tab: move_tab.zip(to_workspace),
             };
-            corvid_client::attach(&runtime, options).await
+            crate::attach_monitored(&runtime, options).await
         }
         Command::Controller {
             controller_id,

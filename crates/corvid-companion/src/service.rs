@@ -149,6 +149,9 @@ impl Service {
     }
 
     async fn connect(&mut self, calls: &mut mpsc::Receiver<Call>) -> Result<SnapshotWatch> {
+        if let Some(endpoint) = self.store.monitor_endpoint()? {
+            self.endpoint = endpoint;
+        }
         let (syncing, mut started) = oneshot::channel();
         let endpoint = self.endpoint.clone();
         let controller = self.controller.clone();
@@ -180,9 +183,20 @@ impl Service {
         watch: &mut SnapshotWatch,
         calls: &mut mpsc::Receiver<Call>,
     ) -> anyhow::Error {
+        let mut refresh = tokio::time::interval(Duration::from_secs(1));
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
+                _ = refresh.tick() => {
+                    match self.store.monitor_endpoint() {
+                        Ok(Some(endpoint)) if endpoint != self.endpoint => {
+                            return ProtocolFault::new("ConnectionRequired", "agent monitor connection changed").into();
+                        }
+                        Err(error) => return error,
+                        _ => {}
+                    }
+                }
                 _ = sleep_until(self.save_status_at.unwrap_or_else(Instant::now)), if self.save_status_at.is_some() => {
                     if let Err(error) = self.flush_status() {
                         return store_fault(error).into();

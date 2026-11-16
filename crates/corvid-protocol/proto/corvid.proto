@@ -101,6 +101,7 @@ message Envelope {
     ViewRenamed view_renamed = 128;
     RestoreWorkspace restore_workspace = 129;
     WorkspaceRestored workspace_restored = 130;
+    StopAgentMonitor stop_agent_monitor = 131;
   }
 }
 
@@ -170,6 +171,8 @@ message RpcError {
 
 message Ping {}
 message Pong {}
+// Presentation socket only. Stops the local companion, never the execution daemon.
+message StopAgentMonitor {}
 message GetHost {}
 message GetCapabilities {}
 message UpgradeDaemon {

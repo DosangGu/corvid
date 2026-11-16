@@ -27,6 +27,10 @@ impl WslDistribution {
         &self.name
     }
 
+    pub fn daemon(&self) -> Option<DaemonInstallation> {
+        self.daemon
+    }
+
     pub(super) fn command(&self, role: PeerRole) -> Result<Command> {
         let arguments = match role {
             PeerRole::Control => "control --stdio",

@@ -555,8 +555,10 @@ impl Desktop {
             for run in &host.runs {
                 entry = entry.child(muted(format!(
                     "{} · {} · {} pending",
-                    short_id(&run.agent_run_id),
-                    badge(run.badge).0,
+                    run.key
+                        .as_ref()
+                        .map_or_else(|| "unknown".into(), |key| short_id(&key.agent_run_id)),
+                    badge(run.last_badge).0,
                     run.pending_requests
                 )));
             }

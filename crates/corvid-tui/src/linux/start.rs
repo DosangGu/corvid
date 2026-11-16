@@ -30,7 +30,7 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
         launch_if_empty: true,
         ..AttachOptions::default()
     };
-    let result = corvid_client::attach(&path, options).await;
+    let result = crate::attach_monitored(&path, options).await;
     let fault = result
         .as_ref()
         .err()
@@ -46,7 +46,7 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
             launch: Some(Vec::new()),
             ..AttachOptions::default()
         };
-        return corvid_client::attach(&path, options).await;
+        return crate::attach_monitored(&path, options).await;
     }
     result
 }

@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         }
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "Usage: corvid-streamdeck [--list | --demo | --pipe-instance NAME --target CLIENT_ID] [--serial SERIAL]"
+                "Usage: corvid-streamdeck [--list | --demo | --state-dir PATH | --pipe-instance NAME] [--target CLIENT_ID] [--serial SERIAL]"
             );
             println!("Quit the Elgato Stream Deck app before using this direct USB adapter.");
             println!("The bottom-right key changes pages. Press Ctrl+C to exit.");
@@ -63,7 +63,8 @@ fn main() -> Result<()> {
 struct Options {
     serial: Option<String>,
     target: Option<Uuid>,
-    instance: String,
+    instance: Option<String>,
+    state: Option<std::path::PathBuf>,
     demo: bool,
 }
 
@@ -73,19 +74,8 @@ impl Options {
         let mut options = Self {
             serial: None,
             target: None,
-            instance: {
-                #[cfg(windows)]
-                {
-                    "main".into()
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    corvid_protocol::macos::runtime_directory()?
-                        .join("corvid-companion")
-                        .to_string_lossy()
-                        .into_owned()
-                }
-            },
+            instance: None,
+            state: None,
             demo: false,
         };
         let mut args = args.into_iter();
@@ -96,7 +86,10 @@ impl Options {
                     options.target = Some(args.next().context("missing target client ID")?.parse()?)
                 }
                 "--pipe-instance" | "--socket-dir" => {
-                    options.instance = args.next().context("missing pipe instance")?
+                    options.instance = Some(args.next().context("missing pipe instance")?)
+                }
+                "--state-dir" => {
+                    options.state = Some(args.next().context("missing state directory")?.into())
                 }
                 "--demo" => options.demo = true,
                 _ => bail!("unknown option {arg}; use --help"),
@@ -111,22 +104,37 @@ fn run(options: Options) -> Result<()> {
     let mut selected = options.serial;
     let mut api = HidApi::new().context("initialize USB HID")?;
     let mut deck = Deck::default();
-    let mut live = if options.demo {
-        None
-    } else {
-        if options.target.is_none() {
-            println!("Live display only. Set --target CLIENT_ID to enable focus.");
-        }
-        #[cfg(windows)]
-        let address = options.instance;
-        #[cfg(target_os = "macos")]
-        let address = std::path::PathBuf::from(options.instance);
-        Some(LiveDevice {
-            client: DesktopClient::start(address, || {})?,
-            deck: LiveDeck::default(),
-            target: options.target,
-        })
-    };
+    let mut live =
+        if options.demo {
+            None
+        } else {
+            if options.target.is_none() {
+                println!("Live display only. Set --target CLIENT_ID to enable focus.");
+            }
+            let (address, identity) =
+                if let Some(instance) = options.instance {
+                    #[cfg(windows)]
+                    let address = instance;
+                    #[cfg(target_os = "macos")]
+                    let address = std::path::PathBuf::from(instance);
+                    (address, None)
+                } else {
+                    let state = options
+                        .state
+                        .map_or_else(corvid_companion::launch::default_state_dir, Ok)?;
+                    let scope = corvid_companion::monitor::discover(&state)?.into_iter().next()
+                .context("No monitored hosts yet. Connect a host in Corvid Desktop or TUI first.")?;
+                    (
+                        scope.address,
+                        Some((scope.config.host_id, scope.config.controller_id)),
+                    )
+                };
+            Some(LiveDevice {
+                client: DesktopClient::start_scoped(address, identity, || {})?,
+                deck: LiveDeck::default(),
+                target: options.target,
+            })
+        };
     let renderer = lcd::Renderer::new();
     let mut warned_open_failure = false;
     println!("Waiting for a 15-key Stream Deck. Press Ctrl+C to exit.");

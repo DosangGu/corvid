@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
-use corvid_client::{AttachOptions, attach, check_tty, daemon_missing, host, ping, runtime_path};
+use corvid_client::{AttachOptions, check_tty, daemon_missing, host, ping, runtime_path};
 use corvid_protocol::windows::StateDirectory;
 use corvid_protocol::wire::AgentProvider;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
@@ -245,7 +245,7 @@ async fn start_attach(runtime: PathBuf, mut options: AttachOptions) -> Result<u3
     if !daemon_running(&runtime).await? {
         ensure_daemon(&runtime, &state_path(None)?, false, None).await?;
     }
-    attach(&runtime, options).await
+    crate::attach_monitored(&runtime, options).await
 }
 
 pub(super) async fn ensure_local_daemon(runtime: &Path) -> Result<()> {

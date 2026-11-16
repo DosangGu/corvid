@@ -376,6 +376,7 @@ enum Action {
 }
 
 struct Requests {
+    monitor: agent_deck::Settings,
     recorder: Option<Recorder>,
     actions: mpsc::Receiver<Action>,
     sizes: watch::Receiver<(u64, Grid)>,
@@ -387,11 +388,13 @@ struct Requests {
 impl Session {
     pub fn start(
         destination: Destination,
-        state_dir: PathBuf,
+        settings: impl Into<agent_deck::Settings>,
         store: ViewStore,
         target: AttachTarget,
         explicit: bool,
     ) -> Result<(Self, Job, mpsc::UnboundedReceiver<Prompt>)> {
+        let settings = settings.into();
+        let state_dir = settings.state.clone();
         let target = if matches!(target, AttachTarget::Default) {
             store
                 .for_target(&destination.saved_target())
@@ -407,6 +410,7 @@ impl Session {
         let (prompt_sender, prompts) = mpsc::unbounded_channel();
         let (size, sizes) = watch::channel((0, grid));
         let requests = Requests {
+            monitor: settings,
             recorder: match store.recorder() {
                 Ok(recorder) => Some(recorder),
                 Err(error) => {
@@ -696,6 +700,7 @@ async fn run(
     mut target: AttachTarget,
     explicit: bool,
     Requests {
+        monitor,
         recorder,
         actions,
         sizes,
@@ -784,6 +789,16 @@ async fn run(
         )
     );
     *host = Some(link.session().host_id.clone());
+    let monitor_settings = monitor.clone();
+    let monitor_endpoint = endpoint.clone();
+    let monitor_host = Uuid::parse_str(&link.session().host_id)?;
+    let monitor_task = tokio::spawn(async move {
+        let scope = monitor_settings.scope(&monitor_endpoint, monitor_host)?;
+        scope.configure(&monitor_endpoint)?;
+        scope
+            .ensure_running(&corvid_tui::monitor_executable()?)
+            .await
+    });
     // Keep the verified endpoint available to Sessions even when attach is busy.
     shared.update_ui(|ui| {
         ui.host_id = host.clone();
@@ -1019,9 +1034,17 @@ async fn run(
     };
     client.publish_view();
     let mut inventory = InventoryWatch::start(endpoint, host, epoch, Arc::clone(shared))?;
+    let mut monitor_task = monitor_task;
+    let mut monitor_pending = true;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         tokio::select! {
+            result = &mut monitor_task, if monitor_pending => {
+                monitor_pending = false;
+                if let Err(error) = result.unwrap_or_else(|error| Err(error.into())) {
+                    shared.update_ui(|ui| ui.message = format!("Agent monitor unavailable: {error:#}"));
+                }
+            }
             frame = client.link.receive() => {
                 if let Some(message) = client.receive(frame?).await? {
                     return Ok(message);

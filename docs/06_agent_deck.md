@@ -14,7 +14,10 @@ code remain in [`plugins/agent-deck`](../plugins/agent-deck/) for source and pac
 compatibility. This is an internal module boundary, not a user-installable plugin
 or a public plugin API. Desktop and the Windows CLI delegate to that package.
 The daemon remains authoritative for PTYs and agent state; `corvid-companion`
-owns the shared slot policy and presentation service.
+owns the shared slot policy and presentation service. Desktop/TUI start that
+headless service when verifying a host, before this UI opens. The UI and its
+Hosts overview only read the companion; closing or reopening a display does
+not restart monitoring. The service retains the verified remote launcher.
 Agent Deck renders its floating grid and management views with GPUI, sharing the
 workspace UI framework with Desktop. Background workers notify the foreground
 executor through a coalesced channel so hidden windows can reopen or quit.
@@ -33,9 +36,10 @@ this pass.
 Open **Agents** in the top bar (or **Settings → Agents → Open Agents**)
 in Desktop. Build source installations with
 `cargo build --locked -p corvid-agent-deck`; Desktop finds the binary beside itself
-or in `plugins/agent-deck/` in an installed package. Direct launches require an
-existing companion `--state-dir` and the matching `--pipe-instance` (Windows) or
-`--socket-dir` (Linux).
+or in `plugins/agent-deck/` in an installed package. Direct launches discover
+existing monitored hosts in the default companion state directory. Use
+`--state-dir` to choose a particular host scope; its saved presentation address
+is reused unless overridden by `--pipe-instance` or `--socket-dir`.
 
 Each companion controller has one Deck instance. Reopening activates it. A private
 named pipe on Windows or private Unix socket on Linux carries bounded Protobuf
@@ -63,10 +67,17 @@ The automated native fixture covers hidden and visible windows, equal/newer
 version reuse, concurrent refresh and activation, saved settings, and host
 isolation. This qualification does not exercise mouse dragging.
 
-Deck starts or reuses a separate companion service when needed. Quitting Deck does
-not kill that shared companion or any daemon, terminal, or agent. Existing Board
+Desktop/TUI start the separate companion service automatically. Deck only
+subscribes to it. Quitting Deck does not kill that shared companion or any
+daemon, terminal, or agent. Existing Board
 state paths under `slot-board/` are deliberately retained, preserving controller
 identity, slots, and pins across the rename.
+
+The `corvid-streamdeck` USB adapter discovers the same monitor scopes without
+opening Agent Deck. Its `--state-dir` selects a host just like the UI; an explicit
+`--pipe-instance` or `--socket-dir` remains supported. Status display needs no
+Deck UI. Hardware focus still targets an explicitly paired TUI with `--target`;
+Desktop focus registration is not yet available through this shared interface.
 
 | Windows action | Result |
 | --- | --- |
