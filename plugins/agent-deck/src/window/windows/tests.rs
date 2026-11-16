@@ -9,6 +9,37 @@ fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
     }
 }
 
+fn check_native_drag_snap(window: &Window, work: RECT) -> Result<()> {
+    let hwnd = handle(window)?;
+    let mut outer = RECT::default();
+    ensure!(
+        unsafe { GetWindowRect(hwnd, &mut outer) } != 0,
+        "reading drag probe bounds"
+    );
+    let visible = snap::visible_frame(hwnd, outer);
+    let x = work.right - visible.right - 6;
+    let y = work.bottom - visible.bottom - 6;
+    let mut proposed = rect(
+        outer.left + x,
+        outer.top + y,
+        outer.right + x,
+        outer.bottom + y,
+    );
+    // Dispatch through GPUI's real native window without injecting mouse input.
+    unsafe { SendMessageW(hwnd, WM_MOVING, 0, &mut proposed as *mut RECT as isize) };
+    let snapped = snap::visible_frame(hwnd, proposed);
+    ensure!(
+        snapped.right == work.right && snapped.bottom == work.bottom,
+        "GPUI move proposal did not snap to the work area"
+    );
+    ensure!(
+        proposed.right - proposed.left == outer.right - outer.left
+            && proposed.bottom - proposed.top == outer.bottom - outer.top,
+        "snapping resized the GPUI window"
+    );
+    Ok(())
+}
+
 #[test]
 fn default_corner_survives_expansion_and_return_to_mini() {
     let work = rect(-1920, -120, 0, 920);
@@ -106,6 +137,7 @@ fn native_window_tracks_the_tray_corner_after_resize() {
                                 info.rcWork.bottom - frame.bottom,
                                 window.scale_factor()
                             );
+                            check_native_drag_snap(window, info.rcWork)?;
                         }
                         match tick {
                             1 => {

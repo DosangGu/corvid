@@ -10,6 +10,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows_sys::Win32::UI::Shell::{ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+#[path = "windows/snap.rs"]
+mod snap;
+
 fn handle(window: &Window) -> Result<HWND> {
     let raw = HasWindowHandle::window_handle(window)
         .map_err(|error| anyhow::anyhow!("accessing Agent Deck window: {error}"))?;
@@ -54,6 +57,7 @@ pub fn visible(window: &Window, visible: bool) -> Result<()> {
 
 pub fn configure(window: &Window, pinned: bool, expanded: bool) -> Result<()> {
     let hwnd = handle(window)?;
+    snap::install(hwnd, pinned)?;
     unsafe {
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32
             & !(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
