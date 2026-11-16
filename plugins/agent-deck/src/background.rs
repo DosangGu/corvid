@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -436,47 +435,13 @@ async fn poll(
 }
 
 async fn poll_connected(
-    state: &Path,
+    _state: &Path,
     address: &PresentationAddress,
     host: Uuid,
     controller: Uuid,
     snapshots: &mpsc::Sender<Result<PresentationAttention, String>>,
 ) -> Result<()> {
-    let mut client = match PresentationClient::connect_if_present(address).await? {
-        Some(client) => client,
-        None => {
-            let mut child = tokio::process::Command::new(std::env::current_exe()?);
-            child
-                .arg("--companion-service")
-                .arg("--state-dir")
-                .arg(state);
-            #[cfg(windows)]
-            child
-                .arg("--pipe-instance")
-                .arg(address)
-                .creation_flags(0x0800_0000);
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            child.arg("--socket-dir").arg(address).process_group(0);
-            let mut process = child
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()?;
-            timeout(COMMAND_TIMEOUT, async {
-                loop {
-                    if let Some(client) = PresentationClient::connect_if_present(address).await? {
-                        return Ok::<_, anyhow::Error>(client);
-                    }
-                    if let Some(status) = process.try_wait()? {
-                        anyhow::bail!("companion service exited ({status})");
-                    }
-                    sleep(Duration::from_millis(50)).await;
-                }
-            })
-            .await
-            .context("companion startup timed out")??
-        }
-    };
+    let mut client = PresentationClient::connect(address).await?;
     ensure!(
         client.session().host_id == host.to_string(),
         "companion belongs to another host"

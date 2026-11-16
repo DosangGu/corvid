@@ -37,6 +37,7 @@ pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
 #[cfg(windows)]
 pub const WEZTERM_SELECTION_CAPABILITY: &str = "wezterm_selection.v1";
 const CAPABILITIES: &[&str] = &[
+    crate::monitor::CAPABILITY,
     PRESENTATION_CAPABILITY,
     PRESENTATION_ATTENTION_CAPABILITY,
     LIST_HOSTS_CAPABILITY,
@@ -157,7 +158,11 @@ async fn accept(
                 Ok(_) => {}
                 Err(_) => sleep(Duration::from_millis(25)).await,
             },
-            _ = peers.join_next(), if !peers.is_empty() => {}
+            result = peers.join_next(), if !peers.is_empty() => {
+                if matches!(result, Some(Ok(Ok(true)))) {
+                    return Ok(());
+                }
+            }
         }
     }
 }
@@ -179,19 +184,26 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     calls: mpsc::Sender<Call>,
     host: String,
     epoch: String,
-) -> Result<()> {
+) -> Result<bool> {
     let mut peer = timeout(COMMAND_TIMEOUT, server_hello(stream, &host, &epoch)).await??;
     while let Some(request) = timeout(IDLE_TIMEOUT, peer.reader.next_envelope()).await?? {
+        let stop = matches!(
+            peer.session.validate_request(&request),
+            Ok(Body::StopAgentMonitor(_))
+        );
         let outcome = match peer.session.validate_request(&request) {
-            Ok(Body::Ping(_)) => Ok(Body::Pong(Pong {})),
+            Ok(Body::Ping(_) | Body::StopAgentMonitor(_)) => Ok(Body::Pong(Pong {})),
             Ok(_) => dispatch(&calls, request.body.expect("validated body")).await,
             Err(fault) => Err(fault),
         };
         let body = outcome.unwrap_or_else(|fault| Body::Error(fault.into_wire()));
         let reply = peer.session.envelope(request.request_id, body);
         timeout(COMMAND_TIMEOUT, peer.writer.envelope(&reply)).await??;
+        if stop {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(

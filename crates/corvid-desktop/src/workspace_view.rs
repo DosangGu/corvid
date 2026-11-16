@@ -377,7 +377,7 @@ impl WorkspaceView {
         }
         let result = Session::start(
             destination.clone(),
-            self.agent_deck.state.clone(),
+            self.agent_deck.clone(),
             self.store.clone(),
             target,
             explicit,

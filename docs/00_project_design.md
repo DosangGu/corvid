@@ -1314,6 +1314,12 @@ epoch change. Control-channel loss alone does not destroy a still-live TUI bindi
 
 ## 11. Companion and desktop slots
 
+Desktop and TUI start a headless companion as soon as they verify an execution
+host. Each companion watches every workspace on that host, independently of
+Agent Deck visibility or attached terminal views. It remains running after the
+launching client exits. Starting Agent Deck later reads the existing snapshot
+and persistent slots; it does not start observation or open its own SSH watch.
+
 The companion owns host connections, caches, resynchronization, terminal bindings,
 and persistent slot layouts. Initially enable one host and retain the same
 identity model for later hosts. The desktop app displays slot state and submits
@@ -1351,7 +1357,7 @@ and app identity. Its default view is a compact floating deck. Always-on-top mod
 keeps it visible; tray mode hides it when focus leaves, with management views
 available by expanding the window. Saved grid presets offer 6, 8, 12, or 15 visible
 keys in landscape or portrait orientation without changing authoritative slot
-assignments. It starts or reuses a separate companion service; closing either
+assignments. It subscribes to the already-running companion service; closing either
 window does not end daemon-owned work. See [Agent Deck](06_agent_deck.md) for the
 implemented lifetime, Linux limitations, and notification validation boundary.
 

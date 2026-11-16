@@ -2,7 +2,7 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     Attach, AttachRole, CollectHook, FocusAgentRequest, FocusSlot, GetCapabilities,
     GetPresentationAttention, GetPresentationSlots, InputChunk, ListHosts, OpenAgentDeck, Ping,
-    ProviderAdapter, ProviderExecutionMode, ProviderProfile, UpgradeDaemon,
+    ProviderAdapter, ProviderExecutionMode, ProviderProfile, StopAgentMonitor, UpgradeDaemon,
 };
 use corvid_protocol::{
     PeerRole, accept_hello, accept_hello_with_profiles, check_hello_result, decode_envelope, hello,
@@ -320,6 +320,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
         Body::GetPresentationSlots(GetPresentationSlots::default()),
         Body::GetPresentationAttention(GetPresentationAttention {}),
         Body::FocusSlot(FocusSlot::default()),
+        Body::StopAgentMonitor(StopAgentMonitor {}),
     ] {
         let request = session.envelope(Some("presentation".into()), body);
         assert!(session.validate_request(&request).is_ok());
@@ -341,6 +342,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
         accept_hello(&request, PeerRole::Control, "host", "remote-epoch", &[]).unwrap();
     for body in [
         Body::ListHosts(ListHosts {}),
+        Body::StopAgentMonitor(StopAgentMonitor {}),
         Body::FocusSlot(FocusSlot::default()),
         Body::GetPresentationAttention(GetPresentationAttention {}),
         Body::OpenAgentDeck(OpenAgentDeck::default()),

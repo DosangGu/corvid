@@ -1,10 +1,14 @@
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::ControlEndpoint;
-use corvid_companion::{Config, HostEndpoint, PresentationAddress};
+#[cfg(windows)]
+use corvid_companion::Config;
+use corvid_companion::monitor::Scope;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{DesktopAgentFocused, PresentedRunKey};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
@@ -18,8 +22,6 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::connection::{self, Client};
-
-const DEFAULT_SLOT_COUNT: u32 = 8;
 
 pub struct FocusRequest {
     pub run: PresentedRunKey,
@@ -68,9 +70,14 @@ pub struct Settings {
     pub pipe_instance: String,
 }
 
-struct Scope {
-    address: <PresentationAddress as ToOwned>::Owned,
-    state: PathBuf,
+impl From<PathBuf> for Settings {
+    fn from(state: PathBuf) -> Self {
+        Self {
+            state,
+            #[cfg(windows)]
+            pipe_instance: "main".into(),
+        }
+    }
 }
 
 pub fn executable() -> Result<PathBuf> {
@@ -104,23 +111,15 @@ async fn open(
     shown: mpsc::Receiver<()>,
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
-    let saved = match endpoint {
-        ControlEndpoint::Local(runtime_dir) => HostEndpoint::Local { runtime_dir },
-        ControlEndpoint::Ssh(alias) => HostEndpoint::Ssh {
-            alias: alias.as_str().to_owned(),
-        },
-        ControlEndpoint::Wsl(distribution) => HostEndpoint::Wsl {
-            distribution: distribution.as_str().to_owned(),
-        },
-    };
-    let (scope, config) = settings.scope(saved, host)?;
+    let scope = settings.scope(&endpoint, host)?;
+    let config = &scope.config;
     #[cfg(windows)]
     let client = {
         let mut client = crate::lifecycle::ensure_current(
             &executable()?,
             &scope.state,
             &scope.address,
-            &config,
+            config,
             true,
         )
         .await?
@@ -278,86 +277,11 @@ impl Settings {
         Ok(())
     }
 
-    fn scope(&self, endpoint: HostEndpoint, host: Uuid) -> Result<(Scope, Config)> {
-        let shared = Config::read_if_present(&self.state)?
-            .is_some_and(|config| config.host_id == host && config.endpoint == endpoint);
-        let state = if shared {
-            self.state.clone()
-        } else {
-            self.state
-                .join("slot-board")
-                .join(host.simple().to_string())
-        };
-        let config = prepare_state(&state, endpoint, host)?;
+    pub fn scope(&self, endpoint: &ControlEndpoint, host: Uuid) -> Result<Scope> {
         #[cfg(windows)]
-        let address = if shared {
-            self.pipe_instance.clone()
-        } else {
-            config.controller_id.simple().to_string()
-        };
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let address = {
-            #[cfg(target_os = "macos")]
-            let runtime = corvid_client::runtime_path(None)?;
-            #[cfg(target_os = "linux")]
-            let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .context("set XDG_RUNTIME_DIR to open Corvid Agent Deck")?;
-            let directory = if shared {
-                "corvid-companion".to_owned()
-            } else if cfg!(target_os = "macos") {
-                format!("s-{}", config.controller_id.simple())
-            } else {
-                format!("cv-slot-{}", config.controller_id.simple())
-            };
-            runtime.join(directory)
-        };
-        Ok((Scope { address, state }, config))
-    }
-}
-
-fn prepare_state(state: &Path, endpoint: HostEndpoint, host: Uuid) -> Result<Config> {
-    let config = match Config::read_if_present(state)? {
-        Some(config) => config,
-        None => {
-            let created = corvid_companion::initialize(state, host, endpoint, DEFAULT_SLOT_COUNT);
-            match Config::read_if_present(state)? {
-                Some(config) => config,
-                None => {
-                    created?;
-                    anyhow::bail!("Corvid Agent Deck companion configuration is missing");
-                }
-            }
-        }
-    };
-    ensure!(
-        config.host_id == host,
-        "Corvid Agent Deck companion configuration belongs to a different host"
-    );
-    Ok(config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reuses_the_controller_and_refuses_a_different_host() -> Result<()> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let directory = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
-        #[cfg(windows)]
-        let directory = tempfile::tempdir()?;
-        let state = directory.path().join("slot-board");
-        let host = Uuid::new_v4();
-        let endpoint = HostEndpoint::Ssh {
-            alias: "work-host".into(),
-        };
-        let first = prepare_state(&state, endpoint.clone(), host)?;
-        let reopened = prepare_state(&state, endpoint.clone(), host)?;
-        assert_eq!(first.controller_id, reopened.controller_id);
-        assert!(prepare_state(&state, endpoint, Uuid::new_v4()).is_err());
-        assert_eq!(Config::read_if_present(&state)?.unwrap().host_id, host);
-        Ok(())
+        let instance = self.pipe_instance.as_str();
+        #[cfg(not(windows))]
+        let instance = "main";
+        Scope::prepare(&self.state, endpoint, host, instance)
     }
 }

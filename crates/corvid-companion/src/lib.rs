@@ -4,6 +4,7 @@ mod ipc;
 mod last_known;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod launch;
+pub mod monitor;
 mod platform;
 mod remote;
 mod service;

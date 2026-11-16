@@ -66,6 +66,8 @@ enum Command {
     },
     /// Run the local companion and resynchronize the configured host on disconnect.
     Run,
+    /// Stop this companion's monitoring without stopping terminals or agents.
+    Stop,
     /// Open the Windows desktop app and start its companion when needed.
     #[cfg(windows)]
     Open {
@@ -228,7 +230,7 @@ fn host_endpoint(alias: Option<String>, _daemon_runtime: Option<PathBuf>) -> Res
     bail!("Windows companion init requires --ssh-alias");
 }
 
-fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
+pub(crate) fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = path {
         return Ok(path);
     }
@@ -283,6 +285,7 @@ impl Command {
     fn request(self, epoch: &str) -> Result<Body> {
         let body = match self {
             Self::Init { .. } | Self::Run => unreachable!("handled by companion execute"),
+            Self::Stop => Body::StopAgentMonitor(corvid_protocol::wire::StopAgentMonitor {}),
             #[cfg(windows)]
             Self::Doctor | Self::Open { .. } => unreachable!("handled by companion execute"),
             Self::Hosts => Body::ListHosts(ListHosts {}),
@@ -431,6 +434,10 @@ fn require_epoch(captured: &str, expected: &str) -> Result<()> {
 }
 
 fn show(reply: Body, host: &str, epoch: &str) -> Result<()> {
+    if matches!(reply, Body::Pong(_)) {
+        println!("Agent monitor stopped.");
+        return Ok(());
+    }
     match reply {
         Body::HostList(hosts) => show_hosts(hosts, host)?,
         Body::PresentationSlots(slots) => show_slots(slots, host, epoch)?,

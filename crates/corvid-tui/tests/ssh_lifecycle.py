@@ -1,6 +1,7 @@
 """Exercise Corvid in an isolated loopback SSH server and transient user service."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import pwd
@@ -219,6 +220,27 @@ def check_companion_ssh(ssh, command, directory):
 
 
 def check_working_ssh(ssh, command, directory):
+    state = directory / "monitor-state"
+    runtime_dir = tempfile.TemporaryDirectory(prefix="cvm-", dir=Path.home())
+    runtime = Path(runtime_dir.name)
+    state.mkdir(mode=0o700)
+    environment = ["env", "CORVID_AGENT_MONITOR=1", f"XDG_STATE_HOME={state}",
+                   f"XDG_RUNTIME_DIR={runtime}"]
+    monitored = [*environment, *command]
+    host = fields(subprocess.check_output([*command, "control", "host"], text=True))["host_id"]
+    scope = state / "corvid/companion/slot-board" / host.replace("-", "")
+    try:
+        check_monitored_ssh(ssh, monitored, directory, scope, command)
+    finally:
+        record = scope / "monitor/connection.json"
+        if record.exists():
+            address = json.loads(record.read_text())["address"]
+            subprocess.run([*command, "companion", "--socket-dir", address, "stop"],
+                           capture_output=True, check=True, timeout=8)
+        runtime_dir.cleanup()
+
+
+def check_monitored_ssh(ssh, command, directory, scope, local):
     fixture = Path(__file__).with_name("interactive.py").resolve()
     progress = directory / "progress"
     attach = [*command, "attach"]
@@ -228,12 +250,30 @@ def check_working_ssh(ssh, command, directory):
         pid = ready[1]
         first.send(b"a")
         first.expect("한글 e\u0301".encode())
-        check_companion_ssh(ssh, command, directory)
+        deadline = time.monotonic() + 8
+        record_path = scope / "monitor/connection.json"
+        while not record_path.exists():
+            assert time.monotonic() < deadline, "TUI did not configure its agent monitor"
+            time.sleep(0.02)
+        record = json.loads(record_path.read_text())
+        reader = [*local, "companion", "--socket-dir", record["address"], "slots"]
+        while True:
+            reply = subprocess.run(reader, text=True, capture_output=True, timeout=3)
+            initial = fields(reply.stdout.splitlines()[0]) if reply.returncode == 0 else {}
+            if initial.get("connection") == "Ready":
+                break
+            assert time.monotonic() < deadline, (initial, reply.stderr)
+            time.sleep(0.02)
+        check_companion_ssh(ssh, local, directory)
         assert first.process.poll() is None
         progress_during_disconnect(progress)
         first.send(b"\x1dd")
         first.wait(0)
     progress_during_disconnect(progress)
+    later = fields(subprocess.check_output(reader, text=True).splitlines()[0])
+    assert later["connection"] == "Ready", later
+    assert later["companion_epoch"] == initial["companion_epoch"]
+    assert later["controller_id"] == initial["controller_id"]
 
     remote = [*ssh, "-tt", shlex.join(attach)]
     with OuterTerminal(remote) as second:
@@ -248,6 +288,8 @@ def check_working_ssh(ssh, command, directory):
         third.send(b"q")
         third.expect(b"TERMINAL-EXIT")
         third.wait(7)
+    final = fields(subprocess.check_output(reader, text=True).splitlines()[0])
+    assert final["companion_epoch"] == initial["companion_epoch"]
 
 
 def unit_pid(unit):

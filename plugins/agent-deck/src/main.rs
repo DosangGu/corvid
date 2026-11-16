@@ -11,13 +11,13 @@ mod window;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use corvid_companion::Config;
+use corvid_companion::monitor;
 use corvid_presentation::ipc::DesktopClient;
 use gpui::{App, AppContext, Application, WindowBounds, WindowOptions};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(version, about = "Corvid Agent Deck background agent monitor")]
+#[command(version, about = "Corvid Agent Deck agent status display")]
 struct Options {
     /// Existing companion configuration; Desktop supplies its verified host scope.
     #[arg(long)]
@@ -29,8 +29,8 @@ struct Options {
     #[arg(long, hide = true, conflicts_with = "socket_dir")]
     socket_name: Option<String>,
     #[cfg(windows)]
-    #[arg(long, default_value = "main")]
-    pipe_instance: String,
+    #[arg(long)]
+    pipe_instance: Option<String>,
     /// Start without taking focus; tray mode stays hidden when its backend works.
     #[arg(long)]
     background: bool,
@@ -43,27 +43,17 @@ struct Options {
 
 fn main() -> Result<()> {
     let options = Options::parse();
-    let state = options.state_dir.map_or_else(default_state, Ok)?;
-    let config = Config::read_if_present(&state)?.context("Agent Deck needs a configured companion. Open it from Corvid Desktop or initialize corvid companion first.")?;
+    let root = options.state_dir.map_or_else(default_state, Ok)?;
+    let scope = monitor::discover(&root)?
+        .into_iter()
+        .next()
+        .context("No monitored hosts yet. Connect a host in Corvid Desktop or TUI first.")?;
+    let state = scope.state;
+    let config = scope.config;
     #[cfg(windows)]
-    let address = options.pipe_instance;
+    let address = options.pipe_instance.unwrap_or(scope.address);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let address = options
-        .socket_dir
-        .or_else(|| {
-            #[cfg(target_os = "macos")]
-            {
-                corvid_client::runtime_path(None)
-                    .ok()
-                    .map(|base| base.join("corvid-companion"))
-            }
-            #[cfg(target_os = "linux")]
-            {
-                std::env::var_os("XDG_RUNTIME_DIR")
-                    .map(|base| PathBuf::from(base).join("corvid-companion"))
-            }
-        })
-        .context("set XDG_RUNTIME_DIR or pass --socket-dir")?;
+    let address = options.socket_dir.unwrap_or(scope.address);
     #[cfg(target_os = "macos")]
     let address = if let Some(name) = options.socket_name {
         anyhow::ensure!(

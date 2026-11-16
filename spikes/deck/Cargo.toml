@@ -11,7 +11,7 @@ default-run = "corvid-deck"
 default = ["desktop"]
 desktop = ["live", "dep:corvid-companion", "dep:gpui", "dep:tokio"]
 live = ["dep:anyhow", "dep:corvid-presentation", "dep:corvid-protocol", "dep:uuid"]
-stream-deck = ["live", "dep:hidapi", "dep:image", "dep:resvg"]
+stream-deck = ["live", "dep:corvid-companion", "dep:hidapi", "dep:image", "dep:resvg"]
 
 [[bin]]
 name = "corvid-deck"

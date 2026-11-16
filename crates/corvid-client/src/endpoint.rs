@@ -28,7 +28,7 @@ const RELAY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_DIAGNOSTIC: usize = 4096;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlEndpoint {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Local(PathBuf),
@@ -99,6 +99,10 @@ impl SshAlias {
     pub fn with_daemon(mut self, platform: HostPlatform, daemon: DaemonInstallation) -> Self {
         self.desktop_daemon = Some((platform, daemon));
         self
+    }
+
+    pub fn daemon(&self) -> Option<(HostPlatform, DaemonInstallation)> {
+        self.desktop_daemon
     }
 
     fn command(&self, role: PeerRole) -> Result<Command> {

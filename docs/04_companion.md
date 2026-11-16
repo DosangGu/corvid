@@ -3,9 +3,14 @@
 For Apple Silicon paths, native behavior, building, and distribution, see
 [macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
 
-The companion connects to one configured Linux Corvid daemon and maintains
+The companion connects to one configured Corvid daemon and maintains
 virtual slots. It serves framed Protobuf to the local CLI and desktop board
 over a private Unix socket on Linux or a current-user named pipe on Windows.
+
+Desktop and TUI start a headless companion automatically after verifying a host.
+Monitoring continues after their windows close. Set `CORVID_AGENT_MONITOR=0` for
+TUI sessions that should not start background monitoring, such as isolated PTY
+fixtures. This does not stop an already-running monitor.
 
 The desktop GUI and TUI share daemon workspaces, tabs, panes, and writer
 leases. A Stream Deck integration daemon is planned for the desktop
@@ -587,17 +592,30 @@ process and stays alive when Desktop detaches or switches
 hosts. Desktop checks the companion host and controller IDs before opening the
 window. A matching configured companion keeps its existing state. Other hosts
 get their own companion state below `slot-board/` in Desktop's state directory.
-When Deck starts a companion service, it uses the same Corvid daemon
-as the attached terminal. On Linux Agent Deck requires `XDG_RUNTIME_DIR`.
+Desktop and TUI automatically start the headless companion when connecting to a
+verified host, before the Agents window is opened. The monitor retains Desktop's
+verified SSH/WSL launcher and runtime selection in private monitor metadata.
+It watches all workspaces on that host and survives closing the UI or terminal
+client. Reopening a display reads the same controller and slot state.
+On Linux Agent Deck requires `XDG_RUNTIME_DIR`.
 
 Desktop archives include Agent Deck as a built-in feature. For source builds, run
 `cargo build --locked -p corvid-agent-deck` and place the resulting executable
 under `plugins/agent-deck/` next to the Desktop executable. You can also launch
 Deck directly using its configured `--state-dir` and `--socket-dir` on Linux
-or `--pipe-instance` on Windows. It starts or reuses the companion service.
+or `--pipe-instance` on Windows. The companion must already be running, started
+by Desktop/TUI or explicitly with `corvid companion run`.
 The window uses the workspace GPUI version and connects directly to the private
 Protobuf endpoint. Linux uses the same X11 or XWayland and Vulkan requirements
 as Corvid Desktop.
+
+The USB adapter can read that same presentation endpoint without Agent Deck.
+Its existing TUI pairing/focus contract is unchanged; routing USB clicks to a
+Desktop window without Agent Deck is still follow-up work. To stop a monitor,
+use `corvid companion --state-dir STATE --pipe-instance INSTANCE stop` on Windows
+or `--socket-dir SOCKET` on Unix. This leaves the execution daemon and agents running.
+After upgrading from a UI-owned companion, stop the old companion process once
+before reconnecting; older companions cannot accept the new monitor connection metadata.
 
 When launched from Desktop, click a key in **Deck** or an agent in **Queue** to
 focus its pane and bring Desktop forward. With a working tray and Always on top

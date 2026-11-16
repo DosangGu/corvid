@@ -20,6 +20,8 @@ struct Target {
 
 #[derive(Clone, Default)]
 pub(crate) struct DesktopLink(Arc<Mutex<Option<Target>>>);
+// TODO: Route physical Stream Deck navigation through a UI-independent Desktop registration
+// Monitoring and slots now live in the companion before Agent Deck opens. Move this Desktop focus registration into the common presentation service so USB adapters can focus Desktop without the Agent Deck UI, preserving exact host/epoch/run validation and foreground activation.
 
 #[derive(Clone)]
 pub(crate) struct Scope {

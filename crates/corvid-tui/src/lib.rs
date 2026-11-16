@@ -88,6 +88,50 @@ pub async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
     }
 }
 
+/// Start the UI-independent companion for a connection whose host was verified.
+pub async fn monitor_agent_host(
+    state: &Path,
+    endpoint: &corvid_client::ControlEndpoint,
+    host: Uuid,
+    instance: &str,
+) -> Result<()> {
+    let scope = corvid_companion::monitor::Scope::prepare(state, endpoint, host, instance)?;
+    scope.configure(endpoint)?;
+    scope.ensure_running(&monitor_executable()?).await
+}
+
+pub fn monitor_executable() -> Result<PathBuf> {
+    local_daemon_executable()
+}
+
+async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions) -> Result<u32> {
+    corvid_client::check_tty()?;
+    if std::env::var_os("CORVID_AGENT_MONITOR").is_some_and(|value| value == "0") {
+        return corvid_client::attach(runtime, options).await;
+    }
+    let endpoint = corvid_client::ControlEndpoint::Local(runtime.to_owned());
+    let monitor = tokio::spawn(async move {
+        let host = endpoint.host().await?;
+        monitor_agent_host(
+            &companion::companion_state(None)?,
+            &endpoint,
+            Uuid::parse_str(&host.host_id)?,
+            "main",
+        )
+        .await
+    });
+    let result = corvid_client::attach(runtime, options).await;
+    if monitor.is_finished() {
+        if let Err(error) = monitor.await.unwrap_or_else(|error| Err(error.into())) {
+            // Report after restoring the TTY, never into the active terminal's render stream.
+            eprintln!("corvid: agent monitor unavailable: {error:#}");
+        }
+    } else {
+        monitor.abort();
+    }
+    result
+}
+
 /// Use the shared runtime payload when starting a daemon from packaged Desktop.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn local_daemon_executable() -> Result<PathBuf> {
@@ -165,7 +209,7 @@ pub fn run_daemon_helper() -> Option<ExitCode> {
     }
 
     match std::env::args_os().nth(1)?.to_str()? {
-        "daemon" | "terminal-host" | "desktop-handoff" => Some(run()),
+        "daemon" | "terminal-host" | "desktop-handoff" | "companion" => Some(run()),
         "observe" => Some(run()),
         _ => None,
     }

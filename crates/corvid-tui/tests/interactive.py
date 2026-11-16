@@ -97,6 +97,8 @@ class OuterTerminal:
         self.output = bytearray()
         self.resize(cols, rows)
         env = dict(os.environ if env is None else env)
+        # Dedicated monitor/SSH fixtures exercise background monitoring and clean it up.
+        env.setdefault("CORVID_AGENT_MONITOR", "0")
         # Crossterm must measure this PTY, not an inherited terminal's dimensions.
         env.pop("COLUMNS", None)
         env.pop("LINES", None)
@@ -702,7 +704,7 @@ def verify_shell_agent_notifications(
         client_env["SSH_TTY"] = "/dev/pts/fixture"
         attach = command
     else:
-        attach = [*ssh, "-tt", shlex.join(map(os.fspath, command))]
+        attach = [*ssh, "-tt", shlex.join(map(os.fspath, ["env", "CORVID_AGENT_MONITOR=0", *command]))]
     daemon = subprocess.Popen([*command, "daemon", "--state-dir", root / "state"], env=env)
     try:
         wait_for_daemon(command, daemon)

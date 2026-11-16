@@ -31,6 +31,40 @@ pub enum HostEndpoint {
     Wsl { distribution: String },
 }
 
+impl HostEndpoint {
+    pub fn control_endpoint(&self) -> Result<ControlEndpoint> {
+        Ok(match self {
+            Self::Local { runtime_dir } => {
+                ensure!(
+                    runtime_dir.is_absolute(),
+                    "daemon runtime directory must be absolute"
+                );
+                ControlEndpoint::Local(runtime_dir.clone())
+            }
+            Self::Ssh { alias } => ControlEndpoint::Ssh(SshAlias::new(alias.clone())?),
+            Self::Wsl { distribution } => {
+                ControlEndpoint::Wsl(WslDistribution::new(distribution.clone())?)
+            }
+        })
+    }
+}
+
+impl From<&ControlEndpoint> for HostEndpoint {
+    fn from(endpoint: &ControlEndpoint) -> Self {
+        match endpoint {
+            ControlEndpoint::Local(runtime_dir) => Self::Local {
+                runtime_dir: runtime_dir.clone(),
+            },
+            ControlEndpoint::Ssh(alias) => Self::Ssh {
+                alias: alias.as_str().to_owned(),
+            },
+            ControlEndpoint::Wsl(distribution) => Self::Wsl {
+                distribution: distribution.as_str().to_owned(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     schema_version: u32,
@@ -78,19 +112,7 @@ impl Config {
     }
 
     pub fn control_endpoint(&self) -> Result<ControlEndpoint> {
-        Ok(match &self.endpoint {
-            HostEndpoint::Local { runtime_dir } => {
-                ensure!(
-                    runtime_dir.is_absolute(),
-                    "daemon runtime directory must be absolute"
-                );
-                ControlEndpoint::Local(runtime_dir.clone())
-            }
-            HostEndpoint::Ssh { alias } => ControlEndpoint::Ssh(SshAlias::new(alias.clone())?),
-            HostEndpoint::Wsl { distribution } => {
-                ControlEndpoint::Wsl(WslDistribution::new(distribution.clone())?)
-            }
-        })
+        self.endpoint.control_endpoint()
     }
 
     fn validate(&self) -> Result<()> {
@@ -140,6 +162,7 @@ pub enum Recovery {
 }
 
 pub struct Store {
+    path: PathBuf,
     directory: StateDirectory,
     _lock: StateLock,
     config: Config,
@@ -182,6 +205,7 @@ impl Store {
         let config = Config::read_from(&directory)?.context("companion config is missing")?;
         let (slots, recovery) = load_slots(&directory, &config)?;
         Ok(Self {
+            path: path.to_owned(),
             directory,
             _lock: lock,
             config,
@@ -192,6 +216,10 @@ impl Store {
 
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub(crate) fn monitor_endpoint(&self) -> Result<Option<ControlEndpoint>> {
+        crate::monitor::endpoint(&self.path, &self.config)
     }
 
     pub fn layout(&self) -> &SlotLayout {
