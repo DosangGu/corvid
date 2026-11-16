@@ -1,16 +1,16 @@
 use corvid_core::agent::{
     Activity, Attention, AttentionCause, Confidence, EndReason, Evidence, Lifecycle,
-    ProcessLiveness, Provider, RequestKind, RequestStatus, Source,
+    ProcessLiveness, RequestKind, RequestStatus, Source,
 };
 use corvid_core::agent::{AgentRun, ResponseOutcome};
 use corvid_core::layout::{Axis, Layout, Location, Node};
 use corvid_protocol::wire::layout_node_state::Body as NodeBody;
 use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{
-    AgentActivity, AgentEndReason, AgentLifecycle, AgentProcessState, AgentProvider,
-    AttentionReason, AttentionState, EvidenceConfidence, EvidenceSource, EvidenceState,
-    InputRequestKind, InputRequestStatus, LayoutNodeState, SnapshotEntity, SplitAxis, SplitState,
-    TabState, ViewSelection, WorkspaceState,
+    AgentActivity, AgentEndReason, AgentLifecycle, AgentProcessState, AttentionReason,
+    AttentionState, EvidenceConfidence, EvidenceSource, EvidenceState, InputRequestKind,
+    InputRequestStatus, LayoutNodeState, SnapshotEntity, SplitAxis, SplitState, TabState,
+    ViewSelection, WorkspaceState,
 };
 use corvid_protocol::wire::{AgentInfo, AgentResponse, AgentState, RequestState};
 
@@ -139,13 +139,6 @@ pub(crate) fn activity(value: Activity) -> AgentActivity {
         Activity::AwaitingPrompt => AgentActivity::AwaitingPrompt,
         Activity::Interrupted => AgentActivity::Interrupted,
         Activity::Error => AgentActivity::Error,
-    }
-}
-
-pub(crate) fn provider(value: Provider) -> AgentProvider {
-    match value {
-        Provider::Claude => AgentProvider::Claude,
-        Provider::Codex => AgentProvider::Codex,
     }
 }
 

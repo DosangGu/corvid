@@ -11,7 +11,7 @@ use portable_pty::CommandBuilder;
 
 use crate::process::Executable;
 
-use super::{CONTRACTS, find_on_path, observer_arguments, program, qualify};
+use super::{CONTRACTS, find_on_path, observer_arguments, qualify};
 
 pub(crate) struct Commands(PathBuf);
 
@@ -21,13 +21,13 @@ impl Commands {
         let executable = env::current_exe()?.canonicalize()?;
         let staging = tempfile::tempdir_in(directory.path())?;
         for contract in CONTRACTS {
-            let link = staging.path().join(contract.program);
+            let link = staging.path().join(contract.unix.program);
             symlink(&executable, &link)?;
-            fs::rename(link, directory.path().join(contract.program))?;
+            fs::rename(link, directory.path().join(contract.unix.program))?;
         }
         let names = CONTRACTS
             .iter()
-            .map(|contract| contract.program)
+            .map(|contract| contract.unix.program)
             .collect::<Vec<_>>()
             .join(" ");
         let zsh = include_str!("shell.zshenv").replace("@CORVID_PROVIDERS@", &names);
@@ -67,7 +67,7 @@ impl Commands {
 
 fn configure_bash(command: &mut CommandBuilder) {
     for contract in CONTRACTS {
-        let name = contract.program;
+        let name = contract.unix.program;
         let key = format!("BASH_FUNC_{name}%%");
         if command.get_env(&key).is_some() {
             continue;
@@ -90,8 +90,12 @@ pub fn invoked_provider(argv0: &OsStr) -> Option<Provider> {
     let name = Path::new(argv0).file_name()?.to_str()?;
     CONTRACTS
         .iter()
-        .find(|contract| contract.program == name)
+        .find(|contract| contract.unix.program == name)
         .map(|contract| contract.provider)
+}
+
+pub fn program(provider: Provider) -> &'static str {
+    super::program(provider)
 }
 
 pub fn resolve(provider: Provider) -> Option<PathBuf> {
@@ -106,4 +110,12 @@ pub fn qualified_arguments(
 ) -> Option<Vec<OsString>> {
     qualify(provider, executable)?;
     Some(observer_arguments(provider, argv))
+}
+
+pub fn interactive_invocation(provider: Provider, argv: &[OsString]) -> bool {
+    super::contract(provider).interactive_invocation(argv)
+}
+
+pub fn provider_number(provider: Provider) -> i32 {
+    super::contract(provider).wire_id
 }

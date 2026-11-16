@@ -11,6 +11,32 @@ use serde_json::{Map, Value, json};
 
 use corvid_core::agent::Provider;
 
+pub(crate) struct Config {
+    build: fn(&str) -> Map<String, Value>,
+    arguments: fn(&str, Map<String, Value>) -> Vec<OsString>,
+    installed_settings: (&'static str, &'static str, &'static str),
+    accepts_settings_override: bool,
+}
+
+pub(super) const CLAUDE: Config = Config {
+    build: claude_hooks,
+    arguments: |_, hooks| {
+        vec![
+            "--settings".into(),
+            json!({ "hooks": hooks }).to_string().into(),
+        ]
+    },
+    installed_settings: ("CLAUDE_CONFIG_DIR", ".claude", "settings.json"),
+    accepts_settings_override: true,
+};
+
+pub(super) const CODEX: Config = Config {
+    build: codex_hooks,
+    arguments: |executable, hooks| vec!["-c".into(), codex_override(executable, &hooks).into()],
+    installed_settings: ("CODEX_HOME", ".codex", "hooks.json"),
+    accepts_settings_override: false,
+};
+
 const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
 const CODEX_EVENTS: [(&str, Option<&str>); 7] = [
     ("SessionStart", Some("startup|resume|compact")),
@@ -28,7 +54,8 @@ pub fn observer_settings(provider: Provider) -> Result<Value> {
 }
 
 pub(super) fn arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> {
-    if provider == Provider::Claude
+    let config = &super::contract(provider).unix.hooks;
+    if config.accepts_settings_override
         && argv
             .iter()
             .take_while(|arg| *arg != "--")
@@ -40,26 +67,18 @@ pub(super) fn arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> 
         return Vec::new();
     };
     let mut hooks = observer_hooks(provider, &executable);
-    if let Some(settings) = installed_settings(provider) {
+    if let Some(settings) = installed_settings(config.installed_settings) {
         retain_missing_hooks(&mut hooks, &settings);
     }
     if hooks.is_empty() {
         return Vec::new();
     }
-    match provider {
-        Provider::Claude => vec![
-            "--settings".into(),
-            json!({ "hooks": hooks }).to_string().into(),
-        ],
-        Provider::Codex => vec!["-c".into(), codex_override(&executable, &hooks).into()],
-    }
+    (config.arguments)(&executable, hooks)
 }
 
-fn installed_settings(provider: Provider) -> Option<Value> {
-    let (variable, default_directory, filename) = match provider {
-        Provider::Claude => ("CLAUDE_CONFIG_DIR", ".claude", "settings.json"),
-        Provider::Codex => ("CODEX_HOME", ".codex", "hooks.json"),
-    };
+fn installed_settings(
+    (variable, default_directory, filename): (&str, &str, &str),
+) -> Option<Value> {
     let directory = env::var_os(variable)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -88,10 +107,7 @@ fn retain_missing_hooks(hooks: &mut Map<String, Value>, settings: &Value) {
 }
 
 fn observer_hooks(provider: Provider, executable: &str) -> Map<String, Value> {
-    match provider {
-        Provider::Claude => claude_hooks(executable),
-        Provider::Codex => codex_hooks(executable),
-    }
+    (super::contract(provider).unix.hooks.build)(executable)
 }
 
 fn observer_executable() -> Result<String> {

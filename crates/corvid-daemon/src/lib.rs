@@ -16,7 +16,6 @@ mod platform;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod process;
 mod projection;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod provider;
 mod publication;
 mod snapshot;
@@ -55,17 +54,14 @@ use crate::workspaces::Workspaces;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use provider::hooks::observer_settings;
-#[cfg(windows)]
-#[path = "provider/windows_hooks.rs"]
-mod windows_hooks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use provider::shell as shell_agent;
+#[cfg(windows)]
+pub use provider::windows_hooks::observer_settings;
 #[cfg(windows)]
 pub use windows::run;
 #[cfg(windows)]
 pub use windows::run_with_options;
-#[cfg(windows)]
-pub use windows_hooks::observer_settings;
 
 /// Read an existing daemon identity without creating state.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]

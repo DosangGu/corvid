@@ -173,7 +173,7 @@ impl RunRecord {
             server_epoch: self.epoch.to_string(),
             terminal_id: self.terminal.to_string(),
             last_location: Some(projection::selection(self.location)),
-            provider: projection::provider(self.provider) as i32,
+            provider: crate::provider::contract(self.provider).wire_id,
             provider_session_id: self.session.clone(),
             parent_run_id: self.parent.map(|id| id.to_string()),
             last_lifecycle: projection::lifecycle(self.lifecycle) as i32,

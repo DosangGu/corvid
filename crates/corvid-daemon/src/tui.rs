@@ -9,9 +9,9 @@ use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, AgentResponded, Attach, AttachRole, Attached, CloseView, CreateView, Envelope,
-    FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader,
-    RouteToken, SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
+    AgentResponded, Attach, AttachRole, Attached, CloseView, CreateView, Envelope, FocusViewAgent,
+    LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader, RouteToken,
+    SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
     WorkspaceClientsDisconnected, WriterClaimed,
 };
 use corvid_protocol::{
@@ -271,7 +271,7 @@ impl TuiConnection<'_> {
                 }
                 Some(provider) = self.client_events.notices.recv() => {
                     self.send(None, Body::AgentResponded(AgentResponded {
-                        provider: crate::projection::provider(provider) as i32,
+                        provider: crate::provider::contract(provider).wire_id,
                     })).await?;
                 }
             }
@@ -1029,12 +1029,13 @@ fn viewport(value: Option<&WireViewport>) -> Result<Viewport, ProtocolFault> {
 }
 
 fn launch(command: &LaunchCommand, if_empty: bool) -> Result<Launch, ProtocolFault> {
-    let provider = match command.agent_provider.map(AgentProvider::try_from) {
-        None => None,
-        Some(Ok(AgentProvider::Claude)) => Some(Provider::Claude),
-        Some(Ok(AgentProvider::Codex)) => Some(Provider::Codex),
-        _ => return Err(invalid("unsupported managed agent provider")),
-    };
+    let provider = command
+        .agent_provider
+        .map(|id| {
+            crate::provider::from_wire(id)
+                .ok_or_else(|| invalid("unsupported managed agent provider"))
+        })
+        .transpose()?;
     let total: usize = command.argv.iter().map(Vec::len).sum();
     if command.argv.len() > 128
         || total > 64 * 1024
