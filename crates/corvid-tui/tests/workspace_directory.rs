@@ -75,13 +75,16 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     }
     #[cfg(windows)]
     {
-        let first = format!("FIRST={}", workspace.display());
-        let moved = format!("MOVED={}", other.display());
+        let first = workspace.canonicalize()?;
+        let moved = other.canonicalize()?;
         wait_for_screen(
             &mut link,
             &route,
             "initial directory and subsequent cd",
-            |screen| screen.contains(&first) && screen.contains(&moved),
+            |screen| {
+                reports_directory(screen, "FIRST=", &first)
+                    && reports_directory(screen, "MOVED=", &moved)
+            },
         )
         .await?;
     }
@@ -149,6 +152,20 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     };
     let (_, route) = attach(&mut link, ask).await?;
     assert_fresh_directory(&mut link, &route, &workspace).await
+}
+
+#[cfg(windows)]
+fn reports_directory(screen: &str, prefix: &str, expected: &Path) -> bool {
+    screen
+        .lines()
+        .filter_map(|line| line.strip_prefix(prefix))
+        .any(|path| {
+            // TEMP can use the account's short name even though PowerShell reports
+            // the long path. Compare the resolved folders.
+            Path::new(path)
+                .canonicalize()
+                .is_ok_and(|path| path == expected)
+        })
 }
 
 fn first_project_shell(path: String) -> Attach {
