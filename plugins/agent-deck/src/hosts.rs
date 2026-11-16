@@ -128,6 +128,20 @@ impl Drop for Subscriptions {
 mod tests {
     use super::*;
 
+    fn configure(path: &Path) -> Result<()> {
+        let config = Config::read_if_present(path)?.context("fixture config")?;
+        #[cfg(windows)]
+        let address = config.controller_id.simple().to_string();
+        #[cfg(not(windows))]
+        let address = path.join("ipc");
+        corvid_companion::monitor::Scope {
+            state: path.to_owned(),
+            config,
+            address,
+        }
+        .configure(&corvid_client::ControlEndpoint::Local(path.join("unused")))
+    }
+
     #[tokio::test]
     async fn subscribes_to_a_host_connected_after_deck_start_without_restarting_existing_readers()
     -> Result<()> {
@@ -142,6 +156,7 @@ mod tests {
             alias: alias.into(),
         };
         corvid_companion::initialize(&root, local, endpoint("first"), 8)?;
+        configure(&root)?;
         let mut subscriptions = Subscriptions::default();
         let (started, mut readers) = tokio::sync::mpsc::unbounded_channel();
         let start = |id, _| {
@@ -155,6 +170,7 @@ mod tests {
         assert_eq!(readers.recv().await, Some(local));
         let scoped = root.join("slot-board").join(remote.simple().to_string());
         corvid_companion::initialize(&scoped, remote, endpoint("second"), 8)?;
+        configure(&scoped)?;
         let wrong = root
             .join("slot-board")
             .join(Uuid::new_v4().simple().to_string());
