@@ -123,6 +123,7 @@ fn native_window_tracks_the_tray_corner_after_resize() {
                                         == tray_monitor(),
                                     "Deck started on the wrong monitor"
                                 );
+                                ensure!(IsWindowVisible(hwnd) != 0, "Deck did not open");
                             }
                             let gap = (12. * window.scale_factor()).round() as i32;
                             ensure!(
@@ -141,16 +142,21 @@ fn native_window_tracks_the_tray_corner_after_resize() {
                         }
                         match tick {
                             1 => {
+                                ensure!(
+                                    unsafe { IsWindowVisible(handle(window)?) } == 0,
+                                    "Deck was visible before placement"
+                                );
                                 configure(window, false, false)?;
-                                set_bounds(window, size(px(392.), px(256.)), true)?;
+                                set_bounds(window, size(px(392.), px(256.)), true, cx)?;
+                                show(window, true, cx)?;
                             }
                             5 => {
                                 configure(window, false, true)?;
-                                set_bounds(window, size(px(800.), px(560.)), false)?;
+                                set_bounds(window, size(px(800.), px(560.)), false, cx)?;
                             }
                             10 => {
                                 configure(window, false, false)?;
-                                set_bounds(window, size(px(392.), px(256.)), false)?;
+                                set_bounds(window, size(px(392.), px(256.)), false, cx)?;
                             }
                             15 => {
                                 let hwnd = handle(window)?;
@@ -177,7 +183,11 @@ fn native_window_tracks_the_tray_corner_after_resize() {
                                     );
                                 }
                             }
-                            20 => set_bounds(window, size(px(300.), px(300.)), false)?,
+                            20 => {
+                                hide(window)?;
+                                set_bounds(window, size(px(300.), px(300.)), false, cx)?;
+                                show(window, true, cx)?;
+                            }
                             25 => {
                                 let mut frame = RECT::default();
                                 let mut info = MONITORINFO {
@@ -185,6 +195,10 @@ fn native_window_tracks_the_tray_corner_after_resize() {
                                     ..Default::default()
                                 };
                                 unsafe {
+                                    ensure!(
+                                        IsWindowVisible(handle(window)?) != 0,
+                                        "Deck did not reopen"
+                                    );
                                     ensure!(
                                         GetWindowRect(handle(window)?, &mut frame) != 0
                                             && GetMonitorInfoW(tray_monitor(), &mut info) != 0,
@@ -227,6 +241,7 @@ fn native_window_tracks_the_tray_corner_after_resize() {
             }),
             window_bounds: Some(WindowBounds::centered(size(px(392.), px(256.)), cx)),
             focus: false,
+            show: false,
             ..Default::default()
         };
         cx.open_window(options, move |_, cx| cx.new(|_| Probe { tick: 0, result }))

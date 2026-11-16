@@ -139,6 +139,7 @@ pub fn set_bounds(
     window: &mut gpui::Window,
     size: gpui::Size<gpui::Pixels>,
     initial: bool,
+    _: &gpui::App,
 ) -> Result<()> {
     let scale = window.scale_factor();
     let width = (f32::from(size.width) * scale).round() as i32;
