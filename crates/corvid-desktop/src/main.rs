@@ -3,6 +3,8 @@
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod app_icon;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod appearance;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod daemon_prompt;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod desktop_windows;
@@ -120,6 +122,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     application.run(move |cx| {
         #[cfg(target_os = "macos")]
         macos::menus(&app_windows, cx);
+        cx.set_global(appearance::Appearance::load(&preferences_state));
         cx.set_global(terminal_fonts::TerminalFonts::load(
             &preferences_state,
             cx.text_system(),

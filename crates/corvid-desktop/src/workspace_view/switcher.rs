@@ -398,11 +398,11 @@ impl WorkspaceView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .flex()
             .flex_col()
-            .w(px(480.))
+            .w(ui_px(480.))
             .max_w_full()
-            .max_h(window.viewport_size().height - px(54.))
-            .p(px(10.))
-            .gap(px(5.))
+            .max_h(window.viewport_size().height - ui_px(54.).to_pixels(window.rem_size()))
+            .p(ui_px(10.))
+            .gap(ui_px(5.))
             .rounded_md()
             .bg(rgb(PANEL))
             .border_1()
@@ -410,8 +410,8 @@ impl WorkspaceView {
             .child(
                 div()
                     .flex_none()
-                    .px(px(10.))
-                    .py(px(8.))
+                    .px(ui_px(10.))
+                    .py(ui_px(8.))
                     .bg(rgb(BACKGROUND))
                     .rounded_md()
                     .text_color(rgb(if self.switcher.query.is_empty() {
@@ -428,9 +428,9 @@ impl WorkspaceView {
             .child(
                 div()
                     .flex_none()
-                    .px(px(10.))
-                    .py(px(4.))
-                    .text_size(px(12.))
+                    .px(ui_px(10.))
+                    .py(ui_px(4.))
+                    .text_size(ui_px(12.))
                     .text_color(rgb(MUTED))
                     .child("↑↓ Move   ←→ Expand or collapse   Enter Select   Esc Return"),
             )
@@ -438,8 +438,8 @@ impl WorkspaceView {
                 panel.child(
                     div()
                         .flex_none()
-                        .px(px(10.))
-                        .text_size(px(12.))
+                        .px(ui_px(10.))
+                        .text_size(ui_px(12.))
                         .text_color(rgb(MUTED))
                         .child(note),
                 )
@@ -451,7 +451,7 @@ impl WorkspaceView {
                     .flex_col()
                     .flex_shrink()
                     .min_h_0()
-                    .max_h(px(330.))
+                    .max_h(ui_px(330.))
                     .overflow_y_scroll()
                     .track_scroll(&self.switcher.scroll)
                     .children(
@@ -477,10 +477,10 @@ impl WorkspaceView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
-            .pl(px(if machine { 10. } else { 29. }))
-            .pr(px(10.))
-            .py(px(7.))
+            .gap(ui_px(8.))
+            .pl(ui_px(if machine { 10. } else { 29. }))
+            .pr(ui_px(10.))
+            .py(ui_px(7.))
             .rounded_md()
             .bg(rgb(if selected {
                 ACTIVE_FILL
@@ -490,7 +490,7 @@ impl WorkspaceView {
                 PANEL
             }))
             .text_color(rgb(TEXT))
-            .text_size(px(13.))
+            .text_size(ui_px(13.))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(ACTIVE_FILL)))
             .child(div().flex_1().min_w_0().truncate().child(row.title.clone()))
@@ -498,7 +498,7 @@ impl WorkspaceView {
                 item.child(
                     div()
                         .flex_none()
-                        .text_size(px(12.))
+                        .text_size(ui_px(12.))
                         .text_color(rgb(if row.status == "Current" {
                             ACTIVE
                         } else {
@@ -516,8 +516,8 @@ impl WorkspaceView {
         let mut actions = div()
             .flex()
             .flex_none()
-            .gap(px(6.))
-            .pt(px(6.))
+            .gap(ui_px(6.))
+            .pt(ui_px(6.))
             .border_t_1()
             .border_color(rgb(BORDER));
         if let Some(RowKey::Workspace {
@@ -592,8 +592,8 @@ impl WorkspaceView {
             .inset_0()
             .flex()
             .items_start()
-            .pt(px(if self.focus_mode { 10. } else { 44. }))
-            .px(px(8.))
+            .pt(ui_px(if self.focus_mode { 10. } else { 44. }))
+            .px(ui_px(8.))
             .when(right, |layer| layer.justify_end())
             .child(
                 div()

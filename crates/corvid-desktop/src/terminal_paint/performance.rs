@@ -39,7 +39,11 @@ impl Render for Probe {
             canvas(
                 move |bounds, window, _| {
                     let started = Instant::now();
-                    let metrics = Metrics::measure(window, &DEFAULT_FONT.into());
+                    let metrics = Metrics::measure(
+                        window,
+                        &DEFAULT_FONT.into(),
+                        crate::terminal_fonts::FONT_SIZE,
+                    );
                     let frame = Frame::new(&screen, metrics.grid(bounds));
                     (frame, metrics, started.elapsed())
                 },

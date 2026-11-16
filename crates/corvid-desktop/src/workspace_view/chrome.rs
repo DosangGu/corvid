@@ -232,16 +232,18 @@ impl WorkspaceView {
             .flex()
             .flex_none()
             .items_center()
-            .h(px(40.))
-            .gap(px(5.))
-            .px(px(8.))
+            .h(ui_px(40.))
+            .gap(ui_px(5.))
+            .px(ui_px(8.))
             .bg(rgb(PANEL))
             .child(
-                div().flex_none().max_w(px(250.)).overflow_hidden().child(
-                    button("workspaces", title, self.switcher_open).on_click(
+                div()
+                    .flex_none()
+                    .max_w(ui_px(250.))
+                    .overflow_hidden()
+                    .child(button("workspaces", title, self.switcher_open).on_click(
                         cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
-                    ),
-                ),
+                    )),
             )
             .child(
                 div()
@@ -294,7 +296,7 @@ impl WorkspaceView {
             .flex()
             .flex_1()
             .min_w_0()
-            .gap(px(3.))
+            .gap(ui_px(3.))
             .overflow_x_scroll()
             .children(workspace.tabs.iter().filter_map(|tab| {
                 let (target, open) = self.choose(workspace, tab, inventory?)?;
@@ -322,7 +324,7 @@ impl WorkspaceView {
                         .items_center()
                         .rounded_md()
                         .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
-                        .max_w(px(240.))
+                        .max_w(ui_px(240.))
                         .child(div().min_w_0().overflow_hidden().child(
                             button("select-tab", title, active).on_click(cx.listener(
                                 move |view, _, window, cx| {
@@ -354,10 +356,10 @@ impl WorkspaceView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .flex()
             .flex_col()
-            .w(px(350.))
+            .w(ui_px(350.))
             .max_w_full()
-            .p(px(7.))
-            .gap(px(2.))
+            .p(ui_px(7.))
+            .gap(ui_px(2.))
             .rounded_md()
             .bg(rgb(PANEL))
             .border_1()
@@ -369,23 +371,23 @@ impl WorkspaceView {
                         .flex()
                         .justify_between()
                         .items_center()
-                        .gap(px(12.))
-                        .px(px(10.))
-                        .py(px(6.))
+                        .gap(ui_px(12.))
+                        .px(ui_px(10.))
+                        .py(ui_px(6.))
                         .rounded_md()
                         .bg(rgb(if index == self.menu_index {
                             ACTIVE_FILL
                         } else {
                             PANEL
                         }))
-                        .text_size(px(13.))
+                        .text_size(ui_px(13.))
                         .text_color(rgb(TEXT))
                         .cursor_pointer()
                         .hover(|style| style.bg(rgb(ACTIVE_FILL)))
                         .child(label)
                         .child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(ui_px(11.))
                                 .text_color(rgb(MUTED))
                                 .child(shortcut),
                         )
@@ -459,22 +461,22 @@ impl WorkspaceView {
                 .flex()
                 .flex_col()
                 .flex_none()
-                .max_h(px(160.))
+                .max_h(ui_px(160.))
                 .overflow_y_scroll()
                 .bg(rgb(PANEL))
-                .p(px(8.))
-                .gap(px(6.))
+                .p(ui_px(8.))
+                .gap(ui_px(6.))
                 .children(errors.into_iter().map(|(target, message)| {
                     let retry = target.clone();
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(ui_px(8.))
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_size(px(12.))
+                                .text_size(ui_px(12.))
                                 .text_color(rgb(MUTED))
                                 .child(message),
                         )
@@ -499,6 +501,7 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(cx.global::<Appearance>().rem_size());
         let ui = self.session.as_ref().map(Session::ui);
         let inventory = ui.as_ref().and_then(|ui| ui.inventory.as_ref());
         let workspace = ui
@@ -549,7 +552,7 @@ impl Render for WorkspaceView {
                     .child(content),
             )
             .when(self.focus_mode, |root| {
-                root.child(div().absolute().top(px(5.)).right(px(8.)).child(
+                root.child(div().absolute().top(ui_px(5.)).right(ui_px(8.)).child(
                     button("leave-focus", "Show tabs", false).on_click(cx.listener(
                         |view, _, _, cx| {
                             view.focus_mode = false;
@@ -565,10 +568,10 @@ impl Render for WorkspaceView {
                         .bottom_0()
                         .left_0()
                         .right_0()
-                        .px(px(12.))
-                        .py(px(5.))
+                        .px(ui_px(12.))
+                        .py(ui_px(5.))
                         .bg(rgb(PANEL))
-                        .text_size(px(12.))
+                        .text_size(ui_px(12.))
                         .text_color(rgb(TEXT))
                         .child(message),
                 )
