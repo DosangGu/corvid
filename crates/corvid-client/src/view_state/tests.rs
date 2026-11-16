@@ -91,6 +91,81 @@ fn concurrent_clients_merge_other_hosts_and_keep_last_selection_per_target() -> 
     Ok(())
 }
 
+#[cfg(windows)]
+#[test]
+fn concurrent_save_waits_for_a_slow_windows_writer() -> Result<()> {
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    let fixture = tempfile::tempdir()?;
+    let store = ViewStore::new(fixture.path().join("views"));
+    let directory = Directory::create_all(&store.path)?;
+    let first = view(Target::Local);
+    let second = view(Target::Ssh {
+        alias: "build".into(),
+    });
+    let lock = directory.lock_storage()?;
+    let acquired = Instant::now();
+    let (started, waiting) = mpsc::channel();
+
+    thread::scope(|scope| -> Result<()> {
+        let store = &store;
+        let second = &second;
+        let waiter = scope.spawn(move || {
+            let started_at = Instant::now();
+            started.send(())?;
+            store
+                .save(second)
+                .with_context(|| format!("second writer failed after {:?}", started_at.elapsed()))
+        });
+        waiting.recv_timeout(Duration::from_secs(2))?;
+        // Exceed the old 500 ms retry budget while holding the usual exclusive lock.
+        thread::sleep(Duration::from_millis(850));
+        let saved = ViewStore::save_locked(&directory, &first);
+        drop(lock);
+        let held_for = acquired.elapsed();
+        saved.context("saving while holding the original Windows storage lock")?;
+        waiter
+            .join()
+            .unwrap()
+            .with_context(|| format!("first writer held the lock for {held_for:?}"))?;
+        Ok(())
+    })?;
+
+    assert_eq!(store.for_target(&first.target), Some(first));
+    assert_eq!(store.last(), Some(second));
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_save_reports_lock_timeout_and_preserves_the_saved_view() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let store = ViewStore::new(fixture.path().join("views"));
+    let original = view(Target::Local);
+    store.save(&original)?;
+    let directory = Directory::open(&store.path)?;
+    let lock = directory.lock_storage()?;
+
+    let error = store.save(&view(Target::Local)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("waiting for private Windows state lock"),
+        "{error:#}"
+    );
+    let io_error = error.downcast_ref::<std::io::Error>().unwrap();
+    assert_eq!(
+        io_error.raw_os_error(),
+        Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+    );
+
+    drop(lock);
+    assert_eq!(store.last(), Some(original));
+    assert!(directory.read_private_file(BACKUP, MAX_BYTES)?.is_none());
+    Ok(())
+}
+
 #[test]
 fn corrupt_state_recovers_from_backup_and_preserves_the_damaged_bytes() -> Result<()> {
     let fixture = tempfile::tempdir()?;

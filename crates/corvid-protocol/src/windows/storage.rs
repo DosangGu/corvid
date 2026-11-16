@@ -5,10 +5,14 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr::{null, null_mut};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use uuid::Uuid;
-use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
@@ -22,6 +26,8 @@ use windows_sys::Win32::System::SystemServices::FILE_PERSISTENT_ACLS;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use super::security::{PrivateDescriptor, checked, current_user, verify_private};
+
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 pub struct StateDirectory {
     path: PathBuf,
@@ -88,15 +94,21 @@ impl StateDirectory {
     }
 
     pub fn lock_storage(&self) -> Result<File> {
-        self.lock("state.lock")
+        self.lock("state.lock", None)
+    }
+
+    /// Wait for another writer to release the usual exclusive storage handle.
+    /// Only a sharing violation while opening the lock file is retried.
+    pub fn lock_storage_with_timeout(&self, timeout: Duration) -> Result<File> {
+        self.lock("state.lock", Some(timeout))
     }
 
     pub fn lock_startup(&self) -> Result<File> {
-        self.lock("startup.lock")
+        self.lock("startup.lock", None)
     }
 
     pub fn lock_instance(&self) -> Result<File> {
-        self.lock("daemon.lock")
+        self.lock("daemon.lock", None)
     }
 
     pub(super) fn file_id(&self) -> Result<String> {
@@ -108,17 +120,39 @@ impl StateDirectory {
         ))
     }
 
-    fn lock(&self, name: &str) -> Result<File> {
+    fn lock(&self, name: &str, timeout: Option<Duration>) -> Result<File> {
         let path = self.file_path(name)?;
         let descriptor = PrivateDescriptor::new(&self.user, false)?;
-        let lock = open_file(
-            &path,
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            OPEN_ALWAYS,
-            Some(&descriptor.attributes()),
-        )
-        .context("acquiring private Windows state lock")?;
+        let attributes = descriptor.attributes();
+        let started = Instant::now();
+        let lock = loop {
+            let error = match open_file(
+                &path,
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                OPEN_ALWAYS,
+                Some(&attributes),
+            ) {
+                Ok(lock) => break lock,
+                Err(error) => error,
+            };
+            let Some(timeout) =
+                timeout.filter(|_| error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32))
+            else {
+                return Err(error).context("acquiring private Windows state lock");
+            };
+            let delay = timeout
+                .saturating_sub(started.elapsed())
+                .min(LOCK_RETRY_INTERVAL);
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+            if started.elapsed() >= timeout {
+                return Err(error).with_context(|| {
+                    format!("timed out after {timeout:?} waiting for private Windows state lock")
+                });
+            }
+        };
         self.check_file(&lock)?;
         Ok(lock)
     }
