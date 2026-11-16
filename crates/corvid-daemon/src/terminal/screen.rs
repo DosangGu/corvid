@@ -8,6 +8,8 @@ use corvid_core::Viewport;
 use corvid_protocol::wire::TerminalHistory;
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
+mod sgr;
+
 const SCROLLBACK_ROWS: usize = 512;
 const MAX_REPLY_BYTES: usize = 32 * 1024;
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -86,6 +88,7 @@ impl Callbacks for QueryReplies {
 
 pub struct TerminalScreen {
     parser: Parser<QueryReplies>,
+    sgr: sgr::Normalizer,
 }
 
 impl TerminalScreen {
@@ -100,11 +103,14 @@ impl TerminalScreen {
         let parser =
             Parser::new_with_callbacks(viewport.rows, viewport.cols, rows, QueryReplies::default());
 
-        Self { parser }
+        Self {
+            parser,
+            sgr: sgr::Normalizer::default(),
+        }
     }
 
     pub fn process(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
-        self.parser.process(bytes);
+        self.sgr.process(bytes, |chunk| self.parser.process(chunk));
 
         let replies = self.parser.callbacks_mut();
         ensure!(!replies.overflow, "terminal query reply limit exceeded");
@@ -353,6 +359,44 @@ mod tests {
 
         child.process(b"\x1b[?1049l").unwrap();
         assert_eq!(child.parser.screen().contents(), "original");
+    }
+
+    #[test]
+    fn redraw_preserves_fragmented_colon_rgb_and_later_sgr_parameters() {
+        let viewport = Viewport::new(80, 24).unwrap();
+        let mut child = TerminalScreen::new(viewport);
+        let ansi = b"\x1b[2;38:2::239:229:219;48:2:0:216:226:236;4mA\x1b[38:2::240:230:220;39;22mB";
+        for byte in ansi {
+            child.process(&[*byte]).unwrap();
+        }
+
+        let mut client = Parser::new(viewport.rows, viewport.cols, 0);
+        client.process(child.redraw(viewport).unwrap().as_bytes());
+        let a = client.screen().cell(0, 0).unwrap();
+        assert_eq!(a.contents(), "A");
+        assert_eq!(a.fgcolor(), Color::Rgb(239, 229, 219));
+        assert_eq!(a.bgcolor(), Color::Rgb(216, 226, 236));
+        assert!(a.dim());
+        assert!(a.underline());
+
+        let b = client.screen().cell(0, 1).unwrap();
+        assert_eq!(b.contents(), "B");
+        assert_eq!(b.fgcolor(), Color::Default);
+        assert_eq!(b.bgcolor(), a.bgcolor());
+        assert!(!b.dim());
+    }
+
+    #[test]
+    fn rgb_normalization_respects_csi_cancellation_and_osc_titles() {
+        let mut screen = terminal(80, 24);
+        screen
+            .process(b"\x1b[31m\x1b[38:2::239:229:219\x18m\x1b]2;38:2::240:230:220m\x07A")
+            .unwrap();
+
+        assert_eq!(screen.title(), "38:2::240:230:220m");
+        let snapshot = screen.snapshot();
+        assert_eq!(snapshot.contents(), "mA");
+        assert_eq!(snapshot.cell(0, 1).unwrap().fgcolor(), Color::Idx(1));
     }
 
     #[test]

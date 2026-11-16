@@ -1309,6 +1309,7 @@ dependencies = [
  "unicode-width 0.2.3",
  "uuid",
  "vt100",
+ "vte",
  "windows-sys 0.61.2",
 ]
 
