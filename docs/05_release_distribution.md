@@ -158,6 +158,9 @@ Settings and keeps the prepared update available in the current app session.
 The managed installation's next launch also uses the new version. A restart
 failure leaves the app open, restores its terminal connection, and permits a retry.
 Terminal jobs remain owned by their existing daemon throughout this flow.
+On Windows, the restarted Desktop also replaces older running Agent Deck
+instances with its bundled version, including Decks hidden in the tray.
+Stopped Decks remain stopped. See [Deck lifetime](06_agent_deck.md#launch-and-lifetime).
 
 ![Available update in Settings](images/release-update-available.png)
 ![Loading indicator during an update check](images/release-update-loading.jpg)

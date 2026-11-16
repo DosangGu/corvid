@@ -36,6 +36,9 @@ struct Options {
     background: bool,
     #[arg(long, hide = true)]
     companion_service: bool,
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    managed_start: bool,
 }
 
 fn main() -> Result<()> {
@@ -81,6 +84,20 @@ fn main() -> Result<()> {
             std::future::pending(),
         ));
     }
+    #[cfg(windows)]
+    if !options.managed_start
+        && let Some(mut client) = runtime.block_on(corvid_agent_deck::lifecycle::ensure_current(
+            &std::env::current_exe()?,
+            &state,
+            &address,
+            &config,
+            false,
+        ))?
+    {
+        runtime.block_on(client.activate(false))?;
+        return Ok(());
+    }
+    #[cfg(not(windows))]
     if runtime
         .block_on(corvid_agent_deck::connection::Client::connect(
             config.host_id,
