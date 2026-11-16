@@ -11,6 +11,7 @@ mod implementation {
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, MonitorFromWindow,
     };
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
     fn handle(window: &Window) -> Result<HWND> {
@@ -20,6 +21,21 @@ mod implementation {
             anyhow::bail!("Agent Deck needs a Win32 window");
         };
         Ok(raw.hwnd.get() as HWND)
+    }
+
+    pub fn start_move(window: &Window) -> Result<()> {
+        let hwnd = handle(window)?;
+        // GPUI captures client mouse presses and its focusable root prevents
+        // default non-client dragging. Queue the native move after dispatch,
+        // so the modal move loop cannot re-enter a borrowed GPUI view.
+        unsafe {
+            ReleaseCapture();
+            ensure!(
+                PostMessageW(hwnd, WM_SYSCOMMAND, (SC_MOVE | HTCAPTION) as usize, 0) != 0,
+                "starting Agent Deck window move"
+            );
+        }
+        Ok(())
     }
 
     pub fn visible(window: &Window, visible: bool) -> Result<()> {
@@ -133,6 +149,9 @@ mod implementation {
 }
 
 pub(super) use implementation::{configure, set_bounds, visible};
+
+#[cfg(windows)]
+pub(super) use implementation::start_move;
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
