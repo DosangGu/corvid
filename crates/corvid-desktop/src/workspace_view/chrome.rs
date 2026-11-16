@@ -157,9 +157,7 @@ impl WorkspaceView {
                 "Shell {}",
                 workspace.map_or(1, |workspace| workspace.tabs.len() + 1)
             ))),
-            MenuAction::NewWorkspace => {
-                self.new_workspace(inventory.map_or(0, |inventory| inventory.workspaces.len()))
-            }
+            MenuAction::NewWorkspace => self.new_workspace(window, cx),
             MenuAction::SplitRight => self.create(Target::SplitAxis(SplitAxis::Horizontal as i32)),
             MenuAction::SplitDown => self.create(Target::SplitAxis(SplitAxis::Vertical as i32)),
             MenuAction::Focus => self.focus_mode = !self.focus_mode,
@@ -582,6 +580,9 @@ impl Render for WorkspaceView {
             .when(self.menu_open, |root| root.child(self.action_menu(cx)))
             .when(self.naming.is_some(), |root| {
                 root.child(self.naming_panel(cx))
+            })
+            .when(self.creation.is_some(), |root| {
+                root.child(self.creation_panel(cx))
             })
     }
 }

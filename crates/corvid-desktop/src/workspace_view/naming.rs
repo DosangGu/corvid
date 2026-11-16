@@ -184,6 +184,9 @@ impl EntityInputHandler for WorkspaceView {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
+        if let Some(draft) = &self.creation {
+            return Some(draft.text().content(range, actual));
+        }
         let draft = self.naming.as_ref()?;
         let units: Vec<_> = (draft.text.clone() + &draft.marked)
             .encode_utf16()
@@ -199,6 +202,9 @@ impl EntityInputHandler for WorkspaceView {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        if let Some(draft) = &self.creation {
+            return Some(draft.text().selected());
+        }
         let draft = self.naming.as_ref()?;
         let end = draft.text.encode_utf16().count();
         Some(UTF16Selection {
@@ -208,12 +214,19 @@ impl EntityInputHandler for WorkspaceView {
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        if let Some(draft) = &self.creation {
+            return draft.text().marked();
+        }
         let draft = self.naming.as_ref()?;
         let start = draft.text.encode_utf16().count();
         (!draft.marked.is_empty()).then(|| start..start + draft.marked.encode_utf16().count())
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.creation.is_some() {
+            self.unmark_creation(cx);
+            return;
+        }
         if let Some(draft) = &mut self.naming {
             draft.marked.clear();
         }
@@ -222,11 +235,15 @@ impl EntityInputHandler for WorkspaceView {
 
     fn replace_text_in_range(
         &mut self,
-        _: Option<Range<usize>>,
+        range: Option<Range<usize>>,
         text: &str,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.creation.is_some() {
+            self.edit_creation(range, text, None, false, cx);
+            return;
+        }
         if let Some(draft) = &mut self.naming {
             draft.append(text);
         }
@@ -235,12 +252,16 @@ impl EntityInputHandler for WorkspaceView {
 
     fn replace_and_mark_text_in_range(
         &mut self,
-        _: Option<Range<usize>>,
+        range: Option<Range<usize>>,
         text: &str,
-        _: Option<Range<usize>>,
+        selected: Option<Range<usize>>,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.creation.is_some() {
+            self.edit_creation(range, text, selected, true, cx);
+            return;
+        }
         if let Some(draft) = &mut self.naming {
             if draft.selected {
                 draft.text.clear();

@@ -120,6 +120,14 @@ counts. Ctrl-] then n or p still cycles through live tabs. Pane writers resize
 their selected pane; hidden panes retain their size until selected. Other
 writers keep their own viewports.
 
+To choose a default folder when creating a workspace, use
+`corvid attach --new-workspace "Review" --browse-directory`. Use Tab to look up
+matches, the arrow keys to navigate, and Enter to choose a folder. For scripts
+and known paths, use `--workspace-directory PATH` instead. The daemon resolves
+paths on its host, including when you run the TUI over SSH. The first
+terminal, new tabs, and splits use this folder. An explicit launch directory
+or a saved pane directory still takes precedence when reopening that pane.
+
 Press Ctrl-] then `%` to split right, `"` to split down, or `o` to cycle
 through live panes in the tab. Use `corvid attach --workspace WORKSPACE_ID
 --tab TAB_ID --pane PANE_ID` to reattach to an exact pane. Windows Desktop

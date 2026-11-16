@@ -73,6 +73,16 @@ pub(super) enum Command {
         /// Create a workspace with this label and open a terminal.
         #[arg(long)]
         new_workspace: Option<String>,
+        /// Use this folder on the execution host as the workspace default.
+        #[arg(long, requires = "new_workspace")]
+        workspace_directory: Option<String>,
+        /// Browse folders on the execution host before creating a workspace.
+        #[arg(
+            long,
+            requires = "new_workspace",
+            conflicts_with = "workspace_directory"
+        )]
+        browse_directory: bool,
         /// Create a tab with this label and open a terminal.
         #[arg(long)]
         new_tab: Option<String>,
@@ -266,11 +276,23 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             tab,
             pane,
             new_workspace,
+            workspace_directory,
+            browse_directory,
             new_tab,
             claim_workspace,
             move_tab,
             to_workspace,
         } => {
+            let workspace_directory = if browse_directory {
+                corvid_client::check_tty()?;
+                ensure(&runtime).await?;
+                super::directory_picker::pick(&runtime).await?
+            } else {
+                workspace_directory
+            };
+            if browse_directory && workspace_directory.is_none() {
+                return Ok(0);
+            }
             let launch = (new
                 || agent.is_some()
                 || !argv.is_empty()
@@ -292,6 +314,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 tab,
                 pane,
                 new_workspace,
+                workspace_directory,
                 new_tab,
                 claim_workspaces: claim_workspace,
                 move_tab: move_tab.zip(to_workspace),

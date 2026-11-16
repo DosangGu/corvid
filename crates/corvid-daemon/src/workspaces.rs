@@ -59,6 +59,8 @@ pub(crate) struct AttachTarget {
     pub(crate) tab: Option<Uuid>,
     pub(crate) pane: Option<Uuid>,
     pub(crate) new_workspace: Option<String>,
+    pub(crate) workspace_directory: Option<Vec<u8>>,
+    pub(crate) fallback_directory: Option<PathBuf>,
     pub(crate) new_tab: Option<String>,
     pub(crate) keymap: Keymap,
     pub(crate) viewport: TuiViewport,
@@ -78,7 +80,7 @@ pub(crate) struct Active {
 pub(crate) enum Destination {
     Exact(Location),
     Open(Location),
-    CreateWorkspace(String),
+    CreateWorkspace(String, Option<Vec<u8>>),
     CreateTab(String),
     Split(Axis),
     Tab(TabCommand),
@@ -569,7 +571,7 @@ impl Workspaces {
         if let Some(launch) = &mut target.launch
             && (!launch.if_empty || !registry.has_live_at(location))
         {
-            prepare_cwd(&layout, location, Some(launch))?;
+            prepare_cwd(&layout, location, launch, target.fallback_directory.take())?;
         }
         let generation = registry.next_generation()?;
         let terminal = self.reserve_slot(&mut registry, location, target.launch.is_some())?;
@@ -1383,14 +1385,15 @@ fn resolve_switch(
             if !layout.contains(location) {
                 return Err(target_gone());
             }
-            let launch = if matches!(destination, Destination::Open(_)) {
-                let mut shell = new_shell();
-                shell.if_empty = true;
-                prepare_cwd(layout, location, Some(&mut shell))?;
-                Some(shell)
-            } else {
-                None
-            };
+            let launch =
+                if matches!(destination, Destination::Open(_)) && !registry.has_live_at(location) {
+                    let mut shell = new_shell();
+                    shell.if_empty = true;
+                    prepare_cwd(layout, location, &mut shell, None)?;
+                    Some(shell)
+                } else {
+                    None
+                };
             Ok(Some((location, launch)))
         }
         Destination::Tab(TabCommand::Create) => {
@@ -1430,15 +1433,18 @@ fn resolve_switch(
         }
         creation => {
             let mut launch = new_shell();
-            prepare_cwd(layout, old.location, Some(&mut launch))?;
+            let inherited = saved_directory(layout, old.location);
             let layout = Arc::make_mut(layout);
             let location = match creation {
-                Destination::CreateWorkspace(label) => layout.add_workspace(label, "Shell".into()),
+                Destination::CreateWorkspace(label, directory) => {
+                    layout.add_workspace_in(label, "Shell".into(), directory)
+                }
                 Destination::CreateTab(label) => layout.add_tab(old.location.workspace, label),
                 Destination::Split(axis) => layout.split_pane(old.location, axis),
                 _ => unreachable!("all other destinations have already been handled"),
             }
             .map_err(|_| invalid_layout())?;
+            prepare_cwd(layout, location, &mut launch, inherited)?;
             Ok(Some((location, Some(launch))))
         }
     }
@@ -1504,6 +1510,7 @@ fn resolve(
         || (target.new_tab.is_some() && target.tab.is_some())
         || (target.pane.is_some() && (target.tab.is_none() || target.workspace.is_none()))
         || ((target.new_workspace.is_some() || target.new_tab.is_some()) && target.launch.is_none())
+        || (target.workspace_directory.is_some() && target.new_workspace.is_none())
     {
         return Err(ProtocolFault::new(
             "InvalidMessage",
@@ -1518,7 +1525,7 @@ fn resolve(
             .cloned();
         let tab = manual.clone().unwrap_or_else(|| "Shell".to_owned());
         let location = Arc::make_mut(layout)
-            .add_workspace(label.clone(), tab)
+            .add_workspace_in(label.clone(), tab, target.workspace_directory.clone())
             .map_err(|_| invalid_layout())?;
         Arc::make_mut(layout)
             .rename_tab(location, manual)
@@ -1575,21 +1582,50 @@ fn resolve(
     Ok(location)
 }
 
-fn prepare_cwd(layout: &Layout, location: Location, launch: Option<&mut Launch>) -> Reply<()> {
-    let Some(launch) = launch else { return Ok(()) };
-    if launch.cwd.is_none() {
-        launch.cwd = layout
-            .last_cwd(location)
-            .and_then(|cwd| crate::platform::decode_os_string(&cwd.path))
+fn saved_directory(layout: &Layout, location: Location) -> Option<PathBuf> {
+    layout
+        .last_cwd(location)
+        .and_then(|cwd| crate::platform::decode_os_string(&cwd.path))
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+fn prepare_cwd(
+    layout: &Layout,
+    location: Location,
+    launch: &mut Launch,
+    fallback: Option<PathBuf>,
+) -> Reply<()> {
+    if launch.cwd.is_some() {
+        if launch.cwd.as_ref().is_some_and(|path| !path.is_dir()) {
+            return Err(ProtocolFault::new(
+                "InvalidMessage",
+                "launch directory does not exist",
+            ));
+        }
+        return Ok(());
+    }
+    let directory = if fallback.is_none() {
+        saved_directory(layout, location)
+    } else {
+        None
+    };
+    let directory = if directory.is_some() {
+        directory
+    } else if let Some(path) = layout.workspace_directory(location.workspace) {
+        let path = crate::platform::decode_os_string(path)
             .map(PathBuf::from)
-            .filter(|path| path.is_dir());
+            .ok_or_else(|| {
+                ProtocolFault::new("InvalidDirectory", "The saved workspace folder is invalid.")
+            })?;
+        Some(path)
+    } else {
+        fallback
+    };
+    if let Some(path) = &directory {
+        crate::directories::validate(path)?;
     }
-    if launch.cwd.as_ref().is_some_and(|path| !path.is_dir()) {
-        return Err(ProtocolFault::new(
-            "InvalidMessage",
-            "launch directory does not exist",
-        ));
-    }
+    launch.cwd = directory;
     Ok(())
 }
 

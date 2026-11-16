@@ -20,6 +20,8 @@ pub struct Layout {
 pub struct Workspace {
     pub id: Uuid,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<Vec<u8>>,
     pub tabs: Vec<Tab>,
 }
 
@@ -163,6 +165,7 @@ impl Layout {
             workspaces: vec![Workspace {
                 id: Uuid::new_v4(),
                 label: "Main".to_owned(),
+                directory: None,
                 tabs: vec![Tab {
                     id: Uuid::new_v4(),
                     label: "Shell".to_owned(),
@@ -184,6 +187,9 @@ impl Layout {
         for workspace in &self.workspaces {
             limits.id(workspace.id)?;
             validate_label(&workspace.label)?;
+            if let Some(directory) = &workspace.directory {
+                validate_path(directory)?;
+            }
             limits.tabs += workspace.tabs.len();
             if workspace.tabs.is_empty() || limits.tabs > MAX_TABS {
                 return Err(InvalidLayout);
@@ -235,7 +241,19 @@ impl Layout {
         label: String,
         tab_label: String,
     ) -> Result<Location, InvalidLayout> {
+        self.add_workspace_in(label, tab_label, None)
+    }
+
+    pub fn add_workspace_in(
+        &mut self,
+        label: String,
+        tab_label: String,
+        directory: Option<Vec<u8>>,
+    ) -> Result<Location, InvalidLayout> {
         validate_label(&label)?;
+        if let Some(directory) = &directory {
+            validate_path(directory)?;
+        }
         if self.workspaces.len() >= MAX_WORKSPACES {
             return Err(InvalidLayout);
         }
@@ -250,9 +268,18 @@ impl Layout {
         self.workspaces.push(Workspace {
             id: workspace,
             label,
+            directory,
             tabs: vec![tab],
         });
         Ok(location)
+    }
+
+    pub fn workspace_directory(&self, id: Uuid) -> Option<&[u8]> {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)?
+            .directory
+            .as_deref()
     }
 
     pub fn contains(&self, location: Location) -> bool {
@@ -643,7 +670,17 @@ fn validate_path(path: &[u8]) -> Result<(), InvalidLayout> {
         && drive_path[0].is_ascii_alphabetic()
         && drive_path[1] == b':'
         && matches!(drive_path[2], b'/' | b'\\');
-    if !(path.first() == Some(&b'/') || windows_absolute)
+    let unc = path
+        .strip_prefix(br"\\?\UNC\")
+        .or_else(|| path.strip_prefix(br"\\"));
+    let windows_share = unc.is_some_and(|path| {
+        let mut parts = path.split(|byte| matches!(byte, b'/' | b'\\'));
+        parts
+            .next()
+            .is_some_and(|host| !host.is_empty() && host != b"?" && host != b".")
+            && parts.next().is_some_and(|share| !share.is_empty())
+    });
+    if !(path.first() == Some(&b'/') || windows_absolute || windows_share)
         || path.len() > MAX_PATH
         || path.contains(&0)
     {

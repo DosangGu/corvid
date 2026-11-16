@@ -64,6 +64,16 @@ pub(super) enum Command {
         pane: Option<String>,
         #[arg(long, conflicts_with = "workspace")]
         new_workspace: Option<String>,
+        /// Use this folder on the execution host as the workspace default.
+        #[arg(long, requires = "new_workspace")]
+        workspace_directory: Option<String>,
+        /// Browse folders on the execution host before creating a workspace.
+        #[arg(
+            long,
+            requires = "new_workspace",
+            conflicts_with = "workspace_directory"
+        )]
+        browse_directory: bool,
         #[arg(long, conflicts_with = "tab")]
         new_tab: Option<String>,
         #[arg(last = true)]
@@ -174,9 +184,21 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
             tab,
             pane,
             new_workspace,
+            workspace_directory,
+            browse_directory,
             new_tab,
             argv,
         } => {
+            let workspace_directory = if browse_directory {
+                check_tty()?;
+                ensure_local_daemon(&runtime).await?;
+                super::directory_picker::pick(&runtime).await?
+            } else {
+                workspace_directory
+            };
+            if browse_directory && workspace_directory.is_none() {
+                return Ok(0);
+            }
             let launch = (new
                 || agent.is_some()
                 || !argv.is_empty()
@@ -199,6 +221,7 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
                 tab,
                 pane,
                 new_workspace,
+                workspace_directory,
                 new_tab,
                 ..AttachOptions::default()
             };

@@ -180,7 +180,16 @@ Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
 The initial attach joins a live pane in the default session or opens its shell.
 
-Use **+ → New workspace** under the active connection. **+ → New tab** creates
+Use **+ → New workspace** or the workspace picker to create a workspace.
+Choose Local, an OpenSSH alias, or a WSL distribution. The folder field accepts
+a path and suggests matching folders. Use **Browse…** to navigate folders with
+the mouse, or use the arrow keys and Tab to choose a suggestion. Home and
+relative paths are resolved on the selected machine. You can leave the folder
+empty to use the usual starting location. Desktop opens the first terminal when
+you choose **Create**. A chosen folder also becomes the default for new tabs
+and splits, and the daemon saves it across restarts.
+
+**+ → New tab** creates
 a shell within the selected workspace. Click a pane to focus it. Other live
 panes in the same tab show read-only previews. Desktop and
 TUI clients using pane writers can operate different panes in the same

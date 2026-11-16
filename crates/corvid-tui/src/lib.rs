@@ -104,6 +104,8 @@ pub fn monitor_executable() -> Result<PathBuf> {
     local_daemon_executable()
 }
 
+mod directory_picker;
+
 async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions) -> Result<u32> {
     corvid_client::check_tty()?;
     if std::env::var_os("CORVID_AGENT_MONITOR").is_some_and(|value| value == "0") {

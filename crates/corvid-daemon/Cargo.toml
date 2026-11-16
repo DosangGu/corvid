@@ -10,6 +10,7 @@ publish.workspace = true
 anyhow.workspace = true
 corvid-core.workspace = true
 corvid-protocol.workspace = true
+dunce.workspace = true
 portable-pty.workspace = true
 prost.workspace = true
 serde = { workspace = true, features = ["rc"] }
@@ -26,7 +27,7 @@ nix = { workspace = true, features = ["fs", "user"] }
 semver.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [lints]
 workspace = true
