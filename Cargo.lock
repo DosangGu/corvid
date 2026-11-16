@@ -1235,6 +1235,7 @@ dependencies = [
  "image",
  "raw-window-handle",
  "resvg 0.49.0",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

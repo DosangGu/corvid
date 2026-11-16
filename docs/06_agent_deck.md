@@ -45,6 +45,24 @@ Closing or switching Desktop retires its focus registration without ending Deck.
 A reopened Desktop can register again. Each Deck currently watches one configured
 host; a unified multi-host window is future work.
 
+On Windows, starting an updated Desktop checks the running Decks in its saved
+controller scopes, including hidden tray instances. It replaces an older Deck
+with the bundled executable and retains whether its window was visible. Opening
+Agents or launching Deck directly performs the same version check. Equal or
+newer Deck versions are reused; a stopped Deck is not started by the startup
+check. Replacement uses the existing GPUI quit loop, waits for process exit, and
+then reopens the same state directory, preserving controller identity, slots,
+window preferences, notification settings, and history. It also handles older
+Deck releases that have no lifecycle IPC. Failure to exit is reported without
+force-killing the process. Linux and macOS retain their existing reuse behavior.
+
+Windows lifecycle qualification on 2026-11-16 replaced a published v0.1.4 GPUI
+Deck with a local build in an isolated controller scope. The old process exited,
+the replacement accepted a connection, and controller identity was unchanged.
+The automated native fixture covers hidden and visible windows, equal/newer
+version reuse, concurrent refresh and activation, saved settings, and host
+isolation. This qualification does not exercise mouse dragging.
+
 Deck starts or reuses a separate companion service when needed. Quitting Deck does
 not kill that shared companion or any daemon, terminal, or agent. Existing Board
 state paths under `slot-board/` are deliberately retained, preserving controller

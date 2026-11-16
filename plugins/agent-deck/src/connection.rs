@@ -39,8 +39,15 @@ pub async fn frames(stream: Stream) -> Result<(Reader, Writer)> {
 
 impl Client {
     pub async fn connect(host: Uuid, controller: Uuid, desktop: bool) -> Result<Self> {
+        let stream = timeout(COMMAND_TIMEOUT, connect(controller)).await??;
+        let mut client = Self::handshake(stream, host, controller).await?;
+        client.activate(desktop).await?;
+        Ok(client)
+    }
+
+    pub(crate) async fn handshake(stream: Stream, host: Uuid, controller: Uuid) -> Result<Self> {
         timeout(COMMAND_TIMEOUT, async {
-            let (mut reader, mut writer) = frames(connect(controller).await?).await?;
+            let (mut reader, mut writer) = frames(stream).await?;
             let request = hello(Uuid::new_v4().to_string(), None, vec![CAPABILITY.into()]);
             writer.envelope(&request).await?;
             let reply = reader
@@ -52,26 +59,33 @@ impl Client {
                 session.host_id == host.to_string(),
                 "Agent Deck belongs to a different host"
             );
-            let mut client = Self {
+            Ok(Self {
                 session,
                 reader,
                 writer,
                 host,
                 controller,
-            };
-            let id = client.open(desktop).await?;
-            let reply = client
+            })
+        })
+        .await
+        .context("Agent Deck connection timed out")?
+    }
+
+    pub async fn activate(&mut self, desktop: bool) -> Result<()> {
+        timeout(COMMAND_TIMEOUT, async {
+            let id = self.open(desktop).await?;
+            let reply = self
                 .reader
                 .next_envelope()
                 .await?
                 .context("Agent Deck did not open")?;
-            client.session.validate_scope(&reply)?;
+            self.session.validate_scope(&reply)?;
             ensure!(
                 reply.request_id.as_deref() == Some(id.as_str())
                     && matches!(reply.body, Some(Body::AgentDeckOpened(_))),
                 "Agent Deck registration rejected"
             );
-            Ok(client)
+            Ok(())
         })
         .await
         .context("Agent Deck connection timed out")?

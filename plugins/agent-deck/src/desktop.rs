@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::Duration;
+#[cfg(not(windows))]
+use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::ControlEndpoint;
@@ -8,10 +8,13 @@ use corvid_companion::{Config, HostEndpoint, PresentationAddress};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{DesktopAgentFocused, PresentedRunKey};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
+#[cfg(not(windows))]
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, timeout};
+#[cfg(not(windows))]
+use tokio::time::sleep;
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::connection::{self, Client};
@@ -111,6 +114,23 @@ async fn open(
         },
     };
     let (scope, config) = settings.scope(saved, host)?;
+    #[cfg(windows)]
+    let client = {
+        let mut client = crate::lifecycle::ensure_current(
+            &executable()?,
+            &scope.state,
+            &scope.address,
+            &config,
+            true,
+        )
+        .await?
+        .context("Agent Deck was not started")?;
+        client.activate(true).await?;
+        client
+    };
+    #[cfg(not(windows))]
+    // TODO: Refresh running Unix Agent Decks after a Desktop update
+    // Add version-aware replacement for Linux and macOS while preserving independent Deck lifetime and shared companion state, matching the Windows startup and activation behavior.
     let client = match Client::connect(host, config.controller_id, true).await {
         Ok(client) => client,
         Err(_) => {
@@ -193,6 +213,71 @@ async fn forward_focus(
 }
 
 impl Settings {
+    /// Refresh already-running Windows Decks without opening stopped ones.
+    #[cfg(windows)]
+    pub async fn refresh_running(&self, executable: &Path) -> Result<()> {
+        let mut states = vec![(self.state.clone(), Some(self.pipe_instance.clone()), None)];
+        match std::fs::read_dir(self.state.join("slot-board")) {
+            Ok(entries) => {
+                for entry in entries.take(256) {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir()
+                        && let Some(host) = entry
+                            .file_name()
+                            .to_str()
+                            .and_then(|name| Uuid::parse_str(name).ok())
+                    {
+                        states.push((entry.path(), None, Some(host)));
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let mut failures = Vec::new();
+        for (state, address, host) in states {
+            let result = async {
+                let Some(config) = Config::read_if_present(&state)? else {
+                    return Ok(());
+                };
+                if host.is_some_and(|host| host != config.host_id) {
+                    return Ok(());
+                }
+                let address = address.unwrap_or_else(|| config.controller_id.simple().to_string());
+                crate::lifecycle::ensure_current(executable, &state, &address, &config, false)
+                    .await?;
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(error) = result {
+                failures.push(error.to_string());
+            }
+        }
+        ensure!(
+            failures.is_empty(),
+            "Could not update running Agent Decks: {}",
+            failures.join("; ")
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub fn refresh_in_background(&self) -> Result<()> {
+        let settings = self.clone();
+        let executable = executable()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        std::thread::Builder::new()
+            .name("corvid-agent-deck-update".into())
+            .spawn(move || {
+                if let Err(error) = runtime.block_on(settings.refresh_running(&executable)) {
+                    eprintln!("{error:#}");
+                }
+            })?;
+        Ok(())
+    }
+
     fn scope(&self, endpoint: HostEndpoint, host: Uuid) -> Result<(Scope, Config)> {
         let shared = Config::read_if_present(&self.state)?
             .is_some_and(|config| config.host_id == host && config.endpoint == endpoint);
