@@ -109,9 +109,9 @@ async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions)
     if std::env::var_os("CORVID_AGENT_MONITOR").is_some_and(|value| value == "0") {
         return corvid_client::attach(runtime, options).await;
     }
-    let host = corvid_client::host(runtime).await?;
     let endpoint = corvid_client::ControlEndpoint::Local(runtime.to_owned());
-    if let Err(error) = async {
+    let monitor = tokio::spawn(async move {
+        let host = endpoint.host().await?;
         monitor_agent_host(
             &companion::companion_state(None)?,
             &endpoint,
@@ -119,12 +119,17 @@ async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions)
             "main",
         )
         .await
+    });
+    let result = corvid_client::attach(runtime, options).await;
+    if monitor.is_finished() {
+        if let Err(error) = monitor.await.unwrap_or_else(|error| Err(error.into())) {
+            // Report after restoring the TTY, never into the active terminal's render stream.
+            eprintln!("corvid: agent monitor unavailable: {error:#}");
+        }
+    } else {
+        monitor.abort();
     }
-    .await
-    {
-        eprintln!("corvid: agent monitor unavailable: {error:#}");
-    }
-    corvid_client::attach(runtime, options).await
+    result
 }
 
 /// Use the shared runtime payload when starting a daemon from packaged Desktop.

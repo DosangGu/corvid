@@ -240,6 +240,12 @@ pub fn address(
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
+            .or_else(|| {
+                // SSH sessions may omit XDG_RUNTIME_DIR even with a running user manager.
+                let uid = unsafe { nix::libc::geteuid() };
+                let runtime = PathBuf::from(format!("/run/user/{uid}"));
+                runtime.is_dir().then_some(runtime)
+            })
             .or_else(|| match &config.endpoint {
                 HostEndpoint::Local { runtime_dir } => Some(runtime_dir.clone()),
                 _ => corvid_client::runtime_path(None).ok(),

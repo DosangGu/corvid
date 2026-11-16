@@ -250,14 +250,19 @@ def check_monitored_ssh(ssh, command, directory, scope, local):
         pid = ready[1]
         first.send(b"a")
         first.expect("한글 e\u0301".encode())
-        record = json.loads((scope / "monitor/connection.json").read_text())
+        deadline = time.monotonic() + 8
+        record_path = scope / "monitor/connection.json"
+        while not record_path.exists():
+            assert time.monotonic() < deadline, "TUI did not configure its agent monitor"
+            time.sleep(0.02)
+        record = json.loads(record_path.read_text())
         reader = [*local, "companion", "--socket-dir", record["address"], "slots"]
-        deadline = time.monotonic() + 5
         while True:
-            initial = fields(subprocess.check_output(reader, text=True).splitlines()[0])
-            if initial["connection"] == "Ready":
+            reply = subprocess.run(reader, text=True, capture_output=True, timeout=3)
+            initial = fields(reply.stdout.splitlines()[0]) if reply.returncode == 0 else {}
+            if initial.get("connection") == "Ready":
                 break
-            assert time.monotonic() < deadline, initial
+            assert time.monotonic() < deadline, (initial, reply.stderr)
             time.sleep(0.02)
         check_companion_ssh(ssh, local, directory)
         assert first.process.poll() is None
