@@ -353,23 +353,18 @@ impl Desktop {
     }
 
     fn header(&self, cx: &mut Context<Self>) -> Div {
-        let mut header = column()
-            .flex_shrink_0()
-            .p(px(12.))
-            .bg(rgb(PANEL))
-            .child(
-                row()
-                    .flex_wrap()
-                    .child(button("hosts", "Hosts", true).on_click(
-                        cx.listener(|view, _, window, cx| view.expand(Section::Hosts, window, cx)),
-                    ))
-                    .child(
-                        button("notifications", "Notifications", true).on_click(cx.listener(
-                            |view, _, window, cx| view.expand(Section::Notifications, window, cx),
-                        )),
-                    ),
-            )
-            .child(muted(connection_text(&self.view)));
+        let mut header = column().flex_shrink_0().p(px(12.)).bg(rgb(PANEL)).child(
+            row()
+                .flex_wrap()
+                .child(button("hosts", "Hosts", true).on_click(
+                    cx.listener(|view, _, window, cx| view.expand(Section::Hosts, window, cx)),
+                ))
+                .child(
+                    button("notifications", "Notifications", true).on_click(cx.listener(
+                        |view, _, window, cx| view.expand(Section::Notifications, window, cx),
+                    )),
+                ),
+        );
         if let Some(snapshot) = &self.view.snapshot {
             if let Some(code) = snapshot
                 .data

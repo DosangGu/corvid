@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -16,9 +17,14 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
+use crate::delivery::Delivery;
+use crate::hosts::{self, Subscriptions};
 use crate::notifications::{Ledger, Notice, Settings, now_ms};
 use crate::parent::{self, DesktopLink};
 use crate::platform::{Event, Native};
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
@@ -198,19 +204,15 @@ async fn run(
         result = listening_rx => result.context("Agent Deck instance already exists or its private endpoint is unavailable")?,
         result = jobs.join_next() => { anyhow::bail!("Agent Deck endpoint unavailable: {result:?}"); }
     }
-    let (snapshots, mut snapshot_rx) = mpsc::channel(1);
-    jobs.spawn(poll(
-        state,
-        address,
-        config.host_id,
-        config.controller_id,
-        snapshots,
-    ));
+    let delivery = Delivery::open(hosts::root(&state, config.host_id))?;
+    let (snapshots, mut snapshot_rx) = mpsc::channel(8);
+    jobs.spawn(poll_hosts(state, address, config.host_id, snapshots));
     let epoch = Uuid::new_v4();
     let mut clients = tokio::task::JoinSet::new();
     let mut monitor = Monitor {
-        host: config.host_id,
         storage,
+        delivery,
+        hosts: BTreeMap::new(),
         ledger,
         native,
         issue,
@@ -257,8 +259,9 @@ async fn run(
 }
 
 struct Monitor {
-    host: Uuid,
     storage: StateDirectory,
+    delivery: Delivery,
+    hosts: BTreeMap<Uuid, HostStatus>,
     ledger: Ledger,
     native: Option<Native>,
     issue: String,
@@ -266,54 +269,119 @@ struct Monitor {
     ctx: UiSignal,
 }
 
+#[derive(Default)]
+struct HostStatus {
+    connected: bool,
+    unseen: usize,
+    issue: String,
+}
+
+enum Update {
+    Hosts(Vec<Uuid>),
+    Snapshot(Uuid, Result<PresentationAttention, String>),
+}
+
 impl Monitor {
-    async fn snapshot(&mut self, result: Result<PresentationAttention, String>) -> Result<()> {
+    async fn snapshot(&mut self, update: Update) -> Result<()> {
+        let (host, result) = match update {
+            Update::Hosts(hosts) => {
+                self.hosts.retain(|id, _| hosts.contains(id));
+                self.publish();
+                return Ok(());
+            }
+            Update::Snapshot(host, result) => (host, result),
+        };
         let snapshot = match result {
             Ok(snapshot) => snapshot,
             Err(issue) => {
-                if let Some(native) = &self.native {
-                    native.status("Corvid Agent Deck — companion unavailable", false);
-                }
-                self.views.send_modify(|view| view.status = issue);
-                self.ctx.notify();
+                self.hosts.insert(
+                    host,
+                    HostStatus {
+                        issue,
+                        ..Default::default()
+                    },
+                );
+                self.publish();
                 return Ok(());
             }
         };
-        let observation = self.ledger.observe(self.host, &snapshot, now_ms())?;
+        let observation = match self.ledger.observe(host, &snapshot, now_ms()) {
+            Ok(observation) => observation,
+            Err(error) => {
+                self.hosts.insert(
+                    host,
+                    HostStatus {
+                        issue: error.to_string(),
+                        ..Default::default()
+                    },
+                );
+                self.publish();
+                return Ok(());
+            }
+        };
+        let notices = if self.native.is_some() {
+            self.delivery.claim(observation.notices).await?
+        } else {
+            Vec::new()
+        };
         if observation.changed {
             save(&self.storage, &self.ledger)?;
         }
-        let status = if snapshot.omitted_count > 0 {
+        let connected = snapshot.connection
+            == corvid_protocol::wire::CompanionConnection::Ready as i32
+            && snapshot.control_generation.is_some();
+        let issue = if snapshot.omitted_count > 0 {
             format!(
                 "{} older notifications exceed the bounded feed.",
                 snapshot.omitted_count
             )
+        } else if !connected {
+            "Waiting for host synchronization".into()
         } else {
-            self.issue.clone()
+            String::new()
         };
-        self.views.send_modify(|view| {
-            view.history = self.ledger.history.iter().rev().cloned().collect();
-            view.status = status;
-        });
-        if let Some(native) = &self.native {
-            let state = if snapshot.control_generation.is_some() {
-                "connected"
-            } else {
-                "offline"
-            };
-            native.status(
-                &format!(
-                    "Corvid Agent Deck — {state} — {} unseen",
-                    snapshot.attention.len()
-                ),
-                !snapshot.attention.is_empty(),
-            );
-        }
-        for notice in batch(observation.notices) {
+        self.hosts.insert(
+            host,
+            HostStatus {
+                connected,
+                unseen: snapshot.attention.len(),
+                issue,
+            },
+        );
+        self.publish();
+        for notice in batch(notices) {
             self.notify(notice).await;
         }
-        self.ctx.notify();
         Ok(())
+    }
+
+    fn publish(&self) {
+        let mut issues = Vec::new();
+        if !self.issue.is_empty() {
+            issues.push(self.issue.clone());
+        }
+        for (id, host) in &self.hosts {
+            if !host.issue.is_empty() {
+                issues.push(format!(
+                    "Host {}: {}",
+                    &id.simple().to_string()[..8],
+                    host.issue
+                ));
+            }
+        }
+        self.views.send_modify(|view| {
+            view.history = self.ledger.history.iter().rev().cloned().collect();
+            view.status = issues.join("; ");
+        });
+        if let Some(native) = &self.native {
+            let online = self.hosts.values().filter(|host| host.connected).count();
+            let unseen: usize = self.hosts.values().map(|host| host.unseen).sum();
+            native.status(
+                &format!("Corvid Agent Deck — {online} connected hosts — {unseen} unseen"),
+                unseen > 0,
+            );
+        }
+        self.ctx.notify();
     }
 
     async fn notify(&mut self, notice: Notice) {
@@ -416,30 +484,65 @@ fn save(storage: &StateDirectory, ledger: &Ledger) -> Result<()> {
     storage.replace_private_file("notifications.json", &serde_json::to_vec(ledger)?)
 }
 
-async fn poll(
+async fn poll_hosts(
     state: PathBuf,
+    address: <PresentationAddress as ToOwned>::Owned,
+    current: Uuid,
+    snapshots: mpsc::Sender<Update>,
+) -> Result<()> {
+    let mut subscriptions = Subscriptions::default();
+    loop {
+        match hosts::discover(&state, current) {
+            Ok(mut profiles) => {
+                // Preserve an explicitly supplied IPC address for this Deck's scope.
+                if let Some(profile) = profiles.get_mut(&current) {
+                    profile.address = address.clone();
+                }
+                snapshots
+                    .send(Update::Hosts(profiles.keys().copied().collect()))
+                    .await?;
+                subscriptions.refresh(&profiles, |id, profile| {
+                    poll(profile.address, id, profile.controller, snapshots.clone())
+                });
+            }
+            Err(error) => {
+                snapshots
+                    .send(Update::Snapshot(current, Err(error.to_string())))
+                    .await?;
+            }
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn poll(
     address: <PresentationAddress as ToOwned>::Owned,
     host: Uuid,
     controller: Uuid,
-    snapshots: mpsc::Sender<Result<PresentationAttention, String>>,
-) -> Result<()> {
+    snapshots: mpsc::Sender<Update>,
+) {
     loop {
-        let result = poll_connected(&state, &address, host, controller, &snapshots).await;
+        let result = poll_connected(&address, host, controller, &snapshots).await;
         let message = match result {
             Ok(()) => "Notification connection closed".into(),
             Err(error) => error.to_string(),
         };
-        snapshots.send(Err(message)).await?;
+        if snapshots
+            .send(Update::Snapshot(host, Err(message)))
+            .await
+            .is_err()
+        {
+            return;
+        }
         sleep(Duration::from_secs(3)).await;
     }
 }
 
 async fn poll_connected(
-    _state: &Path,
     address: &PresentationAddress,
     host: Uuid,
     controller: Uuid,
-    snapshots: &mpsc::Sender<Result<PresentationAttention, String>>,
+    snapshots: &mpsc::Sender<Update>,
 ) -> Result<()> {
     let mut client = PresentationClient::connect(address).await?;
     ensure!(
@@ -467,7 +570,7 @@ async fn poll_connected(
             snapshot.controller_id == controller.to_string(),
             "unexpected companion controller"
         );
-        snapshots.send(Ok(snapshot)).await?;
+        snapshots.send(Update::Snapshot(host, Ok(snapshot))).await?;
         sleep(Duration::from_secs(1)).await;
     }
 }

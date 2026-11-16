@@ -42,6 +42,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
     manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     desktop = None
     previous = None
+    deck = None
     try:
         for _ in range(80):
             ping = subprocess.run([str(root / "corvid"), "control", "ping"], env=environment, capture_output=True)
@@ -209,9 +210,28 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         wait_for_writer(current)
         final_marker = root / "final"
         write_marker(window, final_marker, f"printf %s \"$kept\" > {shlex.quote(str(final_marker))}")
+        # Open Deck after the monitor already synchronized. Only this isolated,
+        # empty deck is captured; terminal windows are excluded from the image.
+        deck_binary = root / ("corvid-agent-deck" if args.build else "plugins/agent-deck/corvid-agent-deck")
+        deck = subprocess.Popen([str(deck_binary), "--state-dir", str(monitor_state)],
+                                env=environment, start_new_session=True)
+        for _ in range(80):
+            assert deck.poll() is None, f"Agent Deck exited with {deck.returncode}"
+            windows = subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
+            if match := re.search(r'(0x[0-9a-f]+) "Corvid Agent Deck"', windows):
+                deck_window = match[1]
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("Agent Deck did not open")
+        monitor_fixture.assert_same(reader, monitor_epoch, environment)
+        if screenshot := os.environ.get("CORVID_AGENT_DECK_SCREENSHOT"):
+            subprocess.run(["xdotool", "windowactivate", "--sync", deck_window], check=True, timeout=10)
+            time.sleep(1)
+            subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
         print("PASS Desktop keyboard input, Unicode clipboard paste, tab creation/switching, independent windows, new-window menu, close/quit/relaunch, shell continuity, settings, and X11 icons")
     finally:
-        for process in [desktop, previous, daemon, manager]:
+        for process in [deck, desktop, previous, daemon, manager]:
             if process is not None and process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
                 process.wait(timeout=15)

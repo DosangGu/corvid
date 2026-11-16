@@ -469,11 +469,11 @@ fn evidence_label(run: &PresentedRun) -> &'static str {
     }
 }
 
-fn connection_text(display: &Display) -> &'static str {
-    match display.link {
-        Link::Connecting => "Connecting to companion",
-        Link::Unavailable => "Companion offline",
-        Link::Incompatible => "Incompatible companion protocol",
+fn connection_text(display: &Display) -> Option<&'static str> {
+    Some(match display.link {
+        Link::Connecting => "Connecting to agents…",
+        Link::Unavailable => "Agent monitor unavailable",
+        Link::Incompatible => "Update Corvid to reconnect",
         Link::Online => match display
             .snapshot
             .as_ref()
@@ -487,18 +487,18 @@ fn connection_text(display: &Display) -> &'static str {
                         .and_then(|snapshot| snapshot.generation())
                         .is_some() =>
                 {
-                    "Daemon ready"
+                    return None;
                 }
-                Ok(CompanionConnection::Connecting) => "Connecting to daemon",
-                Ok(CompanionConnection::Syncing) => "Synchronizing daemon",
-                Ok(CompanionConnection::Offline) => "Daemon offline",
-                Ok(CompanionConnection::Incompatible) => "Incompatible daemon",
-                Ok(CompanionConnection::Error) => "Daemon connection error",
-                _ => "Daemon state unknown",
+                Ok(CompanionConnection::Connecting) => "Connecting to host…",
+                Ok(CompanionConnection::Syncing) => "Synchronizing agents…",
+                Ok(CompanionConnection::Offline) => "Host disconnected",
+                Ok(CompanionConnection::Incompatible) => "Update Corvid on the host to reconnect",
+                Ok(CompanionConnection::Error) => "Could not connect to host",
+                _ => "Waiting for agent status…",
             },
-            None => "Waiting for slots",
+            None => "Loading agents…",
         },
-    }
+    })
 }
 
 fn binding_label(binding: &PresentedBinding) -> String {

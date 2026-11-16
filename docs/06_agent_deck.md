@@ -260,13 +260,25 @@ enablement, and a one-hour pause. **Send test notification** checks OS delivery.
 Notification text includes provider and short host/run IDs; it excludes terminal
 contents, prompts, commands, and credentials.
 
-The private `agent-deck/notifications.json` stores settings, 128 history entries,
-and up to 4,096 attempted-event identities. First observation of an epoch seeds
-history without replaying old popups. Reconnect/restart deduplicates saved events;
-only new events at most five minutes old can notify. Snoozed/disabled events are
-recorded without a later popup burst. More than three fresh events in one poll
-become one summary. A feed overflow is reported. This bounded snapshot feed does
-not claim lossless event delivery or exactly-once OS display across a crash.
+Each Deck discovers verified host scopes every second and subscribes to their
+local companion feeds, including hosts connected after the window opened. The
+first synchronized snapshot imports existing work and unread attention; an agent
+does not need to restart after SSH attachment. Host failures are tracked separately
+so a healthy local feed cannot hide a failed SSH feed. Normal operation has no
+`Daemon ready` banner; the UI shows connection progress or a problem when needed.
+
+The private `agent-deck/notifications.json` stores that Deck's settings, 128 history
+entries, and up to 4,096 observed-event identities. The first snapshot can notify:
+pending questions/approvals remain actionable regardless of age, while responses,
+failures, and unverified input must be within five minutes of the local clock
+(including small remote clock skew). Older events still enter history. Reconnect
+and restart deduplicate saved events. Snoozed/disabled events are recorded without
+a later popup burst. Deck processes sharing a companion root also use the private
+`agent-deck-delivery/attempted.json` under a short exclusive lock to deduplicate
+up to 4,096 OS delivery attempts across windows. The claim is saved before OS
+delivery; a crash or OS delivery failure can lose a popup. More than three fresh
+events in one poll become one summary. A feed overflow is reported. This bounded
+snapshot feed does not claim lossless event delivery or exactly-once OS display.
 
 Dismissal and notification activation do not acknowledge remote attention or
 resolve requests. History offers an explicit navigation button only with a current
@@ -311,11 +323,12 @@ Windows observes [native agent processes](04_companion.md#windows-quick-start)
 launched directly by Corvid or from a Corvid shell.
 Desktop's workspace picker watches verified hosts while their terminal views are
 detached. In Agent Deck, **Hosts** lists the agents on up to eight hosts
-configured by Desktop or companion setup. Refresh after configuring another
-host. The overview checks the expected host identity before using a snapshot
+configured by Desktop or companion setup. Newly connected hosts appear automatically,
+including their existing agents. The overview checks the expected host identity before using a snapshot
 and marks previously seen observations as cached when a host goes offline.
-**Show host Deck** opens that host's running Deck. Slot actions, pane focus,
-and notification settings use the individual host Deck.
+**Show host Deck** opens that host's running Deck. Slot actions and pane focus use
+the individual host Deck. Notifications and history in each Deck cover all discovered
+hosts; notification preferences still belong to the individual Deck window.
 
 Windows supports [opt-in provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage).
 Desktop and the TUI support read-only attach and explicit writer handoff.

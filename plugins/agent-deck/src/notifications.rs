@@ -160,12 +160,12 @@ impl Ledger {
                 AttentionReason::Failure => self.settings.failures,
                 _ => false,
             };
-            if !baseline
-                && relevant
+            let pending = item.reason == AttentionReason::Input as i32
+                && item.request_status == Some(InputRequestStatus::Pending as i32);
+            if relevant
                 && self.settings.enabled
                 && now >= self.settings.paused_until_ms
-                && notice.created_ms <= now
-                && now - notice.created_ms <= MAX_AGE_MS
+                && (pending || notice.created_ms.abs_diff(now) <= MAX_AGE_MS)
             {
                 fresh.push(notice);
             }
@@ -288,16 +288,13 @@ mod tests {
         }
     }
     #[test]
-    fn seeds_then_notifies_once_across_reconnect_and_restart() {
+    fn imports_existing_alerts_then_notifies_once_across_reconnect_and_restart() {
         let (host, mut snapshot) = snapshot();
         let mut ledger = Ledger::default();
         snapshot.attention.push(alert(host, &snapshot, 1000));
-        assert!(
-            ledger
-                .observe(host, &snapshot, 1000)
-                .unwrap()
-                .notices
-                .is_empty()
+        assert_eq!(
+            ledger.observe(host, &snapshot, 1000).unwrap().notices.len(),
+            1
         );
         snapshot.attention.push(alert(host, &snapshot, 1100));
         assert_eq!(
@@ -339,6 +336,37 @@ mod tests {
         assert!(
             ledger
                 .observe(host, &snapshot, 2200)
+                .unwrap()
+                .notices
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn first_connection_surfaces_old_pending_input_and_recent_responses_but_not_old_popups() {
+        let (host, mut snapshot) = snapshot();
+        let now = MAX_AGE_MS * 2;
+        let mut pending = alert(host, &snapshot, 1);
+        pending.reason = AttentionReason::Input as i32;
+        pending.request_kind = Some(InputRequestKind::Permission as i32);
+        pending.request_status = Some(InputRequestStatus::Pending as i32);
+        let mut resolved = pending.clone();
+        resolved.attention_id = Uuid::new_v4().to_string();
+        resolved.request_status = Some(InputRequestStatus::Resolved as i32);
+        snapshot.attention = vec![
+            pending,
+            resolved,
+            alert(host, &snapshot, 1),
+            // A small remote clock skew must not silently discard the alert.
+            alert(host, &snapshot, now + 1000),
+        ];
+        let mut ledger = Ledger::default();
+        let observed = ledger.observe(host, &snapshot, now).unwrap();
+        assert_eq!(observed.notices.len(), 2);
+        assert_eq!(ledger.history.len(), 4);
+        assert!(
+            ledger
+                .observe(host, &snapshot, now + 2000)
                 .unwrap()
                 .notices
                 .is_empty()
