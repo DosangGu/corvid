@@ -796,13 +796,17 @@ The companion connects through the remote control relay.
 local companion -> separate background SSH stdio -> remote control relay
                 -> control.sock -> daemon
 
-invocation: ssh -T <configured-host-alias> corvid control --stdio
+first attempt: ssh -T <configured-host-alias> corvid control --stdio
 ```
 
 `-T` disables PTY allocation; see [OpenSSH ssh(1)](https://man.openbsd.org/ssh.1), checked
 2026-11-07. The relay only bridges the control protocol. It neither auto-starts a missing daemon
 nor opens an agent/terminal; return `DaemonUnavailable` until the user starts/attaches.
 The control SSH channel can reconnect independently of the working SSH terminal.
+If a saved SSH alias cannot reach the daemon with the direct command, the
+companion can detect the remote platform and retry with the same remote launcher
+used by Desktop. The launcher resolves a PATH or Desktop-managed installation
+and uses the platform's runtime directory rules.
 
 An explicit Desktop connection may prepare the daemon before opening its
 writer and control relays. It probes through SSH, starts an installed binary

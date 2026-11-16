@@ -455,7 +455,7 @@ flowchart LR
 | Component | Responsibility | Source |
 | --- | --- | --- |
 | Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
-| SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection runs the fixed `corvid control --stdio` command. | [corvid-client](../crates/corvid-client/src/lib.rs) |
+| SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection uses `corvid control --stdio` directly or through the remote Corvid launcher. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
 | Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and opens agent panes requested by Corvid Agent Deck. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
 | Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |

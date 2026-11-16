@@ -114,6 +114,30 @@ impl SshAlias {
         self.remote_command(&remote)
     }
 
+    async fn connect_control(
+        &self,
+        capability: &str,
+        controller: &str,
+    ) -> Result<ControlConnection> {
+        let command = self.command(PeerRole::Control)?;
+        let error = match ControlConnection::relay(command, capability, controller).await {
+            Ok(connection) => return Ok(connection),
+            Err(error) => error,
+        };
+        if self.desktop_daemon.is_some() || !can_discover_daemon(&error) {
+            return Err(error);
+        }
+
+        // Saved companion profiles have only the alias. The direct command also
+        // supports SSH keys restricted to that exact command, so try it first.
+        let host = RemoteHost::Ssh(self.clone());
+        let Ok(Ok(platform)) = timeout(RELAY_SETUP_TIMEOUT, host.probe_platform()).await else {
+            return Err(error);
+        };
+        let command = self.remote_command(&bootstrap::auto_control_command(platform))?;
+        ControlConnection::relay(command, capability, controller).await
+    }
+
     fn remote_command(&self, remote: &str) -> Result<Command> {
         let mut command = ssh_command()?;
         command.args([
@@ -214,6 +238,25 @@ pub(crate) struct ControlConnection {
     _relay: Option<RelayProcess>,
 }
 
+impl ControlConnection {
+    async fn relay(command: Command, capability: &str, controller: &str) -> Result<Self> {
+        let (read, write, mut relay) = RelayProcess::start(command)?;
+        let wire = relay
+            .negotiate(
+                read,
+                write,
+                PeerRole::Control,
+                vec![capability.to_owned()],
+                Some(controller.to_owned()),
+            )
+            .await?;
+        Ok(Self {
+            wire,
+            _relay: Some(relay),
+        })
+    }
+}
+
 pub struct InteractiveConnection {
     session: Session,
     writer: FrameWriter<Output>,
@@ -310,55 +353,31 @@ impl ControlEndpoint {
         capability: &str,
         controller: Option<String>,
     ) -> Result<ControlConnection> {
-        let (read, write, mut relay): (Input, Output, _) = match self {
+        let controller = controller.unwrap_or_else(|| Uuid::new_v4().to_string());
+        match self {
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Local(path) => {
                 let (read, write) = local_halves(path, SocketRole::Control).await?;
-                (read, write, None)
-            }
-            Self::Ssh(alias) => {
-                let (read, write, process) =
-                    RelayProcess::start(alias.command(PeerRole::Control)?)?;
-                (read, write, Some(process))
-            }
-            Self::Wsl(distribution) => {
-                let (read, write, process) =
-                    RelayProcess::start(distribution.command(PeerRole::Control)?)?;
-                (read, write, Some(process))
-            }
-        };
-
-        let controller = controller.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let capabilities = vec![capability.to_owned()];
-        let wire = match &mut relay {
-            Some(process) => {
-                process
-                    .negotiate(
+                let wire = timeout(
+                    COMMAND_TIMEOUT,
+                    Connection::negotiate(
                         read,
                         write,
                         PeerRole::Control,
-                        capabilities,
+                        vec![capability.to_owned()],
                         Some(controller),
-                    )
-                    .await?
+                    ),
+                )
+                .await
+                .context("daemon handshake timed out")??;
+                Ok(ControlConnection { wire, _relay: None })
             }
-            None => timeout(
-                COMMAND_TIMEOUT,
-                Connection::negotiate(
-                    read,
-                    write,
-                    PeerRole::Control,
-                    capabilities,
-                    Some(controller),
-                ),
-            )
-            .await
-            .context("daemon handshake timed out")??,
-        };
-        Ok(ControlConnection {
-            wire,
-            _relay: relay,
-        })
+            Self::Ssh(alias) => alias.connect_control(capability, &controller).await,
+            Self::Wsl(distribution) => {
+                let command = distribution.command(PeerRole::Control)?;
+                ControlConnection::relay(command, capability, &controller).await
+            }
+        }
     }
 }
 
@@ -453,6 +472,15 @@ fn relay_failure(diagnostic: &[u8]) -> ProtocolFault {
     } else {
         ProtocolFault::new("Offline", "Corvid relay connection failed")
     }
+}
+
+fn can_discover_daemon(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ProtocolFault>().is_some_and(|fault| {
+        matches!(
+            fault.code.as_str(),
+            "RelayUnavailable" | "DaemonUnavailable" | "Offline"
+        )
+    })
 }
 
 #[cfg(test)]
