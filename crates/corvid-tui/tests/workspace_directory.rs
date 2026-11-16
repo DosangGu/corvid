@@ -66,8 +66,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     let (_, mut route) = attach(&mut link, initial).await?;
     let mut sequence = 1;
     assert_directory(&mut link, &route, &mut sequence, &workspace).await?;
-    send_input(&mut link, &route, sequence, b"cd other\r").await?;
-    sequence += 1;
+    send_line(&mut link, &route, &mut sequence, b"cd other").await?;
     assert_directory(&mut link, &route, &mut sequence, &other).await?;
 
     for target in [
@@ -268,6 +267,22 @@ async fn send_input(
     Ok(())
 }
 
+async fn send_line(
+    link: &mut InteractiveConnection,
+    route: &RouteToken,
+    sequence: &mut u64,
+    line: &[u8],
+) -> Result<()> {
+    send_input(link, route, *sequence, line).await?;
+    // Model the Enter key as its own input event. PowerShell on Windows ARM
+    // can leave text unsubmitted when the newline is part of a bulk write.
+    #[cfg(windows)]
+    sleep(Duration::from_millis(75)).await;
+    send_input(link, route, *sequence + 1, b"\r").await?;
+    *sequence += 2;
+    Ok(())
+}
+
 async fn assert_directory(
     link: &mut InteractiveConnection,
     route: &RouteToken,
@@ -276,9 +291,9 @@ async fn assert_directory(
 ) -> Result<()> {
     let marker = format!("CWD{}=", *sequence);
     #[cfg(windows)]
-    let input = format!("('CW' + 'D{}=') + (Get-Location).ProviderPath\r", *sequence);
+    let input = format!("('CW' + 'D{}=') + (Get-Location).ProviderPath", *sequence);
     #[cfg(unix)]
-    let input = format!("printf 'CW%s%s\\n' 'D{}=' \"$PWD\"\r", *sequence);
+    let input = format!("printf 'CW%s%s\\n' 'D{}=' \"$PWD\"", *sequence);
     let expected = expected.canonicalize()?;
     let mut screen = vt100::Parser::new(
         NonZeroU16::new(28).unwrap(),
@@ -289,8 +304,7 @@ async fn assert_directory(
         loop {
             // ConPTY can accept input before PowerShell begins reading it.
             // Use repeatable probes instead of depending on a shell profile.
-            send_input(link, route, *sequence, input.as_bytes()).await?;
-            *sequence += 1;
+            send_line(link, route, sequence, input.as_bytes()).await?;
             if let Ok(result) = timeout(
                 Duration::from_secs(2),
                 read_directory(link, route, &mut screen, &marker, &expected),
