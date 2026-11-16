@@ -1,12 +1,12 @@
-Corvid v0.2.4 fixes Agent Deck SSH monitoring, Windows window placement, and Desktop terminal colors.
+Corvid v0.2.5 fixes update detection for managed SSH and WSL daemons.
 
-- **SSH hosts and notifications.** Agent Deck discovers verified SSH hosts connected after it opens and shows existing agent runs and unread alerts. Pending questions and approvals can trigger a notification on the first connection. Agent Deck windows share delivery records to avoid duplicate desktop popups. [#100](https://github.com/DosangGu/corvid/pull/100)
-- **SSH reconnection.** When the usual command fails for a saved SSH alias, Corvid can detect the remote platform and retry through its managed daemon launcher. [#94](https://github.com/DosangGu/corvid/pull/94)
-- **Windows Agent Deck placement.** The mini Deck opens near the notification area on first show and remembers where you moved it when reopened. [#98](https://github.com/DosangGu/corvid/pull/98)
-- **Desktop terminal colors.** Desktop renders faint text, and Corvid recognizes colon-separated RGB foreground and background colors. [#99](https://github.com/DosangGu/corvid/pull/99)
+- Desktop now checks the installed remote Corvid version even when the connection succeeds, and offers the matching bundled update for an older managed installation. [#103](https://github.com/DosangGu/corvid/pull/103)
+- Canceling an optional update keeps the working connection. Failed version checks or unavailable or invalid bundles report the problem while retaining that connection.
+- Automatic reconnects and PATH installations do not prompt for this update. Equal or newer installations are retained.
+- Update dialogs show the installed and bundled versions, verify the target host, and keep the guidance readable on Linux.
 
 To update, open **Settings → About & updates** in Desktop or run `corvid update` for a script installation.
 
-If you are upgrading from a UI-owned companion, stop it once and reconnect Desktop or TUI. The daemon and running agents stay up. [Companion upgrade instructions](https://github.com/DosangGu/corvid/releases/tag/v0.2.3)
+After updating Desktop, explicitly connect to the SSH host or WSL distribution and accept the offered daemon update. Restart existing Claude Code or Codex processes afterward to enable the updated notification collection; running providers retain their previous observer environment.
 
-[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.2.4/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.2.3...v0.2.4)
+[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.2.5/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.2.4...v0.2.5)
