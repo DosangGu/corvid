@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::{ProcessLiveness, Provider};
-use corvid_protocol::collector::CODEX_VERSION;
 use nix::unistd::geteuid;
+use semver::Version;
 use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
@@ -249,7 +249,6 @@ fn codex_broker(pid: u32, launcher: u32) -> Option<HookProducer> {
     }
     let process = ProcessDirectory::open(pid)?;
     let image = process.path()?;
-    let installed = image.clone();
     let target = if cfg!(target_os = "macos") {
         "aarch64-apple-darwin"
     } else if cfg!(target_arch = "aarch64") {
@@ -257,8 +256,7 @@ fn codex_broker(pid: u32, launcher: u32) -> Option<HookProducer> {
     } else {
         "x86_64-unknown-linux-musl"
     };
-    let release = format!("packages/app-server-daemon/releases/{CODEX_VERSION}-{target}/bin/codex");
-    if !installed.ends_with(release) {
+    if !codex_broker_path(&image, target) {
         return None;
     }
     let metadata = image.metadata().ok()?;
@@ -291,6 +289,27 @@ fn codex_broker(pid: u32, launcher: u32) -> Option<HookProducer> {
         start_ticks: stat.start_ticks,
         executable,
     })
+}
+
+fn codex_broker_path(image: &Path, target: &str) -> bool {
+    if !image.ends_with("bin/codex") {
+        return false;
+    }
+    let Some(release) = image.parent().and_then(Path::parent) else {
+        return false;
+    };
+    if !release
+        .parent()
+        .is_some_and(|parent| parent.ends_with("packages/app-server-daemon/releases"))
+    {
+        return false;
+    }
+    let suffix = format!("-{target}");
+    release
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(&suffix))
+        .is_some_and(|version| Version::parse(version).is_ok())
 }
 
 fn codex_broker_args(args: &[u8]) -> bool {
@@ -452,6 +471,45 @@ mod tests {
     use linux::parse_stat;
     #[cfg(target_os = "linux")]
     use nix::fcntl::readlinkat;
+
+    #[test]
+    fn recognizes_codex_broker_releases_without_a_version_pin() {
+        for target in [
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+            "aarch64-apple-darwin",
+        ] {
+            for version in ["0.166.0", "0.168.0", "0.168.0-alpha.1", "1.0.0"] {
+                let path = PathBuf::from(format!(
+                    "/private/packages/app-server-daemon/releases/{version}-{target}/bin/codex"
+                ));
+                assert!(codex_broker_path(&path, target));
+                assert!(!codex_broker_path(&path, "different-target"));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_unrecognized_broker_layouts_and_commands() {
+        let target = "x86_64-unknown-linux-musl";
+        for path in [
+            format!("/private/releases/0.168.0-{target}/bin/codex"),
+            format!("/private/packages/other/releases/0.168.0-{target}/bin/codex"),
+            format!("/private/packages/app-server-daemon/releases/latest-{target}/bin/codex"),
+            format!("/private/packages/app-server-daemon/releases/0.168.0-{target}/bin/other"),
+        ] {
+            assert!(!codex_broker_path(Path::new(&path), target), "{path}");
+        }
+        assert!(codex_broker_args(
+            b"codex\0app-server\0--listen\0unix://\0--managed-daemon\0"
+        ));
+        assert!(!codex_broker_args(
+            b"codex\0app-server\0--listen\0tcp://127.0.0.1:1234\0--managed-daemon\0"
+        ));
+        assert!(!codex_broker_args(
+            b"codex\0app-server\0--listen\0unix://\0"
+        ));
+    }
 
     #[test]
     fn waiting_probes_cannot_be_overtaken_and_cancelled_probes_release_the_queue() {

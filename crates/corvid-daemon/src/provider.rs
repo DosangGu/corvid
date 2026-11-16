@@ -1,3 +1,4 @@
+mod contracts;
 pub(crate) mod hooks;
 mod profile;
 pub mod shell;
@@ -14,14 +15,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use corvid_core::agent::Provider;
-use corvid_protocol::collector::{CLAUDE_VERSION, CODEX_VERSION};
 use corvid_protocol::wire::ProviderProfile;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
-use semver::Version;
 
 use crate::process::Executable;
 use crate::projection;
 
+pub(crate) use contracts::{CONTRACTS, contract};
 pub(crate) use profile::adapter;
 
 const VERSION_TIMEOUT: Duration = Duration::from_millis(350);
@@ -30,33 +30,16 @@ const VERSION_OUTPUT_LIMIT: usize = 128;
 pub(crate) fn qualify(provider: Provider, path: &Path) -> Option<Executable> {
     let executable = Executable::read(path)?;
     let version = version_output(path)?;
-    if !supports_version(provider, &version) || Executable::read(path) != Some(executable) {
+    if !contract(provider).recognizes_version(&version)
+        || Executable::read(path) != Some(executable)
+    {
         return None;
     }
     Some(executable)
 }
 
-fn supports_version(provider: Provider, output: &str) -> bool {
-    let output = output.trim();
-    match provider {
-        Provider::Claude => {
-            // Recognize Claude's version banner without treating captured fixture
-            // releases as an allowlist or a minimum. The collector validates the
-            // actual hook schema, correlation fields, and process ownership.
-            output
-                .strip_suffix(" (Claude Code)")
-                .is_some_and(|version| Version::parse(version).is_ok())
-        }
-        // Codex ownership also depends on a release-specific broker path.
-        Provider::Codex => output == format!("codex-cli {CODEX_VERSION}"),
-    }
-}
-
 pub(crate) fn program(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Claude => "claude",
-        Provider::Codex => "codex",
-    }
+    contract(provider).program
 }
 
 pub(crate) fn installed_program(provider: Provider) -> Option<PathBuf> {
@@ -77,20 +60,20 @@ pub(crate) fn observer_arguments(provider: Provider, argv: &[OsString]) -> Vec<O
 }
 
 pub(crate) fn qualified_version(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Claude => CLAUDE_VERSION,
-        Provider::Codex => CODEX_VERSION,
-    }
+    contract(provider).fixture_version
 }
 
 pub(crate) fn qualified_profiles() -> &'static [ProviderProfile] {
-    static PROFILES: OnceLock<[ProviderProfile; 2]> = OnceLock::new();
+    static PROFILES: OnceLock<Vec<ProviderProfile>> = OnceLock::new();
     PROFILES.get_or_init(|| {
-        [Provider::Claude, Provider::Codex].map(|provider| ProviderProfile {
-            provider: projection::provider(provider) as i32,
-            version: qualified_version(provider).to_owned(),
-            adapter: Some(adapter(provider, true)),
-        })
+        CONTRACTS
+            .iter()
+            .map(|contract| ProviderProfile {
+                provider: projection::provider(contract.provider) as i32,
+                version: contract.fixture_version.to_owned(),
+                adapter: Some(adapter(contract.provider, true)),
+            })
+            .collect()
     })
 }
 
@@ -157,51 +140,6 @@ fn read_version_output(output: impl Read + AsFd) -> Option<String> {
 mod tests {
     use super::*;
     use std::io::{self, Write};
-
-    #[test]
-    fn accepts_claude_versions_without_an_allowlist_or_minimum() {
-        for version in [
-            "1.0.0",
-            "2.1.99",
-            "2.1.300",
-            "2.1.318-beta.1",
-            CLAUDE_VERSION,
-            "2.1.325",
-            "2.1.1000",
-            "2.2.0",
-            "3.0.0",
-        ] {
-            assert!(
-                supports_version(Provider::Claude, &format!("{version} (Claude Code)\n")),
-                "{version}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_unrecognized_claude_version_output() {
-        for output in [
-            "2.1 (Claude Code)",
-            "02.1.325 (Claude Code)",
-            "2.1.325",
-            "codex-cli 2.1.325",
-            "2.1.325 (Claude Code)\nunexpected output",
-            "garbage (Claude Code)",
-            "",
-        ] {
-            assert!(!supports_version(Provider::Claude, output), "{output}");
-        }
-    }
-
-    #[test]
-    fn preserves_the_codex_broker_version_requirement() {
-        assert!(supports_version(
-            Provider::Codex,
-            &format!("codex-cli {CODEX_VERSION}\n")
-        ));
-        assert!(!supports_version(Provider::Codex, "codex-cli 0.168.0"));
-        assert!(!supports_version(Provider::Codex, "2.1.325 (Claude Code)"));
-    }
 
     #[test]
     fn reads_complete_version_while_another_process_keeps_stdout_open() -> io::Result<()> {

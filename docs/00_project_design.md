@@ -353,12 +353,15 @@ such as `turn_start`, `response_boundary`, `explicit_question`, `permission_requ
 
 Capabilities are qualified (`exact`, `partial`, `unavailable`) with reasons; one
 `supports_hooks` boolean is insufficient. Newer versions do not inherit new
-capabilities from documentation alone. Claude Code has no minimum version or
-exact-version allowlist on Linux and macOS; recognized releases use the same
-observer contract and validate its events and fields. Version admission is
+capabilities from documentation alone. Registered providers have no minimum
+version or exact-version allowlist on Linux and macOS; recognized releases use
+their existing observer contract and validate its events and fields. Version admission is
 separate from runtime qualification: Phase 2/3 fixtures record the exact installed
 CLI release, and an accepted version is not a claim that its complete behavior
-has been tested. Codex keeps its release-specific check.
+has been tested. The adapter registry supplies executable names, banner formats,
+fixture baselines, and schema revisions. New agents add an explicit adapter that
+normalizes observations into the shared collector and attention feed, without
+provider-specific notification policy in Deck.
 See [provider qualification](03_provider_qualification.md) for captured traces
 from Claude Code 2.1.318 and Codex CLI 0.167.0. The agent projection includes the
 adapter schema, qualified event and correlation fields, and capability levels.
@@ -478,9 +481,9 @@ to ordinary CLI Hooks, `notify`, terminal OSC 9, or BEL notifications.
 makes one local Protobuf submission to `collector.sock`. The current adapter
 recognizes Claude's version banner and checks the launch association,
 epoch, provider process incarnation, and the exec-form hook's parent PID.
-`corvid observe --provider codex` uses the same collector. For the qualified
-Codex release, it also recognizes the launcher's direct internal app-server
-child by its installed executable, fixed local-server arguments, and process
+`corvid observe --provider codex` uses the same collector. It also recognizes the
+launcher's direct internal app-server child by its version-independent release
+directory layout, installed executable, fixed local-server arguments, and process
 incarnation. A change in verified producer invalidates navigation for that run.
 See [provider qualification](03_provider_qualification.md) for the enabled scope.
 
@@ -533,9 +536,9 @@ worst-case detection delay when the terminal count consumes that budget. Probe p
 incarnation and foreground group; debounce burst triggers. Failed probes produce Unknown,
 not exit. Absence of output is never a completion timeout.
 
-Corvid-created shells get a private PATH directory for the `claude` and `codex`
+Corvid-created shells get a private PATH directory for registered provider
 commands. A wrapper resolves the real program on the shell's current PATH and
-adds session-scoped observers for qualified releases. The daemon binds the launch
+adds session-scoped observers using the provider's contract. The daemon binds the launch
 to the shell's live PTY using the peer PID, the foreground group, and the executable
 image. It accepts observations only after the expected provider takes over that
 process. Shell startup files and prompt hooks are left intact. Raw command lines

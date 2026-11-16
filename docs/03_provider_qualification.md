@@ -1,29 +1,54 @@
 # Provider Qualification
 
-## Claude version compatibility
+## Provider compatibility and extension
 
-Linux and macOS recognize Claude's version banner without an exact-version
-allowlist or a minimum version. The version probe requires a valid semantic
-version followed by ` (Claude Code)` to identify the provider. Older and newer
-releases can use the existing observer contract; malformed or unrelated version
-output is rejected.
-Both ordinary `claude` commands in Corvid shells and `corvid attach --agent claude`
-use this policy. Windows observation does not use this version gate.
+Linux and macOS recognize each registered provider's version banner without an
+exact-version allowlist or a minimum version. Claude uses `<version> (Claude Code)`
+and Codex uses `codex-cli <version>`, with a valid semantic version. Older and
+newer releases can use the existing observer contract; malformed or unrelated
+version output is rejected. Ordinary provider commands in Corvid shells and
+`corvid attach --agent` use this policy. Windows observation does not use this
+version gate.
 
-The captured 2.1.318 traces remain the adapter's qualification baseline, not a
+The captured releases remain each adapter's qualification baseline, not a
 claim that every accepted release has been exercised. `ProviderProfile.version` and
-`AgentInfo.qualified_provider_version` identify that baseline; Claude hook
-evidence identifies the parser contract as `claude-hooks.v3`. All versions use
+`AgentInfo.qualified_provider_version` identify that baseline; hook evidence
+identifies the parser contract as `claude-hooks.v3` or `codex-hooks.v1`. All versions use
 the same event allowlist, payload limits, correlation requirements, and process
 ownership checks. They do not automatically gain support for new hook events.
 
-The synthetic shell fixture reports 2.1.300 and 2.1.325 and exercises registration,
-response attention, and duplicate bell suppression through local PTYs and SSH. This
-is a regression check for version admission and event delivery, not captured
-traces from those installed Claude Code releases. An accepted version must still
+The synthetic shell fixture reports Claude 2.1.300/2.1.325 and Codex
+0.166.0/0.168.0. It exercises registration, response attention, and duplicate bell
+suppression through local PTYs and SSH, including hooks from Codex's managed
+broker. This is a regression check for version admission and event delivery, not
+captured traces from those installed releases. An accepted version must still
 support the configured hooks and their required fields for observation to work.
-Codex retains its separate release check because its managed broker lookup
-includes a release-specific installation path.
+
+Codex broker recognition accepts semantic-version release directories for the
+current target inside `packages/app-server-daemon/releases/`. It still requires
+the managed launcher's direct child, the expected executable name and local
+server arguments, a private executable owned by the user, and stable process and
+executable identities. A new installation layout needs adapter support; a version
+update within that layout does not.
+
+The Unix adapter registry is
+[`provider/contracts.rs`](../crates/corvid-daemon/src/provider/contracts.rs).
+It supplies command names, banner recognition, fixture baselines, and hook schema
+revisions to launch admission, shell wrappers, capability profiles, and evidence.
+The bounded collector, domain reducer, companion attention feed, and Deck
+notification handling remain shared. Adding an agent requires an explicit adapter:
+
+1. Add its domain and protocol provider identity without reusing enum numbers,
+   and register its command, banner, fixture baseline, and schema revision.
+2. Generate its observation-only hooks and normalize supported payloads into the
+   existing `CollectHook` events. Validate provider-specific ownership and
+   correlation fields; advertise only the capabilities that the adapter handles.
+3. Add provider labels and qualification fixtures, including older/newer version
+   admission, malformed input, unrelated processes, and local/SSH attention.
+
+An unregistered executable does not become a trusted agent from its name, title,
+or terminal text. New provider events require explicit normalization; missing
+hooks or correlation fields must not invent activity, completion, or approval.
 
 ## Windows hook setup and fixture coverage
 

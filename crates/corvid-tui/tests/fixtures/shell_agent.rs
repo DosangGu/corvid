@@ -17,12 +17,23 @@ fn main() {
         println!("{version}");
         return;
     }
+    let broker = args.first().is_some_and(|arg| arg == "app-server");
     let injected = args
         .iter()
         .any(|arg| arg == "--settings" || arg == "features.daemon_auto_start=false");
-    if !injected {
+    if !broker && !injected {
         println!("NO-OBSERVERS-{provider}");
         return;
+    }
+    if provider == "codex"
+        && !broker
+        && let Some(path) = env::var_os("CORVID_FIXTURE_BROKER")
+    {
+        let status = Command::new(path)
+            .args(["app-server", "--listen", "unix://", "--managed-daemon"])
+            .status()
+            .unwrap();
+        std::process::exit(status.code().unwrap_or(1));
     }
 
     observe(

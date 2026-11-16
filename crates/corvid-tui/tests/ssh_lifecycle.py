@@ -292,9 +292,9 @@ def run(binary, *, measure_keys=False):
                 check_ssh(server, ssh)
                 check_control(ssh, command, schema)
                 check_working_ssh(ssh, command, directory)
-                for version in ("2.1.300", "2.1.325"):
+                for release in ("older", "newer"):
                     verify_shell_agent_notifications(
-                        command[0], directory, database, ssh, claude_version=version,
+                        command[0], directory, database, ssh, release=release, broker=True,
                     )
                 if measure_keys:
                     measure_input(ssh, command, directory)

@@ -532,7 +532,7 @@ impl ManagedLaunch {
                 let reason = if launch.qualified {
                     "process ownership unavailable"
                 } else {
-                    "provider release has no qualified hooks"
+                    "provider executable or version banner was not recognized"
                 };
                 evidence.uncertainty = Some(reason.to_owned());
                 record.apply(

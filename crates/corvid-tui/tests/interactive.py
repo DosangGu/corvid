@@ -23,6 +23,11 @@ PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 PASTE = "한글".encode() + b"\x1dd\x1b[20X\n"
 KEYS = b"\x1b\x1bx\x1b[A" + "한글".encode() + b"\x1d\x03"
+PROVIDER_RELEASES = {
+    "baseline": {},
+    "older": {"CLAUDE": "2.1.300", "CODEX": "0.166.0"},
+    "newer": {"CLAUDE": "2.1.325", "CODEX": "0.168.0"},
+}
 
 
 def terminal_attributes(fd):
@@ -640,9 +645,9 @@ def verify_resume(binary, directory):
 
 
 def verify_shell_agent_notifications(
-    binary, directory, terminfo, ssh=None, shell_name="sh", *, claude_version=None,
+    binary, directory, terminfo, ssh=None, shell_name="sh", *, release="baseline", broker=False,
 ):
-    root = directory / f"notify-{shell_name}-{claude_version or 'baseline'}"
+    root = directory / f"notify-{shell_name}-{release}{'-broker' if broker else ''}"
     root.mkdir()
     programs = root / "bin"
     programs.mkdir()
@@ -670,9 +675,9 @@ def verify_shell_agent_notifications(
         build_env[f"CORVID_FIXTURE_{name}"] = re.search(
             rf'{name}_VERSION: &str = "([^"]+)"', versions.read_text(),
         )[1]
-    if claude_version is not None:
-        build_env["CORVID_FIXTURE_CLAUDE"] = claude_version
-    subprocess.run(["rustc", fixture, "-o", programs / "claude"], env=build_env, check=True)
+    for name, version in PROVIDER_RELEASES[release].items():
+        build_env[f"CORVID_FIXTURE_{name}"] = version
+    subprocess.run(["rustc", "--edition=2024", fixture, "-o", programs / "claude"], env=build_env, check=True)
     (programs / "codex").hardlink_to(programs / "claude")
 
     env = os.environ | {
@@ -680,6 +685,14 @@ def verify_shell_agent_notifications(
         "PATH": str(programs), "CORVID_FIXTURE_BINARY": str(Path(binary).resolve()),
         "CLAUDE_CONFIG_DIR": str(root / "claude-config"), "CODEX_HOME": str(root / "codex-home"),
     }
+    env.pop("CORVID_FIXTURE_BROKER", None)
+    if broker:
+        target = f"{os.uname().machine}-unknown-linux-musl"
+        version = build_env["CORVID_FIXTURE_CODEX"]
+        executable = root / "packages/app-server-daemon/releases" / f"{version}-{target}/bin/codex"
+        executable.parent.mkdir(parents=True)
+        shutil.copy2(programs / "codex", executable)
+        env["CORVID_FIXTURE_BROKER"] = str(executable)
     for key in ("ENV", "BASH_ENV", "ZDOTDIR"):
         env.pop(key, None)
     client_env = os.environ.copy()
@@ -700,9 +713,10 @@ def verify_shell_agent_notifications(
             terminal.expect(build_env["CORVID_FIXTURE_CLAUDE"].encode() + rb" \(Claude Code\)")
 
             # A nested process cannot register its own run in the shell's PTY.
-            terminal.send(b"/bin/sh -c 'claude; :'\n")
-            terminal.expect(b"NO-OBSERVERS-claude")
-            assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
+            for provider in ("claude", "codex"):
+                terminal.send(f"/bin/sh -c '{provider}; :'\n".encode())
+                terminal.expect(f"NO-OBSERVERS-{provider}".encode())
+                assert not subprocess.check_output([*command, "control", "agents"], timeout=3)
             for provider in ("claude", "codex"):
                 terminal.output.clear()
                 terminal.send(f"{provider}\n".encode())
@@ -766,12 +780,15 @@ def run(binary, *, tty_only=False):
         for providers in [("claude",), ("codex",), ("claude", "codex")]:
             verify_shell_with_agents(binary, directory, database, providers)
         verify_shell_agent_notifications(binary, directory, database)
-        for version in ("2.1.300", "2.1.325"):
-            verify_shell_agent_notifications(binary, directory, database, claude_version=version)
+        for release in ("older", "newer"):
+            for broker in (False, True):
+                verify_shell_agent_notifications(
+                    binary, directory, database, release=release, broker=broker,
+                )
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
                 verify_shell_agent_notifications(
-                    binary, directory, database, shell_name=shell, claude_version="2.1.325",
+                    binary, directory, database, shell_name=shell, release="newer",
                 )
     print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, command-menu isolation, detach, tab switching, tab search, and daemon replacement with a retained shell.")
 

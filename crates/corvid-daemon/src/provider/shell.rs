@@ -11,7 +11,7 @@ use portable_pty::CommandBuilder;
 
 use crate::process::Executable;
 
-use super::{find_on_path, observer_arguments, program, qualify};
+use super::{CONTRACTS, find_on_path, observer_arguments, program, qualify};
 
 pub(crate) struct Commands(PathBuf);
 
@@ -20,13 +20,18 @@ impl Commands {
         let directory = RuntimeDir::create_all(&runtime.join("agent-bin"))?;
         let executable = env::current_exe()?.canonicalize()?;
         let staging = tempfile::tempdir_in(directory.path())?;
-        for provider in [Provider::Claude, Provider::Codex] {
-            let name = program(provider);
-            let link = staging.path().join(name);
+        for contract in CONTRACTS {
+            let link = staging.path().join(contract.program);
             symlink(&executable, &link)?;
-            fs::rename(link, directory.path().join(name))?;
+            fs::rename(link, directory.path().join(contract.program))?;
         }
-        directory.replace_private_file(".zshenv", include_bytes!("shell.zshenv"))?;
+        let names = CONTRACTS
+            .iter()
+            .map(|contract| contract.program)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let zsh = include_str!("shell.zshenv").replace("@CORVID_PROVIDERS@", &names);
+        directory.replace_private_file(".zshenv", zsh.as_bytes())?;
         Ok(Self(directory.path().to_owned()))
     }
 
@@ -61,8 +66,8 @@ impl Commands {
 }
 
 fn configure_bash(command: &mut CommandBuilder) {
-    for provider in [Provider::Claude, Provider::Codex] {
-        let name = program(provider);
+    for contract in CONTRACTS {
+        let name = contract.program;
         let key = format!("BASH_FUNC_{name}%%");
         if command.get_env(&key).is_some() {
             continue;
@@ -82,11 +87,11 @@ fn configure_bash(command: &mut CommandBuilder) {
 }
 
 pub fn invoked_provider(argv0: &OsStr) -> Option<Provider> {
-    match Path::new(argv0).file_name()?.to_str()? {
-        "claude" => Some(Provider::Claude),
-        "codex" => Some(Provider::Codex),
-        _ => None,
-    }
+    let name = Path::new(argv0).file_name()?.to_str()?;
+    CONTRACTS
+        .iter()
+        .find(|contract| contract.program == name)
+        .map(|contract| contract.provider)
 }
 
 pub fn resolve(provider: Provider) -> Option<PathBuf> {
