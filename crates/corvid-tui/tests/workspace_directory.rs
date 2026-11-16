@@ -1,5 +1,6 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
+use std::num::NonZeroU16;
 use std::path::Path;
 use std::time::Duration;
 
@@ -62,17 +63,20 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     let mut link = open(&endpoint).await?;
     let initial = attach_request(Some("Project".into()), Some(selected_path.clone()));
     let (_, mut route) = attach(&mut link, initial).await?;
-    assert_directory(&mut link, &route, 1, "PROJECT").await?;
-    send_input(&mut link, &route, 2, b"cd other\r").await?;
-    assert_directory(&mut link, &route, 3, "OTHER").await?;
+    let mut sequence = 1;
+    assert_directory(&mut link, &route, &mut sequence, "PROJECT").await?;
+    send_input(&mut link, &route, sequence, b"cd other\r").await?;
+    sequence += 1;
+    assert_directory(&mut link, &route, &mut sequence, "OTHER").await?;
 
     for target in [
-        Target::TabLabel("Fresh tab".into()),
         Target::SplitAxis(SplitAxis::Horizontal as i32),
         Target::SplitAxis(SplitAxis::Vertical as i32),
+        Target::TabLabel("Fresh tab".into()),
     ] {
         (_, route) = create(&mut link, &route, target).await?;
-        assert_directory(&mut link, &route, 1, "PROJECT").await?;
+        sequence = 1;
+        assert_directory(&mut link, &route, &mut sequence, "PROJECT").await?;
     }
     let (second, route) = create(
         &mut link,
@@ -83,7 +87,8 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
         }),
     )
     .await?;
-    assert_directory(&mut link, &route, 1, "OTHER").await?;
+    sequence = 1;
+    assert_directory(&mut link, &route, &mut sequence, "OTHER").await?;
     drop(link);
 
     let second_id = &second.workspace_id;
@@ -114,7 +119,8 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     )
     .await?;
     ensure!(view.workspace_id == second.workspace_id);
-    assert_directory(&mut link, &route, 1, "OTHER").await?;
+    sequence = 1;
+    assert_directory(&mut link, &route, &mut sequence, "OTHER").await?;
     drop(link);
 
     let mut link = open(&endpoint).await?;
@@ -128,7 +134,8 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
         ..attach_request(None, None)
     };
     let (_, route) = attach(&mut link, ask).await?;
-    assert_directory(&mut link, &route, 1, "PROJECT").await
+    sequence = 1;
+    assert_directory(&mut link, &route, &mut sequence, "PROJECT").await
 }
 
 async fn start(runtime: &Path, state: &Path, endpoint: &ControlEndpoint) -> Result<Child> {
@@ -194,10 +201,8 @@ async fn attach(
     let Body::Attached(result) = reply(link, &id).await? else {
         bail!("attach rejected")
     };
-    Ok((
-        result.selection.context("missing view")?,
-        result.route_token.context("missing route")?,
-    ))
+    let route = result.route_token.context("missing route")?;
+    Ok((result.selection.context("missing view")?, route))
 }
 
 async fn create(
@@ -214,10 +219,8 @@ async fn create(
     let Body::ViewChanged(result) = reply(link, &id).await? else {
         bail!("view creation rejected")
     };
-    Ok((
-        result.selection.context("missing view")?,
-        result.route_token.context("missing route")?,
-    ))
+    let route = result.route_token.context("missing route")?;
+    Ok((result.selection.context("missing view")?, route))
 }
 
 async fn reply(link: &mut InteractiveConnection, id: &str) -> Result<Body> {
@@ -267,35 +270,66 @@ async fn send_input(
 async fn assert_directory(
     link: &mut InteractiveConnection,
     route: &RouteToken,
-    sequence: u64,
+    sequence: &mut u64,
     expected: &str,
 ) -> Result<()> {
     #[cfg(windows)]
     let input = b"switch -Wildcard ((Get-Location).Path) { '*\\other' { 'DIR_'+'OTHER' } '*\\project *' { 'DIR_'+'PROJECT' } }\r";
     #[cfg(unix)]
     let input = b"case \"$PWD\" in */other) printf 'DIR_%s\\n' OTHER;; */project\\ *) printf 'DIR_%s\\n' PROJECT;; esac\r";
-    send_input(link, route, sequence, input).await?;
     let marker = format!("DIR_{expected}");
+    let mut screen = vt100::Parser::new(
+        NonZeroU16::new(28).unwrap(),
+        NonZeroU16::new(120).unwrap(),
+        0,
+    );
     timeout(WAIT, async {
-        let mut output = Vec::new();
         loop {
-            match link.receive().await? {
-                Frame::Render(frame) => {
-                    output.extend_from_slice(&frame.ansi);
-                    acknowledge(link, frame).await?;
-                    if String::from_utf8_lossy(&output).contains(&marker) {
-                        return Ok(());
-                    }
-                    ensure!(output.len() < 262144, "folder marker missing");
-                }
-                Frame::Structured(bytes) => {
-                    if let Some(Body::Error(error)) = decode_envelope(&bytes)?.body {
-                        bail!("{}: {}", error.code, error.message);
-                    }
-                }
+            // ConPTY can accept input before PowerShell begins reading it.
+            // Use repeatable probes instead of depending on a shell profile.
+            send_input(link, route, *sequence, input).await?;
+            *sequence += 1;
+            if let Ok(result) = timeout(
+                Duration::from_secs(2),
+                read_directory(link, route, &mut screen, &marker),
+            )
+            .await
+            {
+                return result;
             }
         }
     })
     .await
     .context(format!("expected {marker} in terminal"))?
+}
+
+async fn read_directory(
+    link: &mut InteractiveConnection,
+    route: &RouteToken,
+    screen: &mut vt100::Parser,
+    marker: &str,
+) -> Result<()> {
+    loop {
+        match link.receive().await? {
+            Frame::Render(frame) => {
+                if frame.header.view_revision == route.view_revision {
+                    screen.process(&frame.ansi);
+                }
+                acknowledge(link, frame).await?;
+                if screen
+                    .screen()
+                    .contents()
+                    .lines()
+                    .any(|line| line.trim() == marker)
+                {
+                    return Ok(());
+                }
+            }
+            Frame::Structured(bytes) => {
+                if let Some(Body::Error(error)) = decode_envelope(&bytes)?.body {
+                    bail!("{}: {}", error.code, error.message);
+                }
+            }
+        }
+    }
 }
