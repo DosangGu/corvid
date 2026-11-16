@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use corvid_client::{ControlEndpoint, InteractiveConnection};
+#[cfg(unix)]
+use corvid_protocol::wire::InputChunk;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, BrowseDirectories, CreateView, FrameApplied, InputChunk, LaunchCommand,
-    RouteToken, SplitAxis, ViewSelection, Viewport, WorkspaceCreation,
+    Attach, AttachRole, BrowseDirectories, CreateView, FrameApplied, LaunchCommand, RouteToken,
+    SplitAxis, ViewSelection, Viewport, WorkspaceCreation,
 };
 use corvid_protocol::{
     CREATE_VIEW_CAPABILITY, Frame, WORKSPACE_DIRECTORY_CAPABILITY, decode_envelope,
@@ -62,12 +64,27 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     ensure!(error.code == "DirectoryNotFound");
     drop(link);
     let mut link = open(&endpoint).await?;
-    let initial = attach_request(Some("Project".into()), Some(selected_path.clone()));
+    let initial = first_project_shell(selected_path.clone());
     let (_, mut route) = attach(&mut link, initial).await?;
-    let mut sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, &workspace).await?;
-    send_line(&mut link, &route, &mut sequence, b"cd other").await?;
-    assert_directory(&mut link, &route, &mut sequence, &other).await?;
+    #[cfg(unix)]
+    {
+        let mut sequence = 1;
+        assert_directory(&mut link, &route, &mut sequence, &workspace).await?;
+        send_line(&mut link, &route, &mut sequence, b"cd other").await?;
+        assert_directory(&mut link, &route, &mut sequence, &other).await?;
+    }
+    #[cfg(windows)]
+    {
+        let first = format!("FIRST={}", workspace.display());
+        let moved = format!("MOVED={}", other.display());
+        wait_for_screen(
+            &mut link,
+            &route,
+            "initial directory and subsequent cd",
+            |screen| screen.contains(&first) && screen.contains(&moved),
+        )
+        .await?;
+    }
 
     for target in [
         Target::SplitAxis(SplitAxis::Horizontal as i32),
@@ -75,8 +92,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
         Target::TabLabel("Fresh tab".into()),
     ] {
         (_, route) = create(&mut link, &route, target).await?;
-        sequence = 1;
-        assert_directory(&mut link, &route, &mut sequence, &workspace).await?;
+        assert_fresh_directory(&mut link, &route, &workspace).await?;
     }
     let (second, route) = create(
         &mut link,
@@ -87,8 +103,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
         }),
     )
     .await?;
-    sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, &other).await?;
+    assert_fresh_directory(&mut link, &route, &other).await?;
     drop(link);
 
     let second_id = &second.workspace_id;
@@ -119,8 +134,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     )
     .await?;
     ensure!(view.workspace_id == second.workspace_id);
-    sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, &other).await?;
+    assert_fresh_directory(&mut link, &route, &other).await?;
     drop(link);
 
     let mut link = open(&endpoint).await?;
@@ -134,8 +148,22 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
         ..attach_request(None, None)
     };
     let (_, route) = attach(&mut link, ask).await?;
-    sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, &workspace).await
+    assert_fresh_directory(&mut link, &route, &workspace).await
+}
+
+fn first_project_shell(path: String) -> Attach {
+    let request = attach_request(Some("Project".into()), Some(path));
+    #[cfg(windows)]
+    {
+        let mut request = request;
+        request.launch.as_mut().unwrap().argv = [
+            "powershell.exe", "-NoLogo", "-NoProfile", "-NoExit", "-Command",
+            "'FIRST=' + (Get-Location).ProviderPath; Set-Location -LiteralPath 'other'; 'MOVED=' + (Get-Location).ProviderPath",
+        ].map(|argument| argument.as_bytes().to_vec()).into();
+        request
+    }
+    #[cfg(unix)]
+    request
 }
 
 async fn start(runtime: &Path, state: &Path, endpoint: &ControlEndpoint) -> Result<Child> {
@@ -252,6 +280,7 @@ async fn acknowledge(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn send_input(
     link: &mut InteractiveConnection,
     route: &RouteToken,
@@ -267,6 +296,7 @@ async fn send_input(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn send_line(
     link: &mut InteractiveConnection,
     route: &RouteToken,
@@ -274,15 +304,73 @@ async fn send_line(
     line: &[u8],
 ) -> Result<()> {
     send_input(link, route, *sequence, line).await?;
-    // Model the Enter key as its own input event. PowerShell on Windows ARM
-    // can leave text unsubmitted when the newline is part of a bulk write.
-    #[cfg(windows)]
-    sleep(Duration::from_millis(75)).await;
     send_input(link, route, *sequence + 1, b"\r").await?;
     *sequence += 2;
     Ok(())
 }
 
+async fn assert_fresh_directory(
+    link: &mut InteractiveConnection,
+    route: &RouteToken,
+    expected: &Path,
+) -> Result<()> {
+    #[cfg(unix)]
+    return assert_directory(link, route, &mut 1, expected).await;
+    #[cfg(windows)]
+    {
+        // The native default shell shows its starting directory in the prompt.
+        // The suffix also allows prompts that shorten the current user's home.
+        let suffix = expected
+            .components()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<std::path::PathBuf>();
+        let wanted = suffix.to_string_lossy();
+        wait_for_screen(link, route, &wanted, |screen| {
+            screen.contains(wanted.as_ref())
+        })
+        .await
+    }
+}
+
+#[cfg(windows)]
+async fn wait_for_screen(
+    link: &mut InteractiveConnection,
+    route: &RouteToken,
+    expected: &str,
+    found: impl Fn(&str) -> bool,
+) -> Result<()> {
+    let mut screen = vt100::Parser::new(
+        NonZeroU16::new(28).unwrap(),
+        NonZeroU16::new(120).unwrap(),
+        0,
+    );
+    timeout(WAIT, async {
+        loop {
+            if let Frame::Render(frame) = link.receive().await? {
+                if frame.header.view_revision == route.view_revision {
+                    screen.process(&frame.ansi);
+                }
+                acknowledge(link, frame).await?;
+                if found(&screen.screen().contents()) {
+                    return Ok(());
+                }
+            }
+        }
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "expected {expected} in terminal. Screen: {:?}",
+            screen.screen().contents()
+        )
+    })?
+}
+
+#[cfg(unix)]
 async fn assert_directory(
     link: &mut InteractiveConnection,
     route: &RouteToken,
@@ -290,9 +378,6 @@ async fn assert_directory(
     expected: &Path,
 ) -> Result<()> {
     let marker = format!("CWD{}=", *sequence);
-    #[cfg(windows)]
-    let input = format!("('CW' + 'D{}=') + (Get-Location).ProviderPath", *sequence);
-    #[cfg(unix)]
     let input = format!("printf 'CW%s%s\\n' 'D{}=' \"$PWD\"", *sequence);
     let expected = expected.canonicalize()?;
     let mut screen = vt100::Parser::new(
@@ -302,8 +387,6 @@ async fn assert_directory(
     );
     timeout(WAIT, async {
         loop {
-            // ConPTY can accept input before PowerShell begins reading it.
-            // Use repeatable probes instead of depending on a shell profile.
             send_line(link, route, sequence, input.as_bytes()).await?;
             if let Ok(result) = timeout(
                 Duration::from_secs(2),
@@ -324,6 +407,7 @@ async fn assert_directory(
     })?
 }
 
+#[cfg(unix)]
 async fn read_directory(
     link: &mut InteractiveConnection,
     route: &RouteToken,
