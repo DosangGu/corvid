@@ -45,7 +45,7 @@ fn resolve_path(input: &str) -> Result<PathBuf, ProtocolFault> {
         return Err(invalid_path());
     }
     let path = absolute(input)?;
-    let path = fs::canonicalize(path).map_err(|error| inaccessible(&error))?;
+    let path = dunce::canonicalize(path).map_err(|error| inaccessible(&error))?;
     validate(&path)?;
     text_path(&path)?;
     Ok(path)
@@ -121,7 +121,7 @@ fn listing(query: BrowseDirectories) -> Result<DirectoryListing, ProtocolFault> 
     } else {
         (path.as_path(), "")
     };
-    let directory = fs::canonicalize(directory).map_err(|error| inaccessible(&error))?;
+    let directory = dunce::canonicalize(directory).map_err(|error| inaccessible(&error))?;
     validate(&directory)?;
     let mut listing = description(&directory)?;
     let mut bytes = 0;

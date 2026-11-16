@@ -1298,6 +1298,7 @@ dependencies = [
  "anyhow",
  "corvid-core",
  "corvid-protocol",
+ "dunce",
  "nix 0.31.3",
  "portable-pty",
  "prost",

@@ -31,7 +31,8 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     let state = fixture.path().join("state");
     let workspace = fixture.path().join("project 한글");
     std::fs::create_dir(&workspace)?;
-    std::fs::create_dir(workspace.join("other"))?;
+    let other = workspace.join("other");
+    std::fs::create_dir(&other)?;
     std::fs::write(fixture.path().join("project file"), "")?;
 
     let endpoint = ControlEndpoint::Local(runtime.clone());
@@ -64,10 +65,10 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     let initial = attach_request(Some("Project".into()), Some(selected_path.clone()));
     let (_, mut route) = attach(&mut link, initial).await?;
     let mut sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, "PROJECT").await?;
+    assert_directory(&mut link, &route, &mut sequence, &workspace).await?;
     send_input(&mut link, &route, sequence, b"cd other\r").await?;
     sequence += 1;
-    assert_directory(&mut link, &route, &mut sequence, "OTHER").await?;
+    assert_directory(&mut link, &route, &mut sequence, &other).await?;
 
     for target in [
         Target::SplitAxis(SplitAxis::Horizontal as i32),
@@ -76,19 +77,19 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     ] {
         (_, route) = create(&mut link, &route, target).await?;
         sequence = 1;
-        assert_directory(&mut link, &route, &mut sequence, "PROJECT").await?;
+        assert_directory(&mut link, &route, &mut sequence, &workspace).await?;
     }
     let (second, route) = create(
         &mut link,
         &route,
         Target::Workspace(WorkspaceCreation {
             label: "Other".into(),
-            directory: workspace.join("other").to_string_lossy().into_owned(),
+            directory: other.to_string_lossy().into_owned(),
         }),
     )
     .await?;
     sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, "OTHER").await?;
+    assert_directory(&mut link, &route, &mut sequence, &other).await?;
     drop(link);
 
     let second_id = &second.workspace_id;
@@ -120,7 +121,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     .await?;
     ensure!(view.workspace_id == second.workspace_id);
     sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, "OTHER").await?;
+    assert_directory(&mut link, &route, &mut sequence, &other).await?;
     drop(link);
 
     let mut link = open(&endpoint).await?;
@@ -135,7 +136,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     };
     let (_, route) = attach(&mut link, ask).await?;
     sequence = 1;
-    assert_directory(&mut link, &route, &mut sequence, "PROJECT").await
+    assert_directory(&mut link, &route, &mut sequence, &workspace).await
 }
 
 async fn start(runtime: &Path, state: &Path, endpoint: &ControlEndpoint) -> Result<Child> {
@@ -271,13 +272,14 @@ async fn assert_directory(
     link: &mut InteractiveConnection,
     route: &RouteToken,
     sequence: &mut u64,
-    expected: &str,
+    expected: &Path,
 ) -> Result<()> {
+    let marker = format!("CWD{}=", *sequence);
     #[cfg(windows)]
-    let input = b"switch -Wildcard ((Get-Location).Path) { '*\\other' { 'DIR_'+'OTHER' } '*\\project *' { 'DIR_'+'PROJECT' } }\r";
+    let input = format!("('CW' + 'D{}=') + (Get-Location).ProviderPath\r", *sequence);
     #[cfg(unix)]
-    let input = b"case \"$PWD\" in */other) printf 'DIR_%s\\n' OTHER;; */project\\ *) printf 'DIR_%s\\n' PROJECT;; esac\r";
-    let marker = format!("DIR_{expected}");
+    let input = format!("printf 'CW%s%s\\n' 'D{}=' \"$PWD\"\r", *sequence);
+    let expected = expected.canonicalize()?;
     let mut screen = vt100::Parser::new(
         NonZeroU16::new(28).unwrap(),
         NonZeroU16::new(120).unwrap(),
@@ -287,11 +289,11 @@ async fn assert_directory(
         loop {
             // ConPTY can accept input before PowerShell begins reading it.
             // Use repeatable probes instead of depending on a shell profile.
-            send_input(link, route, *sequence, input).await?;
+            send_input(link, route, *sequence, input.as_bytes()).await?;
             *sequence += 1;
             if let Ok(result) = timeout(
                 Duration::from_secs(2),
-                read_directory(link, route, &mut screen, &marker),
+                read_directory(link, route, &mut screen, &marker, &expected),
             )
             .await
             {
@@ -300,7 +302,12 @@ async fn assert_directory(
         }
     })
     .await
-    .context(format!("expected {marker} in terminal"))?
+    .with_context(|| {
+        format!(
+            "expected {expected:?} in terminal. Screen: {:?}",
+            screen.screen().contents()
+        )
+    })?
 }
 
 async fn read_directory(
@@ -308,6 +315,7 @@ async fn read_directory(
     route: &RouteToken,
     screen: &mut vt100::Parser,
     marker: &str,
+    expected: &Path,
 ) -> Result<()> {
     loop {
         match link.receive().await? {
@@ -316,12 +324,19 @@ async fn read_directory(
                     screen.process(&frame.ansi);
                 }
                 acknowledge(link, frame).await?;
-                if screen
+                if let Some(path) = screen
                     .screen()
                     .contents()
                     .lines()
-                    .any(|line| line.trim() == marker)
+                    .find_map(|line| line.strip_prefix(marker))
                 {
+                    let actual = Path::new(path)
+                        .canonicalize()
+                        .with_context(|| format!("shell reported {path:?}"))?;
+                    ensure!(
+                        actual == expected,
+                        "expected {expected:?}, shell opened in {actual:?}"
+                    );
                     return Ok(());
                 }
             }
