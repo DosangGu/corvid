@@ -61,7 +61,7 @@ verify_payload() {
     [ "${digest%% *}" = "$sha" ]
 }
 
-# Persisted WSL endpoints can resolve either installation after reconnecting.
+# Persisted SSH and WSL endpoints can resolve either installation after reconnecting.
 if [ "$1" = auto ]; then
     shift
     if command -v corvid >/dev/null 2>&1; then

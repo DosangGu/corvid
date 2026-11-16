@@ -218,6 +218,47 @@ def check_companion_ssh(ssh, command, directory):
     finally:
         companion.close()
 
+    check_managed_companion_ssh(companion, command, directory, first["remote_epoch"])
+
+
+def check_managed_companion_ssh(companion, command, directory, epoch):
+    # Reopen the saved alias after removing Corvid from the remote command PATH.
+    # Keep the daemon and its epoch alive behind a Desktop-managed installation.
+    home = directory / "managed-home"
+    home.mkdir(mode=0o700)
+    install = home / ".corvid"
+    install.mkdir(mode=0o700)
+    binary = install / "corvid"
+    shutil.copyfile(command[0], binary)
+    binary.chmod(0o700)
+    path = directory / "managed-path"
+    path.mkdir(mode=0o700)
+    for name in ("sh", "id", "stat"):
+        (path / name).symlink_to(shutil.which(name))
+
+    script = Path(__file__).resolve().parents[2] / "corvid-client/src/endpoint/bootstrap.sh"
+    quoted = script.read_text().replace("'", "'\\''")
+    auto_relay = f"sh -c '{quoted}' corvid-ssh auto control --stdio"
+    environment = shlex.join([
+        f"HOME={home}", f"PATH={path}", f"CORVID_RUNTIME_DIR={command[2]}",
+    ])
+    gate = directory / "relay"
+    gate.write_text(
+        '#!/bin/sh\ncase "$SSH_ORIGINAL_COMMAND" in\n'
+        "  'corvid control --stdio') printf 'corvid: not found\\n' >&2; exit 127 ;;\n"
+        "  'uname -s') exec uname -s ;;\n"
+        f'  {shlex.quote(auto_relay)}) exec env {environment} /bin/sh -c "$SSH_ORIGINAL_COMMAND" ;;\n'
+        "  *) exit 1 ;;\nesac\n"
+    )
+
+    try:
+        ready = companion.start()["header"]
+        assert ready["host_id"] == companion.host
+        assert ready["controller_id"] == companion.controller
+        assert ready["remote_epoch"] == epoch
+    finally:
+        companion.close()
+
 
 def check_working_ssh(ssh, command, directory):
     state = directory / "monitor-state"

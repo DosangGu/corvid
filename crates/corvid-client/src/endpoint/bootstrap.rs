@@ -271,6 +271,15 @@ pub(super) fn daemon_command(
     }
 }
 
+pub(super) fn auto_control_command(platform: HostPlatform) -> String {
+    match platform {
+        HostPlatform::Linux | HostPlatform::Macos => unix_command(platform, "auto control --stdio"),
+        HostPlatform::Windows => windows_setup(
+            "$exe = PathDaemon\nif (!$exe) { $exe = ManagedDaemon }\nRunDaemon $exe 'control --stdio'",
+        ),
+    }
+}
+
 pub(super) fn linux_command(arguments: &str) -> String {
     // The command and arguments are fixed. The artifact header and bytes travel over stdin.
     let script = LINUX_SCRIPT.replace('\'', "'\\''");
@@ -603,6 +612,7 @@ mod tests {
 
     #[test]
     fn windows_commands_fit_the_default_ssh_shell_limit() {
+        assert!(auto_control_command(HostPlatform::Windows).len() < 8000);
         assert!(windows_setup(&windows_install(MAX_BINARY, &"0".repeat(64))).len() < 8000);
         assert!(
             windows_setup(&windows_upgrade(
