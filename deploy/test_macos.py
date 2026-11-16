@@ -11,6 +11,7 @@ import tempfile
 import time
 
 from package import MACOS, RUNTIME_TARGETS, WINDOWS_TARGETS, digest
+import monitor_fixture
 
 
 def run(*arguments):
@@ -57,6 +58,8 @@ assert(windows.contains { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($
             source = directory / "window.swift"
             source.write_text(query)
             run("swift", source, desktop.pid)
+            reader, epoch = monitor_fixture.ready(binaries / "corvid", directory / "state", environment)
+        monitor_fixture.assert_same(reader, epoch, environment)
 
 
 def check(assets):
@@ -86,7 +89,10 @@ def check(assets):
             environment = dict(os.environ, HOME=str(directory), CORVID_RUNTIME_DIR=str(directory / "r"),
                                CORVID_VIEW_STATE_DIR=str(directory / "views"))
             with (directory / "desktop.log").open("w+") as log:
-                check_window(binaries, directory, environment, log)
+                try:
+                    check_window(binaries, directory, environment, log)
+                finally:
+                    monitor_fixture.stop(binaries / "corvid", directory / "state", environment)
         finally:
             run("hdiutil", "detach", mount)
     print("PASS macOS: DMG, signatures, architecture, bundled runtimes, Desktop window")

@@ -13,6 +13,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import monitor_fixture
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("assets", type=Path, nargs="?", help="directory containing the Desktop archive")
@@ -21,7 +22,8 @@ args = parser.parse_args()
 if (args.assets is None) == (args.build is None):
     parser.error("provide either an assets directory or --build")
 
-with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home()) as directory:
+with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home()) as directory,
+      tempfile.TemporaryDirectory(prefix=".cvr-", dir=Path.home()) as runtime_directory):
     root = Path(directory)
     if args.build:
         for binary in ("corvid", "corvid-desktop", "corvid-agent-deck"):
@@ -30,11 +32,11 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
         archive, = args.assets.glob(f"corvid-desktop-*-{platform.machine()}-unknown-linux-gnu.tar.gz")
         with tarfile.open(archive) as stream:
             stream.extractall(root, filter="data")
-    runtime = root / "runtime"
-    runtime.mkdir(mode=0o700)
+    runtime = Path(runtime_directory)
     environment = dict(os.environ, HOME=str(root), CORVID_RUNTIME_DIR=str(runtime / "corvid"),
                        CORVID_VIEW_STATE_DIR=str(root / "views"), XDG_STATE_HOME=str(root / "state"),
-                       SHELL="/bin/sh")
+                       SHELL="/bin/sh", XDG_RUNTIME_DIR=str(runtime))
+    monitor_state = root / "state/corvid/companion"
     # A foreground daemon keeps this test in control of its process lifecycle.
     daemon = subprocess.Popen([str(root / "corvid"), "daemon"], env=environment, start_new_session=True)
     manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -81,6 +83,7 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
             raise AssertionError(f"{title} did not open with its app identity and icon:\n{windows}")
 
         window = wait_for_icon("Corvid Desktop")
+        reader, monitor_epoch = monitor_fixture.ready(root / "corvid", monitor_state, environment)
         def writers():
             clients = subprocess.check_output(
                 [str(root / "corvid"), "control", "clients"], env=environment, text=True, timeout=5,
@@ -182,6 +185,7 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
         assert wait_for_writer() == retired
         key(first_window, "ctrl+shift+q")
         assert previous.wait(timeout=15) == 0, "The original Desktop failed while quitting"
+        monitor_fixture.assert_same(reader, monitor_epoch, environment)
 
         desktop = subprocess.Popen([str(root / "corvid-desktop")], env=environment, start_new_session=True)
         restored = wait_for_icon("Corvid Desktop")
@@ -211,3 +215,4 @@ with tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home(
             if process is not None and process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
                 process.wait(timeout=15)
+        monitor_fixture.stop(root / "corvid", monitor_state, environment)
