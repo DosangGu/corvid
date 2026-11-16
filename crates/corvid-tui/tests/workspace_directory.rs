@@ -64,7 +64,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     ensure!(error.code == "DirectoryNotFound");
     drop(link);
     let mut link = open(&endpoint).await?;
-    let initial = first_project_shell(selected_path.clone());
+    let initial = attach_request(Some("Project".into()), Some(selected_path));
     let (_, mut route) = attach(&mut link, initial).await?;
     #[cfg(unix)]
     {
@@ -74,20 +74,7 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
         assert_directory(&mut link, &route, &mut sequence, &other).await?;
     }
     #[cfg(windows)]
-    {
-        let first = workspace.canonicalize()?;
-        let moved = other.canonicalize()?;
-        wait_for_screen(
-            &mut link,
-            &route,
-            "initial directory and subsequent cd",
-            |screen| {
-                reports_directory(screen, "FIRST=", &first)
-                    && reports_directory(screen, "MOVED=", &moved)
-            },
-        )
-        .await?;
-    }
+    assert_fresh_directory(&mut link, &route, &workspace).await?;
 
     for target in [
         Target::SplitAxis(SplitAxis::Horizontal as i32),
@@ -154,37 +141,9 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     assert_fresh_directory(&mut link, &route, &workspace).await
 }
 
-#[cfg(windows)]
-fn reports_directory(screen: &str, prefix: &str, expected: &Path) -> bool {
-    screen
-        .lines()
-        .filter_map(|line| line.strip_prefix(prefix))
-        .any(|path| {
-            // TEMP can use the account's short name even though PowerShell reports
-            // the long path. Compare the resolved folders.
-            Path::new(path)
-                .canonicalize()
-                .is_ok_and(|path| path == expected)
-        })
-}
-
-fn first_project_shell(path: String) -> Attach {
-    let request = attach_request(Some("Project".into()), Some(path));
-    #[cfg(windows)]
-    {
-        let mut request = request;
-        request.launch.as_mut().unwrap().argv = [
-            "powershell.exe", "-NoLogo", "-NoProfile", "-NoExit", "-Command",
-            "'FIRST=' + (Get-Location).ProviderPath; Set-Location -LiteralPath 'other'; 'MOVED=' + (Get-Location).ProviderPath",
-        ].map(|argument| argument.as_bytes().to_vec()).into();
-        request
-    }
-    #[cfg(unix)]
-    request
-}
-
 async fn start(runtime: &Path, state: &Path, endpoint: &ControlEndpoint) -> Result<Child> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_corvid"));
+    command.current_dir(state.parent().context("missing fixture root")?);
     command
         .arg("--runtime-dir")
         .arg(runtime)
