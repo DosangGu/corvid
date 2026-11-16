@@ -39,6 +39,8 @@ fn main() {
     );
     let stop = format!(r#""hook_event_name":"Stop","stop_hook_active":false,{turn}"#);
     observe(provider, &stop);
+    // TODO: Coalesce response attention for repeated Stop hooks within one turn
+    // These repeated hooks produce one terminal bell but multiple response attention records consumed by Deck. Deduplicate attention by run and turn while preserving notifications for later turns.
     observe(provider, &stop);
     println!("DONE-{provider}");
 }

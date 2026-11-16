@@ -517,6 +517,8 @@ mod tests {
         use std::process::{Command, Stdio};
 
         let executable = Executable::read(Path::new("/bin/sleep")).unwrap();
+        // TODO: Give the process startup fixture distinct executable images on multicall coreutils
+        // Ubuntu installations using multicall coreutils can give /bin/sleep and /bin/cat the same device and inode, invalidating the negative case. Use a fixture executable with a distinct image instead of assuming these commands differ.
         let different = Executable::read(Path::new("/bin/cat")).unwrap();
         for (expected, should_bind) in [
             (Some(executable), true),

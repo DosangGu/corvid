@@ -352,10 +352,13 @@ such as `turn_start`, `response_boundary`, `explicit_question`, `permission_requ
 `request_resolution`, `subagent_identity`, and `revalidate_current_state`.
 
 Capabilities are qualified (`exact`, `partial`, `unavailable`) with reasons; one
-`supports_hooks` boolean is insufficient. Unknown versions do not inherit every
-capability of the newest documentation. Phase 2/3 must capture fixtures from exact
-installed CLI releases and record their versions before claiming runtime support.
-No minimum compatible provider version has been established by this design review.
+`supports_hooks` boolean is insufficient. Newer versions do not inherit new
+capabilities from documentation alone. Claude Code has no minimum version or
+exact-version allowlist on Linux and macOS; recognized releases use the same
+observer contract and validate its events and fields. Version admission is
+separate from runtime qualification: Phase 2/3 fixtures record the exact installed
+CLI release, and an accepted version is not a claim that its complete behavior
+has been tested. Codex keeps its release-specific check.
 See [provider qualification](03_provider_qualification.md) for captured traces
 from Claude Code 2.1.318 and Codex CLI 0.167.0. The agent projection includes the
 adapter schema, qualified event and correlation fields, and capability levels.
@@ -473,7 +476,7 @@ to ordinary CLI Hooks, `notify`, terminal OSC 9, or BEL notifications.
 
 `corvid observe --provider claude` accepts hook data from stdin, filters it, and
 makes one local Protobuf submission to `collector.sock`. The current adapter
-accepts the qualified Claude Code release and checks the launch association,
+recognizes Claude's version banner and checks the launch association,
 epoch, provider process incarnation, and the exec-form hook's parent PID.
 `corvid observe --provider codex` uses the same collector. For the qualified
 Codex release, it also recognizes the launcher's direct internal app-server
@@ -500,11 +503,11 @@ See [provider qualification](03_provider_qualification.md) for the enabled scope
 6. Use explicit nonblocking/fail-open provider settings where supported; never configure
    monitoring with `onFailure: block`. Missing executable, timeout, malformed data,
    collector crash, and queue-full behavior must all preserve provider decisions.
-7. An explicit managed launch requests observation for that session. For qualified
-   releases, pass the observation hooks as additive session settings. Leave provider
-   configuration files, trust, permissions, and execution policy under provider and user
-   control. If neutrality cannot be established for a version/event, disable that
-   observation capability.
+7. An explicit managed launch requests observation for that session. Pass the
+   adapter's observation hooks as additive session settings. Leave provider
+   configuration files, trust, permissions, and execution policy under provider
+   and user control. If neutrality cannot be established for a version/event,
+   disable that observation capability.
 
 Collector failures/gaps degrade state. A dropped hook cannot always report its own
 failure; absent durable delivery, exact completeness is not promised. The architecture

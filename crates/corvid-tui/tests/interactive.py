@@ -639,8 +639,10 @@ def verify_resume(binary, directory):
         stop(daemon)
 
 
-def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shell_name="sh"):
-    root = directory / f"notify-{shell_name}"
+def verify_shell_agent_notifications(
+    binary, directory, terminfo, ssh=None, shell_name="sh", *, claude_version=None,
+):
+    root = directory / f"notify-{shell_name}-{claude_version or 'baseline'}"
     root.mkdir()
     programs = root / "bin"
     programs.mkdir()
@@ -668,6 +670,8 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
         build_env[f"CORVID_FIXTURE_{name}"] = re.search(
             rf'{name}_VERSION: &str = "([^"]+)"', versions.read_text(),
         )[1]
+    if claude_version is not None:
+        build_env["CORVID_FIXTURE_CLAUDE"] = claude_version
     subprocess.run(["rustc", fixture, "-o", programs / "claude"], env=build_env, check=True)
     (programs / "codex").hardlink_to(programs / "claude")
 
@@ -710,6 +714,18 @@ def verify_shell_agent_notifications(binary, directory, terminfo, ssh=None, shel
                 terminal.expect(f"DONE-{provider}".encode())
                 terminal.expect(rb"DONE-" + provider.encode() + rb"[\s\S]*NOTIFY-SHELL>")
                 assert terminal.output.count(b"\x07") == 1, terminal.output
+                # Deck consumes this same daemon attention through the companion.
+                run_ids = [
+                    line.split()[0] for line in agents.splitlines()
+                    if b"provider=" + provider.title().encode() + b" " in line
+                ]
+                assert len(run_ids) == 1, agents
+                attention = subprocess.check_output([*command, "control", "attention"], timeout=3)
+                responses = [
+                    line for line in attention.splitlines()
+                    if b"run_id=" + run_ids[0] + b" " in line and b"reason=Response " in line
+                ]
+                assert responses, attention
             terminal.send(b"exit\n")
             terminal.wait(0)
     finally:
@@ -750,9 +766,13 @@ def run(binary, *, tty_only=False):
         for providers in [("claude",), ("codex",), ("claude", "codex")]:
             verify_shell_with_agents(binary, directory, database, providers)
         verify_shell_agent_notifications(binary, directory, database)
+        for version in ("2.1.300", "2.1.325"):
+            verify_shell_agent_notifications(binary, directory, database, claude_version=version)
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
-                verify_shell_agent_notifications(binary, directory, database, shell_name=shell)
+                verify_shell_agent_notifications(
+                    binary, directory, database, shell_name=shell, claude_version="2.1.325",
+                )
     print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, command-menu isolation, detach, tab switching, tab search, and daemon replacement with a retained shell.")
 
 

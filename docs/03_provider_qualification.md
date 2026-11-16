@@ -1,5 +1,30 @@
 # Provider Qualification
 
+## Claude version compatibility
+
+Linux and macOS recognize Claude's version banner without an exact-version
+allowlist or a minimum version. The version probe requires a valid semantic
+version followed by ` (Claude Code)` to identify the provider. Older and newer
+releases can use the existing observer contract; malformed or unrelated version
+output is rejected.
+Both ordinary `claude` commands in Corvid shells and `corvid attach --agent claude`
+use this policy. Windows observation does not use this version gate.
+
+The captured 2.1.318 traces remain the adapter's qualification baseline, not a
+claim that every accepted release has been exercised. `ProviderProfile.version` and
+`AgentInfo.qualified_provider_version` identify that baseline; Claude hook
+evidence identifies the parser contract as `claude-hooks.v3`. All versions use
+the same event allowlist, payload limits, correlation requirements, and process
+ownership checks. They do not automatically gain support for new hook events.
+
+The synthetic shell fixture reports 2.1.300 and 2.1.325 and exercises registration,
+response attention, and duplicate bell suppression through local PTYs and SSH. This
+is a regression check for version admission and event delivery, not captured
+traces from those installed Claude Code releases. An accepted version must still
+support the configured hooks and their required fields for observation to work.
+Codex retains its separate release check because its managed broker lookup
+includes a release-specific installation path.
+
 ## Windows hook setup and fixture coverage
 
 Generate the observer groups with `corvid hooks claude` or

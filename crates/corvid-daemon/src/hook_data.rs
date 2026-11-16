@@ -264,7 +264,12 @@ pub(crate) fn hook_evidence(provider: Provider, confidence: Confidence) -> Evide
     let mut evidence = evidence(Source::ProviderHook, confidence);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        evidence.source_version = crate::provider::qualified_version(provider).to_owned();
+        evidence.source_version = match provider {
+            // This identifies the parser contract, not the installed CLI release.
+            // Recognized Claude releases reuse the same observer schema.
+            Provider::Claude => "claude-hooks.v3".to_owned(),
+            Provider::Codex => crate::provider::qualified_version(provider).to_owned(),
+        };
     }
     #[cfg(windows)]
     {
