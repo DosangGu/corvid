@@ -8,7 +8,6 @@ use vt100::{Cell, Color, Screen};
 
 #[cfg(test)]
 use crate::terminal_fonts::DEFAULT_FONT;
-use crate::terminal_fonts::FONT_SIZE;
 use crate::terminal_session::Grid;
 
 mod graphic;
@@ -23,19 +22,21 @@ mod performance;
 pub struct Metrics {
     column: Pixels,
     pub row: Pixels,
+    font_size: Pixels,
 }
 
 impl Metrics {
-    pub fn measure(window: &Window, family: &SharedString) -> Self {
+    pub fn measure(window: &Window, family: &SharedString, font_size: Pixels) -> Self {
         let line = window.text_system().shape_line(
             "M".into(),
-            FONT_SIZE,
+            font_size,
             &[text_run(1, Style::default(), family)],
             None,
         );
         Self {
             column: line.width.max(px(1.)),
-            row: (line.ascent + line.descent).max(FONT_SIZE),
+            row: (line.ascent + line.descent).max(font_size),
+            font_size,
         }
     }
 
@@ -218,7 +219,14 @@ impl Frame {
                         ));
                     }
                 } else {
-                    paint_text(span.text, span.style, cell, family, window);
+                    paint_text(
+                        span.text,
+                        span.style,
+                        cell,
+                        family,
+                        metrics.font_size,
+                        window,
+                    );
                 }
             }
         });
@@ -243,7 +251,7 @@ impl Frame {
                 };
                 let marked = window.text_system().shape_line(
                     marked.to_owned().into(),
-                    FONT_SIZE,
+                    metrics.font_size,
                     &[text_run(marked.len(), style, family)],
                     None,
                 );
@@ -265,6 +273,7 @@ fn paint_text(
     style: Style,
     cell: Bounds<Pixels>,
     family: &SharedString,
+    font_size: Pixels,
     window: &mut Window,
 ) {
     if text.trim().is_empty() {
@@ -273,7 +282,7 @@ fn paint_text(
     let run = text_run(text.len(), style, family);
     let line = window
         .text_system()
-        .shape_line(text.into(), FONT_SIZE, &[run], None);
+        .shape_line(text.into(), font_size, &[run], None);
     let baseline = cell.origin
         + point(
             px(0.),
@@ -283,13 +292,13 @@ fn paint_text(
         for glyph in &run.glyphs {
             let position = baseline + point(glyph.position.x, px(0.));
             if glyph.is_emoji {
-                let _ = window.paint_emoji(position, run.font_id, glyph.id, FONT_SIZE);
+                let _ = window.paint_emoji(position, run.font_id, glyph.id, font_size);
             } else {
                 let _ = window.paint_glyph(
                     position,
                     run.font_id,
                     glyph.id,
-                    FONT_SIZE,
+                    font_size,
                     rgb(style.fg).into(),
                 );
             }

@@ -129,21 +129,21 @@ impl WorkspaceView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .flex()
             .flex_col()
-            .w(px(440.))
-            .p(px(16.))
-            .gap(px(12.))
+            .w(ui_px(440.))
+            .p(ui_px(16.))
+            .gap(ui_px(12.))
             .bg(rgb(PANEL))
             .border_1()
             .border_color(rgb(BORDER))
             .rounded_md()
             .text_color(rgb(TEXT))
-            .child(div().text_size(px(18.)).child("Rename tab"))
+            .child(div().text_size(ui_px(18.)).child("Rename tab"))
             .child(
                 div()
                     .relative()
-                    .h(px(38.))
-                    .px(px(8.))
-                    .py(px(6.))
+                    .h(ui_px(38.))
+                    .px(ui_px(8.))
+                    .py(ui_px(6.))
                     .overflow_hidden()
                     .bg(rgb(if draft.selected {
                         ACTIVE_FILL
@@ -155,7 +155,7 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(ui_px(12.))
                     .text_color(rgb(MUTED))
                     .child("Enter saves · Esc cancels · Empty name restores automatic titles"),
             )

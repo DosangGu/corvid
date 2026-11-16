@@ -19,10 +19,11 @@ use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::{CloseView, SplitAxis, TabState, ViewSelection, WorkspaceState};
 use gpui::{
     AppContext, Context, Div, Entity, FocusHandle, IntoElement, KeyDownEvent, PromptLevel,
-    SharedString, Stateful, Task, Window, WindowHandle, div, prelude::*, px, rgb,
+    SharedString, Stateful, Task, Window, WindowHandle, div, prelude::*, rgb,
 };
 
 use crate::agent_deck;
+use crate::appearance::{self, Appearance, ui_px};
 use crate::desktop_windows::{DesktopWindows, WindowLaunch};
 use crate::ssh_hosts;
 use crate::terminal_session::{AttachTarget, Destination, Inventory, Job, Session, Ui};
@@ -712,9 +713,9 @@ impl WorkspaceView {
         div()
             .id(id)
             .flex_none()
-            .px(px(6.))
+            .px(ui_px(6.))
             .rounded_md()
-            .text_size(px(15.))
+            .text_size(ui_px(15.))
             .text_color(rgb(MUTED))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(BORDER)).text_color(rgb(TEXT)))
@@ -797,6 +798,9 @@ impl WorkspaceView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if appearance::terminal_shortcut(event, window, cx) {
+            return;
+        }
         let key = &event.keystroke;
         let modifiers = key.modifiers;
         if modifiers.control
@@ -923,20 +927,20 @@ impl WorkspaceView {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(12.))
-            .p(px(18.))
+            .gap(ui_px(12.))
+            .p(ui_px(18.))
             .child(
                 div()
-                    .text_size(px(19.))
+                    .text_size(ui_px(19.))
                     .text_color(rgb(TEXT))
                     .child(format!("Terminal · {}", destination.label())),
             )
             .when_some(message, |panel, message| {
                 panel.child(
                     div()
-                        .max_w(px(540.))
+                        .max_w(ui_px(540.))
                         .text_center()
-                        .text_size(px(13.))
+                        .text_size(ui_px(13.))
                         .text_color(rgb(MUTED))
                         .child(message.to_owned()),
                 )
@@ -964,7 +968,7 @@ impl WorkspaceView {
         let region = div().flex().flex_1().min_w_0().min_h_0().overflow_hidden();
         match tab.nodes.get(index).and_then(|node| node.body.as_ref()) {
             Some(Node::Split(split)) => region
-                .gap(px(1.))
+                .gap(ui_px(1.))
                 .when(split.axis == SplitAxis::Vertical as i32, |region| {
                     region.flex_col()
                 })
@@ -1002,11 +1006,11 @@ impl WorkspaceView {
                             .flex_none()
                             .flex()
                             .items_center()
-                            .px(px(9.))
-                            .py(px(4.))
+                            .px(ui_px(9.))
+                            .py(ui_px(4.))
                             .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                             .text_color(rgb(if active { ACTIVE } else { MUTED }))
-                            .text_size(px(12.))
+                            .text_size(ui_px(12.))
                             .child(div().flex_1().min_w_0().truncate().child(title))
                             .when(ui.connected && ui.close_supported, |header| {
                                 header.child(
@@ -1041,7 +1045,7 @@ impl WorkspaceView {
                                 .id(SharedString::from(format!("preview-{pane}")))
                                 .flex_1()
                                 .min_h_0()
-                                .p(px(2.))
+                                .p(ui_px(2.))
                                 .overflow_hidden()
                                 .cursor_pointer()
                                 .child(preview(session, pane.clone()))
@@ -1062,15 +1066,15 @@ impl WorkspaceView {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(10.))
-                                .p(px(12.))
+                                .gap(ui_px(10.))
+                                .p(ui_px(12.))
                                 .flex_1()
                                 .items_center()
                                 .justify_center()
                                 .when_some(restore_error, |panel, error| {
                                     panel.child(
                                         div()
-                                            .text_size(px(12.))
+                                            .text_size(ui_px(12.))
                                             .text_color(rgb(MUTED))
                                             .child(error),
                                     )
@@ -1170,12 +1174,12 @@ fn button(
     div()
         .id(id.into())
         .flex_none()
-        .px(px(10.))
-        .py(px(5.))
+        .px(ui_px(10.))
+        .py(ui_px(5.))
         .rounded_md()
         .bg(rgb(if selected { ACTIVE_FILL } else { PANEL }))
         .text_color(rgb(if selected { ACTIVE } else { MUTED }))
-        .text_size(px(13.))
+        .text_size(ui_px(13.))
         .whitespace_nowrap()
         .cursor_pointer()
         .hover(|style| style.text_color(rgb(TEXT)))

@@ -38,13 +38,13 @@ impl WorkspaceView {
             .flex_1()
             .w_full()
             .min_h_0()
-            .gap(px(12.))
-            .p(px(14.))
+            .gap(ui_px(12.))
+            .p(ui_px(14.))
             .bg(rgb(PANEL))
             .child(
                 div()
                     .text_color(rgb(TEXT))
-                    .text_size(px(19.))
+                    .text_size(ui_px(19.))
                     .child("Connections"),
             )
             .child(
@@ -54,7 +54,7 @@ impl WorkspaceView {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .gap(px(12.))
+                    .gap(ui_px(12.))
                     .overflow_y_scroll()
                     .child(self.connection_branch(&Destination::Local, ui, changing, cx))
                     .when(cfg!(windows), |tree| {
@@ -65,13 +65,18 @@ impl WorkspaceView {
                     .child(self.host_list(ui, changing, cx)),
             )
             .when_some(self.error.clone(), |panel, error| {
-                panel.child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(error))
+                panel.child(
+                    div()
+                        .text_size(ui_px(13.))
+                        .text_color(rgb(MUTED))
+                        .child(error),
+                )
             })
             .child(
                 div()
                     .flex()
                     .flex_none()
-                    .gap(px(8.))
+                    .gap(ui_px(8.))
                     .items_center()
                     .child(
                         div()
@@ -80,7 +85,7 @@ impl WorkspaceView {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .p(px(8.))
+                            .p(ui_px(8.))
                             .rounded_md()
                             .bg(rgb(PANEL))
                             .border_1()
@@ -123,7 +128,7 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(5.))
+            .gap(ui_px(5.))
             .w_full()
             .child(
                 div()
@@ -132,7 +137,7 @@ impl WorkspaceView {
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(14.))
+                            .text_size(ui_px(14.))
                             .text_color(rgb(TEXT))
                             .child("SSH Hosts"),
                     )
@@ -144,10 +149,10 @@ impl WorkspaceView {
             .when_some(note, |list, message| {
                 list.child(
                     div()
-                        .p(px(10.))
+                        .p(ui_px(10.))
                         .rounded_md()
                         .bg(rgb(PANEL))
-                        .text_size(px(13.))
+                        .text_size(ui_px(13.))
                         .text_color(rgb(MUTED))
                         .child(message),
                 )
@@ -177,14 +182,19 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(5.))
+            .gap(ui_px(5.))
             .w_full()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(14.)).text_color(rgb(TEXT)).child("WSL"))
+                    .child(
+                        div()
+                            .text_size(ui_px(14.))
+                            .text_color(rgb(TEXT))
+                            .child("WSL"),
+                    )
                     .child(
                         button("refresh-wsl", "Refresh", false)
                             .on_click(cx.listener(|view, _, _, cx| view.refresh_wsl(cx))),
@@ -193,8 +203,8 @@ impl WorkspaceView {
             .when_some(note, |list, message| {
                 list.child(
                     div()
-                        .p(px(10.))
-                        .text_size(px(13.))
+                        .p(ui_px(10.))
+                        .text_size(ui_px(13.))
                         .text_color(rgb(MUTED))
                         .child(message),
                 )
@@ -244,20 +254,20 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(4.))
+            .gap(ui_px(4.))
             .child(
                 div()
                     .id("open-connection")
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .py(px(8.))
+                    .gap(ui_px(8.))
+                    .px(ui_px(10.))
+                    .py(ui_px(8.))
                     .rounded_md()
                     .bg(rgb(if connected { ACTIVE_FILL } else { BACKGROUND }))
                     .text_color(rgb(TEXT))
-                    .text_size(px(13.))
+                    .text_size(ui_px(13.))
                     .child(div().flex_1().min_w_0().truncate().child(label))
                     .when_some(
                         known
@@ -282,7 +292,7 @@ impl WorkspaceView {
                     .child(
                         div()
                             .flex_none()
-                            .text_size(px(12.))
+                            .text_size(ui_px(12.))
                             .text_color(rgb(if connected { ACTIVE } else { MUTED }))
                             .child(status),
                     )

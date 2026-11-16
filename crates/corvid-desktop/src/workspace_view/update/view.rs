@@ -11,14 +11,14 @@ impl WorkspaceView {
             .flex_wrap()
             .items_center()
             .justify_between()
-            .gap(px(8.))
+            .gap(ui_px(8.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .child(gpui::img(crate::app_icon::image()).size(px(40.)))
-                    .child(div().text_size(px(17.)).child("Corvid Desktop")),
+                    .gap(ui_px(10.))
+                    .child(gpui::img(crate::app_icon::image()).size(ui_px(40.)))
+                    .child(div().text_size(ui_px(17.)).child("Corvid Desktop")),
             )
             .child(
                 div()
@@ -28,8 +28,8 @@ impl WorkspaceView {
         let mut card = div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(16.))
+            .gap(ui_px(12.))
+            .p(ui_px(16.))
             .rounded_md()
             .border_1()
             .border_color(rgb(BORDER))
@@ -43,7 +43,7 @@ impl WorkspaceView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(ui_px(10.))
                     .text_color(rgb(if state.error.is_some() {
                         0xeeb47b
                     } else {
@@ -109,7 +109,7 @@ impl WorkspaceView {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(ui_px(12.))
             .child(card)
             .child(hint(installation_hint(state)))
             .child(hint(
@@ -119,7 +119,7 @@ impl WorkspaceView {
 
     fn update_actions(&self, cx: &mut Context<Self>) -> Div {
         let state = &self.update;
-        let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
+        let mut actions = div().flex().flex_wrap().items_center().gap(ui_px(8.));
         match state.phase {
             Phase::Checking | Phase::Installing => actions,
             Phase::Ready => {
@@ -181,7 +181,7 @@ impl WorkspaceView {
 
 fn hint(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(12.))
+        .text_size(ui_px(12.))
         .text_color(rgb(MUTED))
         .child(text.into())
 }
@@ -232,27 +232,27 @@ fn installation_hint(state: &State) -> &'static str {
 }
 
 fn loading_indicator() -> Div {
-    let track = px(72.);
-    let segment = px(24.);
+    let track = 72.;
+    let segment = 24.;
     div()
         .relative()
         .flex_none()
-        .w(track)
-        .h(px(4.))
+        .w(ui_px(track))
+        .h(ui_px(4.))
         .overflow_hidden()
         .rounded_full()
         .bg(rgb(BORDER))
         .child(
             div()
                 .absolute()
-                .w(segment)
+                .w(ui_px(segment))
                 .h_full()
                 .rounded_full()
                 .bg(rgb(ACTIVE))
                 .with_animation(
                     "update-loading",
                     Animation::new(Duration::from_millis(1100)).repeat(),
-                    move |bar, progress| bar.left((track + segment) * progress - segment),
+                    move |bar, progress| bar.left(ui_px((track + segment) * progress - segment)),
                 ),
         )
 }

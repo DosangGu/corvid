@@ -8,7 +8,8 @@ use corvid_protocol::windows::StateDirectory as Directory;
 use gpui::{Global, Pixels, SharedString, TextSystem, font, px};
 use serde::{Deserialize, Serialize};
 
-pub const FONT_SIZE: Pixels = px(15.);
+pub const DEFAULT_FONT_SIZE: u16 = 15;
+pub const FONT_SIZE: Pixels = px(DEFAULT_FONT_SIZE as f32);
 pub const DEFAULT_FONT: &str = if cfg!(target_os = "macos") {
     "Menlo"
 } else if cfg!(windows) {

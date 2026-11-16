@@ -502,7 +502,16 @@ Both clients create tabs and split or select panes on the daemon. Use the
 [shared behavior contract](00_project_design.md#77-shared-tui-and-gui-behavior)
 and acceptance case A32 to verify parity across the full operation set.
 
-### Desktop terminal font
+### Desktop appearance and terminal font
+
+Use **Ctrl+=**, **Ctrl+-**, and **Ctrl+0** to enlarge, reduce, or reset the
+terminal font in all Desktop panes. Use **Cmd** in place of **Ctrl** on macOS.
+The shortcuts leave the app's menus and controls the same size.
+
+Open **Settings → Appearance** to adjust the app scale or the terminal font
+size separately. App scale applies to the workspace and Settings, including
+terminal text. The terminal font setting is the base size at 100% app scale.
+Both choices are saved for the next launch.
 
 Open **Settings → Terminal** to choose an installed monospaced font or restore
 the default. The choice applies to all Desktop terminal panes and is saved for

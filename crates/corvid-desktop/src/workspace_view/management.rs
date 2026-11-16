@@ -1,11 +1,13 @@
 use super::*;
-use gpui::{App, Bounds, TitlebarOptions, WeakEntity, WindowBounds, WindowOptions, size};
+use gpui::{App, Bounds, TitlebarOptions, WeakEntity, WindowBounds, WindowOptions, px, size};
 
+use crate::appearance::{Change, Scope, TERMINAL_SHORTCUTS};
 use crate::terminal_fonts::TerminalFonts;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
     Connections,
+    Appearance,
     Terminal,
     Shortcuts,
     Agents,
@@ -28,7 +30,8 @@ impl ManagementView {
 }
 
 impl Render for ManagementView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(cx.global::<Appearance>().rem_size());
         self.owner
             .update(cx, |owner, cx| owner.management_ui(cx))
             .unwrap_or_else(|_| div().id("settings-unavailable"))
@@ -99,6 +102,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if appearance::terminal_shortcut(event, window, cx) {
+            return;
+        }
         let key = &event.keystroke;
         if key.key == "escape" {
             window.remove_window();
@@ -143,6 +149,7 @@ impl WorkspaceView {
         let ui = self.session.as_ref().map(Session::ui);
         let pages = [
             (Page::Connections, "Connections"),
+            (Page::Appearance, "Appearance"),
             (Page::Terminal, "Terminal"),
             (Page::Shortcuts, "Shortcuts"),
             (Page::Agents, "Agents"),
@@ -150,6 +157,7 @@ impl WorkspaceView {
         ];
         let content = match self.management_page {
             Page::Connections => self.connections_panel(ui.as_ref(), cx),
+            Page::Appearance => appearance_settings(cx),
             Page::Terminal => self.terminal_settings(cx),
             Page::Shortcuts => shortcuts(),
             Page::Agents => settings_page("Agents")
@@ -184,9 +192,9 @@ impl WorkspaceView {
                     .flex()
                     .flex_col()
                     .flex_none()
-                    .w(px(164.))
-                    .p(px(12.))
-                    .gap(px(6.))
+                    .w(ui_px(164.))
+                    .p(ui_px(12.))
+                    .gap(ui_px(6.))
                     .bg(rgb(PANEL))
                     .children(pages.into_iter().map(|(page, label)| {
                         button(label, label, self.management_page == page).on_click(cx.listener(
@@ -260,14 +268,14 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(8.))
-            .child(div().text_size(px(14.)).child("Terminal font"))
+            .gap(ui_px(8.))
+            .child(div().text_size(ui_px(14.)).child("Terminal font"))
             .child(description("Applies to all terminal panes."))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(6.))
+                    .gap(ui_px(6.))
                     .child(use_default)
                     .children(available.into_iter().map(|family| {
                         button(
@@ -281,6 +289,76 @@ impl WorkspaceView {
                     })),
             )
     }
+}
+
+fn appearance_settings(cx: &mut Context<WorkspaceView>) -> Div {
+    let appearance = cx.global::<Appearance>();
+    let app = appearance.value(Scope::App);
+    let terminal = appearance.value(Scope::Terminal);
+    settings_page("Appearance")
+        .child(size_setting(
+            "App scale",
+            "Scales the workspace, settings, and terminal together.",
+            format!("{app}%"),
+            Scope::App,
+            cx,
+        ))
+        .child(size_setting(
+            "Terminal font size",
+            "Changes the text in all terminal panes. App scale also applies.",
+            format!("{terminal} px"),
+            Scope::Terminal,
+            cx,
+        ))
+        .child(description(TERMINAL_SHORTCUTS))
+}
+
+fn size_setting(
+    label: &'static str,
+    help: &'static str,
+    value: String,
+    scope: Scope,
+    cx: &mut Context<WorkspaceView>,
+) -> Div {
+    let appearance = cx.global::<Appearance>();
+    let controls = [
+        ("Decrease", Change::Decrease),
+        ("Reset", Change::Reset),
+        ("Increase", Change::Increase),
+    ]
+    .map(|(text, change)| {
+        let id = format!("{label}-{text}");
+        if appearance.target(scope, change) == appearance.value(scope) {
+            div()
+                .flex_none()
+                .px(ui_px(10.))
+                .py(ui_px(5.))
+                .text_size(ui_px(13.))
+                .text_color(rgb(MUTED))
+                .opacity(0.5)
+                .child(text)
+                .into_any_element()
+        } else {
+            button(id, text, false)
+                .on_click(move |_, window, cx| appearance::adjust(scope, change, window, cx))
+                .into_any_element()
+        }
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(ui_px(6.))
+        .child(div().text_size(ui_px(14.)).child(label))
+        .child(description(help))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(ui_px(6.))
+                .child(div().min_w(ui_px(46.)).text_size(ui_px(14.)).child(value))
+                .children(controls),
+        )
 }
 
 fn set_terminal_font(family: Option<SharedString>, window: &mut Window, cx: &mut App) {
@@ -304,13 +382,16 @@ fn settings_page(title: &'static str) -> Div {
         .flex_col()
         .flex_1()
         .min_h_0()
-        .gap(px(16.))
-        .p(px(24.))
-        .child(div().text_size(px(20.)).child(title))
+        .gap(ui_px(16.))
+        .p(ui_px(24.))
+        .child(div().text_size(ui_px(20.)).child(title))
 }
 
 fn description(text: &'static str) -> Div {
-    div().text_size(px(13.)).text_color(rgb(MUTED)).child(text)
+    div()
+        .text_size(ui_px(13.))
+        .text_color(rgb(MUTED))
+        .child(text)
 }
 
 fn shortcuts() -> Div {
@@ -325,14 +406,15 @@ fn shortcuts() -> Div {
         ("Ctrl+Shift+Z", "Expand / restore active pane"),
         ("Ctrl+Shift+R", "Rename tab"),
         ("Ctrl+Shift+C / Ctrl+Shift+V", "Copy / paste"),
+        (TERMINAL_SHORTCUTS, "Adjust / reset terminal font size"),
         ("Esc", "Close a menu or settings"),
     ];
     settings_page("Shortcuts").children(keys.into_iter().map(|(key, label)| {
         div()
             .flex()
             .justify_between()
-            .gap(px(12.))
-            .text_size(px(13.))
+            .gap(ui_px(12.))
+            .text_size(ui_px(13.))
             .child(label)
             .child(div().text_color(rgb(MUTED)).child(key))
     }))

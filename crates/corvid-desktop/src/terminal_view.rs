@@ -7,6 +7,7 @@ use gpui::{
 };
 use vt100::Screen;
 
+use crate::appearance::{Appearance, ui_px};
 use crate::terminal_fonts::TerminalFonts;
 use crate::terminal_paint::{self as paint, Frame, Metrics};
 use crate::terminal_session::{MAX_INPUT, Session};
@@ -334,7 +335,8 @@ impl Render for TerminalView {
         let surface = canvas(
             move |bounds, window, cx| {
                 let family = cx.global::<TerminalFonts>().current().clone();
-                let metrics = Metrics::measure(window, &family);
+                let font_size = cx.global::<Appearance>().terminal_size();
+                let metrics = Metrics::measure(window, &family, font_size);
                 let grid = metrics.grid(bounds);
                 let terminal = view.read(cx);
                 terminal.surface.set(Some((bounds, metrics)));
@@ -390,7 +392,7 @@ impl Render for TerminalView {
             .flex()
             .flex_col()
             .min_h_0()
-            .p(px(10.))
+            .p(ui_px(10.))
             .overflow_hidden()
             .bg(rgb(paint::BACKGROUND))
             .when_some(self.history.as_ref(), |this, history| {
@@ -399,7 +401,7 @@ impl Render for TerminalView {
                         .flex_shrink_0()
                         .text_sm()
                         .text_color(rgb(0xa6c8db))
-                        .pb(px(6.))
+                        .pb(ui_px(6.))
                         .overflow_hidden()
                         .child(history.title(&self.marked)),
                 )
@@ -412,7 +414,8 @@ pub fn preview(session: Session, pane: String) -> impl IntoElement {
     canvas(
         move |bounds, window, cx| {
             let family = cx.global::<TerminalFonts>().current().clone();
-            let metrics = Metrics::measure(window, &family);
+            let font_size = cx.global::<Appearance>().terminal_size();
+            let metrics = Metrics::measure(window, &family, font_size);
             let grid = metrics.grid(bounds);
             let frame = session
                 .preview(&pane, |screen| Frame::new(screen, grid))
