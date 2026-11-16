@@ -28,6 +28,8 @@ const BACKUP: &str = "view.json.bak";
 const MAX_BYTES: u64 = 64 * 1024;
 const MAX_TARGETS: usize = 64;
 const SAVE_DELAY: Duration = Duration::from_millis(250);
+#[cfg(windows)]
+const WINDOWS_SAVE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 mod tests;
@@ -251,7 +253,14 @@ impl ViewStore {
         let directory = retry_storage(|| Directory::create_all(&self.path))?;
         // The lock is held only during a read/merge/replace, not for a client lifetime.
         // Multiple clients may update different hosts without dropping each other's records.
+        #[cfg(windows)]
+        let _lock = directory.lock_storage_with_timeout(WINDOWS_SAVE_LOCK_TIMEOUT)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let _lock = retry_storage(|| directory.lock_storage())?;
+        Self::save_locked(&directory, view)
+    }
+
+    fn save_locked(directory: &Directory, view: &SavedView) -> Result<()> {
         let previous = directory.read_private_file(FILE, MAX_BYTES)?;
         let mut stored = match previous.as_deref() {
             None => Stored::default(),
