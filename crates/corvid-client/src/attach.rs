@@ -50,6 +50,7 @@ pub struct AttachOptions {
     pub tab: Option<String>,
     pub pane: Option<String>,
     pub new_workspace: Option<String>,
+    pub workspace_directory: Option<String>,
     pub new_tab: Option<String>,
     pub claim_workspaces: Vec<Uuid>,
     /// The tab ID and its destination workspace ID.
@@ -70,6 +71,7 @@ impl Default for AttachOptions {
             tab: None,
             pane: None,
             new_workspace: None,
+            workspace_directory: None,
             new_tab: None,
             claim_workspaces: Vec::new(),
             move_tab: None,
@@ -85,6 +87,9 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let viewport = Tty::check()?;
     let stream = open(runtime, SocketRole::Client).await?;
     let mut required = vec!["attach.v1".into(), "render.v1".into(), "paste.v1".into()];
+    if options.workspace_directory.is_some() {
+        required.push(corvid_protocol::WORKSPACE_DIRECTORY_CAPABILITY.into());
+    }
     if options.take_over {
         ensure!(
             options.launch.is_none()
@@ -303,6 +308,11 @@ async fn request_attach(
                 .any(|name| name == capability)
         });
     let take_over = options.take_over || can_resume;
+    let workspace_directory_supported = connection
+        .session
+        .capabilities
+        .iter()
+        .any(|name| name == corvid_protocol::WORKSPACE_DIRECTORY_CAPABILITY);
     let launch = options
         .launch
         .or_else(|| launch_if_empty.then(Vec::new))
@@ -310,7 +320,7 @@ async fn request_attach(
             Ok(LaunchCommand {
                 argv: argv.into_iter().map(OsString::into_encoded_bytes).collect(),
                 agent_provider: options.agent.map(|provider| provider as i32),
-                cwd: if options.restore_cwd {
+                cwd: if options.restore_cwd || workspace_directory_supported {
                     None
                 } else if launch_if_empty {
                     std::env::current_dir()
@@ -327,6 +337,20 @@ async fn request_attach(
             })
         })
         .transpose()?;
+    let fallback_directory = if workspace_directory_supported
+        && !options.restore_cwd
+        && launch.is_some()
+        && options.workspace_directory.is_none()
+    {
+        let cwd = if launch_if_empty {
+            std::env::current_dir().ok()
+        } else {
+            Some(std::env::current_dir()?)
+        };
+        cwd.map(|path| path.into_os_string().into_encoded_bytes())
+    } else {
+        None
+    };
     let request = connection.session.envelope(
         Some(Uuid::new_v4().to_string()),
         Body::Attach(Attach {
@@ -334,6 +358,8 @@ async fn request_attach(
             tab_id: options.tab,
             pane_id: options.pane,
             create_workspace: options.new_workspace,
+            workspace_directory: options.workspace_directory,
+            fallback_directory,
             create_tab: options.new_tab,
             take_over,
             expected_terminal_id: None,

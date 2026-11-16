@@ -220,6 +220,7 @@ impl Session {
             (
                 PeerRole::Tui,
                 Body::InputChunk(_)
+                | Body::BrowseDirectories(_)
                 | Body::PasteBegin(_)
                 | Body::PasteChunk(_)
                 | Body::PasteEnd(_)

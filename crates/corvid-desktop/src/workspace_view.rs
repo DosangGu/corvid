@@ -6,6 +6,7 @@ mod management;
 mod naming;
 mod switcher;
 mod update;
+mod workspace_creation;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -72,6 +73,8 @@ pub struct WorkspaceView {
     store: ViewStore,
     restore_picker_shown: bool,
     naming: Option<naming::NameDraft>,
+    creation: Option<workspace_creation::Draft>,
+    recent_folders: HashMap<String, Vec<String>>,
     lifetime: Lifetime,
     alias: String,
     setup_focus: FocusHandle,
@@ -145,6 +148,8 @@ impl WorkspaceView {
             store,
             restore_picker_shown: false,
             naming: None,
+            creation: None,
+            recent_folders: HashMap::new(),
             lifetime,
             alias: match &destination {
                 Some(Destination::Ssh(alias)) => alias.as_str().to_owned(),
@@ -509,6 +514,7 @@ impl WorkspaceView {
         let Some(ui) = self.session.as_ref().map(Session::ui) else {
             return;
         };
+        self.sync_creation(&ui, window, cx);
         if ui.closed_view {
             self.naming = None;
             self.selected = None;
@@ -568,7 +574,7 @@ impl WorkspaceView {
             let session = self.session.clone().expect("connected session");
             self.selected = Some(selected);
             self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, cx)));
-            if !self.switcher_open && !self.menu_open {
+            if !self.switcher_open && !self.menu_open && self.creation.is_none() {
                 self.focus_terminal(window, cx);
             }
         }
@@ -756,10 +762,6 @@ impl WorkspaceView {
         .detach();
     }
 
-    fn new_workspace(&self, count: usize) {
-        self.create(Target::WorkspaceLabel(format!("Workspace {}", count + 1)));
-    }
-
     fn choose(
         &self,
         workspace: &WorkspaceState,
@@ -798,6 +800,10 @@ impl WorkspaceView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.creation.is_some() {
+            self.creation_key(event, window, cx);
+            return;
+        }
         if appearance::terminal_shortcut(event, window, cx) {
             return;
         }
@@ -882,7 +888,7 @@ impl WorkspaceView {
                 .find(|workspace| workspace.workspace_id == selected.workspace_id)
         });
         match shortcut {
-            (true, "n") => self.new_workspace(inventory.workspaces.len()),
+            (true, "n") => self.new_workspace(window, cx),
             (true, "t") => self.create(Target::TabLabel(format!(
                 "Shell {}",
                 workspace.map_or(1, |workspace| workspace.tabs.len() + 1)

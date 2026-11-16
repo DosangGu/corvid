@@ -64,7 +64,7 @@ impl Desktop {
                             .as_ref()
                             .and_then(|binding| snapshot.focus(slot, binding))
                     })
-                    .map(|body| FocusAction::Companion(snapshot.clone(), body))
+                    .map(|body| FocusAction::Companion(snapshot.clone(), Box::new(body)))
                 }
             })
             .flatten()

@@ -102,6 +102,8 @@ message Envelope {
     RestoreWorkspace restore_workspace = 129;
     WorkspaceRestored workspace_restored = 130;
     StopAgentMonitor stop_agent_monitor = 131;
+    BrowseDirectories browse_directories = 132;
+    DirectoryListing directory_listing = 133;
   }
 }
 
@@ -1025,6 +1027,35 @@ message Attach {
   optional string pane_id = 9;
   bool take_over = 10;
   optional string expected_terminal_id = 11;
+  optional string workspace_directory = 12;
+  // Initial directory supplied by the CLI when no workspace default applies.
+  optional bytes fallback_directory = 13;
+}
+
+message BrowseDirectories {
+  string path = 1;
+  bool complete = 2;
+  bool show_hidden = 3;
+  bool validate_only = 4;
+}
+
+message DirectoryListing {
+  string directory = 1;
+  optional string parent = 2;
+  string home = 3;
+  repeated DirectoryEntry entries = 4;
+  bool truncated = 5;
+  optional string folder_name = 6;
+}
+
+message DirectoryEntry {
+  string name = 1;
+  string path = 2;
+}
+
+message WorkspaceCreation {
+  string label = 1;
+  string directory = 2;
 }
 
 message LaunchCommand {
@@ -1104,6 +1135,7 @@ message CreateView {
     string tab_label = 3;
     SplitAxis split_axis = 4;
     ViewSelection open_pane = 5;
+    WorkspaceCreation workspace = 6;
   }
 }
 

@@ -229,6 +229,23 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             subprocess.run(["xdotool", "windowactivate", "--sync", deck_window], check=True, timeout=10)
             time.sleep(1)
             subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
+
+        project = root / "project folder"
+        project.mkdir()
+        old_terminal = wait_for_terminal()
+        key(window, "ctrl+shift+n")
+        time.sleep(0.8)
+        subprocess.run(["xdotool", "type", "--clearmodifiers", "--", "project"], check=True, timeout=10)
+        time.sleep(0.5)
+        key(window, "Tab")
+        if screenshot := os.environ.get("CORVID_WORKSPACE_SCREENSHOT"):
+            time.sleep(0.5)
+            subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
+        key(window, "Return")
+        wait_for_terminal(previous=old_terminal)
+        workspace_marker = root / "workspace"
+        write_marker(window, workspace_marker,
+                     f'test "$PWD" = {shlex.quote(str(project))} && printf preserved > {shlex.quote(str(workspace_marker))}')
         print("PASS Desktop keyboard input, Unicode clipboard paste, tab creation/switching, independent windows, new-window menu, close/quit/relaunch, shell continuity, settings, and X11 icons")
     finally:
         for process in [deck, desktop, previous, daemon, manager]:

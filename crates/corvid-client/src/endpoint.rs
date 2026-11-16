@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::connection::SocketRole;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, Frame, FrameWriter, PeerRole, ProtocolFault, Session};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
@@ -317,6 +317,37 @@ impl InteractiveConnection {
             .recv()
             .await
             .context("daemon closed the interactive connection")?
+    }
+
+    pub async fn browse_directories(
+        &mut self,
+        query: corvid_protocol::wire::BrowseDirectories,
+    ) -> Result<corvid_protocol::wire::DirectoryListing> {
+        ensure!(
+            self.session
+                .capabilities
+                .iter()
+                .any(|cap| cap == corvid_protocol::WORKSPACE_DIRECTORY_CAPABILITY),
+            ProtocolFault::new(
+                "UnsupportedCapability",
+                "Update Corvid on this host to choose a workspace folder."
+            )
+        );
+        let id = self.send(Body::BrowseDirectories(query)).await?;
+        let Frame::Structured(payload) = timeout(COMMAND_TIMEOUT, self.receive()).await?? else {
+            bail!("unexpected terminal frame during folder lookup");
+        };
+        let reply = corvid_protocol::decode_envelope(&payload)?;
+        self.session.validate_scope(&reply)?;
+        ensure!(
+            reply.request_id.as_deref() == Some(&id),
+            "folder lookup response ID mismatch"
+        );
+        match reply.body {
+            Some(Body::DirectoryListing(listing)) => Ok(listing),
+            Some(Body::Error(error)) => Err(ProtocolFault::from_wire(&error).into()),
+            _ => bail!("unexpected folder lookup response"),
+        }
     }
 }
 

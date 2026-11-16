@@ -402,6 +402,8 @@ mod tests {
                     workspace: None,
                     tab: None,
                     new_workspace: None,
+                    workspace_directory: None,
+                    fallback_directory: None,
                     new_tab: tab.map(str::to_owned),
                     keymap: Keymap::default(),
                     viewport: TuiViewport {

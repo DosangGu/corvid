@@ -48,6 +48,7 @@ const CAPABILITIES: &[&str] = &[
     "select_view.v1",
     CLAIM_WORKSPACE_CAPABILITY,
     CREATE_VIEW_CAPABILITY,
+    corvid_protocol::WORKSPACE_DIRECTORY_CAPABILITY,
     CLOSE_VIEW_CAPABILITY,
     PANE_PREVIEW_CAPABILITY,
     TERMINAL_HISTORY_CAPABILITY,
@@ -82,10 +83,29 @@ pub(crate) async fn serve(
     else {
         return Ok(());
     };
+    let mut browsing = false;
     let request = loop {
-        let Some(request) = timeout(COMMAND_TIMEOUT, reader.next_envelope()).await?? else {
+        let idle = if browsing {
+            Duration::from_secs(60)
+        } else {
+            COMMAND_TIMEOUT
+        };
+        let Some(request) = timeout(idle, reader.next_envelope()).await?? else {
             return Ok(());
         };
+        if let Some(Body::BrowseDirectories(query)) = request.body.as_ref() {
+            let result = match session.validate_request(&request) {
+                Ok(_) => crate::directories::browse(query.clone()).await,
+                Err(error) => Err(error),
+            };
+            let body = match result {
+                Ok(listing) => Body::DirectoryListing(listing),
+                Err(error) => Body::Error(error.into_wire()),
+            };
+            send(&session, &mut writer, request.request_id, body).await?;
+            browsing = true;
+            continue;
+        }
         if let Some(Body::RestoreWorkspace(_)) = &request.body {
             let result = session.validate_request(&request).and_then(|body| {
                 let Body::RestoreWorkspace(restore) = body else {
@@ -110,7 +130,7 @@ pub(crate) async fn serve(
     let (disconnect, disconnected) = oneshot::channel();
     let (notice_tx, notices) = mpsc::channel(8);
     let target = match session.validate_request(&request) {
-        Ok(Body::Attach(attach)) => attach_target(attach).map(|target| {
+        Ok(Body::Attach(attach)) => attach_target(attach).await.map(|target| {
             let enabled = attach
                 .terminal_capabilities
                 .iter()
@@ -278,7 +298,7 @@ impl TuiConnection<'_> {
                 }
             }
             Body::CreateView(view) => {
-                match create_destination(view, self.active.route.view_revision) {
+                match create_destination(view, self.active.route.view_revision).await {
                     Ok(destination) => self.switch(destination, request.request_id, false).await?,
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
@@ -723,7 +743,10 @@ fn exact_destination(
     }))
 }
 
-fn create_destination(view: &CreateView, revision: u64) -> Result<Destination, ProtocolFault> {
+async fn create_destination(
+    view: &CreateView,
+    revision: u64,
+) -> Result<Destination, ProtocolFault> {
     use corvid_protocol::wire::create_view::Target;
 
     require_view(view.expected_view_revision, revision)?;
@@ -732,7 +755,11 @@ fn create_destination(view: &CreateView, revision: u64) -> Result<Destination, P
         .as_ref()
         .ok_or_else(|| invalid("missing view target"))?
     {
-        Target::WorkspaceLabel(label) => Ok(Destination::CreateWorkspace(label.clone())),
+        Target::WorkspaceLabel(label) => Ok(Destination::CreateWorkspace(label.clone(), None)),
+        Target::Workspace(workspace) => Ok(Destination::CreateWorkspace(
+            workspace.label.clone(),
+            Some(crate::directories::resolve(workspace.directory.clone()).await?),
+        )),
         Target::TabLabel(label) if label.is_empty() => {
             Ok(Destination::Tab(crate::terminal::TabCommand::Create))
         }
@@ -861,7 +888,7 @@ async fn send(
     Ok(())
 }
 
-fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
+async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
     if attach.terminal_capabilities.len() > 64
         || !attach
             .terminal_capabilities
@@ -918,6 +945,22 @@ fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         tab: parse_optional_id(attach.tab_id.as_deref())?,
         pane: parse_optional_id(attach.pane_id.as_deref())?,
         new_workspace: attach.create_workspace.clone(),
+        workspace_directory: match &attach.workspace_directory {
+            Some(path) if attach.create_workspace.is_some() => {
+                Some(crate::directories::resolve(path.clone()).await?)
+            }
+            Some(_) => return Err(invalid("a workspace folder requires workspace creation")),
+            None => None,
+        },
+        fallback_directory: attach
+            .fallback_directory
+            .as_deref()
+            .map(|bytes| {
+                decode_os_string(bytes)
+                    .map(PathBuf::from)
+                    .ok_or_else(|| invalid("invalid fallback directory"))
+            })
+            .transpose()?,
         new_tab: attach.create_tab.clone(),
         take_over: attach.take_over,
         expected_terminal: parse_optional_id(attach.expected_terminal_id.as_deref())?,

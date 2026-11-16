@@ -32,7 +32,7 @@ use deck::{BACKGROUND, MINT, PANEL, TEXT, button, column, muted, row};
 #[derive(Clone)]
 enum FocusAction {
     Desktop(PresentedRunKey),
-    Companion(std::sync::Arc<Snapshot>, Body),
+    Companion(std::sync::Arc<Snapshot>, Box<Body>),
 }
 
 pub(crate) struct Desktop {
@@ -323,7 +323,7 @@ impl Desktop {
         match action {
             FocusAction::Desktop(key) => self.focus_run(key),
             FocusAction::Companion(snapshot, body) => {
-                self.submit(&snapshot, body);
+                self.submit(&snapshot, *body);
             }
         }
     }

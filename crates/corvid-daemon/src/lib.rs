@@ -3,6 +3,7 @@
 mod agents;
 mod collector;
 mod control;
+mod directories;
 mod handoff;
 mod history;
 mod hook_data;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroU16;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
@@ -72,6 +72,12 @@ pub enum AttachTarget {
     },
     Default,
     FreshDefault,
+    NewWorkspace {
+        label: String,
+        directory: Option<String>,
+        endpoint: ControlEndpoint,
+        host_id: String,
+    },
     Restore(SavedView),
     Pane(ViewSelection, bool),
     Workspace {
@@ -694,6 +700,42 @@ async fn run_reconnecting(
     }
 }
 
+pub(crate) async fn prepare_destination(
+    destination: &Destination,
+    state_dir: &Path,
+    capabilities: Vec<String>,
+    explicit: bool,
+    expected_host: Option<&str>,
+    prompts: &Prompts,
+    progress: impl Fn(&str),
+) -> Result<(ControlEndpoint, InteractiveConnection)> {
+    if let Some(remote) = destination.remote() {
+        let configured_host = Config::read_if_present(state_dir)?.and_then(|config| {
+            let matches = match (&config.endpoint, &remote) {
+                (HostEndpoint::Ssh { alias }, RemoteHost::Ssh(target)) => alias == target.as_str(),
+                (HostEndpoint::Wsl { distribution }, RemoteHost::Wsl(target)) => {
+                    distribution == target.as_str()
+                }
+                _ => false,
+            };
+            matches.then(|| config.host_id.to_string())
+        });
+        let expected_host = expected_host.or(configured_host.as_deref());
+        let (remote, link) = remote_bootstrap::connect(
+            remote,
+            capabilities,
+            explicit,
+            expected_host,
+            prompts,
+            progress,
+        )
+        .await?;
+        Ok((remote.endpoint(), link))
+    } else {
+        local_bootstrap::connect(capabilities, explicit, expected_host, prompts, progress).await
+    }
+}
+
 async fn run(
     destination: Destination,
     state_dir: PathBuf,
@@ -731,46 +773,22 @@ async fn run(
     }
     let known_host = match &target {
         AttachTarget::Workspace { host_id, .. }
+        | AttachTarget::NewWorkspace { host_id, .. }
         | AttachTarget::Takeover { host_id, .. }
         | AttachTarget::ResumeAgents { host_id, .. } => Some(host_id.clone()),
         AttachTarget::Restore(saved) => Some(saved.host_id.to_string()),
         _ => None,
     };
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
-    let (endpoint, mut link) = if let Some(remote) = destination.remote() {
-        let configured_host = Config::read_if_present(&state_dir)?.and_then(|config| {
-            let matches = match (&config.endpoint, &remote) {
-                (HostEndpoint::Ssh { alias }, RemoteHost::Ssh(target)) => alias == target.as_str(),
-                (HostEndpoint::Wsl { distribution }, RemoteHost::Wsl(target)) => {
-                    distribution == target.as_str()
-                }
-                _ => false,
-            };
-            matches.then(|| config.host_id.to_string())
-        });
-        let expected_host = host
-            .as_deref()
-            .or(configured_host.as_deref())
-            .or(known_host.as_deref());
-        let (remote, link) = remote_bootstrap::connect(
-            remote,
-            capabilities.clone(),
-            explicit,
-            expected_host,
-            prompts,
-            progress,
+    let (endpoint, mut link) = if let AttachTarget::NewWorkspace { endpoint, .. } = &target {
+        (
+            endpoint.clone(),
+            endpoint.interactive(capabilities.clone()).await?,
         )
-        .await?;
-        ensure!(
-            expected_host.is_none_or(|host| host == link.session().host_id),
-            ProtocolFault::new(
-                "HostMismatch",
-                "connection points to a different Corvid host"
-            )
-        );
-        (remote.endpoint(), link)
     } else {
-        local_bootstrap::connect(
+        prepare_destination(
+            &destination,
+            &state_dir,
             capabilities.clone(),
             explicit,
             host.as_deref().or(known_host.as_deref()),
@@ -874,6 +892,22 @@ async fn run(
     let attached = match &target {
         AttachTarget::Restore(_) => unreachable!("saved view resolved before attach"),
         AttachTarget::ResumeAgents { .. } => unreachable!("agent restore resolved before attach"),
+        AttachTarget::NewWorkspace {
+            label, directory, ..
+        } => {
+            attach(
+                &mut link,
+                grid,
+                false,
+                Attach {
+                    create_workspace: Some(label.clone()),
+                    workspace_directory: directory.clone(),
+                    launch: Some(LaunchCommand::default()),
+                    ..Default::default()
+                },
+            )
+            .await?
+        }
         AttachTarget::Workspace {
             id,
             host_id,
@@ -981,7 +1015,9 @@ async fn run(
             && match &target {
                 AttachTarget::Restore(_) => false,
                 AttachTarget::ResumeAgents { .. } => false,
-                AttachTarget::Default | AttachTarget::FreshDefault => true,
+                AttachTarget::Default
+                | AttachTarget::FreshDefault
+                | AttachTarget::NewWorkspace { .. } => true,
                 AttachTarget::Pane(view, _) | AttachTarget::Takeover { view, .. } =>
                     *view == selected,
                 AttachTarget::Workspace { id, .. } => *id == selected.workspace_id,
@@ -1077,6 +1113,18 @@ async fn attach(
     resume: bool,
     mut request: Attach,
 ) -> Result<Attached> {
+    if request.workspace_directory.is_some() {
+        ensure!(
+            link.session()
+                .capabilities
+                .iter()
+                .any(|name| name == corvid_protocol::WORKSPACE_DIRECTORY_CAPABILITY),
+            ProtocolFault::new(
+                "UnsupportedCapability",
+                "Update Corvid on this host to choose a workspace folder."
+            )
+        );
+    }
     let supports_resume = [
         corvid_protocol::PANE_WRITERS_CAPABILITY,
         SESSION_CLIENTS_CAPABILITY,

@@ -87,12 +87,12 @@ def transcode(schema, operation, payload):
     ).stdout
 
 
-def relay_exchange(ssh, command, schema, payloads):
+def relay_exchange(ssh, command, schema, payloads, relay=("control", "--stdio")):
     frames = [b"CRV1"]
     for payload in payloads:
         frames.append(struct.pack(">IB", len(payload) + 1, 1) + payload)
     result = subprocess.run(
-        [*ssh, "-T", shlex.join([*command, "control", "--stdio"])],
+        [*ssh, "-T", shlex.join([*command, *relay])],
         input=b"".join(frames), capture_output=True, timeout=8,
     )
     assert result.returncode == 0, result.stderr
@@ -124,6 +124,25 @@ def check_control(ssh, command, schema):
     assert fields["server_epoch"].encode() in replies[1]
     assert b"connection_status {" in replies[2] and b"collector {" in replies[2]
     assert b"traffic {" in replies[2]
+
+
+def check_workspace_directories(ssh, command, schema, directory):
+    (directory / "project folder").mkdir()
+    identity = subprocess.check_output([*command, "control", "host"], text=True)
+    fields = dict(line.split("=", 1) for line in identity.splitlines())
+    greeting = (
+        'protocol_major: 1 request_id: "hello" '
+        'hello { supported_major_versions: 1 required_capabilities: "workspace.directory.v1" }'
+    )
+    prefix = json.dumps(str(directory / "project"))
+    lookup = (
+        f'protocol_major: 1 host_id: "{fields["host_id"]}" server_epoch: "{fields["server_epoch"]}" '
+        f'request_id: "folders" browse_directories {{ path: {prefix} complete: true }}'
+    )
+    payloads = [transcode(schema, "encode", message.encode()) for message in (greeting, lookup)]
+    replies = relay_exchange(ssh, command, schema, payloads, ("terminal-relay",))
+    assert len(replies) == 2 and b"hello_result {" in replies[0], replies
+    assert b"directory_listing {" in replies[1] and b'name: "project folder"' in replies[1], replies
 
 
 def progress_during_disconnect(progress):
@@ -374,6 +393,7 @@ def run(binary, *, measure_keys=False):
             try:
                 check_ssh(server, ssh)
                 check_control(ssh, command, schema)
+                check_workspace_directories(ssh, command, schema, directory)
                 check_working_ssh(ssh, command, directory)
                 for release in ("older", "newer"):
                     verify_shell_agent_notifications(

@@ -56,6 +56,7 @@ struct Row {
 
 impl WorkspaceView {
     pub(super) fn dismiss_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.creation = None;
         self.naming = None;
         self.switcher_open = false;
         self.menu_open = false;
@@ -558,16 +559,12 @@ impl WorkspaceView {
                 }),
             ));
         }
-        if let Some(ui) = ui.filter(|ui| ui.can_write()) {
-            let count = ui
-                .inventory
-                .as_ref()
-                .map_or(0, |inventory| inventory.workspaces.len());
+        if !self.connecting(ui) {
             actions = actions.child(
                 button("picker-new-workspace", "+ New workspace", false).on_click(cx.listener(
-                    move |view, _, window, cx| {
+                    |view, _, window, cx| {
                         view.dismiss_overlay(window, cx);
-                        view.new_workspace(count);
+                        view.new_workspace(window, cx);
                     },
                 )),
             );
@@ -629,7 +626,7 @@ impl Picker {
     }
 }
 
-fn machine_label(destination: &Destination) -> String {
+pub(super) fn machine_label(destination: &Destination) -> String {
     match destination {
         Destination::Local => "Local".into(),
         Destination::Ssh(alias) => format!("SSH · {}", alias.as_str()),
