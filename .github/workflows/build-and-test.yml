@@ -184,6 +184,16 @@ jobs:
         env:
           CORVID_AGENT_DECK_SCREENSHOT: target/agent-deck-ready.png
         run: xvfb-run -a python3 deploy/test_desktop.py --build target/${{ matrix.target }}/release
+      - name: Connected managed SSH updates
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: xvfb-run -a python3 deploy/test_remote_update.py --build target/${{ matrix.target }}/release --target ${{ matrix.target }} --screenshot target/remote-update-prompt.png
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: runner.os == 'Linux'
+        with:
+          name: remote-update-preview-${{ matrix.target }}
+          path: target/remote-update-prompt.png
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: runner.os == 'Linux'
         with:
