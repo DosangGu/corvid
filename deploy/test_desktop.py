@@ -210,6 +210,28 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         wait_for_writer(current)
         final_marker = root / "final"
         write_marker(window, final_marker, f"printf %s \"$kept\" > {shlex.quote(str(final_marker))}")
+        if args.build:
+            # The build-stage test exercises the folder picker while the
+            # terminal window still owns focus. The archive smoke test covers
+            # package startup and the terminal and Deck integration below.
+            project = root / "project folder"
+            project.mkdir()
+            old_terminal = wait_for_terminal()
+            key(window, "ctrl+shift+n")
+            time.sleep(0.8)
+            subprocess.run(["xdotool", "type", "--clearmodifiers", "--", "project"], check=True, timeout=10)
+            time.sleep(0.5)
+            key(window, "Tab")
+            if screenshot := os.environ.get("CORVID_WORKSPACE_SCREENSHOT"):
+                time.sleep(0.5)
+                subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
+            key(window, "Return")
+            wait_for_terminal(previous=old_terminal)
+            workspace_marker = root / "workspace"
+            cwd = shlex.quote(str(project.resolve()))
+            marker = shlex.quote(str(workspace_marker))
+            write_marker(window, workspace_marker, f'test "$(pwd -P)" = {cwd} && printf preserved > {marker}')
+
         # Open Deck after the monitor already synchronized. Only this isolated,
         # empty deck is captured; terminal windows are excluded from the image.
         deck_binary = root / ("corvid-agent-deck" if args.build else "plugins/agent-deck/corvid-agent-deck")
@@ -230,22 +252,6 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             time.sleep(1)
             subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
 
-        project = root / "project folder"
-        project.mkdir()
-        old_terminal = wait_for_terminal()
-        key(window, "ctrl+shift+n")
-        time.sleep(0.8)
-        subprocess.run(["xdotool", "type", "--clearmodifiers", "--", "project"], check=True, timeout=10)
-        time.sleep(0.5)
-        key(window, "Tab")
-        if screenshot := os.environ.get("CORVID_WORKSPACE_SCREENSHOT"):
-            time.sleep(0.5)
-            subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
-        key(window, "Return")
-        wait_for_terminal(previous=old_terminal)
-        workspace_marker = root / "workspace"
-        write_marker(window, workspace_marker,
-                     f'test "$PWD" = {shlex.quote(str(project))} && printf preserved > {shlex.quote(str(workspace_marker))}')
         print("PASS Desktop keyboard input, Unicode clipboard paste, tab creation/switching, independent windows, new-window menu, close/quit/relaunch, shell continuity, settings, and X11 icons")
     finally:
         for process in [deck, desktop, previous, daemon, manager]:
