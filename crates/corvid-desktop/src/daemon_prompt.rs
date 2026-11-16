@@ -18,6 +18,24 @@ pub enum Operation {
 }
 
 impl Prompts {
+    pub async fn offer_upgrade(&self, host: &str, detail: &str) -> bool {
+        self.ask(
+            "Upgrade Corvid daemon?",
+            format!("Target: {host}\n\n{detail}\n\nCancel to keep this version."),
+            Some("Upgrade"),
+        )
+        .await
+    }
+
+    pub async fn update_unavailable(&self, host: &str, detail: &str) {
+        self.ask(
+            "Corvid update unavailable",
+            format!("Target: {host}\n\n{detail}\n\nContinue with the installed version."),
+            None,
+        )
+        .await;
+    }
+
     pub async fn confirm(&self, operation: Operation, host: &str, detail: &str) -> Result<()> {
         let (title, action) = match operation {
             Operation::Install => ("Install Corvid daemon?", "Install"),

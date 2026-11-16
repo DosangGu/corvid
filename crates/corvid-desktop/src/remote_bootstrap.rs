@@ -3,6 +3,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::{DaemonInstallation, HostPlatform, InteractiveConnection, RemoteHost};
+use corvid_protocol::ProtocolFault;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -13,7 +14,60 @@ use crate::daemon_prompt::{Operation, Prompts, has_fault, needs_upgrade};
 const MAX_BINARY: u64 = 32 * 1024 * 1024;
 const MAX_MANIFEST: u64 = 4096;
 
+#[cfg(test)]
+mod tests;
+
 pub async fn connect(
+    host: RemoteHost,
+    capabilities: Vec<String>,
+    explicit: bool,
+    expected_host: Option<&str>,
+    prompts: &Prompts,
+    progress: impl Fn(&str),
+) -> Result<(RemoteHost, InteractiveConnection)> {
+    let (host, link) = connect_daemon(
+        host,
+        capabilities.clone(),
+        explicit,
+        expected_host,
+        prompts,
+        &progress,
+    )
+    .await?;
+    verify_host(link.session().host_id.as_str(), expected_host)?;
+    let Some(platform) = managed_platform(&host).filter(|_| explicit) else {
+        return Ok((host, link));
+    };
+
+    // Wire compatibility does not imply that the installed provider collectors
+    // include this Desktop release's fixes. Check even after a successful Hello.
+    progress("Checking the remote Corvid version…");
+    let host_id = link.session().host_id.clone();
+    let upgrade = match available_upgrade(&host, platform, &host_id).await {
+        Ok(Some(upgrade)) => upgrade,
+        Ok(None) => return Ok((host, link)),
+        Err(error) => {
+            prompts
+                .update_unavailable(host.name(), &format!("{error:#}"))
+                .await;
+            return Ok((host, link));
+        }
+    };
+    if !prompts
+        .offer_upgrade(host.name(), &upgrade_detail(&upgrade))
+        .await
+    {
+        return Ok((host, link));
+    }
+
+    drop(link);
+    apply_upgrade(&host, platform, &upgrade, &progress).await?;
+    let link = host.interactive(capabilities).await?;
+    verify_host(link.session().host_id.as_str(), Some(&host_id))?;
+    Ok((host, link))
+}
+
+async fn connect_daemon(
     host: RemoteHost,
     capabilities: Vec<String>,
     explicit: bool,
@@ -111,16 +165,19 @@ pub async fn connect(
         }
     };
     prompts
-        .confirm(
-            Operation::Upgrade,
-            host.name(),
-            &format!(
-                "Corvid {} → {}\n\nHosted shells keep running.\nClients reconnect after the upgrade.",
-                upgrade.installed,
-                env!("CARGO_PKG_VERSION"),
-            ),
-        )
+        .confirm(Operation::Upgrade, host.name(), &upgrade_detail(&upgrade))
         .await?;
+    apply_upgrade(&host, platform, &upgrade, &progress).await?;
+    let link = host.interactive(capabilities).await?;
+    Ok((host, link))
+}
+
+async fn apply_upgrade(
+    host: &RemoteHost,
+    platform: HostPlatform,
+    upgrade: &Upgrade,
+    progress: impl Fn(&str),
+) -> Result<()> {
     progress("Upgrading the Corvid daemon on the execution host…");
     host.upgrade_managed_daemon(
         platform,
@@ -131,8 +188,37 @@ pub async fn connect(
     )
     .await?;
     progress("Connecting to Corvid…");
-    let link = host.interactive(capabilities).await?;
-    Ok((host, link))
+    Ok(())
+}
+
+fn managed_platform(host: &RemoteHost) -> Option<HostPlatform> {
+    match host {
+        RemoteHost::Ssh(alias) => alias.daemon().and_then(|(platform, daemon)| {
+            (daemon == DaemonInstallation::Managed).then_some(platform)
+        }),
+        RemoteHost::Wsl(distribution) => (distribution.daemon()
+            == Some(DaemonInstallation::Managed))
+        .then_some(HostPlatform::Linux),
+    }
+}
+
+fn verify_host(actual: &str, expected: Option<&str>) -> Result<()> {
+    ensure!(
+        expected.is_none_or(|expected| expected == actual),
+        ProtocolFault::new(
+            "HostMismatch",
+            "the connection points to a different Corvid host"
+        )
+    );
+    Ok(())
+}
+
+fn upgrade_detail(upgrade: &Upgrade) -> String {
+    format!(
+        "Corvid {} → {}\n\nHosted shells keep running.\nClients reconnect after the upgrade.\nRestart existing agents to enable\nupdated notification collection.",
+        upgrade.installed,
+        env!("CARGO_PKG_VERSION"),
+    )
 }
 
 struct Upgrade {
@@ -140,6 +226,29 @@ struct Upgrade {
     binary: Vec<u8>,
     sha256: String,
     expected_host: Option<Uuid>,
+}
+
+async fn available_upgrade(
+    host: &RemoteHost,
+    platform: HostPlatform,
+    host_id: &str,
+) -> Result<Option<Upgrade>> {
+    let installed = host
+        .daemon_version(platform, DaemonInstallation::Managed)
+        .await?;
+    if !bundled_is_newer(&installed)? {
+        return Ok(None);
+    }
+    load_upgrade(host, platform, installed, Some(host_id))
+        .await
+        .map(Some)
+}
+
+fn bundled_is_newer(installed: &str) -> Result<bool> {
+    let current =
+        Version::parse(installed).context("Could not verify the installed Corvid version")?;
+    let bundled = Version::parse(env!("CARGO_PKG_VERSION"))?;
+    Ok(current.cmp_precedence(&bundled).is_lt())
 }
 
 async fn prepare_upgrade(
@@ -153,13 +262,20 @@ async fn prepare_upgrade(
         "Update the Corvid installation on PATH using its existing installation method, then reconnect."
     );
     let installed = host.daemon_version(platform, daemon).await?;
-    let current =
-        Version::parse(&installed).context("Could not verify the installed Corvid version")?;
-    let bundled = Version::parse(env!("CARGO_PKG_VERSION"))?;
     ensure!(
-        current.cmp_precedence(&bundled).is_lt(),
-        "The execution host has Corvid {installed} and this Desktop build is {bundled}. Use a compatible Desktop build or update the execution host manually."
+        bundled_is_newer(&installed)?,
+        "The execution host has Corvid {installed} and this Desktop build is {}. Use a compatible Desktop build or update the execution host manually.",
+        env!("CARGO_PKG_VERSION"),
     );
+    load_upgrade(host, platform, installed, expected_host).await
+}
+
+async fn load_upgrade(
+    host: &RemoteHost,
+    platform: HostPlatform,
+    installed: String,
+    expected_host: Option<&str>,
+) -> Result<Upgrade> {
     let (binary, sha256) = read_bundle(host, platform).await?;
     Ok(Upgrade {
         installed,

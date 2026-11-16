@@ -120,7 +120,7 @@ Tabs, split panes, Corvid Agent Deck, detach, and daemon-replacement reconnectio
 same session behavior as other connections.
 
 WSL setup reuses the Linux daemon bundle beside Desktop. It asks before installing
-at `~/.corvid/corvid` or upgrading an incompatible managed installation. Daemon
+at `~/.corvid/corvid` or upgrading an older managed installation. Daemon
 metadata stays in the distribution's Linux state directory. Existing PATH
 installations are reused. Installation requires the Linux x86_64 bundle described
 above. `--wsl-distribution` and `--ssh-alias` select mutually exclusive destinations.
@@ -132,8 +132,14 @@ installing and connecting. The transfer uses SSH stdin, verifies size and
 SHA-256 on both sides, and checks that the installation is still absent.
 Canceling the dialog ends the connection attempt.
 
-Desktop can update an older managed SSH installation from its matching bundle
-when the daemon is stopped or the connection reports a version problem.
+On an explicit SSH or WSL connection, Desktop checks a managed installation's
+version even when the daemon accepts the connection. It offers an update from
+its matching bundle when the installed version is older. Cancel keeps the
+working connection; an unavailable or invalid bundle is reported without
+discarding that connection. Automatic reconnections do not prompt for updates.
+Equal or newer installations are retained without an update prompt.
+Desktop also offers updates when a managed daemon is stopped or reports a
+version problem. Canceling those required setup dialogs ends the connection attempt.
 The confirmation shows the installed and bundled versions. On Linux and Windows,
 a running daemon with terminal-host support preserves live shells and screen state
 through the replacement. Clients detach and establish fresh input routes.
@@ -141,6 +147,8 @@ An active paste or unfinished view operation must finish first.
 After a successful update, Desktop
 connects to the updated daemon. For a PATH installation, use its existing
 installation method and reconnect.
+Existing provider processes retain their old observer environment; restart those
+agents to enable updated notification collection after a daemon upgrade.
 
 Linux provisioning uses a POSIX shell and Linux core utilities. The binary
 is installed at `~/.corvid/corvid`. Windows provisioning uses Windows PowerShell
