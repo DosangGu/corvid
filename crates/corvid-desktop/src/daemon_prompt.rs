@@ -21,7 +21,7 @@ impl Prompts {
     pub async fn offer_upgrade(&self, host: &str, detail: &str) -> bool {
         self.ask(
             "Upgrade Corvid daemon?",
-            format!("Target: {host}\n\n{detail}\n\nCancel to continue with the installed version."),
+            format!("Target: {host}\n\n{detail}\n\nCancel to keep this version."),
             Some("Upgrade"),
         )
         .await
@@ -29,7 +29,7 @@ impl Prompts {
 
     pub async fn update_unavailable(&self, host: &str, detail: &str) {
         self.ask(
-            "Could not check or prepare the Corvid update",
+            "Corvid update unavailable",
             format!("Target: {host}\n\n{detail}\n\nContinue with the installed version."),
             None,
         )

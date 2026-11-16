@@ -120,7 +120,7 @@ Tabs, split panes, Corvid Agent Deck, detach, and daemon-replacement reconnectio
 same session behavior as other connections.
 
 WSL setup reuses the Linux daemon bundle beside Desktop. It asks before installing
-at `~/.corvid/corvid` or upgrading an incompatible managed installation. Daemon
+at `~/.corvid/corvid` or upgrading an older managed installation. Daemon
 metadata stays in the distribution's Linux state directory. Existing PATH
 installations are reused. Installation requires the Linux x86_64 bundle described
 above. `--wsl-distribution` and `--ssh-alias` select mutually exclusive destinations.

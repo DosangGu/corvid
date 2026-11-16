@@ -59,7 +59,7 @@ async fn connected_managed_installations_offer_updates() -> Result<()> {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].0, Some("Upgrade"));
     assert!(messages[0].1.contains("0.1.2 →"));
-    assert!(messages[0].1.contains("Cancel to continue"));
+    assert!(messages[0].1.contains("Cancel to keep this version."));
     assert!(queried.exists());
     assert!(!upgraded.exists());
     drop(link);
