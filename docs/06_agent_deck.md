@@ -117,11 +117,33 @@ Drag the title to move an unpinned deck. The upright mint pin locks the current
 position and keeps the window above other windows. Click it again to restore
 movement and ordinary stacking. Pinning does not move the deck.
 
-Reopening the deck or switching layouts keeps its location within the current
-session. When the window grows, it shifts only as needed to fit the screen or
-monitor work area. Windows initially places the deck near the bottom-right
-corner of the cursor's monitor, clear of the taskbar. X11 placement and stacking
-depend on the window manager. Window coordinates are not saved across restarts.
+Windows initially places Deck at the bottom-right of the work area on the
+system tray's monitor, just above a bottom taskbar, with a 12-logical-pixel gap.
+The primary monitor is the fallback when the shell taskbar is unavailable.
+Cursor position does not choose the initial monitor. While Deck remains at this
+default corner, expanding, shrinking, or changing its grid keeps the right and
+bottom edges aligned. Placement is corrected after the native resize completes.
+
+While dragging an unpinned deck on Windows, its visible edges snap flush to a
+monitor's work-area edges within 12 logical pixels. This includes boundaries
+between monitors and the edge above a taskbar, including secondary monitors.
+Side and top taskbars are respected too. Continue dragging beyond that distance
+to detach; snapping does not pin or resize the deck. The capture distance follows
+the window's DPI, and invisible native resize borders are excluded from alignment.
+
+After dragging Deck elsewhere, reopening and layout changes keep its location
+within the current session; a larger window shifts only as needed to fit the
+monitor work area. X11 placement and stacking depend on the window manager.
+Window coordinates are not saved across restarts.
+
+On 2026-11-16, an isolated native Windows GPUI test measured 12-pixel right and
+bottom gaps at 100% scaling on initial placement and after returning to the mini
+view. It also verified expansion on a smaller work area and retention of a
+manually moved origin through resizing. Native move messages verified snapping
+in both GPUI layouts and pin gating in an isolated Win32 fixture. Coordinate
+tests cover monitor seams, negative origins, taskbar edges, detaching, and scaled
+capture distances. Physical mouse dragging, multiple physical monitors, and
+mixed-DPI transitions were not exercised by this qualification.
 
 The deck defaults to unpinned. The pin state, preset, and orientation are saved
 per controller in the private `agent-deck/window.json`. A legacy fixed-position
