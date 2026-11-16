@@ -141,10 +141,10 @@ impl Window {
                 Err(error) => self.error = Some(error.to_string()),
             }
         }
-        if opened || (first && (!self.background_start || self.pinned() || !tray)) {
-            if let Err(error) = native::show(window, opened || !self.background_start, cx) {
-                self.error = Some(error.to_string());
-            }
+        if (opened || (first && (!self.background_start || self.pinned() || !tray)))
+            && let Err(error) = native::show(window, opened || !self.background_start, cx)
+        {
+            self.error = Some(error.to_string());
         }
         if first || opened {
             window.refresh();
