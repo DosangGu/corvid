@@ -57,19 +57,13 @@ impl Desktop {
                 title.child(muted(layout.label()).flex_shrink_0())
             })
             .when(!pinned, |title| {
-                let title = title.cursor_grab();
-                #[cfg(windows)]
-                let title = title.window_control_area(gpui::WindowControlArea::Drag);
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                let title = title.on_mouse_down(
+                title.cursor_grab().on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|view, _, window, _| {
-                        if !view.window.pinned() {
-                            window.start_window_move();
-                        }
+                    cx.listener(|view, _, window, cx| {
+                        view.window.start_move(window);
+                        cx.notify();
                     }),
-                );
-                title
+                )
             });
 
         let pin_tip = if pinned {

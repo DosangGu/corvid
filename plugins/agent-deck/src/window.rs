@@ -94,6 +94,18 @@ impl Window {
         });
     }
 
+    pub fn start_move(&mut self, window: &mut gpui::Window) {
+        if self.pinned() {
+            return;
+        }
+        #[cfg(windows)]
+        if let Err(error) = native::start_move(window) {
+            self.error = Some(error.to_string());
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        window.start_window_move();
+    }
+
     fn save(&mut self, next: Preferences) {
         let result = serde_json::to_vec(&next)
             .map_err(anyhow::Error::from)
