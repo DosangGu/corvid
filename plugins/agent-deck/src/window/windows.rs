@@ -1,11 +1,12 @@
 use anyhow::{Result, ensure};
-use gpui::{Pixels, Size, Window};
+use gpui::{App, Pixels, Size, Window};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
     MonitorFromPoint, MonitorFromRect, MonitorFromWindow,
 };
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows_sys::Win32::UI::Shell::{ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -37,21 +38,34 @@ pub fn start_move(window: &Window) -> Result<()> {
     Ok(())
 }
 
-pub fn visible(window: &Window, visible: bool) -> Result<()> {
+pub fn hide(window: &Window) -> Result<()> {
     unsafe {
-        ShowWindow(
-            handle(window)?,
-            if visible {
-                if IsIconic(handle(window)?) != 0 {
-                    SW_RESTORE
-                } else {
-                    SW_SHOWNOACTIVATE
-                }
-            } else {
-                SW_HIDE
-            },
-        );
+        ShowWindow(handle(window)?, SW_HIDE);
     }
+    Ok(())
+}
+
+pub fn show(window: &Window, activate: bool, cx: &App) -> Result<()> {
+    let hwnd = handle(window)?;
+    // Show after the queued resize and alignment. GPUI activation would apply
+    // its stored placement for a hidden window and undo the tray placement.
+    cx.foreground_executor()
+        .spawn(async move {
+            unsafe {
+                let command = if IsIconic(hwnd) != 0 {
+                    SW_RESTORE
+                } else if activate {
+                    SW_SHOW
+                } else {
+                    SW_SHOWNA
+                };
+                ShowWindow(hwnd, command);
+                if activate {
+                    SetForegroundWindow(hwnd);
+                }
+            }
+        })
+        .detach();
     Ok(())
 }
 
@@ -89,10 +103,10 @@ pub fn configure(window: &Window, pinned: bool, expanded: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn set_bounds(window: &mut Window, size: Size<Pixels>, initial: bool) -> Result<()> {
+pub fn set_bounds(window: &mut Window, size: Size<Pixels>, initial: bool, cx: &App) -> Result<()> {
     let hwnd = handle(window)?;
     let scale = window.scale_factor();
-    unsafe {
+    let anchored = unsafe {
         let monitor = if initial {
             tray_monitor()
         } else {
@@ -131,18 +145,21 @@ pub fn set_bounds(window: &mut Window, size: Size<Pixels>, initial: bool) -> Res
             ) != 0,
             "placing Agent Deck window"
         );
-        // GPUI applies resize asynchronously. Align the final outer frame,
-        // including native borders and any DPI change caused by the move.
-        if anchored {
-            window.on_next_frame(move |window, _| {
-                if let Err(error) = align_after_resize(window, initial) {
-                    eprintln!("Could not align Agent Deck: {error:#}");
-                }
-            });
-        }
-    }
+        anchored
+    };
     if window.viewport_size() != size {
         window.resize(size);
+    }
+    if anchored {
+        // GPUI queues the resize on this executor. Align the final frame even
+        // if the window is still hidden and no animation frame is requested.
+        cx.foreground_executor()
+            .spawn(async move {
+                if let Err(error) = align_after_resize(hwnd, initial) {
+                    eprintln!("Could not align Agent Deck: {error:#}");
+                }
+            })
+            .detach();
     }
     Ok(())
 }
@@ -181,8 +198,7 @@ fn position(work: RECT, size: [i32; 2], current: RECT, anchored: bool, gap: i32)
     }
 }
 
-fn align_after_resize(window: &Window, initial: bool) -> Result<()> {
-    let hwnd = handle(window)?;
+fn align_after_resize(hwnd: HWND, initial: bool) -> Result<()> {
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -198,7 +214,7 @@ fn align_after_resize(window: &Window, initial: bool) -> Result<()> {
             GetMonitorInfoW(monitor, &mut info) != 0 && GetWindowRect(hwnd, &mut rect) != 0,
             "reading resized Agent Deck bounds"
         );
-        let gap = (12. * window.scale_factor()).round() as i32;
+        let gap = (12. * GetDpiForWindow(hwnd) as f32 / 96.).round() as i32;
         let (x, y) = position(
             info.rcWork,
             [rect.right - rect.left, rect.bottom - rect.top],

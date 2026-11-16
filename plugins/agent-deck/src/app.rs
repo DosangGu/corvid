@@ -311,7 +311,7 @@ impl Desktop {
         #[cfg(windows)]
         self.pairing.poll();
         if self.window_ready {
-            self.window.update(window, tray, opened);
+            self.window.update(window, tray, opened, cx);
         }
         cx.notify();
     }

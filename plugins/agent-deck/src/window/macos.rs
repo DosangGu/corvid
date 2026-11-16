@@ -29,7 +29,12 @@ pub fn configure(window: &Window, pinned: bool, expanded: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn set_bounds(window: &mut Window, size: Size<Pixels>, initial: bool) -> Result<()> {
+pub fn set_bounds(
+    window: &mut Window,
+    size: Size<Pixels>,
+    initial: bool,
+    _: &gpui::App,
+) -> Result<()> {
     unsafe {
         corvid_window_bounds(
             view(window)?,

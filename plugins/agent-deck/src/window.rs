@@ -119,12 +119,12 @@ impl Window {
     }
 
     pub fn hide(&mut self, window: &gpui::Window) {
-        if let Err(error) = native::visible(window, false) {
+        if let Err(error) = native::hide(window) {
             self.error = Some(error.to_string());
         }
     }
 
-    pub fn update(&mut self, window: &mut gpui::Window, tray: bool, opened: bool) {
+    pub fn update(&mut self, window: &mut gpui::Window, tray: bool, opened: bool, cx: &gpui::App) {
         let first = self.applied.is_none();
         let state = Applied {
             expanded: self.expanded,
@@ -132,7 +132,7 @@ impl Window {
             layout: self.layout(),
         };
         if self.applied != Some(state) {
-            let result = self.apply(window, state);
+            let result = self.apply(window, state, cx);
             match result {
                 Ok(()) => {
                     self.applied = Some(state);
@@ -141,20 +141,17 @@ impl Window {
                 Err(error) => self.error = Some(error.to_string()),
             }
         }
-        if opened || (first && (!self.background_start || self.pinned() || !tray)) {
-            if let Err(error) = native::visible(window, true) {
-                self.error = Some(error.to_string());
-            }
-            if opened || !self.background_start {
-                window.activate_window();
-            }
+        if (opened || (first && (!self.background_start || self.pinned() || !tray)))
+            && let Err(error) = native::show(window, opened || !self.background_start, cx)
+        {
+            self.error = Some(error.to_string());
         }
         if first || opened {
             window.refresh();
         }
     }
 
-    fn apply(&self, window: &mut gpui::Window, state: Applied) -> Result<()> {
+    fn apply(&self, window: &mut gpui::Window, state: Applied, cx: &gpui::App) -> Result<()> {
         if self
             .applied
             .is_none_or(|old| old.pinned != state.pinned || old.expanded != state.expanded)
@@ -169,7 +166,7 @@ impl Window {
             } else {
                 state.layout.size()
             };
-            native::set_bounds(window, dimensions, self.applied.is_none())?;
+            native::set_bounds(window, dimensions, self.applied.is_none(), cx)?;
         }
         Ok(())
     }
