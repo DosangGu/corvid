@@ -240,6 +240,10 @@ fn linux_presentation_uses_xdg_directly_and_only_monitor_has_fallbacks() {
                 AgentDeck(CONTROLLER),
                 "cv-deck-0123456789abcdef0123456789abcdef",
             ),
+            (
+                DesktopFocus(CONTROLLER),
+                "cv-deck-f0123456789abcdef0123456789abcdef",
+            ),
         ] {
             let path = Linux::endpoint(&inputs, role, None);
             if xdg.is_empty() {
@@ -264,6 +268,10 @@ fn macos_endpoints_follow_boot_and_keep_controller_scope() {
             "s-0123456789abcdef0123456789abcdef",
         ),
         (AgentDeck(CONTROLLER), "d-0123456789abcdef0123456789abcdef"),
+        (
+            DesktopFocus(CONTROLLER),
+            "d-f0123456789abcdef0123456789abcdef",
+        ),
     ];
     for (boot, base) in [
         (FIRST_BOOT, "/home/.corvid/r-01234567-89ab-cd"),
