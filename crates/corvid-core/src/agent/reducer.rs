@@ -27,6 +27,7 @@ pub(super) struct Correlation {
     tentative_turns: Recent<String>,
     displaced_prompts: Recent<String>,
     completed_turns: Recent<String>,
+    response_attention_turns: Recent<String>,
     interrupted_turns: Recent<String>,
     completed_work: Recent<WorkKey>,
     finished_requests: Recent<RequestKey>,
@@ -468,7 +469,15 @@ impl AgentRun {
             ResponseOutcome::Observed => AttentionCause::Response,
             ResponseOutcome::Interrupted | ResponseOutcome::Failed => AttentionCause::Failure,
         };
-        self.add_attention(cause, None, evidence.observed_unix_ms);
+        let new_attention = cause != AttentionCause::Response
+            || response.turn.as_ref().is_none_or(|turn| {
+                self.correlation
+                    .response_attention_turns
+                    .insert(turn.clone())
+            });
+        if new_attention {
+            self.add_attention(cause, None, evidence.observed_unix_ms);
+        }
 
         if current_boundary && self.collection.value == Collection::Healthy {
             let activity = match response.outcome {
