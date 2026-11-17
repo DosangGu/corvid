@@ -27,7 +27,7 @@ impl FixtureHost {
         corvid_companion::initialize(&state, id, endpoint, 8)?;
         let config = Config::read_if_present(&state)?.context("fixture config")?;
         let controller = config.controller_id;
-        let address = root.join(controller.simple().to_string()[..6].to_owned());
+        let address = root.join(&controller.simple().to_string()[..6]);
         let scope = corvid_companion::monitor::Scope {
             state,
             config,
