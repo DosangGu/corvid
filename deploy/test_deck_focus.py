@@ -65,6 +65,21 @@ def geometry(handle):
     ).stdout.splitlines() if "=" in line)
 
 
+def open_deck(desktop):
+    width = int(geometry(desktop)["WIDTH"])
+    # Font metrics and the display scale can change the width of the Agents
+    # label. Stay in the right side of the toolbar and dismiss incidental menus.
+    for offset in (65, 55, 75, 45, 85, 95, 105):
+        run("xdotool", "windowactivate", "--sync", desktop, "key", "Escape")
+        click(desktop, width - offset, 20)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            if deck := window("Corvid Agent Deck"):
+                return deck
+            time.sleep(0.1)
+    return until("Agent Deck opened from Desktop", lambda: window("Corvid Agent Deck"))
+
+
 def launch_agent(corvid, env, root, name):
     pid, master = pty.fork()
     if pid == 0:
@@ -130,16 +145,15 @@ def main(build):
         except AssertionError as error:
             agents = run(corvid, "control", "agents", env=env, capture_output=True, text=True).stdout
             raise AssertionError(f"{error}\n{slots()}\n{agents}") from error
-        run("xdotool", "windowactivate", "--sync", desktop)
-        click(desktop, int(geometry(desktop)["WIDTH"]) - 65, 20)
-        deck = until("Agent Deck opened from Desktop", lambda: window("Corvid Agent Deck"))
+        deck = open_deck(desktop)
+        scale = int(geometry(deck)["WIDTH"]) / 392
 
         for index, name in enumerate(("second", "first")):
             if index == 1:
                 run("xdotool", "windowminimize", "--sync", desktop)
             run("xdotool", "windowactivate", "--sync", deck)
             time.sleep(0.5)
-            click(deck, 60 + (1 - index) * 94, 80)
+            click(deck, round((55 + (1 - index) * 94) * scale), round(84 * scale))
             until(f"foreground Desktop for {name}", lambda: foreground() == desktop)
             token = f"deck-focus-{name}"
             run("xdotool", "type", "--clearmodifiers", token)
