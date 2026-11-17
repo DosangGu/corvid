@@ -42,7 +42,14 @@ impl DeckView {
         let expanded = self.window.expanded;
         let layout = self.window.layout();
         let portrait = !expanded && layout.orientation == Orientation::Portrait;
-        let tray = self.session.background.view.borrow().background;
+        let tray = self
+            .session
+            .background
+            .view
+            .borrow()
+            .capabilities
+            .status_icon
+            .ready();
         let title = div()
             .id("drag-title")
             .flex_1()
@@ -119,7 +126,15 @@ impl DeckView {
                     0.,
                 )
                 .on_click(cx.listener(|view, _, window, cx| {
-                    if view.session.background.view.borrow().background {
+                    if view
+                        .session
+                        .background
+                        .view
+                        .borrow()
+                        .capabilities
+                        .status_icon
+                        .ready()
+                    {
                         view.window.hide(window);
                     } else {
                         cx.quit();

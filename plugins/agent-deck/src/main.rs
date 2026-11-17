@@ -110,7 +110,13 @@ fn main() -> Result<()> {
     let preferences = shell::Window::load(&state, options.background)?;
     let identity = Some((config.host_id, config.controller_id));
     let catalog = (state.clone(), config.host_id);
-    let background = background::Background::start(state, address.clone(), config, signal.clone())?;
+    let background = background::Background::start(
+        state,
+        address.clone(),
+        config,
+        signal.clone(),
+        platform::start,
+    )?;
     let notify = signal.clone();
     let client = DesktopClient::start_scoped(address, identity, move || notify.notify())?;
     app::run(

@@ -1,5 +1,11 @@
 #import <AppKit/AppKit.h>
 #import <UserNotifications/UserNotifications.h>
+#include <stdatomic.h>
+
+extern void corvid_native_ready(bool status_icon, bool notifications);
+extern void corvid_native_submitted(unsigned long long high, unsigned long long low, bool accepted);
+
+static atomic_bool stopping;
 
 extern void corvid_native_event(unsigned int kind, unsigned long long high, unsigned long long low);
 
@@ -40,6 +46,7 @@ NSStatusBarButton *corvid_status_button(void) { return delegate.item.button; }
 
 void corvid_native_start(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (atomic_load(&stopping)) return;
         delegate = [CorvidDeckDelegate new];
         delegate.item = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
         delegate.item.button.title = @"◈";
@@ -57,23 +64,57 @@ void corvid_native_start(void) {
         button.target = delegate;
         button.action = @selector(statusClicked:);
         [button sendActionOn:NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp];
-        @try { [UNUserNotificationCenter currentNotificationCenter].delegate = delegate; }
-        @catch (NSException *exception) { corvid_native_event(6, 0, 0); }
+        bool notifications = false;
+        @try {
+            UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+            center.delegate = delegate;
+            notifications = center != nil;
+        } @catch (NSException *exception) {
+            // Unbundled launches may not have a notification center.
+        }
+        corvid_native_ready(button != nil, notifications);
     });
 }
 
 void corvid_native_stop(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    atomic_store(&stopping, true);
+    void (^cleanup)(void) = ^{
+        if (!delegate) return;
+        @try {
+            UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+            if (center.delegate == delegate) center.delegate = nil;
+        } @catch (NSException *exception) {
+            // No delegate was installed on this notification center.
+        }
         if (delegate.item) [[NSStatusBar systemStatusBar] removeStatusItem:delegate.item];
         delegate = nil;
-    });
+    };
+    if ([NSThread isMainThread]) cleanup();
+    else dispatch_async(dispatch_get_main_queue(), cleanup);
 }
+
+static NSString *pendingStatus;
+static bool pendingAttention;
 
 void corvid_native_status(const char *text, bool attention) {
     NSString *status = [[NSString alloc] initWithUTF8String:text];
+    @synchronized (CorvidDeckDelegate.class) {
+        bool scheduled = pendingStatus != nil;
+        pendingStatus = status;
+        pendingAttention = attention;
+        if (scheduled) return;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
-        delegate.item.button.toolTip = status;
-        delegate.item.button.title = attention ? @"◈ •" : @"◈";
+        NSString *latest;
+        bool showAttention;
+        @synchronized (CorvidDeckDelegate.class) {
+            latest = pendingStatus;
+            showAttention = pendingAttention;
+            pendingStatus = nil;
+        }
+        if (atomic_load(&stopping)) return;
+        delegate.item.button.toolTip = latest;
+        delegate.item.button.title = showAttention ? @"◈ •" : @"◈";
     });
 }
 
@@ -81,11 +122,14 @@ void corvid_native_notice(unsigned long long high, unsigned long long low, const
     NSString *heading = [[NSString alloc] initWithUTF8String:title];
     NSString *message = [[NSString alloc] initWithUTF8String:body];
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (atomic_load(&stopping)) return;
         @try {
             UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+            if (!center) { corvid_native_submitted(high, low, false); return; }
             [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
                 completionHandler:^(BOOL granted, NSError *error) {
-                    if (!granted || error) { corvid_native_event(6, 0, 0); return; }
+                    if (atomic_load(&stopping)) return;
+                    if (!granted || error) { corvid_native_submitted(high, low, false); return; }
                     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
                     content.title = heading;
                     content.body = message;
@@ -93,9 +137,9 @@ void corvid_native_notice(unsigned long long high, unsigned long long low, const
                     if (sound) content.sound = [UNNotificationSound defaultSound];
                     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:[NSString stringWithFormat:@"%016llx%016llx", high, low] content:content trigger:nil];
                     [center addNotificationRequest:request withCompletionHandler:^(NSError *failure) {
-                        if (failure) corvid_native_event(6, 0, 0);
+                        corvid_native_submitted(high, low, failure == nil);
                     }];
                 }];
-        } @catch (NSException *exception) { corvid_native_event(6, 0, 0); }
+        } @catch (NSException *exception) { corvid_native_submitted(high, low, false); }
     });
 }

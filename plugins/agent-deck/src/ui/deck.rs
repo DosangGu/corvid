@@ -508,6 +508,7 @@ impl DeckView {
     fn notifications(&self, cx: &mut Context<Self>) -> Div {
         let background = self.session.background.view.borrow().clone();
         let settings = &background.settings;
+        let capabilities = background.capabilities;
         let choices = [
             ("Show OS notifications", settings.enabled),
             ("Questions and approvals", settings.input),
@@ -521,7 +522,11 @@ impl DeckView {
                 choices
                     .into_iter()
                     .enumerate()
-                    .filter(|(index, _)| *index != 5 || background.background)
+                    .filter(|(index, _)| match index {
+                        4 => capabilities.sound.ready(),
+                        5 => capabilities.login_startup.ready(),
+                        _ => true,
+                    })
                     .map(|(index, (label, enabled))| {
                         button(
                             ("setting", index),
@@ -571,10 +576,18 @@ impl DeckView {
                         })),
                     )
                     .child(
-                        button("test-notification", "Send test notification", true).on_click(
-                            cx.listener(|view, _, _, _| {
-                                view.session.background.test_notification()
-                            }),
+                        button(
+                            "test-notification",
+                            "Send test notification",
+                            capabilities.notifications.ready(),
+                        )
+                        .when(
+                            capabilities.notifications.ready(),
+                            |button| {
+                                button.on_click(cx.listener(|view, _, _, _| {
+                                    view.session.background.test_notification()
+                                }))
+                            },
                         ),
                     )
                     .child(

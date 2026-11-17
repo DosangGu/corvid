@@ -191,6 +191,7 @@ jobs:
         timeout-minutes: 10
         env:
           CORVID_AGENT_DECK_SCREENSHOT: target/agent-deck-ready.png
+          CORVID_AGENT_DECK_SETTINGS_SCREENSHOT: target/agent-deck-settings.png
           CORVID_WORKSPACE_SCREENSHOT: target/workspace-directory.png
         run: xvfb-run -a python3 deploy/test_desktop.py --build target/${{ matrix.target }}/release
       - name: Connected managed SSH updates
@@ -207,7 +208,9 @@ jobs:
         if: runner.os == 'Linux'
         with:
           name: agent-deck-preview-${{ matrix.target }}
-          path: target/agent-deck-ready.png
+          path: |
+            target/agent-deck-ready.png
+            target/agent-deck-settings.png
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: runner.os == 'Linux'

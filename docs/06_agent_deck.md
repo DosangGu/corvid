@@ -98,7 +98,8 @@ activation after process exit is not supported. Disable login startup in Deck
 before removing an installation.
 
 Linux currently sends notifications through `notify-send` when available. It has
-no tray or login-startup backend: its window remains visible, and closing it exits.
+no tray, login-startup backend, notification click callbacks, or Deck sound
+control. Its window remains visible, and closing it exits.
 
 On macOS, click the menu bar icon to open the Deck below it. Click it again,
 click outside the panel, or press Escape to dismiss it. Right-click the icon for
@@ -286,7 +287,9 @@ companion reports notification support unavailable while the slot UI can still r
 Questions/approvals, observed responses, and failures are enabled by default.
 Unverified input says to check the terminal. An observed response does not claim
 whole-task completion. Settings control categories, sound (off by default), global
-enablement, and a one-hour pause. **Send test notification** checks OS delivery.
+enablement, and a one-hour pause. The Deck shows sound and login startup controls
+when the corresponding native services are ready. **Send test notification**
+asks the OS to submit an alert. The OS controls whether and how it is displayed.
 Notification text includes provider and short host/run IDs; it excludes terminal
 contents, prompts, commands, and credentials.
 
@@ -296,6 +299,16 @@ first synchronized snapshot imports existing work and unread attention; an agent
 does not need to restart after SSH attachment. Host failures are tracked separately
 so a healthy local feed cannot hide a failed SSH feed. Normal operation has no
 `Daemon ready` banner; the UI shows connection progress or a problem when needed.
+
+The background monitor owns the notification policy and waits for the adapter's
+submission result. Notification clicks are separate events carrying the captured
+notice. The native adapter reports icon, notification, activation, sound, and
+login startup availability independently. If a status icon cannot initialize,
+a background launch opens the Deck so it remains accessible. Native callbacks
+use a bounded queue for settings and click events. Opening and quitting use
+the application signal so a full callback queue cannot prevent either action.
+Windows owns its tray window and WinRT objects on the native worker. macOS
+owns the status item and notification delegate on the AppKit main thread.
 
 The private `agent-deck/notifications.json` stores that Deck's settings, 128 history
 entries, and up to 4,096 observed-event identities. The first snapshot can notify:
@@ -321,7 +334,8 @@ Unavailable or ended targets remain in history without opening a new terminal.
 - [`src/connection.rs`](../plugins/agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
 - [`src/background.rs`](../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
 - [Shell](../plugins/agent-deck/src/shell.rs) and [UI](../plugins/agent-deck/src/ui.rs): native window or panel handling, GPUI content, and view controls.
-- [Agent Deck core](../crates/corvid-agent-deck-core/): grid choices, notification policy, gesture capture, and action tracking.
+- [Agent Deck core](../crates/corvid-agent-deck-core/): grid choices, notification policy, gesture capture, action tracking, and the native service contract.
+- [`src/platform.rs`](../plugins/agent-deck/src/platform.rs): OS adapter selection, bounded callback delivery, and capability updates.
 - [`src/ui_signal.rs`](../plugins/agent-deck/src/ui_signal.rs): coalesced worker updates and latched open/quit requests.
 - [`src/platform`](../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
 - [`assets`](../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../assets/icons/); `cargo run -p corvid-agent-deck --example render-icons` regenerates all raster assets.
