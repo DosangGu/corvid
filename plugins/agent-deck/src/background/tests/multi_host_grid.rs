@@ -1,13 +1,17 @@
 use std::process::Stdio;
 
+use corvid_agent_deck::connection::Client as DeckClient;
 use corvid_agent_deck::desktop::FocusRequest;
 use corvid_companion::HostEndpoint;
+use corvid_presentation::desktop_focus::FocusFailure;
+use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, wire::DesktopAgentFocused};
 use tokio::process::{Child, Command};
 use tokio::task::JoinSet;
 
 use super::*;
 
 struct FixtureHost {
+    controller: Uuid,
     run: PresentedRunKey,
     requests: mpsc::Receiver<FocusRequest>,
 }
@@ -46,7 +50,11 @@ impl FixtureHost {
         jobs.spawn(corvid_presentation::desktop_focus::serve(
             id, controller, epoch, focus,
         ));
-        Ok(Self { run, requests })
+        Ok(Self {
+            controller,
+            run,
+            requests,
+        })
     }
 }
 
@@ -93,8 +101,32 @@ async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() 
         .kill_on_drop(true)
         .spawn()?;
     let window = window_id(&mut deck).await?;
-    click_card(&window, 0, &mut local, &mut jobs).await?;
-    click_card(&window, 1, &mut first, &mut jobs).await?;
+    // A Deck opened from Desktop still uses the shared endpoint for its own
+    // host, even when a legacy registration is present.
+    let mut legacy = DeckClient::connect(Uuid::from_u128(1), local.controller, true).await?;
+    click_card(&window, 0, &mut local, &mut jobs, Ok(())).await?;
+    click_card(
+        &window,
+        0,
+        &mut local,
+        &mut jobs,
+        Err(ProtocolFault::new("WorkspaceBusy", "another Desktop owns this workspace").into()),
+    )
+    .await?;
+    let fallback = timeout(COMMAND_TIMEOUT, legacy.reader.next_envelope())
+        .await??
+        .context("the Desktop that opened Deck did not receive the writer-conflict retry")?;
+    let Some(Body::FocusDesktopAgent(focus)) = fallback.body else {
+        anyhow::bail!("unexpected request on the older Deck connection");
+    };
+    assert_eq!(focus.run, Some(local.run.clone()));
+    legacy
+        .reply(
+            fallback.request_id.context("missing retry ID")?,
+            Body::DesktopAgentFocused(DesktopAgentFocused {}),
+        )
+        .await?;
+    click_card(&window, 1, &mut first, &mut jobs, Ok(())).await?;
 
     let mut second = FixtureHost::start(
         &state,
@@ -105,7 +137,7 @@ async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() 
         common_run,
         &mut jobs,
     )?;
-    click_card(&window, 2, &mut second, &mut jobs).await?;
+    click_card(&window, 2, &mut second, &mut jobs, Ok(())).await?;
     if let Some(path) = std::env::var_os("CORVID_MULTI_HOST_GRID_SCREENSHOT") {
         let status = Command::new("scrot")
             .args(["--overwrite", "--focused"])
@@ -150,6 +182,7 @@ async fn click_card(
     index: u32,
     expected: &mut FixtureHost,
     jobs: &mut JoinSet<Result<()>>,
+    result: Result<(), FocusFailure>,
 ) -> Result<()> {
     let x = (55 + index * 94).to_string();
     timeout(Duration::from_secs(12), async {
@@ -162,7 +195,7 @@ async fn click_card(
                 request = expected.requests.recv() => {
                     let request = request.context("Desktop focus request stream closed")?;
                     assert_eq!(request.run, expected.run);
-                    request.result.send(Ok(())).map_err(|_| anyhow::anyhow!("Deck stopped waiting"))?;
+                    request.result.send(result).map_err(|_| anyhow::anyhow!("Deck stopped waiting"))?;
                     return Ok(());
                 }
                 result = jobs.join_next() => anyhow::bail!("fixture server stopped: {result:?}"),

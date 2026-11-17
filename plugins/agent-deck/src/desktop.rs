@@ -179,7 +179,7 @@ async fn forward_focus(
                 .await;
                 let body = match outcome {
                     Ok(Ok(Ok(()))) => Body::DesktopAgentFocused(DesktopAgentFocused {}),
-                    Ok(Ok(Err(error))) => Body::Error(ProtocolFault::new("FocusUnavailable", &error).into_wire()),
+                    Ok(Ok(Err(error))) => Body::Error(error.into_wire()),
                     _ => Body::Error(ProtocolFault::new("FocusUnavailable", "The registered Desktop could not focus this run. Check the current terminal.").into_wire()),
                 };
                 client.reply(id, body).await?;

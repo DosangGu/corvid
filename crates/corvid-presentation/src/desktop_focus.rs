@@ -22,7 +22,30 @@ type Stream = Box<dyn Duplex>;
 
 pub struct FocusRequest {
     pub run: PresentedRunKey,
-    pub result: oneshot::Sender<Result<(), String>>,
+    pub result: FocusReply,
+}
+
+pub type FocusReply = oneshot::Sender<Result<(), FocusFailure>>;
+
+#[derive(Debug)]
+pub struct FocusFailure(ProtocolFault);
+
+impl From<ProtocolFault> for FocusFailure {
+    fn from(fault: ProtocolFault) -> Self {
+        Self(fault)
+    }
+}
+
+impl From<&str> for FocusFailure {
+    fn from(message: &str) -> Self {
+        Self(ProtocolFault::new("FocusUnavailable", message))
+    }
+}
+
+impl FocusFailure {
+    pub fn into_wire(self) -> corvid_protocol::wire::RpcError {
+        self.0.into_wire()
+    }
 }
 
 async fn frames(
@@ -40,13 +63,34 @@ async fn frames(
 /// Request exact navigation from an already attached Desktop on this host.
 pub async fn request(controller: Uuid, run: PresentedRunKey) -> Result<()> {
     timeout(COMMAND_TIMEOUT, async {
-        let stream = connect(controller)
-            .await
-            .context("Open this host in Corvid Desktop to focus its agents.")?;
+        let stream = match connect(controller).await {
+            Err(error) if missing_endpoint(&error) => return Err(EndpointUnavailable.into()),
+            result => result?,
+        };
         request_on_stream(stream, controller, run).await
     })
     .await
     .context("Desktop did not confirm focus in time")?
+}
+
+#[derive(Debug)]
+pub struct EndpointUnavailable;
+
+impl std::fmt::Display for EndpointUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Open this host in Corvid Desktop to focus its agents.")
+    }
+}
+
+impl std::error::Error for EndpointUnavailable {}
+
+fn missing_endpoint(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        )
+    })
 }
 
 async fn request_on_stream(stream: Stream, controller: Uuid, run: PresentedRunKey) -> Result<()> {
@@ -113,6 +157,9 @@ async fn connect(controller: Uuid) -> Result<Stream> {
     use corvid_protocol::unix::{RuntimeDir, SocketRole};
 
     let path = corvid_protocol::paths::desktop_focus_socket(controller)?.prepare()?;
+    if !path.try_exists()? {
+        return Err(EndpointUnavailable.into());
+    }
     Ok(Box::new(
         RuntimeDir::open(&path)?
             .connect(SocketRole::Presentation)
@@ -222,7 +269,7 @@ async fn exchange(
     };
     let body = match outcome {
         Ok(()) => Body::DesktopAgentFocused(DesktopAgentFocused {}),
-        Err(error) => Body::Error(ProtocolFault::new("FocusUnavailable", &error).into_wire()),
+        Err(error) => Body::Error(error.into_wire()),
     };
     writer
         .envelope(&session.envelope(Some(id.to_string()), body))

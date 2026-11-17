@@ -120,7 +120,7 @@ impl Snapshot {
         })
     }
 
-    pub(crate) fn desktop_target(&self, capture: &FocusSlot) -> Option<(Uuid, PresentedRunKey)> {
+    pub fn desktop_target(&self, capture: &FocusSlot) -> Option<(Uuid, PresentedRunKey)> {
         let token = capture.slot.as_ref()?;
         let slot = self
             .data
@@ -130,8 +130,17 @@ impl Snapshot {
         if self.focus_desktop(slot).as_ref() != Some(capture) {
             return None;
         }
-        let controller = Uuid::parse_str(&self.data.controller_id).ok()?;
-        Some((controller, token.run.clone()?))
+        let run = token.run.as_ref()?;
+        Some((self.desktop_run_target(run)?, run.clone()))
+    }
+
+    pub fn desktop_run_target(&self, run: &PresentedRunKey) -> Option<Uuid> {
+        self.generation()?;
+        self.check_key(run)?;
+        if self.data.remote_epoch.as_deref()? != run.remote_epoch {
+            return None;
+        }
+        Uuid::parse_str(&self.data.controller_id).ok()
     }
 
     pub fn acknowledge(&self, run: &PresentedRun) -> Option<Body> {

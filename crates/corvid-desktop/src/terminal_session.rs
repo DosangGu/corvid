@@ -11,6 +11,7 @@ use corvid_client::WslDistribution;
 use corvid_client::view_state::{Recorder, SavedView, Target as SavedTarget, ViewStore};
 use corvid_client::{ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias};
 use corvid_companion::{Config, HostEndpoint};
+use corvid_presentation::desktop_focus::{FocusFailure, FocusReply};
 use corvid_protocol::snapshot::SynchronizedSnapshot;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
@@ -278,7 +279,7 @@ struct Buffer {
 
 struct DeckActivation {
     revision: u64,
-    reply: oneshot::Sender<Result<(), String>>,
+    reply: FocusReply,
 }
 
 struct Shared {
@@ -405,10 +406,7 @@ struct Requests {
 }
 
 impl Session {
-    pub fn take_deck_activation(
-        &self,
-        sequence: u64,
-    ) -> Option<oneshot::Sender<Result<(), String>>> {
+    pub fn take_deck_activation(&self, sequence: u64) -> Option<FocusReply> {
         let mut buffer = self.shared.buffer();
         if buffer.ui.deck_focus != sequence {
             return None;
@@ -644,7 +642,7 @@ struct Client<'a> {
     endpoint: ControlEndpoint,
     agent_deck: &'a mut agent_deck::Job,
     deck_requests: mpsc::Sender<agent_deck::FocusRequest>,
-    deck_result: Option<oneshot::Sender<Result<(), String>>>,
+    deck_result: Option<FocusReply>,
     shared: &'a Shared,
     selected: ViewSelection,
     route: RouteToken,
@@ -1486,7 +1484,7 @@ impl Client<'_> {
             .await
     }
 
-    fn finish_deck_focus(&mut self, result: Result<(), String>) {
+    fn finish_deck_focus(&mut self, result: Result<(), FocusFailure>) {
         let Some(reply) = self.deck_result.take() else {
             return;
         };
@@ -1780,9 +1778,10 @@ impl Client<'_> {
                 if matched {
                     self.pending = None;
                 }
-                let message = ProtocolFault::from_wire(&error).to_string();
+                let fault = ProtocolFault::from_wire(&error);
+                let message = fault.to_string();
                 if matched {
-                    self.finish_deck_focus(Err(message.clone()));
+                    self.finish_deck_focus(Err(fault.into()));
                 }
                 self.shared.update_ui(|ui| {
                     if matched {

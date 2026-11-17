@@ -1,5 +1,5 @@
+use corvid_presentation::desktop_focus::FocusReply;
 use gpui::{Context, Window};
-use tokio::sync::oneshot;
 
 use super::WorkspaceView;
 
@@ -8,7 +8,7 @@ impl WorkspaceView {
         &mut self,
         window: &mut Window,
         cx: &Context<Self>,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: FocusReply,
     ) {
         let Some(terminal) = &self.terminal else {
             let _ = reply.send(Err("The selected terminal pane is unavailable.".into()));
@@ -24,21 +24,13 @@ impl WorkspaceView {
 }
 
 #[cfg(not(windows))]
-fn activate(
-    window: &Window,
-    _: &Context<WorkspaceView>,
-    reply: oneshot::Sender<Result<(), String>>,
-) {
+fn activate(window: &Window, _: &Context<WorkspaceView>, reply: FocusReply) {
     window.activate_window();
     let _ = reply.send(Ok(()));
 }
 
 #[cfg(windows)]
-fn activate(
-    window: &Window,
-    cx: &Context<WorkspaceView>,
-    reply: oneshot::Sender<Result<(), String>>,
-) {
+fn activate(window: &Window, cx: &Context<WorkspaceView>, reply: FocusReply) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
