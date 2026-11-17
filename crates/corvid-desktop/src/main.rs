@@ -101,7 +101,6 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         #[cfg(windows)]
         pipe_instance: options.pipe_instance,
     };
-    #[cfg(windows)]
     if let Err(error) = agent_deck.refresh_in_background() {
         eprintln!("Could not refresh Agent Deck: {error:#}");
     }

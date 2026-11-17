@@ -1235,6 +1235,8 @@ dependencies = [
  "embed-resource",
  "gpui",
  "image",
+ "libc",
+ "nix 0.31.3",
  "raw-window-handle",
  "resvg 0.49.0",
  "semver",
