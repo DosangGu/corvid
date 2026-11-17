@@ -215,7 +215,7 @@ fn verify_host(actual: &str, expected: Option<&str>) -> Result<()> {
 
 fn upgrade_detail(upgrade: &Upgrade) -> String {
     format!(
-        "Corvid {} → {}\n\nHosted shells and agents keep running.\nClients reconnect after the upgrade.\nNotification monitoring reconnects\nfor verified agents.",
+        "Corvid {} → {}\n\nShells and agents keep running.\nClients reconnect after the upgrade.\nNotification monitoring reconnects\nfor verified agents.",
         upgrade.installed,
         env!("CARGO_PKG_VERSION"),
     )
