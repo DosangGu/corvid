@@ -242,7 +242,7 @@ fn linux_presentation_uses_xdg_directly_and_only_monitor_has_fallbacks() {
             ),
             (
                 DesktopFocus(CONTROLLER),
-                "cv-deck-f0123456789abcdef0123456789abcdef",
+                "cv-focus-0123456789abcdef0123456789abcdef",
             ),
         ] {
             let path = Linux::endpoint(&inputs, role, None);
@@ -270,7 +270,7 @@ fn macos_endpoints_follow_boot_and_keep_controller_scope() {
         (AgentDeck(CONTROLLER), "d-0123456789abcdef0123456789abcdef"),
         (
             DesktopFocus(CONTROLLER),
-            "d-f0123456789abcdef0123456789abcdef",
+            "f-0123456789abcdef0123456789abcdef",
         ),
     ];
     for (boot, base) in [

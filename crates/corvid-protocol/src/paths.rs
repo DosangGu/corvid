@@ -278,6 +278,7 @@ enum UnixEndpoint {
 trait UnixPaths: PlatformPaths {
     const SLOT_PREFIX: &'static str;
     const DECK_PREFIX: &'static str;
+    const FOCUS_PREFIX: &'static str;
 
     fn endpoint_base(
         inputs: &impl PathInputs,
@@ -301,7 +302,7 @@ trait UnixPaths: PlatformPaths {
                 format!("{}{}", Self::DECK_PREFIX, controller.simple())
             }
             UnixEndpoint::DesktopFocus(controller) => {
-                format!("{}f{}", Self::DECK_PREFIX, controller.simple())
+                format!("{}{}", Self::FOCUS_PREFIX, controller.simple())
             }
         };
         Ok(Self::endpoint_base(inputs, role, local_runtime)?.join(name))
@@ -312,6 +313,7 @@ trait UnixPaths: PlatformPaths {
 impl UnixPaths for Linux {
     const SLOT_PREFIX: &'static str = "cv-slot-";
     const DECK_PREFIX: &'static str = "cv-deck-";
+    const FOCUS_PREFIX: &'static str = "cv-focus-";
 
     fn endpoint_base(
         inputs: &impl PathInputs,
@@ -346,6 +348,7 @@ impl UnixPaths for Linux {
 impl UnixPaths for MacOs {
     const SLOT_PREFIX: &'static str = "s-";
     const DECK_PREFIX: &'static str = "d-";
+    const FOCUS_PREFIX: &'static str = "f-";
 
     fn endpoint_base(
         inputs: &impl PathInputs,
