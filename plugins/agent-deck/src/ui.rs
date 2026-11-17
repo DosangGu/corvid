@@ -91,7 +91,9 @@ impl DeckView {
             .unwrap_or(true)
         });
         let activation = cx.observe_window_activation(window, |view, window, cx| {
-            view.held.cancel();
+            if !window.is_window_active() {
+                view.held.cancel();
+            }
             view.update(window, cx);
         });
         activation.detach();

@@ -37,7 +37,8 @@ vt100.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 gpui = { workspace = true, features = ["windows-manifest"] }
-windows-sys = { workspace = true, features = ["Win32_UI_Shell"] }
+raw-window-handle.workspace = true
+windows-sys = { workspace = true, features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui = { workspace = true, features = ["x11"] }

@@ -351,6 +351,10 @@ notification deduplication and snooze, cross-host rejection, Desktop reconnectio
 and activation without replacing an existing registration. The Linux routing fixture
 exercises real process exit, relaunch in the same pane, and explicit pane closure.
 
+The Linux Deck focus fixture clicks cards for two live agent tabs. It verifies
+that Desktop comes to the foreground, including from a minimized window, and
+that typed input reaches the selected agent's terminal.
+
 On an interactive Windows desktop, run
 `cargo test -p corvid-agent-deck --test windows_tray -- --ignored --nocapture`
 to check tray reopening. The fixture launches a separate Deck and delivers

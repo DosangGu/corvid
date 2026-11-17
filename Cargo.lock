@@ -1366,6 +1366,7 @@ dependencies = [
  "hex",
  "image",
  "libc",
+ "raw-window-handle",
  "semver",
  "serde",
  "serde_json",

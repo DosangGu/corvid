@@ -270,9 +270,15 @@ impl Ui {
 
 struct Buffer {
     ui: Ui,
+    deck_activation: Option<DeckActivation>,
     screen: Option<Arc<Screen>>,
     revision: u64,
     previews: HashMap<String, Screen>,
+}
+
+struct DeckActivation {
+    revision: u64,
+    reply: oneshot::Sender<Result<(), String>>,
 }
 
 struct Shared {
@@ -309,6 +315,7 @@ impl Shared {
                     closed_view: false,
                     deck_focus: 0,
                 },
+                deck_activation: None,
                 screen: None,
                 revision: 0,
                 previews: HashMap::new(),
@@ -325,7 +332,13 @@ impl Shared {
     }
 
     fn update_ui(&self, edit: impl FnOnce(&mut Ui)) {
-        edit(&mut self.buffer().ui);
+        {
+            let mut buffer = self.buffer();
+            edit(&mut buffer.ui);
+            if !buffer.ui.connected {
+                buffer.deck_activation = None;
+            }
+        }
         self.ui_changed.send_replace(());
     }
 
@@ -392,6 +405,27 @@ struct Requests {
 }
 
 impl Session {
+    pub fn take_deck_activation(
+        &self,
+        sequence: u64,
+    ) -> Option<oneshot::Sender<Result<(), String>>> {
+        let mut buffer = self.shared.buffer();
+        if buffer.ui.deck_focus != sequence {
+            return None;
+        }
+        let activation = buffer.deck_activation.take()?;
+        if activation.reply.is_closed() {
+            return None;
+        }
+        if !buffer.ui.connected || activation.revision != buffer.revision {
+            let _ = activation.reply.send(Err(
+                "The selected Desktop pane changed before it could receive focus.".into(),
+            ));
+            return None;
+        }
+        Some(activation.reply)
+    }
+
     pub fn start(
         destination: Destination,
         settings: impl Into<agent_deck::Settings>,
@@ -1432,13 +1466,27 @@ impl Client<'_> {
     }
 
     fn finish_deck_focus(&mut self, result: Result<(), String>) {
-        if let Some(reply) = self.deck_result.take() {
-            if result.is_ok() {
-                self.shared
-                    .update_ui(|ui| ui.deck_focus = ui.deck_focus.wrapping_add(1));
-            }
-            let _ = reply.send(result);
+        let Some(reply) = self.deck_result.take() else {
+            return;
+        };
+        if let Err(error) = result {
+            let _ = reply.send(Err(error));
+            return;
         }
+        let previous = {
+            let mut buffer = self.shared.buffer();
+            buffer.ui.deck_focus = buffer.ui.deck_focus.wrapping_add(1);
+            buffer.deck_activation.replace(DeckActivation {
+                revision: self.route.view_revision,
+                reply,
+            })
+        };
+        if let Some(previous) = previous {
+            let _ = previous.reply.send(Err(
+                "Desktop focus was superseded by another request.".into()
+            ));
+        }
+        self.shared.ui_changed.send_replace(());
     }
 
     async fn begin_select(
