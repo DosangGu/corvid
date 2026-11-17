@@ -8,6 +8,8 @@ mod appearance;
 mod daemon_prompt;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod desktop_windows;
+#[cfg(target_os = "linux")]
+mod linux_prompt;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod local_bootstrap;
 #[cfg(target_os = "macos")]
@@ -122,6 +124,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     application.run(move |cx| {
         #[cfg(target_os = "macos")]
         macos::menus(&app_windows, cx);
+        #[cfg(target_os = "linux")]
+        cx.set_prompt_builder(linux_prompt::build);
         cx.set_global(appearance::Appearance::load(&preferences_state));
         cx.set_global(terminal_fonts::TerminalFonts::load(
             &preferences_state,

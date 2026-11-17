@@ -31,7 +31,7 @@ def stop(process):
         process.wait(timeout=5)
 
 
-def screenshot(root, environment, output):
+def verify_default_and_capture(root, environment, output):
     manager = desktop = None
     try:
         manager = subprocess.Popen(["openbox"], start_new_session=True)
@@ -49,7 +49,16 @@ def screenshot(root, environment, output):
                 time.sleep(2)
                 subprocess.run(["xdotool", "windowactivate", "--sync", match[1]], check=True)
                 subprocess.run(["scrot", "--overwrite", "--focused", str(output)], check=True)
-                return
+                upgraded = root / "upgraded.json"
+                assert not upgraded.exists(), "The upgrade started before confirmation"
+                subprocess.run(["xdotool", "key", "Return"], check=True, timeout=5)
+                for _ in range(160):
+                    if upgraded.exists() and (root / "installed-version").read_text() != "0.1.2":
+                        assert json.loads(upgraded.read_text())["verified_payload"]
+                        upgraded.unlink()
+                        return
+                    time.sleep(0.1)
+                raise AssertionError("Enter did not approve the default Upgrade action")
             time.sleep(0.1)
         raise AssertionError("Desktop did not check the connected remote version")
     finally:
@@ -137,7 +146,7 @@ def verify(args, root, test_binary):
         else:
             raise AssertionError("Fixture daemon did not start")
         if args.screenshot:
-            screenshot(root, environment, args.screenshot.resolve())
+            verify_default_and_capture(root, environment, args.screenshot.resolve())
         subprocess.run(
             [str(root / "test-runner"), "--ignored", "--exact", "--nocapture",
              "remote_bootstrap::tests::connected_managed_installations_offer_updates"],

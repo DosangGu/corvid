@@ -1,5 +1,6 @@
 use anyhow::{Result, ensure};
 use corvid_protocol::ProtocolFault;
+use gpui::{App, PromptButton, PromptLevel, Window};
 use tokio::sync::{mpsc, oneshot};
 
 pub struct Prompt {
@@ -7,6 +8,26 @@ pub struct Prompt {
     pub message: String,
     pub action: Option<&'static str>,
     pub decision: oneshot::Sender<bool>,
+}
+
+impl Prompt {
+    pub fn show(self, window: &mut Window, cx: &mut App) -> impl Future<Output = ()> + use<> {
+        let buttons = match self.action {
+            Some(action) => vec![PromptButton::ok(action), PromptButton::cancel("Cancel")],
+            None => vec![PromptButton::ok("OK")],
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            self.title,
+            Some(&self.message),
+            &buttons,
+            cx,
+        );
+        async move {
+            let approved = answer.await == Ok(0) && self.action.is_some();
+            let _ = self.decision.send(approved);
+        }
+    }
 }
 
 pub struct Prompts(pub mpsc::UnboundedSender<Prompt>);
