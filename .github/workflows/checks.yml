@@ -10,6 +10,7 @@ permissions:
 
 concurrency:
   group: checks-${{ github.ref }}
+  # A new PR revision replaces its checks while main pushes keep their active run.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
