@@ -23,7 +23,7 @@ use windows::Win32::UI::Shell::{
     FOLDERID_Programs, FOLDERID_Startup, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
     SHStrDupW, ShellLink,
 };
-use windows::core::{GUID, HSTRING, Interface, PCWSTR};
+use windows::core::{GUID, HSTRING, IInspectable, Interface, PCWSTR};
 
 use crate::platform::Callbacks;
 use corvid_agent_deck_core::native::Event;
@@ -124,15 +124,7 @@ impl Sink {
             &notice.key.attention.simple().to_string()[..16],
         ))?;
         toast.SetGroup(&HSTRING::from("agent-deck"))?;
-        let callbacks = self.callbacks.clone();
-        let token = toast.Activated(&TypedEventHandler::new(move |_, _| {
-            let _ = callbacks.event(if notice.summary {
-                Event::OpenNotifications
-            } else {
-                Event::Activate(notice.clone())
-            });
-            Ok(())
-        }))?;
+        let token = toast.Activated(&activation_handler(self.callbacks.clone(), notice.summary))?;
         if let Err(error) = self.notifier.Show(&toast) {
             let _ = toast.RemoveActivated(token);
             return Err(error).context("delivering Windows toast");
@@ -146,6 +138,20 @@ impl Sink {
         }
         Ok(())
     }
+}
+
+fn activation_handler(
+    callbacks: Callbacks,
+    summary: bool,
+) -> TypedEventHandler<ToastNotification, IInspectable> {
+    TypedEventHandler::new(move |_, _| {
+        if summary {
+            let _ = callbacks.event(Event::OpenNotifications);
+        } else {
+            callbacks.signal.open();
+        }
+        Ok(())
+    })
 }
 
 pub fn identify(controller: Uuid) -> Result<()> {
@@ -267,6 +273,10 @@ fn quote(value: &str) -> String {
     result.push('"');
     result
 }
+
+#[cfg(test)]
+#[path = "toast/activation_tests.rs"]
+mod activation_tests;
 
 #[cfg(test)]
 mod tests {
