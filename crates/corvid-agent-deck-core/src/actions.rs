@@ -9,6 +9,10 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub enum FocusAction {
     Desktop(PresentedRunKey),
+    HostDesktop {
+        controller: Uuid,
+        run: PresentedRunKey,
+    },
     Companion(Arc<Snapshot>, Box<Body>),
 }
 

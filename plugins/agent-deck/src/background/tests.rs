@@ -6,6 +6,9 @@ use corvid_protocol::wire::{
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, accept_hello};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+#[cfg(target_os = "linux")]
+mod multi_host_grid;
+
 #[tokio::test]
 async fn late_host_imports_existing_work_and_attention_then_continues_polling() -> Result<()> {
     #[cfg(not(windows))]
@@ -223,8 +226,12 @@ async fn peer(
                 control_generation: Some(controller.to_string()),
                 remote_epoch: Some(key.remote_epoch.clone()),
                 slots: vec![PresentedSlot {
+                    slot_id: 1,
+                    revision: 1,
                     run: Some(PresentedRun {
                         key: Some(key.clone()),
+                        provider: AgentProvider::Claude as i32,
+                        availability: corvid_protocol::wire::RunAvailability::Available as i32,
                         ..Default::default()
                     }),
                     ..Default::default()

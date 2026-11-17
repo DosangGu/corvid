@@ -173,8 +173,9 @@ notifications do not open the Deck or take focus.
 terminal selection, and notification preferences. **Mini deck** returns to the compact
 view. Notification activation opens its history in the expanded view. Window
 visibility and size do not affect daemon-owned work or the slot policy. The mini
-deck shows assigned slots followed by the first 32 queued runs, so larger grids
-can display more agents than the companion's configured slot count. Queued keys
+deck shows this host's assigned slots and first 32 queued runs, followed by
+agents from the other recognized hosts. The grid grows by scrolling. Each agent's
+host appears on its key when multiple hosts are present. Queued keys on this host
 show **Queued** in their tooltip and navigate through Desktop using their exact
 run identity;
 they do not acquire a fabricated slot or pin action. The footer's **+N** button
@@ -184,8 +185,8 @@ shows the queue count and opens the paginated queue.
 
 The **Deck** view uses dark cards with a light selection outline. The
 mini deck uses the selected grid of compact keys; the expanded view adjusts its larger
-square keys from one to six columns when resized. Each occupied key shows only a
-centered provider mark: Claude, OpenAI for Codex, or a generic terminal for an
+square keys from one to six columns when resized. Each occupied key shows a
+provider mark: Claude, OpenAI for Codex, or a generic terminal for an
 unknown provider. A tinted background and colored inner border carry its status.
 Selection adds a separate light outer outline, preserving the status color.
 Empty keys are blank, dark, and inactive. The same design applies to queued keys.
@@ -380,8 +381,11 @@ detached. In Agent Deck, **Hosts** lists the agents on up to eight hosts
 configured by Desktop or companion setup. Newly connected hosts appear automatically,
 including their existing agents. The overview checks the expected host identity before using a snapshot
 and marks previously seen observations as cached when a host goes offline.
-**Show host Deck** opens that host's running Deck. Slot actions and pane focus use
-the individual host Deck. Notifications and history in each Deck cover all discovered
+**Show host Deck** opens that host's running Deck for slot management. A card
+in the combined grid requests the exact run from the Desktop already attached
+to that host through a private, controller-scoped endpoint. Cached cards show
+their last observation and cannot request focus. If Desktop is detached from
+the host, connect it before trying focus again. Notifications and history cover all discovered
 hosts; notification preferences still belong to the individual Deck window.
 
 Windows supports [opt-in provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage).

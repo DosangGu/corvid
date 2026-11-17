@@ -44,6 +44,7 @@ pub(crate) struct DeckView {
     notifications_seen: u64,
     selected_notice: Option<Notice>,
     catalog: Option<Result<Catalog, String>>,
+    catalog_view: crate::catalog::View,
     window: crate::shell::Window,
     window_ready: bool,
     presentation: Option<Presentation>,
@@ -107,6 +108,7 @@ impl DeckView {
             notifications_seen: 0,
             selected_notice: None,
             catalog: None,
+            catalog_view: Default::default(),
             window: preferences,
             window_ready: !cfg!(target_os = "linux"),
             presentation: None,
@@ -136,6 +138,18 @@ impl DeckView {
     }
 
     fn refresh_view(&mut self) {
+        let (state, host) = &self.session.catalog;
+        if let Ok(catalog) = self.catalog.get_or_insert_with(|| {
+            Catalog::start(state.clone(), *host, self.session.signal.clone())
+                .map_err(|error| error.to_string())
+        }) {
+            self.catalog_view = catalog.views.borrow().clone();
+            if let Ok(completion) = catalog.completed.try_recv() {
+                self.actions.complete(completion);
+            }
+        } else {
+            self.catalog_view = Default::default();
+        }
         let next = self.session.client.display.borrow().clone();
         if let Some(completion) = &next.completion {
             self.actions.complete(completion.clone());
@@ -242,6 +256,11 @@ impl DeckView {
         }
         match action {
             FocusAction::Desktop(key) => self.focus_run(key),
+            FocusAction::HostDesktop { controller, run } => {
+                self.actions.focus(run, |id, run| {
+                    matches!(&self.catalog, Some(Ok(catalog)) if catalog.focus(id, controller, run))
+                });
+            }
             FocusAction::Companion(snapshot, body) => {
                 self.submit(&snapshot, *body);
             }

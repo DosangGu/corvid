@@ -53,22 +53,25 @@ impl DeckView {
         slot: Option<&PresentedSlot>,
         run: Option<&PresentedRun>,
     ) -> Option<FocusAction> {
-        self.ready(snapshot)
-            .then(|| {
-                if self.session.background.desktop.connected() {
-                    run.and_then(|run| snapshot.live_key(run))
-                        .cloned()
-                        .map(FocusAction::Desktop)
-                } else {
-                    slot.and_then(|slot| {
-                        self.binding
-                            .as_ref()
-                            .and_then(|binding| snapshot.focus(slot, binding))
-                    })
-                    .map(|body| FocusAction::Companion(snapshot.clone(), Box::new(body)))
-                }
-            })
-            .flatten()
+        if !self.ready(snapshot) {
+            return None;
+        }
+        let run = run?;
+        if self.session.background.desktop.connected() {
+            return snapshot.live_key(run).cloned().map(FocusAction::Desktop);
+        }
+        if let (Some(slot), Some(binding)) = (slot, &self.binding)
+            && let Some(body) = snapshot.focus(slot, binding)
+        {
+            return Some(FocusAction::Companion(snapshot.clone(), Box::new(body)));
+        }
+        snapshot.live_key(run)?;
+        let host = self.catalog_view.hosts.get(&snapshot.host)?;
+        let (controller, run) = host.focus_target(snapshot.host, run)?;
+        Some(FocusAction::HostDesktop {
+            controller,
+            run: run.clone(),
+        })
     }
 
     pub(super) fn card(
@@ -98,32 +101,12 @@ impl DeckView {
         } else {
             crate::shell::KEY_HEIGHT
         };
-        let mut card =
-            card_face(run, cached, self.selected == index, width, height).id(("agent", index));
-        if let Some(action) = action {
-            card = card
-                .cursor_pointer()
-                .when(self.selected != index, |card| {
-                    card.hover(|style| style.border_color(rgb(MUTED)))
-                })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, _, cx| {
-                        view.selected = index;
-                        view.held.press(Input::Pointer, index, action.clone());
-                        cx.notify();
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, _, cx| {
-                        if let Some(action) = view.held.release(Input::Pointer, index) {
-                            view.activate(action);
-                        }
-                        cx.notify();
-                    }),
-                );
-        }
+        let host = (!self.window.expanded && self.catalog_view.hosts.len() > 1)
+            .then(|| self.catalog_view.hosts.get(&snapshot.host))
+            .flatten()
+            .map(|host| host.label.as_str());
+        let face = card_face(run, cached, self.selected == index, width, height, host);
+        let mut card = self.attach_card_action(face, index, action, cx);
         if let Some(run) = run {
             let details = run.clone();
             let placement = placement_label(slot);
@@ -153,6 +136,71 @@ impl DeckView {
             );
         }
         card
+    }
+
+    pub(super) fn attach_card_action(
+        &self,
+        face: Div,
+        index: usize,
+        action: Option<FocusAction>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let mut card = face.id(("agent", index));
+        if let Some(action) = action {
+            card = card
+                .cursor_pointer()
+                .when(self.selected != index, |card| {
+                    card.hover(|style| style.border_color(rgb(MUTED)))
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, _, cx| {
+                        view.selected = index;
+                        view.held.press(Input::Pointer, index, action.clone());
+                        cx.notify();
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, _, cx| {
+                        if let Some(action) = view.held.release(Input::Pointer, index) {
+                            view.activate(action);
+                        }
+                        cx.notify();
+                    }),
+                );
+        }
+        card
+    }
+
+    pub(super) fn host_card(
+        &self,
+        host: &crate::catalog::Host,
+        run: &PresentedRun,
+        index: usize,
+        action: Option<FocusAction>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let cached = !host.online;
+        let face = card_face(
+            Some(run),
+            cached,
+            self.selected == index,
+            crate::shell::KEY_WIDTH,
+            crate::shell::KEY_HEIGHT,
+            Some(&host.label),
+        );
+        let run = run.clone();
+        let label = host.label.clone();
+        self.attach_card_action(face, index, action, cx)
+            .tooltip(move |_, cx| {
+                cx.new(|_| RunDetails {
+                    run: run.clone(),
+                    cached,
+                    placement: label.clone(),
+                })
+                .into()
+            })
     }
 
     fn action_button(
@@ -440,19 +488,15 @@ impl DeckView {
         let mut content = column().child(button("refresh-hosts", "Refresh hosts", true).on_click(
             cx.listener(|view, _, _, cx| {
                 view.catalog = None;
+                view.refresh_view();
                 cx.notify();
             }),
         ));
-        let (state, current) = &self.session.catalog;
-        let catalog = self.catalog.get_or_insert_with(|| {
-            Catalog::start(state.clone(), *current, self.session.signal.clone())
-                .map_err(|error| error.to_string())
-        });
-        let catalog = match catalog {
-            Ok(catalog) => catalog,
-            Err(error) => return content.child(muted(error.clone())),
-        };
-        let data = catalog.views.borrow().clone();
+        let current = self.session.catalog.1;
+        if let Some(Err(error)) = &self.catalog {
+            return content.child(muted(error.clone()));
+        }
+        let data = self.catalog_view.clone();
         if let Some(message) = data.message {
             content = content.child(muted(message));
         }
@@ -470,7 +514,7 @@ impl DeckView {
                     .child(
                         button(
                             ("open-host", index),
-                            if id == *current {
+                            if id == current {
                                 "This Deck's slots"
                             } else {
                                 "Show host Deck"
@@ -655,12 +699,13 @@ impl DeckView {
     }
 }
 
-fn card_face(
+pub(super) fn card_face(
     run: Option<&PresentedRun>,
     cached: bool,
     selected: bool,
     width: f32,
     height: f32,
+    host: Option<&str>,
 ) -> Div {
     let color = run.map(|run| status(run, cached).1);
     let face = div()
@@ -668,6 +713,7 @@ fn card_face(
         .flex()
         .items_center()
         .justify_center()
+        .when(host.is_some(), |face| face.flex_col())
         .rounded_lg()
         .border_1()
         .border_color(rgb(color.unwrap_or(BORDER)))
@@ -678,6 +724,15 @@ fn card_face(
                     .path(provider_logo(run.provider))
                     .size(px((width.min(height) * 0.46).clamp(28., 72.)))
                     .text_color(rgb(if color == Some(MUTED) { MUTED } else { TEXT })),
+            )
+        })
+        .when_some(host, |face, host| {
+            face.child(
+                muted(host.to_owned())
+                    .max_w_full()
+                    .px(px(3.))
+                    .text_size(px(10.))
+                    .truncate(),
             )
         });
 
