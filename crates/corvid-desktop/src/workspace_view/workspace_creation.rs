@@ -377,12 +377,9 @@ impl WorkspaceView {
                         }
                     }
                     Some(prompt) = prompts.recv() => {
-                        let answer = view.update_in(cx, |_, window, cx| {
-                            let buttons = prompt.action.map_or_else(|| vec!["OK"], |action| vec!["Cancel", action]);
-                            window.prompt(PromptLevel::Warning, prompt.title, Some(&prompt.message), &buttons, cx)
-                        });
+                        let answer = view.update_in(cx, |_, window, cx| prompt.show(window, cx));
                         if let Ok(answer) = answer {
-                            let _ = prompt.decision.send(answer.await == Ok(1));
+                            answer.await;
                         }
                     }
                 }
