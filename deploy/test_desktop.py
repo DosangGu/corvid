@@ -38,7 +38,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
     shell_init = root / ".shell-init"
     shell_init.write_text(
         f": > {shlex.quote(str(shell_started))}\n"
-        f"corvid_fixture_ready() {{ : > {shlex.quote(str(keyboard_ready))}; }}\n",
+        f"corvid_fixture_ready() {{ printf %s \"$1\" > {shlex.quote(str(keyboard_ready))}; }}\n",
         encoding="utf-8",
     )
     environment = dict(os.environ, HOME=str(root), CORVID_RUNTIME_DIR=str(runtime / "corvid"),
@@ -113,7 +113,9 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                 if len(active) == 1 and (match := re.search(r" terminal=(\S+)", active[0])):
                     terminal = match[1]
                     if terminal != previous and (expected is None or terminal == expected):
-                        return terminal
+                        wait_for_keyboard(window, active[0].split()[0])
+                        if writers() == active:
+                            return terminal
                 time.sleep(0.1)
             raise AssertionError("Desktop did not select the expected tab's terminal")
 
@@ -134,7 +136,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             output = result.stdout.strip()
             return result.returncode == 0 and output.isdecimal() and int(output) == int(window, 16)
 
-        def input_status(window, expected_writer):
+        def input_status(window, expected_writer, readiness_token):
             try:
                 active = writers()
                 writer_matches = len(active) == 1 and active[0].split()[0] == expected_writer
@@ -145,16 +147,24 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                 f"X11 active={x11_window_matches('getactivewindow', window)}, "
                 f"X11 keyboard focus={x11_window_matches('getwindowfocus', window)}, "
                 f"expected writer={writer_matches}, "
-                f"readiness command received={keyboard_ready.exists()}"
+                f"readiness command received={probe_received(readiness_token)}"
             )
 
-        def wait_for_first_input(window, expected_writer):
+        def probe_received(readiness_token):
+            return (
+                keyboard_ready.exists()
+                and keyboard_ready.read_text(encoding="utf-8") == readiness_token
+            )
+
+        def wait_for_keyboard(window, expected_writer):
             subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
+            # Each transition must acknowledge its own readiness command.
+            readiness_token = str(time.monotonic_ns())
             deadline = time.monotonic() + 15
             next_probe = 0.0
             while time.monotonic() < deadline and desktop.poll() is None:
-                if keyboard_ready.exists():
-                    return
+                if probe_received(readiness_token):
+                    return readiness_token
                 if (time.monotonic() >= next_probe and shell_started.exists()
                         and x11_window_matches("getactivewindow", window)
                         and x11_window_matches("getwindowfocus", window)):
@@ -163,17 +173,15 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                     subprocess.run(
                         ["xdotool", "key", "--clearmodifiers", "ctrl+u"], check=True, timeout=10,
                     )
-                    type_command("corvid_fixture_ready")
+                    type_command(f"corvid_fixture_ready {readiness_token}")
                     next_probe = time.monotonic() + 0.5
                 time.sleep(0.05)
             raise AssertionError(
-                f"Desktop keyboard input did not become ready ({input_status(window, expected_writer)})"
+                f"Desktop keyboard input did not become ready ({input_status(window, expected_writer, readiness_token)})"
             )
 
         def write_marker(window, marker, command):
-            subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
-            # Wait for the full terminal frame after reconnecting or changing panes.
-            time.sleep(0.5)
+            wait_for_keyboard(window, wait_for_writer())
             type_command(command)
             wait_for_marker(marker, "preserved")
 
@@ -182,13 +190,15 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             subprocess.run(["xdotool", "key", "--clearmodifiers", chord], check=True, timeout=10)
 
         retired = wait_for_writer()
-        wait_for_first_input(window, retired)
+        first_probe = wait_for_keyboard(window, retired)
         first_marker = root / "first"
         type_command(f"kept=preserved; printf %s \"$kept\" > {shlex.quote(str(first_marker))}")
         try:
             wait_for_marker(first_marker, "preserved")
         except AssertionError as error:
-            raise AssertionError(f"{error} ({input_status(window, retired)})") from error
+            raise AssertionError(
+                f"{error} ({input_status(window, retired, first_probe)})"
+            ) from error
         # Use the real clipboard and keyboard path, with synthetic Unicode data.
         pasted = "한글 e\u0301 🐦"
         paste_marker = root / "pasted"
