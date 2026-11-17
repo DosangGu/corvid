@@ -193,6 +193,7 @@ jobs:
           CORVID_AGENT_DECK_SCREENSHOT: target/agent-deck-ready.png
           CORVID_AGENT_DECK_SETTINGS_SCREENSHOT: target/agent-deck-settings.png
           CORVID_WORKSPACE_SCREENSHOT: target/workspace-directory.png
+          CORVID_CLOSE_SCREENSHOT: target/desktop-close-confirmation.png
         run: xvfb-run -a python3 deploy/test_desktop.py --build target/${{ matrix.target }}/release
       - name: Connected managed SSH updates
         if: runner.os == 'Linux'
@@ -230,7 +231,9 @@ jobs:
         if: runner.os == 'Linux'
         with:
           name: workspace-directory-preview-${{ matrix.target }}
-          path: target/workspace-directory.png
+          path: |
+            target/workspace-directory.png
+            target/desktop-close-confirmation.png
           if-no-files-found: error
       - name: Stage binaries for Desktop integration
         if: inputs.package

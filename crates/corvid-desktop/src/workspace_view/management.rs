@@ -400,6 +400,8 @@ fn shortcuts() -> Div {
         ("Ctrl+,", "Settings"),
         ("Ctrl+Shift+N", "New workspace"),
         ("Ctrl+Shift+T", "New tab"),
+        ("Ctrl+Shift+X", "Close active pane"),
+        ("Ctrl+Shift+W", "Close active tab"),
         ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
         ("Ctrl+Shift+D / Ctrl+Shift+E", "Split right / down"),
         ("Ctrl+Shift+F", "Toggle focus mode"),
