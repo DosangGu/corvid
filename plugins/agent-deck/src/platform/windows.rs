@@ -358,7 +358,7 @@ impl State {
     }
 }
 
-fn menu(window: HWND, callbacks: Callbacks) {
+fn menu(window: HWND) {
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
@@ -375,24 +375,15 @@ fn menu(window: HWND, callbacks: Callbacks) {
         let mut point = POINT::default();
         GetCursorPos(&mut point);
         SetForegroundWindow(window);
-        let selected = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_NONOTIFY,
-            point.x,
-            point.y,
-            0,
-            window,
-            null(),
-        );
+        TrackPopupMenu(menu, TPM_LEFTBUTTON, point.x, point.y, 0, window, null());
         DestroyMenu(menu);
         PostMessageW(window, WM_NULL, 0, 0);
-        menu_action(selected as u32, &callbacks);
     }
 }
 
 fn menu_action(selected: u32, callbacks: &Callbacks) {
     match selected {
-        1 => callbacks.signal.open(),
+        1 => callbacks.signal.reopen_from_tray(),
         2 => {
             let _ = callbacks.event(Event::OpenNotifications);
         }
@@ -440,12 +431,17 @@ unsafe extern "system" fn window_proc(
                 state.commands();
                 return 0;
             }
+            WM_COMMAND if lparam == 0 && wparam <= u16::MAX as usize => {
+                menu_action(wparam as u32, &state.callbacks);
+                return 0;
+            }
             TRAY => {
                 match (lparam as u32) & 0xffff {
-                    WM_LBUTTONUP | NIN_SELECT | KEY_SELECTED => state.callbacks.signal.open(),
+                    WM_LBUTTONUP | NIN_SELECT | KEY_SELECTED => {
+                        state.callbacks.signal.reopen_from_tray();
+                    }
                     WM_CONTEXTMENU | WM_RBUTTONUP => {
-                        let callbacks = state.callbacks.clone();
-                        menu(window, callbacks);
+                        menu(window);
                     }
                     _ => {}
                 }

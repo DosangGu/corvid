@@ -6,6 +6,8 @@ use tokio::sync::watch;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Presentation {
     Open,
+    #[cfg(windows)]
+    ReopenFromTray,
     #[cfg(target_os = "macos")]
     Toggle,
     #[cfg(target_os = "macos")]
@@ -41,7 +43,16 @@ impl UiSignal {
     }
 
     pub fn open(&self) {
-        *self.presentation.lock().unwrap() = Some(Presentation::Open);
+        self.present(Presentation::Open);
+    }
+
+    #[cfg(windows)]
+    pub fn reopen_from_tray(&self) {
+        self.present(Presentation::ReopenFromTray);
+    }
+
+    fn present(&self, presentation: Presentation) {
+        *self.presentation.lock().unwrap() = Some(presentation);
         self.notify();
     }
 
