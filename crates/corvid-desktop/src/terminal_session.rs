@@ -844,9 +844,11 @@ async fn run(
     let monitor_settings = monitor.clone();
     let monitor_endpoint = endpoint.clone();
     let monitor_host = Uuid::parse_str(&link.session().host_id)?;
+    let (focus_scope, focus_controller) = oneshot::channel();
     let monitor_task = tokio::spawn(async move {
         let scope = monitor_settings.scope(&monitor_endpoint, monitor_host)?;
         scope.configure(&monitor_endpoint)?;
+        let _ = focus_scope.send(scope.config.controller_id);
         scope
             .ensure_running(&corvid_tui::monitor_executable()?)
             .await
@@ -1081,6 +1083,25 @@ async fn run(
         ui.session_clients_supported = session_clients_supported;
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
+    let focus_epoch = Uuid::parse_str(&epoch)?;
+    let focus_requests = deck_requests.clone();
+    let mut focus_service = tokio::task::JoinSet::new();
+    focus_service.spawn(async move {
+        if let Ok(controller) = focus_controller.await {
+            // Another window may already own the host's private listener.
+            // If it closes, a remaining attached window can take over.
+            while !focus_requests.is_closed() {
+                let _ = corvid_agent_deck::focus::serve(
+                    monitor_host,
+                    controller,
+                    focus_epoch,
+                    focus_requests.clone(),
+                )
+                .await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    });
     let mut client = Client {
         recorder: recorder.as_ref(),
         saved_target: destination.saved_target(),

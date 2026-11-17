@@ -1,25 +1,20 @@
+use std::sync::Arc;
+
 use super::*;
 use crate::shell::{BAR_HEIGHT, GAP, GridLayout, KEY_WIDTH, Orientation, Preset};
 
 impl DeckView {
     pub(super) fn keyboard_actions(&self) -> Vec<Option<FocusAction>> {
+        if !self.window.expanded {
+            return self
+                .mini_tiles()
+                .iter()
+                .map(|tile| self.mini_action(tile))
+                .collect();
+        }
         let Some(snapshot) = &self.view.snapshot else {
             return Vec::new();
         };
-        if !self.window.expanded {
-            return tiles(
-                &snapshot.data.slots,
-                &snapshot.data.overflow,
-                self.window.layout().capacity(),
-            )
-            .into_iter()
-            .map(|tile| match tile {
-                Tile::Slot(slot) => self.focus_action(snapshot, Some(slot), slot.run.as_ref()),
-                Tile::Queued(run) => self.focus_action(snapshot, None, Some(run)),
-                Tile::Empty => None,
-            })
-            .collect();
-        }
         match self.section {
             Section::Slots => snapshot
                 .data
@@ -39,36 +34,36 @@ impl DeckView {
 
     pub(super) fn floating(&self, cx: &mut Context<Self>) -> Div {
         let mut grid = column().px(px(12.)).py(px(8.)).gap(px(GAP));
-        if let Some(snapshot) = &self.view.snapshot {
-            if snapshot.page == 0 {
-                let layout = self.window.layout();
-                let tiles = tiles(
-                    &snapshot.data.slots,
-                    &snapshot.data.overflow,
-                    layout.capacity(),
-                );
-                let (columns, _) = layout.dimensions();
-                for (row_index, cells) in tiles.chunks(columns).enumerate() {
-                    let mut line = row().gap(px(GAP));
-                    for (column, tile) in cells.iter().enumerate() {
-                        let index = row_index * columns + column;
-                        line = line.child(match tile {
-                            Tile::Slot(slot) => self.card(snapshot, slot, index, KEY_WIDTH, cx),
-                            Tile::Queued(run) => {
-                                self.run_card(snapshot, Some(run), None, index, KEY_WIDTH, cx)
-                            }
-                            Tile::Empty => {
-                                self.run_card(snapshot, None, None, index, KEY_WIDTH, cx)
-                            }
-                        });
+        let layout = self.window.layout();
+        let (columns, _) = layout.dimensions();
+        for (row_index, cells) in self.mini_tiles().chunks(columns).enumerate() {
+            let mut line = row().gap(px(GAP));
+            for (column, tile) in cells.iter().enumerate() {
+                let index = row_index * columns + column;
+                line = line.child(match tile {
+                    Tile::Slot(snapshot, slot) => self.card(snapshot, slot, index, KEY_WIDTH, cx),
+                    Tile::Queued(snapshot, run) => {
+                        self.run_card(snapshot, Some(run), None, index, KEY_WIDTH, cx)
                     }
-                    grid = grid.child(line);
-                }
-            } else {
-                grid = grid.child(muted("Loading agents…"));
+                    Tile::Host(_, host, run) => {
+                        self.host_card(host, run, index, self.mini_action(tile), cx)
+                    }
+                    Tile::Empty => self.attach_card_action(
+                        super::deck::card_face(
+                            None,
+                            false,
+                            false,
+                            KEY_WIDTH,
+                            crate::shell::KEY_HEIGHT,
+                            None,
+                        ),
+                        index,
+                        None,
+                        cx,
+                    ),
+                });
             }
-        } else {
-            grid = grid.child(muted("Connecting to agents…"));
+            grid = grid.child(line);
         }
         column()
             .size_full()
@@ -83,6 +78,38 @@ impl DeckView {
                     .child(grid),
             )
             .child(self.footer(cx))
+    }
+
+    fn mini_tiles(&self) -> Vec<Tile<'_>> {
+        tiles(
+            self.view
+                .snapshot
+                .as_ref()
+                .filter(|snapshot| snapshot.page == 0),
+            &self.catalog_view,
+            self.session.catalog.1,
+            self.window.layout().capacity(),
+        )
+    }
+
+    fn mini_action(&self, tile: &Tile<'_>) -> Option<FocusAction> {
+        if self.actions.is_pending() {
+            return None;
+        }
+        match tile {
+            Tile::Slot(snapshot, slot) => {
+                self.focus_action(snapshot, Some(slot), slot.run.as_ref())
+            }
+            Tile::Queued(snapshot, run) => self.focus_action(snapshot, None, Some(run)),
+            Tile::Host(id, host, run) => {
+                let (controller, run) = host.focus_target(*id, run)?;
+                Some(FocusAction::HostDesktop {
+                    controller,
+                    run: run.clone(),
+                })
+            }
+            Tile::Empty => None,
+        }
     }
 
     pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
@@ -162,24 +189,41 @@ impl DeckView {
 }
 
 enum Tile<'a> {
-    Slot(&'a PresentedSlot),
-    Queued(&'a PresentedRun),
+    Slot(&'a Arc<Snapshot>, &'a PresentedSlot),
+    Queued(&'a Arc<Snapshot>, &'a PresentedRun),
+    Host(Uuid, &'a crate::catalog::Host, &'a PresentedRun),
     Empty,
 }
 
 fn tiles<'a>(
-    slots: &'a [PresentedSlot],
-    overflow: &'a [PresentedRun],
+    current: Option<&'a Arc<Snapshot>>,
+    catalog: &'a crate::catalog::View,
+    current_host: Uuid,
     capacity: usize,
 ) -> Vec<Tile<'a>> {
-    let mut tiles: Vec<_> = slots
-        .iter()
-        .filter(|slot| slot.run.is_some())
-        .map(Tile::Slot)
-        .collect();
-    // Queue entries keep their exact run identity. They are never fabricated
-    // slot tokens, and changing the visual grid does not edit companion policy.
-    tiles.extend(overflow.iter().map(Tile::Queued));
+    let mut tiles = Vec::new();
+    if let Some(snapshot) = current {
+        tiles.extend(
+            snapshot
+                .data
+                .slots
+                .iter()
+                .filter(|slot| slot.run.is_some())
+                .map(|slot| Tile::Slot(snapshot, slot)),
+        );
+        tiles.extend(
+            snapshot
+                .data
+                .overflow
+                .iter()
+                .map(|run| Tile::Queued(snapshot, run)),
+        );
+    }
+    for (&id, host) in &catalog.hosts {
+        if id != current_host || current.is_none() {
+            tiles.extend(host.runs.iter().map(|run| Tile::Host(id, host, run)));
+        }
+    }
     tiles.resize_with(tiles.len().max(capacity), || Tile::Empty);
     tiles
 }
@@ -187,28 +231,77 @@ fn tiles<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::{Host, View};
+    use crate::hosts::Profile;
 
     #[test]
-    fn larger_grids_show_queued_runs_without_fabricating_slot_tokens() {
-        let slots = vec![PresentedSlot {
-            slot_id: 1,
-            revision: 42,
-            pinned: true,
-            run: Some(PresentedRun::default()),
-        }];
-        let overflow = vec![PresentedRun::default(); 9];
-        let large = tiles(&slots, &overflow, 15);
-        assert_eq!(large.len(), 15);
-        assert!(
-            matches!(large[0], Tile::Slot(slot) if std::ptr::eq(slot, &slots[0]) && slot.pinned)
-        );
-        assert!(matches!(large[9], Tile::Queued(run) if std::ptr::eq(run, &overflow[8])));
-        assert!(large[10..].iter().all(|tile| matches!(tile, Tile::Empty)));
-        let small = tiles(&slots, &overflow, 6);
-        assert_eq!(
-            small.len(),
-            10,
-            "smaller grids retain extra agents for scrolling"
-        );
+    fn the_main_grid_combines_hosts_without_repeating_its_own_slots() {
+        let local = Uuid::new_v4();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let repeated_run = Uuid::new_v4().to_string();
+        let repeated_epoch = Uuid::new_v4().to_string();
+        let agent = |id: Uuid| PresentedRun {
+            key: Some(PresentedRunKey {
+                host_id: id.to_string(),
+                remote_epoch: repeated_epoch.clone(),
+                agent_run_id: repeated_run.clone(),
+            }),
+            ..Default::default()
+        };
+        let current = Arc::new(Snapshot {
+            link: Uuid::new_v4(),
+            host: local,
+            page: 0,
+            data: corvid_protocol::wire::PresentationSlots {
+                slots: vec![PresentedSlot {
+                    slot_id: 1,
+                    revision: 42,
+                    pinned: true,
+                    run: Some(agent(local)),
+                }],
+                overflow: vec![agent(local); 7],
+                ..Default::default()
+            },
+            #[cfg(windows)]
+            can_pair_wezterm: false,
+        });
+        let catalog_host = |id, label: &str| {
+            let mut host = Host::new(&Profile {
+                controller: Uuid::new_v4(),
+                address: Default::default(),
+                label: label.into(),
+            });
+            host.runs.push(agent(id));
+            Arc::new(host)
+        };
+        let mut catalog = View::default();
+        catalog.hosts.insert(local, catalog_host(local, "Local"));
+        catalog
+            .hosts
+            .insert(first, catalog_host(first, "SSH · first"));
+        let before = tiles(Some(&current), &catalog, local, 6);
+        assert_eq!(before.len(), 9, "the current host must not repeat");
+        assert!(matches!(before[0], Tile::Slot(_, slot) if slot.pinned));
+        assert!(matches!(before[7], Tile::Queued(_, _)));
+        assert!(matches!(before[8], Tile::Host(id, _, _) if id == first));
+
+        catalog
+            .hosts
+            .insert(second, catalog_host(second, "SSH · second"));
+        let after = tiles(Some(&current), &catalog, local, 15);
+        let mut rendered = after
+            .iter()
+            .filter_map(|tile| match tile {
+                Tile::Host(id, _, run) => Some((*id, run.key.as_ref().unwrap().host_id.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        rendered.sort();
+        let mut expected = vec![(first, first.to_string()), (second, second.to_string())];
+        expected.sort();
+        assert_eq!(rendered, expected);
+        assert_eq!(after.len(), 15);
+        assert!(after[10..].iter().all(|tile| matches!(tile, Tile::Empty)));
     }
 }

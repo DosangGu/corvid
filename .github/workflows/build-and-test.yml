@@ -202,6 +202,15 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 5
         run: xvfb-run -a python3 deploy/test_deck_focus.py --build target/${{ matrix.target }}/release
+      - name: Linux Agent Deck multi-host grid
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        env:
+          CORVID_MULTI_HOST_GRID_SCREENSHOT: ${{ github.workspace }}/target/agent-deck-multi-host.png
+        run: |
+          runtime=$(mktemp -d "$HOME/.cv-grid-XXXXXX")
+          trap 'rm -rf -- "$runtime"' EXIT
+          XDG_RUNTIME_DIR="$runtime" xvfb-run -a cargo test --locked --release --target ${{ matrix.target }} -p corvid-agent-deck --bin corvid-agent-deck grid_routes_clicks_to_local_and_two_ssh_scopes -- --ignored --nocapture
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: runner.os == 'Linux'
         with:
@@ -215,6 +224,7 @@ jobs:
           path: |
             target/agent-deck-ready.png
             target/agent-deck-settings.png
+            target/agent-deck-multi-host.png
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: runner.os == 'Linux'

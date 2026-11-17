@@ -271,6 +271,7 @@ enum UnixEndpoint {
     Companion,
     Monitor(Option<Uuid>),
     AgentDeck(Uuid),
+    DesktopFocus(Uuid),
 }
 
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
@@ -299,6 +300,9 @@ trait UnixPaths: PlatformPaths {
             UnixEndpoint::AgentDeck(controller) => {
                 format!("{}{}", Self::DECK_PREFIX, controller.simple())
             }
+            UnixEndpoint::DesktopFocus(controller) => {
+                format!("{}f{}", Self::DECK_PREFIX, controller.simple())
+            }
         };
         Ok(Self::endpoint_base(inputs, role, local_runtime)?.join(name))
     }
@@ -321,7 +325,9 @@ impl UnixPaths for Linux {
 
         let hint = match role {
             UnixEndpoint::Companion => "set XDG_RUNTIME_DIR or companion --socket-dir",
-            UnixEndpoint::AgentDeck(_) => "set XDG_RUNTIME_DIR for Agent Deck",
+            UnixEndpoint::AgentDeck(_) | UnixEndpoint::DesktopFocus(_) => {
+                "set XDG_RUNTIME_DIR for Agent Deck"
+            }
             UnixEndpoint::Monitor(_) => {
                 // An SSH session may lack XDG_RUNTIME_DIR even with a running user manager.
                 return inputs
@@ -369,6 +375,11 @@ pub fn monitor_socket(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn agent_deck_socket(controller: Uuid) -> Result<RuntimePath> {
     Native::endpoint(&System, UnixEndpoint::AgentDeck(controller), None)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn desktop_focus_socket(controller: Uuid) -> Result<RuntimePath> {
+    Native::endpoint(&System, UnixEndpoint::DesktopFocus(controller), None)
 }
 
 /// The macOS Deck prototype always uses the boot-scoped companion default.
