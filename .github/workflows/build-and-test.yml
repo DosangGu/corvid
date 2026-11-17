@@ -93,7 +93,11 @@ jobs:
       - name: Retained Unix agent monitoring
         if: runner.os != 'Windows'
         timeout-minutes: 10
-        run: python3 crates/corvid-tui/tests/agent_handoff.py target/${{ matrix.target }}/release/corvid
+        run: |
+          if [ "${{ runner.os }}" = macOS ] && ! command -v protoc >/dev/null; then
+            brew install protobuf
+          fi
+          python3 crates/corvid-tui/tests/agent_handoff.py target/${{ matrix.target }}/release/corvid
       - name: Prepare isolated Linux SSH lifecycle fixture
         if: runner.os == 'Linux'
         run: |
