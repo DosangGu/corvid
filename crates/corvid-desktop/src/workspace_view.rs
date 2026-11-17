@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 mod chrome;
 mod connections;
+mod deck_focus;
 mod host_watch;
 mod management;
 mod naming;
@@ -579,10 +580,14 @@ impl WorkspaceView {
             }
         }
         if self.deck_focus != ui.deck_focus {
-            self.naming = None;
             self.deck_focus = ui.deck_focus;
-            window.activate_window();
-            self.focus_terminal(window, cx);
+            if let Some(reply) = self
+                .session
+                .as_ref()
+                .and_then(|session| session.take_deck_activation(ui.deck_focus))
+            {
+                self.focus_from_deck(window, cx, reply);
+            }
         }
         cx.notify();
     }
