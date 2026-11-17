@@ -92,6 +92,7 @@ class ValidateChangesTests(unittest.TestCase):
     def test_build_inputs_and_unknown_paths_require_package_integration(self):
         for path in (
             "Cargo.lock",
+            "crates/example/Cargo.toml",
             "crates/example/build.rs",
             "crates/corvid-protocol/proto/example.proto",
             "deploy/release-notes.md",
@@ -123,17 +124,31 @@ class ValidateChangesTests(unittest.TestCase):
         self.commit()
         self.assertEqual(self.check_pr(), PACKAGE)
 
-    def test_new_rust_path_requires_package_integration(self):
+    def test_new_rust_source_and_test_run_build_checks(self):
         self.write("crates/example/src/new.rs", "pub fn new() {}\n")
+        self.write("plugins/example/tests/new.rs", "#[test]\nfn new_test() {}\n")
         self.commit()
-        self.assertEqual(self.check_pr(), PACKAGE)
+        self.assertEqual(self.check_pr(), BUILD)
+        self.assertEqual(self.check_push(), LIGHTWEIGHT)
+
+    def test_removed_rust_source_runs_build_checks(self):
+        self.git("rm", "crates/example/src/lib.rs")
+        self.commit()
+        self.assertEqual(self.check_pr(), BUILD)
+        self.assertEqual(self.check_push(), LIGHTWEIGHT)
 
     def test_move_from_source_to_docs_checks_the_deleted_path(self):
         Path("docs").mkdir()
         self.git("mv", "crates/example/src/lib.rs", "docs/example.md")
         self.commit()
-        self.assertEqual(self.check_pr(), PACKAGE)
+        self.assertEqual(self.check_pr(), BUILD)
         self.assertEqual(self.check_push(), PACKAGE)
+
+    def test_executable_rust_source_requires_package_integration(self):
+        path = "crates/example/src/lib.rs"
+        self.git("update-index", "--chmod=+x", path)
+        self.git("commit", "--quiet", "-m", "Executable Rust source fixture")
+        self.assertEqual(self.check_pr(), PACKAGE)
 
     def test_executable_markdown_gets_package_integration_on_prs(self):
         self.git("update-index", "--chmod=+x", "README.md")
