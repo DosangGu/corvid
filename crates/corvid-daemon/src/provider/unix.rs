@@ -132,13 +132,18 @@ mod tests {
 
     #[test]
     fn reads_complete_version_while_another_process_keeps_stdout_open() -> io::Result<()> {
-        let (reader, mut writer) = io::pipe()?;
-        writer.write_all(b"codex-cli 1.2.3\n")?;
+        for (provider, banner) in [
+            (Provider::Claude, "1.2.3 (Claude Code)\n"),
+            (Provider::Codex, "codex-cli 1.2.3\n"),
+        ] {
+            let (reader, mut writer) = io::pipe()?;
+            writer.write_all(banner.as_bytes())?;
 
-        assert_eq!(
-            read_version_output(reader).as_deref(),
-            Some("codex-cli 1.2.3\n")
-        );
+            let version = read_version_output(reader).expect("complete version banner was lost");
+            assert_eq!(version, banner);
+            assert!(contract(provider).recognizes_version(&version));
+            drop(writer);
+        }
         Ok(())
     }
 
