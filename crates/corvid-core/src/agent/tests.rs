@@ -274,6 +274,28 @@ fn an_uncorrelated_response_preserves_work_and_leaves_a_response_record() {
 }
 
 #[test]
+fn repeated_responses_share_attention_and_the_final_boundary_still_completes_the_turn() {
+    let mut fixture = Fixture::new();
+    fixture.turn("first");
+    assert!(fixture.response(Some("first"), ResponseOutcome::Observed, false));
+    let attention = *fixture.run.attention.keys().next().unwrap();
+    fixture.response(Some("first"), ResponseOutcome::Observed, false);
+    assert!(fixture.response(Some("first"), ResponseOutcome::Observed, true));
+    assert_eq!(fixture.run.attention.len(), 1);
+    assert!(fixture.run.attention.contains_key(&attention));
+    assert!(fixture.run.active_turns.is_empty());
+
+    fixture.turn("second");
+    assert!(fixture.response(Some("second"), ResponseOutcome::Observed, false));
+    fixture.response(Some("first"), ResponseOutcome::Observed, false);
+    assert_eq!(fixture.run.attention.len(), 2);
+    assert_eq!(
+        fixture.run.recent_response.unwrap().value.turn.as_deref(),
+        Some("second")
+    );
+}
+
+#[test]
 fn response_closes_only_the_proven_scope() {
     let mut fixture = Fixture::new();
     fixture.turn("turn");
