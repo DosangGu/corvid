@@ -1,4 +1,5 @@
 use super::*;
+use gpui::svg;
 use std::sync::Arc;
 
 pub(super) const BACKGROUND: u32 = 0x0f1319;
@@ -92,82 +93,19 @@ impl Desktop {
     ) -> Stateful<Div> {
         let cached = self.view.link != Link::Online || snapshot.generation().is_none();
         let action = self.focus_action(snapshot, slot, run);
-        let (label, color) = run
-            .map(|run| status(run, cached))
-            .unwrap_or(("Empty", MUTED));
-        let provider = run.map(provider).unwrap_or("+");
-        let detail = run
-            .and_then(|run| run.key.as_ref())
-            .map(|key| short_id(&key.agent_run_id))
-            .unwrap_or_default();
         let height = if self.window.expanded {
             width
         } else {
             crate::window::KEY_HEIGHT
         };
-        let mut card = column()
-            .id(("agent", index))
-            .w(px(width))
-            .h(px(height))
-            .flex_shrink_0()
-            .justify_between()
-            .p(px(8.))
-            .gap(px(2.))
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(if self.selected == index { MINT } else { BORDER }))
-            .bg(rgb(if run.is_some() { PANEL } else { BACKGROUND }))
-            .overflow_hidden()
-            .child(
-                row()
-                    .justify_between()
-                    .text_size(px(10.))
-                    .text_color(rgb(MUTED))
-                    .child(slot.map_or_else(
-                        || {
-                            if run.is_some() {
-                                format!("Q{:02}", index + 1)
-                            } else {
-                                format!("{:02}", index + 1)
-                            }
-                        },
-                        |slot| format!("{:02}", slot.slot_id),
-                    ))
-                    .child(if slot.is_some_and(|slot| slot.pinned) {
-                        "P"
-                    } else {
-                        ""
-                    }),
-            )
-            .child(
-                div()
-                    .text_center()
-                    .text_size(px(if self.window.expanded { 22. } else { 13. }))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(provider),
-            )
-            .when(run.is_some(), |card| {
-                card.child(muted(detail).text_center().text_size(px(9.)))
-            })
-            .child(
-                row()
-                    .justify_center()
-                    .gap(px(4.))
-                    .text_size(px(10.))
-                    .text_color(rgb(color))
-                    .child(label)
-                    .when(run.is_some_and(|run| run.unseen_attention > 0), |status| {
-                        status.child(
-                            div()
-                                .text_color(rgb(AMBER))
-                                .child(format!("· {}", run.unwrap().unseen_attention)),
-                        )
-                    }),
-            );
+        let mut card =
+            card_face(run, cached, self.selected == index, width, height).id(("agent", index));
         if let Some(action) = action {
             card = card
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(0x263541)))
+                .when(self.selected != index, |card| {
+                    card.hover(|style| style.border_color(rgb(MUTED)))
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, _, _, cx| {
@@ -188,11 +126,13 @@ impl Desktop {
         }
         if let Some(run) = run {
             let details = run.clone();
+            let placement = placement_label(slot);
             card = card.when(self.menu.is_none(), |card| {
                 card.tooltip(move |_, cx| {
                     cx.new(|_| RunDetails {
                         run: details.clone(),
                         cached,
+                        placement: placement.clone(),
                     })
                     .into()
                 })
@@ -251,7 +191,7 @@ impl Desktop {
             .border_1()
             .border_color(rgb(BORDER))
             .bg(rgb(PANEL))
-            .child(describe(run, cached))
+            .child(describe(run, cached).child(muted(placement_label(Some(slot)))))
             .on_mouse_down_out(cx.listener(|view, _, _, cx| {
                 view.menu = None;
                 cx.notify();
@@ -696,14 +636,78 @@ impl Desktop {
     }
 }
 
+fn card_face(
+    run: Option<&PresentedRun>,
+    cached: bool,
+    selected: bool,
+    width: f32,
+    height: f32,
+) -> Div {
+    let color = run.map(|run| status(run, cached).1);
+    let face = div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(color.unwrap_or(BORDER)))
+        .when_some(color, |face, color| face.bg(rgba((color << 8) | 0x18)))
+        .when_some(run, |face, run| {
+            face.child(
+                svg()
+                    .path(provider_logo(run.provider))
+                    .size(px((width.min(height) * 0.46).clamp(28., 72.)))
+                    .text_color(rgb(if color == Some(MUTED) { MUTED } else { TEXT })),
+            )
+        });
+
+    // Selection surrounds the status border instead of replacing its color.
+    div()
+        .w(px(width))
+        .h(px(height))
+        .flex_shrink_0()
+        .p(px(2.))
+        .rounded(px(11.))
+        .border_1()
+        .border_color(if selected && run.is_some() {
+            rgb(TEXT)
+        } else {
+            rgba(0x00000000)
+        })
+        .bg(rgb(if run.is_some() { PANEL } else { BACKGROUND }))
+        .child(face)
+}
+
+fn provider_logo(raw: i32) -> &'static str {
+    match AgentProvider::try_from(raw) {
+        Ok(AgentProvider::Claude) => chrome::CLAUDE,
+        Ok(AgentProvider::Codex) => chrome::CODEX,
+        _ => chrome::AGENT,
+    }
+}
+
+fn placement_label(slot: Option<&PresentedSlot>) -> String {
+    match slot.filter(|slot| slot.revision != 0) {
+        Some(slot) => format!(
+            "Slot {:02} · {}",
+            slot.slot_id,
+            if slot.pinned { "Pinned" } else { "Unpinned" },
+        ),
+        None => "Queued · No slot assigned".into(),
+    }
+}
+
 struct RunDetails {
     run: PresentedRun,
     cached: bool,
+    placement: String,
 }
 
 impl Render for RunDetails {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         describe(&self.run, self.cached)
+            .child(muted(self.placement.clone()))
             .p(px(12.))
             .bg(rgb(PANEL))
             .text_color(rgb(TEXT))
@@ -726,7 +730,7 @@ fn badge(raw: i32) -> (&'static str, u32) {
         Ok(AgentBadge::Working) => ("Working", 0x78bdee),
         Ok(AgentBadge::NeedsInput) => ("Needs input", AMBER),
         Ok(AgentBadge::ResponseObserved) => ("New response", MINT),
-        Ok(AgentBadge::Ready) => ("Ready", MINT),
+        Ok(AgentBadge::Ready) => ("Ready", MUTED),
         Ok(AgentBadge::Interrupted) => ("Interrupted", AMBER),
         Ok(AgentBadge::Error) => ("Error", RED),
         Ok(AgentBadge::Ended) => ("Ended", MUTED),
@@ -761,4 +765,77 @@ fn describe(run: &PresentedRun, cached: bool) -> Div {
         view = view.child(muted(format!("Observed {age} ago")));
     }
     view
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn available(badge: AgentBadge) -> PresentedRun {
+        PresentedRun {
+            availability: RunAvailability::Available as i32,
+            last_badge: badge as i32,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_observed_responses_use_the_completion_color() {
+        for badge in [
+            AgentBadge::Working,
+            AgentBadge::NeedsInput,
+            AgentBadge::ResponseObserved,
+            AgentBadge::Ready,
+            AgentBadge::Interrupted,
+            AgentBadge::Error,
+            AgentBadge::Ended,
+            AgentBadge::Unknown,
+            AgentBadge::Unspecified,
+        ] {
+            assert_eq!(
+                status(&available(badge), false).1 == MINT,
+                badge == AgentBadge::ResponseObserved,
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_observations_never_show_live_status_colors() {
+        for badge in [
+            AgentBadge::Working,
+            AgentBadge::NeedsInput,
+            AgentBadge::ResponseObserved,
+        ] {
+            let mut run = available(badge);
+            assert_eq!(status(&run, true), ("Cached", MUTED));
+            for availability in [
+                RunAvailability::Offline,
+                RunAvailability::Historical,
+                RunAvailability::CheckNeeded,
+                RunAvailability::Unspecified,
+            ] {
+                run.availability = availability as i32;
+                assert_eq!(status(&run, false).1, MUTED);
+            }
+            run.availability = i32::MAX;
+            assert_eq!(status(&run, false), ("Check needed", MUTED));
+        }
+    }
+
+    #[test]
+    fn unverified_requests_override_an_observed_response() {
+        let mut run = available(AgentBadge::ResponseObserved);
+        run.unverified_requests = 1;
+        assert_eq!(status(&run, false), ("Check terminal", AMBER));
+        run.availability = RunAvailability::Offline as i32;
+        assert_eq!(status(&run, false), ("Offline", MUTED));
+    }
+
+    #[test]
+    fn unknown_provider_and_badge_have_neutral_fallbacks() {
+        assert_eq!(provider_logo(i32::MAX), chrome::AGENT);
+        let mut run = available(AgentBadge::Unknown);
+        run.last_badge = i32::MAX;
+        assert_eq!(status(&run, false), ("Unknown", MUTED));
+    }
 }

@@ -169,32 +169,57 @@ view. Notification activation opens its history in the expanded view. Window
 visibility and size do not affect daemon-owned work or the slot policy. The mini
 deck shows assigned slots followed by the first 32 queued runs, so larger grids
 can display more agents than the companion's configured slot count. Queued keys
-are marked **Q** and navigate through Desktop using their exact run identity;
+show **Queued** in their tooltip and navigate through Desktop using their exact
+run identity;
 they do not acquire a fabricated slot or pin action. The footer's **+N** button
 shows the queue count and opens the paginated queue.
 
 ## Slots and queue
 
-The **Deck** view uses dark cards with a mint selection border. The
+The **Deck** view uses dark cards with a light selection outline. The
 mini deck uses the selected grid of compact keys; the expanded view adjusts its larger
-square keys from one to six columns when resized. Keys show their number, provider,
-short run ID, current status, unseen alert count, and a pin indicator (**P**). Empty keys in the expanded view are inactive.
+square keys from one to six columns when resized. Each occupied key shows only a
+centered provider mark: Claude, OpenAI for Codex, or a generic terminal for an
+unknown provider. A tinted background and colored inner border carry its status.
+Selection adds a separate light outer outline, preserving the status color.
+Empty keys are blank, dark, and inactive. The same design applies to queued keys.
 
 Click anywhere on an available key to focus its existing terminal. Hover for
-evidence and request details; right-click assigned slots for **Pin / Unpin** and
-unseen alerts for **Acknowledge alert**. Acknowledging an alert does not answer or
+provider, short run ID, exact status, evidence, request and unseen-alert counts,
+slot number, pin state, and queue placement; right-click assigned slots for
+**Pin / Unpin** and unseen alerts for **Acknowledge alert**. Acknowledging an alert does not answer or
 resolve a pending question.
 Arrow keys or Tab select a card; Enter or Space activates its captured target
 on release. Escape cancels a gesture or closes its action menu. The displayed
 slot snapshot stays fixed throughout a mouse or keyboard press and an open
 context menu, so compaction cannot change the action's captured target.
 
-Status uses both text and color: blue for working, amber for input or interruption,
-mint for ready or an observed response, and red for errors. Offline, cached, and
-historical keys explicitly show their availability instead of presenting their
-last activity as live. Unverified input requests say **Check terminal**.
+Status colors are blue for working, amber for input or interruption, mint green
+for an observed response, and red for errors. Ready, ended, unknown, offline,
+cached, and historical observations use gray with a muted logo. A green key means
+a response was observed, not that the whole task succeeded. Availability takes
+precedence over the last activity color, so stale observations never appear live.
+Tooltips and the action menu retain exact text labels; unverified input requests
+use amber and say **Check terminal**.
 **Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
+
+![Mini Agent Deck with provider logos and synthetic states](images/agent-deck/logo-cards.png)
+
+![Expanded Agent Deck with the same logo cards](images/agent-deck/logo-cards-expanded.png)
+
+![Portrait logo cards with keyboard selection](images/agent-deck/logo-cards-portrait.png)
+
+![Text details and pin action for a logo card](images/agent-deck/logo-cards-details.png)
+
+The logo-card screenshots use the GPUI application with synthetic observations
+in an isolated Linux Xvfb session. On 2026-11-17, visual checks covered mini and
+expanded views, 2 × 3 portrait layout, keyboard selection, hover details, and
+the action menu. These screenshots do not demonstrate live terminal navigation.
+The Windows UI automation tool could not target the isolated preview window;
+native Windows visual interaction remains unverified for this change.
+The older screenshots below document window controls and layout; their
+text-heavy card faces predate the logo-only design.
 
 ![Pinned mini Agent Deck with synthetic cached agents](images/agent-deck/window-pin-mini.png)
 

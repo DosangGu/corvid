@@ -7,6 +7,9 @@ const PIN: &str = "window-pin.svg";
 const EXPAND: &str = "window-expand.svg";
 const SHRINK: &str = "window-shrink.svg";
 const CLOSE: &str = "window-close.svg";
+pub(super) const CLAUDE: &str = "provider-claude.svg";
+pub(super) const CODEX: &str = "provider-codex.svg";
+pub(super) const AGENT: &str = "provider-agent.svg";
 
 pub(crate) struct DeckAssets;
 
@@ -17,13 +20,16 @@ impl AssetSource for DeckAssets {
             EXPAND => include_bytes!("../../assets/window-expand.svg").as_slice(),
             SHRINK => include_bytes!("../../assets/window-shrink.svg").as_slice(),
             CLOSE => include_bytes!("../../assets/window-close.svg").as_slice(),
+            CLAUDE => include_bytes!("../../assets/provider-claude.svg").as_slice(),
+            CODEX => include_bytes!("../../assets/provider-codex.svg").as_slice(),
+            AGENT => include_bytes!("../../assets/provider-agent.svg").as_slice(),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(icon)))
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        Ok([PIN, EXPAND, SHRINK, CLOSE]
+        Ok([PIN, EXPAND, SHRINK, CLOSE, CLAUDE, CODEX, AGENT]
             .into_iter()
             .filter(|name| name.starts_with(path))
             .map(SharedString::from)
