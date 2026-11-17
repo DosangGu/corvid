@@ -108,9 +108,18 @@ async fn preserves_live_socket_and_replaces_only_stale_owned_socket() {
 #[tokio::test]
 async fn rejects_overlong_socket_paths_and_authenticates_peer_pid() {
     let parent = test_parent();
-    let long = RuntimeDir::create(&parent.path().join("x".repeat(120))).unwrap();
+    // The directory fits in sun_path on its own. The socket filename makes
+    // the complete byte path too long, even though it has fewer characters.
+    let suffix_bytes = 99_usize
+        .saturating_sub(parent.path().as_os_str().len())
+        .max(1);
+    let name = "é".repeat(suffix_bytes / 2) + &"x".repeat(suffix_bytes % 2);
+    let long = RuntimeDir::create(&parent.path().join(name)).unwrap();
     let instance = long.lock_instance().unwrap();
-    assert!(instance.bind(SocketRole::TerminalHost).await.is_err());
+    let error = instance.bind(SocketRole::TerminalHost).await.err().unwrap();
+    assert_eq!(error.to_string(), "invalid Unix socket path");
+    let error = long.connect(SocketRole::TerminalHost).await.unwrap_err();
+    assert_eq!(error.to_string(), "invalid Unix socket path");
     let runtime = RuntimeDir::create(&parent.path().join("short")).unwrap();
     let instance = runtime.lock_instance().unwrap();
     let server = instance.bind(SocketRole::TerminalHost).await.unwrap();

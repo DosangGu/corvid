@@ -226,39 +226,18 @@ pub fn address(
     shared: bool,
     _instance: &str,
 ) -> Result<<PresentationAddress as ToOwned>::Owned> {
+    use corvid_protocol::paths;
+
+    let controller = (!shared).then_some(config.controller_id);
     #[cfg(windows)]
-    return Ok(if shared {
-        _instance.to_owned()
-    } else {
-        config.controller_id.simple().to_string()
-    });
+    return Ok(paths::monitor_pipe_instance(_instance, controller));
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        #[cfg(target_os = "macos")]
-        let runtime = corvid_client::runtime_path(None)?;
-        #[cfg(target_os = "linux")]
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                // SSH sessions may omit XDG_RUNTIME_DIR even with a running user manager.
-                let uid = unsafe { nix::libc::geteuid() };
-                let runtime = PathBuf::from(format!("/run/user/{uid}"));
-                runtime.is_dir().then_some(runtime)
-            })
-            .or_else(|| match &config.endpoint {
-                HostEndpoint::Local { runtime_dir } => Some(runtime_dir.clone()),
-                _ => corvid_client::runtime_path(None).ok(),
-            })
-            .context("set XDG_RUNTIME_DIR for the agent monitor")?;
-        let name = if shared {
-            "corvid-companion".to_owned()
-        } else if cfg!(target_os = "macos") {
-            format!("s-{}", config.controller_id.simple())
-        } else {
-            format!("cv-slot-{}", config.controller_id.simple())
+        let local_runtime = match &config.endpoint {
+            HostEndpoint::Local { runtime_dir } => Some(runtime_dir.as_path()),
+            HostEndpoint::Ssh { .. } | HostEndpoint::Wsl { .. } => None,
         };
-        Ok(runtime.join(name))
+        paths::monitor_socket(controller, local_runtime)?.prepare()
     }
 }
 

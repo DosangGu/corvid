@@ -1,4 +1,4 @@
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(windows)]
 use std::env;
 use std::future::Future;
 use std::path::PathBuf;
@@ -25,8 +25,6 @@ use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
 
 use super::read_pairing_code;
-#[cfg(target_os = "linux")]
-use crate::linux::state_path;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::runtime_path;
 
@@ -231,30 +229,12 @@ fn host_endpoint(alias: Option<String>, _daemon_runtime: Option<PathBuf>) -> Res
 }
 
 pub(crate) fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = path {
-        return Ok(path);
-    }
-    #[cfg(target_os = "linux")]
-    return Ok(state_path(None)?.join("companion"));
-    #[cfg(any(windows, target_os = "macos"))]
-    return corvid_companion::launch::default_state_dir();
+    corvid_protocol::paths::state_directory(corvid_protocol::paths::StateRole::Companion, path)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn companion_socket(path: Option<PathBuf>) -> Result<PathBuf> {
-    path.map_or_else(
-        || {
-            #[cfg(target_os = "macos")]
-            let base = runtime_path(None)?;
-            #[cfg(target_os = "linux")]
-            let base = env::var_os("XDG_RUNTIME_DIR")
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .context("set XDG_RUNTIME_DIR or companion --socket-dir")?;
-            Ok(base.join("corvid-companion"))
-        },
-        Ok,
-    )
+    corvid_protocol::paths::companion_socket(path)?.prepare()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

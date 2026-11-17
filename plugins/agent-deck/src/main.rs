@@ -45,7 +45,10 @@ struct Options {
 
 fn main() -> Result<()> {
     let options = Options::parse();
-    let root = options.state_dir.map_or_else(default_state, Ok)?;
+    let root = corvid_protocol::paths::state_directory(
+        corvid_protocol::paths::StateRole::AgentDeck,
+        options.state_dir,
+    )?;
     let scope = monitor::discover(&root)?
         .into_iter()
         .next()
@@ -58,11 +61,7 @@ fn main() -> Result<()> {
     let address = options.socket_dir.unwrap_or(scope.address);
     #[cfg(target_os = "macos")]
     let address = if let Some(name) = options.socket_name {
-        anyhow::ensure!(
-            PathBuf::from(&name).file_name() == Some(name.as_ref()),
-            "invalid socket name"
-        );
-        corvid_client::runtime_path(None)?.join(name)
+        corvid_protocol::paths::macos_named_socket(name.as_ref())?.prepare()?
     } else {
         address
     };
@@ -145,22 +144,4 @@ fn main() -> Result<()> {
             .expect("could not open Corvid Agent Deck");
         });
     Ok(())
-}
-
-fn default_state() -> Result<PathBuf> {
-    #[cfg(windows)]
-    return corvid_companion::launch::default_state_dir();
-    #[cfg(target_os = "macos")]
-    return Ok(corvid_protocol::macos::state_directory()?.join("companion"));
-    #[cfg(target_os = "linux")]
-    {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            })
-            .context("set XDG_STATE_HOME or pass --state-dir")?;
-        Ok(base.join("corvid/companion"))
-    }
 }

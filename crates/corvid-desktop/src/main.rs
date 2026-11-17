@@ -13,7 +13,6 @@ mod local_bootstrap;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-mod platform;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod remote_bootstrap;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -90,9 +89,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         )),
         None => destination,
     };
-    let state = options
-        .state_dir
-        .map_or_else(platform::default_state_dir, Ok)?;
+    let state = corvid_protocol::paths::state_directory(
+        corvid_protocol::paths::StateRole::Companion,
+        options.state_dir,
+    )?;
     let preferences_state = state.clone();
     let agent_deck = agent_deck::Settings {
         state,

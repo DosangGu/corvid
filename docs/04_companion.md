@@ -47,6 +47,18 @@ Defaults are `$XDG_RUNTIME_DIR/corvid-companion` for the presentation socket and
 state base fallback. Override with `companion --socket-dir` and `--state-dir`.
 Point subsequent commands at the same socket directory.
 
+Linux companion CLI and Agent Deck presentation endpoints use
+`XDG_RUNTIME_DIR` directly. The daemon uses its `corvid` subdirectory by
+default. The agent monitor can also use an existing `/run/user/<uid>` if
+the session has no `XDG_RUNTIME_DIR`. If neither is available, it uses
+the configured local daemon runtime or, for a remote host, the local
+`CORVID_RUNTIME_DIR` override.
+
+On macOS the default socket directories are scoped to the current boot
+under `~/.corvid/`. Agent Deck's login startup configuration uses a
+socket name for those endpoints so the directory is resolved again at
+login. Companion state remains under `~/Library/Application Support/Corvid/companion`.
+
 ### Linux Desktop quick start
 
 Build the Desktop app with the repository's pinned Rust toolchain and a C/C++

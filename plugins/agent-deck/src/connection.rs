@@ -120,35 +120,18 @@ impl Client {
 async fn connect(controller: Uuid) -> Result<Stream> {
     Ok(Box::new(
         corvid_protocol::windows::open_scoped(
-            "corvid-agent-deck-v1",
-            &controller.simple().to_string(),
+            corvid_protocol::paths::AGENT_DECK_PIPE_PREFIX,
+            &corvid_protocol::paths::controller_pipe_instance(controller),
         )
         .await?,
     ))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn runtime_path(controller: Uuid) -> Result<std::path::PathBuf> {
-    #[cfg(target_os = "macos")]
-    let base = corvid_client::runtime_path(None)?;
-    #[cfg(target_os = "linux")]
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .context("set XDG_RUNTIME_DIR for Agent Deck")?;
-    let name = if cfg!(target_os = "macos") {
-        format!("d-{}", controller.simple())
-    } else {
-        format!("cv-deck-{}", controller.simple())
-    };
-    Ok(base.join(name))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn connect(controller: Uuid) -> Result<Stream> {
     use corvid_protocol::unix::{RuntimeDir, SocketRole};
     Ok(Box::new(
-        RuntimeDir::open(&runtime_path(controller)?)?
+        RuntimeDir::open(&corvid_protocol::paths::agent_deck_socket(controller)?.prepare()?)?
             .connect(SocketRole::Presentation)
             .await?,
     ))
@@ -161,11 +144,13 @@ pub async fn listen(
 ) -> Result<()> {
     #[cfg(windows)]
     let mut listener = corvid_protocol::windows::PipeListener::bind_scoped(
-        "corvid-agent-deck-v1",
-        &controller.simple().to_string(),
+        corvid_protocol::paths::AGENT_DECK_PIPE_PREFIX,
+        &corvid_protocol::paths::controller_pipe_instance(controller),
     )?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let directory = corvid_protocol::unix::RuntimeDir::create_all(&runtime_path(controller)?)?;
+    let directory = corvid_protocol::unix::RuntimeDir::create_all(
+        &corvid_protocol::paths::agent_deck_socket(controller)?.prepare()?,
+    )?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let instance = directory.lock_instance()?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]

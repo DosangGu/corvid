@@ -10,6 +10,7 @@ publish.workspace = true
 prost.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "time"] }
+uuid.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true
@@ -25,7 +26,6 @@ tokio = { workspace = true, features = ["net"] }
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
 tokio = { workspace = true, features = ["net"] }
-uuid.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem",
     "Win32_System_IO", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_System_Threading",

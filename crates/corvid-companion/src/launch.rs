@@ -1,5 +1,3 @@
-#[cfg(windows)]
-use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -21,15 +19,7 @@ pub enum DesktopStartup {
 }
 
 pub fn default_state_dir() -> Result<PathBuf> {
-    #[cfg(target_os = "macos")]
-    return Ok(corvid_protocol::macos::state_directory()?.join("companion"));
-    #[cfg(windows)]
-    {
-        let base = env::var_os("LOCALAPPDATA")
-            .filter(|path| !path.is_empty())
-            .context("set LOCALAPPDATA or choose a companion state directory")?;
-        Ok(PathBuf::from(base).join("Corvid").join("companion"))
-    }
+    corvid_protocol::paths::state_directory(corvid_protocol::paths::StateRole::Companion, None)
 }
 
 pub async fn prepare_desktop(
