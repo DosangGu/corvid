@@ -989,6 +989,8 @@ message CollectHook {
   repeated string finished_input_ids = 8;
   // The actor that invoked the Agent tool for a nested link.
   optional string parent_actor_id = 9;
+  // The observer's launch epoch. Only a verified retained launch may cross epochs.
+  optional string observer_epoch = 10;
 }
 
 message HookCollected {}

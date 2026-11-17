@@ -40,6 +40,10 @@ fn main() {
         provider,
         r#""hook_event_name":"SessionStart","source":"startup""#,
     );
+    if env::var_os("CORVID_FIXTURE_HANDOFF").is_some() {
+        retained(provider);
+        return;
+    }
     println!("READY-{provider}");
     let mut line = String::new();
     io::stdin().read_line(&mut line).unwrap();
@@ -54,6 +58,70 @@ fn main() {
     // These repeated hooks produce one terminal bell but multiple response attention records consumed by Deck. Deduplicate attention by run and turn while preserving notifications for later turns.
     observe(provider, &stop);
     println!("DONE-{provider}");
+}
+
+fn retained(provider: &str) {
+    let mut turn = 1;
+    let fields = |turn| format!(r#""prompt_id":"turn-{turn}","turn_id":"turn-{turn}""#);
+    observe(
+        provider,
+        &format!(r#""hook_event_name":"UserPromptSubmit",{}"#, fields(turn)),
+    );
+    println!("RETAINED-{provider}-PID={}", std::process::id());
+    for line in io::stdin().lines() {
+        let line = line.unwrap();
+        let tool = if provider == "claude" {
+            "AskUserQuestion"
+        } else {
+            "request_user_input"
+        };
+        let question = format!(
+            r#""tool_name":"{tool}","tool_use_id":"question-{turn}",{}"#,
+            fields(turn)
+        );
+        match line.trim() {
+            "question" => observe(
+                provider,
+                &format!(r#""hook_event_name":"PreToolUse",{question}"#),
+            ),
+            "respond" => {
+                observe(
+                    provider,
+                    &format!(r#""hook_event_name":"PostToolUse",{question}"#),
+                );
+                observe(
+                    provider,
+                    &format!(
+                        r#""hook_event_name":"Stop","stop_hook_active":false,{}"#,
+                        fields(turn)
+                    ),
+                );
+                turn += 1;
+                observe(
+                    provider,
+                    &format!(r#""hook_event_name":"UserPromptSubmit",{}"#, fields(turn)),
+                );
+            }
+            "wrong-epoch" => {
+                let original = env::var_os("CORVID_SERVER_EPOCH").unwrap();
+                // Single-threaded fixture: use a foreign epoch for one submission.
+                unsafe {
+                    env::set_var(
+                        "CORVID_SERVER_EPOCH",
+                        "00000000-0000-4000-8000-000000000001",
+                    )
+                };
+                observe(
+                    provider,
+                    &format!(r#""hook_event_name":"PreToolUse",{question}"#),
+                );
+                unsafe { env::set_var("CORVID_SERVER_EPOCH", original) };
+            }
+            "exit" => return,
+            _ => panic!("unknown fixture command"),
+        }
+        println!("OBSERVED-{line}-PID={}", std::process::id());
+    }
 }
 
 fn observe(provider: &str, fields: &str) {

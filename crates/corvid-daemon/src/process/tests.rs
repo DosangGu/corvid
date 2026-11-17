@@ -5,6 +5,25 @@ use native::parse_stat;
 use nix::fcntl::readlinkat;
 
 #[test]
+fn retained_owner_rejects_changed_birth_image_and_boot() {
+    let root = incarnation(std::process::id(), boot_id().unwrap()).unwrap();
+    let owner = ProcessImage::capture(root, None).unwrap();
+    assert!(owner.belongs_to(root));
+    let mut changed = owner;
+    changed.incarnation.birth = BirthIdentity::from_raw(root.birth.wire_value() + 1);
+    assert!(!changed.belongs_to(root));
+    changed = owner;
+    changed.executable.inode = changed.executable.inode.wrapping_add(1);
+    assert!(!changed.belongs_to(root));
+    changed = owner;
+    changed.incarnation.boot_id = Uuid::new_v4();
+    assert!(!changed.belongs_to(root));
+    let mut root_changed = root;
+    root_changed.birth = BirthIdentity::from_raw(root.birth.wire_value() + 1);
+    assert!(!owner.belongs_to(root_changed));
+}
+
+#[test]
 fn recognizes_codex_broker_releases_without_a_version_pin() {
     for target in [
         "x86_64-unknown-linux-musl",

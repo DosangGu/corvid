@@ -14,6 +14,7 @@ use crate::provider;
 
 pub(crate) struct Hook {
     pub(crate) association: Uuid,
+    pub(crate) observer_epoch: Option<Uuid>,
     pub(crate) delivery: Uuid,
     pub(crate) provider: Provider,
     pub(crate) event: HookEvent,
@@ -33,6 +34,11 @@ impl Hook {
         let invalid = || ProtocolFault::new("InvalidMessage", "invalid hook observation");
         let parse_uuid = |value: &str| Uuid::parse_str(value).ok().filter(|id| !id.is_nil());
         let association = parse_uuid(&request.launch_association).ok_or_else(invalid)?;
+        let observer_epoch = request
+            .observer_epoch
+            .as_deref()
+            .map(|value| parse_uuid(value).ok_or_else(invalid))
+            .transpose()?;
         let delivery = request_id.and_then(parse_uuid).ok_or_else(invalid)?;
         let event = HookEvent::try_from(request.event).map_err(|_| invalid())?;
         let provider = provider::from_wire(request.provider).ok_or_else(invalid)?;
@@ -70,6 +76,7 @@ impl Hook {
         }
         Ok(Self {
             association,
+            observer_epoch,
             delivery,
             provider,
             event,

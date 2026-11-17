@@ -66,10 +66,16 @@ pub(crate) struct LaunchScope {
     pub(crate) host: Option<HostConfig>,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct RetainedTerminal {
     pub(crate) id: Uuid,
     shell: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agent: Option<crate::agents::RetainedAgent>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[serde(default)]
+    agent_handoff: bool,
     #[cfg(windows)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<Provider>,
@@ -629,9 +635,18 @@ impl Worker {
             lease.naming = None;
         }
         self.retaining = retain;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let agent = self.scope.registry.upgrade().and_then(|registry| {
+            let epoch = Uuid::parse_str(&self.scope.hook_environment.identity.epoch).ok()?;
+            registry.lock().ok()?.agents.retain(terminal.id, epoch)
+        });
         Ok(live.then_some(RetainedTerminal {
             id: terminal.id,
             shell: terminal.shell,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            agent,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            agent_handoff: true,
             #[cfg(windows)]
             provider: terminal.provider,
         }))
@@ -1243,6 +1258,24 @@ impl Running {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let (process, identity) =
             TerminalProcess::started(None, &mut session, scope, saved.id, None);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let recovered = saved.agent.filter(|agent| {
+            agent.valid() && identity.is_some_and(|root| agent.owner.belongs_to(root))
+        });
+        // v0.2.5 and earlier handed off only PTY identities. On Linux, bind
+        // their surviving foreground provider using its original UUID scope,
+        // saved conversation, process birth and qualified executable.
+        #[cfg(target_os = "linux")]
+        let recovered = recovered.or_else(|| {
+            if saved.agent_handoff {
+                return None;
+            }
+            crate::agents::RetainedAgent::legacy(
+                identity?,
+                scope.metadata.retained_session(saved.id)?,
+                Uuid::parse_str(&scope.hook_environment.identity.host_id).ok()?,
+            )
+        });
         let registry = scope.registry.upgrade().ok_or_else(terminal_fault)?;
         let mut registry = registry.lock().expect("workspace registry lock poisoned");
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1268,6 +1301,16 @@ impl Running {
             registry.agents.track_shell(saved.id, root);
         }
         registry.terminal_started(saved.id, scope.location);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(agent) = recovered {
+            // Poll the retained owner independently of the shell/PTY process.
+            registry.recover_agent(
+                saved.id,
+                identity.expect("verified root"),
+                scope.location,
+                agent,
+            );
+        }
         Ok(Self {
             id: saved.id,
             registry: scope.registry.clone(),

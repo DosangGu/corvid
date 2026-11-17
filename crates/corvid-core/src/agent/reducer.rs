@@ -74,6 +74,14 @@ impl<T: Clone + Ord> Recent<T> {
 }
 
 impl AgentRun {
+    /// Last confirmed prompt still open when transferring a live process.
+    pub fn current_open_turn(&self) -> Option<&str> {
+        self.correlation
+            .current_turn
+            .as_deref()
+            .filter(|turn| self.is_current_open_turn(turn))
+    }
+
     pub fn is_current_open_turn(&self, turn: &str) -> bool {
         self.correlation
             .current_turn

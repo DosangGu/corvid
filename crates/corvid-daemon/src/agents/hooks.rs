@@ -135,6 +135,19 @@ impl Agents {
         if launch.ambiguous || launch.resume.is_some() {
             return Ok(None);
         }
+        if launch.retained {
+            launch.retained = false;
+            let health = if launch.gap {
+                Collection::GapDetected
+            } else {
+                Collection::Healthy
+            };
+            current.apply(
+                Uuid::new_v4(),
+                ObservationKind::Collection(health),
+                hook.evidence(Confidence::Confirmed),
+            );
+        }
         if let Some((kind, confidence)) = hook.observation() {
             let evidence = hook.evidence(confidence);
             let ends_context = matches!(kind, ObservationKind::ContextEnded(_));
@@ -329,7 +342,12 @@ impl Launch {
         Some(next)
     }
 
-    fn establish_context(&mut self, record: &mut ManagedRun, delivery: Uuid, session: &str) {
+    pub(super) fn establish_context(
+        &mut self,
+        record: &mut ManagedRun,
+        delivery: Uuid,
+        session: &str,
+    ) {
         record.run.identity.provider_session = Some(session.to_owned());
         self.resume_key = Some(corvid_core::agent::AgentSessionKey {
             provider: record.run.identity.provider,
@@ -536,6 +554,50 @@ mod tests {
         owner: ProcessImage,
     }
 
+    #[test]
+    fn retained_launch_keeps_observer_scope_but_replaces_live_addresses() {
+        let mut fixture = Fixture::new(Provider::Claude);
+        fixture.apply("session", HookEvent::Startup);
+        fixture.apply("session", HookEvent::PromptSubmitted);
+        fixture.apply("session", HookEvent::QuestionStarted);
+        let epoch = Uuid::new_v4();
+        let next_epoch = Uuid::new_v4();
+        let terminal = fixture.current().run.identity.terminal_id;
+        let location = fixture.current().location;
+        let old_run = fixture.current().run.identity.id;
+        let saved = fixture.agents.retain(terminal, epoch).unwrap();
+        assert!(saved.valid());
+        fixture.agents = Agents::default();
+        fixture.agents.recover(terminal, location, saved);
+        assert_ne!(fixture.current().run.identity.id, old_run);
+        assert!(fixture.current().run.requests.is_empty());
+        assert!(fixture.current().run.attention.is_empty());
+        assert_eq!(fixture.current().run.collection.value, Collection::Degraded);
+        assert!(
+            fixture
+                .agents
+                .accepts_observer_epoch(fixture.association, epoch, next_epoch)
+        );
+        assert!(!fixture.agents.accepts_observer_epoch(
+            fixture.association,
+            next_epoch,
+            next_epoch
+        ));
+        assert!(
+            !fixture
+                .agents
+                .accepts_observer_epoch(Uuid::new_v4(), epoch, next_epoch)
+        );
+        let response = fixture.hook("session", HookEvent::ResponseObserved);
+        assert_eq!(
+            fixture.submit_notice(response).unwrap(),
+            Some((location, Provider::Claude))
+        );
+        assert_eq!(fixture.current().run.collection.value, Collection::Healthy);
+        let saved_again = fixture.agents.retain(terminal, next_epoch).unwrap();
+        assert_eq!(saved_again.observer_epoch, epoch);
+    }
+
     impl Fixture {
         fn new(provider: Provider) -> Self {
             let mut agents = Agents::default();
@@ -573,6 +635,7 @@ mod tests {
 
         fn hook(&self, session: &str, event: HookEvent) -> Hook {
             Hook {
+                observer_epoch: None,
                 association: self.association,
                 delivery: Uuid::new_v4(),
                 provider: self.current().run.identity.provider,

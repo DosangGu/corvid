@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::process::{self, Executable, Incarnation, ProcessImage};
 use crate::provider;
 
-use super::{Reply, Workspaces};
+use super::{Registry, Reply, Workspaces};
 
 const EXEC_GRACE: Duration = Duration::from_secs(1);
 
@@ -62,6 +62,34 @@ impl Shells {
             .min_by_key(|(terminal, _)| (**terminal <= self.sampled, **terminal))?;
         self.sampled = terminal;
         Some((terminal, agent))
+    }
+}
+
+impl Registry {
+    pub(crate) fn recover_agent(
+        &mut self,
+        terminal: Uuid,
+        root: Incarnation,
+        location: corvid_core::layout::Location,
+        agent: crate::agents::RetainedAgent,
+    ) {
+        let owner = agent.owner;
+        let association = agent.association;
+        if !self.agents.recover(terminal, location, agent) {
+            return;
+        }
+        self.shells.terminals.insert(
+            terminal,
+            Shell {
+                root,
+                agent: Some(ShellAgent {
+                    association,
+                    owner,
+                    registered: Instant::now() - EXEC_GRACE,
+                }),
+            },
+        );
+        self.publish(Vec::new());
     }
 }
 

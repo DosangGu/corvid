@@ -50,10 +50,23 @@ and layout locations. Windows uses a separate executable image for terminal host
 so they can remain alive while the daemon executable is replaced.
 
 Client identities, writer leases, and input routes are freshly established after
-handoff. Queued user input is fenced. Agent observations from the previous epoch
-remain historical. New agent invocations from a retained Linux shell register against
-the current daemon epoch. Existing provider processes retain their original observer
-environment and may need a fresh invocation to restore qualified hook monitoring.
+handoff. Queued user input is fenced. Previous agent requests and attention remain
+historical. Qualified Unix agents retain their observer association and process identity
+through planned replacement. The new daemon checks the boot, process birth, executable,
+and retained PTY ownership, then publishes a new run in its own epoch. Collection stays
+degraded until a fresh authenticated hook arrives. Existing observer environments use
+their launch epoch; only that retained association may submit observations across epochs.
+Controller actions and shell registrations still require the current epoch.
+
+Linux also migrates terminal-only handoffs from v0.2.5 and earlier. It checks the saved
+conversation and the surviving foreground provider, reading only Corvid's UUID scope
+from its bounded process environment. This can recover a process whose monitoring was
+lost during an earlier replacement. No provider is restarted and no hooks are injected
+into an uninstrumented process. The observer executable must resolve to the updated
+Corvid binary, as it does when the managed SSH installation is replaced in place.
+Old-format migration on macOS, background jobs without foreground ownership, and
+processes without saved conversation evidence remain outside this migration path.
+New agent invocations from retained shells register against the current epoch.
 
 Press Ctrl-] then d to detach and run `corvid` again to return to the shell.
 The TUI remembers its last successful daemon endpoint and workspace/tab/pane selection

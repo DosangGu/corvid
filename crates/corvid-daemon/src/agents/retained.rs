@@ -1,0 +1,144 @@
+use corvid_core::agent::{
+    Collection, Confidence, Lifecycle, ObservationKind, ProcessLiveness, Provider, Source,
+};
+use corvid_core::layout::Location;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use super::{Agents, evidence};
+use crate::process::{HookProducer, ProcessImage};
+
+/// Private handoff metadata, never terminal content or a live controller address.
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct RetainedAgent {
+    pub(crate) association: Uuid,
+    pub(crate) observer_epoch: Uuid,
+    pub(crate) owner: ProcessImage,
+    provider: Provider,
+    producer: Option<HookProducer>,
+    session: String,
+    sessions: Vec<String>,
+    turn: Option<String>,
+    gap: bool,
+}
+
+impl RetainedAgent {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn legacy(
+        root: crate::process::Incarnation,
+        session: corvid_core::agent::AgentSessionKey,
+        host: Uuid,
+    ) -> Option<Self> {
+        let (owner, association, observer_epoch) =
+            crate::process::legacy_observer(root, session.provider, host)?;
+        Some(Self {
+            association,
+            observer_epoch,
+            owner,
+            provider: session.provider,
+            producer: None,
+            session: session.provider_session_id.clone(),
+            sessions: vec![session.provider_session_id],
+            turn: None,
+            gap: false,
+        })
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        let valid_id =
+            |id: &str| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control);
+        !self.association.is_nil()
+            && !self.observer_epoch.is_nil()
+            && valid_id(&self.session)
+            && self.sessions.len() <= 256
+            && self.sessions.iter().all(|id| valid_id(id))
+            && self.sessions.contains(&self.session)
+            && self.turn.as_deref().is_none_or(valid_id)
+    }
+}
+
+impl Agents {
+    pub(crate) fn retain(&self, terminal: Uuid, epoch: Uuid) -> Option<RetainedAgent> {
+        self.launches.iter().find_map(|(association, launch)| {
+            let record = self.runs.get(&launch.current)?;
+            if record.run.identity.terminal_id != terminal
+                || !record.published
+                || !launch.qualified
+                || launch.ambiguous
+                || launch.resume.is_some()
+                || record.run.lifecycle.value != Lifecycle::Live
+                || record.run.process.value != ProcessLiveness::Running
+            {
+                return None;
+            }
+            Some(RetainedAgent {
+                association: *association,
+                observer_epoch: launch.observer_epoch.unwrap_or(epoch),
+                owner: launch.owner?,
+                provider: record.run.identity.provider,
+                producer: launch.producer,
+                session: record.run.identity.provider_session.clone()?,
+                sessions: launch.sessions.iter().cloned().collect(),
+                turn: record.run.current_open_turn().map(str::to_owned),
+                gap: launch.gap,
+            })
+        })
+    }
+
+    pub(crate) fn accepts_observer_epoch(
+        &self,
+        association: Uuid,
+        epoch: Uuid,
+        current: Uuid,
+    ) -> bool {
+        self.launches
+            .get(&association)
+            .is_some_and(|launch| epoch == launch.observer_epoch.unwrap_or(current))
+    }
+
+    pub(crate) fn recover(
+        &mut self,
+        terminal: Uuid,
+        location: Location,
+        saved: RetainedAgent,
+    ) -> bool {
+        if !saved.valid() || self.launches.contains_key(&saved.association) {
+            return false;
+        }
+        let temporary = self.reserve(location, terminal, saved.provider, true);
+        let mut launch = self.launches.remove(&temporary).expect("reserved launch");
+        let record = self.runs.get_mut(&launch.current).expect("reserved run");
+        record.run.identity.launch_association = saved.association;
+        record.observe_process(
+            ProcessLiveness::Running,
+            Some(saved.owner.incarnation),
+            Source::ProcessProbe,
+        );
+        record.published = true;
+        record.terminal_available = true;
+        launch.owner = Some(saved.owner);
+        launch.producer = saved.producer;
+        launch.observer_epoch = Some(saved.observer_epoch);
+        launch.retained = true;
+        launch.sessions = saved.sessions.into_iter().collect();
+        launch.gap = saved.gap;
+        launch.establish_context(record, Uuid::new_v4(), &saved.session);
+        if let Some(turn) = saved.turn {
+            record.apply(
+                Uuid::new_v4(),
+                ObservationKind::InteractivePromptSubmitted(turn),
+                evidence(Source::Collector, Confidence::Confirmed),
+            );
+        }
+        // Previous requests/attention remain historical. A fresh authenticated
+        // observation must confirm collection in this epoch before notifying.
+        record.apply(
+            Uuid::new_v4(),
+            ObservationKind::Collection(Collection::Degraded),
+            evidence(Source::Collector, Confidence::Confirmed),
+        );
+        self.dirty.insert(launch.current);
+        self.launches.insert(saved.association, launch);
+        true
+    }
+}

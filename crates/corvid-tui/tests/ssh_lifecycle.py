@@ -19,6 +19,7 @@ import uuid
 from companion_fixture import Companion, fields
 from input_latency import measure_input
 from interactive import OuterTerminal, stop, verify_shell_agent_notifications
+from agent_handoff import verify as verify_agent_handoff
 
 
 def key(path):
@@ -399,6 +400,7 @@ def run(binary, *, measure_keys=False):
                     verify_shell_agent_notifications(
                         command[0], directory, database, ssh, release=release, broker=True,
                     )
+                verify_agent_handoff(command[0], directory, database, ssh, legacy=True, broker=True)
                 if measure_keys:
                     measure_input(ssh, command, directory)
                 assert unit_pid(unit) == pid

@@ -2,6 +2,7 @@ pub const CAPABILITY: &str = "collector.v1";
 pub const INPUT_BATCH_CAPABILITY: &str = "collector.input_batch.v1";
 pub const NESTED_SUBAGENT_CAPABILITY: &str = "collector.nested_subagent.v1";
 pub const SHELL_AGENT_CAPABILITY: &str = "collector.shell_agent.v1";
+pub const RETAINED_AGENT_CAPABILITY: &str = "collector.retained_agent.v1";
 // Leave room for 256-byte IDs and the envelope in the 8 KiB collector frame.
 pub const MAX_BATCH_INPUTS: usize = 24;
 pub const LAUNCH_ASSOCIATION: &str = "CORVID_LAUNCH_ASSOCIATION";
