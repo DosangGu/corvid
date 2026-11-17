@@ -176,9 +176,6 @@ impl Fixture {
 }
 
 #[tokio::test]
-// TODO: Diagnose intermittent resume confirmation in the agent restore fixture
-// The fixture now supplies hook input before starting the observer. If confirmation still fails, use the reported collector counters to distinguish transport timeouts from rejected or missing hooks and trace the corresponding path.
-// Issue URL: https://github.com/DosangGu/corvid/issues/74
 async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_clients()
 -> Result<()> {
     let fixture = Fixture::new()?;
