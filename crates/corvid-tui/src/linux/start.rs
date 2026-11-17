@@ -101,10 +101,7 @@ pub(crate) async fn desktop_handoff(path: &Path, host: Uuid, epoch: Uuid) -> Res
 async fn running_image(runtime: &RuntimeDir) -> Option<PathBuf> {
     let stream = runtime.connect(SocketRole::Control).await.ok()?;
     let pid = corvid_protocol::unix::peer_pid(&stream).ok()?;
-    #[cfg(target_os = "linux")]
-    let path = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-    #[cfg(target_os = "macos")]
-    let path = corvid_protocol::macos::process_path(pid).ok()?;
+    let path = corvid_protocol::unix::process_image_path(pid).ok()?;
     path.is_file().then_some(path)
 }
 

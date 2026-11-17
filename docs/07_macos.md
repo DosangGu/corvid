@@ -56,6 +56,8 @@ world-writable `/tmp` and symlinked ancestors are deliberately rejected. Sockets
 verify both UID and the kernel-provided peer PID. Process observations use libproc
 and sysctl with boot identity and process birth-time checks; inaccessible or
 changed process evidence fails closed.
+The daemon uses the shared [process observation contract](02_daemon_foundation.md#verification),
+retaining Darwin's PID/birth revalidation rather than assuming a procfs handle.
 
 Desktop imports PATH from the user's interactive login shell before starting its
 workers, with a bounded timeout. This finds Homebrew and user-installed agents when
