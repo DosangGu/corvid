@@ -109,7 +109,7 @@ fn run(options: Options) -> Result<()> {
             None
         } else {
             if options.target.is_none() {
-                println!("Live display only. Set --target CLIENT_ID to enable focus.");
+                println!("Agent keys focus the attached Corvid Desktop for this host.");
             }
             let (address, identity) =
                 if let Some(instance) = options.instance {
@@ -131,7 +131,11 @@ fn run(options: Options) -> Result<()> {
                 };
             Some(LiveDevice {
                 client: DesktopClient::start_scoped(address, identity, || {})?,
-                deck: LiveDeck::default(),
+                deck: if options.target.is_some() {
+                    LiveDeck::default()
+                } else {
+                    LiveDeck::with_desktop_focus()
+                },
                 target: options.target,
             })
         };

@@ -57,21 +57,15 @@ impl DeckView {
             return None;
         }
         let run = run?;
-        if self.session.background.desktop.connected() {
-            return snapshot.live_key(run).cloned().map(FocusAction::Desktop);
-        }
-        if let (Some(slot), Some(binding)) = (slot, &self.binding)
+        if !self.session.background.desktop.connected()
+            && let (Some(slot), Some(binding)) = (slot, &self.binding)
             && let Some(body) = snapshot.focus(slot, binding)
         {
             return Some(FocusAction::Companion(snapshot.clone(), Box::new(body)));
         }
-        snapshot.live_key(run)?;
-        let host = self.catalog_view.hosts.get(&snapshot.host)?;
-        let (controller, run) = host.focus_target(snapshot.host, run)?;
-        Some(FocusAction::HostDesktop {
-            controller,
-            run: run.clone(),
-        })
+        let key = snapshot.live_key(run)?;
+        snapshot.desktop_run_target(key)?;
+        Some(FocusAction::Desktop(key.clone()))
     }
 
     pub(super) fn card(
@@ -643,16 +637,10 @@ impl DeckView {
             view = view.child(muted(background.status));
         }
         if let Some(notice) = &self.selected_notice {
-            let current = self.view.snapshot.as_ref().is_some_and(|snapshot| {
-                snapshot.host == notice.key.host
-                    && snapshot.data.remote_epoch.as_deref()
-                        == Some(notice.key.epoch.to_string().as_str())
-                    && snapshot.generation().is_some()
-            });
-            let enabled = current
-                && self.session.background.desktop.connected()
-                && !self.actions.is_pending();
             let key = notice.key.run();
+            let enabled = self.view.snapshot.as_ref().is_some_and(|snapshot| {
+                self.ready(snapshot) && snapshot.desktop_run_target(&key).is_some()
+            });
             view = view.child(
                 column()
                     .child(notice.title.clone())

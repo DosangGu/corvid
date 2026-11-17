@@ -140,8 +140,14 @@ impl DeckView {
     fn refresh_view(&mut self) {
         let (state, host) = &self.session.catalog;
         if let Ok(catalog) = self.catalog.get_or_insert_with(|| {
-            Catalog::start(state.clone(), *host, self.session.signal.clone())
-                .map_err(|error| error.to_string())
+            Catalog::start(
+                state.clone(),
+                *host,
+                self.session.signal.clone(),
+                self.session.client.display.clone(),
+                self.session.background.desktop.clone(),
+            )
+            .map_err(|error| error.to_string())
         }) {
             self.catalog_view = catalog.views.borrow().clone();
             if let Ok(completion) = catalog.completed.try_recv() {
@@ -206,8 +212,11 @@ impl DeckView {
     }
 
     fn focus_run(&mut self, key: PresentedRunKey) {
+        let Some(snapshot) = self.view.snapshot.clone() else {
+            return;
+        };
         self.actions.focus(key, |id, run| {
-            self.session.background.desktop.focus(id, run)
+            matches!(&self.catalog, Some(Ok(catalog)) if catalog.focus_current(id, snapshot, run))
         });
     }
 

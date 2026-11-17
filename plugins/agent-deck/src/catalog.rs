@@ -4,11 +4,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::hosts::{self, Profile, Subscriptions};
+use crate::parent::DesktopLink;
 use crate::ui_signal::UiSignal;
 use anyhow::Result;
-use corvid_agent_deck::{connection::Client, focus};
+use corvid_agent_deck::connection::Client;
 use corvid_companion::{PresentationAddress, PresentationClient};
-use corvid_presentation::ipc::Completion;
+use corvid_presentation::desktop_focus::{self, EndpointUnavailable};
+use corvid_presentation::ipc::{Completion, Display, Link};
+use corvid_presentation::model::Snapshot;
+use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::{CompanionConnection, PresentedRun, PresentedRunKey, RunAvailability};
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
@@ -44,6 +48,16 @@ enum Request {
         controller: Uuid,
         run: PresentedRunKey,
     },
+    FocusCurrent {
+        id: Uuid,
+        snapshot: Arc<Snapshot>,
+        run: PresentedRunKey,
+    },
+}
+
+struct CurrentDesktop {
+    view: watch::Receiver<Display>,
+    legacy: DesktopLink,
 }
 
 impl Host {
@@ -74,7 +88,13 @@ impl Host {
 }
 
 impl Catalog {
-    pub fn start(state: PathBuf, current: Uuid, ctx: UiSignal) -> Result<Self> {
+    pub fn start(
+        state: PathBuf,
+        current: Uuid,
+        ctx: UiSignal,
+        view: watch::Receiver<Display>,
+        legacy: DesktopLink,
+    ) -> Result<Self> {
         let profiles = hosts::discover(&state, current)?;
         let hosts = profiles
             .iter()
@@ -93,13 +113,13 @@ impl Catalog {
             .name("corvid-agent-deck-hosts".into())
             .spawn(move || {
                 runtime.block_on(run(
-                    state,
-                    current,
+                    (state, current),
                     profiles,
                     publish,
                     incoming,
                     completions,
                     ctx,
+                    CurrentDesktop { view, legacy },
                 ));
             })?;
         Ok(Self {
@@ -121,16 +141,22 @@ impl Catalog {
             })
             .is_ok()
     }
+
+    pub fn focus_current(&self, id: Uuid, snapshot: Arc<Snapshot>, run: PresentedRunKey) -> bool {
+        self.requests
+            .try_send(Request::FocusCurrent { id, snapshot, run })
+            .is_ok()
+    }
 }
 
 async fn run(
-    state: PathBuf,
-    current: Uuid,
+    (state, current): (PathBuf, Uuid),
     mut profiles: BTreeMap<Uuid, Profile>,
     publish: watch::Sender<View>,
     mut requests: mpsc::Receiver<Request>,
     completions: mpsc::Sender<Completion>,
     ctx: UiSignal,
+    desktop: CurrentDesktop,
 ) {
     let mut subscriptions = Subscriptions::default();
     let mut refresh = tokio::time::interval(Duration::from_secs(1));
@@ -170,17 +196,81 @@ async fn run(
                     }
                     Request::Focus { id, controller, run } => {
                         let result = focus_captured_run(&publish, controller, run).await;
-                        let (message, failed) = match result {
-                            Ok(()) => ("Focused in Corvid Desktop.".into(), false),
-                            Err(error) => (error.to_string(), true),
+                        complete_focus(&completions, id, result);
+                    }
+                    Request::FocusCurrent { id, snapshot, run } => {
+                        let target = current_target(&desktop.view.borrow(), &snapshot, &run);
+                        let result = match target {
+                            Some(controller) => desktop_focus::request(controller, run.clone()).await,
+                            None => Err(anyhow::anyhow!("The displayed agent changed. Review the slots and try again.")),
                         };
-                        let _ = completions.try_send(Completion { id, message, failed, paired: None });
+                        // An older Desktop, or the window that explicitly
+                        // opened Deck when another window owns the endpoint,
+                        // can still receive the exact request on this connection.
+                        if result.as_ref().is_err_and(|error| {
+                            error.is::<EndpointUnavailable>()
+                                || error.downcast_ref::<ProtocolFault>().is_some_and(|fault| {
+                                    matches!(fault.code.as_str(), "WriterRequired" | "WorkspaceBusy")
+                                })
+                        })
+                            && desktop.legacy.focus(id, run)
+                        {
+                            continue;
+                        }
+                        complete_focus(&completions, id, result);
                     }
                 }
                 ctx.notify();
             }
         }
     }
+}
+
+fn complete_focus(completions: &mpsc::Sender<Completion>, id: Uuid, result: Result<()>) {
+    let (message, failed) = match result {
+        Ok(()) => ("Focused in Corvid Desktop.".into(), false),
+        Err(error) => (error.to_string(), true),
+    };
+    let _ = completions.try_send(Completion {
+        id,
+        message,
+        failed,
+        paired: None,
+    });
+}
+
+fn current_target(display: &Display, shown: &Snapshot, run: &PresentedRunKey) -> Option<Uuid> {
+    let latest = display.snapshot.as_ref()?;
+    if display.link != Link::Online
+        || latest.link != shown.link
+        || latest.page != shown.page
+        || latest.generation() != shown.generation()
+    {
+        return None;
+    }
+    let controller = shown.desktop_run_target(run)?;
+    if latest.desktop_run_target(run)? != controller {
+        return None;
+    }
+    if let Some(slot) = shown
+        .data
+        .slots
+        .iter()
+        .find(|slot| slot.run.as_ref().and_then(|entry| shown.live_key(entry)) == Some(run))
+    {
+        let capture = shown.focus_desktop(slot)?;
+        return latest
+            .desktop_target(&capture)
+            .map(|(controller, _)| controller);
+    }
+    let queued = |snapshot: &Snapshot| {
+        snapshot
+            .data
+            .overflow
+            .iter()
+            .any(|entry| snapshot.live_key(entry) == Some(run))
+    };
+    (!queued(shown) || queued(latest)).then_some(controller)
 }
 
 async fn focus_captured_run(
@@ -195,7 +285,7 @@ async fn focus_captured_run(
             .any(|candidate| host.focus_target(id, candidate) == Some((controller, &run)))
     });
     anyhow::ensure!(allowed, "The agent is no longer available on this host.");
-    focus::request(controller, run).await
+    desktop_focus::request(controller, run).await
 }
 
 async fn monitor(

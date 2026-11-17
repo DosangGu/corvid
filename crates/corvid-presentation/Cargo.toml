@@ -10,8 +10,11 @@ publish.workspace = true
 anyhow.workspace = true
 corvid-companion.workspace = true
 corvid-protocol.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Pipes", "Win32_UI_WindowsAndMessaging"] }
 
 [lints]
 workspace = true

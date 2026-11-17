@@ -37,7 +37,13 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
     let (updates, mut received) = mpsc::channel(8);
     let mut jobs = tokio::task::JoinSet::new();
     jobs.spawn(poll_hosts(state.clone(), absent, current, updates));
-    let catalog = crate::catalog::Catalog::start(state.clone(), current, UiSignal::default())?;
+    let catalog = crate::catalog::Catalog::start(
+        state.clone(),
+        current,
+        UiSignal::default(),
+        watch::channel(Default::default()).1,
+        DesktopLink::default(),
+    )?;
     timeout(Duration::from_secs(5), async {
         loop {
             if matches!(received.recv().await, Some(Update::Snapshot(id, Err(_))) if id == current)

@@ -76,8 +76,10 @@ identity, slots, and pins across the rename.
 The `corvid-streamdeck` USB adapter discovers the same monitor scopes without
 opening Agent Deck. Its `--state-dir` selects a host just like the UI; an explicit
 `--pipe-instance` or `--socket-dir` remains supported. Status display needs no
-Deck UI. Hardware focus still targets an explicitly paired TUI with `--target`;
-Desktop focus registration is not yet available through this shared interface.
+Deck UI. Pressing an agent key focuses the exact pane in an attached Corvid
+Desktop for the monitored host. Desktop registers while attached, so opening
+the Agent Deck window is unnecessary. Use `--target CLIENT_ID` to direct the
+keys to an explicitly paired TUI instead.
 
 | Windows action | Result |
 | --- | --- |
@@ -391,7 +393,11 @@ including their existing agents. The overview checks the expected host identity 
 and marks previously seen observations as cached when a host goes offline.
 **Show host Deck** opens that host's running Deck for slot management. A card
 in the combined grid requests the exact run from the Desktop already attached
-to that host through a private, controller-scoped endpoint. Cached cards show
+to that host through the same private, controller-scoped endpoint used by the
+physical Stream Deck. The current host also uses it for queued runs and the
+notification history's Desktop action. If that endpoint is absent or rejects
+the request because another window owns the writer, Deck can pass the same
+request to the Desktop window that opened it. Cached cards show
 their last observation and cannot request focus. If Desktop is detached from
 the host, connect it before trying focus again. Notifications and history cover all discovered
 hosts; notification preferences still belong to the individual Deck window.

@@ -9,8 +9,8 @@ use corvid_client::ControlEndpoint;
 #[cfg(windows)]
 use corvid_companion::Config;
 use corvid_companion::monitor::Scope;
+use corvid_protocol::wire::DesktopAgentFocused;
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{DesktopAgentFocused, PresentedRunKey};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 #[cfg(not(windows))]
 use tokio::process::Command;
@@ -23,10 +23,7 @@ use uuid::Uuid;
 
 use crate::connection::{self, Client};
 
-pub struct FocusRequest {
-    pub run: PresentedRunKey,
-    pub result: oneshot::Sender<Result<(), String>>,
-}
+pub use corvid_presentation::desktop_focus::FocusRequest;
 
 #[derive(Default)]
 pub struct Job {
@@ -182,7 +179,7 @@ async fn forward_focus(
                 .await;
                 let body = match outcome {
                     Ok(Ok(Ok(()))) => Body::DesktopAgentFocused(DesktopAgentFocused {}),
-                    Ok(Ok(Err(error))) => Body::Error(ProtocolFault::new("FocusUnavailable", &error).into_wire()),
+                    Ok(Ok(Err(error))) => Body::Error(error.into_wire()),
                     _ => Body::Error(ProtocolFault::new("FocusUnavailable", "The registered Desktop could not focus this run. Check the current terminal.").into_wire()),
                 };
                 client.reply(id, body).await?;
