@@ -36,6 +36,12 @@ pub fn process_image_path(pid: u32) -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn validate_socket_path(path: &Path) -> Result<()> {
+    std::os::unix::net::SocketAddr::from_pathname(path).context("invalid Unix socket path")?;
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketRole {
     Client,
@@ -195,7 +201,7 @@ impl RuntimeDir {
     }
 
     pub async fn connect(&self, role: SocketRole) -> Result<UnixStream> {
-        let path = self.socket_path(role);
+        let path = self.socket_path(role)?;
         let metadata = fs::symlink_metadata(&path).context("opening daemon socket")?;
         check_socket(&metadata, self.uid)?;
 
@@ -207,17 +213,20 @@ impl RuntimeDir {
         Ok(stream)
     }
 
-    fn socket_path(&self, role: SocketRole) -> PathBuf {
+    fn socket_path(&self, role: SocketRole) -> Result<PathBuf> {
         #[cfg(target_os = "linux")]
         if matches!(role, SocketRole::TerminalHost) {
             // Address the open private directory without extending the runtime pathname.
-            return PathBuf::from(format!(
+            return Ok(PathBuf::from(format!(
                 "/proc/self/fd/{}/{}",
                 self.directory.as_raw_fd(),
                 role.name()
-            ));
+            )));
         }
-        self.path.join(role.name())
+        let path = self.path.join(role.name());
+        #[cfg(target_os = "macos")]
+        validate_socket_path(&path)?;
+        Ok(path)
     }
 }
 
@@ -325,7 +334,7 @@ pub struct Instance<'a> {
 impl Instance<'_> {
     pub async fn bind(&self, role: SocketRole) -> Result<BoundSocket<'_>> {
         let path = self.runtime.path.join(role.name());
-        let socket_path = self.runtime.socket_path(role);
+        let socket_path = self.runtime.socket_path(role)?;
         remove_stale(&socket_path, self.runtime.uid).await?;
         let listener = UnixListener::bind(&socket_path).context("binding daemon socket")?;
         let metadata = fs::symlink_metadata(&path).context("reading bound socket identity")?;

@@ -44,27 +44,3 @@ pub fn process_path(pid: u32) -> io::Result<PathBuf> {
     let path = CStr::from_bytes_until_nul(&bytes).map_err(io::Error::other)?;
     Ok(PathBuf::from(OsStr::from_bytes(path.to_bytes())))
 }
-
-pub fn state_directory() -> io::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .ok_or_else(|| io::Error::other("HOME is unavailable"))?;
-    Ok(PathBuf::from(home).join("Library/Application Support/Corvid"))
-}
-
-pub fn runtime_directory() -> anyhow::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .ok_or_else(|| io::Error::other("HOME is unavailable"))?;
-    let boot = boot_session()?;
-    anyhow::ensure!(
-        boot.len() == 36
-            && boot
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'),
-        "invalid boot session"
-    );
-    let root = PathBuf::from(home).join(".corvid");
-    crate::unix::RuntimeDir::create_all(&root)?;
-    Ok(root.join(format!("r-{}", &boot[..16])))
-}

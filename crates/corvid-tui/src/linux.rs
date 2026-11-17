@@ -2,8 +2,6 @@ pub(crate) mod shell_agent;
 mod start;
 
 use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
-use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -774,18 +772,8 @@ fn print_agent(agent: AgentInfo) {
 }
 
 pub(super) fn state_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = override_path {
-        return Ok(path);
-    }
-    #[cfg(target_os = "macos")]
-    return Ok(corvid_protocol::macos::state_directory()?.join("daemon"));
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(base) = env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
-            return Ok(PathBuf::from(base).join("corvid"));
-        }
-        let home = env::var_os("HOME").context("set XDG_STATE_HOME or --state-dir")?;
-        ensure!(!home.is_empty(), "set XDG_STATE_HOME or --state-dir");
-        Ok(PathBuf::from(home).join(".local/state/corvid"))
-    }
+    corvid_protocol::paths::state_directory(
+        corvid_protocol::paths::StateRole::Daemon,
+        override_path,
+    )
 }

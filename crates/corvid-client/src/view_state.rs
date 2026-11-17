@@ -1,6 +1,5 @@
 //! Private, best-effort client preferences. These are navigation hints, never authority.
 
-use std::env;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
@@ -350,47 +349,21 @@ impl Drop for Recorder {
 }
 
 pub fn tui_store() -> Option<ViewStore> {
-    let base = env::var_os("CORVID_VIEW_STATE_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            #[cfg(windows)]
-            {
-                env::var_os("LOCALAPPDATA")
-                    .filter(|base| !base.is_empty())
-                    .map(|base| PathBuf::from(base).join("Corvid/clients"))
-            }
-            #[cfg(target_os = "macos")]
-            {
-                corvid_protocol::macos::state_directory()
-                    .ok()
-                    .map(|base| base.join("clients"))
-            }
-            #[cfg(target_os = "linux")]
-            {
-                env::var_os("XDG_STATE_HOME")
-                    .filter(|base| !base.is_empty())
-                    .map(PathBuf::from)
-                    .or_else(|| {
-                        env::var_os("HOME")
-                            .filter(|home| !home.is_empty())
-                            .map(|home| PathBuf::from(home).join(".local/state"))
-                    })
-                    .map(|base| base.join("corvid/clients"))
-            }
-        })?;
-    Some(ViewStore::new(base.join("tui")))
+    let path =
+        corvid_protocol::paths::state_directory(corvid_protocol::paths::StateRole::TuiViews, None)
+            .ok()?;
+    Some(ViewStore::new(path))
 }
 
 pub fn tui_runtime(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if override_path.is_some() || env::var_os("CORVID_RUNTIME_DIR").is_some() {
-        return crate::runtime_path(override_path);
-    }
-    if let Some(view) = tui_store().and_then(|store| store.last())
-        && let Target::Tui { runtime } = view.target
-    {
-        return Ok(runtime);
-    }
-    crate::runtime_path(None)
+    corvid_protocol::paths::daemon_runtime(override_path, || {
+        let view = tui_store()?.last()?;
+        match view.target {
+            Target::Tui { runtime } => Some(runtime),
+            _ => None,
+        }
+    })?
+    .prepare()
 }
 
 pub fn tui_target(runtime: &Path) -> Result<Target> {

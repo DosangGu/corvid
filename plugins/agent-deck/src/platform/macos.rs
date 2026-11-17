@@ -103,13 +103,9 @@ impl Native {
         }
         let executable = startup_executable(std::env::current_exe()?);
         let (socket_flag, socket) =
-            if self.address.parent() == Some(corvid_client::runtime_path(None)?.as_path()) {
-                (
-                    "--socket-name",
-                    self.address.file_name().context("missing socket name")?,
-                )
-            } else {
-                ("--socket-dir", self.address.as_os_str())
+            match corvid_protocol::paths::macos_startup_socket_name(&self.address)? {
+                Some(name) => ("--socket-name", name),
+                None => ("--socket-dir", self.address.as_os_str()),
             };
         let arguments = [
             executable.to_string_lossy().into_owned(),

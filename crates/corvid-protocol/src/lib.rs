@@ -1,6 +1,8 @@
 mod frame;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod paths;
 mod preflight;
 mod provider;
 mod session;

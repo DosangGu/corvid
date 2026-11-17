@@ -249,10 +249,10 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
 }
 
 fn state_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = override_path {
-        return Ok(path);
-    }
-    Ok(local_app_data()?.join("Corvid/daemon"))
+    corvid_protocol::paths::state_directory(
+        corvid_protocol::paths::StateRole::Daemon,
+        override_path,
+    )
 }
 
 fn local_app_data() -> Result<PathBuf> {
