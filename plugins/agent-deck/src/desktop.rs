@@ -81,27 +81,7 @@ impl From<PathBuf> for Settings {
 }
 
 pub fn executable() -> Result<PathBuf> {
-    let current = std::env::current_exe()?;
-    let directory = current.parent().context("locating Corvid installation")?;
-    #[cfg(target_os = "macos")]
-    {
-        let helper =
-            directory.join("../Helpers/Corvid Agent Deck.app/Contents/MacOS/corvid-agent-deck");
-        if helper.is_file() {
-            return Ok(helper);
-        }
-    }
-    let binary = format!("corvid-agent-deck{}", std::env::consts::EXE_SUFFIX);
-    let packaged = directory.join("plugins/agent-deck").join(&binary);
-    if packaged.is_file() {
-        return Ok(packaged);
-    }
-    let development = directory.join(binary);
-    ensure!(
-        development.is_file(),
-        "The Agents window is missing from this installation. Reinstall Corvid Desktop to restore it."
-    );
-    Ok(development)
+    corvid_update::layout::agent_deck_executable(&std::env::current_exe()?)
 }
 
 async fn open(

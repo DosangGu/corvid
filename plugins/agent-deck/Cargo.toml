@@ -22,6 +22,7 @@ corvid-client.workspace = true
 corvid-companion.workspace = true
 corvid-presentation.workspace = true
 corvid-protocol.workspace = true
+corvid-update.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync", "time", "process", "net"] }
 uuid.workspace = true
 serde = { workspace = true, features = ["derive"] }

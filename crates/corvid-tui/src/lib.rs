@@ -138,26 +138,7 @@ async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions)
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn local_daemon_executable() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
-    let directory = executable.parent().context("locating the Corvid runtime")?;
-    let metadata = if cfg!(target_os = "macos") && directory.ends_with("Contents/MacOS") {
-        directory.join("../Resources/package.json")
-    } else {
-        directory.join("package.json")
-    };
-    if executable
-        .file_stem()
-        .is_some_and(|name| name == "corvid-desktop")
-        && metadata.is_file()
-    {
-        let runtime = directory.join(if cfg!(windows) {
-            "corvid.exe"
-        } else {
-            "corvid"
-        });
-        anyhow::ensure!(runtime.is_file(), "the packaged Corvid runtime is missing");
-        return Ok(runtime);
-    }
-    Ok(executable)
+    corvid_update::layout::local_daemon_executable(&executable)
 }
 
 /// Replace an automatically started daemon while preserving its hosted terminals.

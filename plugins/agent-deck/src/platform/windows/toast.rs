@@ -189,7 +189,7 @@ fn shortcut_path(folder: &GUID, controller: Uuid) -> Result<PathBuf> {
 
 fn save_shortcut(path: &Path, arguments: &str, id: &HSTRING) -> Result<()> {
     let executable = std::env::current_exe()?;
-    let launcher = setup_launcher(&executable);
+    let launcher = corvid_update::layout::windows_setup_deck_launcher(&executable);
     let target = launcher.as_deref().unwrap_or(&executable);
     let target = wide(
         target
@@ -236,26 +236,6 @@ fn save_shortcut(path: &Path, arguments: &str, id: &HSTRING) -> Result<()> {
         file.Save(PCWSTR(path.as_ptr()), true)?;
     }
     Ok(())
-}
-
-fn setup_launcher(executable: &Path) -> Option<PathBuf> {
-    let plugin = executable.parent()?;
-    let plugins = plugin.parent()?;
-    let version = plugins.parent()?;
-    let versions = version.parent()?;
-    let install = versions.parent()?;
-    if plugin.file_name()? != "agent-deck"
-        || plugins.file_name()? != "plugins"
-        || versions.file_name()? != "versions"
-        || std::fs::read_to_string(version.join("native-package"))
-            .ok()?
-            .trim()
-            != "windows-setup"
-    {
-        return None;
-    }
-    let launcher = install.join("bin/corvid-agent-deck.exe");
-    launcher.is_file().then_some(launcher)
 }
 
 fn wide(value: &str) -> Vec<u16> {

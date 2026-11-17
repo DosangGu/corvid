@@ -301,16 +301,7 @@ async fn read_bundle(host: &RemoteHost, platform: HostPlatform) -> Result<(Vec<u
         HostPlatform::Linux | HostPlatform::Macos => "corvid",
     };
     let exe = std::env::current_exe()?;
-    let binaries = exe.parent().context("locating the Desktop installation")?;
-    let resources = if cfg!(target_os = "macos") && binaries.ends_with("Contents/MacOS") {
-        binaries
-            .parent()
-            .expect("MacOS has a parent")
-            .join("Resources")
-    } else {
-        binaries.to_owned()
-    };
-    let directory = resources.join("daemon").join(target);
+    let directory = corvid_update::layout::for_executable(&exe)?.remote_runtime(target);
     let file = File::open(directory.join("manifest.json")).with_context(|| {
         format!("The {target} daemon bundle is unavailable. Extract the matching daemon bundle beside Corvid Desktop")
     })?;

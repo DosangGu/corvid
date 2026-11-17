@@ -6,6 +6,7 @@ use std::process::{Command, ExitCode};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
+use crate::layout::{self, PackageLayout, VersionedPackage, WindowsInstall};
 use crate::{Package, Product, RELEASES, Release, download, target, version};
 
 #[cfg(windows)]
@@ -46,16 +47,21 @@ impl Installation {
 
     pub fn detect() -> Result<Option<Self>> {
         let executable = env::current_exe()?;
-        let directory = executable.parent().context("locating the installation")?;
-        if !package_metadata(directory).try_exists()? {
+        let layout = layout::for_executable(&executable)?;
+        if !layout.package_metadata().try_exists()? {
             return Ok(None);
         }
-        Self::at(&executable).map(Some)
+        Self::from_layout(layout.as_ref()).map(Some)
     }
 
     pub fn at(executable: &Path) -> Result<Self> {
-        let directory = executable.parent().context("locating the installation")?;
-        let metadata = package_metadata(directory);
+        let layout = layout::for_executable(executable)?;
+        Self::from_layout(layout.as_ref())
+    }
+
+    fn from_layout(layout: &dyn PackageLayout) -> Result<Self> {
+        let directory = layout.binary_directory();
+        let metadata = layout.package_metadata();
         ensure!(
             metadata.is_file(),
             "This is a source build or an externally managed installation. Update it using its original installation method."
@@ -67,22 +73,13 @@ impl Installation {
             package.target == target(package.product)?,
             "package platform mismatch"
         );
-        let package_directory = if cfg!(target_os = "macos")
-            && package.product == Product::Desktop
-            && directory.ends_with("Contents/MacOS")
-        {
-            directory
-                .ancestors()
-                .nth(3)
-                .context("locating macOS package")?
+        let package_directory = if package.product == Product::Desktop {
+            layout.package_directory()
         } else {
             directory
         };
-        let root = package_directory
-            .parent()
-            .filter(|parent| parent.file_name().is_some_and(|name| name == "versions"))
-            .and_then(Path::parent);
-        let marker = directory.join("native-package");
+        let versioned = VersionedPackage::at(package_directory);
+        let marker = WindowsInstall::marker(directory);
         if marker.try_exists()? {
             ensure!(
                 cfg!(windows)
@@ -90,31 +87,34 @@ impl Installation {
                     && fs::read_to_string(marker)?.trim() == "windows-setup",
                 "unsupported native package"
             );
-            let root = root.context("locating the Windows Setup installation root")?;
+            let versioned = versioned.context("locating the Windows Setup installation root")?;
+            let windows = WindowsInstall {
+                root: versioned.root,
+            };
             ensure!(
                 directory
                     .file_name()
                     .is_some_and(|name| name == package.version.as_str())
-                    && root.join("current.txt").is_file()
-                    && !root.join("install.json").exists(),
+                    && windows.pointer().is_file()
+                    && !versioned.receipt().exists(),
                 "Windows Setup installation layout mismatch"
             );
             return Ok(Self {
                 package,
-                root: Some(root.to_owned()),
-                bin_dir: Some(root.join("bin")),
+                root: Some(windows.root.to_owned()),
+                bin_dir: Some(windows.bin()),
                 windows_setup: true,
             });
         }
 
-        let root = root.filter(|root| root.join("install.json").is_file());
-        let bin_dir = if let Some(root) = root {
-            let receipt: Receipt = serde_json::from_slice(&fs::read(root.join("install.json"))?)?;
+        let managed = versioned.filter(|versioned| versioned.receipt().is_file());
+        let bin_dir = if let Some(versioned) = &managed {
+            let receipt: Receipt = serde_json::from_slice(&fs::read(versioned.receipt())?)?;
             ensure!(
                 receipt.schema_version == 1 && receipt.product == package.product,
                 "installation receipt mismatch"
             );
-            let bin = fs::read_to_string(root.join("bin-dir"))?;
+            let bin = fs::read_to_string(versioned.root.join("bin-dir"))?;
             let bin = PathBuf::from(bin.trim_end_matches(['\r', '\n']));
             ensure!(
                 bin.is_absolute(),
@@ -126,7 +126,7 @@ impl Installation {
         };
         Ok(Self {
             package,
-            root: root.map(Path::to_owned),
+            root: managed.map(|versioned| versioned.root.to_owned()),
             bin_dir,
             windows_setup: false,
         })
@@ -290,17 +290,6 @@ impl Installation {
     }
 }
 
-fn package_metadata(directory: &Path) -> PathBuf {
-    if cfg!(target_os = "macos") && directory.ends_with("Contents/MacOS") {
-        directory
-            .parent()
-            .expect("MacOS has a parent")
-            .join("Resources/package.json")
-    } else {
-        directory.join("package.json")
-    }
-}
-
 impl Installed {
     pub fn start_desktop(&self) -> Result<()> {
         self.start_desktop_with_args(env::args_os().skip(1))
@@ -310,12 +299,7 @@ impl Installed {
         &self,
         args: impl IntoIterator<Item = std::ffi::OsString>,
     ) -> Result<()> {
-        let directory = self.executable.parent().context("locating Desktop")?;
-        let binary = directory.join(if cfg!(windows) {
-            "corvid-desktop.exe"
-        } else {
-            "corvid-desktop"
-        });
+        let binary = layout::for_executable(&self.executable)?.desktop();
         let mut command = download::command(binary);
         command.args(args);
         command.spawn().context("restarting Corvid Desktop")?;
@@ -326,16 +310,9 @@ impl Installed {
 /// Stable Windows entry point: only the current-version pointer changes on update.
 pub fn launch(binary: &str, wait: bool) -> Result<ExitCode> {
     let executable = env::current_exe()?;
-    let root = executable
-        .parent()
-        .and_then(Path::parent)
-        .context("locating installation")?;
-    let selected = current_windows_version(root)?;
-    let mut command = Command::new(
-        root.join("versions")
-            .join(selected.to_string())
-            .join(binary),
-    );
+    let install = WindowsInstall::from_launcher(&executable)?;
+    let selected = current_windows_version(&install)?;
+    let mut command = Command::new(install.version_directory(&selected).join(binary));
     command.args(env::args_os().skip(1));
     if !wait {
         command.spawn().context("starting Corvid application")?;
@@ -350,8 +327,8 @@ pub fn launch(binary: &str, wait: bool) -> Result<ExitCode> {
     ))
 }
 
-fn current_windows_version(root: &Path) -> Result<semver::Version> {
-    let current = fs::read_to_string(root.join("current.txt"))
+fn current_windows_version(install: &WindowsInstall<'_>) -> Result<semver::Version> {
+    let current = fs::read_to_string(install.pointer())
         .context("reading the current Windows installation version")?;
     let current = current.trim();
     let selected = version(current)?;
@@ -422,5 +399,64 @@ mod tests {
         assert_eq!(installation.package.product, Product::Desktop);
         assert!(installation.root.is_none());
         assert!(!installation.is_windows_setup());
+    }
+
+    #[test]
+    fn rejects_invalid_package_metadata_and_managed_receipts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let directory = root.join("versions/0.2.0");
+        fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("corvid");
+        let metadata = directory.join("package.json");
+        fs::write(&metadata, b"{incomplete").unwrap();
+        assert!(Installation::at(&executable).is_err());
+
+        let mut package = Package {
+            schema_version: 1,
+            version: "0.2.0".into(),
+            source_revision: "a".repeat(40),
+            product: Product::Desktop,
+            target: "wrong-platform".into(),
+        };
+        fs::write(&metadata, serde_json::to_vec(&package).unwrap()).unwrap();
+        assert_eq!(
+            Installation::at(&executable).unwrap_err().to_string(),
+            "package platform mismatch"
+        );
+
+        package.target = target(package.product).unwrap().into();
+        fs::write(&metadata, serde_json::to_vec(&package).unwrap()).unwrap();
+        assert!(Installation::at(&executable).unwrap().root.is_none());
+        fs::write(
+            root.join("install.json"),
+            r#"{"schema_version":1,"product":"tui"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Installation::at(&executable).unwrap_err().to_string(),
+            "installation receipt mismatch"
+        );
+    }
+
+    #[test]
+    fn windows_launcher_follows_version_switch_and_rejects_invalid_pointers() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let launcher = root.join("bin/corvid-agent-deck.exe");
+        let install = WindowsInstall::from_launcher(&launcher).unwrap();
+        let pointer = root.join("current.txt");
+        for version in ["0.2.0", "0.2.1"] {
+            fs::write(&pointer, format!("{version}\r\n")).unwrap();
+            let active = current_windows_version(&install).unwrap();
+            assert_eq!(
+                install.version_directory(&active),
+                root.join("versions").join(version)
+            );
+        }
+        for invalid in ["../other", "v0.2.1", "0.2.1+local"] {
+            fs::write(&pointer, invalid).unwrap();
+            assert!(current_windows_version(&install).is_err());
+        }
     }
 }
