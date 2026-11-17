@@ -1230,6 +1230,7 @@ dependencies = [
  "corvid-companion",
  "corvid-presentation",
  "corvid-protocol",
+ "corvid-update",
  "embed-resource",
  "gpui",
  "image",

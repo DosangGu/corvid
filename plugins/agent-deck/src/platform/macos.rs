@@ -101,7 +101,7 @@ impl Native {
             }
             return Ok(());
         }
-        let executable = startup_executable(std::env::current_exe()?);
+        let executable = corvid_update::layout::unix_startup_executable(&std::env::current_exe()?);
         let (socket_flag, socket) =
             match corvid_protocol::paths::macos_startup_socket_name(&self.address)? {
                 Some(name) => ("--socket-name", name),
@@ -168,24 +168,4 @@ fn xml(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
-}
-
-fn startup_executable(executable: PathBuf) -> PathBuf {
-    for ancestor in executable.ancestors() {
-        let Some(versions) = ancestor
-            .parent()
-            .filter(|parent| parent.file_name().is_some_and(|name| name == "versions"))
-        else {
-            continue;
-        };
-        let Some(root) = versions.parent() else {
-            continue;
-        };
-        if root.join("install.json").is_file() {
-            return root
-                .join("current")
-                .join(executable.strip_prefix(ancestor).unwrap());
-        }
-    }
-    executable
 }

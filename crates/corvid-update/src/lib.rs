@@ -1,6 +1,7 @@
 //! GitHub release discovery and installation, independent of daemon lifecycle.
 mod download;
 mod install;
+pub mod layout;
 
 use anyhow::{Context, Result, ensure};
 use semver::Version;

@@ -6,7 +6,7 @@ use tokio::process::Command;
 
 pub(super) async fn open(instance: &str, state: &Path, alias: Option<String>) -> Result<()> {
     let cli = env::current_exe()?;
-    let desktop = cli.with_file_name("corvid-desktop.exe");
+    let desktop = corvid_update::layout::for_executable(&cli)?.desktop();
     let mut command = if desktop.is_file() {
         let mut command = Command::new(desktop);
         // Desktop opens a local terminal by default and accepts an explicit SSH alias.

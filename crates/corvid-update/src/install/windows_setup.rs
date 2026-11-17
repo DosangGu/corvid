@@ -12,6 +12,7 @@ pub(super) fn install(
         .root
         .as_deref()
         .context("locating the Windows Setup installation root")?;
+    let windows = WindowsInstall { root };
     let lock = fs::File::options()
         .create(true)
         .truncate(false)
@@ -22,7 +23,7 @@ pub(super) fn install(
     lock.try_lock()
         .context("another process may be updating this Windows Setup installation")?;
 
-    let current = current_windows_version(root)?;
+    let current = current_windows_version(&windows)?;
     if release.version == current {
         return installed_setup(installation, root, release);
     }
@@ -50,7 +51,7 @@ pub(super) fn install(
     let mut destination = OsString::from("/DIR=");
     destination.push(root);
     ensure!(
-        current_windows_version(root)? == current,
+        current_windows_version(&windows)? == current,
         "the active Windows Setup version changed during the download"
     );
     progress(InstallProgress::Installing);
@@ -69,7 +70,7 @@ pub(super) fn install(
         .context("running Windows Setup")?;
     ensure!(status.success(), "Windows Setup exited with {status}");
     ensure!(
-        current_windows_version(root)? == release.version,
+        current_windows_version(&windows)? == release.version,
         "Windows Setup did not activate the selected release"
     );
     installed_setup(installation, root, release)
@@ -80,12 +81,13 @@ fn installed_setup(
     root: &Path,
     release: &Release,
 ) -> Result<Installed> {
-    let directory = root.join("versions").join(release.version.to_string());
+    let directory = WindowsInstall { root }.version_directory(&release.version);
+    let executable = directory.join("corvid.exe");
     ensure!(
-        directory.join("corvid-desktop.exe").is_file(),
+        layout::for_executable(&executable)?.desktop().is_file(),
         "Windows Setup did not install the Desktop executable"
     );
-    installation.installed(directory.join("corvid.exe"), release, String::new())
+    installation.installed(executable, release, String::new())
 }
 
 #[cfg(test)]
