@@ -50,9 +50,12 @@ def window(title):
     return result.stdout.splitlines()[0] if result.returncode == 0 else None
 
 
-def foreground():
-    result = run("xdotool", "getactivewindow", capture_output=True, text=True)
-    return result.stdout.strip()
+def has_keyboard_focus(handle):
+    for query in ("getactivewindow", "getwindowfocus"):
+        result = run("xdotool", query, capture_output=True, text=True)
+        if result.stdout.strip() != handle:
+            return False
+    return True
 
 
 def click(handle, x, y):
@@ -137,29 +140,52 @@ def main(build):
         desktop = until("Desktop window", lambda: window("Corvid Desktop"))
         reader, _ = monitor_fixture.ready(corvid, state, env)
         stack.callback(monitor_fixture.stop, corvid, state, env)
+
+        def control(command):
+            return run(corvid, "control", command, env=env, capture_output=True, text=True).stdout
+
         def slots():
             return run(*reader, "slots", env=env, capture_output=True, text=True).stdout
 
         try:
             until("two agent cards", lambda: slots().count("availability=Available") == 2)
         except AssertionError as error:
-            agents = run(corvid, "control", "agents", env=env, capture_output=True, text=True).stdout
-            raise AssertionError(f"{error}\n{slots()}\n{agents}") from error
+            raise AssertionError(f"{error}\n{slots()}\n{control('agents')}") from error
+        agents = [dict(field.split("=", 1) for field in line.split()[1:] if "=" in field)
+                  for line in control("agents").splitlines()]
+        terminals = {agent["session"]: agent["terminal"] for agent in agents}
         deck = open_deck(desktop)
         scale = int(geometry(deck)["WIDTH"]) / 392
 
         for index, name in enumerate(("second", "first")):
             if index == 1:
                 run("xdotool", "windowminimize", "--sync", desktop)
+                until("minimized Desktop", lambda: "Iconic" in run(
+                    "xprop", "-id", desktop, "WM_STATE", capture_output=True, text=True
+                ).stdout)
             run("xdotool", "windowactivate", "--sync", deck)
             time.sleep(0.5)
             click(deck, round((55 + (1 - index) * 94) * scale), round(84 * scale))
-            until(f"foreground Desktop for {name}", lambda: foreground() == desktop)
-            token = f"deck-focus-{name}"
-            run("xdotool", "type", "--clearmodifiers", token)
-            run("xdotool", "key", "Return")
-            marker = root / f"input-{name}"
-            until(f"input in {name}'s pane", lambda: marker.exists() and marker.read_text() == token)
+            try:
+                until(f"Desktop keyboard focus for {name}", lambda: has_keyboard_focus(desktop))
+                until(f"Desktop writer for {name}'s pane", lambda: any(
+                    f"terminal={terminals[name]}" in line.split() and "pane-writer=" in line
+                    for line in control("clients").splitlines()
+                ))
+                # A restored window can resize the newly selected terminal. Wait for
+                # its full frame, as in the Desktop keyboard-input smoke test.
+                time.sleep(0.5)
+                token = f"deck-focus-{name}"
+                # Toolbar discovery can send Escape to the initial pane. Clear
+                # the fixture's canonical input line before typing its marker.
+                run("xdotool", "key", "--clearmodifiers", "ctrl+u")
+                run("xdotool", "type", "--delay", "20", "--clearmodifiers", token)
+                run("xdotool", "key", "Return")
+                marker = root / f"input-{name}"
+                until(f"input in {name}'s pane", lambda: marker.exists() and marker.read_text() == token)
+            except AssertionError as error:
+                markers = {path.name: path.read_text() for path in root.glob("input-*")}
+                raise AssertionError(f"{error}\n{control('clients')}\nFixture input: {markers!r}") from error
         print("PASS Deck clicks focused two distinct agent panes, including a minimized Desktop")
 
 
