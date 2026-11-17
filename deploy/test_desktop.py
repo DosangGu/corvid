@@ -143,10 +143,48 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         wait_for_marker(paste_marker, pasted)
         first_terminal = wait_for_terminal()
         key(window, "ctrl+shift+t")
-        wait_for_terminal(previous=first_terminal)
+        second_terminal = wait_for_terminal(previous=first_terminal)
         second_tab_marker = root / "second-tab"
         write_marker(window, second_tab_marker,
                      f"second=preserved; printf %s \"$second\" > {shlex.quote(str(second_tab_marker))}")
+        if args.build:
+            key(window, "ctrl+shift+d")
+            wait_for_terminal(previous=second_terminal)
+            key(window, "ctrl+shift+x")
+            wait_for_terminal(expected=second_terminal)
+
+            key(window, "ctrl+shift+t")
+            added_tab = wait_for_terminal(previous=second_terminal)
+            key(window, "ctrl+shift+d")
+            wait_for_terminal(previous=added_tab)
+            key(window, "ctrl+shift+w")
+            wait_for_terminal(expected=first_terminal)
+            key(window, "ctrl+Tab")
+            wait_for_terminal(expected=second_terminal)
+
+            key(window, "ctrl+shift+d")
+            split = wait_for_terminal(previous=second_terminal)
+
+            def confirm_pane_close():
+                subprocess.run(["xdotool", "mousemove", "--window", window, "1055", "20",
+                                "click", "1"], check=True, timeout=10)
+                # The last four items are close pane, close tab, close workspace, and Quit.
+                time.sleep(0.2)
+                subprocess.run(["xdotool", "key", "--repeat", "16", "Down"],
+                               check=True, timeout=10)
+                subprocess.run(["xdotool", "key", "Up", "Up", "Up", "Return"],
+                               check=True, timeout=10)
+                time.sleep(0.3)
+
+            confirm_pane_close()
+            if screenshot := os.environ.get("CORVID_CLOSE_SCREENSHOT"):
+                subprocess.run(["scrot", "--overwrite", "--focused", screenshot],
+                               check=True, timeout=10)
+            key(window, "Escape")
+            wait_for_terminal(expected=split)
+            confirm_pane_close()
+            key(window, "Return")
+            wait_for_terminal(expected=second_terminal)
         key(window, "ctrl+shift+Tab")
         wait_for_terminal(expected=first_terminal)
         selected_marker = root / "selected-tab"

@@ -20,8 +20,8 @@ use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::{CloseView, SplitAxis, TabState, ViewSelection, WorkspaceState};
 use gpui::{
-    AppContext, Context, Div, Entity, FocusHandle, IntoElement, KeyDownEvent, PromptLevel,
-    SharedString, Stateful, Task, Window, WindowHandle, div, prelude::*, rgb,
+    AppContext, Context, Div, Entity, FocusHandle, IntoElement, KeyDownEvent, PromptButton,
+    PromptLevel, SharedString, Stateful, Task, Window, WindowHandle, div, prelude::*, rgb,
 };
 
 use crate::agent_deck;
@@ -740,15 +740,22 @@ impl WorkspaceView {
             return;
         };
         target.expected_view_revision = Some(session.view_revision());
+        let end = PromptButton::ok("End terminals");
+        let cancel = PromptButton::cancel("Cancel");
+        let (buttons, confirm_index) = if target.tab_id.is_some() {
+            ([end, cancel], 0)
+        } else {
+            ([cancel, end], 1)
+        };
         let reply = window.prompt(
             PromptLevel::Warning,
             title,
             Some("The selected terminals and their jobs will stop.\nTo keep them running, use Detach or close the window."),
-            &["Cancel", "End terminals"],
+            &buttons,
             cx,
         );
         cx.spawn(async move |_, _| {
-            if reply.await == Ok(1) {
+            if reply.await == Ok(confirm_index) {
                 session.close(target);
             }
         })
@@ -835,13 +842,21 @@ impl WorkspaceView {
         if event.is_held
             && matches!(
                 shortcut,
-                (true, "n" | "t" | "d" | "e" | "p" | "f" | "r" | "z") | (_, "tab" | ",")
+                (
+                    true,
+                    "n" | "t" | "d" | "e" | "p" | "f" | "r" | "z" | "w" | "x"
+                ) | (_, "tab" | ",")
             )
         {
             cx.stop_propagation();
             return;
         }
         match shortcut {
+            (true, "w" | "x") => {
+                if let Some(session) = &self.session {
+                    session.close_active(name == "x");
+                }
+            }
             (true, "p") => self.toggle_switcher(window, cx),
             (true, "r") => self.open_naming(window, cx),
             (false, ",") => self.open_management(management::Page::Connections, window, cx),

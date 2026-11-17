@@ -599,6 +599,27 @@ impl Session {
         self.change(Action::Close(target));
     }
 
+    pub fn close_active(&self, pane: bool) {
+        let target = {
+            let buffer = self.shared.buffer();
+            let Some(selected) = buffer
+                .ui
+                .selected
+                .as_ref()
+                .filter(|_| buffer.ui.can_close())
+            else {
+                return;
+            };
+            CloseView {
+                workspace_id: selected.workspace_id.clone(),
+                tab_id: Some(selected.tab_id.clone()),
+                pane_id: pane.then(|| selected.pane_id.clone()),
+                expected_view_revision: Some(buffer.revision),
+            }
+        };
+        self.close(target);
+    }
+
     pub fn rename_tab(&self, name: String, revision: u64) {
         self.change(Action::Rename(corvid_protocol::wire::RenameView {
             expected_view_revision: Some(revision),

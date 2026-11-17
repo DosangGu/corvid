@@ -264,6 +264,10 @@ Ctrl+Shift+N creates a workspace, Ctrl+Shift+T creates a tab, Ctrl+Shift+D split
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected workspace.
 
+Ctrl+Shift+X ends the active pane. Ctrl+Shift+W ends the active tab and its
+terminals. The pane and tab close controls and menu actions ask for
+confirmation. Enter chooses **End terminals**, and **Cancel** keeps them open.
+
 Each pane follows its terminal's OSC 0/2 title in real time and uses `Pane N`
 until the terminal supplies a title. An automatic tab follows its only pane's
 title, or uses `Tab N` for a split tab, where N is the tab's workspace position.
