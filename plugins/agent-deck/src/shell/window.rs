@@ -145,7 +145,8 @@ impl Window {
         presentation: Option<Presentation>,
         cx: &gpui::App,
     ) {
-        let opened = presentation == Some(Presentation::Open);
+        // Both presentation requests reveal the existing native window.
+        let opened = presentation.is_some();
         let first = self.applied.is_none();
         let state = Applied {
             expanded: self.expanded,
