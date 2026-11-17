@@ -86,7 +86,8 @@ Desktop focus registration is not yet available through this shared interface.
 | Pin the Deck window | Lock its current position and keep it above other windows, including after focusing a terminal. |
 | Unpin the Deck window | Restore dragging and ordinary window stacking. The window stays open. |
 | Open tray menu | Reopen the previous Deck view, open notifications/settings, pause/resume, or quit. |
-| Click a notification | Show its captured event in Deck; batch notices open history. |
+| Click an agent notification | Bring the main Agent Deck grid forward. |
+| Click a batch or test notification | Open Notifications and settings. |
 | Choose Quit | Exit Deck and clear its Windows notification-center entries. |
 | Enable Start at login | Create a per-user background-launch shortcut. A pinned deck opens without taking focus. An unpinned deck starts hidden. Login startup defaults to off. |
 
@@ -171,7 +172,9 @@ notifications do not open the Deck or take focus.
 
 **Expand Deck** expands the same window for the queue, closed panes, hosts,
 terminal selection, and notification preferences. **Mini deck** returns to the compact
-view. Notification activation opens its history in the expanded view. Window
+view. On Windows, an individual agent notification opens the mini grid. Batch
+and test notifications open Notifications and settings. On macOS, notification
+activation opens its history in the expanded view. Window
 visibility and size do not affect daemon-owned work or the slot policy. The mini
 deck shows assigned slots followed by the first 32 queued runs, so larger grids
 can display more agents than the companion's configured slot count. Queued keys
@@ -357,6 +360,11 @@ to check tray reopening. The fixture launches a separate Deck and delivers
 the Win32 icon and menu messages. It measures the native window bounds and
 styles before and after reopening the mini, moved and resized expanded, and
 pinned views.
+
+The Windows test `agent_toast_opens_grid_when_visible_and_when_hidden` invokes
+the WinRT activation delegate against a running Deck. It checks that a batch
+activation opens settings and that an individual activation returns a visible
+or tray-hidden Deck to the mini grid.
 
 Native popup/click behavior, Explorer restart, startup after login, and installed
 package behavior require interactive OS qualification. They must not be inferred
