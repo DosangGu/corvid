@@ -164,10 +164,8 @@ fn startup_capture_waits_for_exec_before_binding_process_image() {
             }
         }
         let identity = incarnation(child.id(), boot_id().unwrap()).unwrap();
-        assert!(
-            ProcessImage::capture(identity, None).unwrap().executable
-                == NativeInspector.helper_image().unwrap()
-        );
+        let helper = ProcessImage::capture(identity, None).unwrap();
+        assert_eq!(helper.executable, NativeInspector.helper_image().unwrap());
         let mut input = child.stdin.take().unwrap();
         let release = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(50));
@@ -176,10 +174,17 @@ fn startup_capture_waits_for_exec_before_binding_process_image() {
 
         let captured = ProcessImage::capture_started(identity, expected);
         release.join().unwrap();
+        let helper_still_current = helper.is_current();
+        let launched_image_current = captured.is_some_and(ProcessImage::is_current);
         let _ = child.kill();
         child.wait().unwrap();
+        assert!(
+            !helper_still_current,
+            "the pre-exec helper remained focusable"
+        );
         if should_bind {
             let image = captured.expect("startup must wait for the launched image");
+            assert!(launched_image_current, "the launched image is unavailable");
             assert!(image.executable == executable);
             assert_eq!(image.incarnation.birth, identity.birth);
         } else {

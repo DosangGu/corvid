@@ -1261,9 +1261,14 @@ exec /bin/sleep 30
             panic!("missing binding");
         };
         let revision = binding.binding_revision;
-        focus(&runtime, &scope, "before-exec", client, revision, &run)
+        let applied = focus(&runtime, &scope, "before-exec", client, revision, &run)
             .await
             .unwrap();
+        assert_eq!(applied.client_id, tui.route.client_id);
+        assert_eq!(applied.agent_run_id, run.agent_run_id);
+        assert_eq!(applied.terminal_id, terminal);
+        assert_eq!(applied.selection, Some(tui.selection.clone()));
+        assert_eq!(applied.view_revision, tui.route.view_revision);
 
         tui.input(tui.route.clone(), 1, b"\n").await;
         let job = wait_for_agent(&runtime, &terminal, |agent| {
