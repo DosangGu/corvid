@@ -1226,6 +1226,7 @@ dependencies = [
  "anyhow",
  "cc",
  "clap",
+ "corvid-agent-deck-core",
  "corvid-client",
  "corvid-companion",
  "corvid-presentation",
@@ -1245,6 +1246,19 @@ dependencies = [
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "x11rb 0.14.0",
+]
+
+[[package]]
+name = "corvid-agent-deck-core"
+version = "0.2.5"
+dependencies = [
+ "anyhow",
+ "corvid-companion",
+ "corvid-presentation",
+ "corvid-protocol",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

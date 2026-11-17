@@ -3,9 +3,9 @@
 For Apple Silicon paths, native behavior, building, and distribution, see
 [macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
 
-Corvid Agent Deck is Corvid Desktop's built-in **Agents** window. It ships and
+Corvid Agent Deck is Corvid Desktop's built-in **Agents** surface. It ships and
 updates with Desktop and extends the former Agent Board. Agent status, cards,
-notifications, and navigation live in this separate window; the terminal toolbar
+notifications, and navigation live in this separate app; the terminal toolbar
 provides a compact **Agents** entry point with an input-request count when needed.
 **Settings → Agents** provides access and explains notification preferences.
 
@@ -99,11 +99,15 @@ before removing an installation.
 
 Linux currently sends notifications through `notify-send` when available. It has
 no tray or login-startup backend: its window remains visible, and closing it exits.
-Windows background parity is not claimed for Linux. macOS uses an AppKit menu-bar
-item, UserNotifications, and an opt-in per-controller LaunchAgent; see the
-[macOS guide](07_macos.md) for its installed app and permission requirements.
 
-## Floating window
+On macOS, click the menu bar icon to open the Deck below it. Click it again,
+click outside the panel, or press Escape to dismiss it. Right-click the icon for
+notification settings, pause/resume, and quit. The panel can switch between the
+mini grid and expanded views, and monitoring continues while it is dismissed.
+Login startup shows only the menu bar icon. See the [macOS guide](07_macos.md)
+for installation and notification permissions.
+
+## Deck layouts
 
 The default view is a borderless mini deck with eight keys in a **4 × 2** grid
 (**392 × 256 logical pixels**). Use **Expand Deck** to choose a preset and
@@ -122,10 +126,10 @@ mini header shows the resulting columns × rows next to its title. Its shape
 stays fixed as agents arrive and leave; empty keys remain as quiet,
 non-interactive placeholders. Extra agents scroll inside the panel.
 
-Both views have the same header with a title, window pin, expand or shrink
-button, and close button. In a portrait mini deck the title reads **Agents**.
-Drag the title to move an unpinned deck. The upright mint pin locks the current
-position and keeps the window above other windows. Click it again to restore
+Both views have an expand or shrink button and a close button. In a portrait mini
+deck the title reads **Agents**. On Windows and Linux, drag the title to move an
+unpinned deck. The upright mint pin locks the current position and keeps the
+window above other windows. Click it again to restore
 movement and ordinary stacking. Pinning does not move the deck.
 
 Windows initially places Deck at the bottom-right of the work area on the
@@ -156,12 +160,13 @@ tests cover monitor seams, negative origins, taskbar edges, detaching, and scale
 capture distances. Physical mouse dragging, multiple physical monitors, and
 mixed-DPI transitions were not exercised by this qualification.
 
-The deck defaults to unpinned. The pin state, preset, and orientation are saved
-per controller in the private `agent-deck/window.json`. A legacy fixed-position
-preference becomes pinned, while a legacy movable deck starts unpinned.
-Unpinning, clicking elsewhere, or focusing a terminal leaves the deck open.
-Closing hides it when the tray is available and exits otherwise. Incoming agent
-notifications do not open the deck or take focus.
+The floating windows on Windows and Linux default to unpinned. The pin state,
+preset, and orientation are saved per controller in the private
+`agent-deck/window.json`. A legacy fixed-position preference becomes pinned,
+while a legacy movable deck starts unpinned. Unpinning, clicking elsewhere, or
+focusing a terminal leaves those windows open. On Windows, closing hides the
+window when the tray is available. On Linux it exits Agent Deck. Incoming agent
+notifications do not open the Deck or take focus.
 
 **Expand Deck** expands the same window for the queue, closed panes, hosts,
 terminal selection, and notification preferences. **Mini deck** returns to the compact
@@ -315,10 +320,9 @@ Unavailable or ended targets remain in history without opening a new terminal.
 - [`src/desktop.rs`](../plugins/agent-deck/src/desktop.rs): Desktop launch and focus adapter.
 - [`src/connection.rs`](../plugins/agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
 - [`src/background.rs`](../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
-- [`src/window.rs`](../plugins/agent-deck/src/window.rs), [`src/app/chrome.rs`](../plugins/agent-deck/src/app/chrome.rs): saved window pin, native placement, and shared header controls.
-- [`src/window/layout.rs`](../plugins/agent-deck/src/window/layout.rs): fixed grid presets, orientation, and window dimensions.
+- [Shell](../plugins/agent-deck/src/shell.rs) and [UI](../plugins/agent-deck/src/ui.rs): native window or panel handling, GPUI content, and view controls.
+- [Agent Deck core](../crates/corvid-agent-deck-core/): grid choices, notification policy, gesture capture, and action tracking.
 - [`src/ui_signal.rs`](../plugins/agent-deck/src/ui_signal.rs): coalesced worker updates and latched open/quit requests.
-- [`src/notifications.rs`](../plugins/agent-deck/src/notifications.rs): bounded delivery policy and persistence.
 - [`src/platform`](../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
 - [`assets`](../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../assets/icons/); `cargo run -p corvid-agent-deck --example render-icons` regenerates all raster assets.
 

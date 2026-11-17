@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
@@ -19,9 +20,9 @@ use uuid::Uuid;
 
 use crate::delivery::Delivery;
 use crate::hosts::{self, Subscriptions};
-use crate::notifications::{Ledger, Notice, Settings, now_ms};
 use crate::parent::{self, DesktopLink};
 use crate::platform::{Event, Native};
+use corvid_agent_deck_core::notifications::{Ledger, Notice, Settings, now_ms};
 
 #[cfg(test)]
 mod tests;
@@ -43,7 +44,7 @@ pub struct View {
 
 pub struct Background {
     pub desktop: DesktopLink,
-    pub completed: mpsc::Receiver<Completion>,
+    completed: RefCell<mpsc::Receiver<Completion>>,
     pub view: watch::Receiver<View>,
     settings: watch::Sender<Settings>,
     test: mpsc::Sender<()>,
@@ -107,13 +108,17 @@ impl Background {
         }
         Ok(Self {
             desktop,
-            completed: completions,
+            completed: RefCell::new(completions),
             view,
             settings,
             test,
             stop: Some(stop),
             worker: Some(worker),
         })
+    }
+
+    pub fn try_completion(&self) -> Option<Completion> {
+        self.completed.borrow_mut().try_recv().ok()
     }
 
     pub fn configure(&self, settings: Settings) {
@@ -435,8 +440,9 @@ impl Monitor {
                 };
                 self.configure(settings)?;
             }
+            #[cfg(not(target_os = "macos"))]
             Event::Quit => {
-                crate::window::request_quit(&self.ctx);
+                self.ctx.quit();
             }
             Event::Error(error) => self.error(error),
         }
@@ -468,7 +474,7 @@ fn batch(mut notices: Vec<Notice>) -> Vec<Notice> {
 fn test_notice(host: Uuid) -> Notice {
     Notice {
         summary: true,
-        key: crate::notifications::Key {
+        key: corvid_agent_deck_core::notifications::Key {
             host,
             epoch: Uuid::new_v4(),
             run: Uuid::new_v4(),

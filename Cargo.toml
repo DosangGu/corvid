@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/corvid-agent-deck-core",
     "crates/corvid-client",
     "crates/corvid-companion",
     "crates/corvid-core",
@@ -36,6 +37,7 @@ publish = false
 
 [workspace.dependencies]
 corvid-agent-deck = { path = "plugins/agent-deck", default-features = false }
+corvid-agent-deck-core = { path = "crates/corvid-agent-deck-core" }
 anyhow = "1.0"
 base64 = "=0.23.1"
 clap = { version = "4.6", features = ["derive"] }

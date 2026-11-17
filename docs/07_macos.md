@@ -68,7 +68,8 @@ last window keeps the application running; clicking its Dock icon opens another.
 Quitting Desktop leaves daemon-owned PTYs running. Existing composed-text input
 and terminal Control-key encoding remain in use.
 
-Agent Deck has a menu-bar item, native notifications, pinning, show/hide, and an
+Agent Deck opens in a panel under its menu bar icon. Click the icon to toggle
+it, or right-click for settings and quit. It supports native notifications and an
 opt-in login LaunchAgent. Notification permission is controlled in System Settings.
 Click actions are scoped to notices held by the live process and go through the
 existing run/binding fences. Notifications from an exited instance cannot select
@@ -135,7 +136,8 @@ The screenshots below contain synthetic terminal output and an empty controller.
 
 ![Desktop terminal on macOS](images/macos/desktop.png)
 
-Desktop's **Agents** button launched the nested Agent Deck application. Compact
+Before the menu bar panel was introduced, Desktop's **Agents** button launched the
+nested Agent Deck application in a floating window. Compact
 and expanded views rendered, pin/unpin controls worked, and the expanded window
 stayed inside the display's visible area after resizing near its bottom edge.
 Hiding the window and reopening it from Desktop preserved the running controller.

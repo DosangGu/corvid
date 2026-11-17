@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui_signal::UiSignal;
 use anyhow::Result;
 use corvid_companion::{WezTermCandidate, discover_wezterm_panes};
 use corvid_protocol::wire::PairTerminal;
@@ -40,7 +41,7 @@ impl Pairing {
             draft.discovery.poll();
         }
     }
-    pub fn key(&mut self, event: &KeyDownEvent, cx: &mut Context<Desktop>) {
+    pub fn key(&mut self, event: &KeyDownEvent, cx: &mut Context<DeckView>) {
         let Some(draft) = &mut self.draft else {
             return;
         };
@@ -70,7 +71,7 @@ impl Pairing {
     }
 }
 
-impl Desktop {
+impl DeckView {
     pub(super) fn pair_form(&self, cx: &mut Context<Self>) -> Div {
         let Some(draft) = &self.pairing.draft else {
             return column();
@@ -83,7 +84,7 @@ impl Desktop {
             .child(
                 button("refresh-panes", "Refresh panes", true).on_click(cx.listener(
                     |view, _, _, cx| {
-                        view.pairing.open(&view.signal);
+                        view.pairing.open(&view.session.signal);
                         cx.notify();
                     },
                 )),

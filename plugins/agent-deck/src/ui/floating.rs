@@ -1,7 +1,7 @@
 use super::*;
-use crate::window::{BAR_HEIGHT, GAP, GridLayout, KEY_WIDTH, Orientation, Preset};
+use crate::shell::{BAR_HEIGHT, GAP, GridLayout, KEY_WIDTH, Orientation, Preset};
 
-impl Desktop {
+impl DeckView {
     pub(super) fn keyboard_actions(&self) -> Vec<Option<FocusAction>> {
         let Some(snapshot) = &self.view.snapshot else {
             return Vec::new();
@@ -88,9 +88,9 @@ impl Desktop {
     pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
         let text = if let Some(error) = &self.window.error {
             error.clone()
-        } else if self.pending.is_some() {
+        } else if self.actions.is_pending() {
             "Waiting for the action…".into()
-        } else if let Some(notice) = &self.notice {
+        } else if let Some(notice) = self.actions.notice() {
             notice.message.clone()
         } else {
             connection_text(&self.view).unwrap_or_default().into()

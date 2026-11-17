@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use crate::ui_signal::UiSignal;
+use super::{BAR_HEIGHT, GAP, GridLayout, KEY_HEIGHT, KEY_WIDTH};
+#[cfg(test)]
+use super::{Orientation, Preset};
+use crate::ui_signal::Presentation;
 use anyhow::Result;
 use gpui::{px, size};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -10,9 +13,12 @@ use corvid_protocol::unix::RuntimeDir as StateDirectory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory;
 
-mod layout;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(not(target_os = "macos"))]
 mod native;
-pub(crate) use layout::{BAR_HEIGHT, GAP, GridLayout, KEY_HEIGHT, KEY_WIDTH, Orientation, Preset};
+#[cfg(target_os = "macos")]
+pub(super) use macos::prepare as prepare_macos;
 
 #[derive(Clone, Default, Serialize)]
 struct Preferences {
@@ -73,6 +79,7 @@ impl Window {
         })
     }
 
+    #[cfg(any(not(target_os = "macos"), test))]
     pub fn pinned(&self) -> bool {
         self.preferences.pinned
     }
@@ -87,6 +94,7 @@ impl Window {
         });
     }
 
+    #[cfg(any(not(target_os = "macos"), test))]
     pub fn toggle_pin(&mut self) {
         self.save(Preferences {
             pinned: !self.pinned(),
@@ -94,6 +102,7 @@ impl Window {
         });
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn start_move(&mut self, window: &mut gpui::Window) {
         if self.pinned() {
             return;
@@ -102,7 +111,7 @@ impl Window {
         if let Err(error) = native::start_move(window) {
             self.error = Some(error.to_string());
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         window.start_window_move();
     }
 
@@ -119,12 +128,24 @@ impl Window {
     }
 
     pub fn hide(&mut self, window: &gpui::Window) {
-        if let Err(error) = native::hide(window) {
+        #[cfg(target_os = "macos")]
+        let result = macos::hide(window);
+        #[cfg(not(target_os = "macos"))]
+        let result = native::hide(window);
+        if let Err(error) = result {
             self.error = Some(error.to_string());
         }
     }
 
-    pub fn update(&mut self, window: &mut gpui::Window, tray: bool, opened: bool, cx: &gpui::App) {
+    #[cfg(not(target_os = "macos"))]
+    pub fn update(
+        &mut self,
+        window: &mut gpui::Window,
+        tray: bool,
+        presentation: Option<Presentation>,
+        cx: &gpui::App,
+    ) {
+        let opened = presentation == Some(Presentation::Open);
         let first = self.applied.is_none();
         let state = Applied {
             expanded: self.expanded,
@@ -151,6 +172,37 @@ impl Window {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn update(
+        &mut self,
+        window: &mut gpui::Window,
+        background: bool,
+        presentation: Option<Presentation>,
+        _: &gpui::App,
+    ) {
+        let state = Applied {
+            expanded: self.expanded,
+            pinned: self.preferences.pinned,
+            layout: self.layout(),
+        };
+        let first = self.applied.is_none();
+        let presentation = presentation
+            .or((first && (!self.background_start || !background)).then_some(Presentation::Open));
+        if self.applied == Some(state) && presentation.is_none() {
+            return;
+        }
+
+        match macos::update(window, window_size(state), presentation) {
+            Ok(()) => {
+                self.applied = Some(state);
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        window.refresh();
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn apply(&self, window: &mut gpui::Window, state: Applied, cx: &gpui::App) -> Result<()> {
         if self
             .applied
@@ -161,22 +213,26 @@ impl Window {
         if self.applied.is_none_or(|old| {
             old.expanded != state.expanded || (!state.expanded && old.layout != state.layout)
         }) {
-            let dimensions = if state.expanded {
-                size(px(800.), px(560.))
-            } else {
-                state.layout.size()
-            };
-            native::set_bounds(window, dimensions, self.applied.is_none(), cx)?;
+            native::set_bounds(window, window_size(state), self.applied.is_none(), cx)?;
         }
         Ok(())
     }
 }
 
-pub(crate) fn request_quit(signal: &UiSignal) {
-    signal.quit();
+fn window_size(state: Applied) -> gpui::Size<gpui::Pixels> {
+    if state.expanded {
+        size(px(800.), px(560.))
+    } else {
+        layout_size(state.layout)
+    }
 }
-pub(crate) fn request_open(signal: &UiSignal) {
-    signal.open();
+
+pub(super) fn layout_size(layout: GridLayout) -> gpui::Size<gpui::Pixels> {
+    let (columns, rows) = layout.dimensions();
+    size(
+        px(24.0 + columns as f32 * KEY_WIDTH + (columns - 1) as f32 * GAP),
+        px(2.0 * BAR_HEIGHT + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP),
+    )
 }
 
 #[cfg(any(not(target_os = "macos"), test))]

@@ -5,9 +5,17 @@ extern void corvid_native_event(unsigned int kind, unsigned long long high, unsi
 
 @interface CorvidDeckDelegate : NSObject <UNUserNotificationCenterDelegate>
 @property NSStatusItem *item;
+@property NSMenu *menu;
 @end
 
 @implementation CorvidDeckDelegate
+- (void)statusClicked:(NSStatusBarButton *)button {
+    if (NSApp.currentEvent.type == NSEventTypeRightMouseUp) {
+        [self.menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(button.bounds)) inView:button];
+    } else {
+        corvid_native_event(7, 0, 0);
+    }
+}
 - (void)open:(id)sender { corvid_native_event(1, 0, 0); }
 - (void)settings:(id)sender { corvid_native_event(2, 0, 0); }
 - (void)pause:(id)sender { corvid_native_event(3, 0, 0); }
@@ -28,6 +36,8 @@ extern void corvid_native_event(unsigned int kind, unsigned long long high, unsi
 
 static CorvidDeckDelegate *delegate;
 
+NSStatusBarButton *corvid_status_button(void) { return delegate.item.button; }
+
 void corvid_native_start(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         delegate = [CorvidDeckDelegate new];
@@ -42,7 +52,11 @@ void corvid_native_start(void) {
             item.target = delegate;
             [menu addItem:item];
         }
-        delegate.item.menu = menu;
+        delegate.menu = menu;
+        NSStatusBarButton *button = delegate.item.button;
+        button.target = delegate;
+        button.action = @selector(statusClicked:);
+        [button sendActionOn:NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp];
         @try { [UNUserNotificationCenter currentNotificationCenter].delegate = delegate; }
         @catch (NSException *exception) { corvid_native_event(6, 0, 0); }
     });
@@ -83,48 +97,5 @@ void corvid_native_notice(unsigned long long high, unsigned long long low, const
                     }];
                 }];
         } @catch (NSException *exception) { corvid_native_event(6, 0, 0); }
-    });
-}
-
-void corvid_window_visible(void *view, bool visible) {
-    NSWindow *window = [(__bridge NSView *)view window];
-    if (visible) [window orderFront:nil]; else [window orderOut:nil];
-}
-
-void corvid_window_configure(void *view, bool pinned, bool expanded) {
-    NSWindow *window = [(__bridge NSView *)view window];
-    window.level = pinned ? NSFloatingWindowLevel : NSNormalWindowLevel;
-    window.movable = !pinned;
-    window.titleVisibility = NSWindowTitleHidden;
-    window.titlebarAppearsTransparent = YES;
-    NSWindowStyleMask style = window.styleMask | NSWindowStyleMaskFullSizeContentView;
-    window.styleMask = expanded && !pinned ? style | NSWindowStyleMaskResizable : style & ~NSWindowStyleMaskResizable;
-    for (NSWindowButton button = NSWindowCloseButton; button <= NSWindowZoomButton; button++)
-        [window standardWindowButton:button].hidden = YES;
-}
-
-void corvid_window_bounds(void *view, double width, double height, bool initial) {
-    NSWindow *window = [(__bridge NSView *)view window];
-    // Defer resize callbacks until GPUI releases its current app update. Resize
-    // and clamp together: AppKit preserves the top edge when changing size, so
-    // clamping before a queued resize can push an expanded deck off the screen.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSScreen *screen = window.screen ?: [NSScreen mainScreen];
-        if (initial) {
-            NSPoint mouse = [NSEvent mouseLocation];
-            for (NSScreen *candidate in [NSScreen screens]) {
-                if (NSPointInRect(mouse, candidate.frame)) screen = candidate;
-            }
-        }
-        NSSize size = NSMakeSize(width, height);
-        if (!NSEqualSizes(window.contentView.bounds.size, size)) [window setContentSize:size];
-
-        NSRect work = screen.visibleFrame;
-        NSRect frame = window.frame;
-        NSPoint origin = frame.origin;
-        if (initial) origin = NSMakePoint(NSMaxX(work) - frame.size.width - 16, NSMinY(work) + 16);
-        origin.x = MAX(NSMinX(work), MIN(origin.x, NSMaxX(work) - frame.size.width));
-        origin.y = MAX(NSMinY(work), MIN(origin.y, NSMaxY(work) - frame.size.height));
-        [window setFrameOrigin:origin];
     });
 }

@@ -18,6 +18,7 @@ required-features = ["ui"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+corvid-agent-deck-core.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
 corvid-presentation.workspace = true

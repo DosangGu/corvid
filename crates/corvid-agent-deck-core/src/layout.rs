@@ -1,14 +1,13 @@
-use gpui::{Pixels, Size, px, size};
 use serde::{Deserialize, Serialize};
 
-pub(crate) const KEY_WIDTH: f32 = 86.0;
-pub(crate) const KEY_HEIGHT: f32 = 80.0;
-pub(crate) const GAP: f32 = 8.0;
-pub(crate) const BAR_HEIGHT: f32 = 36.0;
+pub const KEY_WIDTH: f32 = 86.0;
+pub const KEY_HEIGHT: f32 = 80.0;
+pub const GAP: f32 = 8.0;
+pub const BAR_HEIGHT: f32 = 36.0;
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Preset {
+pub enum Preset {
     Six,
     #[default]
     Eight,
@@ -31,7 +30,7 @@ impl Preset {
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Orientation {
+pub enum Orientation {
     #[default]
     Landscape,
     Portrait,
@@ -39,7 +38,7 @@ pub(crate) enum Orientation {
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
-pub(crate) struct GridLayout {
+pub struct GridLayout {
     pub preset: Preset,
     pub orientation: Orientation,
 }
@@ -61,14 +60,6 @@ impl GridLayout {
     pub fn label(self) -> String {
         let (columns, rows) = self.dimensions();
         format!("{columns} × {rows}")
-    }
-
-    pub fn size(self) -> Size<Pixels> {
-        let (columns, rows) = self.dimensions();
-        size(
-            px(24.0 + columns as f32 * KEY_WIDTH + (columns - 1) as f32 * GAP),
-            px(2.0 * BAR_HEIGHT + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP),
-        )
     }
 }
 
@@ -98,8 +89,6 @@ mod tests {
             assert_eq!(tall.capacity(), capacity);
             assert_eq!(wide.label(), landscape);
             assert_eq!(tall.label(), portrait);
-            assert!(wide.size().width > wide.size().height);
-            assert!(tall.size().height > tall.size().width);
         }
     }
 }

@@ -188,8 +188,7 @@ impl DesktopLink {
 }
 
 pub(crate) fn show(ctx: &UiSignal) {
-    crate::window::request_open(ctx);
-    ctx.notify();
+    ctx.open();
 }
 
 #[cfg(test)]
