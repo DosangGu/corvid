@@ -40,6 +40,7 @@ const CAPABILITIES: &[&str] = &[
     "attach.v1",
     corvid_protocol::PANE_WRITERS_CAPABILITY,
     corvid_protocol::SESSION_CLIENTS_CAPABILITY,
+    corvid_protocol::GRACEFUL_DETACH_CAPABILITY,
     corvid_protocol::RESUME_ATTACH_CAPABILITY,
     "render.v1",
     "ping.v1",
@@ -289,6 +290,16 @@ impl TuiConnection<'_> {
         };
         match body {
             Body::Detach(_) => return Ok(true),
+            Body::GracefulDetach(_) => {
+                self.active.events.close();
+                let body = match self.active.terminal.retire_view(self.active.route).await {
+                    Ok(()) => Body::Detach(corvid_protocol::wire::Detach {}),
+                    Err(error) => Body::Error(error.into_wire()),
+                };
+                self.workspaces.release(client);
+                self.send(request.request_id, body).await?;
+                return Ok(true);
+            }
             Body::IssuePairingCode(_) => self.pair(request.request_id).await?,
             Body::SelectView(view) => {
                 let destination = exact_destination(view, self.active.route.view_revision);

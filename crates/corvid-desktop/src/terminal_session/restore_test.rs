@@ -226,9 +226,6 @@ async fn wait_disconnected(session: &Session) -> Result<Ui> {
     .context("waiting for Desktop detach")?
 }
 
-// TODO: Make a rapid Desktop relaunch wait for its previous writer to detach
-// Consider acknowledging graceful detach after the daemon releases the writer so a relaunch can restore the same view without displacing an active writer.
-// Issue URL: https://github.com/DosangGu/corvid/issues/79
 async fn wait_for_client_release(runtime: &Path) -> Result<()> {
     timeout(COMMAND_TIMEOUT, async {
         loop {
@@ -308,8 +305,13 @@ async fn verify_restore(runtime: &Path, state: &Path) -> Result<()> {
             .is_some_and(|fault| fault.code == "HostMismatch"),
         "inventory lookup accepted an unexpected daemon"
     );
-    drop(first);
-    wait_for_client_release(runtime).await?;
+    // The test daemon shares this executor. Let it process the detach while
+    // the Desktop shutdown waits for the acknowledgement on its own thread.
+    tokio::task::spawn_blocking(move || drop(first)).await?;
+    ensure!(
+        corvid_client::clients(runtime).await?.clients.is_empty(),
+        "Desktop finished detaching before the daemon released its writer"
+    );
 
     let store = ViewStore::new(state.join("desktop-view"));
     let saved = store.last().context("Desktop did not save its view")?;

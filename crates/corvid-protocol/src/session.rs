@@ -237,6 +237,7 @@ impl Session {
                 | Body::MoveTab(_)
                 | Body::IssuePairingCode(_)
                 | Body::RedrawView(_)
+                | Body::GracefulDetach(_)
                 | Body::FrameApplied(_)
                 | Body::Detach(_),
             ) => Ok(body),
