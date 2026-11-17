@@ -22,6 +22,7 @@ PACKAGE_FILES = {
     "rust-toolchain.toml",
 }
 PACKAGE_DIRECTORIES = (".cargo/", "assets/", "crates/", "deploy/", "plugins/", "spikes/")
+REGULAR_OR_ABSENT = {"100644", "000000"}
 
 
 def comparison_base(event, ref, before):
@@ -59,17 +60,17 @@ def changed_paths(diff):
 
 
 def docs_change(old_mode, new_mode, path):
-    regular_or_absent = {"100644", "000000"}
     return (
-        old_mode in regular_or_absent
-        and new_mode in regular_or_absent
+        old_mode in REGULAR_OR_ABSENT
+        and new_mode in REGULAR_OR_ABSENT
         and is_documentation(path)
     )
 
 
-def rust_source_edit(old_mode, new_mode, path):
+def rust_source_change(old_mode, new_mode, path):
     return (
-        old_mode == new_mode == "100644"
+        old_mode in REGULAR_OR_ABSENT
+        and new_mode in REGULAR_OR_ABSENT
         and path.startswith(("crates/", "plugins/", "spikes/"))
         and path.endswith(".rs")
         and path.rsplit("/", 1)[-1] != "build.rs"
@@ -124,7 +125,7 @@ def classify(event, ref, before):
     for old_mode, new_mode, path in changes:
         if docs_change(old_mode, new_mode, path):
             continue
-        if rust_source_edit(old_mode, new_mode, path):
+        if rust_source_change(old_mode, new_mode, path):
             source = True
             continue
         return PACKAGE
