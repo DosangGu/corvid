@@ -26,9 +26,9 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
-    DEFAULT_SHELL_CAPABILITY, Frame, PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame,
-    SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES,
-    TERMINAL_HISTORY_MAX_ROWS, decode_envelope,
+    DEFAULT_SHELL_CAPABILITY, Frame, GRACEFUL_DETACH_CAPABILITY, PANE_PREVIEW_CAPABILITY,
+    ProtocolFault, RenderFrame, SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY,
+    TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout};
@@ -41,6 +41,7 @@ use crate::{agent_deck, local_bootstrap, remote_bootstrap};
 pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
+const DETACH_TIMEOUT: Duration = Duration::from_secs(2);
 type HistoryReply = std::result::Result<TerminalHistory, String>;
 
 mod inventory_watch;
@@ -403,6 +404,7 @@ struct Requests {
     prompts: Prompts,
     host: Option<String>,
     terminal: Option<String>,
+    closing: oneshot::Receiver<()>,
 }
 
 impl Session {
@@ -447,6 +449,7 @@ impl Session {
         let (actions, incoming) = mpsc::channel(32);
         let (prompt_sender, prompts) = mpsc::unbounded_channel();
         let (size, sizes) = watch::channel((0, grid));
+        let (close, closing) = oneshot::channel();
         let requests = Requests {
             monitor: settings,
             recorder: match store.recorder() {
@@ -461,34 +464,70 @@ impl Session {
             prompts: Prompts(prompt_sender),
             host: None,
             terminal: None,
+            closing,
         };
         let (stop, mut stopped) = oneshot::channel();
         let state = Arc::clone(&shared);
-        let thread = thread::Builder::new().name("corvid-desktop-client".into()).spawn(move || {
-            let result = tokio::runtime::Builder::new_current_thread().enable_all().build()
-                .map_err(anyhow::Error::from)
-                .and_then(|runtime| runtime.block_on(async {
-                    let mut agent_deck = agent_deck::Job::default();
-                    let result = tokio::select! {
-                        result = run_reconnecting(destination, state_dir, target, explicit, requests, &state, &mut agent_deck) => result,
-                        _ = &mut stopped => Ok("Detached from Corvid.".into()),
+        let thread = thread::Builder::new()
+            .name("corvid-desktop-client".into())
+            .spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|runtime| {
+                        runtime.block_on(async {
+                            let mut agent_deck = agent_deck::Job::default();
+                            let result = {
+                                let client = run_reconnecting(
+                                    destination,
+                                    state_dir,
+                                    target,
+                                    explicit,
+                                    requests,
+                                    &state,
+                                    &mut agent_deck,
+                                );
+                                tokio::pin!(client);
+                                tokio::select! {
+                                    result = &mut client => result,
+                                    _ = &mut stopped => {
+                                        let _ = close.send(());
+                                        if timeout(DETACH_TIMEOUT, &mut client).await.is_err() {
+                                            eprintln!("Timed out waiting for Desktop detach");
+                                        }
+                                        Ok("Detached from Corvid.".into())
+                                    }
+                                }
+                            };
+                            agent_deck.close().await;
+                            result
+                        })
+                    });
+                state.update_ui(|ui| {
+                    ui.restore_unavailable = restoring
+                        && result
+                            .as_ref()
+                            .err()
+                            .and_then(|error| error.downcast_ref::<ProtocolFault>())
+                            .is_some_and(|fault| {
+                                matches!(
+                                    fault.code.as_str(),
+                                    "NoTerminal"
+                                        | "TargetGone"
+                                        | "SavedWorkspaceGone"
+                                        | "WorkspaceBusy"
+                                )
+                            });
+                    ui.connected = false;
+                    ui.inventory_ready = false;
+                    ui.changing = false;
+                    ui.message = match result {
+                        Ok(message) => message,
+                        Err(error) => format!("{error:#}"),
                     };
-                    agent_deck.close().await;
-                    result
-                }));
-            state.update_ui(|ui| {
-                ui.restore_unavailable = restoring && result.as_ref().err()
-                    .and_then(|error| error.downcast_ref::<ProtocolFault>())
-                    .is_some_and(|fault| matches!(fault.code.as_str(), "NoTerminal" | "TargetGone" | "SavedWorkspaceGone" | "WorkspaceBusy"));
-                ui.connected = false;
-                ui.inventory_ready = false;
-                ui.changing = false;
-                ui.message = match result {
-                    Ok(message) => message,
-                    Err(error) => format!("{error:#}"),
-                };
-            });
-        })?;
+                });
+            })?;
         Ok((
             Self {
                 shared,
@@ -802,6 +841,7 @@ async fn run(
         prompts,
         host,
         terminal,
+        closing,
     }: &mut Requests,
     shared: &Arc<Shared>,
     agent_deck: &mut agent_deck::Job,
@@ -1149,6 +1189,7 @@ async fn run(
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         tokio::select! {
+            _ = &mut *closing => break,
             result = &mut monitor_task, if monitor_pending => {
                 monitor_pending = false;
                 if let Err(error) = result.unwrap_or_else(|error| Err(error.into())) {
@@ -1162,7 +1203,7 @@ async fn run(
             }
             action = actions.recv() => match action {
                 Some(action) => client.action(action).await?,
-                None => return Ok("Detached from Corvid.".into()),
+                None => break,
             },
             Some(request) = deck_focus.recv() => client.focus_from_deck(request).await?,
             result = client.agent_deck.tasks.join_next(), if !client.agent_deck.tasks.is_empty() => {
@@ -1179,6 +1220,14 @@ async fn run(
             _ = &mut inventory.finished => bail!("workspace synchronization stopped"),
         }
     }
+    if let Err(error) = timeout(DETACH_TIMEOUT, client.detach())
+        .await
+        .context("waiting for daemon detach")
+        .and_then(|result| result)
+    {
+        eprintln!("Desktop detach was not acknowledged: {error:#}");
+    }
+    Ok("Detached from Corvid.".into())
 }
 
 async fn attach(
@@ -1281,6 +1330,37 @@ fn validate_selection(view: &ViewSelection) -> Result<()> {
 }
 
 impl Client<'_> {
+    async fn detach(&mut self) -> Result<()> {
+        if !self
+            .link
+            .session()
+            .capabilities
+            .iter()
+            .any(|cap| cap == GRACEFUL_DETACH_CAPABILITY)
+        {
+            return Ok(());
+        }
+        let id = self
+            .link
+            .send(Body::GracefulDetach(
+                corvid_protocol::wire::GracefulDetach {},
+            ))
+            .await?;
+        loop {
+            let Frame::Structured(payload) = self.link.receive().await? else {
+                continue;
+            };
+            let reply = decode_envelope(&payload)?;
+            self.link.session().validate_scope(&reply)?;
+            if reply.request_id.as_deref() == Some(id.as_str()) {
+                return match reply.body {
+                    Some(Body::Detach(_)) => Ok(()),
+                    Some(Body::Error(fault)) => Err(ProtocolFault::from_wire(&fault).into()),
+                    _ => bail!("unexpected daemon detach response"),
+                };
+            }
+        }
+    }
     fn publish_view(&self) {
         if let Some(recorder) = self.recorder {
             recorder.record(

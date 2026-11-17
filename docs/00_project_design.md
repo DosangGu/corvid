@@ -1494,6 +1494,11 @@ collecting agent observations with no attached TUI. A subsequent attach gets a n
 ClientId, explicit writer claim, current state, and full redraw; it never restores an old
 input queue or a previous connection's terminal-mode assumptions.
 
+On clean Desktop shutdown, a daemon advertising `graceful_detach.v1` retires
+the terminal input route and releases the client's writer claims before
+acknowledging detach. Desktop waits briefly for this acknowledgement. Older
+daemons and broken connections use the transport's ordinary disconnect path.
+
 Deployment must put the daemon outside the disposable SSH login lifecycle. Prefer an
 explicitly installed Linux user service with a verified logout-survival configuration;
 when appropriate and authorized by the operator, this can include lingering. A manual

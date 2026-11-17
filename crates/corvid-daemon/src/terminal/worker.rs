@@ -190,6 +190,7 @@ enum Command {
         action: Action,
     },
     Fence(InputRoute, oneshot::Sender<Reply<bool>>),
+    RetireView(InputRoute, oneshot::Sender<Reply<()>>),
     Freeze(InputRoute, oneshot::Sender<Reply<()>>),
     Thaw(InputRoute, oneshot::Sender<Reply<InputRoute>>),
     Activate(InputRoute, TuiViewport, oneshot::Sender<Reply<()>>),
@@ -334,6 +335,14 @@ impl TerminalHandle {
         let (send, receive) = oneshot::channel();
         self.commands
             .try_send(Command::Fence(route, send))
+            .map_err(|_| overloaded())?;
+        timeout_reply(receive).await
+    }
+
+    pub(crate) async fn retire_view(&self, route: InputRoute) -> Reply<()> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .try_send(Command::RetireView(route, send))
             .map_err(|_| overloaded())?;
         timeout_reply(receive).await
     }
@@ -483,6 +492,15 @@ impl Worker {
                 if !reply.is_closed() {
                     let _ = reply.send(self.fence(route));
                 }
+            }
+            Command::RetireView(route, reply) => {
+                if self.lease.as_ref().is_some_and(|lease| {
+                    lease.route.client_id == route.client_id
+                        && lease.route.connection_generation == route.connection_generation
+                }) {
+                    self.revoke();
+                }
+                let _ = reply.send(Ok(()));
             }
             Command::Freeze(route, reply) => {
                 if !reply.is_closed() {

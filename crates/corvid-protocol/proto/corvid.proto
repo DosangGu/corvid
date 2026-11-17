@@ -106,6 +106,7 @@ message Envelope {
     StopAgentMonitor stop_agent_monitor = 131;
     BrowseDirectories browse_directories = 132;
     DirectoryListing directory_listing = 133;
+    GracefulDetach graceful_detach = 134;
   }
 }
 
@@ -1223,6 +1224,9 @@ message FrameApplied {
 }
 
 message Detach {}
+
+// Ask the daemon to retire the writer before replying with Detach.
+message GracefulDetach {}
 
 message TerminalExited {
   string terminal_id = 1;

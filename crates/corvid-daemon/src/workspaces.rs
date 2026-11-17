@@ -627,9 +627,10 @@ impl Workspaces {
     pub(crate) fn release(&self, client: Uuid) {
         let mut registry = self.lock_registry();
         registry.release_claims(client);
-        registry.clients.remove(&client);
         registry.controllers.disconnect(client);
-        registry.publish(vec![(Group::Client(client), Vec::new())]);
+        if registry.clients.remove(&client).is_some() {
+            registry.publish(vec![(Group::Client(client), Vec::new())]);
+        }
     }
 
     pub(crate) fn claim(&self, client: Uuid, workspace: Uuid, viewport: Viewport) -> Reply<u64> {
