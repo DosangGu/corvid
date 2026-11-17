@@ -531,6 +531,39 @@ leave this evidence unchanged. Focus checks the live process before applying a
 selection.
 [Linux `/proc` reference](https://docs.kernel.org/filesystems/proc.html#process-specific-subdirectories)
 
+Linux and macOS implement the daemon's internal `ProcessInspector` contract,
+with a `ProcessObservation` handle for stat, executable identity/path, bounded
+arguments, and verified CWD. Linux retains a procfs directory and queries entries
+relative to it. macOS retains a PID/birth pair and rechecks birth identity around
+libproc/sysctl observations. Neither handle freezes exec, foreground groups, or
+directories into an atomic snapshot. Ownership checks compare birth and image;
+broker checks retain one handle and revalidate after reading its metadata.
+`BirthIdentity` is an equality token within a boot. Its existing wire field is
+still named `start_ticks`; Linux ticks and Darwin microseconds are not converted
+into a shared time unit, and no Protobuf schema changes are required.
+
+Observation errors distinguish absence, changed identity, unavailable queries,
+invalid data, and size limits. Common daemon policy decides their meaning: a
+missing process at shell-agent open or a sampled replacement birth retires that
+shell run; a failed subsequent query remains Unknown. The PTY probe preserves
+its prior identity on unavailable/reused-PID samples, and requires a matching
+sample with exit evidence before reporting Exited. Child-exit evidence remains
+authoritative. CWD is published only when its named directory matches the
+observed device/inode. Argument queries reject more than 4096 bytes rather than
+accepting a command prefix; Darwin's temporary sysctl buffer remains bounded at
+256 KiB, with at most 128 arguments and no environment returned.
+
+Initial exec polling stays in common policy: a 250 ms deadline, 2 ms polls,
+rejection of the helper/wrong qualified image, and 20 ms of stable observations
+for an unqualified image. Interrupted observations reset that stability window.
+Scripted-backend tests use a fake clock for these transitions and probe timing.
+Native tests cover handle lifetime, CWD identity, bounded argv, and delayed exec;
+the delayed-exec fixture uses separate executable copies even on multicall
+coreutils systems. These are process-contract tests, not provider qualification.
+The TUI shares only a best-effort PID-to-image-path helper through
+`corvid-protocol::unix`; it gains no process authority or client-to-daemon
+dependency. The daemon retains PTY, liveness, ownership, and probe-budget policy.
+
 The SSH fixture uses temporary keys, a pinned host key, a loopback-only SSH
 listener, and a transient user unit. It ran with other user sessions active and
 lingering disabled. Use the last-login fixture to qualify the logout policy on

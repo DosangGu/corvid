@@ -22,6 +22,20 @@ const DIRECTORY_FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_CLOEXEC);
 const SOCKET_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// Best-effort path lookup for local launch/upgrade clients. This PID-only
+/// query is not process-identity or ownership evidence; the daemon uses bound
+/// observation handles and verifies birth/executable identity separately.
+pub fn process_image_path(pid: u32) -> io::Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_link(format!("/proc/{pid}/exe"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::process_path(pid)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketRole {
     Client,

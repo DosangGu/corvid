@@ -1,3 +1,7 @@
+use super::inspection::{
+    ARGUMENT_LIMIT, BirthIdentity, Observation, ObservationError, ProcessInspector,
+    ProcessObservation,
+};
 use super::{Executable, Stat};
 use nix::fcntl::{AtFlags, OFlag, openat, readlinkat};
 use nix::sys::stat::{Mode, SFlag, fstatat};
@@ -16,78 +20,78 @@ pub(crate) fn boot_id() -> Option<Uuid> {
     .ok()
 }
 
+/// Retains a procfs directory: relative queries cannot follow PID reuse. Exec
+/// and directory changes remain possible during this handle's lifetime.
 pub(super) struct ProcessDirectory {
     pid: u32,
     pub(super) directory: File,
 }
 
-impl ProcessDirectory {
-    pub(super) fn open(pid: u32) -> Option<Self> {
-        Some(Self {
-            pid,
-            directory: File::open(format!("/proc/{pid}")).ok()?,
-        })
-    }
+pub(super) struct Inspector;
 
-    pub(super) fn try_open(pid: u32) -> std::io::Result<Self> {
-        Ok(Self {
+impl ProcessInspector for Inspector {
+    type Handle = ProcessDirectory;
+
+    fn open(&self, pid: u32) -> Observation<Self::Handle> {
+        Ok(ProcessDirectory {
             pid,
             directory: File::open(format!("/proc/{pid}"))?,
         })
     }
+}
 
-    pub(super) fn path(&self) -> Option<PathBuf> {
-        Some(PathBuf::from(readlinkat(&self.directory, "exe").ok()?))
+impl ProcessObservation for ProcessDirectory {
+    fn path(&self) -> Observation<PathBuf> {
+        Ok(PathBuf::from(readlinkat(&self.directory, "exe")?))
     }
 
-    pub(super) fn arguments(&self) -> Option<Vec<u8>> {
+    fn arguments(&self) -> Observation<Vec<u8>> {
         let fd = openat(
             &self.directory,
             "cmdline",
             OFlag::O_RDONLY | OFlag::O_CLOEXEC,
             Mode::empty(),
-        )
-        .ok()?;
+        )?;
         let mut bytes = Vec::new();
-        File::from(fd).take(4097).read_to_end(&mut bytes).ok()?;
-        Some(bytes)
+        File::from(fd)
+            .take((ARGUMENT_LIMIT + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > ARGUMENT_LIMIT {
+            return Err(ObservationError::TooLarge);
+        }
+        Ok(bytes)
     }
 
-    pub(super) fn cwd(&self) -> Option<PathBuf> {
-        let path = PathBuf::from(readlinkat(&self.directory, "cwd").ok()?);
-        let observed = fstatat(&self.directory, "cwd", AtFlags::empty()).ok()?;
-        let named = path.metadata().ok()?;
+    fn cwd(&self) -> Observation<PathBuf> {
+        let path = PathBuf::from(readlinkat(&self.directory, "cwd")?);
+        let observed = fstatat(&self.directory, "cwd", AtFlags::empty())?;
+        let named = path.metadata()?;
         (named.is_dir() && named.dev() == observed.st_dev && named.ino() == observed.st_ino)
             .then_some(path)
+            .ok_or(ObservationError::Invalid)
     }
 
-    pub(super) fn stat(&self) -> Option<Stat> {
+    fn stat(&self) -> Observation<Stat> {
         let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC;
-        let fd = openat(&self.directory, "stat", flags, Mode::empty()).ok()?;
-        parse_stat_file(File::from(fd), self.pid)
+        let fd = openat(&self.directory, "stat", flags, Mode::empty())?;
+        let mut bytes = Vec::with_capacity(512);
+        File::from(fd).take(4097).read_to_end(&mut bytes)?;
+        if bytes.len() > 4096 {
+            return Err(ObservationError::TooLarge);
+        }
+        parse_stat(&bytes, self.pid).ok_or(ObservationError::Invalid)
     }
 
-    pub(super) fn executable(&self) -> Option<Executable> {
+    fn executable(&self) -> Observation<Executable> {
         // Read both entries through one directory so PID reuse cannot mix samples.
-        let stat = fstatat(&self.directory, "exe", AtFlags::empty()).ok()?;
-        (SFlag::from_bits_truncate(stat.st_mode) == SFlag::S_IFREG).then_some(Executable {
-            device: stat.st_dev,
-            inode: stat.st_ino,
-        })
+        let stat = fstatat(&self.directory, "exe", AtFlags::empty())?;
+        (SFlag::from_bits_truncate(stat.st_mode) == SFlag::S_IFREG)
+            .then_some(Executable {
+                device: stat.st_dev,
+                inode: stat.st_ino,
+            })
+            .ok_or(ObservationError::Invalid)
     }
-}
-
-pub(super) fn read_stat(pid: u32) -> Option<Stat> {
-    parse_stat_file(File::open(format!("/proc/{pid}/stat")).ok()?, pid)
-}
-
-fn parse_stat_file(file: File, pid: u32) -> Option<Stat> {
-    let mut bytes = Vec::with_capacity(512);
-    file.take(4097).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 4096 {
-        return None;
-    }
-    parse_stat(&bytes, pid)
 }
 
 pub(super) fn parse_stat(bytes: &[u8], pid: u32) -> Option<Stat> {
@@ -115,12 +119,12 @@ pub(super) fn parse_stat(bytes: &[u8], pid: u32) -> Option<Stat> {
         .parse::<i32>()
         .ok()
         .filter(|group| *group > 0);
-    let start_ticks = fields.nth(13)?.parse().ok()?;
+    let birth = BirthIdentity::from_raw(fields.nth(13)?.parse().ok()?);
     Some(Stat {
         parent_pid,
         process_group,
         tty,
-        start_ticks,
+        birth,
         foreground_group,
         exited: matches!(state, "Z" | "X" | "x"),
     })

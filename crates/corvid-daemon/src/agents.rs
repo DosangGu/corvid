@@ -362,7 +362,7 @@ impl ManagedRun {
             process_identity: self.process.map(|identity| ProcessIdentity {
                 pid: identity.pid,
                 boot_id: identity.boot_id.to_string(),
-                start_ticks: identity.start_ticks,
+                start_ticks: identity.birth.wire_value(),
                 foreground_group: identity.foreground_group,
             }),
             process_observed_unix_ms: run.process.evidence.observed_unix_ms,

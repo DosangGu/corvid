@@ -549,7 +549,7 @@ mod tests {
                 incarnation: Incarnation {
                     boot_id: Uuid::new_v4(),
                     pid: 1,
-                    start_ticks: 1,
+                    birth: crate::process::BirthIdentity::from_raw(1),
                     foreground_group: None,
                 },
                 executable: Executable::read(&std::env::current_exe().unwrap()).unwrap(),
@@ -622,7 +622,7 @@ mod tests {
         ) -> Result<Option<(Location, Provider)>, ProtocolFault> {
             let producer = HookProducer {
                 pid: self.owner.incarnation.pid,
-                start_ticks: self.owner.incarnation.start_ticks,
+                birth: self.owner.incarnation.birth,
                 executable: self.owner.executable,
             };
             self.agents.apply_hook(hook, self.owner, producer)
