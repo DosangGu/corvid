@@ -518,7 +518,7 @@ impl Run {
             agent_run_id: run.identity.id.to_string(),
             terminal_id: run.identity.terminal_id.to_string(),
             location: Some(projection::selection(self.location)),
-            provider: projection::provider(run.identity.provider) as i32,
+            provider: crate::provider::contract(run.identity.provider).wire_id,
             process: process as i32,
             process_observed_unix_ms: run.process.evidence.observed_unix_ms,
             exit_code,

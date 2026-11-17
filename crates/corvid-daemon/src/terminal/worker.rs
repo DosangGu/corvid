@@ -1491,10 +1491,7 @@ impl Launch {
         let mut argv = self.argv.into_iter();
         let program = match (self.provider, argv.as_slice().is_empty()) {
             (Some(provider), _) => {
-                let name = match provider {
-                    Provider::Claude => "claude.exe",
-                    Provider::Codex => "codex.exe",
-                };
+                let name = crate::provider::contract(provider).windows.program;
                 std::env::var_os("PATH")
                     .as_ref()
                     .into_iter()

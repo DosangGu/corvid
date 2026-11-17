@@ -6,12 +6,13 @@ use std::time::{Duration, Instant};
 
 use corvid_core::agent::ProcessLiveness;
 use corvid_protocol::ProtocolFault;
-use corvid_protocol::wire::{AgentProvider, RegisterShellAgent};
+use corvid_protocol::wire::RegisterShellAgent;
 use uuid::Uuid;
 
 use crate::process::{self, Executable, Incarnation, ProcessImage};
+use crate::provider;
 
-use super::{Provider, Reply, Workspaces};
+use super::{Reply, Workspaces};
 
 const EXEC_GRACE: Duration = Duration::from_secs(1);
 
@@ -73,11 +74,7 @@ impl Workspaces {
         let unauthorized =
             || ProtocolFault::new("Unauthorized", "shell launch has no verified PTY");
         let terminal = Uuid::parse_str(&request.terminal_id).map_err(|_| unauthorized())?;
-        let provider = match AgentProvider::try_from(request.provider) {
-            Ok(AgentProvider::Claude) => Provider::Claude,
-            Ok(AgentProvider::Codex) => Provider::Codex,
-            _ => return Err(unauthorized()),
-        };
+        let provider = provider::from_wire(request.provider).ok_or_else(unauthorized)?;
         if request.executable_path.len() > 4096 || request.executable_path.contains(&0) {
             return Err(unauthorized());
         }

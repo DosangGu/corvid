@@ -6,10 +6,11 @@ use corvid_core::agent::{
 };
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::collector::MAX_BATCH_INPUTS;
-use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
+use corvid_protocol::wire::{CollectHook, HookEvent};
 use uuid::Uuid;
 
 use crate::agents::evidence;
+use crate::provider;
 
 pub(crate) struct Hook {
     pub(crate) association: Uuid,
@@ -34,13 +35,11 @@ impl Hook {
         let association = parse_uuid(&request.launch_association).ok_or_else(invalid)?;
         let delivery = request_id.and_then(parse_uuid).ok_or_else(invalid)?;
         let event = HookEvent::try_from(request.event).map_err(|_| invalid())?;
-        let provider = match AgentProvider::try_from(request.provider) {
-            Ok(AgentProvider::Claude) => Provider::Claude,
-            Ok(AgentProvider::Codex) => Provider::Codex,
-            _ => return Err(invalid()),
-        };
+        let provider = provider::from_wire(request.provider).ok_or_else(invalid)?;
+        let contract = provider::contract(provider);
         let session_expected = event != HookEvent::DeliveryGap;
-        if !supported_event(provider, event)
+        if (!contract.events.contains(&event) && event != HookEvent::DeliveryGap)
+            || !(contract.valid_hook_fields)(event, request)
             || session_expected != request.session_id.is_some()
             || ![
                 &request.session_id,
@@ -53,27 +52,6 @@ impl Hook {
             .all(|id| id.as_deref().is_none_or(valid_id))
         {
             return Err(invalid());
-        }
-        if provider == Provider::Codex {
-            let turn_expected = !matches!(
-                event,
-                HookEvent::Startup
-                    | HookEvent::Resume
-                    | HookEvent::Compact
-                    | HookEvent::DeliveryGap
-            );
-            let tool_expected = matches!(
-                event,
-                HookEvent::ToolStarted
-                    | HookEvent::ToolFinished
-                    | HookEvent::QuestionStarted
-                    | HookEvent::QuestionResult
-            );
-            if turn_expected != request.turn_id.is_some()
-                || tool_expected != request.tool_id.is_some()
-            {
-                return Err(invalid());
-            }
         }
         if is_child_event(event)
             && (request.actor_id.is_none()
@@ -132,7 +110,7 @@ impl Hook {
                 .to_owned(),
             );
         }
-        if self.provider == Provider::Codex
+        if provider::contract(self.provider).first_stop_per_turn
             && self.event == HookEvent::ResponseObserved
             && let Some(turn) = &self.turn
         {
@@ -146,17 +124,11 @@ impl Hook {
         let mut confidence = Confidence::Confirmed;
         let kind = match self.event {
             HookEvent::PromptSubmitted => {
-                confidence = Confidence::Inferred;
                 let turn = self.turn.clone()?;
-                match self.provider {
-                    Provider::Claude => ObservationKind::InteractivePromptSubmitted(turn),
-                    Provider::Codex => ObservationKind::TurnStarted(turn),
-                }
+                return Some((provider::contract(self.provider).prompt)(turn));
             }
             HookEvent::QuestionStarted => {
-                if self.provider == Provider::Codex {
-                    confidence = Confidence::Inferred;
-                }
+                confidence = provider::contract(self.provider).question_confidence;
                 ObservationKind::InputRequested {
                     key: self.request_key(),
                     kind: RequestKind::Question,
@@ -219,35 +191,6 @@ fn valid_input_batch(request: &CollectHook, event: HookEvent) -> bool {
         && request.actor_id.is_none()
         && (1..=MAX_BATCH_INPUTS).contains(&tools.len())
         && tools.iter().all(|tool| valid_id(tool) && seen.insert(tool))
-}
-
-fn supported_event(provider: Provider, event: HookEvent) -> bool {
-    match event {
-        HookEvent::Startup
-        | HookEvent::Resume
-        | HookEvent::Compact
-        | HookEvent::PromptSubmitted
-        | HookEvent::QuestionStarted
-        | HookEvent::QuestionResult
-        | HookEvent::PermissionRequested
-        | HookEvent::ResponseObserved
-        | HookEvent::DeliveryGap => true,
-        HookEvent::Clear
-        | HookEvent::InputBatchFinished
-        | HookEvent::PlanApprovalStarted
-        | HookEvent::PlanApprovalResult
-        | HookEvent::ContextEnded
-        | HookEvent::ContextReplaced
-        | HookEvent::ResumeContextEnded
-        | HookEvent::SubagentStarted
-        | HookEvent::SubagentResponseObserved
-        | HookEvent::SubagentLinked
-        | HookEvent::NestedSubagentLinked => provider == Provider::Claude,
-        HookEvent::ToolStarted | HookEvent::ToolFinished | HookEvent::TurnInterrupted => {
-            provider == Provider::Codex
-        }
-        HookEvent::Unspecified => false,
-    }
 }
 
 fn is_child_event(event: HookEvent) -> bool {

@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,9 +12,16 @@ use uuid::Uuid;
 use super::{Launch, ProtocolFault, Registry, Reply, Workspaces};
 use crate::metadata::SavedSession;
 use crate::projection;
+use crate::provider::{self, Resume, ResumeConfirmation};
 use crate::terminal::TerminalHandle;
 
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct RestorePlan {
+    launch: Launch,
+    session: AgentSessionKey,
+    confirmation: ResumeConfirmation,
+}
 
 pub(super) struct Attempt {
     request: String,
@@ -81,12 +87,12 @@ impl Workspaces {
                 let prepared = registry
                     .check_not_closing(location)
                     .and_then(|()| prepare_launch(self.metadata.saved_session(location.pane)))
-                    .and_then(|(launch, key)| {
+                    .and_then(|plan| {
                         self.reserve_slot(&mut registry, location, true)
-                            .map(|terminal| (launch, key, terminal))
+                            .map(|terminal| (plan, terminal))
                     });
                 match prepared {
-                    Ok((launch, key, terminal)) => {
+                    Ok((plan, terminal)) => {
                         result = pane_result(location, PaneRestoreStatus::Starting);
                         registry.restores.insert(
                             location.pane,
@@ -97,9 +103,7 @@ impl Workspaces {
                         );
                         let workspaces = self.clone();
                         tokio::spawn(async move {
-                            workspaces
-                                .run_restore(location, terminal, launch, key)
-                                .await;
+                            workspaces.run_restore(location, terminal, plan).await;
                         });
                     }
                     Err(error) => {
@@ -119,17 +123,15 @@ impl Workspaces {
         Ok(WorkspaceRestored { panes })
     }
 
-    async fn run_restore(
-        &self,
-        location: Location,
-        terminal: TerminalHandle,
-        launch: Launch,
-        key: AgentSessionKey,
-    ) {
-        let started = terminal.restore(launch).await;
+    async fn run_restore(&self, location: Location, terminal: TerminalHandle, plan: RestorePlan) {
+        let started = terminal.restore(plan.launch).await;
         let (result, release) = match started {
             Ok(id) => {
-                let confirmed = self.confirm_restore(id, &terminal, &key).await;
+                let confirmed = match plan.confirmation {
+                    ResumeConfirmation::AuthenticatedSession => {
+                        self.confirm_restore(id, &terminal, &plan.session).await
+                    }
+                };
                 match confirmed {
                     Ok(()) => {
                         let mut result = pane_result(location, PaneRestoreStatus::Resumed);
@@ -221,7 +223,10 @@ impl Registry {
         }
         match self.metadata.saved_session(location.pane) {
             None => pane_result(location, PaneRestoreStatus::Empty),
-            Some(saved) if saved.verified => pane_result(location, PaneRestoreStatus::Available),
+            Some(saved) if saved.verified => match resume_contract(saved.key.provider) {
+                Ok(_) => pane_result(location, PaneRestoreStatus::Available),
+                Err(error) => failed(location, error),
+            },
             Some(_) => failed(
                 location,
                 ProtocolFault::new(
@@ -233,34 +238,51 @@ impl Registry {
     }
 }
 
-fn prepare_launch(saved: Option<SavedSession>) -> Reply<(Launch, AgentSessionKey)> {
+fn prepare_launch(saved: Option<SavedSession>) -> Reply<RestorePlan> {
     let saved = saved
-        .filter(|saved| saved.verified && saved.key.is_valid())
+        .filter(|saved| saved.verified && provider::valid_session(&saved.key))
         .ok_or_else(|| {
             ProtocolFault::new(
                 "SessionUnverified",
                 "no verified saved conversation is available for this pane",
             )
         })?;
+    let (resume, confirmation) = resume_contract(saved.key.provider)?;
     let cwd = saved.cwd.as_ref()
         .and_then(|cwd| crate::platform::decode_os_string(&cwd.path))
         .map(PathBuf::from)
         .filter(|path| path.is_absolute() && path.is_dir())
         .ok_or_else(|| ProtocolFault::new("ResumeDirectoryUnavailable", "the saved session directory is unavailable on the daemon host; restore it or open a shell"))?;
-    let argument = match saved.key.provider {
-        Provider::Codex => "resume",
-        Provider::Claude => "--resume",
-    };
     let launch = Launch {
-        argv: vec![
-            OsString::from(argument),
-            OsString::from(&saved.key.provider_session_id),
-        ],
+        argv: (resume.arguments)(&saved.key.provider_session_id),
         cwd: Some(cwd),
         provider: Some(saved.key.provider),
         if_empty: true,
     };
-    Ok((launch, saved.key))
+    Ok(RestorePlan {
+        launch,
+        session: saved.key,
+        confirmation,
+    })
+}
+
+fn resume_contract(provider: Provider) -> Reply<(&'static Resume, ResumeConfirmation)> {
+    let resume = provider::contract(provider)
+        .resume
+        .as_ref()
+        .ok_or_else(|| {
+            ProtocolFault::new(
+                "ResumeUnsupported",
+                "provider does not support native resume; open a shell to continue",
+            )
+        })?;
+    let confirmation = resume.confirmation.ok_or_else(|| {
+        ProtocolFault::new(
+            "ResumeUnconfirmed",
+            "provider cannot verify the saved session; open a shell to choose the session",
+        )
+    })?;
+    Ok((resume, confirmation))
 }
 
 fn parse_id(id: &str) -> Option<Uuid> {
@@ -279,5 +301,130 @@ fn failed(location: Location, error: ProtocolFault) -> PaneRestoreResult {
     PaneRestoreResult {
         error: Some(error.into_wire()),
         ..pane_result(location, PaneRestoreStatus::Failed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+    use std::sync::Arc;
+
+    use corvid_core::layout::{CwdObservation, CwdSource};
+    use tokio::time::timeout;
+
+    use super::*;
+    use crate::collector::HookEnvironment;
+    use crate::identity::Identity;
+    use crate::metadata;
+    use crate::platform::StateDirectory;
+
+    #[tokio::test]
+    async fn registered_fixture_recovers_sessions_and_reports_per_pane_limits() -> anyhow::Result<()>
+    {
+        let directory = tempfile::tempdir_in(
+            std::env::home_dir().ok_or_else(|| anyhow::anyhow!("home directory unavailable"))?,
+        )?;
+        let open = || StateDirectory::create_all(&directory.path().join("state"));
+        let state = open()?;
+        let lock = state.lock_storage()?;
+        let (mut view, updates, saver) = metadata::start(state, lock)?;
+        let mut layout = (*updates.layout()).clone();
+        let exact = layout.primary().unwrap();
+        let manual = layout.add_tab(exact.workspace, "Manual".into())?;
+        let unverifiable = layout.add_tab(exact.workspace, "Unverifiable".into())?;
+        let empty = layout.add_tab(exact.workspace, "Shell".into())?;
+        for location in [exact, manual, unverifiable] {
+            layout.record_cwd(
+                location,
+                CwdObservation {
+                    path: directory.path().as_os_str().as_encoded_bytes().to_vec(),
+                    source: CwdSource::LaunchDirectory,
+                    observed_unix_ms: 1,
+                },
+            )?;
+        }
+        updates.update(Some(Arc::new(layout)), std::iter::empty());
+        for (location, provider) in [
+            (exact, Provider::Fixture),
+            (manual, Provider::FixtureManual),
+            (unverifiable, Provider::FixtureUnverified),
+        ] {
+            updates.observe_session(
+                location,
+                Some(AgentSessionKey {
+                    provider,
+                    provider_session_id: "session/saved".into(),
+                }),
+            );
+        }
+        assert!(timeout(Duration::from_secs(5), view.wait_saved()).await?);
+        drop(updates);
+        drop(view);
+        timeout(Duration::from_secs(5), saver).await??;
+
+        let state = open()?;
+        let identity = Identity::load(&state)?;
+        let lock = state.lock_storage()?;
+        let (_view, updates, _saver) = metadata::start(state, lock)?;
+        let plan = prepare_launch(updates.saved_session(exact.pane)).unwrap();
+        assert_eq!(plan.session.provider, Provider::Fixture);
+        assert_eq!(
+            plan.launch.argv,
+            [OsStr::new("reopen"), OsStr::new("session/saved")]
+        );
+        assert_eq!(plan.launch.cwd.as_deref(), Some(directory.path()));
+
+        let workspaces = Workspaces::new(
+            updates,
+            Arc::new(HookEnvironment {
+                runtime: directory.path().join("run"),
+                identity: Arc::new(identity),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                shell_commands: None,
+            }),
+        );
+        let inspect = RestoreWorkspace {
+            workspace_id: exact.workspace.to_string(),
+            pane_id: None,
+            mode: AgentRestoreMode::Inspect as i32,
+        };
+        let result = workspaces.restore_workspace(&inspect, "inspect").unwrap();
+        for (location, status, error_code) in [
+            (exact, PaneRestoreStatus::Available, None),
+            (manual, PaneRestoreStatus::Failed, Some("ResumeUnsupported")),
+            (
+                unverifiable,
+                PaneRestoreStatus::Failed,
+                Some("ResumeUnconfirmed"),
+            ),
+            (empty, PaneRestoreStatus::Empty, None),
+        ] {
+            let selection = projection::selection(location);
+            let pane = result
+                .panes
+                .iter()
+                .find(|pane| pane.location.as_ref() == Some(&selection))
+                .unwrap();
+            assert_eq!(pane.status(), status);
+            assert_eq!(
+                pane.error.as_ref().map(|error| error.code.as_str()),
+                error_code
+            );
+        }
+        let retry = RestoreWorkspace {
+            pane_id: Some(unverifiable.pane.to_string()),
+            mode: AgentRestoreMode::Retry as i32,
+            ..inspect
+        };
+        for _ in 0..2 {
+            let result = workspaces.restore_workspace(&retry, "retry").unwrap();
+            assert_eq!(result.panes[0].status(), PaneRestoreStatus::Failed);
+            assert_eq!(
+                result.panes[0].error.as_ref().unwrap().code,
+                "ResumeUnconfirmed"
+            );
+        }
+        assert!(workspaces.lock_registry().slots.is_empty());
+        Ok(())
     }
 }

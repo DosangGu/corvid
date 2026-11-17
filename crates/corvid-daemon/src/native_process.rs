@@ -92,7 +92,7 @@ impl Process {
     }
 
     fn provider(&self) -> Option<Provider> {
-        provider_name(self.image()?.file_name()?.to_str()?)
+        crate::provider::windows_provider(self.image()?.file_name()?.to_str()?)
     }
 }
 
@@ -120,7 +120,11 @@ pub(crate) fn verify_hook(pid: u32, root: ProcessKey, provider: Provider) -> Opt
         return None;
     }
     let mut parent = parent(&entries, peer.key)?;
-    if provider == Provider::Codex && is_hook_shell(&parent.image()?) {
+    if crate::provider::contract(provider)
+        .windows
+        .allows_hook_shell
+        && is_hook_shell(&parent.image()?)
+    {
         parent = self::parent(&entries, parent.key)?;
     }
     if parent.provider() != Some(provider) {
@@ -273,7 +277,7 @@ fn snapshot() -> Option<BTreeMap<u32, Entry>> {
             .unwrap_or_default();
         let provider = String::from_utf16(name)
             .ok()
-            .and_then(|name| provider_name(&name));
+            .and_then(|name| crate::provider::windows_provider(&name));
         entries.insert(
             entry.th32ProcessID,
             Entry {
@@ -284,14 +288,4 @@ fn snapshot() -> Option<BTreeMap<u32, Entry>> {
         present = unsafe { Process32NextW(handle.as_raw_handle(), &mut entry) } != 0;
     }
     Some(entries)
-}
-
-fn provider_name(name: &str) -> Option<Provider> {
-    if name.eq_ignore_ascii_case("codex.exe") {
-        Some(Provider::Codex)
-    } else if name.eq_ignore_ascii_case("claude.exe") {
-        Some(Provider::Claude)
-    } else {
-        None
-    }
 }

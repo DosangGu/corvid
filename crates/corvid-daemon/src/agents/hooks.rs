@@ -13,6 +13,7 @@ use super::children::{ChildEvent, ChildOwner};
 use super::{Agents, ChildKey, Launch, ManagedRun, PendingResume, evidence, monotonic_ms};
 use crate::hook_data::{Hook, hook_evidence};
 use crate::process::{HookProducer, ProcessImage};
+use crate::provider::{self, InProcessResume};
 
 const MAX_CONTEXTS_PER_LAUNCH: usize = 256;
 const RESUME_WINDOW_MS: u64 = 5_000;
@@ -112,7 +113,9 @@ impl Agents {
         }
         if current.run.identity.provider_session.as_deref() != Some(session) {
             if !launch.sessions.contains(session) {
-                if hook.provider == Provider::Codex
+                if provider::contract(hook.provider)
+                    .unix
+                    .quarantine_unknown_session
                     && current.run.identity.provider_session.is_some()
                 {
                     launch.ambiguous = true;
@@ -259,7 +262,10 @@ impl Launch {
             }
             HookEvent::Startup if has_context => {
                 if !reused {
-                    if hook.provider == Provider::Codex {
+                    if provider::contract(hook.provider)
+                        .unix
+                        .quarantine_unknown_session
+                    {
                         self.ambiguous = true;
                         current.terminal_available = false;
                     }
@@ -268,16 +274,17 @@ impl Launch {
                 return None;
             }
             HookEvent::Clear if reused => return None,
-            HookEvent::Resume if has_context && hook.provider == Provider::Codex => {
-                self.abandon_resume(
-                    current,
-                    "in-process Codex resume lacks a qualified boundary",
-                );
-                return None;
-            }
             HookEvent::Resume if has_context => {
-                if !self.confirm_resume(current, hook.turn.as_deref()) {
-                    return None;
+                match provider::contract(hook.provider).unix.in_process_resume {
+                    InProcessResume::CorrelatedEnd => {
+                        if !self.confirm_resume(current, hook.turn.as_deref()) {
+                            return None;
+                        }
+                    }
+                    InProcessResume::Ambiguous(reason) => {
+                        self.abandon_resume(current, reason);
+                        return None;
+                    }
                 }
             }
             _ => {}
@@ -408,6 +415,119 @@ mod tests {
         let terminal = codex.current().run.identity.terminal_id;
         codex.apply("second", HookEvent::Resume);
         assert!(codex.agents.confirmed_session(terminal).is_none());
+    }
+
+    #[test]
+    fn registered_fixture_observes_input_and_restores_only_the_confirmed_conversation() {
+        use corvid_core::agent::{Activity, AgentSessionKey, RequestStatus};
+        use corvid_core::layout::Layout;
+
+        let session = "session/first";
+        let mut fixture = Fixture::new(Provider::Fixture);
+        let submit = |fixture: &mut Fixture, session: &str, event, tool: Option<&str>| {
+            let hook = Hook::decode(
+                &CollectHook {
+                    provider: provider::contract(Provider::Fixture).wire_id,
+                    event: event as i32,
+                    launch_association: fixture.association.to_string(),
+                    session_id: Some(session.to_owned()),
+                    turn_id: Some("turn".to_owned()),
+                    tool_id: tool.map(str::to_owned),
+                    ..Default::default()
+                },
+                Some(&Uuid::new_v4().to_string()),
+            )
+            .unwrap();
+            fixture.submit_notice(hook).unwrap()
+        };
+        submit(&mut fixture, session, HookEvent::Startup, None);
+        submit(&mut fixture, session, HookEvent::PromptSubmitted, None);
+        assert_eq!(fixture.current().run.activity.value, Activity::Working);
+        submit(
+            &mut fixture,
+            session,
+            HookEvent::QuestionStarted,
+            Some("first"),
+        );
+        assert_eq!(
+            fixture
+                .current()
+                .run
+                .requests
+                .values()
+                .next()
+                .unwrap()
+                .state
+                .value,
+            RequestStatus::Pending
+        );
+        submit(
+            &mut fixture,
+            session,
+            HookEvent::QuestionResult,
+            Some("first"),
+        );
+        assert_eq!(
+            fixture
+                .current()
+                .run
+                .requests
+                .values()
+                .next()
+                .unwrap()
+                .state
+                .value,
+            RequestStatus::Resolved
+        );
+        assert!(submit(&mut fixture, session, HookEvent::ResponseObserved, None).is_some());
+        assert!(fixture.current().run.recent_response.is_some());
+
+        submit(
+            &mut fixture,
+            session,
+            HookEvent::PlanApprovalStarted,
+            Some("approval"),
+        );
+        let original = fixture.current().run.identity.id;
+        let terminal = fixture.current().run.identity.terminal_id;
+        let replacement = "session/replacement";
+        submit(&mut fixture, replacement, HookEvent::Clear, None);
+        assert_ne!(fixture.current().run.identity.id, original);
+        assert!(fixture.current().run.requests.is_empty());
+        assert!(
+            fixture.agents.runs[&original]
+                .run
+                .requests
+                .values()
+                .all(|request| request.state.value != RequestStatus::Pending)
+        );
+        let key = fixture.agents.confirmed_session(terminal).unwrap();
+        assert_eq!(
+            key,
+            AgentSessionKey {
+                provider: Provider::Fixture,
+                provider_session_id: replacement.to_owned()
+            }
+        );
+
+        let layout = Layout::empty_terminal();
+        let location = layout.primary().unwrap();
+        let updates = crate::metadata::MetadataUpdates::in_memory(layout);
+        updates.observe_session(location, Some(key.clone()));
+        assert_eq!(updates.saved_session(location.pane).unwrap().key, key);
+
+        let mut restored = Fixture::new(Provider::Fixture);
+        submit(&mut restored, replacement, HookEvent::Resume, None);
+        let restored_terminal = restored.current().run.identity.terminal_id;
+        assert_eq!(
+            restored.agents.confirmed_session(restored_terminal),
+            Some(key)
+        );
+        assert_ne!(
+            restored.current().run.identity.id,
+            fixture.current().run.identity.id
+        );
+        assert!(restored.current().run.requests.is_empty());
     }
 
     struct Fixture {

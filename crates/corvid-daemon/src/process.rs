@@ -212,7 +212,7 @@ impl ProcessImage {
                 executable: self.executable,
             });
         }
-        if provider != Provider::Codex {
+        if !crate::provider::contract(provider).unix.managed_broker {
             return None;
         }
         codex_broker(observer.parent_pid, pid)

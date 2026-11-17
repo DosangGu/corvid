@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+test-provider = []
+
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true

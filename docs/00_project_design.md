@@ -394,6 +394,29 @@ Provider-defined Hook/notify JSON stays unchanged at the provider boundary. The 
 converts allowlisted observations into Corvid's bounded Protobuf collector messages;
 changing Corvid IPC does not change provider Hook input/output contracts.
 
+#### Adding a provider integration
+
+Register a provider in the domain provider enum, the Protobuf provider enum, and
+the daemon's provider contracts. Keep its executable names, observer setup,
+hook field requirements, evidence mapping, and qualified capabilities with the
+registration. Add the provider's helper parser and CLI registration so it can
+submit bounded collector messages. Map provider-specific observations to the
+existing domain events where their semantics match. Preserve platform ownership
+checks for the process, launch association, and hook producer.
+
+Declare the saved-session ID syntax and build native resume arguments as
+separate OS strings. Reuse the daemon's authenticated conversation observation
+as confirmation when the provider can supply it. A provider without native
+resume or exact confirmation returns a pane-level failure and leaves ordinary
+shell recovery available. The daemon manages workspace reservation, deadlines,
+cleanup, and run identities. A new run starts with its own request state.
+
+Contract tests may register a synthetic provider and exercise correlation,
+state storage, and recovery without a real CLI. Record real-provider runtime
+qualification separately with the exact version, platform, and observed
+behavior. Use the existing Claude and Codex fixtures to cover changes to their
+adapter contracts.
+
 ### 6.2 Official evidence and proposed mappings
 
 All sources in the following tables were checked **2026-11-07**. Scope `CC-doc` means

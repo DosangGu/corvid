@@ -16,6 +16,12 @@ use reducer::Correlation;
 pub enum Provider {
     Claude,
     Codex,
+    #[cfg(feature = "test-provider")]
+    Fixture,
+    #[cfg(feature = "test-provider")]
+    FixtureManual,
+    #[cfg(feature = "test-provider")]
+    FixtureUnverified,
 }
 
 /// A provider conversation, independent of a process, pane, or daemon epoch.
@@ -26,14 +32,9 @@ pub struct AgentSessionKey {
 }
 
 impl AgentSessionKey {
-    pub fn is_valid(&self) -> bool {
+    pub fn has_valid_id(&self) -> bool {
         let id = &self.provider_session_id;
-        !id.is_empty()
-            && id.len() <= 256
-            && !id.starts_with('-')
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+        !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
     }
 }
 

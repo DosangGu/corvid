@@ -9,21 +9,18 @@ use anyhow::{Context, Result, ensure};
 use corvid_core::agent::Provider;
 use corvid_daemon::shell_agent;
 use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH, SHELL_TERMINAL};
-use corvid_protocol::wire::{AgentProvider, RegisterShellAgent};
+use corvid_protocol::wire::RegisterShellAgent;
 use uuid::Uuid;
 
 pub(crate) fn execute(provider: Provider, argv: Vec<OsString>) -> u8 {
-    let name = match provider {
-        Provider::Claude => "claude",
-        Provider::Codex => "codex",
-    };
+    let name = shell_agent::program(provider);
     let Some(path) = shell_agent::resolve(provider) else {
         eprintln!("{name}: command not found");
         return 127;
     };
     let mut command = Command::new(&path);
     command.env_remove(SHELL_TERMINAL);
-    if interactive_invocation(provider, &argv)
+    if shell_agent::interactive_invocation(provider, &argv)
         && io::stdin().is_terminal()
         && io::stdout().is_terminal()
         && let Ok((association, observer_args, epoch)) = register(provider, &path, &argv)
@@ -37,15 +34,6 @@ pub(crate) fn execute(provider: Provider, argv: Vec<OsString>) -> u8 {
     126
 }
 
-fn interactive_invocation(provider: Provider, argv: &[OsString]) -> bool {
-    !matches!(
-        (provider, argv.first().and_then(|arg| arg.to_str())),
-        (_, Some("-h" | "--help" | "-V" | "--version"))
-            | (Provider::Claude, Some("-p" | "--print"))
-            | (Provider::Codex, Some("e" | "exec"))
-    )
-}
-
 fn register(
     provider: Provider,
     path: &Path,
@@ -56,13 +44,9 @@ fn register(
     let runtime = crate::runtime_path(None)?;
     let observer_args = shell_agent::qualified_arguments(provider, path, argv)
         .context("unqualified shell agent")?;
-    let provider = match provider {
-        Provider::Claude => AgentProvider::Claude,
-        Provider::Codex => AgentProvider::Codex,
-    };
     let registration = RegisterShellAgent {
         terminal_id,
-        provider: provider as i32,
+        provider: shell_agent::provider_number(provider),
         executable_path: path.as_os_str().as_encoded_bytes().to_vec(),
     };
     let (association, epoch) = tokio::runtime::Builder::new_current_thread()

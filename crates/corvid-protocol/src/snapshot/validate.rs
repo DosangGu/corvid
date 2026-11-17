@@ -84,10 +84,8 @@ pub(super) fn historical_run(record: &HistoricalRun, current_epoch: &str) -> Res
     )?;
     let ended = record.last_lifecycle == AgentLifecycle::Ended as i32;
     require(
-        matches!(
-            AgentProvider::try_from(record.provider),
-            Ok(AgentProvider::Claude | AgentProvider::Codex)
-        ) && known_state::<AgentLifecycle>(record.last_lifecycle)
+        known_state::<AgentProvider>(record.provider)
+            && known_state::<AgentLifecycle>(record.last_lifecycle)
             && known_state::<AgentProcessState>(record.last_process)
             && (record.last_exit_code.is_none()
                 || record.last_process == AgentProcessState::Exited as i32)

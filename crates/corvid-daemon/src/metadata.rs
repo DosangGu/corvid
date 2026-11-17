@@ -147,7 +147,7 @@ impl MetadataUpdates {
                 return false;
             }
             let previous = stored.resumes.get(&location.pane);
-            let next = match key.filter(AgentSessionKey::is_valid) {
+            let next = match key.filter(crate::provider::valid_session) {
                 Some(key) => SavedSession {
                     key,
                     cwd: stored.layout.last_cwd(location).cloned(),
@@ -456,7 +456,7 @@ fn valid_resumes(stored: &Stored) -> bool {
         .collect();
     stored.resumes.iter().all(|(pane, saved)| {
         panes.contains(pane)
-            && saved.key.is_valid()
+            && crate::provider::valid_session(&saved.key)
             && saved.cwd.as_ref().is_none_or(|cwd| {
                 !cwd.path.is_empty() && cwd.path.len() <= 4096 && !cwd.path.contains(&0)
             })
