@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use corvid_core::agent::{ProcessLiveness, Provider};
 use nix::unistd::geteuid;
 use semver::Version;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 mod inspection;
@@ -19,6 +20,8 @@ pub(crate) use inspection::BirthIdentity;
 use inspection::{Clock, ObservationError, ProcessInspector, ProcessObservation, SystemClock};
 use native::Inspector as NativeInspector;
 pub(crate) use native::boot_id;
+#[cfg(target_os = "linux")]
+pub(crate) use native::legacy_observer;
 
 const PROBE_SPACING: Duration = Duration::from_millis(50);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
@@ -55,7 +58,7 @@ impl ProbeBudget {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct Incarnation {
     pub(crate) boot_id: Uuid,
     pub(crate) pid: u32,
@@ -73,7 +76,7 @@ struct Stat {
     exited: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct Executable {
     device: u64,
     inode: u64,
@@ -89,13 +92,13 @@ impl Executable {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ProcessImage {
     pub(crate) incarnation: Incarnation,
     pub(crate) executable: Executable,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct HookProducer {
     pub(crate) pid: u32,
     pub(crate) birth: BirthIdentity,
@@ -176,6 +179,26 @@ impl ProcessImage {
 
     pub(crate) fn is_current(self) -> bool {
         self.current_stat_with(&NativeInspector).is_some()
+    }
+
+    pub(crate) fn belongs_to(self, root: Incarnation) -> bool {
+        if root.boot_id != self.incarnation.boot_id || boot_id() != Some(root.boot_id) {
+            return false;
+        }
+        let Some(owner) = self.current_stat_with(&NativeInspector) else {
+            return false;
+        };
+        let Some(root_stat) = NativeInspector
+            .open(root.pid)
+            .ok()
+            .and_then(|process| process.stat().ok())
+        else {
+            return false;
+        };
+        !root_stat.exited
+            && root_stat.birth == root.birth
+            && owner.tty == root_stat.tty
+            && (self.incarnation.pid == root.pid || owner.parent_pid == root.pid)
     }
 
     pub(crate) fn shell_exit(self, pending: bool) -> Option<ProcessLiveness> {

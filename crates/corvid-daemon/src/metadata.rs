@@ -137,6 +137,10 @@ pub(crate) struct MetadataUpdates(
 );
 
 impl MetadataUpdates {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_session(&self, terminal: Uuid) -> Option<AgentSessionKey> {
+        self.0.borrow().history.retained_session(terminal)
+    }
     pub(crate) fn saved_session(&self, pane: Uuid) -> Option<SavedSession> {
         self.0.borrow().resumes.get(&pane).cloned()
     }

@@ -20,6 +20,82 @@ pub(crate) fn boot_id() -> Option<Uuid> {
     .ok()
 }
 
+/// Migration for terminal-only handoffs. Read only Corvid's three UUIDs from
+/// the bounded process environment; never expose or persist other entries.
+pub(crate) fn legacy_observer(
+    root: super::Incarnation,
+    provider: corvid_core::agent::Provider,
+    host: Uuid,
+) -> Option<(super::ProcessImage, Uuid, Uuid)> {
+    let root_process = Inspector.open(root.pid).ok()?;
+    let root_stat = root_process.stat().ok()?;
+    if root_stat.birth != root.birth || root_stat.exited || root_stat.tty == 0 {
+        return None;
+    }
+    let pid = u32::try_from(root_stat.foreground_group?).ok()?;
+    let process = Inspector.open(pid).ok()?;
+    let stat = process.stat().ok()?;
+    let owner = super::ProcessImage {
+        incarnation: stat.incarnation(pid, root.boot_id),
+        executable: process.executable().ok()?,
+    };
+    if !owner.belongs_to(root) {
+        return None;
+    }
+    let scope = observer_scope(&process)?;
+    if scope[1] != host {
+        return None;
+    }
+    let path = process.path().ok()?;
+    if crate::provider::qualify(provider, &path) != Some(owner.executable)
+        || !owner.belongs_to(root)
+    {
+        return None;
+    }
+    Some((owner, scope[0], scope[2]))
+}
+
+fn observer_scope(process: &ProcessDirectory) -> Option<[Uuid; 3]> {
+    use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH};
+    let fd = openat(
+        &process.directory,
+        "environ",
+        OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let mut bytes = Vec::new();
+    File::from(fd)
+        .take(128 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 128 * 1024 || !bytes.ends_with(&[0]) {
+        return None;
+    }
+    let mut ids = [None; 3];
+    for entry in bytes.split(|byte| *byte == 0) {
+        let Some(split) = entry.iter().position(|byte| *byte == b'=') else {
+            continue;
+        };
+        for (index, key) in [LAUNCH_ASSOCIATION, HOST_ID, SERVER_EPOCH]
+            .iter()
+            .enumerate()
+        {
+            if &entry[..split] == key.as_bytes() {
+                if ids[index].is_some() {
+                    return None;
+                }
+                let id = Uuid::parse_str(std::str::from_utf8(&entry[split + 1..]).ok()?).ok()?;
+                if id.is_nil() {
+                    return None;
+                }
+                ids[index] = Some(id);
+            }
+        }
+    }
+    Some([ids[0]?, ids[1]?, ids[2]?])
+}
+
 /// Retains a procfs directory: relative queries cannot follow PID reuse. Exec
 /// and directory changes remain possible during this handle's lifetime.
 pub(super) struct ProcessDirectory {

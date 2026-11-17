@@ -11,7 +11,7 @@ use crate::terminal::RetainedTerminal;
 use crate::workspaces::{MAX_PTY_WORKERS, Workspaces};
 
 const FILE: &str = "handoff.json";
-const LIMIT: u64 = 64 * 1024;
+const LIMIT: u64 = 4 * 1024 * 1024;
 
 #[derive(Deserialize, Serialize)]
 struct Handoff {
@@ -52,7 +52,12 @@ pub(crate) async fn prepare(
             epoch: identity.epoch.clone(),
             terminals: workspaces.retain_terminals(true).await?,
         };
-        StateDirectory::open(runtime)?.replace_private_file(FILE, &serde_json::to_vec(&handoff)?)
+        let bytes = serde_json::to_vec(&handoff)?;
+        ensure!(
+            bytes.len() as u64 <= LIMIT,
+            "daemon handoff exceeds its bound"
+        );
+        StateDirectory::open(runtime)?.replace_private_file(FILE, &bytes)
     }
     .await;
     if result.is_err() {
@@ -99,6 +104,18 @@ pub(crate) async fn recover(
         handoff.epoch != identity.epoch,
         "cannot adopt the current daemon handoff"
     );
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut associations = std::collections::HashSet::new();
+        ensure!(
+            handoff
+                .terminals
+                .iter()
+                .filter_map(|(_, terminal)| terminal.agent.as_ref())
+                .all(|agent| agent.valid() && associations.insert(agent.association)),
+            "invalid retained agent identity"
+        );
+    }
     let mut panes = std::collections::HashSet::new();
     let mut ids = std::collections::HashSet::new();
     ensure!(

@@ -193,6 +193,12 @@ An AgentRun represents a **context incarnation**, not just a process. Its run li
 can end with `ContextReplaced` while its CLI process and Terminal remain alive. Process
 liveness is recorded separately. SessionEnd alone does not establish OS process exit.
 
+Planned daemon replacement may retain a qualified observer's launch association and
+original launch epoch after revalidating the same process incarnation and PTY ownership.
+It creates a new AgentRunId in the new epoch. Only collector observations have this
+explicit bridge; previous requests, attention, client identities and control envelopes
+do not become live in the new epoch. A fresh authenticated hook confirms collection.
+
 ### 4.1 Location and launch association
 
 The server resolves:

@@ -13,7 +13,7 @@ use super::{Executable, Stat};
 pub(super) const ARGUMENT_LIMIT: usize = 4096;
 
 /// Equality evidence within a boot, not a portable timestamp or duration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct BirthIdentity(u64);
 
 impl BirthIdentity {

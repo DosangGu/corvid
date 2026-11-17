@@ -1,5 +1,6 @@
 mod children;
 mod hooks;
+mod retained;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Mutex, OnceLock, Weak};
@@ -26,6 +27,7 @@ use crate::workspaces::Registry;
 use children::{ChildEntry, ChildKey};
 
 pub(crate) use crate::hook_data::Hook;
+pub(crate) use retained::RetainedAgent;
 
 const RETAINED_RUNS: usize = 64;
 
@@ -38,6 +40,8 @@ pub(crate) struct Agents {
 }
 
 struct Launch {
+    observer_epoch: Option<Uuid>,
+    retained: bool,
     resume_key: Option<corvid_core::agent::AgentSessionKey>,
     current: Uuid,
     qualified: bool,
@@ -174,6 +178,8 @@ impl Agents {
         self.launches.insert(
             association,
             Launch {
+                observer_epoch: None,
+                retained: false,
                 resume_key: None,
                 current: id,
                 qualified,

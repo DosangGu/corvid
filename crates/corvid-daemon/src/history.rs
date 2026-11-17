@@ -43,6 +43,28 @@ struct RequestRecord {
 }
 
 impl History {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_session(
+        &self,
+        terminal: Uuid,
+    ) -> Option<corvid_core::agent::AgentSessionKey> {
+        let record = self
+            .0
+            .iter()
+            .rev()
+            .find(|record| record.terminal == terminal && record.parent.is_none())?;
+        // Terminal retirement may have already downgraded liveness while
+        // flushing shutdown metadata. Recovery rechecks the actual process.
+        if record.lifecycle != Lifecycle::Live
+            || matches!(record.process, ProcessLiveness::Exited { .. })
+        {
+            return None;
+        }
+        Some(corvid_core::agent::AgentSessionKey {
+            provider: record.provider,
+            provider_session_id: record.session.clone()?,
+        })
+    }
     pub(crate) fn record(&mut self, record: RunRecord) -> bool {
         if let Some(index) = self.0.iter().position(|old| old.run == record.run) {
             if *self.0[index] == record {
