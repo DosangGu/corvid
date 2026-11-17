@@ -1,8 +1,4 @@
-#[cfg(windows)]
-use std::path::Path;
-use std::path::PathBuf;
-#[cfg(not(windows))]
-use std::{process::Stdio, time::Duration};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::ControlEndpoint;
@@ -12,12 +8,8 @@ use corvid_companion::monitor::Scope;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{DesktopAgentFocused, PresentedRunKey};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-#[cfg(not(windows))]
-use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-#[cfg(not(windows))]
-use tokio::time::sleep;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -108,38 +100,18 @@ async fn open(
         client
     };
     #[cfg(not(windows))]
-    // TODO: Refresh running Unix Agent Decks after a Desktop update
-    // Add version-aware replacement for Linux and macOS while preserving independent Deck lifetime and shared companion state, matching the Windows startup and activation behavior.
-    let client = match Client::connect(host, config.controller_id, true).await {
-        Ok(client) => client,
-        Err(_) => {
-            let mut child = Command::new(executable()?);
-            child.arg("--state-dir").arg(&scope.state);
-            #[cfg(windows)]
-            child.arg("--pipe-instance").arg(&scope.address);
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            child.arg("--socket-dir").arg(&scope.address);
-            child
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            #[cfg(windows)]
-            child.creation_flags(0x0800_0000);
-            let mut process = child.spawn().context("starting Corvid Agent Deck")?;
-            timeout(COMMAND_TIMEOUT, async {
-                loop {
-                    if let Ok(client) = Client::connect(host, config.controller_id, true).await {
-                        return Ok::<_, anyhow::Error>(client);
-                    }
-                    if let Some(status) = process.try_wait()? {
-                        anyhow::bail!("Corvid Agent Deck exited during startup ({status})");
-                    }
-                    sleep(Duration::from_millis(50)).await;
-                }
-            })
-            .await
-            .context("Corvid Agent Deck did not become ready")??
-        }
+    let client = {
+        let mut client = crate::unix_lifecycle::ensure_current(
+            &executable()?,
+            &scope.state,
+            &scope.address,
+            config,
+            true,
+        )
+        .await?
+        .context("Agent Deck was not started")?;
+        client.activate(true).await?;
+        client
     };
     forward_focus(client, shown, focus).await
 }
@@ -241,7 +213,30 @@ impl Settings {
         Ok(())
     }
 
-    #[cfg(windows)]
+    #[cfg(not(windows))]
+    pub async fn refresh_running(&self, executable: &Path) -> Result<()> {
+        let mut failures = Vec::new();
+        for scope in corvid_companion::monitor::discover(&self.state)? {
+            if let Err(error) = crate::unix_lifecycle::ensure_current(
+                executable,
+                &scope.state,
+                &scope.address,
+                &scope.config,
+                false,
+            )
+            .await
+            {
+                failures.push(format!("{error:#}"));
+            }
+        }
+        ensure!(
+            failures.is_empty(),
+            "Could not update running Agent Decks: {}",
+            failures.join("; ")
+        );
+        Ok(())
+    }
+
     pub fn refresh_in_background(&self) -> Result<()> {
         let settings = self.clone();
         let executable = executable()?;

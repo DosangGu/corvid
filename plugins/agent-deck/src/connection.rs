@@ -11,6 +11,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 pub const CAPABILITY: &str = "agent_deck.v1";
+pub const LIFECYCLE_CAPABILITY: &str = "agent_deck.lifecycle.v1";
 pub trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
 pub type Stream = Box<dyn Duplex>;
@@ -89,6 +90,35 @@ impl Client {
         })
         .await
         .context("Agent Deck connection timed out")?
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) async fn retire(&mut self) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        timeout(COMMAND_TIMEOUT, async {
+            self.writer
+                .envelope(&self.session.envelope(
+                    Some(id.clone()),
+                    Body::RetireAgentDeck(corvid_protocol::wire::RetireAgentDeck {
+                        controller_id: self.controller.to_string(),
+                    }),
+                ))
+                .await?;
+            let reply = self
+                .reader
+                .next_envelope()
+                .await?
+                .context("missing Agent Deck retirement response")?;
+            self.session.validate_scope(&reply)?;
+            ensure!(
+                reply.request_id.as_deref() == Some(id.as_str())
+                    && matches!(reply.body, Some(Body::AgentDeckRetired(_))),
+                "Agent Deck refused to retire"
+            );
+            Ok(())
+        })
+        .await
+        .context("retiring Agent Deck timed out")?
     }
 
     pub async fn open(&mut self, desktop: bool) -> Result<String> {

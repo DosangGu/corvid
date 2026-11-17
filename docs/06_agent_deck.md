@@ -58,7 +58,18 @@ check. Replacement uses the existing GPUI quit loop, waits for process exit, and
 then reopens the same state directory, preserving controller identity, slots,
 window preferences, notification settings, and history. It also handles older
 Deck releases that have no lifecycle IPC. Failure to exit is reported without
-force-killing the process. Linux and macOS retain their existing reuse behavior.
+force-killing the process.
+
+Linux and macOS also refresh running Decks on Desktop startup, when opening
+Agents, or when launching a newer Deck directly. They reuse a version that is
+already current and leave stopped scopes alone during the startup check.
+The private Deck endpoint reports its version and accepts a scoped retirement
+request. A replacement waits on the old instance lock and reuses the saved
+controller state. macOS retains whether the AppKit panel was open. For older
+Linux builds, the launcher checks the running executable's version and uses
+a kernel process handle to signal that exact process. For older macOS builds
+without version reporting, AppKit requests termination of the verified Deck
+process. The daemon and companion stay running.
 
 Windows lifecycle qualification on 2026-11-16 replaced a published v0.1.4 GPUI
 Deck with a local build in an isolated controller scope. The old process exited,

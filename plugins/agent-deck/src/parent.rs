@@ -2,11 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
-use corvid_agent_deck::connection::{self, CAPABILITY, Peer};
+use corvid_agent_deck::connection::{self, CAPABILITY, LIFECYCLE_CAPABILITY, Peer};
 use corvid_presentation::ipc::Completion;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{AgentDeckOpened, FocusDesktopAgent, PresentedRunKey};
-use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault, accept_hello};
+use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault, accept_hello_with_profiles};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
@@ -105,12 +105,14 @@ impl DesktopLink {
         let hello = timeout(COMMAND_TIMEOUT, reader.next_envelope())
             .await??
             .context("missing plugin Hello")?;
-        let (session, reply) = accept_hello(
+        let (session, reply) = accept_hello_with_profiles(
             &hello,
             PeerRole::Presentation,
             &host.to_string(),
             &epoch.to_string(),
-            &[CAPABILITY],
+            &[CAPABILITY, LIFECYCLE_CAPABILITY],
+            &[],
+            Some(env!("CARGO_PKG_VERSION")),
         )?;
         timeout(COMMAND_TIMEOUT, writer.envelope(&reply)).await??;
         let (requests, mut incoming) = mpsc::channel(1);
@@ -124,6 +126,19 @@ impl DesktopLink {
                     session.validate_scope(&request)?;
                     let id = connection::request_id(&request)?;
                     match request.body {
+                        Some(Body::RetireAgentDeck(retire)) => {
+                            ensure!(
+                                !registered && retire.controller_id == controller.to_string(),
+                                "unexpected Agent Deck retirement scope"
+                            );
+                            let reply = session.envelope(
+                                Some(id.to_string()),
+                                Body::AgentDeckRetired(corvid_protocol::wire::AgentDeckRetired {}),
+                            );
+                            timeout(COMMAND_TIMEOUT, writer.envelope(&reply)).await??;
+                            ctx.quit();
+                            break;
+                        }
                         Some(Body::OpenAgentDeck(open)) => {
                             ensure!(
                                 open.host_id == host.to_string() && open.controller_id == controller.to_string(),
@@ -252,6 +267,43 @@ mod tests {
             },
             result,
         )
+    }
+
+    #[tokio::test]
+    async fn retirement_requires_the_exact_controller_and_acknowledges_before_quitting() {
+        timeout(COMMAND_TIMEOUT, async {
+            let link = DesktopLink::default();
+            let (scope, _) = scope();
+            let (reader, mut writer, session, wrong) = register(&link, &scope, false).await;
+            let retire = |controller: Uuid| {
+                Body::RetireAgentDeck(corvid_protocol::wire::RetireAgentDeck {
+                    controller_id: controller.to_string(),
+                })
+            };
+            writer
+                .envelope(
+                    &session.envelope(Some(Uuid::new_v4().to_string()), retire(Uuid::new_v4())),
+                )
+                .await
+                .unwrap();
+            assert!(wrong.await.unwrap().is_err());
+            assert!(!scope.ctx.quitting());
+            drop((reader, writer));
+
+            let (mut reader, mut writer, session, current) = register(&link, &scope, false).await;
+            let id = Uuid::new_v4().to_string();
+            writer
+                .envelope(&session.envelope(Some(id.clone()), retire(scope.controller)))
+                .await
+                .unwrap();
+            let reply = reader.next_envelope().await.unwrap().unwrap();
+            assert_eq!(reply.request_id, Some(id));
+            assert!(matches!(reply.body, Some(Body::AgentDeckRetired(_))));
+            current.await.unwrap().unwrap();
+            assert!(scope.ctx.quitting());
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
