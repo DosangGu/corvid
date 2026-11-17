@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -21,7 +21,10 @@ use uuid::Uuid;
 use crate::delivery::Delivery;
 use crate::hosts::{self, Subscriptions};
 use crate::parent::{self, DesktopLink};
-use crate::platform::{Event, Native};
+use crate::platform::Callbacks;
+use corvid_agent_deck_core::native::{
+    Availability, Capabilities, Event, NativeError, NativeServices, Status,
+};
 use corvid_agent_deck_core::notifications::{Ledger, Notice, Settings, now_ms};
 
 #[cfg(test)]
@@ -38,7 +41,7 @@ pub struct View {
     pub history: Vec<Notice>,
     pub selected: Option<Notice>,
     pub status: String,
-    pub background: bool,
+    pub capabilities: Capabilities,
     pub notifications_open: u64,
 }
 
@@ -53,11 +56,12 @@ pub struct Background {
 }
 
 impl Background {
-    pub fn start(
+    pub fn start<N: NativeServices>(
         state: PathBuf,
         address: <PresentationAddress as ToOwned>::Owned,
         config: Config,
         ctx: UiSignal,
+        native: impl FnOnce(Callbacks, Uuid, &Path, &PresentationAddress) -> Result<N> + Send + 'static,
     ) -> Result<Self> {
         let desktop = DesktopLink::default();
         let (completed, completions) = mpsc::channel(8);
@@ -82,18 +86,15 @@ impl Background {
                         tests,
                         ctx: ctx.clone(),
                         started: started.clone(),
+                        stopped,
                     };
-                    let job = run(state, address, config, channels);
-                    tokio::select! {
-                        result = job => if let Err(error) = result {
-                            let _ = started.try_send(Err(error.to_string()));
-                            views.send_modify(|view| {
-                                view.status = error.to_string();
-                                view.background = false;
-                            });
-                            parent::show(&ctx);
-                        },
-                        _ = stopped => {}
+                    if let Err(error) = run(state, address, config, channels, native).await {
+                        let _ = started.try_send(Err(error.to_string()));
+                        views.send_modify(|view| {
+                            view.status = error.to_string();
+                            view.capabilities = view.capabilities.stopped();
+                        });
+                        parent::show(&ctx);
                     }
                 });
             })?;
@@ -149,13 +150,15 @@ struct Channels {
     tests: mpsc::Receiver<()>,
     ctx: UiSignal,
     started: std::sync::mpsc::SyncSender<Result<(), String>>,
+    stopped: oneshot::Receiver<()>,
 }
 
-async fn run(
+async fn run<N: NativeServices>(
     state: PathBuf,
     address: <PresentationAddress as ToOwned>::Owned,
     config: Config,
     channels: Channels,
+    start_native: impl FnOnce(Callbacks, Uuid, &Path, &PresentationAddress) -> Result<N>,
 ) -> Result<()> {
     let Channels {
         bridge,
@@ -165,40 +168,38 @@ async fn run(
         mut tests,
         ctx,
         started,
+        mut stopped,
     } = channels;
     let storage = StateDirectory::create_all(&state.join("agent-deck"))?;
     let _lock = storage.lock_storage()?;
-    let mut ledger: Ledger = storage
+    let ledger: Ledger = storage
         .read_private_file("notifications.json", 1024 * 1024)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?
         .unwrap_or_default();
     ledger.validate()?;
     let (events, mut event_rx) = mpsc::channel(32);
-    let native = Native::start(
-        events.clone(),
-        ctx.clone(),
-        config.controller_id,
-        &state,
-        &address,
-    );
-    let (native, mut issue) = match native {
+    let (issues, mut issue_rx) = watch::channel(None);
+    let (capabilities, mut capability_rx) = watch::channel(Capabilities::default());
+    let callbacks = Callbacks {
+        events,
+        issues,
+        capabilities,
+        signal: ctx.clone(),
+    };
+    let (native, issue) = match start_native(callbacks, config.controller_id, &state, &address) {
         Ok(native) => (Some(native), String::new()),
         Err(error) => (None, error.to_string()),
     };
-    if ledger.settings.start_at_login
-        && let Some(native) = &native
-        && let Err(error) = native.startup(true)
-    {
-        issue = error.to_string();
-        ledger.settings.start_at_login = false;
-        save(&storage, &ledger)?;
+    let mut capabilities = *capability_rx.borrow_and_update();
+    if native.is_none() {
+        capabilities = capabilities.stopped();
     }
     views.send_replace(View {
         settings: ledger.settings.clone(),
         history: ledger.history.iter().rev().cloned().collect(),
         status: issue.clone(),
-        background: native.as_ref().is_some_and(Native::background),
+        capabilities,
         ..Default::default()
     });
     let (peers, mut peer_rx) = mpsc::channel(8);
@@ -206,6 +207,7 @@ async fn run(
     let mut jobs = tokio::task::JoinSet::new();
     jobs.spawn(connection::listen(config.controller_id, peers, listening));
     tokio::select! {
+        _ = &mut stopped => return Ok(()),
         result = listening_rx => result.context("Agent Deck instance already exists or its private endpoint is unavailable")?,
         result = jobs.join_next() => { anyhow::bail!("Agent Deck endpoint unavailable: {result:?}"); }
     }
@@ -220,13 +222,29 @@ async fn run(
         hosts: BTreeMap::new(),
         ledger,
         native,
+        capabilities,
+        last_status: None,
         issue,
         views,
         ctx,
     };
     let _ = started.send(Ok(()));
+    monitor.restore_login().await;
+    let mut capabilities_open = true;
+    let mut issues_open = true;
+    let mut events_open = true;
+    let startup_deadline = sleep(Duration::from_secs(5));
+    tokio::pin!(startup_deadline);
     loop {
         tokio::select! {
+            // Finish any settings transaction before shutting down the adapter.
+            _ = &mut stopped => return Ok(()),
+            _ = &mut startup_deadline, if monitor.capabilities != monitor.capabilities.startup_timed_out() => {
+                // A backend that never completes initialization cannot leave
+                // its window hidden. A late readiness update can still recover.
+                monitor.set_capabilities(monitor.capabilities.startup_timed_out());
+                monitor.error("Native service initialization timed out".into());
+            }
             peer = peer_rx.recv() => {
                 let peer = peer.context("Agent Deck listener closed")?;
                 if clients.len() < 8 {
@@ -245,30 +263,59 @@ async fn run(
             result = jobs.join_next() => {
                 anyhow::bail!("Agent Deck background service stopped: {result:?}");
             }
-            result = snapshot_rx.recv() => {
+            result = snapshot_rx.recv(), if monitor.capabilities.notifications != Availability::Starting => {
                 monitor.snapshot(result.context("notification poller stopped")?).await?;
             }
             result = settings.changed() => {
                 result?;
-                monitor.configure(settings.borrow_and_update().clone())?;
+                let next = settings.borrow_and_update().clone();
+                monitor.configure(next).await;
             }
             test = tests.recv() => {
                 test.context("notification test channel closed")?;
-                monitor.notify(test_notice(config.host_id)).await;
+                let activation = monitor.capabilities.activation.ready();
+                monitor.notify(test_notice(config.host_id, activation)).await;
             }
-            event = event_rx.recv() => {
-                monitor.event(event.context("OS event channel closed")?)?;
+            result = capability_rx.changed(), if capabilities_open => {
+                capabilities_open = result.is_ok();
+                let next = if capabilities_open {
+                    *capability_rx.borrow_and_update()
+                } else {
+                    (*capability_rx.borrow()).stopped()
+                };
+                if monitor.capabilities != next {
+                    let restore = !monitor.capabilities.login_startup.ready()
+                        && next.login_startup.ready();
+                    monitor.set_capabilities(next);
+                    if restore {
+                        monitor.restore_login().await;
+                    }
+                }
+            }
+            result = issue_rx.changed(), if issues_open => {
+                issues_open = result.is_ok();
+                if issues_open && let Some(issue) = issue_rx.borrow_and_update().clone() {
+                    monitor.error(issue.to_string());
+                }
+            }
+            event = event_rx.recv(), if events_open => {
+                match event {
+                    Some(event) => monitor.event(event).await,
+                    None => events_open = false,
+                }
             }
         }
     }
 }
 
-struct Monitor {
+struct Monitor<N> {
     storage: StateDirectory,
     delivery: Delivery,
     hosts: BTreeMap<Uuid, HostStatus>,
     ledger: Ledger,
-    native: Option<Native>,
+    native: Option<N>,
+    capabilities: Capabilities,
+    last_status: Option<Status>,
     issue: String,
     views: watch::Sender<View>,
     ctx: UiSignal,
@@ -286,7 +333,7 @@ enum Update {
     Snapshot(Uuid, Result<PresentationAttention, String>),
 }
 
-impl Monitor {
+impl<N: NativeServices> Monitor<N> {
     async fn snapshot(&mut self, update: Update) -> Result<()> {
         let (host, result) = match update {
             Update::Hosts(hosts) => {
@@ -324,7 +371,7 @@ impl Monitor {
                 return Ok(());
             }
         };
-        let notices = if self.native.is_some() {
+        let notices = if self.capabilities.notifications.ready() {
             self.delivery.claim(observation.notices).await?
         } else {
             Vec::new()
@@ -360,7 +407,7 @@ impl Monitor {
         Ok(())
     }
 
-    fn publish(&self) {
+    fn publish(&mut self) {
         let mut issues = Vec::new();
         if !self.issue.is_empty() {
             issues.push(self.issue.clone());
@@ -378,76 +425,123 @@ impl Monitor {
             view.history = self.ledger.history.iter().rev().cloned().collect();
             view.status = issues.join("; ");
         });
-        if let Some(native) = &self.native {
-            let online = self.hosts.values().filter(|host| host.connected).count();
-            let unseen: usize = self.hosts.values().map(|host| host.unseen).sum();
-            native.status(
-                &format!("Corvid Agent Deck — {online} connected hosts — {unseen} unseen"),
-                unseen > 0,
-            );
+        self.update_status();
+        self.ctx.notify();
+    }
+
+    fn update_status(&mut self) {
+        if !self.capabilities.status_icon.ready() {
+            return;
+        }
+        let Some(native) = &mut self.native else {
+            return;
+        };
+        let online = self.hosts.values().filter(|host| host.connected).count();
+        let unseen: usize = self.hosts.values().map(|host| host.unseen).sum();
+        let status = Status {
+            text: format!("Corvid Agent Deck — {online} connected hosts — {unseen} unseen"),
+            attention: unseen > 0,
+        };
+        if self.last_status.as_ref() != Some(&status) {
+            match native.update_status(status.clone()) {
+                Ok(()) => self.last_status = Some(status),
+                Err(error) => self.error(error.to_string()),
+            }
+        }
+    }
+
+    fn set_capabilities(&mut self, next: Capabilities) {
+        let lost_icon = self.capabilities.can_start_hidden() && !next.can_start_hidden();
+        if self.capabilities.status_icon != next.status_icon {
+            self.last_status = None;
+        }
+        self.capabilities = next;
+        self.views.send_modify(|view| view.capabilities = next);
+        self.update_status();
+        if lost_icon {
+            parent::show(&self.ctx);
         }
         self.ctx.notify();
     }
 
     async fn notify(&mut self, notice: Notice) {
-        let result = match &self.native {
-            Some(native) => native.notify(notice, self.ledger.settings.sound).await,
-            None => Err(anyhow::anyhow!("OS notifications unavailable")),
+        let result = match (self.capabilities.notifications.check(), &mut self.native) {
+            (Ok(()), Some(native)) => {
+                let sound = self.capabilities.sound.ready() && self.ledger.settings.sound;
+                native.notify(notice, sound).await
+            }
+            (Err(error), _) => Err(error),
+            _ => Err(NativeError::Unavailable),
         };
         if let Err(error) = result {
             self.error(error.to_string());
         }
-        self.ctx.notify();
     }
 
-    fn configure(&mut self, mut next: Settings) -> Result<()> {
-        if next.start_at_login != self.ledger.settings.start_at_login {
-            let result = self
-                .native
-                .as_ref()
-                .context("OS integration unavailable")
-                .and_then(|native| native.startup(next.start_at_login));
-            if let Err(error) = result {
-                next.start_at_login = self.ledger.settings.start_at_login;
-                self.error(error.to_string());
-            }
+    async fn set_login_startup(&mut self, enabled: bool) -> Result<(), NativeError> {
+        self.capabilities.login_startup.check()?;
+        let native = self.native.as_mut().ok_or(NativeError::Unavailable)?;
+        native.set_login_startup(enabled).await
+    }
+
+    async fn restore_login(&mut self) {
+        if self.ledger.settings.start_at_login
+            && self.capabilities.login_startup.ready()
+            && let Err(error) = self.set_login_startup(true).await
+        {
+            self.error(format!("Could not restore login startup: {error}"));
         }
-        self.ledger.settings = next;
-        save(&self.storage, &self.ledger)?;
+    }
+
+    async fn configure(&mut self, mut next: Settings) {
+        if next.sound != self.ledger.settings.sound && !self.capabilities.sound.ready() {
+            next.sound = self.ledger.settings.sound;
+        }
+        let previous_login = self.ledger.settings.start_at_login;
+        if next.start_at_login != previous_login
+            && let Err(error) = self.set_login_startup(next.start_at_login).await
+        {
+            next.start_at_login = previous_login;
+            self.error(format!("Could not change login startup: {error}"));
+        }
+
+        let login_changed = next.start_at_login != previous_login;
+        let previous = std::mem::replace(&mut self.ledger.settings, next);
+        if let Err(error) = save(&self.storage, &self.ledger) {
+            self.ledger.settings = previous;
+            let mut issue = format!("Could not save notification settings: {error}");
+            if login_changed && let Err(error) = self.set_login_startup(previous_login).await {
+                issue.push_str(&format!("; could not restore login startup: {error}"));
+            }
+            self.error(issue);
+        }
         self.views
             .send_modify(|view| view.settings = self.ledger.settings.clone());
         self.ctx.notify();
-        Ok(())
     }
 
     fn error(&mut self, issue: String) {
         self.issue = issue;
         self.views
             .send_modify(|view| view.status = self.issue.clone());
+        self.ctx.notify();
     }
 
-    fn event(&mut self, event: Event) -> Result<()> {
+    async fn event(&mut self, event: Event) {
         match event {
-            Event::Open => parent::show(&self.ctx),
-            Event::Notifications => self.open_notice(None),
-            Event::Notice(notice) => self.open_notice(Some(notice)),
-            Event::Pause => {
+            Event::OpenNotifications => self.open_notice(None),
+            Event::Activate(notice) => self.open_notice(Some(notice)),
+            Event::TogglePause => {
                 let mut settings = self.ledger.settings.clone();
-                settings.paused_until_ms = if settings.paused_until_ms > now_ms() {
+                let now = now_ms();
+                settings.paused_until_ms = if settings.paused_until_ms > now {
                     0
                 } else {
-                    now_ms().saturating_add(60 * 60 * 1000)
+                    now.saturating_add(60 * 60 * 1000)
                 };
-                self.configure(settings)?;
+                self.configure(settings).await;
             }
-            #[cfg(not(target_os = "macos"))]
-            Event::Quit => {
-                self.ctx.quit();
-            }
-            Event::Error(error) => self.error(error),
         }
-        self.ctx.notify();
-        Ok(())
     }
 
     fn open_notice(&self, notice: Option<Notice>) {
@@ -471,7 +565,7 @@ fn batch(mut notices: Vec<Notice>) -> Vec<Notice> {
     vec![summary]
 }
 
-fn test_notice(host: Uuid) -> Notice {
+fn test_notice(host: Uuid, activation: bool) -> Notice {
     Notice {
         summary: true,
         key: corvid_agent_deck_core::notifications::Key {
@@ -481,7 +575,12 @@ fn test_notice(host: Uuid) -> Notice {
             attention: Uuid::new_v4(),
         },
         title: "Corvid Agent Deck test notification".into(),
-        body: "Notifications are working. Click to open notification settings.".into(),
+        body: if activation {
+            "Notifications are working. Click to open notification settings."
+        } else {
+            "Notifications are working."
+        }
+        .into(),
         created_ms: now_ms(),
     }
 }

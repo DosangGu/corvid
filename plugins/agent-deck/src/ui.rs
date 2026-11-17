@@ -73,7 +73,15 @@ impl DeckView {
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             weak.update(cx, |view, _| {
-                if view.session.background.view.borrow().background {
+                if view
+                    .session
+                    .background
+                    .view
+                    .borrow()
+                    .capabilities
+                    .status_icon
+                    .ready()
+                {
                     view.window.hide(window);
                     false
                 } else {
@@ -210,7 +218,13 @@ impl DeckView {
         if !self.held.active() && self.menu.is_none() {
             self.refresh_view();
         }
-        let tray = self.session.background.view.borrow().background;
+        let tray = self
+            .session
+            .background
+            .view
+            .borrow()
+            .capabilities
+            .can_start_hidden();
         #[cfg(windows)]
         self.pairing.poll();
         if self.window_ready {

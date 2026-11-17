@@ -1,70 +1,47 @@
-use corvid_agent_deck_core::notifications::Notice;
+use corvid_agent_deck_core::native::{Capabilities, Event, NativeError};
+use tokio::sync::{mpsc, watch};
 
-#[derive(Clone)]
-// Linux currently delivers notifications without tray or activation callbacks.
+use crate::ui_signal::UiSignal;
+
+// Linux has no native callbacks.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-pub enum Event {
-    Open,
-    Notifications,
-    Pause,
-    #[cfg(not(target_os = "macos"))]
-    Quit,
-    Notice(Notice),
-    Error(String),
+#[derive(Clone)]
+pub(crate) struct Callbacks {
+    pub events: mpsc::Sender<Event>,
+    pub issues: watch::Sender<Option<NativeError>>,
+    pub capabilities: watch::Sender<Capabilities>,
+    pub signal: UiSignal,
 }
 
-#[cfg(windows)]
-mod windows;
-#[cfg(windows)]
-pub use windows::{Native, identify};
+#[cfg(any(not(target_os = "linux"), test))]
+impl Callbacks {
+    pub fn event(&self, event: Event) -> Result<(), NativeError> {
+        use mpsc::error::TrySendError;
+        self.events.try_send(event).map_err(|error| match error {
+            TrySendError::Full(_) => {
+                self.issue(NativeError::QueueFull);
+                NativeError::QueueFull
+            }
+            TrySendError::Closed(_) => NativeError::Disconnected,
+        })
+    }
 
-#[cfg(target_os = "linux")]
-pub struct Native;
-
-#[cfg(target_os = "linux")]
-impl Native {
-    pub fn start(
-        _: tokio::sync::mpsc::Sender<Event>,
-        _: crate::ui_signal::UiSignal,
-        _: uuid::Uuid,
-        _: &std::path::Path,
-        _: &std::path::Path,
-    ) -> anyhow::Result<Self> {
-        Ok(Self)
-    }
-    pub fn background(&self) -> bool {
-        false
-    }
-    pub fn status(&self, _: &str, _: bool) {}
-    pub fn startup(&self, enabled: bool) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !enabled,
-            "Agent Deck login startup is currently available on Windows"
-        );
-        Ok(())
-    }
-    pub async fn notify(&self, notice: Notice, _: bool) -> anyhow::Result<()> {
-        let mut command = tokio::process::Command::new("notify-send");
-        command
-            .args([
-                "--app-name=Corvid Agent Deck",
-                "--icon=corvid",
-                "--",
-                &notice.title,
-                &notice.body,
-            ])
-            .kill_on_drop(true);
-        let status =
-            tokio::time::timeout(std::time::Duration::from_secs(3), command.status()).await??;
-        anyhow::ensure!(
-            status.success(),
-            "Linux notification service is unavailable"
-        );
-        Ok(())
+    pub fn issue(&self, error: NativeError) {
+        self.issues.send_replace(Some(error));
     }
 }
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::start;
 
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::Native;
+pub(crate) use macos::{shutdown_on_main, start};
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub(crate) use windows::{identify, start};

@@ -21,6 +21,12 @@ pub(crate) struct Session {
 pub(crate) fn run(session: Session, preferences: shell::Window) {
     Application::new().with_assets(DeckAssets).run(move |cx| {
         shell::prepare();
+        #[cfg(target_os = "macos")]
+        cx.on_app_quit(|_| {
+            crate::platform::shutdown_on_main();
+            async {}
+        })
+        .detach();
         let session = Rc::new(session);
         let mut updates = session.signal.subscribe();
         let options = shell::options(&preferences, cx);

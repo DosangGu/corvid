@@ -252,6 +252,21 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             time.sleep(1)
             subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
 
+        if screenshot := os.environ.get("CORVID_AGENT_DECK_SETTINGS_SCREENSHOT"):
+            geometry = subprocess.check_output(
+                ["xdotool", "getwindowgeometry", "--shell", deck_window], text=True
+            )
+            width = int(re.search(r"^WIDTH=(\d+)$", geometry, re.M)[1])
+            subprocess.run(["xdotool", "windowactivate", "--sync", deck_window,
+                            "mousemove", "--window", deck_window, str(width - 53), "18", "click", "1"],
+                           check=True, timeout=10)
+            time.sleep(0.5)
+            subprocess.run(["xdotool", "mousemove", "--window", deck_window, "95", "60", "click", "1",
+                            "mousemove", "--window", deck_window, "390", "370"],
+                           check=True, timeout=10)
+            time.sleep(0.5)
+            subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
+
         print("PASS Desktop keyboard input, Unicode clipboard paste, tab creation/switching, independent windows, new-window menu, close/quit/relaunch, shell continuity, settings, and X11 icons")
     finally:
         for process in [deck, desktop, previous, daemon, manager]:

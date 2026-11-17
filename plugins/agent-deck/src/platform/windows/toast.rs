@@ -2,9 +2,7 @@ use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 
-use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
-use tokio::sync::mpsc;
 use uuid::Uuid;
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::TypedEventHandler;
@@ -27,7 +25,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{GUID, HSTRING, Interface, PCWSTR};
 
-use crate::platform::Event;
+use crate::platform::Callbacks;
+use corvid_agent_deck_core::native::Event;
 use corvid_agent_deck_core::notifications::Notice;
 
 pub struct Apartment;
@@ -52,8 +51,7 @@ pub struct Sink {
     controller: Uuid,
     notifier: ToastNotifier,
     active: VecDeque<(ToastNotification, i64)>,
-    events: mpsc::Sender<Event>,
-    ctx: UiSignal,
+    callbacks: Callbacks,
     arguments: String,
 }
 
@@ -62,8 +60,7 @@ impl Sink {
         controller: Uuid,
         state: &Path,
         address: &str,
-        events: mpsc::Sender<Event>,
-        ctx: UiSignal,
+        callbacks: Callbacks,
     ) -> Result<Self> {
         let id = identity(controller);
         let arguments = format!(
@@ -81,8 +78,7 @@ impl Sink {
             controller,
             notifier,
             active: VecDeque::new(),
-            events,
-            ctx,
+            callbacks,
             arguments,
         })
     }
@@ -128,20 +124,19 @@ impl Sink {
             &notice.key.attention.simple().to_string()[..16],
         ))?;
         toast.SetGroup(&HSTRING::from("agent-deck"))?;
-        let events = self.events.clone();
-        let ctx = self.ctx.clone();
+        let callbacks = self.callbacks.clone();
         let token = toast.Activated(&TypedEventHandler::new(move |_, _| {
-            let _ = events.try_send(if notice.summary {
-                Event::Notifications
+            let _ = callbacks.event(if notice.summary {
+                Event::OpenNotifications
             } else {
-                Event::Notice(notice.clone())
+                Event::Activate(notice.clone())
             });
-            crate::parent::show(&ctx);
             Ok(())
         }))?;
-        self.notifier
-            .Show(&toast)
-            .context("delivering Windows toast")?;
+        if let Err(error) = self.notifier.Show(&toast) {
+            let _ = toast.RemoveActivated(token);
+            return Err(error).context("delivering Windows toast");
+        }
         self.active.push_back((toast, token));
         while self.active.len() > 64 {
             if let Some((toast, token)) = self.active.pop_front() {
@@ -289,23 +284,40 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    #[ignore = "creates a temporary native notification and Start Menu registration"]
-    fn native_notification_reaches_windows_history() -> Result<()> {
+    #[tokio::test]
+    #[ignore = "creates a temporary tray icon, notification and shortcuts"]
+    async fn native_notification_reaches_windows_history() -> Result<()> {
+        use corvid_agent_deck_core::native::{NativeServices, Status};
         let _apartment = Apartment::new()?;
         let directory = tempfile::tempdir()?;
         let controller = Uuid::new_v4();
         identify(controller)?;
-        let (events, _received) = mpsc::channel(4);
-        let shortcut = shortcut_path(&FOLDERID_Programs, controller)?;
-        let outcome = (|| -> Result<()> {
-            let mut sink = Sink::new(
-                controller,
-                directory.path(),
-                "agent-deck-test",
-                events,
-                UiSignal::default(),
-            )?;
+        let (events, _received) = tokio::sync::mpsc::channel(4);
+        let callbacks = Callbacks {
+            events,
+            issues: tokio::sync::watch::channel(None).0,
+            capabilities: tokio::sync::watch::channel(Default::default()).0,
+            signal: crate::ui_signal::UiSignal::default(),
+        };
+        let programs = shortcut_path(&FOLDERID_Programs, controller)?;
+        let startup = shortcut_path(&FOLDERID_Startup, controller)?;
+        ensure!(
+            !programs.exists() && !startup.exists(),
+            "fixture shortcut collision"
+        );
+        let state = callbacks.capabilities.subscribe();
+        let outcome: Result<()> = async {
+            let mut adapter =
+                super::super::start(callbacks, controller, directory.path(), "agent-deck-test")?;
+            assert!(state.borrow().status_icon.ready());
+            adapter.update_status(Status {
+                text: "Corvid test".into(),
+                attention: true,
+            })?;
+            adapter.set_login_startup(true).await?;
+            assert!(startup.exists());
+            adapter.set_login_startup(false).await?;
+            assert!(!startup.exists());
             let notice = Notice {
                 summary: true,
                 key: corvid_agent_deck_core::notifications::Key {
@@ -319,7 +331,7 @@ mod tests {
                     .into(),
                 created_ms: corvid_agent_deck_core::notifications::now_ms(),
             };
-            sink.show(notice, false)?;
+            adapter.notify(notice, false).await?;
             let history = ToastNotificationManager::History()
                 .context("opening Windows notification history")?;
             for _ in 0..30 {
@@ -334,10 +346,14 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             anyhow::bail!("Windows did not retain the test notification in its history")
-        })();
-        if shortcut.exists() {
-            std::fs::remove_file(shortcut)?;
         }
+        .await;
+        for shortcut in [programs, startup] {
+            if shortcut.exists() {
+                std::fs::remove_file(shortcut)?;
+            }
+        }
+        assert!(!state.borrow().status_icon.ready());
         outcome
     }
 
