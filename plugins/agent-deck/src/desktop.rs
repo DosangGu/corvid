@@ -9,8 +9,8 @@ use corvid_client::ControlEndpoint;
 #[cfg(windows)]
 use corvid_companion::Config;
 use corvid_companion::monitor::Scope;
+use corvid_protocol::wire::DesktopAgentFocused;
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{DesktopAgentFocused, PresentedRunKey};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 #[cfg(not(windows))]
 use tokio::process::Command;
@@ -23,10 +23,7 @@ use uuid::Uuid;
 
 use crate::connection::{self, Client};
 
-pub struct FocusRequest {
-    pub run: PresentedRunKey,
-    pub result: oneshot::Sender<Result<(), String>>,
-}
+pub use corvid_presentation::desktop_focus::FocusRequest;
 
 #[derive(Default)]
 pub struct Job {

@@ -1091,7 +1091,7 @@ async fn run(
             // Another window may already own the host's private listener.
             // If it closes, a remaining attached window can take over.
             while !focus_requests.is_closed() {
-                let _ = corvid_agent_deck::focus::serve(
+                let _ = corvid_presentation::desktop_focus::serve(
                     monitor_host,
                     controller,
                     focus_epoch,

@@ -2,20 +2,40 @@ use anyhow::{Context, Result, ensure};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{DesktopAgentFocused, FocusDesktopAgent, PresentedRunKey};
 use corvid_protocol::{
-    COMMAND_TIMEOUT, PeerRole, ProtocolFault, accept_hello, check_hello_result, hello,
+    COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, accept_hello,
+    check_hello_result, hello,
 };
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::connection::{self, Stream};
-use crate::desktop::FocusRequest;
-
 const CAPABILITY: &str = "desktop_focus.v1";
 #[cfg(windows)]
 const PIPE_PREFIX: &str = "corvid-desktop-focus-v1";
 const MAX_PEERS: usize = 4;
+
+trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+type Stream = Box<dyn Duplex>;
+
+pub struct FocusRequest {
+    pub run: PresentedRunKey,
+    pub result: oneshot::Sender<Result<(), String>>,
+}
+
+async fn frames(
+    stream: Stream,
+) -> Result<(
+    FrameReader<ReadHalf<Stream>>,
+    FrameWriter<WriteHalf<Stream>>,
+)> {
+    let (read, write) = tokio::io::split(stream);
+    let writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
+    let reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
+    Ok((reader, writer))
+}
 
 /// Request exact navigation from an already attached Desktop on this host.
 pub async fn request(controller: Uuid, run: PresentedRunKey) -> Result<()> {
@@ -30,7 +50,7 @@ pub async fn request(controller: Uuid, run: PresentedRunKey) -> Result<()> {
 }
 
 async fn request_on_stream(stream: Stream, controller: Uuid, run: PresentedRunKey) -> Result<()> {
-    let (mut reader, mut writer) = connection::frames(stream).await?;
+    let (mut reader, mut writer) = frames(stream).await?;
     let greeting = hello(
         Uuid::new_v4().to_string(),
         Some(controller.to_string()),
@@ -150,7 +170,7 @@ async fn exchange(
     epoch: Uuid,
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
-    let (mut reader, mut writer) = connection::frames(stream).await?;
+    let (mut reader, mut writer) = frames(stream).await?;
     let greeting = reader
         .next_envelope()
         .await?
@@ -172,7 +192,17 @@ async fn exchange(
         .await?
         .context("missing Desktop focus request")?;
     session.validate_scope(&request)?;
-    let id = connection::request_id(&request)?;
+    ensure!(
+        request.sequence.is_none() && request.subscription_id.is_none(),
+        "Desktop focus request contains event metadata"
+    );
+    let id = Uuid::parse_str(
+        request
+            .request_id
+            .as_deref()
+            .context("missing request ID")?,
+    )?;
+    ensure!(!id.is_nil(), "invalid Desktop focus request ID");
     let Some(Body::FocusDesktopAgent(body)) = request.body else {
         anyhow::bail!("unsupported Desktop focus request");
     };

@@ -76,8 +76,10 @@ identity, slots, and pins across the rename.
 The `corvid-streamdeck` USB adapter discovers the same monitor scopes without
 opening Agent Deck. Its `--state-dir` selects a host just like the UI; an explicit
 `--pipe-instance` or `--socket-dir` remains supported. Status display needs no
-Deck UI. Hardware focus still targets an explicitly paired TUI with `--target`;
-Desktop focus registration is not yet available through this shared interface.
+Deck UI. Pressing an agent key focuses the exact pane in an attached Corvid
+Desktop for the monitored host. Desktop registers while attached, so opening
+the Agent Deck window is unnecessary. Use `--target CLIENT_ID` to direct the
+keys to an explicitly paired TUI instead.
 
 | Windows action | Result |
 | --- | --- |

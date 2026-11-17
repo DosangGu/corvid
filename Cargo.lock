@@ -1357,6 +1357,7 @@ dependencies = [
  "corvid-companion",
  "corvid-core",
  "corvid-daemon",
+ "corvid-presentation",
  "corvid-protocol",
  "corvid-tui",
  "corvid-update",
@@ -1393,6 +1394,7 @@ dependencies = [
  "corvid-protocol",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

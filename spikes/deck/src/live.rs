@@ -14,6 +14,7 @@ const SLOTS_PER_PAGE: usize = KEY_COUNT - 1;
 pub struct LiveDeck {
     display: Display,
     target: Option<PresentedBinding>,
+    focus_desktop: bool,
     page: usize,
     revision: u64,
     pending: Option<(Uuid, String)>,
@@ -37,6 +38,13 @@ pub struct Face {
 }
 
 impl LiveDeck {
+    pub fn with_desktop_focus() -> Self {
+        Self {
+            focus_desktop: true,
+            ..Default::default()
+        }
+    }
+
     pub fn update(&mut self, display: Display) -> bool {
         let changed =
             self.display.link != display.link || self.display.snapshot != display.snapshot;
@@ -290,12 +298,17 @@ impl LiveDeck {
                 return None;
             }
             let snapshot = self.display.snapshot.as_ref()?;
-            let Body::FocusSlot(focus) =
-                snapshot.focus(self.slot(index)?, self.target.as_ref()?)?
-            else {
+            let slot = self.slot(index)?;
+            if let Some(target) = &self.target {
+                let Body::FocusSlot(focus) = snapshot.focus(slot, target)? else {
+                    return None;
+                };
+                Some(focus)
+            } else if self.focus_desktop {
+                Some(snapshot.focus_desktop(slot)?)
+            } else {
                 return None;
-            };
-            Some(focus)
+            }
         };
         Some(Capture {
             index,
@@ -316,6 +329,11 @@ impl LiveDeck {
             return;
         };
         let label = self.face(capture.index).label;
+        let target = if focus.binding.is_some() {
+            "the registered terminal"
+        } else {
+            "Corvid Desktop"
+        };
         let id = Uuid::new_v4();
         let command = Command {
             id,
@@ -325,7 +343,7 @@ impl LiveDeck {
             body: Body::FocusSlot(focus),
         };
         if client.commands.try_send(command).is_ok() {
-            self.result = Some(format!("Selecting {label} in the registered terminal…"));
+            self.result = Some(format!("Selecting {label} in {target}…"));
             self.pending = Some((id, label));
         } else {
             self.result = Some("Companion busy. Try again after it refreshes.".into());
@@ -411,6 +429,20 @@ mod tests {
         edit(&mut snapshot);
         updated.snapshot = Some(Arc::new(snapshot));
         updated
+    }
+
+    #[test]
+    fn hardware_keys_capture_desktop_focus_without_a_paired_terminal() {
+        let (_, display) = setup();
+        let mut deck = LiveDeck::with_desktop_focus();
+        deck.update(display.clone());
+        let capture = deck.capture(0).unwrap();
+        assert!(capture.focus.as_ref().unwrap().binding.is_none());
+
+        deck.update(update_snapshot(&display, |snapshot| {
+            snapshot.data.slots[0].revision += 1;
+        }));
+        assert!(!deck.accepts(&capture));
     }
 
     #[test]

@@ -208,10 +208,36 @@ impl Worker {
     }
 
     async fn execute(
-        &self,
+        &mut self,
         client: &mut PresentationClient,
         command: Command,
     ) -> Result<Completion> {
+        if let Body::FocusSlot(focus) = &command.body
+            && focus.binding.is_none()
+        {
+            self.refresh(client, command.link).await?;
+            let target = self
+                .display
+                .borrow()
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.desktop_target(focus));
+            let result = match target {
+                Some((controller, run)) => crate::desktop_focus::request(controller, run).await,
+                None => Err(anyhow::anyhow!(
+                    "Display changed. Review the updated slots and try again."
+                )),
+            };
+            return Ok(Completion {
+                id: command.id,
+                failed: result.is_err(),
+                message: match result {
+                    Ok(()) => "Focused in Corvid Desktop.".to_owned(),
+                    Err(error) => error.to_string(),
+                },
+                paired: None,
+            });
+        }
         let expected = Expected::for_request(&command.body)?;
         let result = match client.request(command.body).await {
             Ok(reply) => {

@@ -43,7 +43,7 @@ impl FixtureHost {
         let (_, feed) = watch::channel(Vec::new());
         jobs.spawn(serve(address, controller, run.clone(), feed));
         let (focus, requests) = mpsc::channel(1);
-        jobs.spawn(corvid_agent_deck::focus::serve(
+        jobs.spawn(corvid_presentation::desktop_focus::serve(
             id, controller, epoch, focus,
         ));
         Ok(Self { run, requests })

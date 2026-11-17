@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::hosts::{self, Profile, Subscriptions};
 use crate::ui_signal::UiSignal;
 use anyhow::Result;
-use corvid_agent_deck::{connection::Client, focus};
+use corvid_agent_deck::connection::Client;
 use corvid_companion::{PresentationAddress, PresentationClient};
 use corvid_presentation::ipc::Completion;
 use corvid_protocol::wire::{CompanionConnection, PresentedRun, PresentedRunKey, RunAvailability};
@@ -195,7 +195,7 @@ async fn focus_captured_run(
             .any(|candidate| host.focus_target(id, candidate) == Some((controller, &run)))
     });
     anyhow::ensure!(allowed, "The agent is no longer available on this host.");
-    focus::request(controller, run).await
+    corvid_presentation::desktop_focus::request(controller, run).await
 }
 
 async fn monitor(
