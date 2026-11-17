@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     let mut instance = "main".to_owned();
     #[cfg(target_os = "macos")]
-    let mut instance = corvid_protocol::macos::runtime_directory()?.join("corvid-companion");
+    let mut instance = corvid_protocol::paths::macos_default_companion_socket()?.prepare()?;
     let mut state = None;
     let mut alias = None;
     while let Some(flag) = args.next() {

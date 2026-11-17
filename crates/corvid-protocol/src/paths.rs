@@ -13,6 +13,8 @@ use uuid::Uuid;
 mod tests;
 
 const VIEW_STATE_DIR: &str = "CORVID_VIEW_STATE_DIR";
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+const COMPANION_SOCKET_NAME: &str = "corvid-companion";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateRole {
@@ -288,7 +290,9 @@ trait UnixPaths: PlatformPaths {
         local_runtime: Option<&Path>,
     ) -> Result<RuntimePath> {
         let name = match role {
-            UnixEndpoint::Companion | UnixEndpoint::Monitor(None) => "corvid-companion".to_owned(),
+            UnixEndpoint::Companion | UnixEndpoint::Monitor(None) => {
+                COMPANION_SOCKET_NAME.to_owned()
+            }
             UnixEndpoint::Monitor(Some(controller)) => {
                 format!("{}{}", Self::SLOT_PREFIX, controller.simple())
             }
@@ -365,6 +369,12 @@ pub fn monitor_socket(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn agent_deck_socket(controller: Uuid) -> Result<RuntimePath> {
     Native::endpoint(&System, UnixEndpoint::AgentDeck(controller), None)
+}
+
+/// The macOS Deck prototype always uses the boot-scoped companion default.
+#[cfg(target_os = "macos")]
+pub fn macos_default_companion_socket() -> Result<RuntimePath> {
+    Ok(MacOs::default_runtime(&System)?.join(COMPANION_SOCKET_NAME))
 }
 
 #[cfg(any(test, target_os = "macos"))]
