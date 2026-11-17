@@ -5,17 +5,16 @@ mod background;
 mod catalog;
 mod delivery;
 mod hosts;
-mod notifications;
 mod parent;
 mod platform;
+mod shell;
+mod ui;
 mod ui_signal;
-mod window;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use corvid_companion::monitor;
 use corvid_presentation::ipc::DesktopClient;
-use gpui::{App, AppContext, Application, WindowBounds, WindowOptions};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -108,40 +107,20 @@ fn main() -> Result<()> {
         "Agent Deck requires an X11 or XWayland display"
     );
     let signal = ui_signal::UiSignal::default();
-    let preferences = window::Window::load(&state, options.background)?;
+    let preferences = shell::Window::load(&state, options.background)?;
     let identity = Some((config.host_id, config.controller_id));
     let catalog = (state.clone(), config.host_id);
     let background = background::Background::start(state, address.clone(), config, signal.clone())?;
     let notify = signal.clone();
     let client = DesktopClient::start_scoped(address, identity, move || notify.notify())?;
-    Application::new()
-        .with_assets(app::DeckAssets)
-        .run(move |cx: &mut App| {
-            cx.on_window_closed(|cx| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-            let options = WindowOptions {
-                app_id: Some("corvid-agent-deck".into()),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Corvid Agent Deck".into()),
-                    appears_transparent: true,
-                    ..Default::default()
-                }),
-                window_bounds: Some(WindowBounds::centered(preferences.layout().size(), cx)),
-                focus: false,
-                show: !cfg!(windows),
-                window_min_size: Some(gpui::size(gpui::px(204.), gpui::px(140.))),
-                ..Default::default()
-            };
-            cx.open_window(options, move |window, cx| {
-                cx.new(|cx| {
-                    app::Desktop::new(client, background, catalog, preferences, signal, window, cx)
-                })
-            })
-            .expect("could not open Corvid Agent Deck");
-        });
+    app::run(
+        app::Session {
+            client,
+            background,
+            signal,
+            catalog,
+        },
+        preferences,
+    );
     Ok(())
 }

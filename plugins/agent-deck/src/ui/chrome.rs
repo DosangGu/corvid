@@ -1,5 +1,5 @@
 use super::*;
-use crate::window::{BAR_HEIGHT, Orientation};
+use crate::shell::{BAR_HEIGHT, Orientation};
 use gpui::{AssetSource, Transformation, radians, svg};
 use std::borrow::Cow;
 
@@ -37,13 +37,12 @@ impl AssetSource for DeckAssets {
     }
 }
 
-impl Desktop {
+impl DeckView {
     pub(super) fn window_header(&self, cx: &mut Context<Self>) -> Div {
-        let pinned = self.window.pinned();
         let expanded = self.window.expanded;
         let layout = self.window.layout();
         let portrait = !expanded && layout.orientation == Orientation::Portrait;
-        let tray = self.background.view.borrow().background;
+        let tray = self.session.background.view.borrow().background;
         let title = div()
             .id("drag-title")
             .flex_1()
@@ -61,17 +60,22 @@ impl Desktop {
             }))
             .when(!expanded, |title| {
                 title.child(muted(layout.label()).flex_shrink_0())
-            })
-            .when(!pinned, |title| {
-                title.cursor_grab().on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, window, cx| {
-                        view.window.start_move(window);
-                        cx.notify();
-                    }),
-                )
             });
 
+        #[cfg(not(target_os = "macos"))]
+        let pinned = self.window.pinned();
+        #[cfg(not(target_os = "macos"))]
+        let title = title.when(!pinned, |title| {
+            title.cursor_grab().on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    view.window.start_move(window);
+                    cx.notify();
+                }),
+            )
+        });
+
+        #[cfg(not(target_os = "macos"))]
         let pin_tip = if pinned {
             "Unpin window · Allow movement and release always on top"
         } else {
@@ -79,21 +83,23 @@ impl Desktop {
         };
         let size_icon = if expanded { SHRINK } else { EXPAND };
         let size_tip = if expanded { "Mini deck" } else { "Expand Deck" };
-        row()
+        let header = row()
             .h(px(BAR_HEIGHT))
             .flex_shrink_0()
             .gap(px(4.))
             .px(px(8.))
             .bg(rgb(PANEL))
-            .child(title)
-            .child(
-                icon_button(PIN, pin_tip, pinned, if pinned { 0. } else { 35. }).on_click(
-                    cx.listener(|view, _, window, cx| {
-                        view.window.toggle_pin();
-                        view.update(window, cx);
-                    }),
-                ),
-            )
+            .child(title);
+        #[cfg(not(target_os = "macos"))]
+        let header = header.child(
+            icon_button(PIN, pin_tip, pinned, if pinned { 0. } else { 35. }).on_click(cx.listener(
+                |view, _, window, cx| {
+                    view.window.toggle_pin();
+                    view.update(window, cx);
+                },
+            )),
+        );
+        header
             .child(
                 icon_button(size_icon, size_tip, false, 0.).on_click(cx.listener(
                     |view, _, window, cx| {
@@ -104,12 +110,16 @@ impl Desktop {
             .child(
                 icon_button(
                     CLOSE,
-                    if tray { "Hide to tray" } else { "Close" },
+                    if tray && !cfg!(target_os = "macos") {
+                        "Hide to tray"
+                    } else {
+                        "Close"
+                    },
                     false,
                     0.,
                 )
                 .on_click(cx.listener(|view, _, window, cx| {
-                    if view.background.view.borrow().background {
+                    if view.session.background.view.borrow().background {
                         view.window.hide(window);
                     } else {
                         cx.quit();

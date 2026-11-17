@@ -46,7 +46,7 @@ pub(super) fn button(
         .child(label.into())
 }
 
-impl Desktop {
+impl DeckView {
     pub(super) fn focus_action(
         &self,
         snapshot: &Arc<Snapshot>,
@@ -55,7 +55,7 @@ impl Desktop {
     ) -> Option<FocusAction> {
         self.ready(snapshot)
             .then(|| {
-                if self.parent.connected() {
+                if self.session.background.desktop.connected() {
                     run.and_then(|run| snapshot.live_key(run))
                         .cloned()
                         .map(FocusAction::Desktop)
@@ -96,7 +96,7 @@ impl Desktop {
         let height = if self.window.expanded {
             width
         } else {
-            crate::window::KEY_HEIGHT
+            crate::shell::KEY_HEIGHT
         };
         let mut card =
             card_face(run, cached, self.selected == index, width, height).id(("agent", index));
@@ -314,7 +314,7 @@ impl Desktop {
             {
                 header = header.child(muted(format!("Connection issue ({code})")));
             }
-            if !self.parent.connected() {
+            if !self.session.background.desktop.connected() {
                 header = header.child(muted("Target terminal")).child(
                     row().flex_wrap().children(
                         snapshot
@@ -352,7 +352,7 @@ impl Desktop {
                             self.ready(snapshot),
                             |button| {
                                 button.on_click(cx.listener(|view, _, _, cx| {
-                                    view.pairing.open(&view.signal);
+                                    view.pairing.open(&view.session.signal);
                                     cx.notify();
                                 }))
                             },
@@ -443,9 +443,9 @@ impl Desktop {
                 cx.notify();
             }),
         ));
-        let (state, current) = &self.catalog_scope;
+        let (state, current) = &self.session.catalog;
         let catalog = self.catalog.get_or_insert_with(|| {
-            Catalog::start(state.clone(), *current, self.signal.clone())
+            Catalog::start(state.clone(), *current, self.session.signal.clone())
                 .map_err(|error| error.to_string())
         });
         let catalog = match catalog {
@@ -478,7 +478,7 @@ impl Desktop {
                             true,
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            if id == view.catalog_scope.1 {
+                            if id == view.session.catalog.1 {
                                 view.section = Section::Slots;
                             } else if let Some(Ok(catalog)) = &view.catalog {
                                 catalog.open(id);
@@ -506,7 +506,7 @@ impl Desktop {
     }
 
     fn notifications(&self, cx: &mut Context<Self>) -> Div {
-        let background = self.background.view.borrow().clone();
+        let background = self.session.background.view.borrow().clone();
         let settings = &background.settings;
         let choices = [
             ("Show OS notifications", settings.enabled),
@@ -529,7 +529,8 @@ impl Desktop {
                             true,
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            let mut settings = view.background.view.borrow().settings.clone();
+                            let mut settings =
+                                view.session.background.view.borrow().settings.clone();
                             let value = match index {
                                 0 => &mut settings.enabled,
                                 1 => &mut settings.input,
@@ -539,7 +540,7 @@ impl Desktop {
                                 _ => &mut settings.start_at_login,
                             };
                             *value = !*value;
-                            view.background.configure(settings);
+                            view.session.background.configure(settings);
                             cx.notify();
                         }))
                     }),
@@ -558,24 +559,27 @@ impl Desktop {
                             true,
                         )
                         .on_click(cx.listener(|view, _, _, cx| {
-                            let mut settings = view.background.view.borrow().settings.clone();
+                            let mut settings =
+                                view.session.background.view.borrow().settings.clone();
                             settings.paused_until_ms = if settings.paused_until_ms > now_ms() {
                                 0
                             } else {
                                 now_ms().saturating_add(3_600_000)
                             };
-                            view.background.configure(settings);
+                            view.session.background.configure(settings);
                             cx.notify();
                         })),
                     )
                     .child(
                         button("test-notification", "Send test notification", true).on_click(
-                            cx.listener(|view, _, _, _| view.background.test_notification()),
+                            cx.listener(|view, _, _, _| {
+                                view.session.background.test_notification()
+                            }),
                         ),
                     )
                     .child(
                         button("quit", "Quit Corvid Agent Deck", true)
-                            .on_click(cx.listener(|view, _, _, _| view.signal.quit())),
+                            .on_click(cx.listener(|view, _, _, _| view.session.signal.quit())),
                     ),
             );
         if !background.status.is_empty() {
@@ -588,7 +592,9 @@ impl Desktop {
                         == Some(notice.key.epoch.to_string().as_str())
                     && snapshot.generation().is_some()
             });
-            let enabled = current && self.parent.connected() && self.pending.is_none();
+            let enabled = current
+                && self.session.background.desktop.connected()
+                && !self.actions.is_pending();
             let key = notice.key.run();
             view = view.child(
                 column()

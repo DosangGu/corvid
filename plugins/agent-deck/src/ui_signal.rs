@@ -1,14 +1,23 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Presentation {
+    Open,
+    #[cfg(target_os = "macos")]
+    Toggle,
+    #[cfg(target_os = "macos")]
+    Hide,
+}
+
 /// Coalesced worker notifications and latched lifecycle requests. The receiver
-/// runs on GPUI's foreground executor even when the native window is hidden.
+/// runs on the application executor even when the native surface is hidden.
 #[derive(Clone)]
 pub(crate) struct UiSignal {
     changed: watch::Sender<()>,
-    open: Arc<AtomicBool>,
+    presentation: Arc<Mutex<Option<Presentation>>>,
     quit: Arc<AtomicBool>,
 }
 
@@ -16,7 +25,7 @@ impl Default for UiSignal {
     fn default() -> Self {
         Self {
             changed: watch::channel(()).0,
-            open: Arc::new(AtomicBool::new(false)),
+            presentation: Arc::default(),
             quit: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -32,12 +41,25 @@ impl UiSignal {
     }
 
     pub fn open(&self) {
-        self.open.store(true, Ordering::Release);
+        *self.presentation.lock().unwrap() = Some(Presentation::Open);
         self.notify();
     }
 
-    pub fn take_open(&self) -> bool {
-        self.open.swap(false, Ordering::AcqRel)
+    pub fn take_presentation(&self) -> Option<Presentation> {
+        self.presentation.lock().unwrap().take()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn toggle(&self) {
+        let mut pending = self.presentation.lock().unwrap();
+        *pending = match *pending {
+            Some(Presentation::Open) => Some(Presentation::Hide),
+            Some(Presentation::Hide) => Some(Presentation::Open),
+            Some(Presentation::Toggle) => None,
+            None => Some(Presentation::Toggle),
+        };
+        drop(pending);
+        self.notify();
     }
 
     pub fn quit(&self) {
@@ -61,8 +83,25 @@ mod tests {
         signal.quit();
         receiver.changed().await.unwrap();
         signal.open();
-        assert!(signal.take_open());
-        assert!(!signal.take_open());
+        assert_eq!(signal.take_presentation(), Some(Presentation::Open));
+        assert_eq!(signal.take_presentation(), None);
         assert!(signal.quitting());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_clicks_toggle_without_losing_an_explicit_open() {
+        let signal = UiSignal::default();
+        signal.toggle();
+        signal.toggle();
+        assert_eq!(signal.take_presentation(), None);
+
+        signal.open();
+        signal.toggle();
+        assert_eq!(signal.take_presentation(), Some(Presentation::Hide));
+
+        signal.toggle();
+        signal.open();
+        assert_eq!(signal.take_presentation(), Some(Presentation::Open));
     }
 }

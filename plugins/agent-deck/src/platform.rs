@@ -1,4 +1,4 @@
-use crate::notifications::Notice;
+use corvid_agent_deck_core::notifications::Notice;
 
 #[derive(Clone)]
 // Linux currently delivers notifications without tray or activation callbacks.
@@ -7,6 +7,7 @@ pub enum Event {
     Open,
     Notifications,
     Pause,
+    #[cfg(not(target_os = "macos"))]
     Quit,
     Notice(Notice),
     Error(String),

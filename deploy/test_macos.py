@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the DMG, nested apps, Mach-O payloads, and a real Desktop window."""
+"""Check the DMG, nested apps, Mach-O payloads, and real Desktop and Agent Deck windows."""
 import argparse
 from contextlib import contextmanager
 import json
@@ -28,7 +28,7 @@ def running(arguments, environment, log):
         process.wait(timeout=15)
 
 
-def check_window(binaries, directory, environment, log):
+def check_window(binaries, deck, directory, environment, log):
     runtime = directory / "r"
     # Own the daemon explicitly so unmounting cannot leave a running DMG executable.
     with running([binaries / "corvid", "--runtime-dir", runtime, "daemon",
@@ -60,6 +60,46 @@ assert(windows.contains { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($
             run("swift", source, desktop.pid)
             reader, epoch = monitor_fixture.ready(binaries / "corvid", directory / "state", environment)
         monitor_fixture.assert_same(reader, epoch, environment)
+        check_deck(deck, directory, environment, log)
+        monitor_fixture.assert_same(reader, epoch, environment)
+
+
+def check_deck(binary, directory, environment, log):
+    source = directory / "panel.swift"
+    source.write_text('''import AppKit
+import CoreGraphics
+let pid = Int(CommandLine.arguments[1])!
+let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+for window in windows where (window[kCGWindowOwnerPID as String] as? Int) == pid {
+    if (window[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue {
+        print(window[kCGWindowNumber as String] as! Int)
+    }
+}
+''')
+    query = directory / "panel"
+    run("swiftc", source, "-o", query)
+    arguments = [binary, "--state-dir", directory / "state"]
+    with running([*arguments, "--background"], environment, log) as deck:
+        deadline = time.monotonic() + 10
+        while not any(Path(environment["CORVID_RUNTIME_DIR"]).glob("d-*/companion.sock")):
+            if deck.poll() is not None:
+                log.seek(0)
+                raise AssertionError(log.read())
+            assert time.monotonic() < deadline, "Agent Deck did not start its listener"
+            time.sleep(0.1)
+
+        assert not run(query, deck.pid).strip(), "Background Deck showed a panel"
+        # The second invocation sends the same activation request as Desktop.
+        subprocess.run(arguments, env=environment, check=True, timeout=10)
+        for _ in range(40):
+            window = run(query, deck.pid).strip()
+            if window:
+                break
+            time.sleep(0.1)
+        assert window.isdigit(), "The background Deck did not show a single AppKit panel"
+        if screenshot := os.environ.get("CORVID_AGENT_DECK_MACOS_SCREENSHOT"):
+            subprocess.run(["screencapture", "-x", "-l", window, screenshot],
+                           timeout=10, check=False)
 
 
 def check(assets):
@@ -82,20 +122,20 @@ def check(assets):
                 metadata = json.loads((runtime / "manifest.json").read_text())
                 binary = runtime / ("corvid.exe" if target in WINDOWS_TARGETS else "corvid")
                 assert metadata["sha256"] == digest(binary)
-            for binary in [binaries / "corvid", binaries / "corvid-desktop",
-                           app / "Contents/Helpers/Corvid Agent Deck.app/Contents/MacOS/corvid-agent-deck"]:
+            deck = app / "Contents/Helpers/Corvid Agent Deck.app/Contents/MacOS/corvid-agent-deck"
+            for binary in [binaries / "corvid", binaries / "corvid-desktop", deck]:
                 assert run("lipo", "-archs", binary).strip() == "arm64"
                 run(binary, "--help")
             environment = dict(os.environ, HOME=str(directory), CORVID_RUNTIME_DIR=str(directory / "r"),
                                CORVID_VIEW_STATE_DIR=str(directory / "views"))
             with (directory / "desktop.log").open("w+") as log:
                 try:
-                    check_window(binaries, directory, environment, log)
+                    check_window(binaries, deck, directory, environment, log)
                 finally:
                     monitor_fixture.stop(binaries / "corvid", directory / "state", environment)
         finally:
             run("hdiutil", "detach", mount)
-    print("PASS macOS: DMG, signatures, architecture, bundled runtimes, Desktop window")
+    print("PASS macOS: DMG, signatures, architecture, bundled runtimes, Desktop window, Agent Deck background activation")
 
 
 if __name__ == "__main__":

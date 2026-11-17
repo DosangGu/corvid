@@ -1,6 +1,7 @@
 use super::Event;
-use crate::{notifications::Notice, ui_signal::UiSignal};
+use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result};
+use corvid_agent_deck_core::notifications::Notice;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -38,10 +39,17 @@ extern "C" fn corvid_native_event(kind: u32, high: u64, low: u64) {
     };
     let id = uuid::Uuid::from_u128((u128::from(high) << 64) | u128::from(low));
     let event = match kind {
+        4 => {
+            bridge.signal.quit();
+            return;
+        }
+        7 => {
+            bridge.signal.toggle();
+            return;
+        }
         1 => Event::Open,
         2 => Event::Notifications,
         3 => Event::Pause,
-        4 => Event::Quit,
         5 => match bridge.notices.get(&id) { Some(notice) => Event::Notice(notice.clone()), None => return },
         _ => Event::Error("macOS notifications are unavailable. Check System Settings → Notifications and use the installed app bundle.".into()),
     };

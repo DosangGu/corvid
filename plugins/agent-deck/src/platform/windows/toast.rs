@@ -27,8 +27,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{GUID, HSTRING, Interface, PCWSTR};
 
-use crate::notifications::Notice;
 use crate::platform::Event;
+use corvid_agent_deck_core::notifications::Notice;
 
 pub struct Apartment;
 impl Apartment {
@@ -308,7 +308,7 @@ mod tests {
             )?;
             let notice = Notice {
                 summary: true,
-                key: crate::notifications::Key {
+                key: corvid_agent_deck_core::notifications::Key {
                     host: Uuid::new_v4(),
                     epoch: Uuid::new_v4(),
                     run: Uuid::new_v4(),
@@ -317,7 +317,7 @@ mod tests {
                 title: "Corvid Agent Deck delivery check".into(),
                 body: "Temporary test notification; automatically removed after verification."
                     .into(),
-                created_ms: crate::notifications::now_ms(),
+                created_ms: corvid_agent_deck_core::notifications::now_ms(),
             };
             sink.show(notice, false)?;
             let history = ToastNotificationManager::History()

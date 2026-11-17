@@ -87,7 +87,7 @@ pub fn configure(_: &gpui::Window, pinned: bool, expanded: bool) -> Result<()> {
         .intern_atom(false, b"_NET_WM_ICON")?
         .reply()?
         .atom;
-    let source = image::load_from_memory(include_bytes!("../../../../assets/icons/corvid.png"))?
+    let source = image::load_from_memory(include_bytes!("../../../../../assets/icons/corvid.png"))?
         .into_rgba8();
     let icon = image::imageops::resize(&source, 128, 128, image::imageops::FilterType::Lanczos3);
     let mut pixels = vec![icon.width(), icon.height()];

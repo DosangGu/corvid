@@ -16,7 +16,7 @@ use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::Event;
-use crate::notifications::Notice;
+use corvid_agent_deck_core::notifications::Notice;
 
 const TRAY: u32 = WM_APP + 1;
 const COMMAND: u32 = WM_APP + 2;
@@ -362,7 +362,7 @@ fn dispatch_event(events: &mpsc::Sender<Event>, ctx: &UiSignal, event: Event) {
     if matches!(event, Event::Quit) {
         // Quit must reach the UI even while the background worker is busy or
         // its bounded event queue is full.
-        crate::window::request_quit(ctx);
+        ctx.quit();
         return;
     }
     let _ = events.try_send(event);

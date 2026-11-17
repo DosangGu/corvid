@@ -1,13 +1,13 @@
-use super::FocusAction;
+use crate::actions::FocusAction;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Input {
+pub enum Input {
     Pointer,
     Keyboard,
 }
 
 #[derive(Default)]
-pub(super) struct Gesture {
+pub struct Gesture {
     pressed: Option<(Input, usize, FocusAction)>,
 }
 

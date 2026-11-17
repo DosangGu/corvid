@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Result, ensure};
 use tokio::time::{Instant, sleep};
 
-use crate::notifications::{Key, Notice};
+use corvid_agent_deck_core::notifications::{Key, Notice};
 
 #[cfg(not(windows))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
