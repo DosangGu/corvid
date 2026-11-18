@@ -9,6 +9,7 @@ pub(super) const MUTED: u32 = 0x8594a3;
 pub(super) const MINT: u32 = 0x77d8b7;
 pub(super) const AMBER: u32 = 0xf4c065;
 pub(super) const RED: u32 = 0xf18590;
+const BLUE: u32 = 0x78bdee;
 const BORDER: u32 = 0x303b48;
 
 pub(super) fn column() -> Div {
@@ -102,17 +103,8 @@ impl DeckView {
         let face = card_face(run, cached, self.selected == index, width, height, host);
         let mut card = self.attach_card_action(face, index, action, cx);
         if let Some(run) = run {
-            let details = run.clone();
-            let placement = placement_label(slot);
             card = card.when(self.menu.is_none(), |card| {
-                card.tooltip(move |_, cx| {
-                    cx.new(|_| RunDetails {
-                        run: details.clone(),
-                        cached,
-                        placement: placement.clone(),
-                    })
-                    .into()
-                })
+                RunDetails::attach(card, run, cx)
             });
             let mut captured = slot.cloned().unwrap_or_else(|| PresentedSlot {
                 run: Some(run.clone()),
@@ -184,17 +176,8 @@ impl DeckView {
             crate::shell::KEY_HEIGHT,
             Some(&host.label),
         );
-        let run = run.clone();
-        let label = host.label.clone();
-        self.attach_card_action(face, index, action, cx)
-            .tooltip(move |_, cx| {
-                cx.new(|_| RunDetails {
-                    run: run.clone(),
-                    cached,
-                    placement: label.clone(),
-                })
-                .into()
-            })
+        let card = self.attach_card_action(face, index, action, cx);
+        RunDetails::attach(card, run, cx)
     }
 
     fn action_button(
@@ -761,15 +744,63 @@ fn placement_label(slot: Option<&PresentedSlot>) -> String {
 }
 
 struct RunDetails {
-    run: PresentedRun,
-    cached: bool,
-    placement: String,
+    deck: gpui::Entity<DeckView>,
+    key: PresentedRunKey,
+}
+
+impl RunDetails {
+    fn attach(card: Stateful<Div>, run: &PresentedRun, cx: &Context<DeckView>) -> Stateful<Div> {
+        let Some(key) = run.key.clone() else {
+            return card;
+        };
+        let deck = cx.entity();
+        card.tooltip(move |_, cx| {
+            cx.new(|cx| {
+                cx.observe(&deck, |_, _, cx| cx.notify()).detach();
+                Self {
+                    deck: deck.clone(),
+                    key: key.clone(),
+                }
+            })
+            .into()
+        })
+    }
+
+    fn content(&self, deck: &DeckView) -> Option<Div> {
+        let host_id = Uuid::parse_str(&self.key.host_id).ok()?;
+        if let Some(snapshot) = deck
+            .view
+            .snapshot
+            .as_ref()
+            .filter(|view| view.host == host_id)
+        {
+            let slot =
+                snapshot.data.slots.iter().find(|slot| {
+                    slot.run.as_ref().and_then(|run| run.key.as_ref()) == Some(&self.key)
+                });
+            let run = slot.and_then(|slot| slot.run.as_ref()).or_else(|| {
+                snapshot
+                    .data
+                    .overflow
+                    .iter()
+                    .find(|run| run.key.as_ref() == Some(&self.key))
+            })?;
+            let cached = deck.view.link != Link::Online || snapshot.generation().is_none();
+            return Some(describe(run, cached).child(muted(placement_label(slot))));
+        }
+        let host = deck.catalog_view.hosts.get(&host_id)?;
+        let run = host
+            .runs
+            .iter()
+            .find(|run| run.key.as_ref() == Some(&self.key))?;
+        Some(describe(run, !host.online).child(muted(host.label.clone())))
+    }
 }
 
 impl Render for RunDetails {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        describe(&self.run, self.cached)
-            .child(muted(self.placement.clone()))
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.content(self.deck.read(cx))
+            .unwrap_or_else(|| muted("Agent no longer displayed"))
             .p(px(12.))
             .bg(rgb(PANEL))
             .text_color(rgb(TEXT))
@@ -789,7 +820,7 @@ fn provider(run: &PresentedRun) -> &'static str {
 }
 fn badge(raw: i32) -> (&'static str, u32) {
     match AgentBadge::try_from(raw) {
-        Ok(AgentBadge::Working) => ("Working", 0x78bdee),
+        Ok(AgentBadge::Working) => ("Working", BLUE),
         Ok(AgentBadge::NeedsInput) => ("Needs input", AMBER),
         Ok(AgentBadge::ResponseObserved) => ("New response", MINT),
         Ok(AgentBadge::Ready) => ("Ready", MUTED),
@@ -808,7 +839,11 @@ fn status(run: &PresentedRun, cached: bool) -> (&'static str, u32) {
     if run.pending_requests == 0 && run.unverified_requests > 0 {
         return ("Check terminal", AMBER);
     }
-    badge(run.last_badge)
+    match prompt_detail(run) {
+        Some(PromptObservation::Submitted) => ("Working (inferred)", BLUE),
+        Some(PromptObservation::Responded) => badge(AgentBadge::ResponseObserved as i32),
+        _ => badge(run.last_badge),
+    }
 }
 fn describe(run: &PresentedRun, cached: bool) -> Div {
     let (label, color) = status(run, cached);
@@ -839,6 +874,26 @@ mod tests {
             last_badge: badge as i32,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn live_prompt_observations_fill_unknown_status_until_stronger_evidence_arrives() {
+        let mut run = available(AgentBadge::Unknown);
+        run.collection = AgentCollection::Healthy as i32;
+        assert_eq!(status(&run, false), ("Unknown", MUTED));
+        run.prompt_observation = PromptObservation::Submitted as i32;
+        assert_eq!(status(&run, false), ("Working (inferred)", BLUE));
+        run.prompt_observation = PromptObservation::Responded as i32;
+        assert_eq!(status(&run, false), ("New response", MINT));
+        assert_eq!(status(&run, true), ("Cached", MUTED));
+        run.collection = AgentCollection::GapDetected as i32;
+        assert_eq!(status(&run, false), ("Unknown", MUTED));
+        run.collection = AgentCollection::Healthy as i32;
+        run.unverified_requests = 1;
+        assert_eq!(status(&run, false), ("Check terminal", AMBER));
+        run.pending_requests = 1;
+        run.last_badge = AgentBadge::NeedsInput as i32;
+        assert_eq!(status(&run, false), ("Needs input", AMBER));
     }
 
     #[test]

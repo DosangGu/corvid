@@ -62,6 +62,43 @@ def click(handle, x, y):
     run("xdotool", "mousemove", "--window", handle, str(x), str(y), "click", "1")
 
 
+def deck_pixels(frame):
+    run("scrot", "--overwrite", "--focused", str(frame))
+    # scrot writes a binary RGB PPM and may include a comment before its dimensions.
+    header, pixels = frame.read_bytes().split(b"\n255\n", 1)
+    width, _ = map(int, header.splitlines()[-1].split())
+    return width, pixels
+
+
+def key_colors(frame, expected):
+    width, pixels = deck_pixels(frame)
+    scale = width / 392
+    row = round(84 * scale) * width * 3
+    for index, color in enumerate(expected):
+        left = round((12 + 94 * index) * scale) * 3
+        right = round((102 + 94 * index) * scale) * 3
+        if bytes.fromhex(color) not in pixels[row + left:row + right]:
+            return False
+    return True
+
+
+def tooltip_color(frame, expected):
+    width, pixels = deck_pixels(frame)
+    scale = width / 392
+    # The first key's tooltip opens at the pointer. Its status text crosses
+    # the otherwise empty gap between the first two cards.
+    left, right = round(98 * scale), round(108 * scale)
+    color = bytes.fromhex(expected)
+    for y in range(round(30 * scale), round(80 * scale)):
+        for x in range(left, right):
+            offset = (y * width + x) * 3
+            pixel = pixels[offset:offset + 3]
+            if (pixel[1] > pixel[2]) == (color[1] > color[2]) and all(
+                    abs(actual - target) <= 40 for actual, target in zip(pixel, color)):
+                return True
+    return False
+
+
 def geometry(handle):
     return dict(line.split("=", 1) for line in run(
         "xdotool", "getwindowgeometry", "--shell", handle, capture_output=True, text=True
@@ -112,7 +149,7 @@ def launch_agent(corvid, env, root, name):
         os.waitpid(pid, 0)
 
 
-def main(build):
+def main(build, screenshot):
     with ExitStack() as stack:
         root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".deck-focus-", dir=Path.home())))
         runtime = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".cvf-", dir=Path.home())))
@@ -155,7 +192,11 @@ def main(build):
                   for line in control("agents").splitlines()]
         terminals = {agent["session"]: agent["terminal"] for agent in agents}
         deck = open_deck(desktop)
+        run("xdotool", "windowactivate", "--sync", deck)
         scale = int(geometry(deck)["WIDTH"]) / 392
+        frame = root / "deck.ppm"
+        blue, gray, mint = "78bdee", "8594a3", "77d8b7"
+        until("submitted and idle keys", lambda: key_colors(frame, (blue, gray)))
 
         for index, name in enumerate(("second", "first")):
             if index == 1:
@@ -183,13 +224,27 @@ def main(build):
                 run("xdotool", "key", "Return")
                 marker = root / f"input-{name}"
                 until(f"input in {name}'s pane", lambda: marker.exists() and marker.read_text() == token)
+                run("xdotool", "windowactivate", "--sync", deck)
+                if name == "first":
+                    until("open working tooltip", lambda: tooltip_color(frame, blue))
+                    (root / "finish-turn").touch()
+                    until("same open tooltip showing a response", lambda: tooltip_color(frame, mint))
+                run("xdotool", "mousemove", "--window", deck, str(round(200 * scale)), str(round(20 * scale)))
+                colors = (blue, blue) if index == 0 else (mint, blue)
+                until(f"live prompt status for {name}", lambda: key_colors(frame, colors))
             except AssertionError as error:
+                if screenshot:
+                    run("scrot", "--overwrite", "--focused", str(screenshot))
                 markers = {path.name: path.read_text() for path in root.glob("input-*")}
-                raise AssertionError(f"{error}\n{control('clients')}\nFixture input: {markers!r}") from error
-        print("PASS Deck clicks focused two distinct agent panes, including a minimized Desktop")
+                raise AssertionError(f"{error}\n{control('clients')}\n{slots()}\nFixture input: {markers!r}") from error
+        if screenshot:
+            run("scrot", "--overwrite", "--focused", str(screenshot))
+        print("PASS Deck clicks focused two distinct agent panes and both keys followed live prompt hooks")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, required=True)
-    main(parser.parse_args().build.resolve())
+    parser.add_argument("--screenshot", type=Path)
+    args = parser.parse_args()
+    main(args.build.resolve(), args.screenshot)

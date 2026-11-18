@@ -11,7 +11,8 @@ use corvid_presentation::model::Snapshot;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentProvider, CompanionConnection, EvidenceConfidence,
-    PresentedBinding, PresentedRun, PresentedRunKey, PresentedSlot, RunAvailability,
+    PresentedBinding, PresentedRun, PresentedRunKey, PresentedSlot, PromptObservation,
+    RunAvailability,
 };
 use gpui::{
     Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, KeyUpEvent, MouseButton,
@@ -408,7 +409,24 @@ fn availability_label(availability: Option<RunAvailability>, cached: bool) -> Op
     }
 }
 
+fn prompt_detail(run: &PresentedRun) -> Option<PromptObservation> {
+    if run.last_badge == AgentBadge::Unknown as i32
+        && run.collection == AgentCollection::Healthy as i32
+        && run.pending_requests == 0
+        && run.unverified_requests == 0
+    {
+        PromptObservation::try_from(run.prompt_observation).ok()
+    } else {
+        None
+    }
+}
+
 fn evidence_label(run: &PresentedRun) -> &'static str {
+    match prompt_detail(run) {
+        Some(PromptObservation::Submitted) => return "Prompt submission observed",
+        Some(PromptObservation::Responded) => return "Response observed for this prompt",
+        _ => {}
+    }
     match AgentCollection::try_from(run.collection) {
         Ok(AgentCollection::Healthy) => match EvidenceConfidence::try_from(run.confidence) {
             Ok(EvidenceConfidence::Confirmed) => "Confirmed evidence",

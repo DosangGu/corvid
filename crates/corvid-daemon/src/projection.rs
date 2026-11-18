@@ -2,7 +2,7 @@ use corvid_core::agent::{
     Activity, Attention, AttentionCause, Confidence, EndReason, Evidence, Lifecycle,
     ProcessLiveness, RequestKind, RequestStatus, Source,
 };
-use corvid_core::agent::{AgentRun, ResponseOutcome};
+use corvid_core::agent::{AgentRun, PromptObservation, ResponseOutcome};
 use corvid_core::layout::{Axis, Layout, Location, Node};
 use corvid_protocol::wire::layout_node_state::Body as NodeBody;
 use corvid_protocol::wire::snapshot_entity::Body;
@@ -204,6 +204,15 @@ fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
         None => AgentResponse::Unspecified,
     };
     AgentState {
+        prompt_observation: match run.prompt_observation {
+            Some(PromptObservation::Submitted) => {
+                corvid_protocol::wire::PromptObservation::Submitted
+            }
+            Some(PromptObservation::Responded) => {
+                corvid_protocol::wire::PromptObservation::Responded
+            }
+            None => corvid_protocol::wire::PromptObservation::Unspecified,
+        } as i32,
         created_sequence: None,
         summary: Some(summary),
         lifecycle: lifecycle(run.lifecycle.value) as i32,

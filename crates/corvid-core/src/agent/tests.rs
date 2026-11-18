@@ -194,6 +194,43 @@ fn ambiguous_permission_is_visible_without_inventing_a_pending_request() {
 }
 
 #[test]
+fn prompt_observations_follow_only_the_current_turn_and_healthy_collection() {
+    let mut fixture = Fixture::new();
+    let submit = |fixture: &mut Fixture, turn: &str| {
+        let mut prompt = fixture.observation(ObservationKind::TurnStarted(turn.to_owned()));
+        prompt.evidence.confidence = Confidence::Inferred;
+        fixture.run.apply(prompt, fixture.now)
+    };
+    assert!(submit(&mut fixture, "first"));
+    assert_eq!(
+        fixture.run.prompt_observation,
+        Some(PromptObservation::Submitted)
+    );
+    assert_eq!(fixture.run.badge(), Badge::Unknown);
+    assert!(fixture.response(Some("first"), ResponseOutcome::Observed, false));
+    assert_eq!(
+        fixture.run.prompt_observation,
+        Some(PromptObservation::Responded)
+    );
+
+    assert!(submit(&mut fixture, "second"));
+    assert!(fixture.response(Some("first"), ResponseOutcome::Observed, false));
+    assert!(fixture.response(None, ResponseOutcome::Observed, false));
+    assert!(!submit(&mut fixture, "first"));
+    assert_eq!(
+        fixture.run.prompt_observation,
+        Some(PromptObservation::Submitted)
+    );
+    fixture.push(ObservationKind::Collection(Collection::GapDetected));
+    fixture.push(ObservationKind::Collection(Collection::Healthy));
+    assert!(fixture.response(Some("second"), ResponseOutcome::Observed, false));
+    assert_eq!(fixture.run.prompt_observation, None);
+    assert!(submit(&mut fixture, "third"));
+    assert!(fixture.response(Some("third"), ResponseOutcome::Interrupted, true));
+    assert_eq!(fixture.run.prompt_observation, None);
+}
+
+#[test]
 fn response_and_process_exit_are_independent() {
     let mut fixture = Fixture::new();
     fixture.process(ProcessLiveness::Running);
