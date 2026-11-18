@@ -683,11 +683,12 @@ When running Agent Deck directly,
 choose a paired TUI in **Target terminal**, then click the agent's key.
 The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant
-permissions in the terminal. Completed agents retain their cards until their
-pane, tab, or workspace/session is explicitly closed. Additional agents queue
-in arrival order. Closing a pane shifts all following cards forward and fills
-vacancies from the queue. Pins follow their cards. **Closed panes** shows recent
-removed run IDs. Older manually suppressed runs can still be re-added.
+permissions in the terminal. Completed agents retain their cards while their
+panes remain in the current daemon epoch. Additional agents queue in arrival
+order. Closing a pane shifts all following cards forward and fills vacancies
+from the queue. Pins follow their cards. **Run history** shows recent runs
+removed after pane closure or daemon replacement. Manually suppressed runs
+from the current epoch can still be re-added.
 
 On Windows, closing the Deck window hides it to the tray. **Notifications &
 settings** controls categories, sound, pause, and optional login startup. Use
@@ -837,8 +838,9 @@ companion process.
   in eligibility order. It stores badges, evidence, counts, and timestamps.
   The companion groups observation saves on a one-second timer and flushes
   pending observations on clean exit. Existing placement files load with an
-  empty cache. A new daemon epoch makes old slots historical until there is
-  end evidence or explicit removal.
+  empty cache. Synchronizing with a new daemon epoch for the same host moves
+  previous runs from slots and the queue into run history. Rediscovered
+  agents enter as new runs.
   [Windows file replacement flags](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
 - During a control outage, desktop cards show the last known badge and
   observation age. `companion slots` prints `last_observed_unix_ms`. A fresh

@@ -266,7 +266,7 @@ impl DeckView {
                     Section::Overflow,
                     format!("Queue ({})", snapshot.data.overflow_count),
                 ),
-                (Section::History, "Closed panes".to_owned()),
+                (Section::History, "Run history".to_owned()),
             ];
             content = content.child(row().children(sections.into_iter().enumerate().map(
                 |(index, (section, label))| {
@@ -279,21 +279,22 @@ impl DeckView {
                     ))
                 },
             )));
-            content =
-                content.child(match self.section {
-                    Section::Slots => self.board(&snapshot, window, cx),
-                    Section::Overflow => self.overflow(&snapshot, cx),
-                    Section::History => {
-                        column()
-                            .children(snapshot.data.recent_ended.iter().map(|run| {
-                                muted(format!("Ended · {}", short_id(&run.agent_run_id)))
-                            }))
-                            .when(snapshot.data.recent_ended.is_empty(), |view| {
-                                view.child(muted("No agents removed by pane closure yet."))
-                            })
-                    }
-                    _ => column(),
-                });
+            content = content.child(match self.section {
+                Section::Slots => self.board(&snapshot, window, cx),
+                Section::Overflow => self.overflow(&snapshot, cx),
+                Section::History => column()
+                    .children(
+                        snapshot
+                            .data
+                            .recent_ended
+                            .iter()
+                            .map(|run| muted(format!("Run · {}", short_id(&run.agent_run_id)))),
+                    )
+                    .when(snapshot.data.recent_ended.is_empty(), |view| {
+                        view.child(muted("No runs removed from the Deck yet."))
+                    }),
+                _ => column(),
+            });
         } else {
             content = content.child(muted("Connecting to companion…"));
         }

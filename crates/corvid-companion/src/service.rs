@@ -239,9 +239,10 @@ impl Service {
             ));
         }
         let remote = Remote::read(watch.state(), &self.controller)?;
-        // Only authoritative layout deletion retires a tracked card. Agent
-        // completion, entity pruning, transport loss, and epoch changes do not.
-        let removed = self.store.layout().closed_panes(&remote.panes);
+        let removed = self
+            .store
+            .layout()
+            .retired_runs(remote.epoch, &remote.panes);
         let runs = observations(&remote);
         self.store
             .update(|layout| Ok(layout.reconcile(&runs, &removed)?))

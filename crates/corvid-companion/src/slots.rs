@@ -106,11 +106,18 @@ impl SlotLayout {
         self.suppressed.iter().copied()
     }
 
-    pub(crate) fn closed_panes(&self, panes: &BTreeSet<Uuid>) -> BTreeSet<RunKey> {
+    pub(crate) fn retired_runs(&self, epoch: Uuid, panes: &BTreeSet<Uuid>) -> BTreeSet<RunKey> {
         self.owners
             .iter()
             .filter(|owner| !panes.contains(&owner.pane))
             .map(|owner| owner.run)
+            .chain(
+                self.order
+                    .iter()
+                    .chain(&self.suppressed)
+                    .copied()
+                    .filter(|run| run.epoch != epoch),
+            )
             .collect()
     }
 
@@ -338,12 +345,85 @@ mod tests {
         let mut restored: SlotLayout =
             serde_json::from_slice(&serde_json::to_vec(&layout).unwrap()).unwrap();
         // Even after agent history is pruned, a retained pane keeps the card.
-        let removed = restored.closed_panes(&BTreeSet::from([pane]));
+        let removed = restored.retired_runs(key.epoch, &BTreeSet::from([pane]));
         restored.reconcile(&BTreeMap::new(), &removed).unwrap();
         assert_eq!(restored.slots()[0].run, Some(key));
-        let removed = restored.closed_panes(&BTreeSet::new());
+        let removed = restored.retired_runs(key.epoch, &BTreeSet::new());
         restored.reconcile(&BTreeMap::new(), &removed).unwrap();
         assert!(restored.slots().iter().all(|slot| slot.run.is_none()));
         assert_eq!(restored.ended().collect::<Vec<_>>(), [key]);
+    }
+
+    #[test]
+    fn retires_previous_epoch_slots_queue_and_suppression_before_new_runs_arrive() {
+        let host = Uuid::new_v4();
+        let old_epoch = Uuid::new_v4();
+        let epoch = Uuid::new_v4();
+        let old_keys = [1, 2, 3].map(|id| RunKey {
+            host,
+            epoch: old_epoch,
+            run: Uuid::from_u128(id),
+        });
+        let [pinned, queued, suppressed] = old_keys;
+        let panes = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        let observation = |index: usize| RunObservation {
+            pane: Some(panes[index]),
+            created_sequence: Some(index as u64),
+            eligible: true,
+            navigable: true,
+            ended: false,
+        };
+        let old_runs = BTreeMap::from([
+            (pinned, observation(0)),
+            (queued, observation(1)),
+            (suppressed, observation(2)),
+        ]);
+        let mut layout = SlotLayout::new(1).unwrap();
+        layout.reconcile(&old_runs, &BTreeSet::new()).unwrap();
+        let old_revision = layout.slots()[0].revision;
+        layout.pin(1, old_revision, Some(pinned), true).unwrap();
+        let pinned_revision = layout.slots()[0].revision;
+        layout.remove(suppressed).unwrap();
+        layout.owners.retain(|owner| owner.run != queued);
+        let mut restored: SlotLayout =
+            serde_json::from_slice(&serde_json::to_vec(&layout).unwrap()).unwrap();
+        assert_eq!(restored.overflow().collect::<Vec<_>>(), [queued]);
+        assert_eq!(restored.suppressed().collect::<Vec<_>>(), [suppressed]);
+
+        let panes = BTreeSet::from(panes);
+        assert!(restored.retired_runs(old_epoch, &panes).is_empty());
+        let removed = restored.retired_runs(epoch, &panes);
+        restored.reconcile(&BTreeMap::new(), &removed).unwrap();
+        assert_eq!(restored.slots()[0].run, None);
+        assert!(!restored.slots()[0].pinned);
+        assert!(restored.overflow().next().is_none());
+        assert!(restored.suppressed().next().is_none());
+        assert_eq!(restored.ended().collect::<BTreeSet<_>>(), removed);
+        assert_eq!(removed, BTreeSet::from(old_keys));
+        assert!(restored.owners.is_empty());
+
+        let first = RunKey { epoch, ..pinned };
+        let second = RunKey { epoch, ..queued };
+        let mut runs = BTreeMap::from([(first, old_runs[&pinned])]);
+        let removed = restored.retired_runs(epoch, &panes);
+        restored.reconcile(&runs, &removed).unwrap();
+        assert_eq!(restored.slots()[0].run, Some(first));
+        assert!(!restored.slots()[0].pinned);
+        assert!(
+            restored
+                .exact_slot(1, pinned_revision, Some(pinned))
+                .is_err()
+        );
+
+        let current_revision = restored.slots()[0].revision;
+        restored
+            .pin(1, current_revision, Some(first), true)
+            .unwrap();
+        let first_slot = restored.slots()[0].clone();
+        runs.insert(second, old_runs[&queued]);
+        let removed = restored.retired_runs(epoch, &panes);
+        restored.reconcile(&runs, &removed).unwrap();
+        assert_eq!(restored.slots()[0], first_slot);
+        assert_eq!(restored.overflow().collect::<Vec<_>>(), [second]);
     }
 }
