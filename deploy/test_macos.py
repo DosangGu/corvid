@@ -52,12 +52,16 @@ def check_window(binaries, deck, directory, environment, log):
             # Quartz window enumeration needs no Accessibility permission.
             query = '''import CoreGraphics
 let pid = Int(CommandLine.arguments[1])!
-let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
-assert(windows.contains { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 })
+let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+let window = windows.first { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }
+print(window![kCGWindowNumber as String] as! Int)
 '''
             source = directory / "window.swift"
             source.write_text(query)
-            run("swift", source, desktop.pid)
+            window = run("swift", source, desktop.pid).strip()
+            if screenshot := os.environ.get("CORVID_DESKTOP_MACOS_SCREENSHOT"):
+                subprocess.run(["screencapture", "-x", "-l", window, screenshot],
+                               timeout=10, check=False)
             reader, epoch = monitor_fixture.ready(binaries / "corvid", directory / "state", environment)
         monitor_fixture.assert_same(reader, epoch, environment)
         check_deck(deck, directory, environment, log)

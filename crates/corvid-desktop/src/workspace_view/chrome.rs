@@ -233,12 +233,12 @@ impl WorkspaceView {
                 bar.child(self.tabs(workspace, ui, cx))
             });
         #[cfg(target_os = "macos")]
-        let tabs = tabs.when(ui.zip(workspace).is_none(), |tabs| {
-            crate::macos::window_drag_region(tabs.self_stretch())
+        let tabs = tabs.h_full().when(ui.zip(workspace).is_none(), |tabs| {
+            crate::macos::window_drag_region(tabs)
         });
         #[cfg(target_os = "macos")]
         let drag_region = Some(crate::macos::window_drag_region(
-            div().w(px(18.)).flex_none().self_stretch(),
+            div().w(px(18.)).flex_none().h_full(),
         ));
         #[cfg(not(target_os = "macos"))]
         let drag_region: Option<Div> = None;

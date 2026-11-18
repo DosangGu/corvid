@@ -89,9 +89,12 @@ impl TabBar {
             }));
 
         #[cfg(target_os = "macos")]
-        let strip = strip.child(crate::macos::window_drag_region(
-            div().flex_1().min_w_0().self_stretch(),
-        ));
+        let strip = strip
+            .h_full()
+            .items_center()
+            .child(crate::macos::window_drag_region(
+                div().flex_1().min_w_0().h_full(),
+            ));
 
         let arrows = self.arrows.clone();
         let shown = arrows.get();
@@ -101,6 +104,7 @@ impl TabBar {
             .flex_1()
             .min_w_0()
             .items_center()
+            .when(cfg!(target_os = "macos"), |row| row.h_full())
             .on_children_prepainted(move |children, window, _| {
                 let reserved_width = match children.as_slice() {
                     [left, _, right] => left.size.width + right.size.width,
