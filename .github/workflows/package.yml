@@ -10,6 +10,7 @@ on:
       - '.gitattributes'
       - '.github/workflows/package.yml'
       - '.github/workflows/release.yml'
+      - 'Cargo.lock'
       - 'LICENSE'
       - 'assets/**'
       - 'crates/corvid-client/src/endpoint/bootstrap*'

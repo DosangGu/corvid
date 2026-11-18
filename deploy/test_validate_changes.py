@@ -21,17 +21,26 @@ from validate_changes import (
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/package.yml"
 
 
+def workflow_patterns(block):
+    return {
+        line.removeprefix("      - ").strip().strip("'\"")
+        for line in block.split("\n\n", 1)[0].splitlines()
+        if line.startswith("      - ")
+    }
+
+
 class PackagePathsTests(unittest.TestCase):
+    def test_cargo_lock_triggers_pr_packaging(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        pull_request = text.split("  pull_request:\n", 1)[1].split("  push:\n", 1)[0]
+        paths = pull_request.split("    paths:\n", 1)[1]
+        self.assertIn("Cargo.lock", workflow_patterns(paths))
+
     def test_push_fallback_uses_the_workflow_paths(self):
         push = WORKFLOW.read_text(encoding="utf-8").split("  push:\n", 1)[1]
         block = push.split("    paths:\n", 1)[1]
-        workflow_paths = {
-            line.removeprefix("      - ").strip().strip("'\"")
-            for line in block.split("\n\n", 1)[0].splitlines()
-            if line.startswith("      - ")
-        }
         self.assertSetEqual(
-            workflow_paths,
+            workflow_patterns(block),
             PACKAGE_FILES | {f"{path}**" for path in PACKAGE_DIRECTORIES},
         )
 

@@ -218,7 +218,7 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 | --- | --- | --- | --- |
 | Documentation-only PR | Lightweight validation | — | — |
 | Ordinary source PR | Lightweight validation and native builds, tests, and lints on all five targets | — | — |
-| PR touching packaging, installers, updater implementation, or packaged assets | Lightweight validation and native checks | Build and verify installable packages on all five targets | — |
+| PR touching `Cargo.lock`, packaging, installers, updater implementation, or packaged assets | Lightweight validation and native checks | Build and verify installable packages on all five targets | — |
 | Push to `main` | Lightweight validation | Package integration when a packaging input changes | — |
 | Manual **Run workflow** on **Package Corvid** | — | Package integration and release assets | — |
 | Push of a `v*` tag | — | Package integration and release assets, called by the publisher | Publish validated release assets |
@@ -231,10 +231,10 @@ under `docs/images/` use only lightweight validation. The always-reported
 PR status check.
 
 **Package Corvid** uses GitHub path filters for PRs and pushes to `main`. The
-`main` filter also covers ordinary workspace source, dependencies, and schemas. On `main`, **Corvid Checks**
-compares the previous and pushed tips and runs package integration as a fallback
-for unavailable comparisons, large diffs with packaging inputs, and changes that
-could be moves out of a packaging path.
+`main` filter also covers ordinary workspace sources, manifests, and schemas.
+On `main`, **Corvid Checks** compares the previous and pushed tips and runs
+package integration as a fallback for unavailable comparisons, large diffs with
+packaging inputs, and changes that could be moves out of a packaging path.
 
 Both workflows call **Build and Test Corvid**, which runs native TUI/daemon and
 Desktop builds and tests in parallel. A PR that triggers both workflows builds
