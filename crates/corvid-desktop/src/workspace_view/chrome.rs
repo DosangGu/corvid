@@ -9,7 +9,6 @@ pub(super) enum MenuAction {
     Quit,
     Rename,
     NewTab,
-    NewWorkspace,
     SplitRight,
     SplitDown,
     Focus,
@@ -47,7 +46,6 @@ impl WorkspaceView {
             return if ui.as_ref().is_some_and(|ui| ui.can_write() && !ui.changing) {
                 vec![
                     (MenuAction::NewTab, "New tab", "Ctrl+Shift+T"),
-                    (MenuAction::NewWorkspace, "New workspace", "Ctrl+Shift+N"),
                     (MenuAction::SplitRight, "Split right", "Ctrl+Shift+D"),
                     (MenuAction::SplitDown, "Split down", "Ctrl+Shift+E"),
                 ]
@@ -157,7 +155,6 @@ impl WorkspaceView {
                 "Shell {}",
                 workspace.map_or(1, |workspace| workspace.tabs.len() + 1)
             ))),
-            MenuAction::NewWorkspace => self.new_workspace(window, cx),
             MenuAction::SplitRight => self.create(Target::SplitAxis(SplitAxis::Horizontal as i32)),
             MenuAction::SplitDown => self.create(Target::SplitAxis(SplitAxis::Vertical as i32)),
             MenuAction::Focus => self.focus_mode = !self.focus_mode,
@@ -582,7 +579,7 @@ impl Render for WorkspaceView {
                 root.child(self.naming_panel(cx))
             })
             .when(self.creation.is_some(), |root| {
-                root.child(self.creation_panel(cx))
+                root.child(self.creation_panel(window, cx))
             })
     }
 }

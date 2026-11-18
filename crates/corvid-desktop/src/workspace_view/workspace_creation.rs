@@ -1,7 +1,9 @@
 use std::ops::Range;
 
-use corvid_protocol::wire::{BrowseDirectories, DirectoryListing, WorkspaceCreation};
-use gpui::{ElementInputHandler, MouseButton, UTF16Selection, canvas};
+use corvid_protocol::wire::{
+    BrowseDirectories, DirectoryEntry, DirectoryListing, WorkspaceCreation,
+};
+use gpui::{ElementInputHandler, Keystroke, MouseButton, ScrollHandle, UTF16Selection, canvas};
 use tokio::sync::{mpsc, watch};
 
 use super::switcher::machine_label;
@@ -15,8 +17,8 @@ mod browser;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
-    Host,
     Folder,
+    Folders,
     Name,
 }
 
@@ -140,182 +142,297 @@ struct Prepared {
     supports_directory: bool,
 }
 
+enum FolderQuery {
+    Browse { reselect: Option<String> },
+    Complete,
+    Validate,
+}
+
 pub(super) struct Draft {
     destination: Destination,
-    host: Text,
+    return_to_picker: bool,
     folder: Text,
     name: Text,
     field: Field,
     default_name: String,
     name_edited: bool,
     hidden: bool,
-    expanded: bool,
     prepared: Option<Prepared>,
     browser: Option<Task<()>>,
     queries: Option<watch::Sender<(u64, BrowseDirectories)>>,
     revision: u64,
+    pending: Option<FolderQuery>,
     listing: Option<DirectoryListing>,
     choice: usize,
+    scroll: ScrollHandle,
     status: Option<String>,
     connecting: bool,
-    validating: bool,
     creating: Option<Option<String>>,
 }
 
 impl Draft {
+    fn new(destination: Destination, return_to_picker: bool, default_name: String) -> Self {
+        let mut name = Text::default();
+        name.set(default_name.clone());
+        Self {
+            destination,
+            return_to_picker,
+            folder: Text::default(),
+            name,
+            field: Field::Folders,
+            default_name,
+            name_edited: false,
+            hidden: false,
+            prepared: None,
+            browser: None,
+            queries: None,
+            revision: 0,
+            pending: None,
+            listing: None,
+            choice: 0,
+            scroll: ScrollHandle::new(),
+            status: None,
+            connecting: false,
+            creating: None,
+        }
+    }
+
     pub(super) fn text(&self) -> &Text {
         match self.field {
-            Field::Host => &self.host,
-            Field::Folder => &self.folder,
+            Field::Folder | Field::Folders => &self.folder,
             Field::Name => &self.name,
         }
     }
 
     fn text_mut(&mut self) -> &mut Text {
         match self.field {
-            Field::Host => &mut self.host,
-            Field::Folder => &mut self.folder,
+            Field::Folder | Field::Folders => &mut self.folder,
             Field::Name => &mut self.name,
         }
     }
 
-    fn propose_name(&mut self) {
-        if self.name_edited {
-            return;
+    fn propose_name(&mut self, name: Option<String>) {
+        if !self.name_edited {
+            self.name
+                .set(name.unwrap_or_else(|| self.default_name.clone()));
         }
-        let name = self
-            .folder
-            .value
-            .trim_end_matches(['/', '\\'])
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|name| !name.is_empty() && !matches!(*name, "~" | "." | ".."))
-            .map_or_else(|| self.default_name.clone(), str::to_owned);
-        self.name.set(name);
     }
 
-    fn query(&mut self, complete: bool) {
-        self.choice = 0;
-        self.listing = None;
-        self.status = None;
-        self.validating = false;
+    fn query(&mut self, path: String, kind: FolderQuery) {
+        let Some(queries) = &self.queries else {
+            return;
+        };
         self.revision += 1;
-        if self.text().marked.is_some() {
-            return;
-        }
-        if let Some(queries) = &self.queries {
-            queries.send_replace((
-                self.revision,
-                BrowseDirectories {
-                    path: self.folder.value.clone(),
-                    complete,
-                    show_hidden: self.hidden,
-                    validate_only: false,
-                },
-            ));
+        queries.send_replace((
+            self.revision,
+            BrowseDirectories {
+                path,
+                complete: matches!(kind, FolderQuery::Complete),
+                show_hidden: self.hidden,
+                validate_only: matches!(kind, FolderQuery::Validate),
+            },
+        ));
+        self.pending = Some(kind);
+        self.status = None;
+    }
+
+    fn browse_folder(&mut self, path: String, reselect: Option<String>) {
+        if self.creating.is_none() && self.pending.is_none() && self.text().marked.is_none() {
+            self.field = Field::Folders;
+            self.query(path, FolderQuery::Browse { reselect });
         }
     }
 
-    fn set_folder(&mut self, path: String) {
-        self.field = Field::Folder;
-        self.expanded = true;
-        self.folder.set(path);
-        self.propose_name();
-        self.query(false);
+    fn selected_folder(&self) -> Option<&DirectoryEntry> {
+        self.listing.as_ref()?.entries.get(self.choice)
+    }
+
+    fn select_folder(&mut self, index: usize) {
+        let count = self.listing.as_ref().map_or(0, |list| list.entries.len());
+        self.choice = index.min(count.saturating_sub(1));
+        if count != 0 {
+            self.scroll.scroll_to_item(self.choice);
+        }
+    }
+
+    fn refresh_folders(&mut self) {
+        if let Some(list) = &self.listing
+            && self.folder.value == list.directory
+        {
+            let reselect = self.selected_folder().map(|entry| entry.path.clone());
+            self.browse_folder(list.directory.clone(), reselect);
+        } else {
+            self.query(self.folder.value.clone(), FolderQuery::Complete);
+        }
     }
 
     fn edited(&mut self) {
         match self.field {
-            Field::Host => self.choice = 0,
             Field::Folder => {
-                self.expanded = true;
-                self.propose_name();
-                self.query(true);
+                self.revision += 1;
+                self.pending = None;
+                self.listing = None;
+                self.status = None;
+                if self.folder.marked.is_none() {
+                    self.query(self.folder.value.clone(), FolderQuery::Complete);
+                }
             }
+            Field::Folders => {}
             Field::Name => self.name_edited = true,
         }
+    }
+
+    fn can_submit(&self) -> bool {
+        self.prepared.is_some()
+            && self.creating.is_none()
+            && matches!(self.pending, None | Some(FolderQuery::Complete))
+            && self.folder.marked.is_none()
+            && self.name.marked.is_none()
+    }
+
+    fn folder_key(&mut self, key: &Keystroke) -> bool {
+        if !self
+            .prepared
+            .as_ref()
+            .is_some_and(|host| host.supports_directory)
+            || key.modifiers.control
+            || key.modifiers.alt
+            || key.modifiers.platform
+        {
+            return false;
+        }
+        match (self.field, key.key.as_str(), key.modifiers.shift) {
+            (Field::Folders, "tab", true) | (Field::Name, "tab", false) => {
+                self.field = Field::Folder;
+            }
+            (Field::Folder, "tab", true) => self.field = Field::Name,
+            (Field::Name, "tab", true) => self.field = Field::Folders,
+            (Field::Folder | Field::Folders, "tab", false) => {
+                if self.pending.is_none() {
+                    if let Some(entry) = self.selected_folder() {
+                        self.browse_folder(entry.path.clone(), None);
+                    } else {
+                        self.field = Field::Name;
+                    }
+                }
+            }
+            (Field::Folder, "up" | "down", false) => {
+                self.field = Field::Folders;
+                self.select_folder(self.choice);
+            }
+            (Field::Folders, "up", false) => self.select_folder(self.choice.saturating_sub(1)),
+            (Field::Folders, "down", false) => self.select_folder(self.choice + 1),
+            (Field::Folders, "right", false) => {
+                if let Some(entry) = self.selected_folder() {
+                    self.browse_folder(entry.path.clone(), None);
+                }
+            }
+            (Field::Folders, "left", false) => {
+                if let Some(list) = &self.listing
+                    && let Some(parent) = &list.parent
+                {
+                    self.browse_folder(parent.clone(), Some(list.directory.clone()));
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn edit_key(
+        &mut self,
+        key: &Keystroke,
+        command: bool,
+        cx: &mut Context<WorkspaceView>,
+    ) -> bool {
+        if self.field == Field::Folders {
+            return false;
+        }
+        let edit = self.text_mut();
+        let mut changed = false;
+        match key.key.as_str() {
+            "a" if command => {
+                edit.anchor = 0;
+                edit.cursor = edit.value.len();
+            }
+            "v" if command => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    edit.replace(None, &text, None, false);
+                    changed = true;
+                }
+            }
+            "left" => edit.move_to(edit.prior(), key.modifiers.shift),
+            "right" => edit.move_to(edit.next(), key.modifiers.shift),
+            "home" => edit.move_to(0, key.modifiers.shift),
+            "end" => edit.move_to(edit.value.len(), key.modifiers.shift),
+            "backspace" | "delete" => {
+                if edit.selection().is_empty() {
+                    edit.anchor = if key.key == "backspace" {
+                        edit.prior()
+                    } else {
+                        edit.next()
+                    };
+                }
+                edit.replace(None, "", None, false);
+                changed = true;
+            }
+            _ => return false,
+        }
+        if changed {
+            self.edited();
+        }
+        true
     }
 }
 
 impl WorkspaceView {
-    pub(super) fn new_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dismiss_overlay(window, cx);
-        let ui = self.session.as_ref().map(Session::ui);
-        let count = ui
-            .as_ref()
-            .and_then(|ui| ui.inventory.as_ref())
-            .map_or(0, |inventory| inventory.workspaces.len());
-        let name = format!("Workspace {}", count + 1);
-        let mut draft = Draft {
-            destination: self.destination.clone().unwrap_or(Destination::Local),
-            host: Text::default(),
-            folder: Text::default(),
-            name: Text::default(),
-            field: Field::Host,
-            default_name: name.clone(),
-            name_edited: false,
-            hidden: false,
-            expanded: false,
-            prepared: None,
-            browser: None,
-            queries: None,
-            revision: 0,
-            listing: None,
-            choice: 0,
-            status: None,
-            connecting: false,
-            validating: false,
-            creating: None,
-        };
-        draft.name.set(name);
-        self.creation = Some(draft);
-        self.refresh_hosts(cx);
-        #[cfg(windows)]
-        self.refresh_wsl(cx);
-        window.focus(&self.setup_focus);
-        if ui.is_some_and(|ui| ui.connected && ui.endpoint.is_some()) {
-            self.prepare_folder_host(false, window, cx);
-        }
-        cx.notify();
-    }
-
-    fn host_choices(&self, filter: &str) -> Vec<Destination> {
-        let query = filter.to_lowercase();
-        std::iter::once(Destination::Local)
-            .chain(self.ssh_destinations())
-            .chain({
-                #[cfg(windows)]
-                {
-                    self.wsl_destinations()
-                }
-                #[cfg(not(windows))]
-                {
-                    std::iter::empty()
-                }
-            })
-            .filter(|target| machine_label(target).to_lowercase().contains(&query))
-            .collect()
-    }
-
-    fn choose_host(
+    pub(super) fn new_workspace(
         &mut self,
         destination: Destination,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let draft = self.creation.as_mut().expect("workspace editor");
+        let ui = self.session.as_ref().map(Session::ui);
+        if self.connecting(ui.as_ref()) {
+            return;
+        }
+        let count = ui
+            .filter(|_| self.destination.as_ref() == Some(&destination))
+            .and_then(|ui| ui.inventory)
+            .or_else(|| {
+                self.known_sessions
+                    .get(&destination)
+                    .and_then(|known| known.inventory.clone())
+            })
+            .map_or(0, |inventory| inventory.workspaces.len());
+        let return_to_picker = std::mem::take(&mut self.switcher_open);
+        self.menu_open = false;
+        self.naming = None;
+        self.creation = Some(Draft::new(
+            destination,
+            return_to_picker,
+            format!("Workspace {}", count + 1),
+        ));
+        window.focus(&self.setup_focus);
+        self.prepare_folder_host(window, cx);
+    }
+
+    pub(super) fn cancel_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = self.creation.as_ref().expect("workspace editor");
         if draft.creating.is_some() {
             return;
         }
-        draft.destination = destination;
-        draft.host.set(String::new());
-        draft.folder.set(String::new());
-        draft.propose_name();
-        draft.expanded = false;
-        self.prepare_folder_host(true, window, cx);
+        if draft.return_to_picker {
+            self.creation = None;
+            self.switcher_open = true;
+            window.focus(&self.setup_focus);
+            cx.notify();
+        } else {
+            self.dismiss_overlay(window, cx);
+        }
     }
 
-    fn prepare_folder_host(&mut self, explicit: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn prepare_folder_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.creation.as_mut().expect("workspace editor");
         let destination = draft.destination.clone();
         let current = self
@@ -339,7 +456,7 @@ impl WorkspaceView {
         draft.prepared = None;
         draft.browser = None;
         draft.queries = None;
-        draft.validating = false;
+        draft.pending = None;
         draft.listing = None;
         draft.connecting = true;
         draft.status = Some(format!("Connecting to {}…", machine_label(&destination)));
@@ -348,7 +465,6 @@ impl WorkspaceView {
             self.agent_deck.state.clone(),
             known_endpoint,
             expected_host,
-            explicit,
         );
         let (queries, mut updates, mut prompts) = match result {
             Ok(channels) => channels,
@@ -398,6 +514,7 @@ impl WorkspaceView {
     ) {
         if let Some(draft) = &mut self.creation
             && draft.creating.is_none()
+            && draft.field != Field::Folders
         {
             draft.text_mut().replace(range, text, selected, composing);
             draft.edited();
@@ -426,157 +543,47 @@ impl WorkspaceView {
             cx.stop_propagation();
             return;
         }
-        let field = draft.field;
-        let marked = draft.text().marked.is_some();
+        if draft.text().marked.is_some() {
+            return;
+        }
         let command = key.modifiers.control || key.modifiers.platform;
-        if !marked && matches!(key.key.as_str(), "enter" | "tab") {
-            cx.stop_propagation();
-            self.accept_creation_input(field, key.key == "tab", window, cx);
-            return;
-        }
-        if !marked && key.key == "escape" {
-            cx.stop_propagation();
-            self.dismiss_overlay(window, cx);
-            return;
-        }
-        if !marked && matches!(key.key.as_str(), "up" | "down") && field != Field::Name {
-            let length = match field {
-                Field::Host => self.host_choices(&draft.host.value).len(),
-                Field::Folder => draft.listing.as_ref().map_or(0, |list| list.entries.len()),
-                Field::Name => 0,
-            };
-            let draft = self.creation.as_mut().expect("workspace editor");
-            draft.choice = if key.key == "up" {
-                draft.choice.saturating_sub(1)
-            } else {
-                (draft.choice + 1).min(length.saturating_sub(1))
-            };
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
-        if marked {
-            return;
-        }
-        let draft = self.creation.as_mut().expect("workspace editor");
-        let edit = draft.text_mut();
-        let mut changed = false;
         match key.key.as_str() {
-            "a" if command => {
-                edit.anchor = 0;
-                edit.cursor = edit.value.len();
-            }
-            "v" if command => {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    edit.replace(None, &text, None, false);
-                    changed = true;
+            "enter" if !event.is_held => self.submit_workspace(window, cx),
+            "enter" => {}
+            "escape" => self.cancel_creation(window, cx),
+            _ => {
+                let draft = self.creation.as_mut().expect("workspace editor");
+                if !draft.folder_key(key) && !draft.edit_key(key, command, cx) {
+                    return;
                 }
             }
-            "left" => edit.move_to(edit.prior(), key.modifiers.shift),
-            "right" => edit.move_to(edit.next(), key.modifiers.shift),
-            "home" => edit.move_to(0, key.modifiers.shift),
-            "end" => edit.move_to(edit.value.len(), key.modifiers.shift),
-            "backspace" | "delete" => {
-                if edit.selection().is_empty() {
-                    edit.anchor = if key.key == "backspace" {
-                        edit.prior()
-                    } else {
-                        edit.next()
-                    };
-                }
-                edit.replace(None, "", None, false);
-                changed = true;
-            }
-            _ => return,
-        }
-        if changed {
-            draft.edited();
         }
         cx.stop_propagation();
         cx.notify();
     }
 
-    fn accept_creation_input(
-        &mut self,
-        field: Field,
-        tab: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let draft = self.creation.as_ref().expect("workspace editor");
-        match field {
-            Field::Host => {
-                if let Some(host) = self
-                    .host_choices(&draft.host.value)
-                    .into_iter()
-                    .nth(draft.choice)
-                {
-                    self.choose_host(host, window, cx);
-                } else {
-                    self.connect_typed_host(window, cx);
-                }
-            }
-            Field::Folder if tab => {
-                let draft = self.creation.as_mut().expect("workspace editor");
-                if let Some(entry) = draft
-                    .listing
-                    .as_ref()
-                    .and_then(|list| list.entries.get(draft.choice))
-                {
-                    draft.set_folder(entry.path.clone());
-                } else {
-                    draft.field = Field::Name;
-                    draft.name.anchor = 0;
-                }
-                cx.notify();
-            }
-            _ => self.submit_workspace(window, cx),
-        }
-    }
-
-    fn connect_typed_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let draft = self.creation.as_mut().expect("workspace editor");
-        match SshAlias::new(draft.host.value.clone()) {
-            Ok(alias) => self.choose_host(Destination::Ssh(alias), window, cx),
-            Err(_) => {
-                draft.status = Some(
-                    "Choose a host or enter an OpenSSH alias from your SSH configuration.".into(),
-                );
-                cx.notify();
-            }
-        }
-    }
-
     fn submit_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let draft = self.creation.as_mut().expect("workspace editor");
-        if draft.prepared.is_none()
-            || draft.creating.is_some()
-            || draft.validating
-            || draft.text().marked.is_some()
-        {
+        let ui = self.session.as_ref().map(Session::ui);
+        if self.connecting(ui.as_ref()) {
             return;
         }
-        if !draft.folder.value.is_empty()
-            && let Some(queries) = &draft.queries
-        {
-            draft.validating = true;
-            draft.revision += 1;
+        let draft = self.creation.as_mut().expect("workspace editor");
+        if !draft.can_submit() {
+            return;
+        }
+        if !draft.folder.value.is_empty() {
+            draft.query(draft.folder.value.clone(), FolderQuery::Validate);
             draft.status = Some("Checking the workspace folder…".into());
-            queries.send_replace((
-                draft.revision,
-                BrowseDirectories {
-                    path: draft.folder.value.clone(),
-                    validate_only: true,
-                    ..Default::default()
-                },
-            ));
             cx.notify();
             return;
         }
+        draft.propose_name(None);
         self.finish_workspace(window, cx);
     }
 
     fn finish_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ui = self.session.as_ref().map(Session::ui);
+        let busy = self.connecting(ui.as_ref());
         let draft = self.creation.as_mut().expect("workspace editor");
         let Some(prepared) = &draft.prepared else {
             return;
@@ -591,14 +598,23 @@ impl WorkspaceView {
         if directory.is_some() && !prepared.supports_directory {
             return;
         }
-        let old = self.selected.as_ref().map(|view| view.workspace_id.clone());
+        if busy {
+            draft.status = Some("Wait for the current connection to finish and try again.".into());
+            cx.notify();
+            return;
+        }
+        let old = self
+            .selected
+            .as_ref()
+            .filter(|_| self.destination.as_ref() == Some(&draft.destination))
+            .map(|view| view.workspace_id.clone());
         draft.creating = Some(old);
         draft.status = Some("Creating workspace…".into());
         if self.destination.as_ref() == Some(&draft.destination)
-            && let Some(session) = self.session.as_ref().filter(|session| {
-                let ui = session.ui();
+            && ui.is_some_and(|ui| {
                 ui.connected && !ui.changing && ui.host_id.as_ref() == Some(&prepared.host)
             })
+            && let Some(session) = &self.session
         {
             session.create(match directory {
                 Some(directory) => Target::Workspace(WorkspaceCreation { label, directory }),
@@ -617,6 +633,14 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    pub(super) fn creation_failed(&mut self, error: String) {
+        if let Some(draft) = &mut self.creation
+            && draft.creating.take().is_some()
+        {
+            draft.status = Some(error);
+        }
+    }
+
     pub(super) fn sync_creation(&mut self, ui: &Ui, window: &mut Window, cx: &mut Context<Self>) {
         let Some(draft) = &mut self.creation else {
             return;
@@ -626,6 +650,8 @@ impl WorkspaceView {
             return;
         }
         if let Some(selected) = ui.selected.as_ref().filter(|_| ui.connected)
+            && ui.host_id.as_ref() == draft.prepared.as_ref().map(|prepared| &prepared.host)
+            && self.destination.as_ref() == Some(&draft.destination)
             && Some(&selected.workspace_id) != old.as_ref()
         {
             if let Some(host) = &ui.host_id
@@ -638,13 +664,17 @@ impl WorkspaceView {
             }
             self.dismiss_overlay(window, cx);
         } else {
-            draft.creating = None;
-            draft.status = Some(ui.message.clone());
+            self.creation_failed(ui.message.clone());
         }
     }
 
-    pub(super) fn creation_panel(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn creation_panel(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let draft = self.creation.as_ref().expect("workspace editor");
+        let offset = if self.focus_mode { 20. } else { 54. };
+        let status = draft.status.as_deref().or(match draft.pending {
+            Some(FolderQuery::Browse { .. } | FolderQuery::Complete) => Some("Loading folders…"),
+            _ => None,
+        });
         let panel = div()
             .id("new-workspace")
             .occlude()
@@ -653,8 +683,7 @@ impl WorkspaceView {
             .flex_col()
             .w(ui_px(560.))
             .max_w_full()
-            .max_h_full()
-            .overflow_y_scroll()
+            .max_h(window.viewport_size().height - ui_px(offset).to_pixels(window.rem_size()))
             .gap(ui_px(8.))
             .p(ui_px(14.))
             .rounded_md()
@@ -662,274 +691,211 @@ impl WorkspaceView {
             .border_1()
             .border_color(rgb(BORDER))
             .text_color(rgb(TEXT))
-            .child(div().text_size(ui_px(18.)).child("New workspace"))
-            .child(self.creation_hosts(draft, cx))
-            .child(self.creation_folder(draft, cx))
-            .child(self.creation_field(Field::Name, "Workspace name", &draft.name, cx))
-            .when_some(draft.status.clone(), |panel, status| {
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(ui_px(18.))
+                    .truncate()
+                    .child(format!("New workspace on {}", machine_label(&draft.destination))),
+            )
+            .when_some(draft.prepared.as_ref(), |panel, prepared| {
+                if prepared.supports_directory {
+                    panel.child(self.creation_folders(draft, prepared, cx))
+                } else {
+                    panel.child(
+                        div().text_color(rgb(MUTED)).child(
+                            "Update Corvid on this machine to choose a folder. The default starting folder is available.",
+                        ),
+                    )
+                }
+                .child(self.creation_field(Field::Name, "Workspace name", &draft.name, cx))
+            })
+            .when_some(status, |panel, status| {
                 panel.child(
                     div()
+                        .flex_none()
                         .text_size(ui_px(12.))
                         .text_color(rgb(MUTED))
-                        .child(status),
+                        .child(status.to_owned()),
                 )
             })
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .justify_between()
                     .child(
                         button("cancel-workspace", "Cancel", false).on_click(cx.listener(
-                            |view, _, window, cx| {
-                                if view
-                                    .creation
-                                    .as_ref()
-                                    .is_some_and(|draft| draft.creating.is_none())
-                                {
-                                    view.dismiss_overlay(window, cx);
-                                }
-                            },
+                            |view, _, window, cx| view.cancel_creation(window, cx),
                         )),
                     )
-                    .child(
-                        if draft.prepared.is_some() && draft.creating.is_none() && !draft.validating
-                        {
-                            button("create-workspace", "Create", true).on_click(cx.listener(
-                                |view, _, window, cx| {
-                                    view.submit_workspace(window, cx);
-                                },
-                            ))
-                        } else {
-                            button("create-workspace-disabled", "Create", false).opacity(0.5)
-                        },
-                    ),
+                    .child(if draft.can_submit() {
+                        button("create-workspace", "Create", true).on_click(cx.listener(
+                            |view, _, window, cx| view.submit_workspace(window, cx),
+                        ))
+                    } else if draft.prepared.is_none() && !draft.connecting {
+                        button("retry-workspace-host", "Retry", true).on_click(cx.listener(
+                            |view, _, window, cx| view.prepare_folder_host(window, cx),
+                        ))
+                    } else {
+                        button("create-workspace-disabled", "Create", false).opacity(0.5)
+                    }),
             );
         self.overlay(panel, false, cx)
     }
 
-    fn creation_hosts(&self, draft: &Draft, cx: &mut Context<Self>) -> Div {
-        let hosts = self.host_choices(&draft.host.value);
-        let start = draft.choice.saturating_sub(4);
+    fn creation_folders(&self, draft: &Draft, prepared: &Prepared, cx: &mut Context<Self>) -> Div {
+        let parent = draft
+            .listing
+            .as_ref()
+            .and_then(|list| Some((list.parent.clone()?, list.directory.clone())));
         div()
             .flex()
             .flex_col()
+            .flex_shrink()
+            .min_h_0()
             .gap(ui_px(4.))
-            .child(
-                div()
-                    .text_color(rgb(MUTED))
-                    .child(format!("Target · {}", machine_label(&draft.destination))),
-            )
+            .child(self.creation_field(Field::Folder, "Folder path", &draft.folder, cx))
             .child(
                 div()
                     .flex()
-                    .items_end()
-                    .gap(ui_px(5.))
-                    .child(self.creation_field(
-                        Field::Host,
-                        "Search connections or enter SSH alias",
-                        &draft.host,
+                    .flex_none()
+                    .flex_wrap()
+                    .gap(ui_px(4.))
+                    .child(folder_button(
+                        "workspace-home",
+                        "Home",
+                        "~".into(),
+                        false,
                         cx,
                     ))
-                    .child(
-                        button("connect-workspace-alias", "Connect SSH", false).on_click(
-                            cx.listener(|view, _, window, cx| {
-                                view.connect_typed_host(window, cx);
-                            }),
-                        ),
-                    ),
-            )
-            .when(draft.prepared.is_none() && !draft.connecting, |panel| {
-                panel.child(
-                    button("retry-workspace-host", "Connect to selected target", false).on_click(
-                        cx.listener(|view, _, window, cx| {
-                            view.prepare_folder_host(true, window, cx)
-                        }),
-                    ),
-                )
-            })
-            .when(draft.field == Field::Host && !draft.connecting, |panel| {
-                panel.children(hosts.into_iter().enumerate().skip(start).take(5).map(
-                    |(index, target)| {
-                        button(
-                            format!("workspace-host-{index}"),
-                            machine_label(&target),
-                            index == draft.choice,
+                    .when_some(parent, |row, (parent, child)| {
+                        row.child(
+                            button("workspace-parent", "Up", false).on_click(cx.listener(
+                                move |view, _, window, cx| {
+                                    let draft = view.creation.as_mut().expect("workspace editor");
+                                    draft.browse_folder(parent.clone(), Some(child.clone()));
+                                    window.focus(&view.setup_focus);
+                                    cx.notify();
+                                },
+                            )),
                         )
-                        .on_click(cx.listener(
-                            move |view, _, window, cx| view.choose_host(target.clone(), window, cx),
-                        ))
-                    },
-                ))
-            })
-    }
-
-    fn creation_folder(&self, draft: &Draft, cx: &mut Context<Self>) -> Div {
-        let Some(prepared) = &draft.prepared else {
-            return div();
-        };
-        if !prepared.supports_directory {
-            return div().text_color(rgb(MUTED)).child("Update Corvid on this target to choose a folder. You can create a workspace with its usual starting location.");
-        }
-        let list = draft.listing.as_ref();
-        let start = draft.choice.saturating_sub(4);
-        div()
-            .flex()
-            .flex_col()
-            .gap(ui_px(4.))
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap(ui_px(5.))
-                    .child(self.creation_field(
-                        Field::Folder,
-                        "Folder · optional",
-                        &draft.folder,
-                        cx,
-                    ))
+                    })
                     .child(
-                        button("browse-workspace", "Browse…", false).on_click(cx.listener(
-                            |view, _, window, cx| {
-                                let draft = view.creation.as_mut().expect("workspace editor");
-                                draft.set_folder(if draft.folder.value.is_empty() {
-                                    "~".into()
-                                } else {
-                                    draft.folder.value.clone()
-                                });
+                        button(
+                            "workspace-hidden",
+                            if draft.hidden {
+                                "Hide hidden"
+                            } else {
+                                "Show hidden"
+                            },
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            let draft = view.creation.as_mut().expect("workspace editor");
+                            if draft.pending.is_none()
+                                && draft.creating.is_none()
+                                && draft.text().marked.is_none()
+                            {
+                                draft.hidden = !draft.hidden;
+                                draft.refresh_folders();
+                                cx.notify();
+                            }
+                        })),
+                    )
+                    .child(button("workspace-default", "Use default", false).on_click(
+                        cx.listener(|view, _, window, cx| {
+                            let draft = view.creation.as_mut().expect("workspace editor");
+                            if draft.creating.is_none() {
+                                draft.field = Field::Name;
+                                draft.folder.set(String::new());
+                                draft.revision += 1;
+                                draft.pending = None;
+                                draft.listing = None;
+                                draft.status = None;
+                                draft.propose_name(None);
                                 window.focus(&view.setup_focus);
                                 cx.notify();
-                            },
-                        )),
-                    ),
+                            }
+                        }),
+                    )),
             )
-            .when(draft.expanded, |panel| {
-                let parent = list.and_then(|list| list.parent.clone());
+            .when_some(draft.listing.as_ref(), |panel, list| {
                 panel
                     .child(
                         div()
-                            .flex()
-                            .gap(ui_px(4.))
-                            .child(folder_button(
-                                "workspace-home",
-                                "Home",
-                                "~".into(),
-                                false,
-                                cx,
-                            ))
-                            .when_some(parent, |row, parent| {
-                                row.child(folder_button(
-                                    "workspace-parent",
-                                    "Up",
-                                    parent,
-                                    false,
-                                    cx,
-                                ))
-                            })
-                            .child(
-                                button(
-                                    "workspace-hidden",
-                                    if draft.hidden {
-                                        "Hide hidden"
-                                    } else {
-                                        "Show hidden"
-                                    },
-                                    false,
-                                )
-                                .on_click(cx.listener(
-                                    |view, _, _, cx| {
-                                        let draft =
-                                            view.creation.as_mut().expect("workspace editor");
-                                        draft.hidden = !draft.hidden;
-                                        draft.query(false);
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                            .child(folder_button(
-                                "workspace-default",
-                                "Use default",
-                                String::new(),
-                                false,
-                                cx,
-                            )),
+                            .flex_none()
+                            .text_size(ui_px(12.))
+                            .text_color(rgb(MUTED))
+                            .child("↑↓ Move   ←→ Browse   Tab Complete   Shift+Tab Edit path"),
                     )
-                    .when_some(list, |panel, list| {
-                        panel
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(rgb(MUTED))
-                                    .child(list.directory.clone()),
-                            )
-                            .children(list.entries.iter().enumerate().skip(start).take(5).map(
-                                |(index, entry)| {
-                                    folder_button(
-                                        format!("workspace-folder-{index}"),
-                                        entry.name.clone(),
-                                        entry.path.clone(),
-                                        index == draft.choice,
-                                        cx,
-                                    )
-                                },
-                            ))
-                            .when(list.entries.len() > 5, |panel| {
-                                let count = list.entries.len();
-                                panel.child(
-                                    div()
-                                        .flex()
-                                        .gap(ui_px(5.))
-                                        .when(start > 0, |nav| {
-                                            nav.child(
-                                                button("folder-prev", "Previous folders", false)
-                                                    .on_click(cx.listener(
-                                                        move |view, _, _, cx| {
-                                                            view.creation
-                                                                .as_mut()
-                                                                .expect("workspace editor")
-                                                                .choice = start.saturating_sub(1);
-                                                            cx.notify();
-                                                        },
-                                                    )),
-                                            )
-                                        })
-                                        .when(start + 5 < count, |nav| {
-                                            nav.child(
-                                                button("folder-next", "More folders", false)
-                                                    .on_click(cx.listener(
-                                                        move |view, _, _, cx| {
-                                                            view.creation
-                                                                .as_mut()
-                                                                .expect("workspace editor")
-                                                                .choice =
-                                                                (start + 9).min(count - 1);
-                                                            cx.notify();
-                                                        },
-                                                    )),
-                                            )
-                                        }),
-                                )
-                            })
-                            .when(list.truncated, |panel| {
-                                panel.child(
-                                    div().text_color(rgb(MUTED)).child(
-                                        "Type more of the folder name to narrow the results.",
-                                    ),
-                                )
-                            })
-                    })
-                    .when_some(self.recent_folders.get(&prepared.host), |panel, paths| {
-                        panel
-                            .child(div().text_color(rgb(MUTED)).child("Recent folders"))
-                            .children(paths.iter().enumerate().take(3).map(|(index, path)| {
+                    .child(
+                        div()
+                            .id("workspace-folders")
+                            .flex()
+                            .flex_col()
+                            .flex_shrink()
+                            .min_h_0()
+                            .max_h(ui_px(320.))
+                            .overflow_y_scroll()
+                            .track_scroll(&draft.scroll)
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(if draft.field == Field::Folders {
+                                ACTIVE
+                            } else {
+                                BORDER
+                            }))
+                            .children(list.entries.iter().enumerate().map(|(index, entry)| {
                                 folder_button(
-                                    format!("workspace-recent-{index}"),
-                                    path.clone(),
-                                    path.clone(),
-                                    false,
+                                    format!("workspace-folder-{index}"),
+                                    entry.name.clone(),
+                                    entry.path.clone(),
+                                    index == draft.choice,
                                     cx,
                                 )
                             }))
+                            .when(list.entries.is_empty(), |list| {
+                                list.child(
+                                    div()
+                                        .px(ui_px(10.))
+                                        .py(ui_px(5.))
+                                        .text_color(rgb(MUTED))
+                                        .child("No matching folders"),
+                                )
+                            }),
+                    )
+                    .when(list.truncated, |panel| {
+                        panel.child(
+                            div()
+                                .flex_none()
+                                .text_size(ui_px(12.))
+                                .text_color(rgb(MUTED))
+                                .child("Type more of the folder name to narrow the results."),
+                        )
                     })
+            })
+            .when_some(self.recent_folders.get(&prepared.host), |panel, paths| {
+                panel.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(ui_px(4.))
+                        .overflow_hidden()
+                        .child(div().text_color(rgb(MUTED)).child("Recent"))
+                        .children(paths.iter().enumerate().take(3).map(|(index, path)| {
+                            folder_button(
+                                format!("workspace-recent-{index}"),
+                                path.clone(),
+                                path.clone(),
+                                false,
+                                cx,
+                            )
+                            .flex_1()
+                            .min_w_0()
+                        })),
+                )
             })
     }
 
@@ -954,7 +920,7 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .gap(ui_px(3.))
-            .flex_1()
+            .flex_none()
             .min_w_0()
             .child(
                 div()
@@ -981,10 +947,11 @@ impl WorkspaceView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             let draft = view.creation.as_mut().expect("workspace editor");
-                            draft.field = field;
-                            draft.choice = 0;
-                            window.focus(&view.setup_focus);
-                            cx.notify();
+                            if draft.creating.is_none() && draft.text().marked.is_none() {
+                                draft.field = field;
+                                window.focus(&view.setup_focus);
+                                cx.notify();
+                            }
                         }),
                     )
                     .when(active, |field| {
@@ -1018,10 +985,138 @@ fn folder_button(
         .truncate()
         .on_click(cx.listener(move |view, _, window, cx| {
             let draft = view.creation.as_mut().expect("workspace editor");
-            if draft.creating.is_none() {
-                draft.set_folder(path.clone());
-                window.focus(&view.setup_focus);
-                cx.notify();
-            }
+            draft.browse_folder(path.clone(), None);
+            window.focus(&view.setup_focus);
+            cx.notify();
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::browser::Update;
+    use super::*;
+
+    fn connected_browser() -> (Draft, watch::Receiver<(u64, BrowseDirectories)>) {
+        let (queries, pending) = watch::channel((0, BrowseDirectories::default()));
+        let alias = SshAlias::new("test-machine".into()).unwrap();
+        let mut draft = Draft::new(Destination::Ssh(alias.clone()), true, "Workspace 1".into());
+        draft.queries = Some(queries);
+        assert!(!draft.update(Update::Ready(Prepared {
+            endpoint: ControlEndpoint::Ssh(alias),
+            host: "test-host".into(),
+            supports_directory: true,
+        })));
+        (draft, pending)
+    }
+
+    fn listing(directory: &str, parent: Option<&str>, names: &[&str]) -> DirectoryListing {
+        DirectoryListing {
+            directory: directory.into(),
+            parent: parent.map(str::to_owned),
+            folder_name: directory
+                .rsplit('/')
+                .next()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+            entries: names
+                .iter()
+                .map(|name| DirectoryEntry {
+                    name: (*name).into(),
+                    path: format!("{}/{name}", directory.trim_end_matches('/')),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn press(draft: &mut Draft, key: &str) {
+        assert!(draft.folder_key(&Keystroke::parse(key).unwrap()));
+    }
+
+    #[test]
+    fn opens_home_then_reselects_the_folder_after_going_up() {
+        let (mut draft, queries) = connected_browser();
+        assert_eq!(queries.borrow().1.path, "~");
+        let names: Vec<_> = (1..=32).map(|i| format!("folder-{i:02}")).collect();
+        let names: Vec<_> = names.iter().map(String::as_str).collect();
+        let home = listing("/home", Some("/"), &names);
+        draft.update(Update::Listed(draft.revision, Ok(home.clone())));
+        assert_eq!(draft.folder.value, "/home");
+        for _ in 0..40 {
+            press(&mut draft, "down");
+        }
+        assert_eq!(draft.choice, 31);
+        press(&mut draft, "right");
+        assert_eq!(queries.borrow().1.path, "/home/folder-32");
+        draft.update(Update::Listed(
+            draft.revision,
+            Ok(listing("/home/folder-32", Some("/home"), &[])),
+        ));
+        assert_eq!(draft.folder.value, "/home/folder-32");
+        assert_eq!(draft.name.value, "folder-32");
+        press(&mut draft, "left");
+        assert_eq!(queries.borrow().1.path, "/home");
+        draft.update(Update::Listed(draft.revision, Ok(home)));
+        assert_eq!(draft.selected_folder().unwrap().name, "folder-32");
+    }
+
+    #[test]
+    fn tab_completes_a_path_and_ignores_older_replies() {
+        let (mut draft, queries) = connected_browser();
+        let old_revision = draft.revision;
+        draft.update(Update::Listed(
+            old_revision,
+            Ok(listing("/home", Some("/"), &[])),
+        ));
+        press(&mut draft, "shift-tab");
+        assert!(draft.field == Field::Folder);
+        assert!(!draft.folder_key(&Keystroke::parse("left").unwrap()));
+        draft.folder.set("/p".into());
+        draft.edited();
+        assert!(queries.borrow().1.complete);
+        assert_eq!(queries.borrow().1.path, "/p");
+        draft.update(Update::Listed(
+            old_revision,
+            Ok(listing("/home", Some("/"), &[])),
+        ));
+        assert!(draft.listing.is_none());
+        draft.update(Update::Listed(
+            draft.revision,
+            Ok(listing("/", None, &["projects"])),
+        ));
+        assert_eq!(draft.folder.value, "/p");
+        press(&mut draft, "tab");
+        assert_eq!(queries.borrow().1.path, "/projects");
+        assert!(!queries.borrow().1.complete);
+        draft.name.set("My workspace".into());
+        draft.name_edited = true;
+        draft.update(Update::Listed(
+            draft.revision,
+            Ok(listing("/projects", Some("/"), &[])),
+        ));
+        assert_eq!(draft.folder.value, "/projects");
+        assert_eq!(draft.name.value, "My workspace");
+    }
+
+    #[test]
+    fn an_inaccessible_child_keeps_the_current_folder_and_root_has_no_parent() {
+        let (mut draft, _) = connected_browser();
+        draft.update(Update::Listed(
+            draft.revision,
+            Ok(listing("/", None, &["private"])),
+        ));
+        let at_root = draft.revision;
+        press(&mut draft, "left");
+        assert_eq!(draft.revision, at_root);
+        press(&mut draft, "right");
+        assert!(!draft.can_submit());
+        draft.update(Update::Listed(
+            draft.revision,
+            Err(anyhow::anyhow!("Access denied")),
+        ));
+        assert_eq!(draft.folder.value, "/");
+        assert_eq!(draft.selected_folder().unwrap().name, "private");
+        assert_eq!(draft.status.as_deref(), Some("Access denied"));
+        assert!(draft.can_submit());
+    }
 }
