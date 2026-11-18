@@ -1,15 +1,19 @@
 # Continuous integration coverage
 
-Corvid Checks runs native Linux x64, Windows x64, and Apple Silicon macOS jobs
-for Rust source changes. Documentation-only changes use lightweight validation.
-Changes to build inputs, test drivers, or packaging run the full package pipeline.
-The required `Corvid checks` result includes failures from the selected jobs.
+**Corvid Checks** always reports lightweight PR validation. **Corvid Native
+Checks** runs separate Runtime and Desktop jobs for Linux and Windows x64 and
+ARM64 and for Apple Silicon macOS. It skips documentation-only PRs.
+
+**Package Corvid** runs installer integration separately for PRs touching
+`Cargo.lock` or package inputs and for relevant pushes to `main`. The tag-only
+**Publish Corvid Release** workflow calls it to build the assets it publishes.
+See the [workflow trigger table](05_release_distribution.md#build-and-publish).
 
 ## Checks on source pull requests
 
 | Platform | Automated behavior |
 | --- | --- |
-| All three | Runtime and workspace Rust tests, Clippy, and native builds. Tests cover protocol framing, identities, input fencing, and restoration through the daemon/client boundary. |
+| All five targets | Runtime and workspace Rust tests, Clippy, and native builds. Tests cover protocol framing, identities, input fencing, and restoration through the daemon/client boundary. |
 | Windows | `windows_daemon.rs` runs real ConPTY sessions and private named pipes, including input/paste isolation, tab naming, detach/resume, multiple writers, provider observations, and daemon handoff. |
 | Linux and macOS | The terminal spike and `interactive.py --tty-only` exercise real PTYs: fragmented UTF-8, escape sequences, bracketed paste, terminal queries, resize, Ctrl-C, exit status, TTY restoration, pairing, tabs, and reattachment to the same child. Linux runs the full interactive suite instead of the TTY-only subset. |
 | Linux | The full interactive suite also checks automatic daemon startup, shell continuity across replacement, and synthetic agent notifications. The loopback OpenSSH fixture checks abrupt disconnects, companion resynchronization, and same-PTY reattachment under a transient systemd user service. |
