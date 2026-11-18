@@ -82,9 +82,10 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         let (resume_parsing, resume) = blocking::channel();
         let mut parser =
             Parser::new_with_callbacks(grid.rows, grid.cols, 0, PauseOnBell { parsing, resume });
-        shared.apply_ansi(&mut parser, b"before", WheelEncoding::Sgr);
-        assert!(!session.send_wheel("other", (3, 4), -1, 0));
-        assert!(session.send_wheel("pane", (3, 4), -1, 0));
+        shared.apply_ansi(&mut parser, b"before", WheelEncoding::Sgr, Some(false));
+        assert!(session.wheel_target("other").is_none());
+        let route = session.wheel_target("pane").unwrap();
+        session.send_wheel("pane", route, (3, 4), -1, 0);
         assert!(matches!(incoming.try_recv().unwrap(),
             Action::Input { revision: 7, bytes, paste: false } if bytes == b"\x1b[<64;5;4M"
         ));
@@ -96,7 +97,7 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
             ansi.extend_from_slice(b"\x1b[2J\x1b[Hafter ");
             let korean = "한".as_bytes();
             ansi.extend_from_slice(&korean[..1]);
-            shared.apply_ansi(&mut parser, &ansi, WheelEncoding::Disabled);
+            shared.apply_ansi(&mut parser, &ansi, WheelEncoding::Disabled, Some(false));
             parser
         });
 
@@ -119,16 +120,46 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         resume_parsing.send(()).unwrap();
         let mut parser = parsing.join().unwrap();
         assert!(changes.has_changed().unwrap());
-        assert!(!session.send_wheel("pane", (3, 4), -1, 0));
+        assert_eq!(
+            session.wheel_target("pane").unwrap().1,
+            WheelTarget::Scrollback
+        );
+        session.send_wheel("pane", route, (3, 4), -1, 0);
+        assert!(incoming.try_recv().is_err());
         assert_eq!(
             session.screen("pane", Screen::contents).as_deref(),
             Some("after ")
         );
 
-        shared.apply_ansi(&mut parser, &"한".as_bytes()[1..], WheelEncoding::Disabled);
+        shared.apply_ansi(
+            &mut parser,
+            &"한".as_bytes()[1..],
+            WheelEncoding::Disabled,
+            Some(false),
+        );
         assert_eq!(
             session.screen("pane", Screen::contents).as_deref(),
             Some("after 한")
         );
     });
+}
+
+#[test]
+fn history_rejects_non_sgr_payloads_and_broken_character_offsets() {
+    let mut history = TerminalHistory {
+        columns: 10,
+        lines: vec!["한글".into()],
+        styles: vec![corvid_protocol::wire::HistoryStyle {
+            row: 0,
+            offset: 3,
+            sgr: "38;5;2".into(),
+        }],
+        ..Default::default()
+    };
+    assert!(validate_history(&history).is_ok());
+    history.styles[0].offset = 2;
+    assert!(validate_history(&history).is_err());
+    history.styles[0].offset = 3;
+    history.styles[0].sgr = "0m\x1b[2J".into();
+    assert!(validate_history(&history).is_err());
 }

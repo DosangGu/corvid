@@ -1414,7 +1414,7 @@ A current daemon publishes an immutable creation sequence on each agent record.
 The slot allocator sorts records from older peers without this field by run ID
 after records with a known sequence. The Linux companion store keeps controller
 identity and host configuration in `config.json` and placements in `slots.json`.
-Its layout supports up to 64 slots, a FIFO queue, and 256 closed-pane records.
+Its layout supports up to 64 slots, a FIFO queue, and 256 retired run records.
 
 A slot record contains SlotId, optional `(HostId, ServerEpoch, AgentRunId)`, monotonically
 increasing slot revision, pin, eligibility order, and removal status. Bind to a run, not
@@ -1428,10 +1428,12 @@ PaneId or a provider session that might be resumed in another execution.
 - Remove a tracked run when its owning pane is absent from a synchronized daemon layout
   after an explicit pane, tab, or workspace/session close. Shift every following card
   forward, then admit queued cards at the tail. Pins follow their cards; empty holes are
-  not reserved. Increment each changed slot's revision and retain closed-pane history.
+  not reserved. Increment each changed slot's revision and retain run history.
 - Persist pane ownership so history pruning and reconnects cannot lose that association.
-  Offline/Syncing/Unknown, a missing agent record, or an epoch change alone retains the
-  card. Old-epoch focus remains invalid. Never match an old run to a same-name new run.
+  Offline/Syncing/Unknown and missing agent records within the same epoch retain
+  cards. After synchronization with a new epoch for the same host, retire the
+  previous epoch's runs before admitting the current runs. Pins and focus captures
+  belong to the original run.
 - Queue completed runs as well as active runs; urgency cannot reorder them. Legacy CLI
   remove/re-add/place commands remain available for compatibility, but Agent Deck's UI
   uses pane closure and automatic compaction for cleanup and placement.

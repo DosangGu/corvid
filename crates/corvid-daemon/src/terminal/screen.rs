@@ -6,12 +6,13 @@ use vt100::{Callbacks, Parser, Screen};
 
 use corvid_core::Viewport;
 use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
+#[cfg(test)]
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
 mod history;
 mod sgr;
 
-use history::OlderRows;
+use history::{HistoryBuilder, HistoryLine, OlderRows};
 
 const SCROLLBACK_ROWS: usize = 512;
 const MAX_REPLY_BYTES: usize = 32 * 1024;
@@ -183,6 +184,10 @@ impl TerminalScreen {
             && self.wheel_encoding() == WheelEncoding::Disabled
     }
 
+    pub(super) fn alternate_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
     pub(super) fn wheel_encoding(&self) -> WheelEncoding {
         let screen = self.parser.screen();
         if screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None {
@@ -204,30 +209,13 @@ impl TerminalScreen {
         let (rows, cols) = screen.size();
         let height = usize::from(rows.get());
         let mut remaining = screen.scrollback_len();
-        let mut history = TerminalHistory {
-            columns: cols.get().into(),
-            ..Default::default()
-        };
-        let mut bytes = 0;
+        let mut history = HistoryBuilder::new(cols.get());
         let mut take = height;
         'pages: loop {
-            let skip = take.saturating_sub(TERMINAL_HISTORY_MAX_ROWS);
-            let page: Vec<_> = screen.rows(0, cols.get()).take(take).skip(skip).collect();
-            for mut line in page.into_iter().rev() {
-                line.retain(|ch| !ch.is_control() && !is_bidi_control(ch));
-                // Budget for the repeated field tag and encoded string length.
-                bytes += line.len() + 8;
-                if bytes > TERMINAL_HISTORY_MAX_BYTES
-                    || history.lines.len() == TERMINAL_HISTORY_MAX_ROWS
-                {
-                    history.truncated = true;
+            for row in (0..take).rev() {
+                if !history.push(HistoryLine::from_screen(screen, row as u16, cols.get())) {
                     break 'pages;
                 }
-                history.lines.push(line);
-            }
-            if skip > 0 {
-                history.truncated = true;
-                break;
             }
             if remaining == 0 {
                 break;
@@ -237,14 +225,16 @@ impl TerminalScreen {
             remaining -= take;
         }
         screen.set_scrollback(0);
-        if !screen.alternate_screen()
+        let alternate_screen = screen.alternate_screen();
+        if !alternate_screen
             && !history.truncated
             && let Some(older) = &self.parser.callbacks().older_rows
         {
-            older.append_newest_first(&mut history, bytes);
+            older.append(&mut history);
         }
-        history.lines.reverse();
-        history
+        let mut snapshot = history.finish();
+        snapshot.alternate_screen = Some(alternate_screen);
+        snapshot
     }
 
     pub(crate) fn render(
@@ -659,6 +649,41 @@ mod tests {
         assert!(!terminal.allows_shell_history());
         terminal.process(b"\x1b[?1000l").unwrap();
         assert!(terminal.allows_shell_history());
+    }
+
+    #[test]
+    fn history_preserves_rendition_changes_in_archived_and_recent_rows() {
+        let mut terminal = TerminalScreen::live(Viewport::new(30, 4).unwrap());
+        for i in 0..301 {
+            terminal
+                .process(
+                    format!("row{i:03} \x1b[1;3;4;7;38;2;10;20;30;48;5;12m한글\x1b[0m end\r\n")
+                        .as_bytes(),
+                )
+                .unwrap();
+        }
+        let history = terminal.history();
+        for row in [0, 300] {
+            let text = &history.lines[row];
+            assert_eq!(text, &format!("row{row:03} 한글 end"));
+            let mut parser = Parser::new(1.try_into().unwrap(), 30.try_into().unwrap(), 0);
+            let mut from = 0;
+            for change in history.styles.iter().filter(|s| s.row as usize == row) {
+                let next = change.offset as usize;
+                parser.process(&text.as_bytes()[from..next]);
+                parser.process(format!("\x1b[{}m", change.sgr).as_bytes());
+                from = next;
+            }
+            parser.process(&text.as_bytes()[from..]);
+            let color = parser.screen().cell(0, 7).unwrap();
+            assert_eq!(color.fgcolor(), vt100::Color::Rgb(10, 20, 30));
+            assert_eq!(color.bgcolor(), vt100::Color::Idx(12));
+            assert!(color.bold() && color.italic() && color.underline() && color.inverse());
+            assert_eq!(
+                parser.screen().cell(0, 12).unwrap().fgcolor(),
+                vt100::Color::Default
+            );
+        }
     }
 
     #[test]

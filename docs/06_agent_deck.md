@@ -183,11 +183,12 @@ focusing a terminal leaves those windows open. On Windows, closing hides the
 window when the tray is available. On Linux it exits Agent Deck. Incoming agent
 notifications do not open the Deck or take focus.
 
-**Expand Deck** expands the same window for the queue, closed panes, hosts,
+**Expand Deck** expands the same window for the queue, run history, hosts,
 terminal selection, and notification preferences. **Mini deck** returns to the compact
-view. On Windows, an individual agent notification opens the mini grid. Batch
-and test notifications open Notifications and settings. On macOS, notification
-activation opens its history in the expanded view. Window
+view. On Windows and macOS, clicking an individual agent notification selects
+that agent's pane in the Desktop attached to its host, restores the target window
+if minimized, and requests foreground activation. Batch and test notifications
+open Notifications and settings. Window
 visibility and size do not affect daemon-owned work or the slot policy. The mini
 deck shows this host's assigned slots and first 32 queued runs, followed by
 agents from the other recognized hosts. The grid grows by scrolling. Each agent's
@@ -234,7 +235,7 @@ observations. Process-only sessions keep their gray status.
 
 ![Two live fixture sessions after the first responded and the second submitted a prompt](images/agent-deck/live-prompt-status.png)
 
-**Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
+**Queue**, **Run history**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
 
 ![Mini Agent Deck with provider logos and synthetic states](images/agent-deck/logo-cards.png)
@@ -278,10 +279,10 @@ login startup, mixed-DPI dragging, and taskbar relocation remain unverified for
 the GPUI migration. Earlier renderer qualification is not evidence for those
 new runtime paths.
 
-An agent's work finishing, process exiting, or provider context changing does not
-remove its card. The card remains until its owning pane is removed from the daemon's
-layout by closing that pane, its tab, or its workspace/session in Desktop. Closing
-only the Desktop window detaches the presentation and retains the layout.
+An agent's card survives work completion, process exit, and provider context
+changes within the current daemon epoch. Closing its pane, tab, or workspace
+removes the card. Closing the Desktop window detaches the presentation and
+retains the layout.
 
 Runs beyond the configured slot count enter a FIFO queue. Initial observations use
 the daemon's immutable creation sequence, with run identity as a deterministic
@@ -290,13 +291,17 @@ then fills the tail from the queue. For example, `[A, B, C] + [D, E]` becomes
 `[A, C, D] + [E]` when B's pane closes. Completed queued agents remain queued too.
 Pins move with their agent; they do not reserve empty holes.
 
-Pane ownership is saved with each tracked run. Agent-history pruning, a disconnect,
-or an epoch change alone cannot evict a card. A synchronized layout confirms pane
-removal, including closures that happened while Deck was offline. Older saved
-records learn ownership when observed again; an unobserved legacy record is kept
-conservatively. The queue is bounded to 4,096 tracked runs and closed-pane history
-to 256 entries. The UI does not offer manual removal or out-of-order placement;
-legacy CLI layout-editing commands remain available for compatibility.
+Pane ownership is saved with each tracked run. During a disconnect, Deck shows
+cached cards. The next synchronized layout confirms pane closures that happened
+while Deck was offline. If the same host starts a new daemon epoch, Companion
+moves the previous epoch's runs into **Run history** as part of synchronization.
+Rediscovered agents get new cards and fresh pins. The queue is bounded to 4,096
+tracked runs and run history to 256 entries. Legacy CLI layout-editing commands
+remain available for compatibility.
+
+Updated Desktop replaces an older Companion the next time it connects to the
+monitored host. The replacement reuses that host's saved controller state while
+the daemon and its terminals continue running.
 
 Every changed slot gets a new revision. A click captures both the run identity and
 revision; compaction cannot turn a click on B into a click on C. Completed or stale
@@ -350,9 +355,13 @@ delivery; a crash or OS delivery failure can lose a popup. More than three fresh
 events in one poll become one summary. A feed overflow is reported. This bounded
 snapshot feed does not claim lossless event delivery or exactly-once OS display.
 
-Dismissal and notification activation do not acknowledge remote attention or
-resolve requests. History offers an explicit navigation button only with a current
-Desktop registration and matching host/epoch. Desktop revalidates the exact run.
+Dismissal and notification activation leave remote attention and input requests
+pending. A notification targets the host, daemon epoch, and agent run captured
+at delivery. Desktop resolves the run's current pane and checks the writer
+before selecting it. If navigation fails or the OS rejects foreground activation,
+Agent Deck records the result in the corresponding history entry without opening
+its window. History offers an explicit navigation button with a current Desktop
+registration and matching host/epoch.
 Unavailable or ended targets remain in history without opening a new terminal.
 
 ## Assets and source map
@@ -389,14 +398,20 @@ the Win32 icon and menu messages. It measures the native window bounds and
 styles before and after reopening the mini, moved and resized expanded, and
 pinned views.
 
-The Windows test `agent_toast_opens_grid_when_visible_and_when_hidden` invokes
-the WinRT activation delegate against a running Deck. It checks that a batch
-activation opens settings and that an individual activation returns a visible
-or tray-hidden Deck to the mini grid.
+Windows tests invoke the WinRT activation delegate to verify that it preserves
+each toast's notice and that summary clicks open settings for both a visible
+and tray-hidden Deck. The background routing test delivers clicks for two
+hosts in reverse order and checks exact routing, stale-epoch rejection, and
+persisted failure when Desktop is disconnected.
 
 Native popup/click behavior, Explorer restart, startup after login, and installed
 package behavior require interactive OS qualification. They must not be inferred
-from unit tests. The explicit native test
+from unit tests. To qualify pane focus on Windows and macOS, generate individual
+notices from two agents, hide Deck, minimize Desktop, and activate the notices
+from the OS while another app is active. Check that Desktop restores the correct
+window and that a typed marker reaches only the selected pane. With Desktop
+closed, click another retained notice and check the entry in Agent Deck history
+after opening it manually. The explicit native test
 `native_notification_reaches_windows_history` verifies delivery through WinRT into
 Windows notification-center history and removes its temporary notification and
 shortcut. It passed on the development Windows host; visual popup/click behavior

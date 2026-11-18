@@ -108,7 +108,6 @@ pub struct WorkspaceView {
     terminal_window: WindowHandle<Self>,
     management_window: Option<WindowHandle<management::ManagementView>>,
     management_page: management::Page,
-    focus_mode: bool,
     zoom_pane: bool,
     menu_open: bool,
     menu_create: bool,
@@ -187,7 +186,6 @@ impl WorkspaceView {
             terminal_window: window.window_handle().downcast().expect("workspace window"),
             management_window: None,
             management_page: management::Page::Connections,
-            focus_mode: false,
             zoom_pane: false,
             menu_open: false,
             menu_create: false,
@@ -844,9 +842,7 @@ impl WorkspaceView {
         if event.is_held
             && matches!(
                 shortcut,
-                (true, "n" | "t" | "d" | "e" | "p" | "f" | "r" | "z" | "w")
-                    | (_, "tab")
-                    | (false, ",")
+                (true, "n" | "t" | "d" | "e" | "p" | "r" | "z" | "w") | (_, "tab") | (false, ",")
             )
         {
             cx.stop_propagation();
@@ -866,10 +862,6 @@ impl WorkspaceView {
             ),
             (true, "r") => self.open_naming(window, cx),
             (false, ",") => self.open_management(management::Page::Connections, window, cx),
-            (true, "f") => {
-                self.focus_mode = !self.focus_mode;
-                cx.notify();
-            }
             (true, "z") => {
                 self.zoom_pane = !self.zoom_pane;
                 cx.notify();

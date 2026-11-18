@@ -220,17 +220,6 @@ impl WorkspaceView {
     }
 
     fn terminal_settings(&self, cx: &mut Context<Self>) -> Div {
-        let focus_label = if self.focus_mode {
-            "☑ Hide the tab bar (focus mode)"
-        } else {
-            "☐ Hide the tab bar (focus mode)"
-        };
-        let focus = button("focus-mode-setting", focus_label, self.focus_mode).on_click(
-            cx.listener(|view, _, _, cx| {
-                view.focus_mode = !view.focus_mode;
-                cx.notify();
-            }),
-        );
         let zoom_label = if self.zoom_pane {
             "☑ Expand the active pane"
         } else {
@@ -244,10 +233,9 @@ impl WorkspaceView {
         ));
         settings_page("Terminal")
             .child(Self::terminal_font_settings(cx))
-            .child(focus)
             .child(zoom)
             .child(description(concat!(
-                "Ctrl+Shift+F toggles focus mode. Ctrl+Shift+Z expands the active pane ",
+                "Ctrl+Shift+Z expands the active pane ",
                 "and restores the split layout. These view settings apply to this window.",
             )))
     }
@@ -403,7 +391,7 @@ fn shortcuts() -> Div {
         ("Ctrl+Shift+W", "Close active pane"),
         ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
         ("Ctrl+Shift+D / Ctrl+Shift+E", "Split right / down"),
-        ("Ctrl+Shift+F", "Toggle focus mode"),
+        ("Ctrl+Shift+F", "Search terminal history"),
         ("Ctrl+Shift+Z", "Expand / restore active pane"),
         ("Ctrl+Shift+R", "Rename tab"),
         ("Ctrl+Shift+C / Ctrl+Shift+V", "Copy / paste"),

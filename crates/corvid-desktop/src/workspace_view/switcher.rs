@@ -611,7 +611,7 @@ impl WorkspaceView {
             .inset_0()
             .flex()
             .items_start()
-            .pt(ui_px(if self.focus_mode { 10. } else { 44. }))
+            .pt(ui_px(44.))
             .px(ui_px(8.))
             .when(right, |layer| layer.justify_end())
             .child(

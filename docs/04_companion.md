@@ -303,7 +303,7 @@ returns focus to the terminal. Type to filter by machine and workspace name.
 Use Up/Down to move, Left/Right to collapse or expand a machine, and Enter to
 activate a row. The list also scrolls with the mouse.
 
-Ctrl+Shift+F hides/restores the tab bar; **Show tabs** also exits focus mode.
+Ctrl+Shift+F searches the focused terminal’s output with its tabs visible.
 Ctrl+Shift+Z expands the selected pane and restores its split layout without
 changing the daemon's layout. Settings opens a reusable separate window with
 Connections, Terminal, Shortcuts, Agents, and About & updates. Closing
@@ -563,27 +563,24 @@ returns a live selection to the current screen.
 **Cmd+click** also works. Desktop recognizes `http:`, `https:`, `mailto:` and
 `vscode://` links. In history, click a URL that fits within a single row.
 
-In the focused pane, the wheel scrolls the running program when it has enabled
-terminal mouse reporting. This lets fullscreen agents scroll through their own
-conversation. At an interactive shell, scrolling up opens its previous output.
-While a foreground program is running, the pane stays live. If the daemon
-cannot confirm a foreground shell, use **Shift+Page Up** to open history explicitly.
-Shells can mark command execution with OSC 133 or 633. Without those markers,
-in-process shell builtins count as shell activity. On Windows, a shell with a
-background child can require the explicit shortcut even at the prompt.
-Use the wheel, arrows, or Page Up and Page Down to browse. Scrolling down to
-the newest row, or pressing **End**, returns to live output and typing.
-**Ctrl+Shift+F** opens case-sensitive text search within rendered rows. Enter
-and Shift+Enter cycle through matches. Escape returns to the live terminal
-after clearing any selection. The history view consumes terminal input locally
-and uses the same drag-and-copy control.
+In the focused pane, an application that requests mouse reporting receives the
+wheel directly. On the alternate screen without mouse reporting, wheel steps
+send Up or Down in the application's cursor-key mode. In the primary screen,
+scrolling up browses older output even while a program is running. The view
+stays anchored as new output arrives. Typing while browsing with the wheel
+returns to live input and delivers the first keystroke or composed text.
 
-History is plain text from the daemon's in-memory terminal screen and scrollback.
-The main screen keeps older scrolled rows as plain text. A snapshot includes
-the newest rows that fit within 2,048 rows and 192 KiB, and the view reports
-when older rows were omitted. History is read over the attached session using its view
-revision. Opening the view does not resize the PTY or interrupt the program.
-The history controls are currently implemented in Desktop.
+**Shift+Page Up** opens explicit history. **Ctrl+Shift+F** searches rendered
+rows. Enter and Shift+Enter cycle through matches. The wheel and navigation
+keys move through history. Reaching the bottom, or pressing **End**, returns to
+the live pane. Remaining motion from the same gesture stays with its original
+view. Escape clears a selection first, then closes history.
+
+History captures text and terminal colors and attributes within a combined
+2,048-row and 192 KiB limit. Older terminal hosts can supply plain text;
+without screen-mode metadata the wheel uses the host's shell confirmation.
+Explicit history remains available over the attached session. Opening history
+keeps the PTY dimensions and writer route.
 
 ### Desktop redraw performance
 
@@ -687,11 +684,12 @@ When running Agent Deck directly,
 choose a paired TUI in **Target terminal**, then click the agent's key.
 The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant
-permissions in the terminal. Completed agents retain their cards until their
-pane, tab, or workspace/session is explicitly closed. Additional agents queue
-in arrival order. Closing a pane shifts all following cards forward and fills
-vacancies from the queue. Pins follow their cards. **Closed panes** shows recent
-removed run IDs. Older manually suppressed runs can still be re-added.
+permissions in the terminal. Completed agents retain their cards while their
+panes remain in the current daemon epoch. Additional agents queue in arrival
+order. Closing a pane shifts all following cards forward and fills vacancies
+from the queue. Pins follow their cards. **Run history** shows recent runs
+removed after pane closure or daemon replacement. Manually suppressed runs
+from the current epoch can still be re-added.
 
 On Windows, closing the Deck window hides it to the tray. **Notifications &
 settings** controls categories, sound, pause, and optional login startup. Use
@@ -841,8 +839,9 @@ companion process.
   in eligibility order. It stores badges, evidence, counts, and timestamps.
   The companion groups observation saves on a one-second timer and flushes
   pending observations on clean exit. Existing placement files load with an
-  empty cache. A new daemon epoch makes old slots historical until there is
-  end evidence or explicit removal.
+  empty cache. Synchronizing with a new daemon epoch for the same host moves
+  previous runs from slots and the queue into run history. Rediscovered
+  agents enter as new runs.
   [Windows file replacement flags](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
 - During a control outage, desktop cards show the last known badge and
   observation age. `companion slots` prints `last_observed_unix_ms`. A fresh

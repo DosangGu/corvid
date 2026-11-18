@@ -694,7 +694,7 @@ impl WorkspaceView {
             });
         }
         let draft = self.creation.as_ref().expect("workspace editor");
-        let offset = if self.focus_mode { 20. } else { 54. };
+        let offset = 54.;
         let status = draft.status.as_deref().or(match draft.pending {
             Some(FolderQuery::Browse { .. } | FolderQuery::Complete) => Some("Loading folders…"),
             _ => None,

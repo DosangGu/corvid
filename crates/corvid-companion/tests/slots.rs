@@ -110,7 +110,7 @@ fn admits_an_already_completed_run_with_an_existing_pane() {
 }
 
 #[test]
-fn retains_missing_and_old_epoch_bindings_until_explicit_evidence() {
+fn reconciles_placements_using_the_callers_retirement_set() {
     let mut layout = SlotLayout::new(1).unwrap();
     let a = key(2);
     let b = RunKey {

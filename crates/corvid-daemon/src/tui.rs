@@ -650,6 +650,7 @@ impl TuiConnection<'_> {
             ansi_bytes: render.ansi.len() as u32,
             preview: None,
             wheel_encoding: render.wheel_encoding.into(),
+            alternate_screen: render.alternate_screen,
         };
         let frame = RenderFrame {
             header,
@@ -699,6 +700,7 @@ impl TuiConnection<'_> {
             base_frame_id: None,
             ansi_bytes: ansi.len() as u32,
             wheel_encoding: corvid_protocol::wire::WheelEncoding::Disabled.into(),
+            alternate_screen: None,
             preview: Some(PanePreviewFrame {
                 pane_id: preview.pane_id.clone(),
                 viewport: Some(WireViewport {

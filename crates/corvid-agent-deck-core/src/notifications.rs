@@ -12,6 +12,7 @@ use uuid::Uuid;
 const MAX_SEEN: usize = 4096;
 const MAX_HISTORY: usize = 128;
 const MAX_AGE_MS: u64 = 5 * 60 * 1000;
+const MAX_FOCUS_ERROR: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Key {
@@ -39,6 +40,8 @@ pub struct Notice {
     pub title: String,
     pub body: String,
     pub created_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_error: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -92,9 +95,12 @@ impl Ledger {
             "unsupported or damaged Agent Deck notification storage"
         );
         ensure!(
-            self.history
-                .iter()
-                .all(|item| item.title.len() <= 160 && item.body.len() <= 256),
+            self.history.iter().all(|item| item.title.len() <= 160
+                && item.body.len() <= 256
+                && item
+                    .focus_error
+                    .as_ref()
+                    .is_none_or(|error| error.len() <= MAX_FOCUS_ERROR)),
             "invalid notification history"
         );
         Ok(())
@@ -176,6 +182,34 @@ impl Ledger {
             changed,
         })
     }
+
+    pub fn record_focus(&mut self, mut notice: Notice, error: Option<String>) -> bool {
+        debug_assert!(!notice.summary);
+        let error = error.map(|mut error| {
+            error.truncate(error.floor_char_boundary(MAX_FOCUS_ERROR));
+            error
+        });
+        if let Some(entry) = self
+            .history
+            .iter_mut()
+            .find(|entry| entry.key == notice.key)
+        {
+            if entry.focus_error == error {
+                return false;
+            }
+            entry.focus_error = error;
+        } else if error.is_some() {
+            // The OS can retain a notice after it has rolled out of the history.
+            if self.history.len() == MAX_HISTORY {
+                self.history.pop_front();
+            }
+            notice.focus_error = error;
+            self.history.push_back(notice);
+        } else {
+            return false;
+        }
+        true
+    }
 }
 
 fn notice(host: Uuid, epoch: Uuid, item: &PresentedAttention) -> Result<Notice> {
@@ -239,6 +273,7 @@ fn notice(host: Uuid, epoch: Uuid, item: &PresentedAttention) -> Result<Notice> 
         key,
         title,
         created_ms: item.created_unix_ms,
+        focus_error: None,
     })
 }
 
@@ -287,6 +322,34 @@ mod tests {
             ..Default::default()
         }
     }
+
+    #[test]
+    fn stores_focus_errors_on_the_exact_notice_and_clears_them_after_success() {
+        let (host, mut snapshot) = snapshot();
+        snapshot.attention.push(alert(host, &snapshot, 1));
+        snapshot.attention.push(alert(host, &snapshot, 1));
+        let mut ledger = Ledger::default();
+        let notices = ledger.observe(host, &snapshot, 1).unwrap().notices;
+        let stored = serde_json::to_vec(&ledger).unwrap();
+        let mut ledger: Ledger = serde_json::from_slice(&stored).unwrap();
+        assert!(
+            ledger
+                .history
+                .iter()
+                .all(|entry| entry.focus_error.is_none())
+        );
+        let notice = notices[0].clone();
+        assert!(ledger.record_focus(notice.clone(), Some("창".repeat(MAX_FOCUS_ERROR))));
+        assert_eq!(
+            ledger.history[0].focus_error.as_ref().unwrap().len(),
+            MAX_FOCUS_ERROR - MAX_FOCUS_ERROR % "창".len()
+        );
+        assert!(ledger.history[1].focus_error.is_none());
+        ledger.validate().unwrap();
+        assert!(ledger.record_focus(notice, None));
+        assert!(ledger.history[0].focus_error.is_none());
+    }
+
     #[test]
     fn imports_existing_alerts_then_notifies_once_across_reconnect_and_restart() {
         let (host, mut snapshot) = snapshot();

@@ -94,6 +94,7 @@ mod tests {
             title: "Codex needs your input".into(),
             body: String::new(),
             created_ms: 1,
+            focus_error: None,
         };
         let (a, b) = tokio::join!(
             first.claim(vec![notice.clone()]),

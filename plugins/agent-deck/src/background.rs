@@ -10,7 +10,7 @@ use corvid_agent_deck::connection;
 use corvid_companion::{
     Config, PRESENTATION_ATTENTION_CAPABILITY, PresentationAddress, PresentationClient,
 };
-use corvid_presentation::ipc::Completion;
+use corvid_presentation::{desktop_focus, ipc::Completion};
 use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationAttention, PresentationAttention};
@@ -213,7 +213,12 @@ async fn run<N: NativeServices>(
     }
     let delivery = Delivery::open(hosts::root(&state, config.host_id))?;
     let (snapshots, mut snapshot_rx) = mpsc::channel(8);
-    jobs.spawn(poll_hosts(state, address, config.host_id, snapshots));
+    jobs.spawn(poll_hosts(
+        state.clone(),
+        address,
+        config.host_id,
+        snapshots,
+    ));
     let epoch = Uuid::new_v4();
     let mut clients = tokio::task::JoinSet::new();
     let mut monitor = Monitor {
@@ -300,7 +305,7 @@ async fn run<N: NativeServices>(
             }
             event = event_rx.recv(), if events_open => {
                 match event {
-                    Some(event) => monitor.event(event).await,
+                    Some(event) => monitor.event(event, &state, config.host_id).await,
                     None => events_open = false,
                 }
             }
@@ -527,10 +532,22 @@ impl<N: NativeServices> Monitor<N> {
         self.ctx.notify();
     }
 
-    async fn event(&mut self, event: Event) {
+    async fn event(&mut self, event: Event, state: &Path, current: Uuid) {
         match event {
             Event::OpenNotifications => self.open_notice(None),
-            Event::Activate(notice) => self.open_notice(Some(notice)),
+            Event::Activate(notice) if notice.summary => self.open_notice(Some(notice)),
+            Event::Activate(notice) => {
+                let error = focus_notice(state, current, &notice)
+                    .await
+                    .err()
+                    .map(|error| error.to_string());
+                if self.ledger.record_focus(notice, error) {
+                    if let Err(error) = save(&self.storage, &self.ledger) {
+                        self.error(format!("Could not save notification focus result: {error}"));
+                    }
+                    self.publish();
+                }
+            }
             Event::TogglePause => {
                 let mut settings = self.ledger.settings.clone();
                 let now = now_ms();
@@ -551,6 +568,24 @@ impl<N: NativeServices> Monitor<N> {
         });
         parent::show(&self.ctx);
     }
+}
+
+async fn focus_notice(state: &Path, current: Uuid, notice: &Notice) -> Result<()> {
+    let profiles = hosts::discover(state, current)?;
+    let profile = profiles
+        .get(&notice.key.host)
+        .context("This notification's host is no longer configured.")?;
+    let run = notice.key.run();
+    #[cfg(target_os = "macos")]
+    let result = desktop_focus::request_with_activation(
+        profile.controller,
+        run,
+        crate::platform::yield_activation,
+    )
+    .await;
+    #[cfg(not(target_os = "macos"))]
+    let result = desktop_focus::request(profile.controller, run).await;
+    result
 }
 
 fn batch(mut notices: Vec<Notice>) -> Vec<Notice> {
@@ -582,6 +617,7 @@ fn test_notice(host: Uuid, activation: bool) -> Notice {
         }
         .into(),
         created_ms: now_ms(),
+        focus_error: None,
     }
 }
 

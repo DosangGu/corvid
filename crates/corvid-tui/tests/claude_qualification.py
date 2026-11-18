@@ -922,8 +922,8 @@ class CorvidFixture:
         )
         assert focus.returncode != 0 and "EpochMismatch" in focus.stderr
         view = self.companion.wait(lambda view: view["header"].get("remote_epoch") == after["server_epoch"])
-        slot, = [slot for slot in view["slots"] if slot.get("run") == old_slot["run"]]
-        assert slot["availability"] == "Historical" and not view["bindings"]
+        assert not assigned_slots(view) and not view["bindings"]
+        assert old_slot["run"] in view["ended"]
 
     def presented_question(self, question):
         def has_question(view):

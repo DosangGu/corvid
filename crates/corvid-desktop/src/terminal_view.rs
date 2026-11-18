@@ -2,13 +2,14 @@ use std::{
     cell::{Cell, RefCell},
     ops::Range,
     sync::Arc,
+    time::Instant,
 };
 
 use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     IntoElement, KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, ScrollWheelEvent, Task, UTF16Selection, Window, canvas, div,
-    prelude::*, px, rgb,
+    prelude::*, rgb,
 };
 use tokio::sync::oneshot;
 use vt100::Screen;
@@ -16,12 +17,14 @@ use vt100::Screen;
 use crate::appearance::{Appearance, ui_px};
 use crate::terminal_fonts::TerminalFonts;
 use crate::terminal_paint::{self as paint, Frame, Metrics};
-use crate::terminal_session::{Grid, MAX_INPUT, Session};
+use crate::terminal_session::{Grid, MAX_INPUT, Session, WheelTarget};
 
 mod history;
 mod keyboard;
 mod links;
+mod wheel;
 use history::History;
+use wheel::WheelGesture;
 
 type CellPosition = (u16, u16);
 type CellRange = Range<CellPosition>;
@@ -37,6 +40,8 @@ pub struct TerminalView {
     history: Option<History>,
     history_request: Option<Task<()>>,
     pending_wheel_back: usize,
+    history_epoch: Option<u64>,
+    gesture: WheelGesture,
     _updates: Task<()>,
 }
 
@@ -147,6 +152,15 @@ impl TerminalView {
                     changes.borrow_and_update();
                     if view
                         .update(cx, |view, cx| {
+                            if let Some(epoch) = view.history_epoch
+                                && view
+                                    .session
+                                    .wheel_target(&view.pane)
+                                    .is_none_or(|route| route.0 != epoch)
+                            {
+                                view.clear_history();
+                                view.selection = None;
+                            }
                             if view.history.is_none() && view.selection.is_none() {
                                 cx.notify();
                             }
@@ -173,6 +187,8 @@ impl TerminalView {
             history: None,
             history_request: None,
             pending_wheel_back: 0,
+            history_epoch: None,
+            gesture: WheelGesture::default(),
             _updates: updates,
         }
     }
@@ -289,9 +305,13 @@ impl TerminalView {
     }
 
     fn open_history(&mut self, mode: HistoryOpen, back: isize, cx: &mut Context<Self>) {
-        let shell_only = mode == HistoryOpen::Wheel;
+        let route = self.session.wheel_target(&self.pane);
+        let wheel = mode == HistoryOpen::Wheel;
+        let shell_only =
+            wheel && route.is_some_and(|(_, owner)| owner == WheelTarget::LegacyScrollback);
+        self.history_epoch = route.map(|route| route.0);
         let height = self.visible_rows();
-        if shell_only {
+        if wheel {
             self.pending_wheel_back = back as usize;
         } else {
             self.pending_wheel_back = 0;
@@ -315,12 +335,19 @@ impl TerminalView {
                 .unwrap_or_else(|_| Err("The terminal connection ended.".into()));
             let _ = view.update(cx, |view, cx| {
                 let height = view.visible_rows();
-                if shell_only {
+                let current = view.session.wheel_target(&view.pane);
+                if current.map(|r| r.0) != route.map(|r| r.0) {
+                    view.clear_history();
+                } else if wheel {
                     let back = std::mem::take(&mut view.pending_wheel_back);
-                    if let Some(history) = History::from_wheel(result, back, height) {
+                    if route == current
+                        && let Some(history) = History::from_wheel(result, back, height, shell_only)
+                    {
                         view.selection = None;
                         view.marked.clear();
                         view.history = Some(history);
+                    } else {
+                        view.history_epoch = None;
                     }
                 } else if let Some(history) = &mut view.history {
                     history.loaded(result, height);
@@ -331,10 +358,25 @@ impl TerminalView {
         cx.notify();
     }
 
+    fn clear_history(&mut self) {
+        self.history = None;
+        self.history_request = None;
+        self.pending_wheel_back = 0;
+        self.history_epoch = None;
+        self.marked.clear();
+    }
+
+    fn wheel_browse(&self) -> bool {
+        self.history
+            .as_ref()
+            .is_some_and(|h| h.wheel_browse && h.search.is_none())
+    }
+
     fn cancel_pending_wheel(&mut self) {
         if self.pending_wheel_back > 0 {
-            self.pending_wheel_back = 0;
+            self.history_epoch = None;
             self.history_request = None;
+            self.pending_wheel_back = 0;
         }
     }
 
@@ -342,9 +384,7 @@ impl TerminalView {
         if let Some(history) = &mut self.history {
             history.scroll(rows, height);
             if rows > 0 && history.at_bottom(height) {
-                self.history = None;
-                self.history_request = None;
-                self.marked.clear();
+                self.clear_history();
             }
         }
         self.selection = None;
@@ -360,40 +400,59 @@ impl TerminalView {
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
-        let delta = event.delta.pixel_delta(metrics.row).y;
-        if delta == px(0.) {
+        if !bounds.contains(&event.position) {
             return;
         }
+        let Some((epoch, live)) = self.session.wheel_target(&self.pane) else {
+            return;
+        };
+        let owner = if self.history.is_some() || live == WheelTarget::LegacyScrollback {
+            WheelTarget::Scrollback
+        } else {
+            live
+        };
+        let delta = -(event.delta.pixel_delta(metrics.row).y / metrics.row);
+        let Some(rows) =
+            self.gesture
+                .rows(Instant::now(), event.touch_phase, (epoch, owner), delta)
+        else {
+            cx.stop_propagation();
+            return;
+        };
         self.cancel_link();
-        let count = (delta / metrics.row).abs().ceil() as isize;
-        let rows = if delta > px(0.) { -count } else { count };
-        let height = self.visible_rows();
         if self.history.is_some() {
-            self.move_in_history(rows, height);
-            cx.notify();
-        } else if bounds.contains(&event.position) {
-            let cell = metrics.position(bounds, event.position);
-            let modifiers =
-                u8::from(event.modifiers.alt) * 8 + u8::from(event.modifiers.control) * 16;
-            if !event.modifiers.shift && self.session.send_wheel(&self.pane, cell, rows, modifiers)
-            {
-                self.cancel_pending_wheel();
-                self.selection = None;
-                cx.notify();
-            } else if self.pending_wheel_back > 0 {
-                let back = self
-                    .pending_wheel_back
-                    .saturating_add_signed(-rows)
-                    .min(isize::MAX as usize);
-                if back == 0 {
-                    self.cancel_pending_wheel();
-                } else {
-                    self.pending_wheel_back = back;
-                }
-            } else if rows < 0 {
-                self.open_history(HistoryOpen::Wheel, count, cx);
+            self.move_in_history(rows, self.visible_rows());
+            if self.history.is_none() {
+                self.gesture.finish_at_bottom();
             }
+        } else if matches!(live, WheelTarget::Mouse(_) | WheelTarget::Cursor { .. }) {
+            self.cancel_pending_wheel();
+            let modifiers = u8::from(event.modifiers.shift) * 4
+                + u8::from(event.modifiers.alt) * 8
+                + u8::from(event.modifiers.control) * 16;
+            self.session.send_wheel(
+                &self.pane,
+                (epoch, live),
+                metrics.position(bounds, event.position),
+                rows,
+                modifiers,
+            );
+            self.selection = None;
+        } else if self.pending_wheel_back > 0 {
+            let back = self
+                .pending_wheel_back
+                .saturating_add_signed(-rows)
+                .min(isize::MAX as usize);
+            if back == 0 {
+                self.cancel_pending_wheel();
+                self.gesture.finish_at_bottom();
+            } else {
+                self.pending_wheel_back = back;
+            }
+        } else if rows < 0 {
+            self.open_history(HistoryOpen::Wheel, -rows, cx);
         }
+        cx.notify();
         cx.stop_propagation();
     }
 
@@ -401,9 +460,7 @@ impl TerminalView {
         let height = self.visible_rows();
         if key.key == "escape" {
             if self.selection.take().is_none() {
-                self.history_request = None;
-                self.history = None;
-                self.marked.clear();
+                self.clear_history();
             }
             cx.notify();
             return true;
@@ -437,8 +494,8 @@ impl TerminalView {
                     history.edit_query(Some(&text));
                 }
             }
-            ("backspace", false, _) => history.edit_query(None),
-            ("enter", false, shift) => history.find(shift),
+            ("backspace", false, _) if history.search.is_some() => history.edit_query(None),
+            ("enter", false, shift) if history.search.is_some() => history.find(shift),
             ("up", false, _) => history.scroll(-1, height),
             ("down", false, _) => self.move_in_history(1, height),
             ("pageup", _, _) => history.scroll(-(height as isize), height),
@@ -463,11 +520,18 @@ impl TerminalView {
         let edit_shortcut = modifiers == gpui::Modifiers::control_shift()
             || (cfg!(target_os = "macos") && modifiers == gpui::Modifiers::command());
         if self.history.is_some() {
-            if !self.history_key(key, cx) {
-                // Let the platform input handler deliver printable and composed text.
+            if self.history_key(key, cx) {
+                cx.stop_propagation();
                 return;
             }
-        } else if edit_shortcut && key.key == "f" {
+            if !self.wheel_browse() {
+                return;
+            }
+            self.clear_history();
+            self.selection = None;
+            cx.notify();
+        }
+        if edit_shortcut && key.key == "f" {
             self.open_history(HistoryOpen::Search, 0, cx);
         } else if modifiers == gpui::Modifiers::shift() && key.key == "pageup" {
             self.open_history(HistoryOpen::Browse, self.visible_rows() as isize, cx);
@@ -658,6 +722,9 @@ impl EntityInputHandler for TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.cancel_pending_wheel();
+        if self.wheel_browse() {
+            self.clear_history();
+        }
         self.marked.clear();
         self.selection = None;
         if let Some(history) = &mut self.history {
@@ -681,6 +748,9 @@ impl EntityInputHandler for TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.cancel_pending_wheel();
+        if self.wheel_browse() {
+            self.clear_history();
+        }
         self.marked = text
             .chars()
             .filter(|ch| !ch.is_control())

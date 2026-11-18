@@ -5,16 +5,21 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::{ControlEndpoint, DaemonInstallation, HostPlatform, RemoteHost};
+use corvid_protocol::wire::StopAgentMonitor;
+use corvid_protocol::wire::envelope::Body;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-use crate::platform::StateDirectory;
+use crate::platform::{StateDirectory, StateLock};
 use crate::{Config, HostEndpoint, PresentationAddress, PresentationClient};
 
 pub const CAPABILITY: &str = "automatic_monitor.v1";
+pub(crate) const EPOCH_RETIREMENT_CAPABILITY: &str = "retire_previous_epoch_slots.v1";
 const LIMIT: u64 = 8192;
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const STARTUP_POLL: Duration = Duration::from_millis(50);
 
 pub struct Scope {
     pub state: PathBuf,
@@ -152,9 +157,33 @@ impl Scope {
     }
 
     pub async fn ensure_running(&self, executable: &Path) -> Result<()> {
-        if self.connected().await? {
-            return Ok(());
+        let directory = StateDirectory::create_all(&self.state.join("monitor"))?;
+        let _startup = wait_for_lock(|| directory.lock_startup())
+            .await
+            .context("waiting for agent monitor startup")?;
+        if let Some(mut client) = self.connected().await? {
+            if supports_epoch_retirement(&client) {
+                return Ok(());
+            }
+            let reply = timeout(
+                STARTUP_TIMEOUT,
+                client.request(Body::StopAgentMonitor(StopAgentMonitor {})),
+            )
+            .await
+            .context("waiting for the previous agent monitor to accept shutdown")??;
+            ensure!(
+                matches!(reply, Body::Pong(_)),
+                "unexpected agent monitor shutdown response"
+            );
+            drop(client);
+
+            let state = StateDirectory::open(&self.state)?;
+            // The service holds this lock until it flushes observations and closes IPC.
+            let _retired = wait_for_lock(|| state.lock_storage())
+                .await
+                .context("waiting for the previous agent monitor to exit")?;
         }
+
         let mut command = Command::new(executable);
         command.arg("companion").arg("--state-dir").arg(&self.state);
         #[cfg(windows)]
@@ -190,23 +219,27 @@ impl Scope {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut child = command.spawn().context("starting the agent monitor")?;
-        timeout(Duration::from_secs(5), async {
+        timeout(STARTUP_TIMEOUT, async {
             loop {
-                if self.connected().await? {
+                if let Some(client) = self.connected().await? {
+                    ensure!(
+                        supports_epoch_retirement(&client),
+                        "the started agent monitor does not support retiring previous-epoch slots"
+                    );
                     return Ok::<_, anyhow::Error>(());
                 }
                 // Concurrent starters can lose the store lock before the winner publishes IPC.
                 let _ = child.try_wait()?;
-                sleep(Duration::from_millis(50)).await;
+                sleep(STARTUP_POLL).await;
             }
         })
         .await
         .context("agent monitor did not start")?
     }
 
-    async fn connected(&self) -> Result<bool> {
+    async fn connected(&self) -> Result<Option<PresentationClient>> {
         let Some(mut client) = PresentationClient::connect_if_present(&self.address).await? else {
-            return Ok(false);
+            return Ok(None);
         };
         ensure!(
             client
@@ -216,9 +249,40 @@ impl Scope {
                 .any(|cap| cap == CAPABILITY),
             "An older companion is running. Quit its companion service once, then reconnect Desktop or TUI."
         );
-        timeout(Duration::from_secs(5), client.slots(Some(&self.config))).await??;
-        Ok(true)
+        timeout(STARTUP_TIMEOUT, client.slots(Some(&self.config))).await??;
+        Ok(Some(client))
     }
+}
+
+fn supports_epoch_retirement(client: &PresentationClient) -> bool {
+    client
+        .session()
+        .capabilities
+        .iter()
+        .any(|cap| cap == EPOCH_RETIREMENT_CAPABILITY)
+}
+
+async fn wait_for_lock(mut try_lock: impl FnMut() -> Result<StateLock>) -> Result<StateLock> {
+    timeout(STARTUP_TIMEOUT, async {
+        loop {
+            match try_lock() {
+                Ok(lock) => return Ok(lock),
+                Err(error) if lock_busy(&error) => sleep(STARTUP_POLL).await,
+                Err(error) => return Err(error),
+            }
+        }
+    })
+    .await?
+}
+
+fn lock_busy(error: &anyhow::Error) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    return error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::EWOULDBLOCK);
+
+    #[cfg(windows)]
+    return error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+    });
 }
 
 pub fn address(
