@@ -258,6 +258,26 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"], check=True, timeout=10)
         subprocess.run(["xdotool", "key", "Return"], check=True, timeout=10)
         wait_for_marker(paste_marker, pasted)
+        search_ready = root / "search-ready"
+        type_command(f"seq -f 'search-item-%03g' 1 75; printf ready > {shlex.quote(str(search_ready))}")
+        wait_for_marker(search_ready, "ready")
+        # The workspace must let the focused terminal handle its search shortcut.
+        key(window, "ctrl+shift+f")
+        subprocess.run(["xdotool", "type", "--clearmodifiers", "search-item-001"], check=True, timeout=10)
+        # The history reply and clipboard ownership both arrive asynchronously.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            key(window, "ctrl+shift+c")
+            found = subprocess.check_output(["xclip", "-selection", "clipboard", "-o"], timeout=10)
+            if b"search-item-001" in found.splitlines():
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("history search did not locate the older row")
+        if preview_dir := os.environ.get("CORVID_SCROLL_PREVIEW_DIR"):
+            subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview_dir) / "tab-search.png")],
+                           check=True, timeout=10)
+        key(window, "Escape")
         first_terminal = wait_for_terminal()
         key(window, "ctrl+shift+t")
         second_terminal = wait_for_terminal(previous=first_terminal)

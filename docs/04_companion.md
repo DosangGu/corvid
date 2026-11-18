@@ -303,7 +303,7 @@ returns focus to the terminal. Type to filter by machine and workspace name.
 Use Up/Down to move, Left/Right to collapse or expand a machine, and Enter to
 activate a row. The list also scrolls with the mouse.
 
-Ctrl+Shift+F hides/restores the tab bar; **Show tabs** also exits focus mode.
+Ctrl+Shift+F searches the focused terminal’s output with its tabs visible.
 Ctrl+Shift+Z expands the selected pane and restores its split layout without
 changing the daemon's layout. Settings opens a reusable separate window with
 Connections, Terminal, Shortcuts, Agents, and About & updates. Closing

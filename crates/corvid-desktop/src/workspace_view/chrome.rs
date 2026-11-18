@@ -11,7 +11,6 @@ pub(super) enum MenuAction {
     NewTab,
     SplitRight,
     SplitDown,
-    Focus,
     Zoom,
     Settings,
     DisconnectOthers,
@@ -55,15 +54,6 @@ impl WorkspaceView {
         }
         let mut items = vec![
             (MenuAction::NewWindow, "New window", ""),
-            (
-                MenuAction::Focus,
-                if self.focus_mode {
-                    "Show tab bar"
-                } else {
-                    "Focus mode"
-                },
-                "Ctrl+Shift+F",
-            ),
             (
                 MenuAction::Zoom,
                 if self.zoom_pane {
@@ -157,7 +147,6 @@ impl WorkspaceView {
             ))),
             MenuAction::SplitRight => self.create(Target::SplitAxis(SplitAxis::Horizontal as i32)),
             MenuAction::SplitDown => self.create(Target::SplitAxis(SplitAxis::Vertical as i32)),
-            MenuAction::Focus => self.focus_mode = !self.focus_mode,
             MenuAction::Zoom => self.zoom_pane = !self.zoom_pane,
             MenuAction::Settings => self.open_management(management::Page::Connections, window, cx),
             MenuAction::DisconnectOthers => self.disconnect_others(window, cx),
@@ -529,9 +518,7 @@ impl Render for WorkspaceView {
             .flex_col()
             .size_full()
             .bg(rgb(BACKGROUND))
-            .when(!self.focus_mode, |root| {
-                root.child(self.toolbar(ui.as_ref(), workspace, cx))
-            })
+            .child(self.toolbar(ui.as_ref(), workspace, cx))
             .when_some(
                 ui.as_ref().and_then(|ui| self.restore_errors(ui, cx)),
                 |root, errors| root.child(errors),
@@ -545,16 +532,6 @@ impl Render for WorkspaceView {
                     .min_w_0()
                     .child(content),
             )
-            .when(self.focus_mode, |root| {
-                root.child(div().absolute().top(ui_px(5.)).right(ui_px(8.)).child(
-                    button("leave-focus", "Show tabs", false).on_click(cx.listener(
-                        |view, _, _, cx| {
-                            view.focus_mode = false;
-                            cx.notify();
-                        },
-                    )),
-                ))
-            })
             .when_some(status, |root, message| {
                 root.child(
                     div()
