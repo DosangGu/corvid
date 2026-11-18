@@ -240,6 +240,7 @@ jobs:
             target/pane-close-after.png
             target/scroll-history.png
             target/scroll-live.png
+            target/tab-search.png
           if-no-files-found: error
       - name: Stage binaries for Desktop integration
         if: inputs.package
