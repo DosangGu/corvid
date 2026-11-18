@@ -5,6 +5,7 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, accept_hello,
     check_hello_result, hello,
 };
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -12,8 +13,12 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 const CAPABILITY: &str = "desktop_focus.v1";
+const ROUTED_CAPABILITY: &str = "desktop_route.v1";
+const ROUTED_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(windows)]
 const PIPE_PREFIX: &str = "corvid-desktop-focus-v1";
+#[cfg(windows)]
+const ROUTED_PREFIX: &str = "corvid-desktop-route-v1";
 const MAX_PEERS: usize = 4;
 
 trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -60,7 +65,7 @@ async fn frames(
     Ok((reader, writer))
 }
 
-/// Request exact navigation from an already attached Desktop on this host.
+/// Request exact navigation in a running Desktop.
 pub async fn request(controller: Uuid, run: PresentedRunKey) -> Result<()> {
     request_with_activation(controller, run, |_| async {}).await
 }
@@ -71,12 +76,26 @@ pub async fn request_with_activation(
     run: PresentedRunKey,
     handoff: impl AsyncFnOnce(u32),
 ) -> Result<()> {
-    timeout(COMMAND_TIMEOUT, async {
-        let (stream, pid) = match connect(controller).await {
-            Err(error) if missing_endpoint(&error) => return Err(EndpointUnavailable.into()),
-            result => result?,
-        };
-        request_on_stream(stream, controller, run, async move {
+    let (stream, pid, routed) = match timeout(COMMAND_TIMEOUT, connect(controller, true)).await? {
+        Ok((stream, pid)) => (stream, pid, true),
+        Err(error) if error.is::<EndpointUnavailable>() || missing_endpoint(&error) => {
+            match timeout(COMMAND_TIMEOUT, connect(controller, false)).await? {
+                Err(error) if missing_endpoint(&error) => return Err(EndpointUnavailable.into()),
+                result => {
+                    let (stream, pid) = result?;
+                    (stream, pid, false)
+                }
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    let wait = if routed {
+        ROUTED_TIMEOUT
+    } else {
+        COMMAND_TIMEOUT
+    };
+    timeout(wait, async {
+        request_on_stream(stream, controller, run, routed, async move {
             if let Some(pid) = pid {
                 handoff(pid).await;
             }
@@ -111,13 +130,19 @@ async fn request_on_stream(
     stream: Stream,
     controller: Uuid,
     run: PresentedRunKey,
+    routed: bool,
     handoff: impl Future<Output = ()>,
 ) -> Result<()> {
     let (mut reader, mut writer) = frames(stream).await?;
+    let capability = if routed {
+        ROUTED_CAPABILITY
+    } else {
+        CAPABILITY
+    };
     let greeting = hello(
         Uuid::new_v4().to_string(),
         Some(controller.to_string()),
-        vec![CAPABILITY.into()],
+        vec![capability.into()],
     );
     writer.envelope(&greeting).await?;
     let reply = reader
@@ -126,7 +151,13 @@ async fn request_on_stream(
         .context("Desktop closed during Hello")?;
     let session = check_hello_result(&greeting, &reply, PeerRole::Presentation)?;
     ensure!(
-        session.host_id == run.host_id && session.server_epoch == run.remote_epoch,
+        session.host_id == run.host_id
+            && session.capabilities.iter().any(|cap| cap == capability)
+            && if routed {
+                session.server_epoch == controller.to_string()
+            } else {
+                session.server_epoch == run.remote_epoch
+            },
         "The agent belongs to a different daemon session."
     );
     handoff.await;
@@ -154,13 +185,14 @@ async fn request_on_stream(
 }
 
 #[cfg(windows)]
-async fn connect(controller: Uuid) -> Result<(Stream, Option<u32>)> {
+async fn connect(controller: Uuid, routed: bool) -> Result<(Stream, Option<u32>)> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
-    let pipe = corvid_protocol::windows::open_scoped(PIPE_PREFIX, &controller.simple().to_string())
-        .await?;
+    let prefix = if routed { ROUTED_PREFIX } else { PIPE_PREFIX };
+    let pipe =
+        corvid_protocol::windows::open_scoped(prefix, &controller.simple().to_string()).await?;
     let mut pid = 0;
     ensure!(
         unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } != 0 && pid != 0,
@@ -173,10 +205,10 @@ async fn connect(controller: Uuid) -> Result<(Stream, Option<u32>)> {
 }
 
 #[cfg(not(windows))]
-async fn connect(controller: Uuid) -> Result<(Stream, Option<u32>)> {
+async fn connect(controller: Uuid, routed: bool) -> Result<(Stream, Option<u32>)> {
     use corvid_protocol::unix::{RuntimeDir, SocketRole, peer_pid};
 
-    let path = corvid_protocol::paths::desktop_focus_socket(controller)?.prepare()?;
+    let path = socket(controller, routed)?;
     if !path.try_exists()? {
         return Err(EndpointUnavailable.into());
     }
@@ -187,6 +219,26 @@ async fn connect(controller: Uuid) -> Result<(Stream, Option<u32>)> {
     Ok((Box::new(stream), pid))
 }
 
+#[cfg(not(windows))]
+fn socket(controller: Uuid, routed: bool) -> Result<std::path::PathBuf> {
+    if routed {
+        corvid_protocol::paths::desktop_route_socket(controller)?.prepare()
+    } else {
+        corvid_protocol::paths::desktop_focus_socket(controller)?.prepare()
+    }
+}
+
+/// Keep focus available for a known host even while its terminal is detached.
+pub async fn serve_routed(
+    host: Uuid,
+    controller: Uuid,
+    focus: mpsc::Sender<FocusRequest>,
+) -> Result<()> {
+    // The private connection is scoped to the controller. Desktop verifies the
+    // daemon epoch in each run against the actual daemon before navigation.
+    serve_scope(host, controller, controller, true, focus).await
+}
+
 /// This listener is owned by an already attached Desktop session.
 pub async fn serve(
     host: Uuid,
@@ -194,17 +246,25 @@ pub async fn serve(
     epoch: Uuid,
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
+    serve_scope(host, controller, epoch, false, focus).await
+}
+
+async fn serve_scope(
+    host: Uuid,
+    controller: Uuid,
+    epoch: Uuid,
+    routed: bool,
+    focus: mpsc::Sender<FocusRequest>,
+) -> Result<()> {
     #[cfg(windows)]
     let mut listener = corvid_protocol::windows::PipeListener::bind_scoped(
-        PIPE_PREFIX,
+        if routed { ROUTED_PREFIX } else { PIPE_PREFIX },
         &controller.simple().to_string(),
     )?;
     #[cfg(not(windows))]
     use corvid_protocol::unix::{RuntimeDir, SocketRole};
     #[cfg(not(windows))]
-    let directory = RuntimeDir::create_all(
-        &corvid_protocol::paths::desktop_focus_socket(controller)?.prepare()?,
-    )?;
+    let directory = RuntimeDir::create_all(&socket(controller, routed)?)?;
     #[cfg(not(windows))]
     let instance = directory.lock_instance()?;
     #[cfg(not(windows))]
@@ -221,8 +281,9 @@ pub async fn serve(
                 let Some(stream) = connected? else { continue };
                 let focus = focus.clone();
                 peers.spawn(async move {
-                    let _ = timeout(COMMAND_TIMEOUT, exchange(
-                        Box::new(stream), host, controller, epoch, focus,
+                    let wait = if routed { ROUTED_TIMEOUT } else { COMMAND_TIMEOUT };
+                    let _ = timeout(wait, exchange(
+                        Box::new(stream), host, controller, epoch, routed, focus,
                     )).await;
                 });
             }
@@ -235,6 +296,7 @@ async fn exchange(
     host: Uuid,
     controller: Uuid,
     epoch: Uuid,
+    routed: bool,
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
     let (mut reader, mut writer) = frames(stream).await?;
@@ -247,7 +309,11 @@ async fn exchange(
         PeerRole::Presentation,
         &host.to_string(),
         &epoch.to_string(),
-        &[CAPABILITY],
+        &[if routed {
+            ROUTED_CAPABILITY
+        } else {
+            CAPABILITY
+        }],
     )?;
     ensure!(
         session.controller_id.as_deref() == Some(controller.to_string().as_str()),
@@ -276,15 +342,20 @@ async fn exchange(
     let run = body.run.context("missing agent identity")?;
     ensure!(
         run.host_id == session.host_id
-            && run.remote_epoch == session.server_epoch
-            && Uuid::parse_str(&run.agent_run_id).is_ok(),
+            && (routed || run.remote_epoch == session.server_epoch)
+            && Uuid::parse_str(&run.remote_epoch).is_ok_and(|epoch| !epoch.is_nil())
+            && Uuid::parse_str(&run.agent_run_id).is_ok_and(|run| !run.is_nil()),
         "invalid Desktop focus scope"
     );
     let (result, completed) = oneshot::channel();
     let outcome = match focus.try_send(FocusRequest { run, result }) {
-        Ok(()) => completed
-            .await
-            .context("Desktop focus result unavailable")?,
+        Ok(()) => tokio::select! {
+            result = completed => result.context("Desktop focus result unavailable")?,
+            next = reader.next_envelope() => {
+                ensure!(next?.is_none(), "unexpected second Desktop focus request");
+                return Ok(());
+            }
+        },
         Err(_) => Err("Desktop is unavailable or handling another focus request.".into()),
     };
     let body = match outcome {
@@ -302,6 +373,46 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn routed_focus_carries_the_requested_daemon_epoch_to_desktop() -> Result<()> {
+        let host = Uuid::new_v4();
+        let controller = Uuid::new_v4();
+        let run = PresentedRunKey {
+            host_id: host.to_string(),
+            remote_epoch: Uuid::new_v4().to_string(),
+            agent_run_id: Uuid::new_v4().to_string(),
+        };
+        let (client, server) = tokio::io::duplex(16384);
+        let (send, mut received) = mpsc::channel(1);
+        let listen = tokio::spawn(exchange(
+            Box::new(server),
+            host,
+            controller,
+            controller,
+            true,
+            send,
+        ));
+        let request = request_on_stream(Box::new(client), controller, run.clone(), true, async {});
+        let confirm = async {
+            let request = received.recv().await.expect("missing routed request");
+            assert_eq!(request.run, run);
+            request
+                .result
+                .send(Err(ProtocolFault::new(
+                    "EpochMismatch",
+                    "Daemon restarted.",
+                )
+                .into()))
+                .unwrap();
+        };
+        let (result, _) =
+            timeout(COMMAND_TIMEOUT, async { tokio::join!(request, confirm) }).await?;
+        let fault = result.unwrap_err().downcast::<ProtocolFault>()?;
+        assert_eq!(fault.code, "EpochMismatch");
+        listen.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn focus_routes_only_the_exact_host_epoch_and_run() -> Result<()> {
         let host = Uuid::new_v4();
         let controller = Uuid::new_v4();
@@ -313,8 +424,15 @@ mod tests {
         };
         let (client, server) = tokio::io::duplex(16384);
         let (send, mut received) = mpsc::channel(1);
-        let listen = tokio::spawn(exchange(Box::new(server), host, controller, epoch, send));
-        let request = request_on_stream(Box::new(client), controller, run.clone(), async {});
+        let listen = tokio::spawn(exchange(
+            Box::new(server),
+            host,
+            controller,
+            epoch,
+            false,
+            send,
+        ));
+        let request = request_on_stream(Box::new(client), controller, run.clone(), false, async {});
         let confirm = async {
             let request = received.recv().await.context("missing focus request")?;
             assert_eq!(request.run, run);
@@ -329,14 +447,21 @@ mod tests {
 
         let (client, server) = tokio::io::duplex(16384);
         let (send, mut received) = mpsc::channel(1);
-        let listen = tokio::spawn(exchange(Box::new(server), host, controller, epoch, send));
+        let listen = tokio::spawn(exchange(
+            Box::new(server),
+            host,
+            controller,
+            epoch,
+            false,
+            send,
+        ));
         let mismatched = PresentedRunKey {
             host_id: Uuid::new_v4().to_string(),
             ..run
         };
         let error = timeout(
             COMMAND_TIMEOUT,
-            request_on_stream(Box::new(client), controller, mismatched, async {}),
+            request_on_stream(Box::new(client), controller, mismatched, false, async {}),
         )
         .await?
         .expect_err("another host's identically keyed agent must not focus");

@@ -1382,11 +1382,19 @@ toolbar provides a compact Agents entry point; Settings uses an Agents category.
 Agent activity, notification preferences, and card management belong in the
 separate window. Its module/package boundary does not define a public plugin API.
 
-Corvid Agent Deck runs independently and sends focus requests over its private
-reconnectable Desktop registration. Desktop resolves the displayed host, epoch, and run
-against its current daemon snapshot. It focuses the pane through its attached
-writer connection. The daemon checks the run ID, pane location, and writer
-lease at focus commit.
+Corvid Agent Deck runs independently and sends focus requests over a private
+controller-scoped Desktop endpoint. Desktop routes by host, daemon epoch and run
+ID. It prefers a window showing the exact pane, then a window on the same host.
+When navigation needs another connection, Desktop confirms the destination pane
+before switching the window. Current daemons resolve and validate the live run
+when attaching a writer. Older daemons use an exact pane attach with snapshot
+verification before and after attach.
+
+When the window switches hosts, Desktop releases the previous writer lease and
+retains the authenticated terminal transport when the daemon supports
+park_terminal.v1. Resuming acquires a fresh writer route. The cache is bounded
+per window, and the daemon reserves interactive connection capacity for new
+clients. Desktop reconnects when a parked transport has closed.
 
 The Windows Agents process owns its tray, native notifications, history, startup setting,
 and app identity. Its default view is a compact floating deck. Always-on-top mode

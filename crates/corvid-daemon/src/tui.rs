@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::platform::{ReadHalf, Stream, WriteHalf, decode_os_string};
+use crate::platform::{Stream, WriteHalf, decode_os_string};
 use anyhow::Result;
 use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, Location};
@@ -16,12 +16,12 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
-    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameReader, FrameWriter,
+    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameWriter,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
     TERMINAL_HISTORY_CAPABILITY,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, SemaphorePermit, mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -41,6 +41,8 @@ const CAPABILITIES: &[&str] = &[
     corvid_protocol::PANE_WRITERS_CAPABILITY,
     corvid_protocol::SESSION_CLIENTS_CAPABILITY,
     corvid_protocol::GRACEFUL_DETACH_CAPABILITY,
+    corvid_protocol::PARK_TERMINAL_CAPABILITY,
+    corvid_protocol::ATTACH_AGENT_CAPABILITY,
     corvid_protocol::RESUME_ATTACH_CAPABILITY,
     "render.v1",
     "ping.v1",
@@ -70,13 +72,16 @@ const CAPABILITIES: &[&str] = &[
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
+// Leave room for new interactive clients even if several Desktop windows park.
+static PARKED_TERMINALS: Semaphore = Semaphore::const_new(crate::MAX_TUI_CONNECTIONS / 2);
+type ParkedTerminal = Option<SemaphorePermit<'static>>;
 
 pub(crate) async fn serve(
     stream: Stream,
     identity: &Identity,
     workspaces: &Workspaces,
 ) -> Result<()> {
-    let Some((session, mut reader, mut writer)) = timeout(
+    let Some((session, reader, mut writer)) = timeout(
         COMMAND_TIMEOUT,
         handshake(stream, identity, PeerRole::Tui, CAPABILITIES),
     )
@@ -84,16 +89,61 @@ pub(crate) async fn serve(
     else {
         return Ok(());
     };
+    let mut incoming = Incoming::start(reader);
+    let mut parked: ParkedTerminal = None;
+    loop {
+        let Some(request) = read_attach(
+            &session,
+            &mut incoming,
+            &mut writer,
+            workspaces,
+            parked.is_some(),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        parked = serve_attachment(
+            &session,
+            &mut incoming,
+            &mut writer,
+            request,
+            workspaces,
+            parked,
+        )
+        .await?;
+        if parked.is_none() {
+            return Ok(());
+        }
+    }
+}
+
+async fn read_attach(
+    session: &Session,
+    incoming: &mut Incoming,
+    writer: &mut FrameWriter<WriteHalf>,
+    workspaces: &Workspaces,
+    parked: bool,
+) -> Result<Option<Envelope>> {
     let mut browsing = false;
-    let request = loop {
+    loop {
         let idle = if browsing {
             Duration::from_secs(60)
         } else {
             COMMAND_TIMEOUT
         };
-        let Some(request) = timeout(idle, reader.next_envelope()).await?? else {
-            return Ok(());
+        let request = if parked {
+            incoming.requests.recv().await
+        } else {
+            timeout(idle, incoming.requests.recv()).await?
         };
+        let Some(request) = request.transpose()? else {
+            return Ok(None);
+        };
+        if parked && matches!(session.validate_request(&request), Ok(Body::Ping(_))) {
+            send(session, writer, request.request_id, Body::Pong(Pong {})).await?;
+            continue;
+        }
         if let Some(Body::BrowseDirectories(query)) = request.body.as_ref() {
             let result = match session.validate_request(&request) {
                 Ok(_) => crate::directories::browse(query.clone()).await,
@@ -103,7 +153,7 @@ pub(crate) async fn serve(
                 Ok(listing) => Body::DirectoryListing(listing),
                 Err(error) => Body::Error(error.into_wire()),
             };
-            send(&session, &mut writer, request.request_id, body).await?;
+            send(session, writer, request.request_id, body).await?;
             browsing = true;
             continue;
         }
@@ -121,11 +171,21 @@ pub(crate) async fn serve(
                 Ok(result) => Body::WorkspaceRestored(result),
                 Err(error) => Body::Error(error.into_wire()),
             };
-            send(&session, &mut writer, request.request_id, body).await?;
+            send(session, writer, request.request_id, body).await?;
             continue;
         }
-        break request;
-    };
+        return Ok(Some(request));
+    }
+}
+
+async fn serve_attachment(
+    session: &Session,
+    incoming: &mut Incoming,
+    writer: &mut FrameWriter<WriteHalf>,
+    request: Envelope,
+    workspaces: &Workspaces,
+    parked: ParkedTerminal,
+) -> Result<ParkedTerminal> {
     let client = Uuid::new_v4();
     let (focus_tx, focuses) = mpsc::channel(1);
     let (disconnect, disconnected) = oneshot::channel();
@@ -162,18 +222,19 @@ pub(crate) async fn serve(
         Ok(active) => active,
         Err(error) => {
             send(
-                &session,
-                &mut writer,
+                session,
+                writer,
                 request.request_id,
                 Body::Error(error.into_wire()),
             )
             .await?;
-            return Ok(());
+            return Ok(parked);
         }
     };
+    drop(parked);
     let result = serve_active(
         session,
-        reader,
+        incoming,
         writer,
         request.request_id,
         active,
@@ -190,14 +251,14 @@ pub(crate) async fn serve(
 }
 
 async fn serve_active(
-    session: Session,
-    reader: FrameReader<ReadHalf>,
-    mut writer: FrameWriter<WriteHalf>,
+    session: &Session,
+    incoming: &mut Incoming,
+    writer: &mut FrameWriter<WriteHalf>,
     request_id: Option<String>,
     active: Active,
     workspaces: &Workspaces,
     client_events: ClientEvents,
-) -> Result<()> {
+) -> Result<ParkedTerminal> {
     let route = active.route;
     let attached = Attached {
         client_id: route.client_id.to_string(),
@@ -206,18 +267,7 @@ async fn serve_active(
         writer_leases: vec![active.location.workspace.to_string()],
         selection: Some(selection(active.location)),
     };
-    send(&session, &mut writer, request_id, Body::Attached(attached)).await?;
-    serve_writer(session, reader, writer, active, workspaces, client_events).await
-}
-
-async fn serve_writer(
-    session: Session,
-    reader: FrameReader<ReadHalf>,
-    writer: FrameWriter<WriteHalf>,
-    active: Active,
-    workspaces: &Workspaces,
-    client_events: ClientEvents,
-) -> Result<()> {
+    send(session, writer, request_id, Body::Attached(attached)).await?;
     TuiConnection {
         session,
         writer,
@@ -226,19 +276,21 @@ async fn serve_writer(
         client_events,
         last_preview: None,
         last_history: None,
+        parked: None,
     }
-    .run(reader)
+    .run(incoming)
     .await
 }
 
 struct TuiConnection<'a> {
-    session: Session,
-    writer: FrameWriter<WriteHalf>,
+    session: &'a Session,
+    writer: &'a mut FrameWriter<WriteHalf>,
     active: Active,
     workspaces: &'a Workspaces,
     client_events: ClientEvents,
     last_preview: Option<Instant>,
     last_history: Option<Instant>,
+    parked: ParkedTerminal,
 }
 
 struct ClientEvents {
@@ -248,27 +300,26 @@ struct ClientEvents {
 }
 
 impl TuiConnection<'_> {
-    async fn run(mut self, reader: FrameReader<ReadHalf>) -> Result<()> {
-        let mut incoming = Incoming::start(reader);
+    async fn run(mut self, incoming: &mut Incoming) -> Result<ParkedTerminal> {
         loop {
             tokio::select! {
                 biased;
                 _ = &mut self.client_events.disconnected => {
                     self.active.events.close();
                     self.send(None, Body::Detach(corvid_protocol::wire::Detach {})).await?;
-                    return Ok(());
+                    return Ok(None);
                 }
                 event = self.active.events.recv() => {
-                    let Some(event) = event else { return Ok(()) };
-                    if self.event(event).await? { return Ok(()) }
+                    let Some(event) = event else { return Ok(None) };
+                    if self.event(event).await? { return Ok(None) }
                 }
                 request = incoming.requests.recv() => {
-                    let Some(request) = request else { return Ok(()) };
-                    if self.request(request?).await? { return Ok(()) }
+                    let Some(request) = request else { return Ok(None) };
+                    if self.request(request?).await? { return Ok(self.parked) }
                 }
                 command = self.client_events.focuses.recv() => {
-                    let Some(command) = command else { return Ok(()) };
-                    if self.focus(command).await? { return Ok(()) }
+                    let Some(command) = command else { return Ok(None) };
+                    if self.focus(command).await? { return Ok(None) }
                 }
                 Some(provider) = self.client_events.notices.recv() => {
                     self.send(None, Body::AgentResponded(AgentResponded {
@@ -290,13 +341,27 @@ impl TuiConnection<'_> {
         };
         match body {
             Body::Detach(_) => return Ok(true),
-            Body::GracefulDetach(_) => {
+            Body::GracefulDetach(detach) => {
                 self.active.events.close();
                 let body = match self.active.terminal.retire_view(self.active.route).await {
                     Ok(()) => Body::Detach(corvid_protocol::wire::Detach {}),
                     Err(error) => Body::Error(error.into_wire()),
                 };
                 self.workspaces.release(client);
+                let body = if detach.keep_connection
+                    && self
+                        .session
+                        .capabilities
+                        .iter()
+                        .any(|cap| cap == corvid_protocol::PARK_TERMINAL_CAPABILITY)
+                    && matches!(body, Body::Detach(_))
+                    && let Ok(permit) = PARKED_TERMINALS.try_acquire()
+                {
+                    self.parked = Some(permit);
+                    Body::Pong(Pong {})
+                } else {
+                    body
+                };
                 self.send(request.request_id, body).await?;
                 return Ok(true);
             }
@@ -740,7 +805,7 @@ impl TuiConnection<'_> {
     }
 
     async fn send(&mut self, id: Option<String>, body: Body) -> Result<()> {
-        send(&self.session, &mut self.writer, id, body).await
+        send(self.session, self.writer, id, body).await
     }
 
     async fn fault(&mut self, id: Option<String>, fault: ProtocolFault) -> Result<()> {
@@ -957,7 +1022,20 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
     if attach.expected_terminal_id.is_some() && (!attach.take_over || attach.pane_id.is_none()) {
         return Err(invalid("terminal identity requires an exact pane takeover"));
     }
+    if attach.agent_run_id.is_some()
+        && (attach.take_over
+            || attach.workspace_id.is_some()
+            || attach.tab_id.is_some()
+            || attach.pane_id.is_some()
+            || attach.launch.is_some()
+            || attach.create_workspace.is_some()
+            || attach.create_tab.is_some()
+            || attach.requested_role != AttachRole::Writer as i32)
+    {
+        return Err(invalid("agent attach requires a run and a writer role"));
+    }
     Ok(AttachTarget {
+        agent_run: parse_optional_id(attach.agent_run_id.as_deref())?,
         workspace: parse_optional_id(attach.workspace_id.as_deref())?,
         tab: parse_optional_id(attach.tab_id.as_deref())?,
         pane: parse_optional_id(attach.pane_id.as_deref())?,

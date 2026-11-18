@@ -1051,6 +1051,7 @@ message Attach {
   optional string workspace_directory = 12;
   // Initial directory supplied by the CLI when no workspace default applies.
   optional bytes fallback_directory = 13;
+  optional string agent_run_id = 14;
 }
 
 message BrowseDirectories {
@@ -1249,7 +1250,9 @@ message FrameApplied {
 message Detach {}
 
 // Ask the daemon to retire the writer before replying with Detach.
-message GracefulDetach {}
+message GracefulDetach {
+  bool keep_connection = 1;
+}
 
 message TerminalExited {
   string terminal_id = 1;

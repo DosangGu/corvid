@@ -272,6 +272,7 @@ enum UnixEndpoint {
     Monitor(Option<Uuid>),
     AgentDeck(Uuid),
     DesktopFocus(Uuid),
+    DesktopRoute(Uuid),
 }
 
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
@@ -279,6 +280,7 @@ trait UnixPaths: PlatformPaths {
     const SLOT_PREFIX: &'static str;
     const DECK_PREFIX: &'static str;
     const FOCUS_PREFIX: &'static str;
+    const ROUTE_PREFIX: &'static str;
 
     fn endpoint_base(
         inputs: &impl PathInputs,
@@ -304,6 +306,9 @@ trait UnixPaths: PlatformPaths {
             UnixEndpoint::DesktopFocus(controller) => {
                 format!("{}{}", Self::FOCUS_PREFIX, controller.simple())
             }
+            UnixEndpoint::DesktopRoute(controller) => {
+                format!("{}{}", Self::ROUTE_PREFIX, controller.simple())
+            }
         };
         Ok(Self::endpoint_base(inputs, role, local_runtime)?.join(name))
     }
@@ -314,6 +319,7 @@ impl UnixPaths for Linux {
     const SLOT_PREFIX: &'static str = "cv-slot-";
     const DECK_PREFIX: &'static str = "cv-deck-";
     const FOCUS_PREFIX: &'static str = "cv-focus-";
+    const ROUTE_PREFIX: &'static str = "cv-route-";
 
     fn endpoint_base(
         inputs: &impl PathInputs,
@@ -327,9 +333,9 @@ impl UnixPaths for Linux {
 
         let hint = match role {
             UnixEndpoint::Companion => "set XDG_RUNTIME_DIR or companion --socket-dir",
-            UnixEndpoint::AgentDeck(_) | UnixEndpoint::DesktopFocus(_) => {
-                "set XDG_RUNTIME_DIR for Agent Deck"
-            }
+            UnixEndpoint::AgentDeck(_)
+            | UnixEndpoint::DesktopFocus(_)
+            | UnixEndpoint::DesktopRoute(_) => "set XDG_RUNTIME_DIR for Agent Deck",
             UnixEndpoint::Monitor(_) => {
                 // An SSH session may lack XDG_RUNTIME_DIR even with a running user manager.
                 return inputs
@@ -349,6 +355,7 @@ impl UnixPaths for MacOs {
     const SLOT_PREFIX: &'static str = "s-";
     const DECK_PREFIX: &'static str = "d-";
     const FOCUS_PREFIX: &'static str = "f-";
+    const ROUTE_PREFIX: &'static str = "r-";
 
     fn endpoint_base(
         inputs: &impl PathInputs,
@@ -383,6 +390,11 @@ pub fn agent_deck_socket(controller: Uuid) -> Result<RuntimePath> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn desktop_focus_socket(controller: Uuid) -> Result<RuntimePath> {
     Native::endpoint(&System, UnixEndpoint::DesktopFocus(controller), None)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn desktop_route_socket(controller: Uuid) -> Result<RuntimePath> {
+    Native::endpoint(&System, UnixEndpoint::DesktopRoute(controller), None)
 }
 
 /// The macOS Deck prototype always uses the boot-scoped companion default.

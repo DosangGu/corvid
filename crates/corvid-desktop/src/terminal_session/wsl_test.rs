@@ -76,6 +76,7 @@ async fn wsl_session_installs_and_reconnects_to_the_same_shell() -> Result<()> {
             ViewStore::new(state.path().join("desktop/desktop-view")),
             AttachTarget::Default,
             true,
+            ParkedConnections::default(),
         )
     };
 
@@ -91,7 +92,7 @@ async fn wsl_session_installs_and_reconnects_to_the_same_shell() -> Result<()> {
 
     let (session, mut job, mut prompts) = start()?;
     let result = verify_live_session(&session, &mut prompts, distro).await;
-    job.stop();
+    job.stop(false);
     job.join();
     result
 }

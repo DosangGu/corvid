@@ -83,6 +83,13 @@ struct Connection {
 }
 
 impl Scope {
+    pub fn control_endpoint(&self) -> Result<ControlEndpoint> {
+        match endpoint(&self.state, &self.config)? {
+            Some(endpoint) => Ok(endpoint),
+            None => self.config.control_endpoint(),
+        }
+    }
+
     pub fn prepare(
         root: &Path,
         endpoint: &ControlEndpoint,
