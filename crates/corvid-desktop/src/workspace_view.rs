@@ -853,7 +853,7 @@ impl WorkspaceView {
         match shortcut {
             (true, "w" | "x") => {
                 if let Some(session) = &self.session {
-                    session.close_active(name == "x");
+                    session.close_active_pane();
                 }
             }
             (true, "p") => self.toggle_switcher(window, cx),

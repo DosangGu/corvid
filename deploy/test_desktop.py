@@ -275,6 +275,8 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             key(window, "ctrl+shift+d")
             wait_for_terminal(previous=added_tab)
             key(window, "ctrl+shift+w")
+            wait_for_terminal(expected=added_tab)
+            key(window, "ctrl+shift+w")
             wait_for_terminal(expected=first_terminal)
             key(window, "ctrl+Tab")
             wait_for_terminal(expected=second_terminal)
