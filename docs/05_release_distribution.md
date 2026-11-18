@@ -142,10 +142,12 @@ The check command changes neither installed files nor daemon state. Network,
 rate-limit, missing-release, and validation errors are reported as failures,
 not as evidence that the installation is up to date.
 
-Desktop provides **Settings → About & updates → Check for updates**. One compact
-panel keeps the running version, installation type, stable channel, and last check
-time visible. Check results and actionable errors stay in that page; technical
-error details can be expanded. Release notes open the selected release page.
+Desktop provides **Settings → About & updates → Check for updates**. The panel
+shows the running version, installation type, stable channel, and last check time
+in the system time zone. Check results and actionable errors stay in the panel,
+with expandable technical details. Release notes open the selected release page.
+
+![Last update check time in Settings](images/release-update-last-checked.png)
 
 For installations from Windows Setup, the scripts, or a portable archive,
 **Download update** downloads, verifies, and installs the selected release in
