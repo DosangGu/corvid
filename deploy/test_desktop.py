@@ -309,7 +309,9 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         )
         type_command(shlex.join(["python3", str(chord_probe), str(chord_ready), str(chord_marker)]))
         wait_for_marker(chord_ready, "ready")
-        for chord in ("shift+Return", "alt+b", "ctrl+Home", "shift+F5", "ctrl+shift+x", "ctrl+v"):
+        # Older xdotool injects Alt with function keys on newer XKB maps.
+        # Use Shift+Delete to exercise a modified tilde sequence over X11.
+        for chord in ("shift+Return", "alt+b", "ctrl+Home", "shift+Delete", "ctrl+shift+x", "ctrl+v"):
             key(window, chord)
         key(window, "Return")
 
@@ -319,7 +321,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             time.sleep(0.1)
         assert chord_marker.exists(), "Terminal chord probe did not receive Return"
         chords = chord_marker.read_bytes()
-        assert chords == b"\x1b[13;2u\x1bb\x1b[1;5H\x1b[15;2~\x1b[120;6u\x16", (
+        assert chords == b"\x1b[13;2u\x1bb\x1b[1;5H\x1b[3;2~\x1b[120;6u\x16", (
             f"unexpected terminal chords: {chords!r}"
         )
 
