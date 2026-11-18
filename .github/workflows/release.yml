@@ -17,7 +17,7 @@ jobs:
 
   publish:
     needs: package
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:

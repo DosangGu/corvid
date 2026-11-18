@@ -73,7 +73,7 @@ env:
 
 jobs:
   validate:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,10 +96,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             native: x86_64-unknown-linux-musl
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             target: aarch64-unknown-linux-gnu
             native: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
@@ -146,7 +146,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2025
+          - os: windows-latest
             target: x86_64-pc-windows-msvc
             native: x86_64-pc-windows-msvc
           - os: windows-11-arm
@@ -197,7 +197,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          - os: macos-latest
             target: aarch64-apple-darwin
             native: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
@@ -246,7 +246,7 @@ jobs:
 
   assemble:
     needs: [linux-installers, windows-installers, macos-installers]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
