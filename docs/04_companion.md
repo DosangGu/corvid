@@ -136,6 +136,10 @@ at `~/.corvid/corvid` or upgrading an older managed installation. Daemon
 metadata stays in the distribution's Linux state directory. Existing PATH
 installations are reused. Installation requires the Linux x86_64 bundle described
 above. `--wsl-distribution` and `--ssh-alias` select mutually exclusive destinations.
+WSL connections honor an explicit `CORVID_RUNTIME_DIR` and otherwise use
+`$XDG_RUNTIME_DIR/corvid` when its directory and parents pass Corvid's checks.
+If WSLg supplies an unsafe runtime path, Corvid uses its private boot-scoped
+directory under `~/.corvid` for connections, startup, and upgrades.
 
 An explicit Desktop connection detects the host OS and starts an installed
 Corvid daemon if needed. When Desktop finds a fresh Linux x86_64 or Windows x64
