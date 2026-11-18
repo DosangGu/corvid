@@ -1,6 +1,5 @@
-use std::time::UNIX_EPOCH;
-
 use super::*;
+use chrono::{DateTime, Local};
 use gpui::{Animation, AnimationExt};
 
 impl WorkspaceView {
@@ -53,14 +52,11 @@ impl WorkspaceView {
                     .child(status(state)),
             );
 
-        if let Some(checked) = state.last_checked
-            && let Ok(since_epoch) = checked.duration_since(UNIX_EPOCH)
-        {
-            let seconds = since_epoch.as_secs();
+        if let Some(checked) = state.last_checked {
+            let local_time = DateTime::<Local>::from(checked);
             card = card.child(hint(format!(
-                "Last checked at {:02}:{:02} UTC",
-                (seconds / 3600) % 24,
-                (seconds / 60) % 60,
+                "Last checked at {}",
+                local_time.format("%H:%M")
             )));
         }
         if !state.busy() {
