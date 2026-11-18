@@ -122,13 +122,13 @@ runtime artifacts built from **the same revision**, then run:
 cargo build-desktop /path/to/linux-x64 /path/to/windows-x64 /path/to/linux-arm64 /path/to/windows-arm64
 ```
 
-CI builds and tests Desktop and Agent Deck with Xcode 27.2 on the `xcode-27`
-Apple Silicon image. The `macos-latest` image exercises the runtime, installer
-version switching and corruption rejection, nested code signatures, and the
-packaged Desktop and Agent Deck windows. The DMG check verifies the SDK and
-macOS 15.0 deployment target of the nested Agent Deck executable. Testing on
-older macOS versions, physical USB devices, OS permission prompts, multiple
-monitors, and non-Latin IME interaction requires separate qualification.
+CI uses the default Xcode on the `macos-latest` Apple Silicon image for runtime
+and workspace tests, installer version switching and corruption rejection,
+nested code signatures, and the packaged Desktop and Agent Deck windows. The
+DMG check verifies that Agent Deck was built with a macOS 26 or later SDK and
+targets macOS 15.0. Testing on older macOS versions, physical USB devices,
+OS permission prompts, multiple monitors, and non-Latin IME interaction
+requires separate qualification.
 
 ## Interactive validation
 

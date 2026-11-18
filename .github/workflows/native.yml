@@ -334,7 +334,7 @@ jobs:
 
   macos-runtime:
     name: macOS Runtime (${{ matrix.runner }})
-    strategy:
+    strategy: &macos-targets
       fail-fast: false
       matrix:
         include:
@@ -406,13 +406,11 @@ jobs:
           if-no-files-found: error
 
   macos-desktop:
-    name: macOS Desktop (xcode-27)
-    runs-on: xcode-27
+    name: macOS Desktop (${{ matrix.runner }})
+    strategy: *macos-targets
+    runs-on: ${{ matrix.runner }}
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: '15.0'
-      # Avoid misaligned proc-macro dylibs with the pinned Rust toolchain on macOS 27.
-      CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -425,29 +423,29 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/release
-            target/aarch64-apple-darwin/release
-          key: desktop-xcode-27-aarch64-apple-darwin-sdk27.2-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+            target/${{ matrix.desktop }}/release
+          key: desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: |
-            desktop-xcode-27-aarch64-apple-darwin-sdk27.2-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            desktop-xcode-27-aarch64-apple-darwin-sdk27.2-v1-
+            desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
-      - run: rustup target add aarch64-apple-darwin
+      - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target aarch64-apple-darwin -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update --features corvid-deck/stream-deck
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update --features corvid-deck/stream-deck
       - name: Workspace tests
-        run: cargo test --locked --release --target aarch64-apple-darwin --workspace --features corvid-deck/stream-deck
+        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace --features corvid-deck/stream-deck
       - name: Workspace lints
-        run: cargo clippy --locked --release --target aarch64-apple-darwin --workspace --all-targets --features corvid-deck/stream-deck -- -D warnings
+        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets --features corvid-deck/stream-deck -- -D warnings
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: bash
         run: |
           mkdir -p target/desktop-binaries
-          cp target/aarch64-apple-darwin/release/{corvid-desktop,corvid-agent-deck,corvid-deck,corvid-streamdeck} target/desktop-binaries/
+          cp target/${{ matrix.desktop }}/release/{corvid-desktop,corvid-agent-deck,corvid-deck,corvid-streamdeck} target/desktop-binaries/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: inputs.package
         with:
-          name: binaries-desktop-aarch64-apple-darwin
+          name: binaries-desktop-${{ matrix.desktop }}
           path: target/desktop-binaries/
           if-no-files-found: error

@@ -153,8 +153,8 @@ def check(assets):
             build_info = dict(line.split() for line in run("vtool", "-show-build", deck).splitlines()
                               if line.strip().startswith(("minos ", "sdk ")))
             assert build_info["minos"] == "15.0", build_info
-            if expected_sdk := os.environ.get("CORVID_AGENT_DECK_EXPECTED_SDK"):
-                assert build_info["sdk"] == expected_sdk, build_info
+            # The built-in panel uses the AppKit glass API starting in SDK 26.
+            assert int(build_info["sdk"].split(".")[0]) >= 26, build_info
             environment = dict(os.environ, HOME=str(directory), CORVID_RUNTIME_DIR=str(directory / "r"),
                                CORVID_VIEW_STATE_DIR=str(directory / "views"))
             with (directory / "desktop.log").open("w+") as log:
