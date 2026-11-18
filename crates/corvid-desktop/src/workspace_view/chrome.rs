@@ -283,65 +283,59 @@ impl WorkspaceView {
             )
     }
 
-    fn tabs(&self, workspace: &WorkspaceState, ui: &Ui, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn tabs(&self, workspace: &WorkspaceState, ui: &Ui, cx: &mut Context<Self>) -> Div {
         let selected = ui.selected.as_ref().map(|view| view.tab_id.as_str());
         let inventory = ui.inventory.as_ref();
-        div()
-            .id("daemon-tabs")
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .gap(ui_px(3.))
-            .overflow_x_scroll()
-            .children(workspace.tabs.iter().filter_map(|tab| {
-                let (target, open) = self.choose(workspace, tab, inventory?)?;
-                let active = selected == Some(tab.tab_id.as_str());
-                let attention = ui.connected
-                    && ui.inventory_ready
-                    && inventory?.agents.iter().any(|agent| {
-                        agent.terminal_available
-                            && agent.badge == AgentBadge::NeedsInput as i32
-                            && agent
-                                .location
-                                .as_ref()
-                                .is_some_and(|location| location.tab_id == tab.tab_id)
-                    });
-                let title = if attention {
-                    format!("{} !", tab.label)
-                } else {
-                    tab.label.clone()
-                };
-                Some(
-                    div()
-                        .id(SharedString::from(tab.tab_id.clone()))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .rounded_md()
-                        .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
-                        .max_w(ui_px(240.))
-                        .child(div().min_w_0().overflow_hidden().child(
-                            button("select-tab", title, active).on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    view.dismiss_overlay(window, cx);
-                                    view.select(target.clone(), open, window, cx);
-                                },
-                            )),
+        self.tab_bar.render(workspace.tabs.iter().filter_map(|tab| {
+            let (target, open) = self.choose(workspace, tab, inventory?)?;
+            let active = selected == Some(tab.tab_id.as_str());
+            let attention = ui.connected
+                && ui.inventory_ready
+                && inventory?.agents.iter().any(|agent| {
+                    agent.terminal_available
+                        && agent.badge == AgentBadge::NeedsInput as i32
+                        && agent
+                            .location
+                            .as_ref()
+                            .is_some_and(|location| location.tab_id == tab.tab_id)
+                });
+            let title = if attention {
+                format!("{} !", tab.label)
+            } else {
+                tab.label.clone()
+            };
+            Some((
+                tab.tab_id.as_str(),
+                div()
+                    .id(SharedString::from(tab.tab_id.clone()))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .rounded_md()
+                    .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
+                    .max_w(ui_px(240.))
+                    .child(div().min_w_0().overflow_hidden().child(
+                        button("select-tab", title, active).on_click(cx.listener(
+                            move |view, _, window, cx| {
+                                view.dismiss_overlay(window, cx);
+                                view.select(target.clone(), open, window, cx);
+                            },
+                        )),
+                    ))
+                    .when(ui.can_close(), |row| {
+                        row.child(Self::close_button(
+                            "close-tab",
+                            "End this tab and its terminals?",
+                            CloseView {
+                                workspace_id: workspace.workspace_id.clone(),
+                                tab_id: Some(tab.tab_id.clone()),
+                                ..Default::default()
+                            },
+                            cx,
                         ))
-                        .when(ui.can_close(), |row| {
-                            row.child(Self::close_button(
-                                "close-tab",
-                                "End this tab and its terminals?",
-                                CloseView {
-                                    workspace_id: workspace.workspace_id.clone(),
-                                    tab_id: Some(tab.tab_id.clone()),
-                                    ..Default::default()
-                                },
-                                cx,
-                            ))
-                        }),
-                )
-            }))
+                    }),
+            ))
+        }))
     }
 
     fn action_menu(&self, cx: &mut Context<Self>) -> Div {
@@ -498,6 +492,11 @@ impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(cx.global::<Appearance>().rem_size());
         let ui = self.session.as_ref().map(Session::ui);
+        self.tab_bar.select(
+            ui.as_ref()
+                .and_then(|ui| ui.selected.as_ref())
+                .map(|selected| selected.tab_id.as_str()),
+        );
         let inventory = ui.as_ref().and_then(|ui| ui.inventory.as_ref());
         let workspace = ui
             .as_ref()
