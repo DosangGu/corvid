@@ -840,10 +840,8 @@ impl WorkspaceView {
         if event.is_held
             && matches!(
                 shortcut,
-                (
-                    true,
-                    "n" | "t" | "d" | "e" | "p" | "f" | "r" | "z" | "w" | "x"
-                ) | (_, "tab")
+                (true, "n" | "t" | "d" | "e" | "p" | "f" | "r" | "z" | "w")
+                    | (_, "tab")
                     | (false, ",")
             )
         {
@@ -851,7 +849,7 @@ impl WorkspaceView {
             return;
         }
         match shortcut {
-            (true, "w" | "x") => {
+            (true, "w") => {
                 if let Some(session) = &self.session {
                     session.close_active_pane();
                 }
