@@ -214,10 +214,16 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         key(window, "ctrl+shift+c")
         copied = subprocess.check_output(["xclip", "-selection", "clipboard", "-o"], timeout=10)
         assert b"scroll-row-001" in copied.splitlines(), "wheel did not open shell history"
+        if preview := os.environ.get("CORVID_SCROLL_PREVIEW_DIR"):
+            subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "scroll-history.png")],
+                           check=True, timeout=10)
         wheel(5, 260)
         live = root / "scroll-live"
         type_command(f"printf live > {shlex.quote(str(live))}")
         wait_for_marker(live, "live")
+        if preview:
+            subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "scroll-live.png")],
+                           check=True, timeout=10)
 
         program_ready = root / "program-ready"
         program_input = root / "program-input"

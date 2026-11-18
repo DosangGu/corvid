@@ -57,12 +57,13 @@ impl TerminalPty {
         self.master.resize(size(viewport))
     }
 
-    pub(super) fn foreground_shell(&self, marked_prompt: bool) -> bool {
+    pub(super) fn foreground_shell(&self, _marked_prompt: bool) -> bool {
+        // Some prompts emit OSC 133;B without a matching execution marker.
+        // A child may already own the console even if the last marker was a prompt.
         self.interactive_shell
-            && (marked_prompt
-                || self
-                    .process_key()
-                    .is_some_and(crate::native_process::shell_has_no_child))
+            && self
+                .process_key()
+                .is_some_and(crate::native_process::shell_has_no_child)
     }
 
     pub(crate) fn process_key(&self) -> Option<ProcessKey> {
