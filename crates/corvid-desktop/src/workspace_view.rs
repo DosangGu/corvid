@@ -6,6 +6,7 @@ mod host_watch;
 mod management;
 mod naming;
 mod switcher;
+mod tab_bar;
 mod update;
 mod workspace_creation;
 use std::collections::HashMap;
@@ -95,6 +96,7 @@ pub struct WorkspaceView {
     lookup_errors: HashMap<Destination, &'static str>,
     terminal: Option<Entity<TerminalView>>,
     selected: Option<ViewSelection>,
+    tab_bar: tab_bar::TabBar,
     preferred_tabs: HashMap<String, String>,
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
@@ -173,6 +175,7 @@ impl WorkspaceView {
             lookup_errors: HashMap::new(),
             terminal: None,
             selected: None,
+            tab_bar: tab_bar::TabBar::default(),
             preferred_tabs: HashMap::new(),
             preferred_panes: HashMap::new(),
             updates: None,
@@ -404,6 +407,7 @@ impl WorkspaceView {
         self.error = None;
         self.terminal = None;
         self.selected = None;
+        self.tab_bar = tab_bar::TabBar::default();
         self.deck_focus = 0;
         if self.destination.as_ref() != Some(&destination) {
             self.preferred_tabs.clear();
