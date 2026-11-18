@@ -1,6 +1,6 @@
 use super::*;
 use corvid_protocol::wire::AgentBadge;
-use gpui::MouseButton;
+use gpui::{MouseButton, px};
 
 #[derive(Clone, Copy)]
 pub(super) enum MenuAction {
