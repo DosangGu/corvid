@@ -550,6 +550,7 @@ fn encode_key(key: &Keystroke, application: bool) -> Option<Vec<u8>> {
         };
     }
     let bytes: &[u8] = match name {
+        "enter" if modifiers == gpui::Modifiers::shift() => b"\x1b[13;2u",
         "enter" => b"\r",
         "escape" => b"\x1b",
         "backspace" => b"\x7f",

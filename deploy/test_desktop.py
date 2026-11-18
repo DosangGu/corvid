@@ -199,6 +199,14 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             raise AssertionError(
                 f"{error} ({input_status(window, retired, first_probe)})"
             ) from error
+
+        # The shell's read ends on plain Enter and retains the preceding Shift+Enter.
+        enter_marker = root / "shift-enter"
+        type_command(f'IFS= read -r line; printf %s "$line" > {shlex.quote(str(enter_marker))}')
+        key(window, "shift+Return")
+        key(window, "Return")
+        wait_for_marker(enter_marker, "\x1b[13;2u")
+
         # Use the real clipboard and keyboard path, with synthetic Unicode data.
         pasted = "한글 e\u0301 🐦"
         paste_marker = root / "pasted"
