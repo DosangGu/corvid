@@ -80,6 +80,10 @@ the user requests a merge. Follow the PR's CI checks through completion and fix
 failures before declaring it ready for review. Report any checks that remain
 pending or blocked explicitly.
 
+After completing a task, remove its local build artifacts, temporary files, and
+dedicated worktree once any needed outputs and changes are safely preserved.
+Leave shared build caches and worktrees for other tasks intact.
+
 History uses `docs:`. Use concise, imperative subjects and appropriate prefixes
 such as `feat:` or `fix:` for implementation. Keep commits focused. PRs should explain
 the problem, resulting behavior, validation, and limitations. Link relevant issues and
