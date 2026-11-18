@@ -23,6 +23,12 @@ concurrency:
   group: windows-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  PYTHONUNBUFFERED: '1'
+
 jobs:
   runtime:
     strategy: &targets
@@ -35,17 +41,93 @@ jobs:
           - runner: windows-11-arm
             runtime: aarch64-pc-windows-msvc
             desktop: aarch64-pc-windows-msvc
-    uses: ./.github/workflows/runtime.yml
-    with:
-      runner: ${{ matrix.runner }}
-      target: ${{ matrix.runtime }}
-      binary: corvid.exe
-      package: ${{ inputs.package || false }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: rustup target add ${{ matrix.runtime }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+            target/${{ matrix.runtime }}/release
+          key: rust-${{ runner.os }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            rust-${{ runner.os }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            rust-${{ runner.os }}-${{ matrix.runtime }}-v1-
+      - name: Build runtime and launchers
+        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
+      - name: Runtime tests
+        run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
+      - name: Runtime manifest
+        if: inputs.package
+        run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid.exe --output target/runtime
+      - name: Package TUI
+        if: inputs.package
+        run: python deploy/package.py package --product tui --target ${{ matrix.runtime }} --runtime target/runtime --build target/${{ matrix.runtime }}/release --output target/dist
+      - name: Validate installation and daemon lifecycle
+        if: inputs.package
+        run: python deploy/test_install.py --assets target/dist --binary target/${{ matrix.runtime }}/release/corvid.exe
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.package
+        with:
+          name: runtime-${{ matrix.runtime }}
+          path: target/runtime/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.package
+        with:
+          name: tui-${{ matrix.runtime }}
+          path: target/dist/
+          if-no-files-found: error
 
   desktop:
     strategy: *targets
-    uses: ./.github/workflows/desktop.yml
-    with:
-      runner: ${{ matrix.runner }}
-      target: ${{ matrix.desktop }}
-      package: ${{ inputs.package || false }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+            target/${{ matrix.desktop }}/release
+          key: desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-
+      - run: rustup target add ${{ matrix.desktop }}
+      - name: Build Desktop and plugins
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
+      - name: Workspace tests
+        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
+      - name: Workspace lints
+        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
+      - name: Stage binaries for Desktop integration
+        if: inputs.package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path target/desktop-binaries | Out-Null
+          $binaries = @(
+            'corvid-desktop.exe',
+            'corvid-agent-deck.exe',
+            'corvid-launch.exe',
+            'corvid-desktop-launch.exe',
+            'corvid-agent-deck-launch.exe',
+            'corvid-deck.exe'
+          )
+          foreach ($binary in $binaries) {
+            Copy-Item -LiteralPath "target/${{ matrix.desktop }}/release/$binary" -Destination target/desktop-binaries
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.package
+        with:
+          name: binaries-desktop-${{ matrix.desktop }}
+          path: target/desktop-binaries/
+          if-no-files-found: error

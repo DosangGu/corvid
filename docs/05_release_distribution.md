@@ -227,8 +227,8 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 It compares the checked-out PR merge commit with its first parent. The three
 platform workflows use path filters to skip PRs limited to `AGENTS.md`,
 `README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG under `docs/images/`.
-Each platform workflow lists its runner and target pairs and calls the shared
-**Build and Test Runtime** and **Build and Test Desktop** workflows.
+Each platform workflow lists its runner and target pairs and defines separate
+Runtime and Desktop jobs with that platform's own build and test steps.
 
 **Package Corvid** uses GitHub path filters for PRs and pushes to `main`. The
 `main` filter also covers ordinary workspace sources, manifests, and schemas.
