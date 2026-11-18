@@ -8,11 +8,9 @@ on:
     paths:
       - '.cargo/**'
       - '.gitattributes'
-      - '.github/workflows/linux.yml'
-      - '.github/workflows/macos.yml'
+      - '.github/workflows/native.yml'
       - '.github/workflows/package.yml'
       - '.github/workflows/release.yml'
-      - '.github/workflows/windows.yml'
       - 'Cargo.lock'
       - 'LICENSE'
       - 'assets/**'
@@ -46,11 +44,9 @@ on:
       - '.cargo/**'
       - '.gitattributes'
       - '.gitignore'
-      - '.github/workflows/linux.yml'
-      - '.github/workflows/macos.yml'
+      - '.github/workflows/native.yml'
       - '.github/workflows/package.yml'
       - '.github/workflows/release.yml'
-      - '.github/workflows/windows.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'LICENSE'
@@ -86,26 +82,14 @@ jobs:
       - run: python3 deploy/test_icons.py
       - run: cargo fmt --all -- --check
 
-  linux:
+  native:
     needs: validate
-    uses: ./.github/workflows/linux.yml
-    with:
-      package: true
-
-  windows:
-    needs: validate
-    uses: ./.github/workflows/windows.yml
-    with:
-      package: true
-
-  macos:
-    needs: validate
-    uses: ./.github/workflows/macos.yml
+    uses: ./.github/workflows/native.yml
     with:
       package: true
 
   linux-installers:
-    needs: [linux, windows, macos]
+    needs: native
     strategy:
       fail-fast: false
       matrix:
@@ -151,7 +135,7 @@ jobs:
           if-no-files-found: error
 
   windows-installers:
-    needs: [linux, windows, macos]
+    needs: native
     strategy:
       fail-fast: false
       matrix:
@@ -200,7 +184,7 @@ jobs:
           if-no-files-found: error
 
   macos-installers:
-    needs: [linux, windows, macos]
+    needs: native
     strategy:
       fail-fast: false
       matrix:

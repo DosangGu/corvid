@@ -214,7 +214,7 @@ and release manifest generation. It validates runtime version, source revision,
 size, and checksum before including a payload. It rejects dynamic Linux daemon
 binaries and binaries exceeding the existing 32 MiB provisioning limit.
 
-| Changes or trigger | Corvid Checks | Corvid Linux, Windows, macOS | Package Corvid | Publish Corvid Release |
+| Changes or trigger | Corvid Checks | Corvid Native Checks | Package Corvid | Publish Corvid Release |
 | --- | --- | --- | --- | --- |
 | Documentation-only PR | Lightweight validation | — | — | — |
 | Ordinary source PR | Lightweight validation | Native builds, tests, and lints on five targets | — | — |
@@ -224,11 +224,11 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 | Push of a `v*` tag | — | — | Package integration and release assets, called by the publisher | Publish validated release assets |
 
 **Corvid Checks** validates the version, shared icons, formatting, and whitespace.
-It compares the checked-out PR merge commit with its first parent. The three
-platform workflows use path filters to skip PRs limited to `AGENTS.md`,
-`README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG under `docs/images/`.
-Each platform workflow lists its runner and target pairs and defines separate
-Runtime and Desktop jobs with that platform's own build and test steps.
+It compares the checked-out PR merge commit with its first parent. **Corvid
+Native Checks** uses path filters to skip PRs limited to `AGENTS.md`, `README.md`,
+Markdown under `docs/`, or JPEG, PNG, and SVG under `docs/images/`. It defines
+separate Runtime and Desktop jobs for Linux, Windows, and macOS, with build and
+test steps specific to each platform.
 
 **Package Corvid** uses GitHub path filters for PRs and pushes to `main`. The
 `main` filter also covers ordinary workspace sources, manifests, and schemas.
@@ -236,7 +236,7 @@ On `main`, **Corvid Checks** compares the previous and pushed tips and calls
 **Package Corvid** as a fallback for unavailable comparisons, large diffs with
 packaging inputs, and changes that could be moves out of a packaging path.
 
-Package runs call the three platform workflows to produce the TUI and Desktop
+Package runs call **Corvid Native Checks** to produce the TUI and Desktop
 binaries for that run. Desktop packages then bundle all five runtime artifacts.
 Integration tests cover installation with a live daemon, Desktop terminal input
 and reattachment under Xvfb, and native installers.

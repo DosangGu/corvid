@@ -11,11 +11,9 @@ PATH_FILTER_LIMIT = 300
 PACKAGE_FILES = {
     ".gitattributes",
     ".gitignore",
-    ".github/workflows/linux.yml",
-    ".github/workflows/macos.yml",
+    ".github/workflows/native.yml",
     ".github/workflows/package.yml",
     ".github/workflows/release.yml",
-    ".github/workflows/windows.yml",
     "Cargo.lock",
     "Cargo.toml",
     "LICENSE",

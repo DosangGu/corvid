@@ -18,7 +18,6 @@ from validate_changes import (
 )
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github/workflows"
-PLATFORMS = ("linux", "windows", "macos")
 
 
 def workflow_patterns(block):
@@ -45,7 +44,7 @@ class WorkflowsTests(unittest.TestCase):
         )
 
 
-    def test_platform_workflows_skip_documentation_only_prs(self):
+    def test_native_workflow_skips_documentation_only_prs(self):
         documentation_paths = {
             "AGENTS.md",
             "README.md",
@@ -55,18 +54,14 @@ class WorkflowsTests(unittest.TestCase):
             "docs/images/**/*.png",
             "docs/images/**/*.svg",
         }
-        for platform in PLATFORMS:
-            with self.subTest(platform=platform):
-                text = (WORKFLOWS / f"{platform}.yml").read_text(encoding="utf-8")
-                pull_request = text.split("  pull_request:\n", 1)[1].split("  workflow_call:\n", 1)[0]
-                paths = pull_request.split("    paths-ignore:\n", 1)[1]
-                self.assertSetEqual(workflow_patterns(paths), documentation_paths)
+        text = (WORKFLOWS / "native.yml").read_text(encoding="utf-8")
+        pull_request = text.split("  pull_request:\n", 1)[1].split("  workflow_call:\n", 1)[0]
+        paths = pull_request.split("    paths-ignore:\n", 1)[1]
+        self.assertSetEqual(workflow_patterns(paths), documentation_paths)
 
-    def test_packaging_uses_the_same_targets_as_the_platform_builds(self):
-        builds = []
-        for platform in PLATFORMS:
-            text = (WORKFLOWS / f"{platform}.yml").read_text(encoding="utf-8")
-            builds.extend(re.findall(r"- runner: (\S+)\s+runtime: (\S+)\s+desktop: (\S+)", text))
+    def test_packaging_uses_the_same_targets_as_the_native_builds(self):
+        text = (WORKFLOWS / "native.yml").read_text(encoding="utf-8")
+        builds = re.findall(r"- runner: (\S+)\s+runtime: (\S+)\s+desktop: (\S+)", text)
 
         text = (WORKFLOWS / "package.yml").read_text(encoding="utf-8")
         installers = re.findall(r"- os: (\S+)\s+target: (\S+)\s+native: (\S+)", text)
