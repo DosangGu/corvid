@@ -211,6 +211,7 @@ impl ObservedRun {
                 key: Some(key.into()),
                 availability: availability as i32,
                 last_badge: summary.badge,
+                prompt_observation: agent.prompt_observation,
                 provider: summary.provider,
                 confidence: evidence.map_or(0, |evidence| evidence.confidence),
                 collection: summary.collection,

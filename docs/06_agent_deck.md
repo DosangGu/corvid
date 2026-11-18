@@ -224,6 +224,16 @@ a response was observed, not that the whole task succeeded. Availability takes
 precedence over the last activity color, so stale observations never appear live.
 Tooltips and the action menu retain exact text labels; unverified input requests
 use amber and say **Check terminal**.
+
+For monitored Claude and Codex sessions, submitting a prompt turns the key blue.
+The tooltip says **Working (inferred)** because another provider hook can still
+block the prompt. A response hook for that same prompt turns the key mint green
+when there is no stronger activity or input status. The next submission starts
+a new blue indication. This requires a daemon and companion that forward prompt
+observations. Process-only sessions keep their gray status.
+
+![Two live fixture sessions after the first responded and the second submitted a prompt](images/agent-deck/live-prompt-status.png)
+
 **Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
 

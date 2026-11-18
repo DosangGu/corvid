@@ -47,6 +47,7 @@ impl LastKnown {
             latest_unseen_attention_id: None,
             last_response_unix_ms: self.last_response_unix_ms,
             last_observed_unix_ms: self.last_observed_unix_ms,
+            prompt_observation: Default::default(),
         }
     }
 

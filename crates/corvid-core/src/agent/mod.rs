@@ -129,6 +129,12 @@ pub enum Activity {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptObservation {
+    Submitted,
+    Responded,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Collection {
@@ -289,6 +295,7 @@ pub struct AgentRun {
     pub process: Observed<ProcessLiveness>,
     pub activity: Observed<Activity>,
     pub collection: Observed<Collection>,
+    pub prompt_observation: Option<PromptObservation>,
     pub recent_response: Option<Observed<Response>>,
     pub requests: BTreeMap<Uuid, InputRequest>,
     pub attention: BTreeMap<Uuid, Attention>,
@@ -306,6 +313,7 @@ impl AgentRun {
             process: Observed::new(ProcessLiveness::Unknown, &evidence),
             activity: Observed::new(Activity::Unknown, &evidence),
             collection: Observed::new(Collection::NotRegistered, &evidence),
+            prompt_observation: None,
             recent_response: None,
             requests: BTreeMap::new(),
             attention: BTreeMap::new(),

@@ -4,8 +4,9 @@ use uuid::Uuid;
 
 use super::{
     Activity, AgentRun, Attention, AttentionCause, Collection, Confidence, EndReason, Evidence,
-    InputRequest, Lifecycle, Observation, ObservationKind, Observed, ProcessLiveness, RequestKey,
-    RequestKind, RequestStatus, Resolution, Response, ResponseOutcome, Source, WorkKey,
+    InputRequest, Lifecycle, Observation, ObservationKind, Observed, ProcessLiveness,
+    PromptObservation, RequestKey, RequestKind, RequestStatus, Resolution, Response,
+    ResponseOutcome, Source, WorkKey,
 };
 
 const MAX_SCOPES: usize = 256;
@@ -171,8 +172,11 @@ impl AgentRun {
                 final_boundary,
             } => self.observe_response(response, final_boundary, evidence),
             ObservationKind::PromptReady if self.can_assert_wait(evidence) => {
+                let had_prompt = self.prompt_observation.take().is_some();
                 let had_response = std::mem::take(&mut self.correlation.response_for_prompt);
-                replace(&mut self.activity, Activity::AwaitingPrompt, evidence) || had_response
+                replace(&mut self.activity, Activity::AwaitingPrompt, evidence)
+                    || had_response
+                    || had_prompt
             }
             ObservationKind::ContextEnded(reason)
                 if evidence.confidence == Confidence::Confirmed =>
@@ -203,6 +207,12 @@ impl AgentRun {
             self.displace_prompt(previous, evidence);
         }
         self.correlation.response_for_prompt = false;
+        self.prompt_observation = (evidence.source == Source::ProviderHook
+            && evidence.confidence != Confidence::Unknown
+            && self.lifecycle.value == Lifecycle::Live
+            && self.collection.value == Collection::Healthy
+            && !self.correlation.response_attention_turns.contains(&turn))
+        .then_some(PromptObservation::Submitted);
         self.activity = Observed::new(Activity::Unknown, evidence);
         if confirmed {
             self.active_turns.insert(turn, evidence.clone());
@@ -448,6 +458,17 @@ impl AgentRun {
         evidence: &Evidence,
     ) -> bool {
         let mut current_boundary = false;
+        if self.prompt_observation.is_some()
+            && evidence.source == Source::ProviderHook
+            && evidence.confidence == Confidence::Confirmed
+            && response
+                .turn
+                .as_deref()
+                .is_some_and(|turn| self.is_current_open_turn(turn))
+        {
+            self.prompt_observation = (response.outcome == ResponseOutcome::Observed)
+                .then_some(PromptObservation::Responded);
+        }
         if final_boundary
             && evidence.confidence == Confidence::Confirmed
             && let Some(turn) = &response.turn
@@ -554,6 +575,7 @@ impl AgentRun {
     }
 
     fn end(&mut self, reason: EndReason, evidence: &Evidence) {
+        self.prompt_observation = None;
         self.lifecycle = Observed::new(Lifecycle::Ended(reason), evidence);
         self.activity = Observed::new(Activity::Unknown, evidence);
         self.active_turns.clear();
@@ -574,6 +596,7 @@ impl AgentRun {
         }
         let mut evidence = evidence.clone();
         if health != Collection::Healthy {
+            self.prompt_observation = None;
             self.correlation.generation = self.correlation.generation.saturating_add(1);
             evidence.coverage_generation = self.correlation.generation;
             self.correlation.response_for_prompt = false;
