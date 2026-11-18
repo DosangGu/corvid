@@ -62,12 +62,26 @@ async fn frames(
 
 /// Request exact navigation from an already attached Desktop on this host.
 pub async fn request(controller: Uuid, run: PresentedRunKey) -> Result<()> {
+    request_with_activation(controller, run, |_| async {}).await
+}
+
+/// Run the activation handoff with the verified Desktop process ID before requesting focus.
+pub async fn request_with_activation(
+    controller: Uuid,
+    run: PresentedRunKey,
+    handoff: impl AsyncFnOnce(u32),
+) -> Result<()> {
     timeout(COMMAND_TIMEOUT, async {
-        let stream = match connect(controller).await {
+        let (stream, pid) = match connect(controller).await {
             Err(error) if missing_endpoint(&error) => return Err(EndpointUnavailable.into()),
             result => result?,
         };
-        request_on_stream(stream, controller, run).await
+        request_on_stream(stream, controller, run, async move {
+            if let Some(pid) = pid {
+                handoff(pid).await;
+            }
+        })
+        .await
     })
     .await
     .context("Desktop did not confirm focus in time")?
@@ -93,7 +107,12 @@ fn missing_endpoint(error: &anyhow::Error) -> bool {
     })
 }
 
-async fn request_on_stream(stream: Stream, controller: Uuid, run: PresentedRunKey) -> Result<()> {
+async fn request_on_stream(
+    stream: Stream,
+    controller: Uuid,
+    run: PresentedRunKey,
+    handoff: impl Future<Output = ()>,
+) -> Result<()> {
     let (mut reader, mut writer) = frames(stream).await?;
     let greeting = hello(
         Uuid::new_v4().to_string(),
@@ -110,6 +129,7 @@ async fn request_on_stream(stream: Stream, controller: Uuid, run: PresentedRunKe
         session.host_id == run.host_id && session.server_epoch == run.remote_epoch,
         "The agent belongs to a different daemon session."
     );
+    handoff.await;
     let id = Uuid::new_v4().to_string();
     writer
         .envelope(&session.envelope(
@@ -134,7 +154,7 @@ async fn request_on_stream(stream: Stream, controller: Uuid, run: PresentedRunKe
 }
 
 #[cfg(windows)]
-async fn connect(controller: Uuid) -> Result<Stream> {
+async fn connect(controller: Uuid) -> Result<(Stream, Option<u32>)> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
@@ -149,22 +169,22 @@ async fn connect(controller: Uuid) -> Result<Stream> {
     // On a click, Deck can pass its foreground permission to the private
     // endpoint's actual owner. The Desktop UI reports any refusal to activate.
     unsafe { AllowSetForegroundWindow(pid) };
-    Ok(Box::new(pipe))
+    Ok((Box::new(pipe), Some(pid)))
 }
 
 #[cfg(not(windows))]
-async fn connect(controller: Uuid) -> Result<Stream> {
-    use corvid_protocol::unix::{RuntimeDir, SocketRole};
+async fn connect(controller: Uuid) -> Result<(Stream, Option<u32>)> {
+    use corvid_protocol::unix::{RuntimeDir, SocketRole, peer_pid};
 
     let path = corvid_protocol::paths::desktop_focus_socket(controller)?.prepare()?;
     if !path.try_exists()? {
         return Err(EndpointUnavailable.into());
     }
-    Ok(Box::new(
-        RuntimeDir::open(&path)?
-            .connect(SocketRole::Presentation)
-            .await?,
-    ))
+    let stream = RuntimeDir::open(&path)?
+        .connect(SocketRole::Presentation)
+        .await?;
+    let pid = peer_pid(&stream).ok();
+    Ok((Box::new(stream), pid))
 }
 
 /// This listener is owned by an already attached Desktop session.
@@ -294,7 +314,7 @@ mod tests {
         let (client, server) = tokio::io::duplex(16384);
         let (send, mut received) = mpsc::channel(1);
         let listen = tokio::spawn(exchange(Box::new(server), host, controller, epoch, send));
-        let request = request_on_stream(Box::new(client), controller, run.clone());
+        let request = request_on_stream(Box::new(client), controller, run.clone(), async {});
         let confirm = async {
             let request = received.recv().await.context("missing focus request")?;
             assert_eq!(request.run, run);
@@ -316,7 +336,7 @@ mod tests {
         };
         let error = timeout(
             COMMAND_TIMEOUT,
-            request_on_stream(Box::new(client), controller, mismatched),
+            request_on_stream(Box::new(client), controller, mismatched, async {}),
         )
         .await?
         .expect_err("another host's identically keyed agent must not focus");

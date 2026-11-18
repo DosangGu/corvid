@@ -620,14 +620,22 @@ impl DeckView {
             view = view.child(muted(background.status));
         }
         if let Some(notice) = &self.selected_notice {
+            let focus_error = background
+                .history
+                .iter()
+                .find(|entry| !notice.summary && entry.key == notice.key)
+                .and_then(|entry| entry.focus_error.clone());
             let key = notice.key.run();
             let enabled = self.view.snapshot.as_ref().is_some_and(|snapshot| {
-                self.ready(snapshot) && snapshot.desktop_run_target(&key).is_some()
+                !notice.summary
+                    && self.ready(snapshot)
+                    && snapshot.desktop_run_target(&key).is_some()
             });
             view = view.child(
                 column()
                     .child(notice.title.clone())
                     .child(muted(notice.body.clone()))
+                    .when_some(focus_error, |detail, error| detail.child(muted(error)))
                     .child(
                         button(
                             "focus-notification",

@@ -1,6 +1,16 @@
 fn main() {
     println!("cargo:rerun-if-changed=../../assets/icons");
-    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if os == "macos" {
+        println!("cargo:rerun-if-changed=src/workspace_view/deck_focus.m");
+        cc::Build::new()
+            .file("src/workspace_view/deck_focus.m")
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .compile("corvid_desktop_activation");
+        println!("cargo:rustc-link-lib=framework=AppKit");
+    }
+    if os == "windows" {
         embed_resource::compile_for(
             "../../assets/icons/app.rc",
             ["corvid-desktop"],

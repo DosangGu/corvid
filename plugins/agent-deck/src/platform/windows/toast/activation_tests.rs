@@ -33,7 +33,7 @@ impl NativeServices for FixtureTray {
 
 #[test]
 #[ignore = "opens an isolated Deck window to exercise WinRT activation callbacks"]
-fn agent_toast_opens_grid_when_visible_and_when_hidden() -> Result<()> {
+fn summary_toast_opens_settings_when_visible_and_when_hidden() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let state = directory.path().join("state");
     let host = Uuid::new_v4();
@@ -94,18 +94,11 @@ fn check_routes(callbacks: Callbacks) -> Result<()> {
         deck_window().filter(|window| visible(*window))
     })?;
     let grid = window_size(window)?;
-    let activate = |summary| {
-        activation_handler(callbacks.clone(), summary)
+    let activate = || {
+        activation_handler(callbacks.clone(), notice(Uuid::new_v4(), true))
             .Invoke(None::<&ToastNotification>, None::<&IInspectable>)
     };
     for hidden in [false, true] {
-        activate(true)?;
-        wait_for("expanded notification settings", || {
-            (visible(window)
-                && resizable(window)
-                && window_size(window).is_ok_and(|size| size.0 > grid.0))
-            .then_some(())
-        })?;
         if hidden {
             ensure!(
                 unsafe { PostMessageW(window, WM_CLOSE, 0, 0) } != 0,
@@ -114,20 +107,63 @@ fn check_routes(callbacks: Callbacks) -> Result<()> {
             wait_for("Deck hidden to tray", || (!visible(window)).then_some(()))?;
             ensure!(unsafe { IsWindow(window) } != 0, "Deck was destroyed");
         }
-        activate(false)?;
-        wait_for("visible main grid after agent toast activation", || {
+        activate()?;
+        wait_for("expanded notification settings", || {
             (visible(window)
-                && !resizable(window)
-                && window_size(window).is_ok_and(|size| size == grid))
+                && resizable(window)
+                && window_size(window).is_ok_and(|size| size.0 > grid.0))
             .then_some(())
         })?;
-        let foreground = unsafe { GetForegroundWindow() } == window;
-        eprintln!(
-            "Agent toast restored the {}×{} grid (started hidden: {hidden}, foreground: {foreground})",
-            grid.0, grid.1
-        );
     }
     Ok(())
+}
+
+#[test]
+fn each_toast_callback_keeps_its_original_notice() -> Result<()> {
+    let _apartment = Apartment::new()?;
+    let (events, mut received) = tokio::sync::mpsc::channel(3);
+    let callbacks = Callbacks {
+        events,
+        issues: tokio::sync::watch::channel(None).0,
+        capabilities: tokio::sync::watch::channel(Default::default()).0,
+        signal: UiSignal::default(),
+    };
+    let first = notice(Uuid::new_v4(), false);
+    let second = notice(Uuid::new_v4(), false);
+    let summary = notice(first.key.host, true);
+    let first_callback = activation_handler(callbacks.clone(), first.clone());
+    let second_callback = activation_handler(callbacks.clone(), second.clone());
+    let summary_callback = activation_handler(callbacks.clone(), summary.clone());
+    for (callback, expected) in [
+        (second_callback, second),
+        (first_callback, first),
+        (summary_callback, summary),
+    ] {
+        callback.Invoke(None::<&ToastNotification>, None::<&IInspectable>)?;
+        let Event::Activate(actual) = received.try_recv()? else {
+            anyhow::bail!("expected toast activation");
+        };
+        assert_eq!(actual.key, expected.key);
+        assert_eq!(actual.summary, expected.summary);
+    }
+    assert_eq!(callbacks.signal.take_presentation(), None);
+    Ok(())
+}
+
+fn notice(host: Uuid, summary: bool) -> Notice {
+    Notice {
+        summary,
+        key: corvid_agent_deck_core::notifications::Key {
+            host,
+            epoch: Uuid::new_v4(),
+            run: Uuid::new_v4(),
+            attention: Uuid::new_v4(),
+        },
+        title: "Fixture notification".into(),
+        body: String::new(),
+        created_ms: 1,
+        focus_error: None,
+    }
 }
 
 fn deck_window() -> Option<HWND> {

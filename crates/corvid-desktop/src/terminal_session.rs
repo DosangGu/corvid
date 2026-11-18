@@ -1597,6 +1597,9 @@ impl Client<'_> {
     }
 
     async fn focus_from_deck(&mut self, request: agent_deck::FocusRequest) -> Result<()> {
+        if request.result.is_closed() {
+            return Ok(());
+        }
         let run = request.run;
         let session = self.link.session();
         if run.host_id != session.host_id || run.remote_epoch != session.server_epoch {

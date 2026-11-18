@@ -124,7 +124,7 @@ impl Sink {
             &notice.key.attention.simple().to_string()[..16],
         ))?;
         toast.SetGroup(&HSTRING::from("agent-deck"))?;
-        let token = toast.Activated(&activation_handler(self.callbacks.clone(), notice.summary))?;
+        let token = toast.Activated(&activation_handler(self.callbacks.clone(), notice))?;
         if let Err(error) = self.notifier.Show(&toast) {
             let _ = toast.RemoveActivated(token);
             return Err(error).context("delivering Windows toast");
@@ -142,14 +142,10 @@ impl Sink {
 
 fn activation_handler(
     callbacks: Callbacks,
-    summary: bool,
+    notice: Notice,
 ) -> TypedEventHandler<ToastNotification, IInspectable> {
     TypedEventHandler::new(move |_, _| {
-        if summary {
-            let _ = callbacks.event(Event::OpenNotifications);
-        } else {
-            callbacks.signal.open();
-        }
+        let _ = callbacks.event(Event::Activate(notice.clone()));
         Ok(())
     })
 }
@@ -340,6 +336,7 @@ mod tests {
                 body: "Temporary test notification; automatically removed after verification."
                     .into(),
                 created_ms: corvid_agent_deck_core::notifications::now_ms(),
+                focus_error: None,
             };
             adapter.notify(notice, false).await?;
             let history = ToastNotificationManager::History()
