@@ -1,13 +1,14 @@
 # Continuous integration coverage
 
-**Corvid Checks** runs native jobs on Linux and Windows x64 and ARM64, and on
-Apple Silicon macOS. Documentation-only PRs use lightweight validation. The
-always-reported `Corvid checks` result includes failures from the selected jobs.
+**Corvid Checks** always reports lightweight PR validation. **Corvid Linux** and
+**Corvid Windows** run native x64 and ARM64 jobs, and **Corvid macOS** runs native
+Apple Silicon jobs. Each calls shared Runtime and Desktop workflows. The
+platform workflows skip documentation-only PRs.
 
-**Package Corvid** runs installer integration separately for PRs touching package
-inputs and for relevant pushes to `main`. The tag-only **Publish Corvid Release**
-workflow calls it to build the assets it publishes. See the
-[workflow trigger table](05_release_distribution.md#build-and-publish).
+**Package Corvid** runs installer integration separately for PRs touching
+`Cargo.lock` or package inputs and for relevant pushes to `main`. The tag-only
+**Publish Corvid Release** workflow calls it to build the assets it publishes.
+See the [workflow trigger table](05_release_distribution.md#build-and-publish).
 
 ## Checks on source pull requests
 

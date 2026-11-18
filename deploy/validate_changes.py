@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
-"""Validate the event diff and select the required CI jobs."""
+"""Validate the event diff and detect main pushes that need a packaging fallback."""
 
 import os
 import re
 import subprocess
 
-LIGHTWEIGHT = "lightweight"
-BUILD = "build"
-PACKAGE = "package"
 # Use the conservative GitHub path-filter limit for the main-push fallback.
 PATH_FILTER_LIMIT = 300
 # Mirror the main-push paths in .github/workflows/package.yml.
 PACKAGE_FILES = {
     ".gitattributes",
     ".gitignore",
-    ".github/workflows/build-and-test.yml",
+    ".github/workflows/desktop.yml",
+    ".github/workflows/linux.yml",
+    ".github/workflows/macos.yml",
     ".github/workflows/package.yml",
     ".github/workflows/release.yml",
+    ".github/workflows/runtime.yml",
+    ".github/workflows/windows.yml",
     "Cargo.lock",
     "Cargo.toml",
     "LICENSE",
     "rust-toolchain.toml",
 }
 PACKAGE_DIRECTORIES = (".cargo/", "assets/", "crates/", "deploy/", "plugins/", "spikes/")
-REGULAR_OR_ABSENT = {"100644", "000000"}
 
 
 def comparison_base(event, ref, before):
@@ -41,31 +41,12 @@ def comparison_base(event, ref, before):
     return None
 
 
-def is_documentation(path):
-    return (
-        path in {"AGENTS.md", "README.md"}
-        or (path.startswith("docs/") and path.endswith(".md"))
-        or (
-            path.startswith("docs/images/")
-            and path.endswith((".jpg", ".jpeg", ".png", ".svg"))
-        )
-    )
-
-
 def changed_paths(diff):
     # Each raw record has a metadata field and a path with rename detection off.
     fields = diff.decode("utf-8", errors="surrogateescape").split("\0")[:-1]
     for metadata, path in zip(fields[::2], fields[1::2], strict=True):
         old_mode, new_mode, *_ = metadata[1:].split()
         yield old_mode, new_mode, path
-
-
-def docs_change(old_mode, new_mode, path):
-    return (
-        old_mode in REGULAR_OR_ABSENT
-        and new_mode in REGULAR_OR_ABSENT
-        and is_documentation(path)
-    )
 
 
 def is_packaging_input(path):
@@ -90,39 +71,33 @@ def push_fallback(changes):
     )
 
 
-def classify(event, ref, before):
-    """Return the work to run in the Checks workflow for this event."""
-    # The separate package workflow uses native PR path filters.
-    fallback = PACKAGE if event == "push" else BUILD
+def validate_changes(event, ref, before):
+    """Return whether the Checks workflow should run fallback packaging."""
+    main_push = event == "push" and ref == "refs/heads/main"
     try:
         base = comparison_base(event, ref, before)
         if base is None:
-            print(f"No comparison for this event. Selecting {fallback} checks.")
-            return fallback
+            print("No comparison for this event.")
+            return main_push
         # Treat moves as deletions and additions so both paths are considered.
         diff = subprocess.check_output(
             ["git", "diff", "--raw", "--no-renames", "-z", base, "HEAD", "--"]
         )
     except subprocess.CalledProcessError:
-        print(f"Could not compare the event commits. Selecting {fallback} checks.")
-        return fallback
+        print("Could not compare the event commits.")
+        return main_push
 
     subprocess.run(["git", "diff", "--check", base, "HEAD", "--"], check=True)
-    changes = list(changed_paths(diff))
-    if event == "push":
-        return PACKAGE if push_fallback(changes) else LIGHTWEIGHT
-    if changes and all(docs_change(*change) for change in changes):
-        return LIGHTWEIGHT
-
-    return BUILD
+    return main_push and push_fallback(list(changed_paths(diff)))
 
 
 if __name__ == "__main__":
-    level = classify(
+    fallback = validate_changes(
         os.environ["GITHUB_EVENT_NAME"],
         os.environ["GITHUB_REF"],
         os.environ.get("PUSH_BEFORE", ""),
     )
-    print(f"Checks workflow selection: {level}")
+    value = "true" if fallback else "false"
+    print(f"Run fallback packaging: {value}")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        print(f"level={level}", file=output)
+        print(f"package_fallback={value}", file=output)

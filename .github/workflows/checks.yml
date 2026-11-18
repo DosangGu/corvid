@@ -17,7 +17,7 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     outputs:
-      level: ${{ steps.changes.outputs.level }}
+      package_fallback: ${{ steps.changes.outputs.package_fallback }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,36 +35,32 @@ jobs:
       - run: python3 deploy/test_package.py
       - run: cargo fmt --all -- --check
 
-  pipeline:
-    # On main, package integration here is a fallback for the push path filter.
+  package-fallback:
+    # Cover main pushes that the package workflow's path filter may miss.
     needs: validate
-    if: needs.validate.outputs.level == 'build' || needs.validate.outputs.level == 'package'
-    uses: ./.github/workflows/build-and-test.yml
-    with:
-      package: ${{ needs.validate.outputs.level == 'package' }}
+    if: needs.validate.outputs.package_fallback == 'true'
+    uses: ./.github/workflows/package.yml
 
   checks:
     name: Corvid checks
-    needs: [validate, pipeline]
+    needs: [validate, package-fallback]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Check validation and selected jobs
+      - name: Check validation and package fallback
         env:
           VALIDATE_RESULT: ${{ needs.validate.result }}
-          LEVEL: ${{ needs.validate.outputs.level }}
-          PIPELINE_RESULT: ${{ needs.pipeline.result }}
+          PACKAGE_FALLBACK: ${{ needs.validate.outputs.package_fallback }}
+          PACKAGE_RESULT: ${{ needs.package-fallback.result }}
         run: |
           if [[ "$VALIDATE_RESULT" != success ]]; then
             echo "::error::Validation finished with $VALIDATE_RESULT"
             exit 1
           fi
-          case "$LEVEL" in
-            lightweight) expected=skipped ;;
-            build|package) expected=success ;;
-            *) echo "::error::Missing change classification"; exit 1 ;;
+          case "$PACKAGE_FALLBACK:$PACKAGE_RESULT" in
+            true:success|false:skipped) ;;
+            *)
+              echo "::error::Unexpected package fallback result: $PACKAGE_FALLBACK/$PACKAGE_RESULT"
+              exit 1
+              ;;
           esac
-          if [[ "$PIPELINE_RESULT" != "$expected" ]]; then
-            echo "::error::Expected $expected for $LEVEL, got $PIPELINE_RESULT"
-            exit 1
-          fi

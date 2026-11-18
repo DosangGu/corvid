@@ -1,0 +1,51 @@
+name: Corvid Windows
+
+on:
+  pull_request:
+    paths-ignore:
+      - AGENTS.md
+      - README.md
+      - 'docs/**/*.md'
+      - 'docs/images/**/*.jpg'
+      - 'docs/images/**/*.jpeg'
+      - 'docs/images/**/*.png'
+      - 'docs/images/**/*.svg'
+  workflow_call:
+    inputs:
+      package:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  runtime:
+    strategy: &targets
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            runtime: x86_64-pc-windows-msvc
+            desktop: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            runtime: aarch64-pc-windows-msvc
+            desktop: aarch64-pc-windows-msvc
+    uses: ./.github/workflows/runtime.yml
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.runtime }}
+      binary: corvid.exe
+      package: ${{ inputs.package || false }}
+
+  desktop:
+    strategy: *targets
+    uses: ./.github/workflows/desktop.yml
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.desktop }}
+      package: ${{ inputs.package || false }}

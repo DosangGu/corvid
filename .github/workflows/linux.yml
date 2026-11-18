@@ -1,0 +1,50 @@
+name: Corvid Linux
+
+on:
+  pull_request:
+    paths-ignore:
+      - AGENTS.md
+      - README.md
+      - 'docs/**/*.md'
+      - 'docs/images/**/*.jpg'
+      - 'docs/images/**/*.jpeg'
+      - 'docs/images/**/*.png'
+      - 'docs/images/**/*.svg'
+  workflow_call:
+    inputs:
+      package:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  runtime:
+    strategy: &targets
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            runtime: x86_64-unknown-linux-musl
+            desktop: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            runtime: aarch64-unknown-linux-musl
+            desktop: aarch64-unknown-linux-gnu
+    uses: ./.github/workflows/runtime.yml
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.runtime }}
+      package: ${{ inputs.package || false }}
+
+  desktop:
+    strategy: *targets
+    uses: ./.github/workflows/desktop.yml
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.desktop }}
+      package: ${{ inputs.package || false }}

@@ -214,33 +214,32 @@ and release manifest generation. It validates runtime version, source revision,
 size, and checksum before including a payload. It rejects dynamic Linux daemon
 binaries and binaries exceeding the existing 32 MiB provisioning limit.
 
-| Changes or trigger | Corvid Checks | Package Corvid | Publish Corvid Release |
-| --- | --- | --- | --- |
-| Documentation-only PR | Lightweight validation | — | — |
-| Ordinary source PR | Lightweight validation and native builds, tests, and lints on all five targets | — | — |
-| PR touching `Cargo.lock`, packaging, installers, updater implementation, or packaged assets | Lightweight validation and native checks | Build and verify installable packages on all five targets | — |
-| Push to `main` | Lightweight validation | Package integration when a packaging input changes | — |
-| Manual **Run workflow** on **Package Corvid** | — | Package integration and release assets | — |
-| Push of a `v*` tag | — | Package integration and release assets, called by the publisher | Publish validated release assets |
+| Changes or trigger | Corvid Checks | Corvid Linux, Windows, macOS | Package Corvid | Publish Corvid Release |
+| --- | --- | --- | --- | --- |
+| Documentation-only PR | Lightweight validation | — | — | — |
+| Ordinary source PR | Lightweight validation | Native builds, tests, and lints on five targets | — | — |
+| PR touching `Cargo.lock`, packaging, installers, updater implementation, or packaged assets | Lightweight validation | Native builds, tests, and lints | Build and verify installable packages on all five targets | — |
+| Push to `main` | Lightweight validation | — | Package integration when a packaging input changes | — |
+| Manual **Run workflow** on **Package Corvid** | — | — | Package integration and release assets | — |
+| Push of a `v*` tag | — | — | Package integration and release assets, called by the publisher | Publish validated release assets |
 
 **Corvid Checks** validates the version, shared icons, formatting, and whitespace.
-It compares the checked-out PR merge commit with its first parent. Regular changes
-limited to `AGENTS.md`, `README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG
-under `docs/images/` use only lightweight validation. The always-reported
-**Corvid checks** job reports the native check result and can serve as a required
-PR status check.
+It compares the checked-out PR merge commit with its first parent. The three
+platform workflows use path filters to skip PRs limited to `AGENTS.md`,
+`README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG under `docs/images/`.
+Each platform workflow lists its runner and target pairs and calls the shared
+**Build and Test Runtime** and **Build and Test Desktop** workflows.
 
 **Package Corvid** uses GitHub path filters for PRs and pushes to `main`. The
 `main` filter also covers ordinary workspace sources, manifests, and schemas.
-On `main`, **Corvid Checks** compares the previous and pushed tips and runs
-package integration as a fallback for unavailable comparisons, large diffs with
+On `main`, **Corvid Checks** compares the previous and pushed tips and calls
+**Package Corvid** as a fallback for unavailable comparisons, large diffs with
 packaging inputs, and changes that could be moves out of a packaging path.
 
-Both workflows call **Build and Test Corvid**, which runs native TUI/daemon and
-Desktop builds and tests in parallel. A PR that triggers both workflows builds
-separately in each run so the packaging workflow has its own binaries. Package runs also use the Desktop build
-and all five runtime artifacts to verify installation with a live daemon,
-Desktop terminal input and reattachment under Xvfb, and native installers.
+Package runs call the three platform workflows to produce the TUI and Desktop
+binaries for that run. Desktop packages then bundle all five runtime artifacts.
+Integration tests cover installation with a live daemon, Desktop terminal input
+and reattachment under Xvfb, and native installers.
 
 **Publish Corvid Release** calls **Package Corvid** for the tagged revision,
 then creates a draft, uploads and checks the asset inventory, and publishes the
