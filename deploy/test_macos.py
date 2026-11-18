@@ -72,7 +72,14 @@ let pid = Int(CommandLine.arguments[1])!
 let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
 for window in windows where (window[kCGWindowOwnerPID as String] as? Int) == pid {
     if (window[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue {
-        print(window[kCGWindowNumber as String] as! Int)
+        let id = window[kCGWindowNumber as String] as! Int
+        let bounds = CGRect(dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
+        // Quartz Y increases downwards from the primary display's top edge.
+        let primaryTop = NSScreen.screens.first!.frame.maxY
+        let center = CGPoint(x: bounds.midX, y: primaryTop - bounds.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(center) }!
+        let offset = bounds.minY - (primaryTop - screen.visibleFrame.maxY)
+        print(id, offset)
     }
 }
 ''')
@@ -91,15 +98,25 @@ for window in windows where (window[kCGWindowOwnerPID as String] as? Int) == pid
         assert not run(query, deck.pid).strip(), "Background Deck showed a panel"
         # The second invocation sends the same activation request as Desktop.
         subprocess.run(arguments, env=environment, check=True, timeout=10)
-        for _ in range(40):
-            window = run(query, deck.pid).strip()
-            if window:
-                break
-            time.sleep(0.1)
-        assert window.isdigit(), "The background Deck did not show a single AppKit panel"
+        window = check_panel_placement(query, deck.pid)
         if screenshot := os.environ.get("CORVID_AGENT_DECK_MACOS_SCREENSHOT"):
             subprocess.run(["screencapture", "-x", "-l", window, screenshot],
                            timeout=10, check=False)
+
+    with running(arguments, environment, log) as deck:
+        check_panel_placement(query, deck.pid)
+
+
+def check_panel_placement(query, pid):
+    for _ in range(40):
+        output = run(query, pid).strip()
+        if output:
+            window, offset = output.split()
+            assert window.isdigit(), "Agent Deck did not show a single AppKit panel"
+            assert -1 <= float(offset) <= 12, f"Agent Deck is {offset} pt below the visible area's top"
+            return window
+        time.sleep(0.1)
+    raise AssertionError("Agent Deck did not show a panel")
 
 
 def check(assets):

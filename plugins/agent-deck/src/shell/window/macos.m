@@ -6,12 +6,15 @@ enum { PanelKeep, PanelOpen, PanelToggle, PanelHide };
 
 static id globalMonitor;
 static id localMonitor;
+static NSUInteger presentationGeneration;
+static NSSize requestedSize;
 
 void corvid_panel_prepare(void) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
 
 static void hidePanel(NSWindow *panel) {
+    presentationGeneration++;
     if (globalMonitor) [NSEvent removeMonitor:globalMonitor];
     if (localMonitor) [NSEvent removeMonitor:localMonitor];
     globalMonitor = nil;
@@ -27,8 +30,21 @@ static bool belongsToPanel(NSWindow *window, NSWindow *panel) {
 }
 
 static NSRect statusButtonFrame(NSStatusBarButton *button) {
-    if (!button.window) return NSZeroRect;
+    if (!button.window || button.isHiddenOrHasHiddenAncestor) return NSZeroRect;
     return [button.window convertRectToScreen:[button convertRect:button.bounds toView:nil]];
+}
+
+static NSScreen *screenContaining(NSPoint point) {
+    for (NSScreen *screen in NSScreen.screens) {
+        if (NSPointInRect(point, screen.frame)) return screen;
+    }
+    return nil;
+}
+
+static NSScreen *statusAnchor(NSRect *anchor) {
+    *anchor = statusButtonFrame(corvid_status_button());
+    if (NSIsEmptyRect(*anchor)) return nil;
+    return screenContaining(NSMakePoint(NSMidX(*anchor), NSMidY(*anchor)));
 }
 
 static bool onStatusButton(void) {
@@ -50,11 +66,8 @@ static void dismissOnOutsideClick(NSWindow *panel) {
     }];
 }
 
-static void placePanel(NSWindow *panel, NSSize requested) {
-    NSStatusBarButton *button = corvid_status_button();
-    NSScreen *screen = button.window.screen ?: panel.screen ?: NSScreen.mainScreen;
-    NSRect work = screen.visibleFrame;
-    NSRect anchor = button.window ? statusButtonFrame(button) : work;
+static void placePanel(NSWindow *panel, NSRect work, NSRect anchor) {
+    NSSize requested = requestedSize;
     NSSize content = panel.contentView.bounds.size;
     NSSize frame = panel.frame.size;
     // Allow scrolling within the panel when the requested view is larger than
@@ -67,13 +80,36 @@ static void placePanel(NSWindow *panel, NSSize requested) {
     if (NSIsEmptyRect(work)) return;
 
     frame = panel.frame.size;
-    CGFloat x = NSMidX(anchor) - frame.width / 2;
-    CGFloat y = NSMinY(anchor) - frame.height - 4;
-    if (!button.window) y = NSMidY(work) - frame.height / 2;
+    CGFloat x = NSIsEmptyRect(anchor) ? NSMaxX(work) - frame.width - 4 : NSMidX(anchor) - frame.width / 2;
+    CGFloat top = NSIsEmptyRect(anchor) ? NSMaxY(work) : NSMinY(anchor);
+    CGFloat y = top - frame.height - 4;
     [panel setFrameOrigin:NSMakePoint(
         MAX(NSMinX(work), MIN(x, NSMaxX(work) - frame.width)),
         MAX(NSMinY(work), MIN(y, NSMaxY(work) - frame.height))
     )];
+}
+
+static void presentPanel(NSWindow *panel, NSUInteger generation, NSUInteger retries) {
+    if (!panel || generation != presentationGeneration) return;
+
+    NSRect anchor;
+    NSScreen *screen = statusAnchor(&anchor);
+    if (!screen && retries > 0) {
+        // The status item can exist before AppKit lays it out in the menu bar.
+        __weak NSWindow *target = panel;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+            presentPanel(target, generation, retries - 1);
+        });
+        return;
+    }
+
+    if (!screen) {
+        screen = screenContaining(NSEvent.mouseLocation) ?: panel.screen ?: NSScreen.mainScreen;
+        anchor = NSZeroRect;
+    }
+    placePanel(panel, screen.visibleFrame, anchor);
+    [panel makeKeyAndOrderFront:nil];
+    dismissOnOutsideClick(panel);
 }
 
 void corvid_panel_hide(void *view) {
@@ -98,10 +134,14 @@ void corvid_panel_update(void *view, double width, double height, uint8_t presen
         for (NSWindowButton button = NSWindowCloseButton; button <= NSWindowZoomButton; button++) {
             [panel standardWindowButton:button].hidden = YES;
         }
-        placePanel(panel, NSMakeSize(width, height));
+        requestedSize = NSMakeSize(width, height);
         if (presentation == PanelOpen || presentation == PanelToggle) {
-            [panel makeKeyAndOrderFront:nil];
-            dismissOnOutsideClick(panel);
+            presentPanel(panel, ++presentationGeneration, 10);
+        } else if (panel.visible) {
+            NSRect anchor;
+            NSScreen *screen = statusAnchor(&anchor);
+            placePanel(panel, (screen ?: panel.screen ?: NSScreen.mainScreen).visibleFrame,
+                screen ? anchor : NSZeroRect);
         }
     });
 }
