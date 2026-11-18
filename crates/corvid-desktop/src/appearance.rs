@@ -179,7 +179,7 @@ fn terminal_change(key: &gpui::Keystroke) -> Option<Change> {
     } else {
         modifiers.control && !modifiers.platform
     };
-    if !primary || modifiers.alt {
+    if !primary || modifiers.alt || modifiers.function {
         return None;
     }
     match (key.key.as_str(), modifiers.shift) {

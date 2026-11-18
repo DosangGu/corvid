@@ -576,6 +576,10 @@ fn native_hook_provider_fixture() -> Result<()> {
         } else {
             assert!(result.stdout.is_empty());
         }
+        if event == "UserPromptSubmit" {
+            println!("HOOK_PROMPT_SUBMITTED");
+            std::io::stdin().read_line(&mut String::new())?;
+        }
     }
     println!("HOOK_FIXTURE_READY");
     std::io::stdin().read_line(&mut String::new())?;
@@ -586,6 +590,7 @@ fn native_hook_provider_fixture() -> Result<()> {
 async fn windows_shell_hooks_publish_only_bound_provider_observations() -> Result<()> {
     use corvid_protocol::wire::{
         AgentCollection, AgentProcessState, AttentionReason, CollectHook, HookEvent,
+        PromptObservation,
     };
 
     for provider in ["claude", "codex"] {
@@ -614,8 +619,19 @@ async fn windows_shell_hooks_publish_only_bound_provider_observations() -> Resul
             executable.to_string_lossy().replace('\'', "''"),
         );
         tui.send(launch.as_bytes())?;
+        tui.wait_for("HOOK_PROMPT_SUBMITTED")?;
+        let submitted = native_agent(&runtime, AgentProcessState::Running).await?;
+        assert_eq!(
+            submitted.prompt_observation,
+            PromptObservation::Submitted as i32
+        );
+        tui.send(b"\r")?;
         tui.wait_for("HOOK_FIXTURE_READY")?;
         let agent = native_agent(&runtime, AgentProcessState::Running).await?;
+        assert_eq!(
+            agent.prompt_observation,
+            PromptObservation::Responded as i32
+        );
         let run = agent.summary.context("missing native hook run")?;
         assert_eq!(
             run.provider_session_id,
