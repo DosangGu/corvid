@@ -25,12 +25,13 @@ other text (for example, `v0.1.2`, not `Corvid v0.1.2`).
 | Windows ARM64 Desktop | `aarch64-pc-windows-msvc` | `corvid-desktop-VERSION-aarch64-pc-windows-msvc.zip` |
 | Windows ARM64 Desktop Setup | Windows 11 ARM64 | `corvid-desktop-VERSION-aarch64-pc-windows-msvc-setup.exe` |
 
-Linux TUI and daemon binaries are statically linked. Linux Desktop is built on
-Ubuntu 24.04 and requires X11 or XWayland, Fontconfig, and a Vulkan driver.
-Other distributions require separate runtime qualification. WSL uses the Linux
-TUI and daemon package for its architecture. Linux and Windows support x64 and
-ARM64; Windows ARM64 targets Windows 11. macOS 15+ supports Apple Silicon; Intel
-Macs are outside the release scope. See the [macOS guide](07_macos.md)
+Linux TUI and daemon binaries are statically linked. Linux Desktop builds and
+installer tests use the Ubuntu runners listed in [CI coverage](08_ci_validation.md).
+The resulting binaries require X11 or XWayland, Fontconfig, and a Vulkan driver.
+Older Ubuntu releases and other distributions require separate runtime
+qualification. WSL uses the Linux TUI and daemon package for its architecture.
+Linux and Windows support x64 and ARM64. Windows ARM64 targets Windows 11.
+Apple Silicon packages target macOS 15 and later. See the [macOS guide](07_macos.md)
 for Gatekeeper, app layout, installation paths, and validation limitations.
 
 The `corvid` executable contains the TUI, daemon, terminal host, and relays.
@@ -295,7 +296,7 @@ the path to the Inno Setup compiler.
 
 ## ARM64 validation
 
-Linux and Windows ARM64 assets are produced by `ubuntu-24.04-arm` and
+Linux and Windows ARM64 assets are produced by `ubuntu-26.04-arm` and
 `windows-11-arm` runners. They run runtime and workspace tests, Clippy,
 installer lifecycle checks, and native package assembly. Linux ARM64 also runs
 the PTY, SSH reconnect, and Xvfb Desktop checks. Release assembly requires both

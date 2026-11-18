@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     outputs:
       package_fallback: ${{ steps.changes.outputs.package_fallback }}
     steps:
@@ -47,7 +47,7 @@ jobs:
     name: Corvid checks
     needs: [validate, package-fallback]
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Check validation and package fallback
         env:

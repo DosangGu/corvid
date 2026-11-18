@@ -1028,7 +1028,8 @@ restores slots and requires a new pairing.
 
 ### macOS
 
-macOS 15+ Apple Silicon now has runtime, workspace, installer, and app/DMG CI.
+Apple Silicon runtime, workspace, installer, and app/DMG CI runs on
+`macos-latest`. Packages target macOS 15 or later.
 See [macOS support](07_macos.md) for commands and default paths. Manual
 qualification should record the OS build, CPU architecture, terminal emulator,
 and SSH version, and exercise the terminal compatibility suite (A19). Native

@@ -120,11 +120,12 @@ runtime artifacts built from **the same revision**, then run:
 cargo build-desktop /path/to/linux-x64 /path/to/windows-x64 /path/to/linux-arm64 /path/to/windows-arm64
 ```
 
-CI uses `macos-15` ARM runners for runtime tests, workspace tests/lints, installer
-version switching and corruption rejection, nested code-signature checks, DMG
-mounting, and a real Desktop window smoke test. Physical USB devices, OS permission
-prompts, multi-monitor behavior, and non-Latin IME interaction require manual
-qualification; successful compilation does not establish those checks.
+CI uses the `macos-latest` Apple Silicon image for runtime tests, workspace
+tests and lints, installer version switching and corruption rejection, nested
+code-signature checks, DMG mounting, and a Desktop window smoke test. Packages
+declare macOS 15 as their deployment target. Testing on older macOS versions,
+physical USB devices, OS permission prompts, multiple monitors, and non-Latin
+IME interaction requires separate qualification.
 
 ## Interactive validation
 

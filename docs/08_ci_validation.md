@@ -9,6 +9,11 @@ ARM64 and for Apple Silicon macOS. It skips documentation-only PRs.
 **Publish Corvid Release** workflow calls it to build the assets it publishes.
 See the [workflow trigger table](05_release_distribution.md#build-and-publish).
 
+The workflows use GitHub's `ubuntu-latest`, `windows-latest`, and
+`macos-latest` labels for the default image on each platform. Linux and Windows
+ARM64 run on `ubuntu-26.04-arm` and `windows-11-arm`. The same runner labels
+apply to native tests and release packaging.
+
 ## Checks on source pull requests
 
 | Platform | Automated behavior |

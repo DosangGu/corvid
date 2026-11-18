@@ -44,11 +44,18 @@ static NSScreen *screenContaining(NSPoint point) {
 static NSScreen *statusAnchor(NSRect *anchor) {
     *anchor = statusButtonFrame(corvid_status_button());
     if (NSIsEmptyRect(*anchor)) return nil;
-    return screenContaining(NSMakePoint(NSMidX(*anchor), NSMidY(*anchor)));
+    NSScreen *screen = screenContaining(NSMakePoint(NSMidX(*anchor), NSMidY(*anchor)));
+    if (!screen) return nil;
+
+    // AppKit can expose a placeholder frame near the display origin until
+    // the status button is laid out. Only use frames that reach the menu bar.
+    CGFloat menuBarBottom = NSMaxY(screen.frame) - NSStatusBar.systemStatusBar.thickness;
+    return NSMaxY(*anchor) > menuBarBottom ? screen : nil;
 }
 
 static bool onStatusButton(void) {
-    return NSPointInRect(NSEvent.mouseLocation, statusButtonFrame(corvid_status_button()));
+    NSRect anchor;
+    return statusAnchor(&anchor) != nil && NSPointInRect(NSEvent.mouseLocation, anchor);
 }
 
 static void dismissOnOutsideClick(NSWindow *panel) {

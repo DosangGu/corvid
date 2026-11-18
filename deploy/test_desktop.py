@@ -284,17 +284,46 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                        rb"(?:\x1b\[<64;\d+;\d+M)+(?:\x1b\[<65;\d+;\d+M)+")
             assert re.fullmatch(pattern, data), f"unexpected {mode} wheel input: {data!r}"
 
-        # Turn off the tty's literal-next handling so the shell can observe Ctrl+V.
+        # Capture the forwarded bytes before the shell's line discipline can
+        # interpret Ctrl+V or translate a carriage return.
+        chord_probe = root / "chord-probe.py"
+        chord_ready = root / "chords-ready"
         chord_marker = root / "terminal-chords"
-        type_command(
-            'stty -iexten; corvid_fixture_ready chords; IFS= read -r line; stty iexten; '
-            f'printf %s "$line" > {shlex.quote(str(chord_marker))}'
+        chord_probe.write_text(
+            "import os, sys, termios, tty\nfrom pathlib import Path\n"
+            "ready, result = map(Path, sys.argv[1:])\n"
+            "saved = termios.tcgetattr(0)\n"
+            "data = bytearray()\n"
+            "try:\n"
+            "    tty.setraw(0)\n"
+            "    ready.write_text('ready')\n"
+            "    while b'\\r' not in data:\n"
+            "        chunk = os.read(0, 256)\n"
+            "        if not chunk:\n"
+            "            break\n"
+            "        data.extend(chunk)\n"
+            "finally:\n"
+            "    termios.tcsetattr(0, termios.TCSANOW, saved)\n"
+            "result.write_bytes(data.partition(b'\\r')[0])\n",
+            encoding="utf-8",
         )
-        wait_for_marker(keyboard_ready, "chords")
-        for chord in ("shift+Return", "alt+b", "ctrl+Home", "shift+F5", "ctrl+shift+x", "ctrl+v"):
+        type_command(shlex.join(["python3", str(chord_probe), str(chord_ready), str(chord_marker)]))
+        wait_for_marker(chord_ready, "ready")
+        # Older xdotool injects Alt with function keys on newer XKB maps.
+        # Use Shift+Delete to exercise a modified tilde sequence over X11.
+        for chord in ("shift+Return", "alt+b", "ctrl+Home", "shift+Delete", "ctrl+shift+x", "ctrl+v"):
             key(window, chord)
         key(window, "Return")
-        wait_for_marker(chord_marker, "\x1b[13;2u\x1bb\x1b[1;5H\x1b[15;2~\x1b[120;6u\x16")
+
+        deadline = time.monotonic() + 8
+        while not chord_marker.exists() and time.monotonic() < deadline:
+            assert desktop.poll() is None, "Desktop exited while forwarding terminal chords"
+            time.sleep(0.1)
+        assert chord_marker.exists(), "Terminal chord probe did not receive Return"
+        chords = chord_marker.read_bytes()
+        assert chords == b"\x1b[13;2u\x1bb\x1b[1;5H\x1b[3;2~\x1b[120;6u\x16", (
+            f"unexpected terminal chords: {chords!r}"
+        )
 
         # Use the real clipboard and keyboard path, with synthetic Unicode data.
         pasted = "한글 e\u0301 🐦"
