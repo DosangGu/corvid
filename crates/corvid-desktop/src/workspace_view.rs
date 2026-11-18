@@ -809,12 +809,7 @@ impl WorkspaceView {
         }
         let key = &event.keystroke;
         let modifiers = key.modifiers;
-        if modifiers.control
-            && modifiers.shift
-            && !modifiers.alt
-            && !modifiers.platform
-            && key.key.eq_ignore_ascii_case("q")
-        {
+        if modifiers == gpui::Modifiers::control_shift() && key.key.eq_ignore_ascii_case("q") {
             if !event.is_held {
                 self.windows.quit(cx);
             }
@@ -834,7 +829,8 @@ impl WorkspaceView {
             self.menu_key(event, window, cx);
             return;
         }
-        if !modifiers.control || modifiers.alt || modifiers.platform {
+        if modifiers != gpui::Modifiers::control() && modifiers != gpui::Modifiers::control_shift()
+        {
             return;
         }
         let name = key.key.to_ascii_lowercase();
@@ -845,7 +841,8 @@ impl WorkspaceView {
                 (
                     true,
                     "n" | "t" | "d" | "e" | "p" | "f" | "r" | "z" | "w" | "x"
-                ) | (_, "tab" | ",")
+                ) | (_, "tab")
+                    | (false, ",")
             )
         {
             cx.stop_propagation();

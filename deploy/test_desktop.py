@@ -200,12 +200,17 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                 f"{error} ({input_status(window, retired, first_probe)})"
             ) from error
 
-        # The shell's read ends on plain Enter and retains the preceding Shift+Enter.
-        enter_marker = root / "shift-enter"
-        type_command(f'IFS= read -r line; printf %s "$line" > {shlex.quote(str(enter_marker))}')
-        key(window, "shift+Return")
+        # Turn off the tty's literal-next handling so the shell can observe Ctrl+V.
+        chord_marker = root / "terminal-chords"
+        type_command(
+            'stty -iexten; corvid_fixture_ready chords; IFS= read -r line; stty iexten; '
+            f'printf %s "$line" > {shlex.quote(str(chord_marker))}'
+        )
+        wait_for_marker(keyboard_ready, "chords")
+        for chord in ("shift+Return", "alt+b", "ctrl+Home", "shift+F5", "ctrl+v"):
+            key(window, chord)
         key(window, "Return")
-        wait_for_marker(enter_marker, "\x1b[13;2u")
+        wait_for_marker(chord_marker, "\x1b[13;2u\x1bb\x1b[1;5H\x1b[15;2~\x16")
 
         # Use the real clipboard and keyboard path, with synthetic Unicode data.
         pasted = "한글 e\u0301 🐦"

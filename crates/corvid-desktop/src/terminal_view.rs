@@ -13,6 +13,7 @@ use crate::terminal_paint::{self as paint, Frame, Metrics};
 use crate::terminal_session::{MAX_INPUT, Session};
 
 mod history;
+mod keyboard;
 use history::History;
 
 pub struct TerminalView {
@@ -275,33 +276,27 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.marked.is_empty() {
+            return;
+        }
         let key = &event.keystroke;
         let modifiers = key.modifiers;
+        let edit_shortcut = modifiers == gpui::Modifiers::control_shift()
+            || (cfg!(target_os = "macos") && modifiers == gpui::Modifiers::command());
         if self.history.is_some() {
             if !self.history_key(key, cx) {
                 // Let the platform input handler deliver printable and composed text.
                 return;
             }
-        } else if ((modifiers.control && modifiers.shift)
-            || (cfg!(target_os = "macos") && modifiers.platform))
-            && !modifiers.alt
-            && key.key == "f"
-        {
+        } else if edit_shortcut && key.key == "f" {
             self.open_history(true, 0, cx);
-        } else if modifiers.shift && !modifiers.control && !modifiers.alt && key.key == "pageup" {
+        } else if modifiers == gpui::Modifiers::shift() && key.key == "pageup" {
             self.open_history(false, self.visible_rows() as isize, cx);
-        } else if (modifiers.control || (cfg!(target_os = "macos") && modifiers.platform))
-            && !modifiers.alt
-            && key.key == "v"
-        {
+        } else if edit_shortcut && key.key == "v" {
             self.selection = None;
             self.paste(cx);
             cx.notify();
-        } else if ((modifiers.control && modifiers.shift)
-            || (cfg!(target_os = "macos") && modifiers.platform))
-            && !modifiers.alt
-            && key.key == "c"
-        {
+        } else if edit_shortcut && key.key == "c" {
             let contents = self
                 .selection
                 .as_ref()
@@ -310,14 +305,16 @@ impl TerminalView {
             if let Some(contents) = contents {
                 cx.write_to_clipboard(ClipboardItem::new_string(contents));
             }
-        } else if key.key == "escape" && self.selection.take().is_some() {
+        } else if key.key == "escape" && !modifiers.modified() && self.selection.take().is_some() {
             cx.notify();
         } else {
-            let application = self
+            let (cursor, keypad) = self
                 .session
-                .screen(&self.pane, Screen::application_cursor)
-                .unwrap_or(false);
-            let Some(bytes) = encode_key(key, application) else {
+                .screen(&self.pane, |s| {
+                    (s.application_cursor(), s.application_keypad())
+                })
+                .unwrap_or_default();
+            let Some(bytes) = keyboard::encode(key, cursor, keypad) else {
                 return;
             };
             self.selection = None;
@@ -524,78 +521,6 @@ impl EntityInputHandler for TerminalView {
         None
     }
 }
-
-fn encode_key(key: &Keystroke, application: bool) -> Option<Vec<u8>> {
-    if key.modifiers.platform {
-        return None;
-    }
-    let name = key.key.as_str();
-    let modifiers = key.modifiers;
-    let arrow = match name {
-        "up" => Some(b'A'),
-        "down" => Some(b'B'),
-        "right" => Some(b'C'),
-        "left" => Some(b'D'),
-        _ => None,
-    };
-    if let Some(arrow) = arrow {
-        let modifier = 1
-            + u8::from(modifiers.shift)
-            + 2 * u8::from(modifiers.alt)
-            + 4 * u8::from(modifiers.control);
-        return if modifier > 1 {
-            Some(format!("\x1b[1;{modifier}{}", char::from(arrow)).into_bytes())
-        } else {
-            Some(vec![0x1b, if application { b'O' } else { b'[' }, arrow])
-        };
-    }
-    let bytes: &[u8] = match name {
-        "enter" if modifiers == gpui::Modifiers::shift() => b"\x1b[13;2u",
-        "enter" => b"\r",
-        "escape" => b"\x1b",
-        "backspace" => b"\x7f",
-        "tab" if modifiers.shift => b"\x1b[Z",
-        "tab" => b"\t",
-        "insert" => b"\x1b[2~",
-        "delete" => b"\x1b[3~",
-        "home" => {
-            if application {
-                b"\x1bOH"
-            } else {
-                b"\x1b[H"
-            }
-        }
-        "end" => {
-            if application {
-                b"\x1bOF"
-            } else {
-                b"\x1b[F"
-            }
-        }
-        "pageup" => b"\x1b[5~",
-        "pagedown" => b"\x1b[6~",
-        "f1" => b"\x1bOP",
-        "f2" => b"\x1bOQ",
-        "f3" => b"\x1bOR",
-        "f4" => b"\x1bOS",
-        "f5" => b"\x1b[15~",
-        "f6" => b"\x1b[17~",
-        "f7" => b"\x1b[18~",
-        "f8" => b"\x1b[19~",
-        "f9" => b"\x1b[20~",
-        "f10" => b"\x1b[21~",
-        "f11" => b"\x1b[23~",
-        "f12" => b"\x1b[24~",
-        name if modifiers.control && !modifiers.alt => {
-            let [byte] = name.as_bytes() else { return None };
-            let byte = byte.to_ascii_uppercase();
-            return matches!(byte, b'@'..=b'_' | b' ').then(|| vec![byte & 0x1f]);
-        }
-        _ => return None,
-    };
-    Some(bytes.to_vec())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
