@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gpui::{Bounds, Div, Pixels, ScrollHandle, Stateful, div, point, prelude::*, px, rgb};
 
-use super::{MUTED, button, ui_px};
+use super::{MUTED, PANEL, TEXT, ui_px};
 
 const SCROLL_EPSILON: Pixels = px(0.01);
 
@@ -128,33 +128,38 @@ impl TabBar {
             Direction::Right => ("scroll-tabs-right", "›"),
         };
         let scroll = self.scroll.clone();
-        button(id, label, false)
+        div()
+            .id(id)
+            .flex_none()
             .w(ui_px(26.))
-            .px_0()
+            .py(ui_px(5.))
+            .rounded_md()
+            .bg(rgb(PANEL))
+            .text_color(rgb(MUTED))
+            .text_size(ui_px(13.))
             .text_center()
-            .when(!enabled, |arrow| {
-                arrow
-                    .opacity(0.4)
-                    .cursor_default()
-                    .hover(|style| style.text_color(rgb(MUTED)))
-            })
+            .child(label)
+            .when(!enabled, |arrow| arrow.opacity(0.4))
             .when(enabled, |arrow| {
-                arrow.on_click(move |_, window, _| {
-                    let viewport = scroll.bounds();
-                    let offset = scroll.offset().x;
-                    let mut edges = (0..)
-                        .map_while(|index| scroll.bounds_for_item(index))
-                        .map(|tab| hidden_tab_edge(direction, viewport, tab, offset));
-                    let next = match direction {
-                        Direction::Left => edges.map_while(|edge| edge).last(),
-                        Direction::Right => edges.find_map(|edge| edge),
-                    };
-                    if let Some(next) = next
-                        && set_scroll_x(&scroll, next)
-                    {
-                        window.refresh();
-                    }
-                })
+                arrow
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(rgb(TEXT)))
+                    .on_click(move |_, window, _| {
+                        let viewport = scroll.bounds();
+                        let offset = scroll.offset().x;
+                        let mut edges = (0..)
+                            .map_while(|index| scroll.bounds_for_item(index))
+                            .map(|tab| hidden_tab_edge(direction, viewport, tab, offset));
+                        let next = match direction {
+                            Direction::Left => edges.map_while(|edge| edge).last(),
+                            Direction::Right => edges.find_map(|edge| edge),
+                        };
+                        if let Some(next) = next
+                            && set_scroll_x(&scroll, next)
+                        {
+                            window.refresh();
+                        }
+                    })
             })
     }
 }
@@ -223,6 +228,15 @@ mod tests {
             Arrows::for_scroll(px(53.), px(-53.), px(52.)).buttons(),
             Some((true, false))
         );
+    }
+
+    #[test]
+    fn builds_the_tab_strip_with_disabled_end_arrows() {
+        let bar = TabBar::default();
+        for left in [false, true] {
+            bar.arrows.set(Arrows::Visible { left, right: !left });
+            let _ = bar.render(std::iter::empty());
+        }
     }
 
     #[test]
