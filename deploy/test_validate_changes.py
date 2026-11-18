@@ -1,38 +1,73 @@
 #!/usr/bin/env python3
-"""Exercise the CI change classifier against real Git diffs."""
+"""Check workflow routing and validate changes against real Git diffs."""
 
 from contextlib import chdir, redirect_stdout
 from io import StringIO
 from pathlib import Path
+import re
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
+from package import DESKTOP_TARGETS, RUNTIME_TARGETS
 from validate_changes import (
-    BUILD,
-    LIGHTWEIGHT,
-    PACKAGE,
     PACKAGE_DIRECTORIES,
     PACKAGE_FILES,
     PATH_FILTER_LIMIT,
-    classify,
+    validate_changes,
 )
 
-WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/package.yml"
+WORKFLOWS = Path(__file__).resolve().parents[1] / ".github/workflows"
 
 
-class PackagePathsTests(unittest.TestCase):
+def workflow_patterns(block):
+    return {
+        line.removeprefix("      - ").strip().strip("'\"")
+        for line in block.split("\n\n", 1)[0].splitlines()
+        if line.startswith("      - ")
+    }
+
+
+class WorkflowsTests(unittest.TestCase):
+    def test_cargo_lock_triggers_pr_packaging(self):
+        text = (WORKFLOWS / "package.yml").read_text(encoding="utf-8")
+        pull_request = text.split("  pull_request:\n", 1)[1].split("  push:\n", 1)[0]
+        paths = pull_request.split("    paths:\n", 1)[1]
+        self.assertIn("Cargo.lock", workflow_patterns(paths))
+
     def test_push_fallback_uses_the_workflow_paths(self):
-        block = WORKFLOW.read_text(encoding="utf-8").split("    paths:\n", 1)[1]
-        workflow_paths = {
-            line.removeprefix("      - ").strip().strip("'\"")
-            for line in block.split("\n\n", 1)[0].splitlines()
-            if line.startswith("      - ")
-        }
+        push = (WORKFLOWS / "package.yml").read_text(encoding="utf-8").split("  push:\n", 1)[1]
+        block = push.split("    paths:\n", 1)[1]
         self.assertSetEqual(
-            workflow_paths,
+            workflow_patterns(block),
             PACKAGE_FILES | {f"{path}**" for path in PACKAGE_DIRECTORIES},
         )
+
+
+    def test_native_workflow_skips_documentation_only_prs(self):
+        documentation_paths = {
+            "AGENTS.md",
+            "README.md",
+            "docs/**/*.md",
+            "docs/images/**/*.jpg",
+            "docs/images/**/*.jpeg",
+            "docs/images/**/*.png",
+            "docs/images/**/*.svg",
+        }
+        text = (WORKFLOWS / "native.yml").read_text(encoding="utf-8")
+        pull_request = text.split("  pull_request:\n", 1)[1].split("  workflow_call:\n", 1)[0]
+        paths = pull_request.split("    paths-ignore:\n", 1)[1]
+        self.assertSetEqual(workflow_patterns(paths), documentation_paths)
+
+    def test_packaging_uses_the_same_targets_as_the_native_builds(self):
+        text = (WORKFLOWS / "native.yml").read_text(encoding="utf-8")
+        builds = re.findall(r"- runner: (\S+)\s+runtime: (\S+)\s+desktop: (\S+)", text)
+
+        text = (WORKFLOWS / "package.yml").read_text(encoding="utf-8")
+        installers = re.findall(r"- os: (\S+)\s+target: (\S+)\s+native: (\S+)", text)
+        self.assertCountEqual(installers, [(runner, desktop, runtime) for runner, runtime, desktop in builds])
+        self.assertCountEqual((runtime for _, runtime, _ in builds), RUNTIME_TARGETS)
+        self.assertCountEqual((desktop for _, _, desktop in builds), DESKTOP_TARGETS)
 
 
 class ValidateChangesTests(unittest.TestCase):
@@ -61,126 +96,64 @@ class ValidateChangesTests(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def check_push(self):
-        return classify("push", "refs/heads/main", self.base)
+        return validate_changes("push", "refs/heads/main", self.base)
 
-    def check_pr(self):
+    def test_pr_whitespace_check_uses_the_checked_out_merge_base_tree(self):
         self.git("switch", "--quiet", "-c", "topic")
-        self.git("reset", "--hard", self.base)
-        self.git("merge", "--quiet", "--no-ff", "main")
-        level = classify("pull_request", "refs/pull/1/merge", "")
-        self.git("switch", "--quiet", "main")
-        self.git("branch", "-D", "topic")
-        return level
-
-    def test_docs_pr_uses_the_checked_out_merge_base_tree(self):
-        self.git("switch", "--quiet", "-c", "topic")
-        self.write("AGENTS.md", "# Guidelines\n")
         self.write("docs/guide with spaces.md", "# Guide\n")
-        self.write("docs/images/example.svg", "<svg/>\n")
         self.commit()
         self.git("switch", "--quiet", "main")
-        self.write("Cargo.lock", "# Base branch change\n")
+        self.write("Cargo.lock", "# Trailing space on base branch \n")
         self.commit()
         self.git("merge", "--quiet", "--no-ff", "topic")
-        self.assertEqual(classify("pull_request", "refs/pull/1/merge", ""), LIGHTWEIGHT)
+        self.assertFalse(validate_changes("pull_request", "refs/pull/1/merge", ""))
+
+    def test_pr_whitespace_check_covers_committed_changes(self):
+        self.git("switch", "--quiet", "-c", "topic")
+        self.write("README.md", "# Trailing space in PR \n")
+        self.commit()
+        self.git("switch", "--quiet", "main")
+        self.git("merge", "--quiet", "--no-ff", "topic")
+        with self.assertRaises(subprocess.CalledProcessError):
+            validate_changes("pull_request", "refs/pull/1/merge", "")
 
     def test_docs_only_push(self):
         self.write("README.md", "# Documentation update\n")
         self.commit()
-        self.assertEqual(self.check_push(), LIGHTWEIGHT)
+        self.assertFalse(self.check_push())
 
-    def test_build_inputs_and_unknown_paths_require_package_integration(self):
-        for path in (
-            "Cargo.lock",
-            "crates/example/Cargo.toml",
-            "crates/example/build.rs",
-            "crates/corvid-protocol/proto/example.proto",
-            "deploy/release-notes.md",
-            "deploy/windows/CorvidSetup.iss",
-            "assets/icons/corvid.png",
-            ".github/workflows/package.yml",
-            "docs/unknown.py",
-        ):
-            with self.subTest(path=path):
-                self.git("reset", "--hard", self.base)
-                self.write(path, "Fixture\n")
-                self.commit()
-                self.assertEqual(self.check_pr(), PACKAGE)
-                # Main delegates packaging inputs to its path-filtered workflow.
-                self.assertEqual(self.check_push(), LIGHTWEIGHT)
-
-    def test_comment_only_source_and_docs_still_run_build_checks(self):
-        self.write("crates/example/src/lib.rs", "// A comment\npub fn example() {}\n")
+    def test_ordinary_packaging_input_push_uses_the_package_workflow(self):
+        self.write("Cargo.lock", "# Dependencies changed\n")
         self.commit()
-        self.write("README.md", "# Documentation update\n")
-        self.commit()
-        self.assertEqual(self.check_pr(), BUILD)
-        self.assertEqual(self.check_push(), LIGHTWEIGHT)
-
-    def test_packaging_input_takes_precedence_over_source_and_docs(self):
-        self.write("crates/example/src/lib.rs", "pub fn changed() {}\n")
-        self.write("README.md", "# Documentation update\n")
-        self.write("deploy/install.sh", "exit 0\n")
-        self.commit()
-        self.assertEqual(self.check_pr(), PACKAGE)
-
-    def test_new_rust_source_and_test_run_build_checks(self):
-        self.write("crates/example/src/new.rs", "pub fn new() {}\n")
-        self.write("plugins/example/tests/new.rs", "#[test]\nfn new_test() {}\n")
-        self.commit()
-        self.assertEqual(self.check_pr(), BUILD)
-        self.assertEqual(self.check_push(), LIGHTWEIGHT)
-
-    def test_removed_rust_source_runs_build_checks(self):
-        self.git("rm", "crates/example/src/lib.rs")
-        self.commit()
-        self.assertEqual(self.check_pr(), BUILD)
-        self.assertEqual(self.check_push(), LIGHTWEIGHT)
+        self.assertFalse(self.check_push())
 
     def test_move_from_source_to_docs_checks_the_deleted_path(self):
         Path("docs").mkdir()
         self.git("mv", "crates/example/src/lib.rs", "docs/example.md")
         self.commit()
-        self.assertEqual(self.check_pr(), BUILD)
-        self.assertEqual(self.check_push(), PACKAGE)
-
-    def test_executable_rust_source_requires_package_integration(self):
-        path = "crates/example/src/lib.rs"
-        self.git("update-index", "--chmod=+x", path)
-        self.git("commit", "--quiet", "-m", "Executable Rust source fixture")
-        self.assertEqual(self.check_pr(), PACKAGE)
-
-    def test_executable_markdown_gets_package_integration_on_prs(self):
-        self.git("update-index", "--chmod=+x", "README.md")
-        self.git("commit", "--quiet", "-m", "Executable documentation fixture")
-        self.assertEqual(self.check_pr(), PACKAGE)
-        self.assertEqual(self.check_push(), LIGHTWEIGHT)
+        self.assertTrue(self.check_push())
 
     def test_large_push_falls_back_to_package_integration(self):
         for index in range(PATH_FILTER_LIMIT):
             self.write(f"docs/{index:03}.md", "# Guide\n")
         self.write("docs/unknown.py", "# Unrelated to packaging\n")
         self.commit()
-        self.assertEqual(self.check_push(), LIGHTWEIGHT)
+        self.assertFalse(self.check_push())
         self.write("crates/example/src/lib.rs", "pub fn changed() {}\n")
         self.commit()
-        self.assertEqual(self.check_push(), PACKAGE)
+        self.assertTrue(self.check_push())
 
-    def test_full_pipeline_when_no_reliable_diff_is_available(self):
-        for event, ref, before in (
-            ("workflow_dispatch", "refs/heads/main", ""),
-            ("push", "refs/tags/v0.1.3", self.base),
-            ("push", "refs/heads/main", "0" * 40),
-            ("pull_request", "refs/pull/1/merge", ""),
-        ):
-            with self.subTest(event=event, ref=ref, before=before):
-                self.assertEqual(classify(event, ref, before), PACKAGE)
+    def test_push_without_a_reliable_diff_runs_package_integration(self):
+        self.assertTrue(validate_changes("push", "refs/heads/main", "0" * 40))
+
+    def test_pr_without_a_merge_commit_does_not_run_fallback_packaging(self):
+        self.assertFalse(validate_changes("pull_request", "refs/pull/1/merge", ""))
 
     def test_empty_push_diff_stays_lightweight(self):
-        self.assertEqual(self.check_push(), LIGHTWEIGHT)
+        self.assertFalse(self.check_push())
 
     def test_missing_push_commit_requires_the_full_pipeline(self):
-        self.assertEqual(classify("push", "refs/heads/main", "a" * 40), PACKAGE)
+        self.assertTrue(validate_changes("push", "refs/heads/main", "a" * 40))
 
     def test_whitespace_check_covers_committed_changes(self):
         self.write("README.md", "# Trailing space \n")
