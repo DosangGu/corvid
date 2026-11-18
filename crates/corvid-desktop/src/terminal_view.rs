@@ -5,6 +5,7 @@ use gpui::{
     IntoElement, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
     Point, ScrollWheelEvent, Task, UTF16Selection, Window, canvas, div, prelude::*, px, rgb,
 };
+use tokio::sync::oneshot;
 use vt100::Screen;
 
 use crate::appearance::{Appearance, ui_px};
@@ -66,20 +67,31 @@ impl Selection {
 }
 
 impl TerminalView {
-    pub fn new(session: Session, pane: String, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: Session, pane: String, window: &Window, cx: &mut Context<Self>) -> Self {
         let mut changes = session.screen_changes();
-        let updates = cx.spawn(async move |view, cx| {
+        let updates = cx.spawn_in(window, async move |view, cx| {
             while changes.changed().await.is_ok() {
-                if view
-                    .update(cx, |view, cx| {
-                        if view.history.is_none() && view.selection.is_none() {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
+                // A busy terminal can keep the watch ready and monopolize the UI thread.
+                // Consume the latest update at the next frame before waiting for more output.
+                let view = view.clone();
+                let (complete, frame) = oneshot::channel();
+                cx.on_next_frame(move |_, cx| {
+                    changes.borrow_and_update();
+                    if view
+                        .update(cx, |view, cx| {
+                            if view.history.is_none() && view.selection.is_none() {
+                                cx.notify();
+                            }
+                        })
+                        .is_ok()
+                    {
+                        let _ = complete.send(changes);
+                    }
+                });
+                let Ok(receiver) = frame.await else {
                     break;
-                }
+                };
+                changes = receiver;
             }
         });
         Self {
@@ -538,5 +550,81 @@ mod tests {
             dragging: false,
         };
         assert_eq!(selection.text(), "한BCde\ne");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens an isolated native window to exercise the Windows message loop"]
+    fn native_terminal_updates_yield_to_window_frames() {
+        use std::rc::Rc;
+        use std::time::Duration;
+
+        use gpui::{Application, Entity, WindowOptions};
+
+        struct Probe {
+            _terminal: Entity<TerminalView>,
+        }
+
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full()
+            }
+        }
+
+        const UPDATES: usize = 8;
+        let updates = Rc::new(Cell::new(0));
+        let observed = updates.clone();
+        let at_next_frame = Rc::new(Cell::new(None));
+        let sampled = at_next_frame.clone();
+        Application::new().run(move |cx| {
+            cx.open_window(WindowOptions::default(), move |window, cx| {
+                let (session, changes) = Session::screen_change_fixture();
+                let terminal = cx.new(|cx| TerminalView::new(session, "probe".into(), window, cx));
+                let handle = window.window_handle();
+                let initial = changes.clone();
+
+                cx.observe(&terminal, move |_, cx| {
+                    let count = observed.get() + 1;
+                    observed.set(count);
+                    if count == 1 {
+                        let observed = observed.clone();
+                        let sampled = sampled.clone();
+                        cx.defer(move |cx| {
+                            handle
+                                .update(cx, |_, window, _| {
+                                    window.on_next_frame(move |_, cx| {
+                                        sampled.set(Some(observed.get()));
+                                        if observed.get() == UPDATES {
+                                            cx.quit();
+                                        }
+                                    });
+                                })
+                                .unwrap();
+                        });
+                    }
+                    if count < UPDATES {
+                        // Keep the foreground watch ready even while it handles this update.
+                        changes.send_replace(());
+                    } else if sampled.get().is_some() {
+                        cx.quit();
+                    }
+                })
+                .detach();
+
+                initial.send_replace(());
+                cx.new(|_| Probe {
+                    _terminal: terminal,
+                })
+            })
+            .unwrap();
+
+            cx.spawn(async |cx| {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                let _ = cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+        assert_eq!(updates.get(), UPDATES);
+        assert_eq!(at_next_frame.get(), Some(1));
     }
 }

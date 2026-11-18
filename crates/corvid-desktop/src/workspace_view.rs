@@ -564,7 +564,7 @@ impl WorkspaceView {
             self.naming = None;
             let session = self.session.clone().expect("connected session");
             self.selected = Some(selected);
-            self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, cx)));
+            self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, window, cx)));
             if !self.switcher_open && !self.menu_open && self.creation.is_none() {
                 self.focus_terminal(window, cx);
             }

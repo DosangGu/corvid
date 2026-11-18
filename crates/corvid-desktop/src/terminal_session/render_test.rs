@@ -2,6 +2,22 @@ use std::sync::mpsc as blocking;
 
 use super::*;
 
+#[cfg(windows)]
+impl Session {
+    pub(crate) fn screen_change_fixture() -> (Self, watch::Sender<()>) {
+        let shared = Arc::new(Shared::new(&Destination::Local));
+        let changes = shared.screen_changed.clone();
+        let (actions, _) = mpsc::channel(1);
+        let (size, _) = watch::channel((0, Grid::new(2, 24)));
+        let session = Self {
+            shared,
+            actions,
+            size,
+        };
+        (session, changes)
+    }
+}
+
 struct PauseOnBell {
     parsing: blocking::Sender<()>,
     resume: blocking::Receiver<()>,
