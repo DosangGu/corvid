@@ -42,6 +42,9 @@ unsafe extern "C" {
 }
 
 pub(crate) async fn yield_activation(pid: u32) {
+    if !BRIDGE.lock().is_ok_and(|bridge| bridge.is_some()) {
+        return;
+    }
     let (completion, done) = oneshot::channel::<()>();
     // The main-queue callback takes ownership, even if the request is cancelled.
     unsafe { corvid_native_yield_activation(pid, Box::into_raw(Box::new(completion)).cast()) };
