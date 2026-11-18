@@ -4,8 +4,9 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::snapshot::SynchronizedSnapshot;
 use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{
-    AgentBadge, AgentLifecycle, AgentProcessState, AgentState, InputRequestStatus,
-    PresentedAttention, PresentedRun, PresentedRunKey, RunAvailability,
+    AgentBadge, AgentLifecycle, AgentProcessState, AgentState, AttentionReason, EvidenceConfidence,
+    InputRequestStatus, PresentedAttention, PresentedRun, PresentedRunKey, PromptObservation,
+    RequestState, RunAvailability,
 };
 use uuid::Uuid;
 
@@ -28,6 +29,7 @@ pub(crate) struct ObservedRun {
     pub(crate) observation: RunObservation,
     pub(crate) display: PresentedRun,
     latest_alert: Option<(u64, String)>,
+    latest_result: Option<(u64, bool)>,
 }
 
 impl Remote {
@@ -99,7 +101,7 @@ impl Remote {
             .collect();
         for entry in snapshot.entities() {
             match &entry.body {
-                Some(Body::Attention(alert)) if alert.acknowledged_unix_ms.is_none() => {
+                Some(Body::Attention(alert)) => {
                     let key = RunKey {
                         host,
                         epoch,
@@ -110,6 +112,23 @@ impl Remote {
                             .request_id
                             .as_deref()
                             .and_then(|id| requests.get(&(alert.agent_run_id.as_str(), id)));
+                        match AttentionReason::try_from(alert.reason) {
+                            Ok(AttentionReason::Input)
+                                if request.is_some_and(|request| pending(request)) =>
+                            {
+                                run.note_pending_since(alert.created_unix_ms);
+                            }
+                            Ok(AttentionReason::Response | AttentionReason::Failure) => {
+                                run.latest_result = run.latest_result.max(Some((
+                                    alert.created_unix_ms,
+                                    alert.acknowledged_unix_ms.is_some(),
+                                )));
+                            }
+                            _ => {}
+                        }
+                        if alert.acknowledged_unix_ms.is_some() {
+                            continue;
+                        }
                         remote.attention.push(PresentedAttention {
                             run: Some(key.into()),
                             attention_id: alert.attention_id.clone(),
@@ -141,9 +160,8 @@ impl Remote {
                             .display
                             .last_observed_unix_ms
                             .max((time != 0).then_some(time));
-                        if request.status == InputRequestStatus::Pending as i32
-                            && run.display.last_badge == AgentBadge::NeedsInput as i32
-                        {
+                        if pending(request) {
+                            run.note_pending_since(time);
                             run.display.confidence = evidence.confidence;
                         }
                     }
@@ -162,11 +180,36 @@ impl Remote {
         remote
             .attention
             .truncate(crate::PRESENTATION_ATTENTION_LIMIT);
+        for run in remote.runs.values_mut() {
+            let active = run.display.last_badge == AgentBadge::Working as i32
+                || run.display.prompt_observation == PromptObservation::Submitted as i32;
+            if !active {
+                run.display.new_result_unix_ms = run
+                    .latest_result
+                    .filter(|(time, acknowledged)| *time != 0 && !acknowledged)
+                    .map(|(time, _)| time);
+            }
+        }
         Ok(remote)
     }
 }
 
+fn pending(request: &RequestState) -> bool {
+    request.status == InputRequestStatus::Pending as i32
+        && request
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.confidence == EvidenceConfidence::Confirmed as i32)
+}
+
 impl ObservedRun {
+    fn note_pending_since(&mut self, time: u64) {
+        if time != 0 {
+            let since = &mut self.display.pending_since_unix_ms;
+            *since = Some(since.map_or(time, |old| old.min(time)));
+        }
+    }
+
     fn new(key: RunKey, agent: &AgentState) -> Self {
         let summary = agent.summary.as_ref().expect("validated agent summary");
         let ended = agent.lifecycle == AgentLifecycle::Ended as i32
@@ -222,6 +265,7 @@ impl ObservedRun {
                 ..Default::default()
             },
             latest_alert: None,
+            latest_result: None,
         }
     }
 }

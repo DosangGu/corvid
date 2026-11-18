@@ -1,5 +1,5 @@
 use super::*;
-use gpui::svg;
+use gpui::{linear_color_stop, linear_gradient, svg};
 use std::sync::Arc;
 
 pub(super) const BACKGROUND: u32 = 0x0f1319;
@@ -164,6 +164,7 @@ impl DeckView {
         host: &crate::catalog::Host,
         run: &PresentedRun,
         index: usize,
+        width: f32,
         action: Option<FocusAction>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
@@ -172,8 +173,12 @@ impl DeckView {
             Some(run),
             cached,
             self.selected == index,
-            crate::shell::KEY_WIDTH,
-            crate::shell::KEY_HEIGHT,
+            width,
+            if self.window.expanded {
+                width
+            } else {
+                crate::shell::KEY_HEIGHT
+            },
             Some(&host.label),
         );
         let card = self.attach_card_action(face, index, action, cx);
@@ -259,13 +264,11 @@ impl DeckView {
             content = content.child(self.hosts(cx));
         } else if self.section == Section::Notifications {
             content = content.child(self.notifications(cx));
-        } else if let Some(snapshot) = self.view.snapshot.clone() {
+        } else if self.view.snapshot.is_some() || !self.deck_order.is_empty() {
+            let snapshot = self.view.snapshot.clone();
             let sections = [
                 (Section::Slots, "Deck".to_owned()),
-                (
-                    Section::Overflow,
-                    format!("Queue ({})", snapshot.data.overflow_count),
-                ),
+                (Section::Overflow, format!("Queue ({})", self.queue_len())),
                 (Section::History, "Run history".to_owned()),
             ];
             content = content.child(row().children(sections.into_iter().enumerate().map(
@@ -274,25 +277,31 @@ impl DeckView {
                         move |view, _, _, cx| {
                             view.section = section;
                             view.held.cancel();
+                            view.set_page(0);
                             cx.notify();
                         },
                     ))
                 },
             )));
             content = content.child(match self.section {
-                Section::Slots => self.board(&snapshot, window, cx),
-                Section::Overflow => self.overflow(&snapshot, cx),
+                Section::Slots => snapshot.as_ref().map_or_else(
+                    || column().child(muted("Connecting to companion…")),
+                    |snapshot| self.board(snapshot, window, cx),
+                ),
+                Section::Overflow => self.overflow(snapshot.as_ref(), cx),
                 Section::History => column()
                     .children(
                         snapshot
-                            .data
-                            .recent_ended
                             .iter()
+                            .flat_map(|snapshot| &snapshot.data.recent_ended)
                             .map(|run| muted(format!("Run · {}", short_id(&run.agent_run_id)))),
                     )
-                    .when(snapshot.data.recent_ended.is_empty(), |view| {
-                        view.child(muted("No runs removed from the Deck yet."))
-                    }),
+                    .when(
+                        snapshot
+                            .as_ref()
+                            .is_none_or(|snapshot| snapshot.data.recent_ended.is_empty()),
+                        |view| view.child(muted("No runs removed from the Deck yet.")),
+                    ),
                 _ => column(),
             });
         } else {
@@ -403,7 +412,7 @@ impl DeckView {
         )
     }
 
-    fn overflow(&self, snapshot: &Arc<Snapshot>, cx: &mut Context<Self>) -> Div {
+    fn overflow(&self, snapshot: Option<&Arc<Snapshot>>, cx: &mut Context<Self>) -> Div {
         let mut view = column().child(
             row()
                 .child(
@@ -418,14 +427,12 @@ impl DeckView {
                 .child(muted(format!(
                     "Page {} of {}",
                     self.page + 1,
-                    snapshot.page_count()
+                    self.queue_pages()
                 )))
                 .child(
-                    button("next", "Next", self.page + 1 < snapshot.page_count()).on_click(
+                    button("next", "Next", self.page + 1 < self.queue_pages()).on_click(
                         cx.listener(|view, _, _, cx| {
-                            if let Some(snapshot) = &view.view.snapshot
-                                && view.page + 1 < snapshot.page_count()
-                            {
+                            if view.page + 1 < view.queue_pages() {
                                 view.set_page(view.page + 1);
                             }
                             view.held.cancel();
@@ -434,29 +441,29 @@ impl DeckView {
                     ),
                 ),
         );
-        if snapshot.page != self.page {
-            return view.child(muted("Loading page…"));
-        }
+        let tiles = self.queue_tiles();
         view = view.child(
             row().flex_wrap().children(
-                snapshot
-                    .data
-                    .overflow
+                tiles
                     .iter()
                     .enumerate()
-                    .map(|(index, run)| self.run_card(snapshot, Some(run), None, index, 150., cx)),
+                    .map(|(index, tile)| self.tile_card(*tile, index, 150., cx)),
             ),
         );
-        for (index, run) in snapshot.data.suppressed.iter().enumerate() {
-            view = view.child(self.action_button(
-                ("readd", index),
-                format!("Re-add {}", short_id(&run.agent_run_id)),
-                snapshot,
-                snapshot.readd(run),
-                cx,
-            ));
+        let mut suppressed = false;
+        if let Some(snapshot) = snapshot.filter(|snapshot| snapshot.page == self.page) {
+            suppressed = !snapshot.data.suppressed.is_empty();
+            for (index, run) in snapshot.data.suppressed.iter().enumerate() {
+                view = view.child(self.action_button(
+                    ("readd", index),
+                    format!("Re-add {}", short_id(&run.agent_run_id)),
+                    snapshot,
+                    snapshot.readd(run),
+                    cx,
+                ));
+            }
         }
-        if snapshot.data.overflow.is_empty() && snapshot.data.suppressed.is_empty() {
+        if tiles.is_empty() && !suppressed {
             view = view.child(muted("No queued agents on this page."));
         }
         view
@@ -509,7 +516,7 @@ impl DeckView {
                         })),
                     ),
             );
-            for run in &host.runs {
+            for run in host.runs.iter().take(crate::catalog::HOST_PREVIEW_LIMIT) {
                 entry = entry.child(muted(format!(
                     "{} · {} · {} pending",
                     run.key
@@ -519,8 +526,12 @@ impl DeckView {
                     run.pending_requests
                 )));
             }
-            if host.omitted > 0 {
-                entry = entry.child(muted(format!("{} older runs omitted", host.omitted)));
+            let omitted = host
+                .runs
+                .len()
+                .saturating_sub(crate::catalog::HOST_PREVIEW_LIMIT);
+            if omitted > 0 {
+                entry = entry.child(muted(format!("{omitted} additional runs in the Deck")));
             }
             content = content.child(entry);
         }
@@ -695,9 +706,20 @@ pub(super) fn card_face(
         .justify_center()
         .when(host.is_some(), |face| face.flex_col())
         .rounded_lg()
-        .border_1()
         .border_color(rgb(color.unwrap_or(BORDER)))
-        .when_some(color, |face, color| face.bg(rgba((color << 8) | 0x18)))
+        .when(run.is_none(), |face| face.border_1())
+        .when_some(color, |face, color| {
+            let (top, bottom) = if color == MUTED {
+                (0x1e, 0x0c)
+            } else {
+                (0x3a, 0x13)
+            };
+            face.border_2().bg(linear_gradient(
+                180.,
+                linear_color_stop(rgba((color << 8) | top), 0.),
+                linear_color_stop(rgba((color << 8) | bottom), 1.),
+            ))
+        })
         .when_some(run, |face, run| {
             face.child(
                 svg()
@@ -793,9 +815,11 @@ impl RunDetails {
                     .overflow
                     .iter()
                     .find(|run| run.key.as_ref() == Some(&self.key))
-            })?;
-            let cached = deck.view.link != Link::Online || snapshot.generation().is_none();
-            return Some(describe(run, cached).child(muted(placement_label(slot))));
+            });
+            if let Some(run) = run {
+                let cached = deck.view.link != Link::Online || snapshot.generation().is_none();
+                return Some(describe(run, cached).child(muted(placement_label(slot))));
+            }
         }
         let host = deck.catalog_view.hosts.get(&host_id)?;
         let run = host

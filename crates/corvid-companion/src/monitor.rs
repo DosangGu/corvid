@@ -17,6 +17,7 @@ use crate::{Config, HostEndpoint, PresentationAddress, PresentationClient};
 
 pub const CAPABILITY: &str = "automatic_monitor.v1";
 pub(crate) const EPOCH_RETIREMENT_CAPABILITY: &str = "retire_previous_epoch_slots.v1";
+pub(crate) const DECK_PRIORITY_CAPABILITY: &str = "deck_priority.v1";
 const LIMIT: u64 = 8192;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STARTUP_POLL: Duration = Duration::from_millis(50);
@@ -169,7 +170,7 @@ impl Scope {
             .await
             .context("waiting for agent monitor startup")?;
         if let Some(mut client) = self.connected().await? {
-            if supports_epoch_retirement(&client) {
+            if supports_current_layout(&client) {
                 return Ok(());
             }
             let reply = timeout(
@@ -230,8 +231,8 @@ impl Scope {
             loop {
                 if let Some(client) = self.connected().await? {
                     ensure!(
-                        supports_epoch_retirement(&client),
-                        "the started agent monitor does not support retiring previous-epoch slots"
+                        supports_current_layout(&client),
+                        "the started agent monitor does not support the current slot layout"
                     );
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -261,12 +262,16 @@ impl Scope {
     }
 }
 
-fn supports_epoch_retirement(client: &PresentationClient) -> bool {
-    client
-        .session()
-        .capabilities
-        .iter()
-        .any(|cap| cap == EPOCH_RETIREMENT_CAPABILITY)
+fn supports_current_layout(client: &PresentationClient) -> bool {
+    [EPOCH_RETIREMENT_CAPABILITY, DECK_PRIORITY_CAPABILITY]
+        .into_iter()
+        .all(|required| {
+            client
+                .session()
+                .capabilities
+                .iter()
+                .any(|cap| cap == required)
+        })
 }
 
 async fn wait_for_lock(mut try_lock: impl FnMut() -> Result<StateLock>) -> Result<StateLock> {

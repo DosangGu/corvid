@@ -189,14 +189,13 @@ view. On Windows and macOS, clicking an individual agent notification selects
 that agent's pane in Desktop, restores the target window
 if minimized, and requests foreground activation. Batch and test notifications
 open Notifications and settings. Window
-visibility and size do not affect daemon-owned work or the slot policy. The mini
-deck shows this host's assigned slots and first 32 queued runs, followed by
-agents from the other recognized hosts. The grid grows by scrolling. Each agent's
-host appears on its key when multiple hosts are present. Queued keys on this host
-show **Queued** in their tooltip and navigate through Desktop using their exact
-run identity;
-they do not acquire a fabricated slot or pin action. The footer's **+N** button
-shows the queue count and opens the paginated queue.
+visibility and size do not affect daemon-owned work. The mini deck applies
+the slot priority rules to agents from all recognized hosts and fills the
+selected grid. Each agent's host appears on its key when multiple hosts are
+present. Queued keys on this host navigate through Desktop using their exact
+run identity. The footer shows **+N** for the cards outside the mini grid,
+with **M waiting** if some need an answer or approval. The button opens that
+same cross-host queue, including cards beyond its first page.
 
 ## Slots and queue
 
@@ -204,7 +203,7 @@ The **Deck** view uses dark cards with a light selection outline. The
 mini deck uses the selected grid of compact keys; the expanded view adjusts its larger
 square keys from one to six columns when resized. Each occupied key shows a
 provider mark: Claude, OpenAI for Codex, or a generic terminal for an
-unknown provider. A tinted background and colored inner border carry its status.
+unknown provider. A tinted gradient and two-pixel inner border carry its status.
 Selection adds a separate light outer outline, preserving the status color.
 Empty keys are blank, dark, and inactive. The same design applies to queued keys.
 
@@ -284,12 +283,16 @@ changes within the current daemon epoch. Closing its pane, tab, or workspace
 removes the card. Closing the Desktop window detaches the presentation and
 retains the layout.
 
-Runs beyond the configured slot count enter a FIFO queue. Initial observations use
-the daemon's immutable creation sequence, with run identity as a deterministic
-fallback. Removing a pane compacts every following visible card toward the front,
-then fills the tail from the queue. For example, `[A, B, C] + [D, E]` becomes
-`[A, C, D] + [E]` when B's pane closes. Completed queued agents remain queued too.
-Pins move with their agent; they do not reserve empty holes.
+New runs enter the queue in creation order, with run identity as a deterministic
+fallback. On a full grid a queued card replaces the lowest-priority unpinned
+card if its score is strictly higher. The replaced card goes to the tail.
+Working has zero priority. An unread response or failure starts at 50 and
+halves every 30 minutes. A pending input request starts at 60, rises to 90
+over 30 minutes, then halves every 90 minutes. Recent input requests use
+their existing visible positions in oldest-first order. Scores use observed
+event times and are recalculated as events arrive and as time passes.
+Removing a pane compacts the slots and fills the freed space from the queue.
+Pins protect a card from reprioritization and follow it during compaction.
 
 Pane ownership is saved with each tracked run. During a disconnect, Deck shows
 cached cards. The next synchronized layout confirms pane closures that happened

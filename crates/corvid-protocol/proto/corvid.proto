@@ -479,6 +479,10 @@ message PresentedRun {
   optional uint64 last_response_unix_ms = 11;
   optional uint64 last_observed_unix_ms = 12;
   PromptObservation prompt_observation = 13;
+  // Opening time of the oldest confirmed request that is still pending.
+  optional uint64 pending_since_unix_ms = 14;
+  // Time of the latest unacknowledged result or failure when the run is idle.
+  optional uint64 new_result_unix_ms = 15;
 }
 
 message PresentedSlot {

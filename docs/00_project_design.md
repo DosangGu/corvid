@@ -1422,7 +1422,7 @@ A current daemon publishes an immutable creation sequence on each agent record.
 The slot allocator sorts records from older peers without this field by run ID
 after records with a known sequence. The Linux companion store keeps controller
 identity and host configuration in `config.json` and placements in `slots.json`.
-Its layout supports up to 64 slots, a FIFO queue, and 256 retired run records.
+Its layout supports up to 64 slots, an overflow queue, and 256 retired run records.
 
 A slot record contains SlotId, optional `(HostId, ServerEpoch, AgentRunId)`, monotonically
 increasing slot revision, pin, eligibility order, and removal status. Bind to a run, not
@@ -1430,9 +1430,9 @@ PaneId or a provider session that might be resumed in another execution.
 
 - Admit top-level runs with an owning pane in the synchronized layout, including runs
   already completed when first observed. Preserve saved order, then append new runs by
-  server creation sequence and ID. The first N occupy slots; the rest form the FIFO queue.
+  server creation sequence and ID. The first N occupy slots; the rest form the queue.
 - Keep a run through work completion, process exit, context replacement, acknowledgment,
-  and quiet waiting. Completion never releases its card or changes other placements.
+  and quiet waiting. The run can move between slots and the queue as priority changes.
 - Remove a tracked run when its owning pane is absent from a synchronized daemon layout
   after an explicit pane, tab, or workspace/session close. Shift every following card
   forward, then admit queued cards at the tail. Pins follow their cards; empty holes are
@@ -1442,9 +1442,11 @@ PaneId or a provider session that might be resumed in another execution.
   cards. After synchronization with a new epoch for the same host, retire the
   previous epoch's runs before admitting the current runs. Pins and focus captures
   belong to the original run.
-- Queue completed runs as well as active runs; urgency cannot reorder them. Legacy CLI
-  remove/re-add/place commands remain available for compatibility, but Agent Deck's UI
-  uses pane closure and automatic compaction for cleanup and placement.
+- On a full deck, a higher-priority queued run takes the lowest-priority unpinned
+  slot and sends its former occupant to the queue tail. Recent input requests
+  appear oldest-first across their unpinned slots. The mini deck applies the same
+  policy across its selected grid and available hosts. See [Agent Deck](06_agent_deck.md)
+  for the scoring rules.
 - Persist after allocation/removal/pin changes, atomically. On restart load placements as
   stale, synchronize, reconcile exact identities, then enable clicks. Never persist queued
   clicks, approval actions, or terminal IDs as trusted permanent registrations.

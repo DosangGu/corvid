@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::last_known::LastKnown;
 #[cfg(windows)]
 use crate::platform::{TerminalRecord, TerminalRegistry};
+use crate::priority::{Priority, now_ms};
 use crate::remote::Remote;
 use crate::{RunKey, RunObservation, Store};
 
@@ -23,6 +24,7 @@ type Outcome = Result<Body, ProtocolFault>;
 type Observations = BTreeMap<RunKey, RunObservation>;
 
 const STATUS_SAVE_DELAY: Duration = Duration::from_secs(1);
+const PRIORITY_REFRESH: Duration = Duration::from_secs(10);
 
 pub(crate) struct Call {
     pub(crate) body: Body,
@@ -185,6 +187,9 @@ impl Service {
     ) -> anyhow::Error {
         let mut refresh = tokio::time::interval(Duration::from_secs(1));
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut priority_refresh =
+            tokio::time::interval_at(Instant::now() + PRIORITY_REFRESH, PRIORITY_REFRESH);
+        priority_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
@@ -199,6 +204,16 @@ impl Service {
                 }
                 _ = sleep_until(self.save_status_at.unwrap_or_else(Instant::now)), if self.save_status_at.is_some() => {
                     if let Err(error) = self.flush_status() {
+                        return store_fault(error).into();
+                    }
+                }
+                _ = priority_refresh.tick() => {
+                    let now = now_ms();
+                    if let Some(remote) = &self.remote
+                        && let Err(error) = self.store.update(|layout| {
+                            Ok(layout.reorder(now, |key| priority(remote, key, now))?)
+                        })
+                    {
                         return store_fault(error).into();
                     }
                 }
@@ -244,8 +259,13 @@ impl Service {
             .layout()
             .retired_runs(remote.epoch, &remote.panes);
         let runs = observations(&remote);
+        let now = now_ms();
         self.store
-            .update(|layout| Ok(layout.reconcile(&runs, &removed)?))
+            .update(|layout| {
+                Ok(layout.reconcile_prioritized(&runs, &removed, now, |key| {
+                    priority(&remote, key, now)
+                })?)
+            })
             .map_err(store_fault)?;
         #[cfg(windows)]
         self.reconcile_terminals(&remote);
@@ -296,6 +316,12 @@ impl Service {
         let _ = call.reply.send(outcome);
         reconnect
     }
+}
+
+fn priority(remote: &Remote, key: &RunKey, now: u64) -> Priority {
+    remote.runs.get(key).map_or_else(Priority::default, |run| {
+        Priority::for_run(&run.display, true, now)
+    })
 }
 
 fn observations(remote: &Remote) -> Observations {
