@@ -5,10 +5,13 @@ use anyhow::{Result, ensure};
 use vt100::{Callbacks, Parser, Screen};
 
 use corvid_core::Viewport;
-use corvid_protocol::wire::TerminalHistory;
+use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
+mod history;
 mod sgr;
+
+use history::OlderRows;
 
 const SCROLLBACK_ROWS: usize = 512;
 const MAX_REPLY_BYTES: usize = 32 * 1024;
@@ -21,6 +24,8 @@ struct QueryReplies {
     bytes: Vec<u8>,
     overflow: bool,
     title: String,
+    older_rows: Option<OlderRows>,
+    shell_prompt: Option<bool>,
 }
 
 impl QueryReplies {
@@ -35,11 +40,25 @@ impl QueryReplies {
 }
 
 impl Callbacks for QueryReplies {
+    fn on_scroll(&mut self, row: vt100::capture::RowContents<'_>, alternate_screen: bool) {
+        if !alternate_screen && let Some(older) = &mut self.older_rows {
+            older.push(row);
+        }
+    }
+
     fn set_window_title(&mut self, _: &mut Screen, title: &[u8]) {
         self.title = corvid_core::layout::clean_title(&String::from_utf8_lossy(title));
     }
 
     fn unhandled_osc(&mut self, screen: &mut Screen, params: &[&[u8]]) {
+        if let [b"133" | b"633", phase, ..] = params {
+            match *phase {
+                b"A" | b"B" => self.shell_prompt = Some(true),
+                b"C" => self.shell_prompt = Some(false),
+                b"D" => self.shell_prompt = None,
+                _ => {}
+            }
+        }
         if matches!(params.first(), Some(&b"0" | &b"2")) {
             self.set_window_title(screen, &params[1..].join(&b';'));
         }
@@ -96,12 +115,24 @@ impl TerminalScreen {
         &self.parser.callbacks().title
     }
     pub fn new(viewport: Viewport) -> Self {
-        Self::with_scrollback(viewport, SCROLLBACK_ROWS)
+        Self::with_scrollback(viewport, SCROLLBACK_ROWS, None)
     }
 
-    pub(super) fn with_scrollback(viewport: Viewport, rows: usize) -> Self {
-        let parser =
-            Parser::new_with_callbacks(viewport.rows, viewport.cols, rows, QueryReplies::default());
+    pub(super) fn live(viewport: Viewport) -> Self {
+        // Only the recent styled rows are cloned when computing a render diff.
+        Self::with_scrollback(viewport, 128, Some(OlderRows::default()))
+    }
+
+    fn with_scrollback(viewport: Viewport, rows: usize, older_rows: Option<OlderRows>) -> Self {
+        let parser = Parser::new_with_callbacks(
+            viewport.rows,
+            viewport.cols,
+            rows,
+            QueryReplies {
+                older_rows,
+                ..Default::default()
+            },
+        );
 
         Self {
             parser,
@@ -110,7 +141,15 @@ impl TerminalScreen {
     }
 
     pub fn process(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
-        self.sgr.process(bytes, |chunk| self.parser.process(chunk));
+        self.sgr.process(bytes, |chunk, clear_history| {
+            self.parser.process(chunk);
+            if clear_history
+                && !self.parser.screen().alternate_screen()
+                && let Some(older) = &mut self.parser.callbacks_mut().older_rows
+            {
+                *older = OlderRows::default();
+            }
+        });
 
         let replies = self.parser.callbacks_mut();
         ensure!(!replies.overflow, "terminal query reply limit exceeded");
@@ -132,6 +171,28 @@ impl TerminalScreen {
 
     pub(super) fn bracketed_paste(&self) -> bool {
         self.parser.screen().bracketed_paste()
+    }
+
+    pub(super) fn shell_prompt(&self) -> Option<bool> {
+        self.parser.callbacks().shell_prompt
+    }
+
+    pub(super) fn allows_shell_history(&self) -> bool {
+        !self.parser.screen().alternate_screen()
+            && self.shell_prompt() != Some(false)
+            && self.wheel_encoding() == WheelEncoding::Disabled
+    }
+
+    pub(super) fn wheel_encoding(&self) -> WheelEncoding {
+        let screen = self.parser.screen();
+        if screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None {
+            return WheelEncoding::Disabled;
+        }
+        match screen.mouse_protocol_encoding() {
+            vt100::MouseProtocolEncoding::Default => WheelEncoding::Legacy,
+            vt100::MouseProtocolEncoding::Utf8 => WheelEncoding::Utf8,
+            vt100::MouseProtocolEncoding::Sgr => WheelEncoding::Sgr,
+        }
     }
 
     pub(crate) fn snapshot(&self) -> Screen {
@@ -176,6 +237,12 @@ impl TerminalScreen {
             remaining -= take;
         }
         screen.set_scrollback(0);
+        if !screen.alternate_screen()
+            && !history.truncated
+            && let Some(older) = &self.parser.callbacks().older_rows
+        {
+            older.append_newest_first(&mut history, bytes);
+        }
         history.lines.reverse();
         history
     }
@@ -547,6 +614,72 @@ mod tests {
         assert!(!history.truncated);
         assert_eq!(terminal.parser.screen().contents(), live);
         assert_eq!(terminal.parser.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn live_history_keeps_older_rows_outside_the_render_snapshot() {
+        let mut terminal = TerminalScreen::live(Viewport::new(20, 4).unwrap());
+        let rows = (0..600)
+            .map(|row| format!("turn {row} 한"))
+            .collect::<Vec<_>>();
+        terminal.process(rows.join("\r\n").as_bytes()).unwrap();
+        assert_eq!(terminal.snapshot().scrollback_len(), 128);
+        let history = terminal.history();
+        assert_eq!(history.lines, rows);
+        assert!(!history.truncated);
+
+        terminal
+            .process(b"\x1b[?1049h\x1b[3J\x1b[?1000h\x1b[?1006h")
+            .unwrap();
+        assert_eq!(terminal.wheel_encoding(), WheelEncoding::Sgr);
+        assert!(!terminal.history().lines.contains(&rows[0]));
+        terminal.process(b"\x1b[?1000l\x1b[?1049l").unwrap();
+        assert_eq!(terminal.wheel_encoding(), WheelEncoding::Disabled);
+        assert_eq!(terminal.history().lines, rows);
+
+        terminal.process(b"\x1b[3").unwrap();
+        terminal.process(b"Jafter").unwrap();
+        assert_eq!(terminal.history().lines.len(), 4);
+    }
+
+    #[test]
+    fn shell_history_observes_prompt_markers_and_terminal_modes() {
+        let mut terminal = TerminalScreen::new(Viewport::new(80, 24).unwrap());
+        assert!(terminal.allows_shell_history());
+        terminal.process(b"\x1b]133;").unwrap();
+        terminal.process(b"B\x07").unwrap();
+        assert_eq!(terminal.shell_prompt(), Some(true));
+        terminal.process(b"\x1b]633;C\x1b\\").unwrap();
+        assert!(!terminal.allows_shell_history());
+        terminal.process(b"\x1b]633;D;0\x07\x1b]633;A\x07").unwrap();
+        assert!(terminal.allows_shell_history());
+        terminal.process(b"\x1b[?1049h").unwrap();
+        assert!(!terminal.allows_shell_history());
+        terminal.process(b"\x1b[?1049l\x1b[?1000h").unwrap();
+        assert!(!terminal.allows_shell_history());
+        terminal.process(b"\x1b[?1000l").unwrap();
+        assert!(terminal.allows_shell_history());
+    }
+
+    #[test]
+    fn live_history_reports_eviction_and_reset_discards_archived_text() {
+        let mut terminal = TerminalScreen::live(Viewport::new(24, 4).unwrap());
+        for row in 0..3000 {
+            terminal
+                .process(format!("row {row}\r\n").as_bytes())
+                .unwrap();
+        }
+        let history = terminal.history();
+        assert!(history.truncated);
+        assert_eq!(history.lines.len(), TERMINAL_HISTORY_MAX_ROWS);
+        assert_eq!(
+            history.lines[0],
+            format!("row {}", 3001 - TERMINAL_HISTORY_MAX_ROWS)
+        );
+        terminal.process(b"\x1bchello").unwrap();
+        let history = terminal.history();
+        assert!(!history.truncated);
+        assert_eq!(history.lines, ["hello", "", "", ""]);
     }
 
     #[test]

@@ -52,6 +52,13 @@ impl TerminalPty {
         self.child.try_wait()
     }
 
+    pub(super) fn foreground_shell(&self, marked_prompt: bool) -> bool {
+        self.master
+            .process_group_leader()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .is_some_and(|pid| crate::process::interactive_shell(pid, marked_prompt))
+    }
+
     pub(crate) fn pid(&self) -> Option<u32> {
         self.child.process_id()
     }

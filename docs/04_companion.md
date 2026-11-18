@@ -558,17 +558,25 @@ Drag across terminal cells and press **Ctrl+Shift+C** to copy the selection.
 The selected cells stay stable while new output arrives. Escape or typing
 returns a live selection to the current screen.
 
-Scroll up or press **Shift+Page Up** to review a snapshot of the focused pane.
-Use the wheel, arrows, or Page Up and Page Down to move through the snapshot.
+In the focused pane, the wheel scrolls the running program when it has enabled
+terminal mouse reporting. This lets fullscreen agents scroll through their own
+conversation. At an interactive shell, scrolling up opens its previous output.
+While a foreground program is running, the pane stays live. If the daemon
+cannot confirm a foreground shell, use **Shift+Page Up** to open history explicitly.
+Shells can mark command execution with OSC 133 or 633. Without those markers,
+in-process shell builtins count as shell activity. On Windows, a shell with a
+background child can require the explicit shortcut even at the prompt.
+Use the wheel, arrows, or Page Up and Page Down to browse. Scrolling down to
+the newest row, or pressing **End**, returns to live output and typing.
 **Ctrl+Shift+F** opens case-sensitive text search within rendered rows. Enter
 and Shift+Enter cycle through matches. Escape returns to the live terminal
 after clearing any selection. The history view consumes terminal input locally
 and uses the same drag-and-copy control.
 
 History is plain text from the daemon's in-memory terminal screen and scrollback.
-Corvid retains up to 128 scrolled rows for a live PTY. A response includes the
-newest rows within 2,048 rows and 192 KiB, and the view reports when that response
-omits older rows. History is read over the attached session using its view
+The main screen keeps older scrolled rows as plain text. A snapshot includes
+the newest rows that fit within 2,048 rows and 192 KiB, and the view reports
+when older rows were omitted. History is read over the attached session using its view
 revision. Opening the view does not resize the PTY or interrupt the program.
 The history controls are currently implemented in Desktop.
 

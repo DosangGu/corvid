@@ -21,10 +21,12 @@ pub struct TerminalPty {
     completion: Receiver<io::Result<usize>>,
     writing: bool,
     exited: Option<(ExitStatus, Instant)>,
+    interactive_shell: bool,
 }
 
 impl TerminalPty {
     pub fn spawn(command: CommandBuilder, viewport: Viewport) -> Result<Self> {
+        let interactive_shell = interactive_shell(&command);
         let pair = native_pty_system().openpty(size(viewport))?;
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
@@ -47,11 +49,21 @@ impl TerminalPty {
             completion,
             writing: false,
             exited: None,
+            interactive_shell,
         })
     }
 
     pub fn resize(&self, viewport: Viewport) -> Result<()> {
         self.master.resize(size(viewport))
+    }
+
+    pub(super) fn foreground_shell(&self, _marked_prompt: bool) -> bool {
+        // Some prompts emit OSC 133;B without a matching execution marker.
+        // A child may already own the console even if the last marker was a prompt.
+        self.interactive_shell
+            && self
+                .process_key()
+                .is_some_and(crate::native_process::shell_has_no_child)
     }
 
     pub(crate) fn process_key(&self) -> Option<ProcessKey> {
@@ -156,6 +168,32 @@ impl Drop for TerminalPty {
         // The output thread drains until EOF while ClosePseudoConsole runs.
         drop(self.output.take());
     }
+}
+
+fn interactive_shell(command: &CommandBuilder) -> bool {
+    let argv = command.get_argv();
+    let Some(name) = argv
+        .first()
+        .and_then(|arg| std::path::Path::new(arg).file_stem())
+        .and_then(|name| name.to_str())
+    else {
+        return false;
+    };
+    if name.eq_ignore_ascii_case("cmd") {
+        return argv[1..].iter().all(|arg| {
+            matches!(
+                arg.to_string_lossy().to_ascii_lowercase().as_str(),
+                "/d" | "/q"
+            )
+        });
+    }
+    (name.eq_ignore_ascii_case("powershell") || name.eq_ignore_ascii_case("pwsh"))
+        && argv[1..].iter().all(|arg| {
+            matches!(
+                arg.to_string_lossy().to_ascii_lowercase().as_str(),
+                "-nologo" | "-noprofile" | "-noexit" | "-login" | "-interactive"
+            )
+        })
 }
 
 fn output_thread(

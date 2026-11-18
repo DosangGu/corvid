@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
-use corvid_protocol::wire::TerminalHistory;
+use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
 use portable_pty::{CommandBuilder, ExitStatus};
 use uuid::Uuid;
 use vt100::Screen;
@@ -145,10 +145,10 @@ impl Backend {
         }
     }
 
-    pub(super) fn history(&mut self) -> Result<TerminalHistory> {
+    pub(super) fn history(&mut self, shell_only: bool) -> Result<TerminalHistory> {
         match self {
-            Self::Local(session) => Ok(session.screen.history()),
-            Self::Hosted(client) => client.history(),
+            Self::Local(session) => Ok(session.history(shell_only)),
+            Self::Hosted(client) => client.history(shell_only),
         }
     }
 
@@ -165,6 +165,13 @@ impl Backend {
                 Ok((ansi, Some(Box::new(session.screen.snapshot()))))
             }
             Self::Hosted(client) => Ok((client.render(previous.is_some(), outer, footer)?, None)),
+        }
+    }
+
+    pub(super) fn rendered_wheel_encoding(&self) -> WheelEncoding {
+        match self {
+            Self::Local(session) => session.screen.wheel_encoding(),
+            Self::Hosted(client) => client.rendered_wheel_encoding,
         }
     }
 

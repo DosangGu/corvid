@@ -400,6 +400,56 @@ pub(crate) fn incarnation(pid: u32, boot_id: Uuid) -> Option<Incarnation> {
     (!stat.exited).then(|| stat.incarnation(pid, boot_id))
 }
 
+/// Checked on a wheel history request, including after the shell execs another image.
+pub(crate) fn interactive_shell(pid: u32, marked_prompt: bool) -> bool {
+    let Ok(process) = NativeInspector.open(pid) else {
+        return false;
+    };
+    let Ok(path) = process.path() else {
+        return false;
+    };
+    let name = path.file_name().and_then(|name| name.to_str());
+    let known_shell = matches!(
+        name,
+        Some(
+            "sh" | "ash"
+                | "bash"
+                | "dash"
+                | "zsh"
+                | "ksh"
+                | "mksh"
+                | "fish"
+                | "csh"
+                | "tcsh"
+                | "nu"
+                | "pwsh"
+        )
+    );
+    if !known_shell
+        && std::env::var_os("SHELL")
+            .and_then(|shell| fs::canonicalize(shell).ok())
+            .is_none_or(|shell| shell != path)
+    {
+        return false;
+    }
+    if marked_prompt {
+        return true;
+    }
+    let Ok(argv) = process.arguments() else {
+        return false;
+    };
+    let mut args = argv.split(|&byte| byte == 0);
+    args.next();
+    args.filter(|arg| !arg.is_empty()).all(|arg| {
+        matches!(
+            arg,
+            b"--login" | b"--interactive" | b"--noprofile" | b"--norc" | b"--no-config"
+        ) || arg.strip_prefix(b"-").is_some_and(|flags| {
+            !flags.is_empty() && flags.iter().all(|flag| b"ilf".contains(flag))
+        })
+    })
+}
+
 impl Stat {
     fn incarnation(&self, pid: u32, boot_id: Uuid) -> Incarnation {
         Incarnation {

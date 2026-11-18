@@ -10,6 +10,7 @@ use corvid_core::Viewport;
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 #[cfg(windows)]
 use corvid_protocol::windows::{DaemonPipe, StateDirectory};
+use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use prost::{Enumeration, Message};
@@ -46,6 +47,7 @@ pub(super) enum Operation {
     CancelRetain = 9,
     Stop = 10,
     History = 11,
+    ShellHistory = 12,
 }
 
 #[derive(Clone, Message, PartialEq)]
@@ -99,6 +101,8 @@ pub(super) struct Response {
     process_created: Option<u64>,
     #[prost(string, tag = "15")]
     pub(super) title: String,
+    #[prost(enumeration = "WheelEncoding", tag = "16")]
+    wheel_encoding: i32,
 }
 
 impl Response {
@@ -134,6 +138,7 @@ pub(super) struct Client {
     pub(super) process_key: Option<crate::native_process::ProcessKey>,
     pub(super) paste_pending: bool,
     pub(super) retained: bool,
+    pub(super) rendered_wheel_encoding: WheelEncoding,
 }
 
 #[derive(Clone)]
@@ -172,8 +177,16 @@ impl HostConfig {
 }
 
 impl Client {
-    pub(super) fn history(&mut self) -> Result<corvid_protocol::wire::TerminalHistory> {
-        let response = self.command(Operation::History, Vec::new())?;
+    pub(super) fn history(
+        &mut self,
+        shell_only: bool,
+    ) -> Result<corvid_protocol::wire::TerminalHistory> {
+        let operation = if shell_only {
+            Operation::ShellHistory
+        } else {
+            Operation::History
+        };
+        let response = self.command(operation, Vec::new())?;
         ensure!(!response.rejected, "terminal host could not read history");
         response
             .history
@@ -253,6 +266,7 @@ impl Client {
             process_key: None,
             paste_pending: false,
             retained: false,
+            rendered_wheel_encoding: WheelEncoding::Disabled,
         };
         let response = client.call(Request {
             operation: Operation::Hello as i32,
@@ -315,6 +329,7 @@ impl Client {
             ..Default::default()
         })?;
         ensure!(!response.rejected, "terminal host could not render");
+        self.rendered_wheel_encoding = response.wheel_encoding();
         Ok(String::from_utf8(response.bytes)?)
     }
 
@@ -645,7 +660,9 @@ impl Host {
                 response.rows = size.rows.get().into();
                 response.bytes = self.session.screen.redraw(size)?.into_bytes();
             }
-            Operation::History => response.history = Some(self.session.screen.history()),
+            operation @ (Operation::History | Operation::ShellHistory) => {
+                response.history = Some(self.session.history(operation == Operation::ShellHistory));
+            }
             Operation::Render => {
                 let size = viewport(request.cols, request.rows)?;
                 let footer = if request.footer_row == 0 {
@@ -662,6 +679,7 @@ impl Host {
                     .screen
                     .render(previous, size, footer)?
                     .into_bytes();
+                response.wheel_encoding = self.session.screen.wheel_encoding().into();
                 self.previous = Some(self.session.screen.snapshot());
             }
             Operation::Retain => {

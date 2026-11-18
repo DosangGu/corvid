@@ -199,6 +199,43 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             raise AssertionError(
                 f"{error} ({input_status(window, retired, first_probe)})"
             ) from error
+        # Scrollback must release the keyboard at the bottom, and an ordinary
+        # foreground program that never enabled mouse reporting must keep it.
+        def wheel(button, count):
+            subprocess.run(["xdotool", "mousemove", "--window", window, "320", "240",
+                            "click", "--repeat", str(count), "--delay", "15", str(button)],
+                           check=True, timeout=10)
+
+        history_ready = root / "history-ready"
+        type_command(f"seq -f 'scroll-row-%03g' 1 240; printf ready > {shlex.quote(str(history_ready))}")
+        wait_for_marker(history_ready, "ready")
+        wheel(4, 30)
+        key(window, "Home")
+        key(window, "ctrl+shift+c")
+        copied = subprocess.check_output(["xclip", "-selection", "clipboard", "-o"], timeout=10)
+        assert b"scroll-row-001" in copied.splitlines(), "wheel did not open shell history"
+        if preview := os.environ.get("CORVID_SCROLL_PREVIEW_DIR"):
+            subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "scroll-history.png")],
+                           check=True, timeout=10)
+        wheel(5, 260)
+        live = root / "scroll-live"
+        type_command(f"printf live > {shlex.quote(str(live))}")
+        wait_for_marker(live, "live")
+        if preview:
+            subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "scroll-live.png")],
+                           check=True, timeout=10)
+
+        program_ready = root / "program-ready"
+        program_input = root / "program-input"
+        program = root / "reader.py"
+        program.write_text(
+            f"from pathlib import Path\nPath({str(program_ready)!r}).write_text('ready')\n"
+            f"Path({str(program_input)!r}).write_text(input())\n", encoding="utf-8")
+        type_command(f"python3 {shlex.quote(str(program))}")
+        wait_for_marker(program_ready, "ready")
+        wheel(4, 30)
+        type_command("still-live")
+        wait_for_marker(program_input, "still-live")
 
         # Turn off the tty's literal-next handling so the shell can observe Ctrl+V.
         chord_marker = root / "terminal-chords"

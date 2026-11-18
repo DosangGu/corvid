@@ -10,6 +10,7 @@ use corvid_core::agent::Source;
 use corvid_core::agent::{ProcessLiveness, Provider};
 use corvid_core::layout::{CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
+use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use serde::{Deserialize, Serialize};
@@ -172,6 +173,7 @@ pub(crate) struct Render {
     pub(crate) generation: u64,
     pub(crate) frame_id: u64,
     pub(crate) base_frame_id: Option<u64>,
+    pub(crate) wheel_encoding: WheelEncoding,
     pub(crate) ansi: Vec<u8>,
 }
 
@@ -198,6 +200,7 @@ enum Command {
     Preview(oneshot::Sender<Reply<(Viewport, Vec<u8>)>>),
     History(
         InputRoute,
+        bool,
         oneshot::Sender<Reply<corvid_protocol::wire::TerminalHistory>>,
     ),
     Retain(bool, oneshot::Sender<Reply<Option<RetainedTerminal>>>),
@@ -315,10 +318,11 @@ impl TerminalHandle {
     pub(crate) async fn history(
         &self,
         route: InputRoute,
+        shell_only: bool,
     ) -> Reply<corvid_protocol::wire::TerminalHistory> {
         let (send, receive) = oneshot::channel();
         self.commands
-            .try_send(Command::History(route, send))
+            .try_send(Command::History(route, shell_only, send))
             .map_err(|_| overloaded())?;
         timeout_reply(receive).await
     }
@@ -534,9 +538,9 @@ impl Worker {
                     let _ = reply.send(self.transfer(route, spec));
                 }
             }
-            Command::History(route, reply) => {
+            Command::History(route, shell_only, reply) => {
                 if !reply.is_closed() {
-                    let _ = reply.send(self.history(route));
+                    let _ = reply.send(self.history(route, shell_only));
                 }
             }
             Command::Retain(retain, reply) => {
@@ -581,7 +585,11 @@ impl Worker {
         Ok((viewport, ansi))
     }
 
-    fn history(&mut self, route: InputRoute) -> Reply<corvid_protocol::wire::TerminalHistory> {
+    fn history(
+        &mut self,
+        route: InputRoute,
+        shell_only: bool,
+    ) -> Reply<corvid_protocol::wire::TerminalHistory> {
         if self
             .lease
             .as_ref()
@@ -594,7 +602,10 @@ impl Worker {
             .as_mut()
             .filter(|terminal| terminal.exit.is_none())
             .ok_or_else(terminal_fault)?;
-        terminal.session.history().map_err(|_| terminal_fault())
+        terminal
+            .session
+            .history(shell_only)
+            .map_err(|_| terminal_fault())
     }
 
     fn publish_mode_change(&self, previous: Option<InputMode>) {
@@ -1888,6 +1899,11 @@ impl Lease {
             generation: self.render_generation,
             frame_id,
             base_frame_id: self.previous.as_ref().map(|_| self.frame_id),
+            wheel_encoding: if matches!(painted, LastFrame::Terminal(_)) {
+                terminal.session.rendered_wheel_encoding()
+            } else {
+                WheelEncoding::Disabled
+            },
             ansi: ansi.into_bytes(),
         };
         self.events
