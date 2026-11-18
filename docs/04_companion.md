@@ -548,6 +548,12 @@ the next launch. Desktop uses the default if the saved font is unavailable.
 
 ### Desktop terminal selection and history
 
+When a live pane has focus, Desktop handles its own shortcuts and forwards
+the remaining terminal input to the pane. For example, Claude Code can bind
+**Shift+Enter** to insert a newline and **Enter** to submit. **Ctrl+V** goes
+to the running program. Use **Ctrl+Shift+V** (or **Cmd+V** on macOS) to paste
+from the system clipboard. Keyboard layout and IME text are sent on commit.
+
 Drag across terminal cells and press **Ctrl+Shift+C** to copy the selection.
 The selected cells stay stable while new output arrives. Escape or typing
 returns a live selection to the current screen.
