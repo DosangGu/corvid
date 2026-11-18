@@ -1,9 +1,129 @@
-use corvid_presentation::desktop_focus::FocusReply;
+use corvid_client::ControlEndpoint;
+use corvid_presentation::desktop_focus::{FocusReply, FocusRequest};
+use corvid_protocol::wire::{PresentedRunKey, ViewSelection};
 use gpui::{Context, Window};
 
 use super::WorkspaceView;
+use crate::terminal_session::{AttachTarget, Destination, Session, Ui};
 
 impl WorkspaceView {
+    pub(crate) fn deck_focus_rank(&self, run: &PresentedRunKey) -> u8 {
+        let Some(ui) = self
+            .session
+            .as_ref()
+            .map(Session::ui)
+            .filter(|ui| matching_host(ui, run))
+        else {
+            return 0;
+        };
+        match (ui.selected.as_ref(), agent_view(&ui, run)) {
+            (Some(selected), Some(target)) if selected == target => 3,
+            (Some(selected), Some(target)) if selected.workspace_id == target.workspace_id => 2,
+            _ => 1,
+        }
+    }
+
+    pub(crate) fn route_deck_focus(
+        &mut self,
+        endpoint: ControlEndpoint,
+        FocusRequest { run, mut result }: FocusRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.connecting(self.session.as_ref().map(Session::ui).as_ref()) {
+            let _ = result.send(Err("Desktop is changing views. Try again.".into()));
+            return;
+        }
+        if self.deck_focus_rank(&run) >= 2
+            && let Some(session) = &self.session
+        {
+            session.focus_agent(FocusRequest { run, result });
+            return;
+        }
+        let destination = match Destination::from_endpoint(&endpoint) {
+            Ok(destination) => destination,
+            Err(_) => {
+                let _ = result.send(Err(
+                    "The selected host is unavailable on this platform.".into()
+                ));
+                return;
+            }
+        };
+        let settings = self.agent_deck.clone();
+        let store = self.store.clone();
+        let lifetime = self.lifetime.clone();
+        self.host_switch = Some(cx.spawn_in(window, async move |view, cx| {
+            // A second click can arrive while the previous writer is still retiring.
+            while !lifetime.retirement_done() && !result.is_closed() {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(25))
+                    .await;
+            }
+            let start = if result.is_closed() {
+                None
+            } else {
+                Some(Session::start(
+                    destination.clone(),
+                    settings,
+                    store,
+                    AttachTarget::Agent { endpoint, run },
+                    false,
+                    lifetime.parked(),
+                ))
+            };
+            let (session, job, prompts) = match start {
+                Some(Ok(connection)) => connection,
+                start => {
+                    let _ = view.update_in(cx, |view, _, cx| {
+                        view.host_switch = None;
+                        cx.notify();
+                    });
+                    if start.is_some() {
+                        let _ = result
+                            .send(Err("Could not start the agent's Desktop connection.".into()));
+                    }
+                    return;
+                }
+            };
+            let mut changes = session.changes();
+            let outcome = loop {
+                let ui = session.ui();
+                if ui.can_write() {
+                    break Some(Ok((session, job, prompts)));
+                }
+                if !ui.changing {
+                    break Some(Err(ui.message));
+                }
+                tokio::select! {
+                    _ = result.closed() => break None,
+                    change = changes.changed() => {
+                        if change.is_err() {
+                            break Some(Err("The selected terminal pane is unavailable.".into()));
+                        }
+                    }
+                }
+            };
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.host_switch = None;
+                match outcome {
+                    Some(Ok(connection)) if !result.is_closed() => {
+                        connection.0.commit_navigation();
+                        view.show_connection(destination, connection, window, cx);
+                        view.sync(window, cx);
+                        view.focus_from_deck(window, cx, result);
+                    }
+                    Some(Err(error)) => {
+                        let fault = corvid_protocol::ProtocolFault::new("FocusUnavailable", &error);
+                        let _ = result.send(Err(fault.into()));
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     pub(super) fn focus_from_deck(
         &mut self,
         window: &mut Window,
@@ -21,6 +141,22 @@ impl WorkspaceView {
         terminal.read(cx).focus(window);
         activate(window, cx, reply);
     }
+}
+
+fn matching_host(ui: &Ui, run: &PresentedRunKey) -> bool {
+    ui.connected
+        && ui.host_id.as_deref() == Some(run.host_id.as_str())
+        && ui.epoch.as_deref() == Some(run.remote_epoch.as_str())
+}
+
+fn agent_view<'a>(ui: &'a Ui, run: &PresentedRunKey) -> Option<&'a ViewSelection> {
+    let inventory = ui.inventory.as_ref().filter(|_| ui.inventory_ready)?;
+    inventory
+        .agents
+        .iter()
+        .find(|agent| agent.agent_run_id == run.agent_run_id && agent.terminal_available)?
+        .location
+        .as_ref()
 }
 
 #[cfg(target_os = "linux")]

@@ -29,7 +29,9 @@ use crate::agent_deck;
 use crate::appearance::{self, Appearance, ui_px};
 use crate::desktop_windows::{DesktopWindows, WindowLaunch};
 use crate::ssh_hosts;
-use crate::terminal_session::{AttachTarget, Destination, Inventory, Job, Session, Ui};
+use crate::terminal_session::{
+    AttachTarget, Destination, Inventory, Job, ParkedConnections, Session, Ui,
+};
 use crate::terminal_view::{TerminalView, preview};
 use corvid_client::view_state::ViewStore;
 
@@ -43,30 +45,57 @@ const ACTIVE_FILL: u32 = 0x20332f;
 const MAX_BACKGROUND_HOSTS: usize = 8;
 
 #[derive(Clone, Default)]
-pub struct Lifetime(Rc<RefCell<Option<Job>>>);
+pub struct Lifetime(Rc<RefCell<WindowConnections>>);
+
+#[derive(Default)]
+struct WindowConnections {
+    active: Option<Job>,
+    retiring: Vec<Job>,
+    parked: ParkedConnections,
+}
 
 impl Lifetime {
-    fn replace(&self, job: Job) {
-        if let Some(old) = self.0.replace(Some(job)) {
-            old.join();
+    fn parked(&self) -> ParkedConnections {
+        self.0.borrow().parked.clone()
+    }
+
+    fn replace(&self, job: Job, park_previous: bool) {
+        let mut connections = self.0.borrow_mut();
+        connections.retiring.retain(|old| !old.finished());
+        if let Some(mut old) = connections.active.replace(job) {
+            old.stop(park_previous);
+            connections.retiring.push(old);
         }
     }
 
+    fn retirement_done(&self) -> bool {
+        self.0.borrow().retiring.iter().all(Job::finished)
+    }
+
     fn available(&self) -> bool {
-        self.0.borrow().as_ref().is_none_or(Job::finished)
+        self.retirement_done() && self.0.borrow().active.as_ref().is_none_or(Job::finished)
     }
 
     pub(crate) fn stop(&self) {
-        if let Some(job) = self.0.borrow_mut().as_mut() {
-            job.stop();
+        self.retire(false);
+    }
+
+    fn retire(&self, park: bool) {
+        if let Some(job) = self.0.borrow_mut().active.as_mut() {
+            job.stop(park);
         }
     }
 
     pub fn shutdown(&self) {
         self.stop();
-        if let Some(job) = self.0.take() {
+        let mut connections = self.0.borrow_mut();
+        if let Some(job) = connections.active.take() {
             job.join();
         }
+        for job in connections.retiring.drain(..) {
+            job.join();
+        }
+        connections.parked.clear();
     }
 }
 
@@ -316,7 +345,8 @@ impl WorkspaceView {
             self.connect(destination, target, true, window, cx);
         } else {
             window.focus(&self.setup_focus);
-            self.lifetime.stop();
+            self.lifetime
+                .retire(self.destination.as_ref() != Some(&destination));
             self.host_switch = Some(cx.spawn_in(window, async move |view, cx| {
                 loop {
                     let finished = view
@@ -389,8 +419,9 @@ impl WorkspaceView {
             self.store.clone(),
             target,
             explicit,
+            self.lifetime.parked(),
         );
-        let (session, job, mut prompts) = match result {
+        let (session, job, prompts) = match result {
             Ok(connection) => connection,
             Err(error) => {
                 let error = format!("{error:#}");
@@ -400,7 +431,23 @@ impl WorkspaceView {
                 return;
             }
         };
-        self.lifetime.replace(job);
+        self.show_connection(destination, (session, job, prompts), window, cx);
+    }
+
+    fn show_connection(
+        &mut self,
+        destination: Destination,
+        (session, job, mut prompts): (
+            Session,
+            Job,
+            tokio::sync::mpsc::UnboundedReceiver<crate::daemon_prompt::Prompt>,
+        ),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.lifetime
+            .replace(job, self.destination.as_ref() != Some(&destination));
+
         self.restore_picker_shown = false;
         self.error = None;
         self.terminal = None;

@@ -55,6 +55,7 @@ const EVENT_CAPACITY: usize = 4;
 type Reply<T> = Result<T, ProtocolFault>;
 
 pub(crate) struct AttachTarget {
+    pub(crate) agent_run: Option<Uuid>,
     pub(crate) workspace: Option<Uuid>,
     pub(crate) tab: Option<Uuid>,
     pub(crate) pane: Option<Uuid>,
@@ -500,55 +501,69 @@ impl Workspaces {
                 .map(|active| (active, None))
         };
 
-        let mut registry = self.lock_registry();
-        if let Some(slot) = registry.slots.get_mut(&location.pane) {
-            slot.reserved = false;
-        }
-        match opened {
-            Ok((active, _previous_events)) => {
-                if let Some(previous) = previous {
-                    registry.pane_claims.remove(&location.pane);
-                    registry.claims.remove(&location.workspace);
-                    registry.insert_claim(location, target.keymap, client, generation);
-                    if let Some(client) = registry.clients.get_mut(&previous.client_id) {
-                        client.view = None;
-                        disconnect_client(&mut client.disconnect);
+        let stale = {
+            let mut registry = self.lock_registry();
+            if let Some(slot) = registry.slots.get_mut(&location.pane) {
+                slot.reserved = false;
+            }
+            match opened {
+                Ok((active, _))
+                    if target.agent_run.is_some_and(|run| {
+                        !registry
+                            .agent_terminal(run)
+                            .is_ok_and(|found| found == (location, active.route.terminal_id))
+                    }) =>
+                {
+                    active
+                }
+                Ok((active, _previous_events)) => {
+                    if let Some(previous) = previous {
+                        registry.pane_claims.remove(&location.pane);
+                        registry.claims.remove(&location.workspace);
+                        registry.insert_claim(location, target.keymap, client, generation);
+                        if let Some(client) = registry.clients.get_mut(&previous.client_id) {
+                            client.view = None;
+                            disconnect_client(&mut client.disconnect);
+                        }
                     }
+                    registry.resize_hidden(
+                        client,
+                        active.viewport.content(),
+                        Some(active.location.pane),
+                    );
+                    registry.clients.insert(
+                        client,
+                        Client {
+                            generation,
+                            keymap: target.keymap,
+                            view: None,
+                            focuses,
+                            disconnect,
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            notices,
+                        },
+                    );
+                    if let Some(previous) = previous {
+                        registry.set_view(&active);
+                        let projections = vec![
+                            registry.client_projection(previous.client_id),
+                            registry.client_projection(client),
+                        ];
+                        registry.publish(projections);
+                    } else {
+                        registry.record_view(&active);
+                    }
+                    return Ok(active);
                 }
-                registry.resize_hidden(
-                    client,
-                    active.viewport.content(),
-                    Some(active.location.pane),
-                );
-                registry.clients.insert(
-                    client,
-                    Client {
-                        generation,
-                        keymap: target.keymap,
-                        view: None,
-                        focuses,
-                        disconnect,
-                        #[cfg(any(target_os = "linux", target_os = "macos"))]
-                        notices,
-                    },
-                );
-                if let Some(previous) = previous {
-                    registry.set_view(&active);
-                    let projections = vec![
-                        registry.client_projection(previous.client_id),
-                        registry.client_projection(client),
-                    ];
-                    registry.publish(projections);
-                } else {
-                    registry.record_view(&active);
+                Err(fault) => {
+                    registry.release_claims(client);
+                    return Err(fault);
                 }
-                Ok(active)
             }
-            Err(fault) => {
-                registry.release_claims(client);
-                Err(fault)
-            }
-        }
+        };
+        let _ = stale.terminal.retire_view(stale.route).await;
+        self.release(client);
+        Err(target_gone())
     }
 
     fn reserve(
@@ -559,12 +574,16 @@ impl Workspaces {
         let mut registry = self.lock_registry();
         registry.sweep();
         let mut layout = self.metadata.layout();
-        let mut location = resolve(
-            &registry,
-            &mut layout,
-            target,
-            target.keymap.pane_writer && !target.take_over,
-        )?;
+        let mut location = if let Some(run) = target.agent_run {
+            registry.agent_terminal(run)?.0
+        } else {
+            resolve(
+                &registry,
+                &mut layout,
+                target,
+                target.keymap.pane_writer && !target.take_over,
+            )?
+        };
         if target.take_over
             && target.tab.is_none()
             && target.pane.is_none()

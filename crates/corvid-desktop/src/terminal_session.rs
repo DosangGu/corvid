@@ -67,6 +67,10 @@ pub enum Destination {
 
 #[derive(Clone)]
 pub enum AttachTarget {
+    Agent {
+        endpoint: ControlEndpoint,
+        run: corvid_protocol::wire::PresentedRunKey,
+    },
     ResumeAgents {
         view: ViewSelection,
         host_id: String,
@@ -95,6 +99,19 @@ pub enum AttachTarget {
 }
 
 impl Destination {
+    pub fn from_endpoint(endpoint: &ControlEndpoint) -> Result<Self> {
+        Ok(match endpoint {
+            ControlEndpoint::Local(_) => Self::Local,
+            ControlEndpoint::Ssh(alias) => Self::Ssh(SshAlias::new(alias.as_str().to_owned())?),
+            #[cfg(windows)]
+            ControlEndpoint::Wsl(distribution) => {
+                Self::Wsl(WslDistribution::new(distribution.as_str().to_owned())?)
+            }
+            #[cfg(not(windows))]
+            ControlEndpoint::Wsl(_) => bail!("WSL requires Windows"),
+        })
+    }
+
     pub fn saved_target(&self) -> SavedTarget {
         match self {
             Self::Local => SavedTarget::Local,
@@ -246,6 +263,7 @@ pub struct Ui {
     pub restore_unavailable: bool,
     pub naming_supported: bool,
     pub host_id: Option<String>,
+    pub epoch: Option<String>,
     pub endpoint: Option<ControlEndpoint>,
     pub terminal_id: Option<String>,
     pub selected: Option<ViewSelection>,
@@ -332,6 +350,7 @@ impl Shared {
                     restore_unavailable: false,
                     naming_supported: false,
                     host_id: None,
+                    epoch: None,
                     endpoint: None,
                     terminal_id: None,
                     selected: None,
@@ -405,15 +424,82 @@ pub struct Session {
     size: watch::Sender<(u64, Grid)>,
 }
 
+// The reader and SSH relay tasks must outlive any one attached session.
+fn session_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+        })
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("Could not start Desktop connection runtime: {error}"))
+}
+
+type ParkedLink = (Destination, ControlEndpoint, InteractiveConnection);
+
+#[derive(Clone, Default)]
+pub struct ParkedConnections(Arc<std::sync::Mutex<Vec<ParkedLink>>>);
+
+impl ParkedConnections {
+    fn insert(
+        &self,
+        destination: Destination,
+        endpoint: ControlEndpoint,
+        link: InteractiveConnection,
+    ) {
+        let mut connections = self.0.lock().expect("parked connections");
+        connections.retain(|(key, _, _)| key != &destination);
+        if connections.len() == 8 {
+            connections.remove(0);
+        }
+        connections.push((destination, endpoint, link));
+    }
+
+    async fn take(
+        &self,
+        destination: &Destination,
+        host: Option<&str>,
+        epoch: Option<&str>,
+    ) -> Option<(ControlEndpoint, InteractiveConnection)> {
+        let (_, endpoint, mut link) = {
+            let mut connections = self.0.lock().expect("parked connections");
+            let index = connections.iter().position(|(key, _, link)| {
+                key == destination
+                    && host.is_none_or(|host| host == link.session().host_id)
+                    && epoch.is_none_or(|epoch| epoch == link.session().server_epoch)
+            })?;
+            connections.remove(index)
+        };
+        let alive = timeout(Duration::from_millis(750), async {
+            let id = link
+                .send(Body::Ping(corvid_protocol::wire::Ping {}))
+                .await?;
+            let frame = link.receive().await?;
+            let (reply_id, body) = envelope(&link, frame)?;
+            Ok::<_, anyhow::Error>(reply_id == Some(id) && matches!(body, Body::Pong(_)))
+        })
+        .await;
+        matches!(alive, Ok(Ok(true))).then_some((endpoint, link))
+    }
+
+    pub fn clear(&self) {
+        self.0.lock().expect("parked connections").clear();
+    }
+}
+
 pub struct Job {
-    stop: Option<oneshot::Sender<()>>,
+    stop: Option<oneshot::Sender<bool>>,
     thread: thread::JoinHandle<()>,
 }
 
 impl Job {
-    pub fn stop(&mut self) {
+    pub fn stop(&mut self, park: bool) {
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            let _ = stop.send(park);
         }
     }
 
@@ -439,6 +525,8 @@ enum Action {
     Create(Target),
     Close(CloseView),
     OpenAgentDeck(agent_deck::Settings),
+    FocusAgent(agent_deck::FocusRequest),
+    CommitNavigation,
 }
 
 struct Requests {
@@ -449,7 +537,8 @@ struct Requests {
     prompts: Prompts,
     host: Option<String>,
     terminal: Option<String>,
-    closing: oneshot::Receiver<()>,
+    closing: oneshot::Receiver<bool>,
+    parked: ParkedConnections,
 }
 
 impl Session {
@@ -477,7 +566,9 @@ impl Session {
         store: ViewStore,
         target: AttachTarget,
         explicit: bool,
+        parked: ParkedConnections,
     ) -> Result<(Self, Job, mpsc::UnboundedReceiver<Prompt>)> {
+        let runtime = session_runtime()?;
         let settings = settings.into();
         let state_dir = settings.state.clone();
         let target = if matches!(target, AttachTarget::Default) {
@@ -510,45 +601,40 @@ impl Session {
             host: None,
             terminal: None,
             closing,
+            parked,
         };
         let (stop, mut stopped) = oneshot::channel();
         let state = Arc::clone(&shared);
         let thread = thread::Builder::new()
             .name("corvid-desktop-client".into())
             .spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(anyhow::Error::from)
-                    .and_then(|runtime| {
-                        runtime.block_on(async {
-                            let mut agent_deck = agent_deck::Job::default();
-                            let result = {
-                                let client = run_reconnecting(
-                                    destination,
-                                    state_dir,
-                                    target,
-                                    explicit,
-                                    requests,
-                                    &state,
-                                    &mut agent_deck,
-                                );
-                                tokio::pin!(client);
-                                tokio::select! {
-                                    result = &mut client => result,
-                                    _ = &mut stopped => {
-                                        let _ = close.send(());
-                                        if timeout(DETACH_TIMEOUT, &mut client).await.is_err() {
-                                            eprintln!("Timed out waiting for Desktop detach");
-                                        }
-                                        Ok("Detached from Corvid.".into())
-                                    }
+                let result = runtime.block_on(async {
+                    let mut agent_deck = agent_deck::Job::default();
+                    let result = {
+                        let client = run_reconnecting(
+                            destination,
+                            state_dir,
+                            target,
+                            explicit,
+                            requests,
+                            &state,
+                            &mut agent_deck,
+                        );
+                        tokio::pin!(client);
+                        tokio::select! {
+                            result = &mut client => result,
+                            park = &mut stopped => {
+                                let _ = close.send(park.unwrap_or(false));
+                                if timeout(DETACH_TIMEOUT, &mut client).await.is_err() {
+                                    eprintln!("Timed out waiting for Desktop detach");
                                 }
-                            };
-                            agent_deck.close().await;
-                            result
-                        })
-                    });
+                                Ok("Detached from Corvid.".into())
+                            }
+                        }
+                    };
+                    agent_deck.close().await;
+                    result
+                });
                 state.update_ui(|ui| {
                     ui.restore_unavailable = restoring
                         && result
@@ -754,6 +840,20 @@ impl Session {
         }
     }
 
+    pub fn commit_navigation(&self) {
+        let _ = self.actions.try_send(Action::CommitNavigation);
+    }
+
+    pub fn focus_agent(&self, request: agent_deck::FocusRequest) {
+        if let Err(error) = self.actions.try_send(Action::FocusAgent(request))
+            && let Action::FocusAgent(request) = error.into_inner()
+        {
+            let _ = request
+                .result
+                .send(Err("Desktop is busy. Try again.".into()));
+        }
+    }
+
     pub fn open_agent_deck(&self, settings: agent_deck::Settings) {
         if self.shared.buffer().ui.connected {
             let _ = self.actions.try_send(Action::OpenAgentDeck(settings));
@@ -780,6 +880,7 @@ fn in_pane(ui: &Ui, pane: &str) -> bool {
 
 struct Client<'a> {
     recorder: Option<&'a Recorder>,
+    record_navigation: bool,
     saved_target: SavedTarget,
     link: InteractiveConnection,
     endpoint: ControlEndpoint,
@@ -933,6 +1034,7 @@ async fn run(
         host,
         terminal,
         closing,
+        parked,
     }: &mut Requests,
     shared: &Arc<Shared>,
     agent_deck: &mut agent_deck::Job,
@@ -961,10 +1063,26 @@ async fn run(
         | AttachTarget::Takeover { host_id, .. }
         | AttachTarget::ResumeAgents { host_id, .. } => Some(host_id.clone()),
         AttachTarget::Restore(saved) => Some(saved.host_id.to_string()),
+        AttachTarget::Agent { run, .. } => Some(run.host_id.clone()),
         _ => None,
     };
     let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
-    let (endpoint, mut link) = if let AttachTarget::NewWorkspace { endpoint, .. } = &target {
+    let expected_epoch = match &target {
+        AttachTarget::Agent { run, .. } => Some(run.remote_epoch.as_str()),
+        _ => None,
+    };
+    let warmed = parked
+        .take(
+            &destination,
+            host.as_deref().or(known_host.as_deref()),
+            expected_epoch,
+        )
+        .await;
+    let (endpoint, mut link) = if let Some(connection) = warmed {
+        connection
+    } else if let AttachTarget::NewWorkspace { endpoint, .. }
+    | AttachTarget::Agent { endpoint, .. } = &target
+    {
         (
             endpoint.clone(),
             endpoint.interactive(capabilities.clone()).await?,
@@ -990,6 +1108,13 @@ async fn run(
             "the connection points to a different Corvid host"
         )
     );
+    ensure!(
+        expected_epoch.is_none_or(|epoch| epoch == link.session().server_epoch),
+        ProtocolFault::new(
+            "EpochMismatch",
+            "The agent belongs to a previous daemon session."
+        )
+    );
     *host = Some(link.session().host_id.clone());
     let monitor_settings = monitor.clone();
     let monitor_endpoint = endpoint.clone();
@@ -1006,6 +1131,7 @@ async fn run(
     // Keep the verified endpoint available to Sessions even when attach is busy.
     shared.update_ui(|ui| {
         ui.host_id = host.clone();
+        ui.epoch = Some(link.session().server_epoch.clone());
         ui.endpoint = Some(endpoint.clone());
         ui.restore_supported = link
             .session()
@@ -1076,6 +1202,7 @@ async fn run(
     let grid = sizes.borrow().1;
     let resume = terminal.is_none() && !restoring && shared.buffer().ui.restore_results.is_empty();
     let attached = match &target {
+        AttachTarget::Agent { run, .. } => attach_agent(&endpoint, &mut link, grid, run).await?,
         AttachTarget::Restore(_) => unreachable!("saved view resolved before attach"),
         AttachTarget::ResumeAgents { .. } => unreachable!("agent restore resolved before attach"),
         AttachTarget::NewWorkspace {
@@ -1203,7 +1330,8 @@ async fn run(
                 AttachTarget::ResumeAgents { .. } => false,
                 AttachTarget::Default
                 | AttachTarget::FreshDefault
-                | AttachTarget::NewWorkspace { .. } => true,
+                | AttachTarget::NewWorkspace { .. }
+                | AttachTarget::Agent { .. } => true,
                 AttachTarget::Pane(view, _) | AttachTarget::Takeover { view, .. } =>
                     *view == selected,
                 AttachTarget::Workspace { id, .. } => *id == selected.workspace_id,
@@ -1254,6 +1382,7 @@ async fn run(
     });
     let mut client = Client {
         recorder: recorder.as_ref(),
+        record_navigation: !matches!(target, AttachTarget::Agent { .. }),
         saved_target: destination.saved_target(),
         link,
         endpoint: endpoint.clone(),
@@ -1276,13 +1405,13 @@ async fn run(
         next_preview: Instant::now(),
     };
     client.publish_view();
-    let mut inventory = InventoryWatch::start(endpoint, host, epoch, Arc::clone(shared))?;
+    let mut inventory = InventoryWatch::start(endpoint.clone(), host, epoch, Arc::clone(shared))?;
     let mut monitor_task = monitor_task;
     let mut monitor_pending = true;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
-    loop {
+    let keep_connection = loop {
         tokio::select! {
-            _ = &mut *closing => break,
+            close = &mut *closing => break close.unwrap_or(false),
             result = &mut monitor_task, if monitor_pending => {
                 monitor_pending = false;
                 if let Err(error) = result.unwrap_or_else(|error| Err(error.into())) {
@@ -1296,7 +1425,7 @@ async fn run(
             }
             action = actions.recv() => match action {
                 Some(action) => client.action(action).await?,
-                None => break,
+                None => break false,
             },
             Some(request) = deck_focus.recv() => client.focus_from_deck(request).await?,
             result = client.agent_deck.tasks.join_next(), if !client.agent_deck.tasks.is_empty() => {
@@ -1312,15 +1441,95 @@ async fn run(
             }
             _ = &mut inventory.finished => bail!("workspace synchronization stopped"),
         }
-    }
-    if let Err(error) = timeout(DETACH_TIMEOUT, client.detach())
-        .await
-        .context("waiting for daemon detach")
-        .and_then(|result| result)
-    {
-        eprintln!("Desktop detach was not acknowledged: {error:#}");
+    };
+    let keep_connection = keep_connection
+        && client
+            .link
+            .session()
+            .capabilities
+            .iter()
+            .any(|cap| cap == corvid_protocol::PARK_TERMINAL_CAPABILITY);
+    match timeout(DETACH_TIMEOUT, client.detach(keep_connection)).await {
+        Ok(Ok(true)) => parked.insert(destination, endpoint, client.link),
+        Ok(Ok(false)) => {}
+        Ok(Err(error)) => eprintln!("Desktop detach was not acknowledged: {error:#}"),
+        Err(_) => eprintln!("Timed out waiting for Desktop detach"),
     }
     Ok("Detached from Corvid.".into())
+}
+
+async fn attach_agent(
+    endpoint: &ControlEndpoint,
+    link: &mut InteractiveConnection,
+    grid: Grid,
+    run: &corvid_protocol::wire::PresentedRunKey,
+) -> Result<Attached> {
+    if link
+        .session()
+        .capabilities
+        .iter()
+        .any(|cap| cap == corvid_protocol::ATTACH_AGENT_CAPABILITY)
+    {
+        return attach(
+            link,
+            grid,
+            false,
+            Attach {
+                agent_run_id: Some(run.agent_run_id.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+    // Verify the exact pane and run on both sides of attach on older daemons.
+    let (view, terminal) = agent_location(endpoint, run).await?;
+    let attached = attach(
+        link,
+        grid,
+        false,
+        Attach {
+            workspace_id: Some(view.workspace_id.clone()),
+            tab_id: Some(view.tab_id.clone()),
+            pane_id: Some(view.pane_id.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    ensure!(
+        attached.selection.as_ref() == Some(&view)
+            && attached
+                .route_token
+                .as_ref()
+                .is_some_and(|route| route.terminal_id == terminal)
+            && agent_location(endpoint, run).await? == (view, terminal),
+        ProtocolFault::new("TargetGone", "The agent pane is no longer available.")
+    );
+    Ok(attached)
+}
+
+async fn agent_location(
+    endpoint: &ControlEndpoint,
+    run: &corvid_protocol::wire::PresentedRunKey,
+) -> Result<(ViewSelection, String)> {
+    let snapshot = endpoint
+        .view_snapshot(&run.host_id, &run.remote_epoch)
+        .await?;
+    let inventory = Inventory::read(&snapshot);
+    inventory
+        .agents
+        .into_iter()
+        .find(|agent| agent.agent_run_id == run.agent_run_id && agent.terminal_available)
+        .and_then(|agent| {
+            let view = agent.location?;
+            let terminal = inventory
+                .terminals
+                .iter()
+                .find(|terminal| terminal.location.as_ref() == Some(&view))?;
+            Some((view, terminal.terminal_id.clone()))
+        })
+        .ok_or_else(|| {
+            ProtocolFault::new("TargetGone", "The agent pane is no longer available.").into()
+        })
 }
 
 async fn attach(
@@ -1423,7 +1632,7 @@ fn validate_selection(view: &ViewSelection) -> Result<()> {
 }
 
 impl Client<'_> {
-    async fn detach(&mut self) -> Result<()> {
+    async fn detach(&mut self, keep_connection: bool) -> Result<bool> {
         if !self
             .link
             .session()
@@ -1431,12 +1640,12 @@ impl Client<'_> {
             .iter()
             .any(|cap| cap == GRACEFUL_DETACH_CAPABILITY)
         {
-            return Ok(());
+            return Ok(false);
         }
         let id = self
             .link
             .send(Body::GracefulDetach(
-                corvid_protocol::wire::GracefulDetach {},
+                corvid_protocol::wire::GracefulDetach { keep_connection },
             ))
             .await?;
         loop {
@@ -1447,21 +1656,28 @@ impl Client<'_> {
             self.link.session().validate_scope(&reply)?;
             if reply.request_id.as_deref() == Some(id.as_str()) {
                 return match reply.body {
-                    Some(Body::Detach(_)) => Ok(()),
+                    Some(Body::Pong(_)) if keep_connection => Ok(true),
+                    Some(Body::Detach(_)) => Ok(false),
                     Some(Body::Error(fault)) => Err(ProtocolFault::from_wire(&fault).into()),
                     _ => bail!("unexpected daemon detach response"),
                 };
             }
         }
     }
-    fn publish_view(&self) {
-        if let Some(recorder) = self.recorder {
+    fn record_view(&self) {
+        if self.record_navigation
+            && let Some(recorder) = self.recorder
+        {
             recorder.record(
                 self.saved_target.clone(),
                 &self.link.session().host_id,
                 &self.selected,
             );
         }
+    }
+
+    fn publish_view(&self) {
+        self.record_view();
         let previous = {
             let mut buffer = self.shared.buffer();
             if buffer
@@ -1546,6 +1762,12 @@ impl Client<'_> {
 
     async fn action(&mut self, action: Action) -> Result<()> {
         match action {
+            Action::FocusAgent(request) => self.focus_from_deck(request).await?,
+            Action::CommitNavigation => {
+                self.record_navigation = true;
+                self.record_view();
+            }
+
             Action::Rename(target) => {
                 self.request(Body::RenameView(target), Operation::Rename)
                     .await?;

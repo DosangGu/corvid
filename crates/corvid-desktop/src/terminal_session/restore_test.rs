@@ -163,8 +163,14 @@ impl AttachedSession {
     }
 
     fn with_target(state: &Path, store: ViewStore, target: AttachTarget) -> Result<Self> {
-        let (session, job, _prompts) =
-            Session::start(Destination::Local, state.to_owned(), store, target, false)?;
+        let (session, job, _prompts) = Session::start(
+            Destination::Local,
+            state.to_owned(),
+            store,
+            target,
+            false,
+            ParkedConnections::default(),
+        )?;
         Ok(Self {
             session,
             job: Some(job),
@@ -175,7 +181,7 @@ impl AttachedSession {
 impl Drop for AttachedSession {
     fn drop(&mut self) {
         if let Some(mut job) = self.job.take() {
-            job.stop();
+            job.stop(false);
             job.join();
         }
     }

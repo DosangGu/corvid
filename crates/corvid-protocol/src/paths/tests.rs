@@ -244,6 +244,10 @@ fn linux_presentation_uses_xdg_directly_and_only_monitor_has_fallbacks() {
                 DesktopFocus(CONTROLLER),
                 "cv-focus-0123456789abcdef0123456789abcdef",
             ),
+            (
+                DesktopRoute(CONTROLLER),
+                "cv-route-0123456789abcdef0123456789abcdef",
+            ),
         ] {
             let path = Linux::endpoint(&inputs, role, None);
             if xdg.is_empty() {
@@ -271,6 +275,10 @@ fn macos_endpoints_follow_boot_and_keep_controller_scope() {
         (
             DesktopFocus(CONTROLLER),
             "f-0123456789abcdef0123456789abcdef",
+        ),
+        (
+            DesktopRoute(CONTROLLER),
+            "r-0123456789abcdef0123456789abcdef",
         ),
     ];
     for (boot, base) in [

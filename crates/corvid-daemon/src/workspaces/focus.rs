@@ -284,24 +284,8 @@ impl Registry {
                 .verify(target.client, controller, *revision)?;
         }
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let terminal = self
-            .agents
-            .focus_terminal(target.run)
-            .filter(|(_, owner)| owner.is_current())
-            .map(|(terminal, _)| terminal);
-        #[cfg(windows)]
-        let terminal = self.agents.focus_terminal(target.run);
-        let terminal = terminal.ok_or_else(target_gone)?;
-        let location = *self.terminals.get(&terminal).ok_or_else(target_gone)?;
+        let (location, terminal) = self.agent_terminal(target.run)?;
         if matches!(target.authorization, FocusAuthorization::Writer { location: expected } if location != expected)
-        {
-            return Err(target_gone());
-        }
-        if !self
-            .slots
-            .get(&location.pane)
-            .is_some_and(|slot| slot.terminal.has_live_terminal())
         {
             return Err(target_gone());
         }
@@ -321,6 +305,28 @@ impl Registry {
             terminal,
             lease,
         })
+    }
+
+    pub(super) fn agent_terminal(&self, run: Uuid) -> Reply<(Location, Uuid)> {
+        self.require_publication()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let terminal = self
+            .agents
+            .focus_terminal(run)
+            .filter(|(_, owner)| owner.is_current())
+            .map(|(terminal, _)| terminal);
+        #[cfg(windows)]
+        let terminal = self.agents.focus_terminal(run);
+        let terminal = terminal.ok_or_else(target_gone)?;
+        let location = *self.terminals.get(&terminal).ok_or_else(target_gone)?;
+        if !self
+            .slots
+            .get(&location.pane)
+            .is_some_and(|slot| slot.terminal.has_live_terminal())
+        {
+            return Err(target_gone());
+        }
+        Ok((location, terminal))
     }
 
     pub(super) fn require_route(&self, route: InputRoute) -> Reply<()> {
@@ -387,49 +393,45 @@ mod tests {
         )
     }
 
+    fn attach_target(tab: Option<&str>, agent_run: Option<Uuid>) -> AttachTarget {
+        AttachTarget {
+            agent_run,
+            pane: None,
+            take_over: false,
+            expected_terminal: None,
+            workspace: None,
+            tab: None,
+            new_workspace: None,
+            workspace_directory: None,
+            fallback_directory: None,
+            new_tab: tab.map(str::to_owned),
+            keymap: Keymap::default(),
+            viewport: TuiViewport {
+                outer: Viewport::new(80, 24).unwrap(),
+                status_bar: false,
+            },
+            launch: agent_run.is_none().then(|| Launch {
+                argv: ["/bin/sleep", "30"].map(OsString::from).to_vec(),
+                cwd: None,
+                provider: None,
+                if_empty: false,
+            }),
+        }
+    }
+
     async fn attach(
         workspaces: &Workspaces,
         tab: Option<&str>,
     ) -> (Active, mpsc::Receiver<FocusDispatch>) {
         let (sender, receiver) = mpsc::channel(1);
         let active = workspaces
-            .attach(
-                Uuid::new_v4(),
-                AttachTarget {
-                    pane: None,
-                    take_over: false,
-                    expected_terminal: None,
-                    workspace: None,
-                    tab: None,
-                    new_workspace: None,
-                    workspace_directory: None,
-                    fallback_directory: None,
-                    new_tab: tab.map(str::to_owned),
-                    keymap: Keymap::default(),
-                    viewport: TuiViewport {
-                        outer: Viewport::new(80, 24).unwrap(),
-                        status_bar: false,
-                    },
-                    launch: Some(Launch {
-                        argv: ["/bin/sleep", "30"].map(OsString::from).to_vec(),
-                        cwd: None,
-                        provider: None,
-                        if_empty: false,
-                    }),
-                },
-                sender,
-                None,
-                None,
-            )
+            .attach(Uuid::new_v4(), attach_target(tab, None), sender, None, None)
             .await
             .unwrap();
         (active, receiver)
     }
 
-    #[tokio::test]
-    async fn revoking_binding_after_fence_restores_source_with_a_new_input_token() {
-        let workspaces = workspaces();
-        let (target, _target_mailbox) = attach(&workspaces, None).await;
+    fn observe_agent(workspaces: &Workspaces, target: &Active) -> (Uuid, ManagedLaunch) {
         let managed = ManagedLaunch::reserve(
             &Arc::downgrade(&workspaces.registry),
             target.location,
@@ -447,6 +449,63 @@ mod tests {
             owner,
         );
         let run = Uuid::parse_str(&workspaces.agents().agents[0].agent_run_id).unwrap();
+        (run, managed)
+    }
+
+    #[tokio::test]
+    async fn attaching_by_run_opens_its_exact_pane_and_respects_the_existing_writer() {
+        let workspaces = workspaces();
+        let (target, _mailbox) = attach(&workspaces, Some("Agent")).await;
+        let (run, _managed) = observe_agent(&workspaces, &target);
+        let (sender, _receiver) = mpsc::channel(1);
+        let fault = workspaces
+            .attach(
+                Uuid::new_v4(),
+                attach_target(None, Some(run)),
+                sender.clone(),
+                None,
+                None,
+            )
+            .await
+            .err()
+            .expect("an attached agent pane must keep its writer");
+        assert_eq!(fault.code, "WorkspaceBusy");
+
+        let fault = workspaces
+            .attach(
+                Uuid::new_v4(),
+                attach_target(None, Some(Uuid::new_v4())),
+                sender.clone(),
+                None,
+                None,
+            )
+            .await
+            .err()
+            .expect("an unknown run must never attach a default pane");
+        assert_eq!(fault.code, "TargetGone");
+
+        let (location, terminal) = (target.location, target.route.terminal_id);
+        target.terminal.retire_view(target.route).await.unwrap();
+        workspaces.release(target.route.client_id);
+        let active = workspaces
+            .attach(
+                Uuid::new_v4(),
+                attach_target(None, Some(run)),
+                sender,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(active.location, location);
+        assert_eq!(active.route.terminal_id, terminal);
+    }
+
+    #[tokio::test]
+    async fn revoking_binding_after_fence_restores_source_with_a_new_input_token() {
+        let workspaces = workspaces();
+        let (target, _target_mailbox) = attach(&workspaces, None).await;
+        let (run, managed) = observe_agent(&workspaces, &target);
         workspaces.release(target.route.client_id);
         drop(target);
 

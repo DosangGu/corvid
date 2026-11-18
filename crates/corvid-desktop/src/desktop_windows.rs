@@ -3,11 +3,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use anyhow::Result;
+use corvid_client::ControlEndpoint;
 use corvid_client::view_state::ViewStore;
 use corvid_client::view_state::windows::{WindowRegistry, WindowState};
+use corvid_companion::monitor::Scope;
+use corvid_presentation::desktop_focus::{FocusRequest, serve_routed};
 use gpui::{
     App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions, px, size,
 };
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agent_deck;
@@ -49,6 +53,73 @@ impl DesktopWindows {
 
     pub fn settings(&self) -> agent_deck::Settings {
         self.0.settings.clone()
+    }
+
+    pub fn listen_for_deck(&self, cx: &mut App) -> Result<()> {
+        let (requests, mut incoming) = mpsc::channel(8);
+        let state = self.0.settings.state.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        std::thread::Builder::new()
+            .name("corvid-desktop-focus".into())
+            .spawn(move || {
+                runtime.block_on(listen_for_deck(state, requests));
+            })?;
+        let windows = self.clone();
+        cx.spawn(async move |cx| {
+            while let Some((endpoint, request)) = incoming.recv().await {
+                if cx
+                    .update(|cx| windows.route_deck_focus(endpoint, request, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        Ok(())
+    }
+
+    fn route_deck_focus(&self, endpoint: ControlEndpoint, request: FocusRequest, cx: &mut App) {
+        if self.0.quitting.get() || request.result.is_closed() {
+            return;
+        }
+        if self.0.entries.borrow().is_empty()
+            && let Err(error) = self.new_window(cx)
+        {
+            let _ = request
+                .result
+                .send(Err("Could not open a Desktop window.".into()));
+            eprintln!("Could not open a Desktop window: {error:#}");
+            return;
+        }
+        let active = cx.active_window().map(|window| window.window_id());
+        let handles: Vec<_> = self
+            .0
+            .entries
+            .borrow()
+            .iter()
+            .map(|(id, entry)| (*id, entry.handle))
+            .collect();
+        let target = handles
+            .into_iter()
+            .filter_map(|(id, handle)| {
+                let rank = handle
+                    .update(cx, |view, _, _| view.deck_focus_rank(&request.run))
+                    .ok()?;
+                Some(((rank, active == Some(handle.window_id()), id), handle))
+            })
+            .max_by_key(|(priority, _)| *priority);
+        if let Some((_, handle)) = target {
+            let _ = handle.update(cx, |view, window, cx| {
+                view.route_deck_focus(endpoint, request, window, cx)
+            });
+        } else {
+            let _ = request
+                .result
+                .send(Err("No Desktop window is available.".into()));
+        }
     }
 
     pub fn restore(&self, destination: Option<Destination>, cx: &mut App) -> Result<()> {
@@ -242,6 +313,65 @@ impl DesktopWindows {
                     }
                 });
                 Err(error)
+            }
+        }
+    }
+}
+
+async fn listen_for_deck(
+    state: std::path::PathBuf,
+    requests: mpsc::Sender<(ControlEndpoint, FocusRequest)>,
+) {
+    let mut listeners = HashMap::new();
+    loop {
+        if let Ok(scopes) = corvid_companion::monitor::discover(&state) {
+            let mut current = HashMap::new();
+            for scope in scopes {
+                let controller = scope.config.controller_id;
+                if current.contains_key(&controller) {
+                    continue;
+                }
+                let listener = match listeners.remove(&controller) {
+                    Some(listener) if !tokio::task::JoinHandle::<()>::is_finished(&listener) => {
+                        listener
+                    }
+                    _ => tokio::spawn(serve_deck_scope(scope, requests.clone())),
+                };
+                current.insert(controller, listener);
+            }
+            for listener in listeners.into_values() {
+                listener.abort();
+            }
+            listeners = current;
+        }
+        tokio::select! {
+            _ = requests.closed() => break,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+        }
+    }
+}
+
+async fn serve_deck_scope(scope: Scope, requests: mpsc::Sender<(ControlEndpoint, FocusRequest)>) {
+    let (focus, mut incoming) = mpsc::channel::<FocusRequest>(1);
+    let listener = serve_routed(scope.config.host_id, scope.config.controller_id, focus);
+    tokio::pin!(listener);
+    loop {
+        tokio::select! {
+            _ = &mut listener => break,
+            _ = requests.closed() => break,
+            request = incoming.recv() => {
+                let Some(request) = request else { break };
+                match scope.control_endpoint() {
+                    Ok(endpoint) => {
+                        if let Err(error) = requests.try_send((endpoint, request)) {
+                            let (_, request) = error.into_inner();
+                            let _ = request.result.send(Err("Desktop is busy. Try again.".into()));
+                        }
+                    }
+                    Err(_) => {
+                        let _ = request.result.send(Err("Could not read the agent host connection.".into()));
+                    }
+                }
             }
         }
     }

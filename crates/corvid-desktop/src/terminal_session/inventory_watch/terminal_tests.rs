@@ -85,7 +85,12 @@ async fn open(
     target: Option<ViewSelection>,
 ) -> Result<(InteractiveConnection, Attached)> {
     let mut link = endpoint
-        .interactive(vec!["attach.v1".into(), "render.v1".into()])
+        .interactive(vec![
+            "attach.v1".into(),
+            "render.v1".into(),
+            GRACEFUL_DETACH_CAPABILITY.into(),
+            corvid_protocol::PARK_TERMINAL_CAPABILITY.into(),
+        ])
         .await?;
     let request = if let Some(target) = target {
         Attach {
@@ -203,6 +208,91 @@ async fn verify_titles(endpoint: ControlEndpoint) -> Result<()> {
     )?;
     wait_title(&mut link, &shared, &target.pane_id, "Title-32").await?;
     link.send(Body::Detach(Detach {})).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn parked_transport_releases_its_writer_and_reattaches_with_a_fresh_route() -> Result<()> {
+    let (_daemon, endpoint) = Daemon::start().await?;
+    let (mut link, attached) = open(&endpoint, None).await?;
+    let view = attached.selection.context("missing initial pane")?;
+    let original = attached.route_token.context("missing initial route")?;
+
+    let id = link
+        .send(Body::GracefulDetach(
+            corvid_protocol::wire::GracefulDetach {
+                keep_connection: true,
+            },
+        ))
+        .await?;
+    timeout(COMMAND_TIMEOUT, async {
+        loop {
+            let frame = link.receive().await?;
+            if let Frame::Structured(_) = &frame {
+                let (request, body) = envelope(&link, frame)?;
+                if request.as_ref() == Some(&id) {
+                    ensure!(
+                        matches!(body, Body::Pong(_)),
+                        "daemon did not park the transport"
+                    );
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+        }
+    })
+    .await??;
+
+    // An independent client can attach without taking over the parked pane.
+    let (mut other, attached) = open(&endpoint, Some(view.clone())).await?;
+    let other_route = attached.route_token.context("missing second route")?;
+    assert_eq!(other_route.terminal_id, original.terminal_id);
+    let id = other
+        .send(Body::GracefulDetach(
+            corvid_protocol::wire::GracefulDetach::default(),
+        ))
+        .await?;
+    timeout(COMMAND_TIMEOUT, async {
+        loop {
+            let frame = other.receive().await?;
+            if let Frame::Structured(_) = &frame {
+                let (request, body) = envelope(&other, frame)?;
+                if request.as_ref() == Some(&id) {
+                    ensure!(
+                        matches!(body, Body::Detach(_)),
+                        "second client did not detach"
+                    );
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+        }
+    })
+    .await??;
+
+    let cache = ParkedConnections::default();
+    let host = link.session().host_id.clone();
+    let epoch = link.session().server_epoch.clone();
+    cache.insert(Destination::Local, endpoint, link);
+    let (_, mut link) = cache
+        .take(&Destination::Local, Some(&host), Some(&epoch))
+        .await
+        .context("could not recover the parked transport")?;
+    let reattached = attach(
+        &mut link,
+        Grid::new(24, 80),
+        false,
+        Attach {
+            workspace_id: Some(view.workspace_id.clone()),
+            tab_id: Some(view.tab_id.clone()),
+            pane_id: Some(view.pane_id.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let route = reattached.route_token.context("missing resumed route")?;
+    assert_eq!(reattached.selection, Some(view));
+    assert_eq!(route.terminal_id, original.terminal_id);
+    assert_ne!(route.client_id, original.client_id);
+    assert!(route.connection_generation > other_route.connection_generation);
     Ok(())
 }
 

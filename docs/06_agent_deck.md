@@ -87,9 +87,9 @@ identity, slots, and pins across the rename.
 The `corvid-streamdeck` USB adapter discovers the same monitor scopes without
 opening Agent Deck. Its `--state-dir` selects a host just like the UI; an explicit
 `--pipe-instance` or `--socket-dir` remains supported. Status display needs no
-Deck UI. Pressing an agent key focuses the exact pane in an attached Corvid
-Desktop for the monitored host. Desktop registers while attached, so opening
-the Agent Deck window is unnecessary. Use `--target CLIENT_ID` to direct the
+Deck UI. Pressing an agent key asks running Corvid Desktop to focus the exact
+pane for the monitored host. Desktop can switch hosts to reach the pane.
+Opening the Agent Deck window is unnecessary. Use `--target CLIENT_ID` to direct the
 keys to an explicitly paired TUI instead.
 
 | Windows action | Result |
@@ -186,7 +186,7 @@ notifications do not open the Deck or take focus.
 **Expand Deck** expands the same window for the queue, run history, hosts,
 terminal selection, and notification preferences. **Mini deck** returns to the compact
 view. On Windows and macOS, clicking an individual agent notification selects
-that agent's pane in the Desktop attached to its host, restores the target window
+that agent's pane in Desktop, restores the target window
 if minimized, and requests foreground activation. Batch and test notifications
 open Notifications and settings. Window
 visibility and size do not affect daemon-owned work or the slot policy. The mini
@@ -428,9 +428,12 @@ configured by Desktop or companion setup. Newly connected hosts appear automatic
 including their existing agents. The overview checks the expected host identity before using a snapshot
 and marks previously seen observations as cached when a host goes offline.
 **Show host Deck** opens that host's running Deck for slot management. A card
-in the combined grid requests the exact run from the Desktop already attached
-to that host through the same private, controller-scoped endpoint used by the
-physical Stream Deck. The current host also uses it for queued runs and the
+in the combined grid requests the exact run from Desktop through the same
+private, controller-scoped endpoint used by the physical Stream Deck. If the
+pane is already open in a Desktop window, that window is activated. Otherwise
+Desktop opens the pane, connecting to the registered host if needed. Switching
+hosts releases the previous pane's writer and keeps its connection ready for
+reuse on daemons that support parking. The current host also uses it for queued runs and the
 notification history's Desktop action. If that endpoint is absent or rejects
 the request because another window owns the writer, Deck can pass the same
 request to the Desktop window that opened it. Cached cards show

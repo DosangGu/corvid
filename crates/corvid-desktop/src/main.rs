@@ -140,6 +140,9 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             eprintln!("Could not restore Desktop windows: {error:#}");
             app_windows.quit(cx);
         }
+        if let Err(error) = app_windows.listen_for_deck(cx) {
+            eprintln!("Could not listen for Agent Deck: {error:#}");
+        }
         cx.activate(true);
     });
 

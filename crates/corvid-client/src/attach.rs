@@ -354,6 +354,7 @@ async fn request_attach(
     let request = connection.session.envelope(
         Some(Uuid::new_v4().to_string()),
         Body::Attach(Attach {
+            agent_run_id: None,
             workspace_id: options.workspace,
             tab_id: options.tab,
             pane_id: options.pane,
