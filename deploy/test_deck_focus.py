@@ -9,6 +9,7 @@ import pty
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import tempfile
 import time
@@ -16,6 +17,7 @@ import time
 import monitor_fixture
 
 WAIT = 15
+REPOSITORY = Path(__file__).resolve().parents[1]
 
 
 def until(description, check):
@@ -149,7 +151,59 @@ def launch_agent(corvid, env, root, name):
         os.waitpid(pid, 0)
 
 
-def main(build, screenshot):
+def fields(line):
+    return dict(field.split("=", 1) for field in line.split() if "=" in field)
+
+
+def recover_agent_cards(stack, daemon, corvid, env, runtime, agents, slots, control):
+    sys.path.insert(0, str(REPOSITORY / "crates/corvid-tui/tests"))
+    from agent_handoff import prepare
+
+    previous = {fields(line)["run"] for line in slots().splitlines()
+                if line.startswith("slot=") and "availability=Available" in line}
+    assert len(previous) == 2, previous
+    identity = prepare([corvid, "--runtime-dir", runtime], runtime,
+                       REPOSITORY / "crates/corvid-protocol/proto/corvid.proto")
+    assert daemon.wait(timeout=5) == 0
+    processes(stack, corvid, "daemon", "--autostarted", env=env)
+    until("replacement daemon", lambda: subprocess.run(
+        [corvid, "control", "ping"], env=env, capture_output=True, timeout=5
+    ).returncode == 0)
+
+    def recovered():
+        header, *lines = slots().splitlines()
+        header = fields(header)
+        if header.get("connection") != "Ready" or header.get("remote_epoch") == identity["server_epoch"]:
+            return None
+        assert header["host_id"] == identity["host_id"], header
+        cards = [fields(line) for line in lines if line.startswith("slot=") and " run=" in line]
+        history = {fields(line)["run"] for line in lines if line.startswith("ended ")}
+        if len(cards) != 2 or not previous <= history:
+            return None
+        assert all(card["availability"] == "Available" for card in cards), cards
+        assert previous.isdisjoint(card["run"] for card in cards), cards
+        return {card["run"].rsplit("/", 1)[-1]: int(card["slot"]) - 1 for card in cards}
+
+    indices = until("two recovered cards and both prior runs in history", recovered)
+    old_agents = {agent["session"]: (agent["pid"], agent["terminal"]) for agent in agents}
+    current = {fields(line)["session"]: (line.split()[0], fields(line))
+               for line in control("agents").splitlines()}
+    assert {name: (agent["pid"], agent["terminal"]) for name, (_, agent) in current.items()} == old_agents
+    return {name: indices[run_id] for name, (run_id, _) in current.items()}
+
+
+def capture_history(deck, scale, screenshot):
+    run("xdotool", "windowactivate", "--sync", deck)
+    width = int(geometry(deck)["WIDTH"])
+    click(deck, width - round(57 * scale), round(18 * scale))
+    until("expanded Deck", lambda: int(geometry(deck)["WIDTH"]) > width)
+    click(deck, round(197 * scale), round(153 * scale))
+    run("xdotool", "mousemove", "--window", deck, str(round(246 * scale)), str(round(176 * scale)))
+    time.sleep(0.2)
+    run("scrot", "--overwrite", "--focused", str(screenshot))
+
+
+def main(build, screenshot, history_screenshot):
     with ExitStack() as stack:
         root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".deck-focus-", dir=Path.home())))
         runtime = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".cvf-", dir=Path.home())))
@@ -163,7 +217,7 @@ def main(build, screenshot):
         fixture = Path(__file__).with_name("fixtures") / "deck_focus_agent.rs"
         run("rustc", "--edition=2024", str(fixture), "-o", str(provider))
         state = root / "state/corvid/companion"
-        daemon = processes(stack, corvid, "daemon", env=env)
+        daemon = processes(stack, corvid, "daemon", "--autostarted", env=env)
         processes(stack, "openbox", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         until("daemon", lambda: subprocess.run(
             [corvid, "control", "ping"], env=env, capture_output=True, timeout=5
@@ -188,8 +242,7 @@ def main(build, screenshot):
             until("two agent cards", lambda: slots().count("availability=Available") == 2)
         except AssertionError as error:
             raise AssertionError(f"{error}\n{slots()}\n{control('agents')}") from error
-        agents = [dict(field.split("=", 1) for field in line.split()[1:] if "=" in field)
-                  for line in control("agents").splitlines()]
+        agents = [fields(line) for line in control("agents").splitlines()]
         terminals = {agent["session"]: agent["terminal"] for agent in agents}
         deck = open_deck(desktop)
         run("xdotool", "windowactivate", "--sync", deck)
@@ -239,12 +292,28 @@ def main(build, screenshot):
                 raise AssertionError(f"{error}\n{control('clients')}\n{slots()}\nFixture input: {markers!r}") from error
         if screenshot:
             run("scrot", "--overwrite", "--focused", str(screenshot))
-        print("PASS Deck clicks focused two distinct agent panes and both keys followed live prompt hooks")
+
+        recovered = recover_agent_cards(stack, daemon, corvid, env, runtime / "corvid", agents, slots, control)
+        for name in ("second", "first"):
+            def focus_recovered():
+                run("xdotool", "windowactivate", "--sync", deck)
+                click(deck, round((55 + recovered[name] * 94) * scale), round(84 * scale))
+                time.sleep(0.3)
+                return has_keyboard_focus(desktop) and any(
+                    f"terminal={terminals[name]}" in line.split() and "pane-writer=" in line
+                    for line in control("clients").splitlines()
+                )
+
+            until(f"Deck click focused {name}'s retained terminal", focus_recovered)
+        if history_screenshot:
+            capture_history(deck, scale, history_screenshot)
+        print("PASS Deck followed live prompts and focused both retained agents after daemon handoff")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--screenshot", type=Path)
+    parser.add_argument("--history-screenshot", type=Path)
     args = parser.parse_args()
-    main(args.build.resolve(), args.screenshot)
+    main(args.build.resolve(), args.screenshot, args.history_screenshot)

@@ -204,7 +204,7 @@ jobs:
       - name: Linux Agent Deck card focus
         if: runner.os == 'Linux'
         timeout-minutes: 5
-        run: xvfb-run -a python3 deploy/test_deck_focus.py --build target/${{ matrix.target }}/release
+        run: xvfb-run -a python3 deploy/test_deck_focus.py --build target/${{ matrix.target }}/release --history-screenshot target/agent-deck-run-history.png
       - name: Linux Agent Deck multi-host grid
         if: runner.os == 'Linux'
         timeout-minutes: 5
@@ -227,6 +227,7 @@ jobs:
           path: |
             target/agent-deck-ready.png
             target/agent-deck-settings.png
+            target/agent-deck-run-history.png
             target/agent-deck-multi-host.png
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

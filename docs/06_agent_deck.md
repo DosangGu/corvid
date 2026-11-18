@@ -183,7 +183,7 @@ focusing a terminal leaves those windows open. On Windows, closing hides the
 window when the tray is available. On Linux it exits Agent Deck. Incoming agent
 notifications do not open the Deck or take focus.
 
-**Expand Deck** expands the same window for the queue, closed panes, hosts,
+**Expand Deck** expands the same window for the queue, run history, hosts,
 terminal selection, and notification preferences. **Mini deck** returns to the compact
 view. On Windows, an individual agent notification opens the mini grid. Batch
 and test notifications open Notifications and settings. On macOS, notification
@@ -234,7 +234,7 @@ observations. Process-only sessions keep their gray status.
 
 ![Two live fixture sessions after the first responded and the second submitted a prompt](images/agent-deck/live-prompt-status.png)
 
-**Queue**, **Closed panes**, **Hosts**, and **Notifications** retain their separate
+**Queue**, **Run history**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
 
 ![Mini Agent Deck with provider logos and synthetic states](images/agent-deck/logo-cards.png)
@@ -278,10 +278,10 @@ login startup, mixed-DPI dragging, and taskbar relocation remain unverified for
 the GPUI migration. Earlier renderer qualification is not evidence for those
 new runtime paths.
 
-An agent's work finishing, process exiting, or provider context changing does not
-remove its card. The card remains until its owning pane is removed from the daemon's
-layout by closing that pane, its tab, or its workspace/session in Desktop. Closing
-only the Desktop window detaches the presentation and retains the layout.
+An agent's card survives work completion, process exit, and provider context
+changes within the current daemon epoch. Closing its pane, tab, or workspace
+removes the card. Closing the Desktop window detaches the presentation and
+retains the layout.
 
 Runs beyond the configured slot count enter a FIFO queue. Initial observations use
 the daemon's immutable creation sequence, with run identity as a deterministic
@@ -290,13 +290,17 @@ then fills the tail from the queue. For example, `[A, B, C] + [D, E]` becomes
 `[A, C, D] + [E]` when B's pane closes. Completed queued agents remain queued too.
 Pins move with their agent; they do not reserve empty holes.
 
-Pane ownership is saved with each tracked run. Agent-history pruning, a disconnect,
-or an epoch change alone cannot evict a card. A synchronized layout confirms pane
-removal, including closures that happened while Deck was offline. Older saved
-records learn ownership when observed again; an unobserved legacy record is kept
-conservatively. The queue is bounded to 4,096 tracked runs and closed-pane history
-to 256 entries. The UI does not offer manual removal or out-of-order placement;
-legacy CLI layout-editing commands remain available for compatibility.
+Pane ownership is saved with each tracked run. During a disconnect, Deck shows
+cached cards. The next synchronized layout confirms pane closures that happened
+while Deck was offline. If the same host starts a new daemon epoch, Companion
+moves the previous epoch's runs into **Run history** as part of synchronization.
+Rediscovered agents get new cards and fresh pins. The queue is bounded to 4,096
+tracked runs and run history to 256 entries. Legacy CLI layout-editing commands
+remain available for compatibility.
+
+Updated Desktop replaces an older Companion the next time it connects to the
+monitored host. The replacement reuses that host's saved controller state while
+the daemon and its terminals continue running.
 
 Every changed slot gets a new revision. A click captures both the run identity and
 revision; compaction cannot turn a click on B into a click on C. Completed or stale
