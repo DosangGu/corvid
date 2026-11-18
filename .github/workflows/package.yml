@@ -39,6 +39,8 @@ jobs:
           persist-credentials: false
       - run: python3 deploy/release.py validate
       - run: python3 deploy/test_icons.py
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: cargo fmt --all -- --check
 
   pipeline:
