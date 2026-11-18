@@ -24,7 +24,15 @@ pub struct TerminalView {
     selection: Option<Selection>,
     history: Option<History>,
     history_request: Option<Task<()>>,
+    pending_wheel_back: usize,
     _updates: Task<()>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryOpen {
+    Wheel,
+    Browse,
+    Search,
 }
 
 struct Selection {
@@ -90,6 +98,7 @@ impl TerminalView {
             selection: None,
             history: None,
             history_request: None,
+            pending_wheel_back: 0,
             _updates: updates,
         }
     }
@@ -104,6 +113,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_pending_wheel();
         self.focus(window);
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
@@ -169,32 +179,66 @@ impl TerminalView {
         self.session.send(&self.pane, text.into_bytes(), true);
     }
 
-    fn open_history(&mut self, search: bool, back: isize, cx: &mut Context<Self>) {
-        self.selection = None;
-        self.marked.clear();
-        let mut history = History::new(search);
-        history.scroll(-back, self.visible_rows());
-        if let Some(receive) = self.session.history(&self.pane) {
-            self.history_request = Some(cx.spawn(async move |view, cx| {
-                let result = receive
-                    .await
-                    .unwrap_or_else(|_| Err("The terminal connection ended.".into()));
-                let _ = view.update(cx, |view, cx| {
-                    let height = view.visible_rows();
-                    if let Some(history) = &mut view.history {
-                        history.loaded(result, height);
-                        cx.notify();
-                    }
-                });
-            }));
+    fn open_history(&mut self, mode: HistoryOpen, back: isize, cx: &mut Context<Self>) {
+        let shell_only = mode == HistoryOpen::Wheel;
+        let height = self.visible_rows();
+        if shell_only {
+            self.pending_wheel_back = back as usize;
         } else {
-            history.loaded(
-                Err("Terminal history is unavailable.".into()),
-                self.visible_rows(),
-            );
+            self.pending_wheel_back = 0;
+            self.selection = None;
+            self.marked.clear();
+            let mut history = History::new(mode == HistoryOpen::Search);
+            history.scroll(-back, height);
+            self.history = Some(history);
         }
-        self.history = Some(history);
+        let Some(receive) = self.session.history(&self.pane, shell_only) else {
+            self.pending_wheel_back = 0;
+            if let Some(history) = &mut self.history {
+                history.loaded(Err("Terminal history is unavailable.".into()), height);
+            }
+            cx.notify();
+            return;
+        };
+        self.history_request = Some(cx.spawn(async move |view, cx| {
+            let result = receive
+                .await
+                .unwrap_or_else(|_| Err("The terminal connection ended.".into()));
+            let _ = view.update(cx, |view, cx| {
+                let height = view.visible_rows();
+                if shell_only {
+                    let back = std::mem::take(&mut view.pending_wheel_back);
+                    if let Some(history) = History::from_wheel(result, back, height) {
+                        view.selection = None;
+                        view.marked.clear();
+                        view.history = Some(history);
+                    }
+                } else if let Some(history) = &mut view.history {
+                    history.loaded(result, height);
+                }
+                cx.notify();
+            });
+        }));
         cx.notify();
+    }
+
+    fn cancel_pending_wheel(&mut self) {
+        if self.pending_wheel_back > 0 {
+            self.pending_wheel_back = 0;
+            self.history_request = None;
+        }
+    }
+
+    fn move_in_history(&mut self, rows: isize, height: usize) {
+        if let Some(history) = &mut self.history {
+            history.scroll(rows, height);
+            if rows > 0 && history.at_bottom(height) {
+                self.history = None;
+                self.history_request = None;
+                self.marked.clear();
+            }
+        }
+        self.selection = None;
     }
 
     fn visible_rows(&self) -> usize {
@@ -214,9 +258,8 @@ impl TerminalView {
         let count = (delta / metrics.row).abs().ceil() as isize;
         let rows = if delta > px(0.) { -count } else { count };
         let height = self.visible_rows();
-        if let Some(history) = &mut self.history {
-            history.scroll(rows, height);
-            self.selection = None;
+        if self.history.is_some() {
+            self.move_in_history(rows, height);
             cx.notify();
         } else if bounds.contains(&event.position) {
             let cell = metrics.position(bounds, event.position);
@@ -224,10 +267,21 @@ impl TerminalView {
                 u8::from(event.modifiers.alt) * 8 + u8::from(event.modifiers.control) * 16;
             if !event.modifiers.shift && self.session.send_wheel(&self.pane, cell, rows, modifiers)
             {
+                self.cancel_pending_wheel();
                 self.selection = None;
                 cx.notify();
+            } else if self.pending_wheel_back > 0 {
+                let back = self
+                    .pending_wheel_back
+                    .saturating_add_signed(-rows)
+                    .min(isize::MAX as usize);
+                if back == 0 {
+                    self.cancel_pending_wheel();
+                } else {
+                    self.pending_wheel_back = back;
+                }
             } else if rows < 0 {
-                self.open_history(false, count, cx);
+                self.open_history(HistoryOpen::Wheel, count, cx);
             }
         }
         cx.stop_propagation();
@@ -276,11 +330,11 @@ impl TerminalView {
             ("backspace", false, _) => history.edit_query(None),
             ("enter", false, shift) => history.find(shift),
             ("up", false, _) => history.scroll(-1, height),
-            ("down", false, _) => history.scroll(1, height),
+            ("down", false, _) => self.move_in_history(1, height),
             ("pageup", _, _) => history.scroll(-(height as isize), height),
-            ("pagedown", _, _) => history.scroll(height as isize, height),
+            ("pagedown", _, _) => self.move_in_history(height as isize, height),
             ("home", _, _) => history.scroll(isize::MIN, height),
-            ("end", _, _) => history.scroll(isize::MAX, height),
+            ("end", _, _) => self.move_in_history(isize::MAX, height),
             _ => return false,
         }
         self.selection = None;
@@ -289,6 +343,7 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_pending_wheel();
         let key = &event.keystroke;
         let modifiers = key.modifiers;
         if self.history.is_some() {
@@ -301,9 +356,9 @@ impl TerminalView {
             && !modifiers.alt
             && key.key == "f"
         {
-            self.open_history(true, 0, cx);
+            self.open_history(HistoryOpen::Search, 0, cx);
         } else if modifiers.shift && !modifiers.control && !modifiers.alt && key.key == "pageup" {
-            self.open_history(false, self.visible_rows() as isize, cx);
+            self.open_history(HistoryOpen::Browse, self.visible_rows() as isize, cx);
         } else if (modifiers.control || (cfg!(target_os = "macos") && modifiers.platform))
             && !modifiers.alt
             && key.key == "v"
@@ -483,6 +538,7 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_pending_wheel();
         self.marked.clear();
         self.selection = None;
         if let Some(history) = &mut self.history {
@@ -505,6 +561,7 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_pending_wheel();
         self.marked = text
             .chars()
             .filter(|ch| !ch.is_control())

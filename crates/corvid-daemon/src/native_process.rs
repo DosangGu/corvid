@@ -186,6 +186,15 @@ fn parent(entries: &BTreeMap<u32, Entry>, child: ProcessKey) -> Option<Process> 
         .then_some(process)
 }
 
+// ConPTY has no Unix foreground process group. For an unmarked shell, keep
+// wheel input live while a child is present. Explicit history stays available.
+pub(crate) fn shell_has_no_child(shell: ProcessKey) -> bool {
+    let Some(entries) = snapshot() else {
+        return false;
+    };
+    entries.contains_key(&shell.pid) && !entries.values().any(|entry| entry.parent == shell.pid)
+}
+
 pub(crate) fn scan(roots: &[ProcessKey]) -> Vec<Found> {
     if roots.is_empty() {
         return Vec::new();

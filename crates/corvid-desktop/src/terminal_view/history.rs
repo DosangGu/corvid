@@ -33,6 +33,21 @@ impl History {
         }
     }
 
+    pub(super) fn from_wheel(
+        result: Result<TerminalHistory, String>,
+        back: usize,
+        height: usize,
+    ) -> Option<Self> {
+        let snapshot = result.ok()?;
+        if !snapshot.shell_foreground || back == 0 || snapshot.lines.len() <= height {
+            return None;
+        }
+        let mut history = Self::new(false);
+        history.pending_back = back;
+        history.loaded(Ok(snapshot), height);
+        Some(history)
+    }
+
     pub(super) fn loaded(&mut self, result: Result<TerminalHistory, String>, height: usize) {
         self.result = Some(result);
         self.first = self.last_top(height).saturating_sub(self.pending_back);
@@ -75,6 +90,14 @@ impl History {
         }
         let end = self.last_top(height);
         self.first = self.first.min(end).saturating_add_signed(delta).min(end);
+    }
+
+    pub(super) fn at_bottom(&self, height: usize) -> bool {
+        match &self.result {
+            None => self.pending_back == 0,
+            Some(Ok(_)) => self.first >= self.last_top(height),
+            Some(Err(_)) => true,
+        }
     }
 
     fn snapshot(&self) -> Option<&TerminalHistory> {
@@ -173,6 +196,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opens_wheel_history_only_for_a_confirmed_shell_with_older_rows() {
+        let mut snapshot = TerminalHistory {
+            columns: 40,
+            lines: (0..12).map(|row| row.to_string()).collect(),
+            ..Default::default()
+        };
+        assert!(History::from_wheel(Ok(snapshot.clone()), 3, 4).is_none());
+        snapshot.shell_foreground = true;
+        assert!(History::from_wheel(Ok(snapshot.clone()), 3, 12).is_none());
+        assert!(History::from_wheel(Ok(snapshot.clone()), 0, 4).is_none());
+        let mut history = History::from_wheel(Ok(snapshot), 3, 4).unwrap();
+        assert_eq!(history.first, 5);
+        history.scroll(3, 4);
+        assert!(history.at_bottom(4));
+    }
+
+    #[test]
     fn scrolls_by_the_entire_gesture_while_waiting_for_history() {
         let mut history = History::new(false);
         for delta in [-3, -5, -8, 2] {
@@ -182,11 +222,16 @@ mod tests {
             Ok(TerminalHistory {
                 columns: 20,
                 lines: (0..80).map(|row| format!("row {row}")).collect(),
-                truncated: false,
+                ..Default::default()
             }),
             4,
         );
         assert_eq!(history.first, 62);
+        assert!(!history.at_bottom(4));
+        history.scroll(13, 4);
+        assert!(!history.at_bottom(4));
+        history.scroll(1, 4);
+        assert!(history.at_bottom(4));
         history.scroll(isize::MIN, 4);
         assert_eq!(
             history.screen(Grid::new(4, 20)).unwrap().0.contents(),
@@ -203,7 +248,7 @@ mod tests {
                     .map(str::to_owned)
                     .into(),
                 columns: 30,
-                truncated: false,
+                ..Default::default()
             }),
             2,
         );

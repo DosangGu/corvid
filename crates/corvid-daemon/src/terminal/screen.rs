@@ -25,6 +25,7 @@ struct QueryReplies {
     overflow: bool,
     title: String,
     older_rows: Option<OlderRows>,
+    shell_prompt: Option<bool>,
 }
 
 impl QueryReplies {
@@ -50,6 +51,14 @@ impl Callbacks for QueryReplies {
     }
 
     fn unhandled_osc(&mut self, screen: &mut Screen, params: &[&[u8]]) {
+        if let [b"133" | b"633", phase, ..] = params {
+            match *phase {
+                b"A" | b"B" => self.shell_prompt = Some(true),
+                b"C" => self.shell_prompt = Some(false),
+                b"D" => self.shell_prompt = None,
+                _ => {}
+            }
+        }
         if matches!(params.first(), Some(&b"0" | &b"2")) {
             self.set_window_title(screen, &params[1..].join(&b';'));
         }
@@ -162,6 +171,16 @@ impl TerminalScreen {
 
     pub(super) fn bracketed_paste(&self) -> bool {
         self.parser.screen().bracketed_paste()
+    }
+
+    pub(super) fn shell_prompt(&self) -> Option<bool> {
+        self.parser.callbacks().shell_prompt
+    }
+
+    pub(super) fn allows_shell_history(&self) -> bool {
+        !self.parser.screen().alternate_screen()
+            && self.shell_prompt() != Some(false)
+            && self.wheel_encoding() == WheelEncoding::Disabled
     }
 
     pub(super) fn wheel_encoding(&self) -> WheelEncoding {
@@ -621,6 +640,25 @@ mod tests {
         terminal.process(b"\x1b[3").unwrap();
         terminal.process(b"Jafter").unwrap();
         assert_eq!(terminal.history().lines.len(), 4);
+    }
+
+    #[test]
+    fn shell_history_observes_prompt_markers_and_terminal_modes() {
+        let mut terminal = TerminalScreen::new(Viewport::new(80, 24).unwrap());
+        assert!(terminal.allows_shell_history());
+        terminal.process(b"\x1b]133;").unwrap();
+        terminal.process(b"B\x07").unwrap();
+        assert_eq!(terminal.shell_prompt(), Some(true));
+        terminal.process(b"\x1b]633;C\x1b\\").unwrap();
+        assert!(!terminal.allows_shell_history());
+        terminal.process(b"\x1b]633;D;0\x07\x1b]633;A\x07").unwrap();
+        assert!(terminal.allows_shell_history());
+        terminal.process(b"\x1b[?1049h").unwrap();
+        assert!(!terminal.allows_shell_history());
+        terminal.process(b"\x1b[?1049l\x1b[?1000h").unwrap();
+        assert!(!terminal.allows_shell_history());
+        terminal.process(b"\x1b[?1000l").unwrap();
+        assert!(terminal.allows_shell_history());
     }
 
     #[test]

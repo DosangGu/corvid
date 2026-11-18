@@ -145,10 +145,10 @@ impl Backend {
         }
     }
 
-    pub(super) fn history(&mut self) -> Result<TerminalHistory> {
+    pub(super) fn history(&mut self, shell_only: bool) -> Result<TerminalHistory> {
         match self {
-            Self::Local(session) => Ok(session.screen.history()),
-            Self::Hosted(client) => client.history(),
+            Self::Local(session) => Ok(session.history(shell_only)),
+            Self::Hosted(client) => client.history(shell_only),
         }
     }
 

@@ -399,7 +399,7 @@ enum Action {
         bytes: Vec<u8>,
         paste: bool,
     },
-    ReadHistory(u64, oneshot::Sender<HistoryReply>),
+    ReadHistory(HistoryRead),
     DisconnectOthers(u64),
     Select(ViewSelection, bool),
     Create(Target),
@@ -585,14 +585,18 @@ impl Session {
         self.shared.buffer().previews.get(pane).map(read)
     }
 
-    pub fn history(&self, pane: &str) -> Option<oneshot::Receiver<HistoryReply>> {
+    pub fn history(&self, pane: &str, shell_only: bool) -> Option<oneshot::Receiver<HistoryReply>> {
         let buffer = self.shared.buffer();
         if !buffer.ui.can_write() || buffer.screen.is_none() || !in_pane(&buffer.ui, pane) {
             return None;
         }
         let (send, receive) = oneshot::channel();
         self.actions
-            .try_send(Action::ReadHistory(buffer.revision, send))
+            .try_send(Action::ReadHistory(HistoryRead {
+                revision: buffer.revision,
+                shell_only,
+                reply: send,
+            }))
             .ok()?;
         Some(receive)
     }
@@ -740,8 +744,16 @@ struct Client<'a> {
     pending: Option<Pending>,
     preview: Option<(String, Pending)>,
     history: Option<HistoryRequest>,
+    queued_history: Option<HistoryRead>,
+    next_history: Instant,
     preview_index: usize,
     next_preview: Instant,
+}
+
+struct HistoryRead {
+    revision: u64,
+    shell_only: bool,
+    reply: oneshot::Sender<HistoryReply>,
 }
 
 struct HistoryRequest {
@@ -1206,6 +1218,8 @@ async fn run(
         pending: None,
         preview: None,
         history: None,
+        queued_history: None,
+        next_history: Instant::now(),
         preview_index: 0,
         next_preview: Instant::now(),
     };
@@ -1427,6 +1441,12 @@ impl Client<'_> {
         if let Some(history) = &self.history {
             ensure!(now < history.deadline, "daemon terminal history timed out");
         }
+        if self.history.is_none()
+            && now >= self.next_history
+            && let Some(read) = self.queued_history.take()
+        {
+            self.read_history(read).await?;
+        }
         if let Some(pending) = &self.pending {
             ensure!(now < pending.deadline, "daemon view change timed out");
         } else if revision == self.route.view_revision && self.grid != grid {
@@ -1486,7 +1506,14 @@ impl Client<'_> {
                 )
                 .await?;
             }
-            Action::ReadHistory(revision, reply) => self.read_history(revision, reply).await?,
+            Action::ReadHistory(read) => {
+                if self.history.is_some() || Instant::now() < self.next_history {
+                    self.queued_history = Some(read);
+                } else {
+                    self.queued_history = None;
+                    self.read_history(read).await?;
+                }
+            }
             Action::OpenAgentDeck(settings) if self.agent_deck.tasks.is_empty() => {
                 let host = self.link.session().host_id.clone();
                 self.agent_deck.spawn(
@@ -1527,11 +1554,12 @@ impl Client<'_> {
         Ok(())
     }
 
-    async fn read_history(
-        &mut self,
-        revision: u64,
-        reply: oneshot::Sender<HistoryReply>,
-    ) -> Result<()> {
+    async fn read_history(&mut self, read: HistoryRead) -> Result<()> {
+        let HistoryRead {
+            revision,
+            shell_only,
+            reply,
+        } = read;
         if reply.is_closed() {
             return Ok(());
         }
@@ -1543,8 +1571,6 @@ impl Client<'_> {
             .any(|name| name == TERMINAL_HISTORY_CAPABILITY);
         let error = if !available {
             Some("This daemon does not support terminal history.")
-        } else if self.history.is_some() {
-            Some("A terminal history request is already in progress.")
         } else if self.pending.is_some() || revision != self.route.view_revision {
             Some("The terminal view changed. Open history again.")
         } else {
@@ -1558,6 +1584,7 @@ impl Client<'_> {
             .link
             .send(Body::ReadTerminalHistory(ReadTerminalHistory {
                 expected_view_revision: Some(revision),
+                shell_only,
             }))
             .await?;
         self.history = Some(HistoryRequest {
@@ -1798,6 +1825,8 @@ impl Client<'_> {
             .is_some_and(|history| id.as_deref() == Some(&history.id))
         {
             let pending = self.history.take().expect("matching history request");
+            // A quick down/up gesture or explicit shortcut can follow an in-flight read.
+            self.next_history = Instant::now() + corvid_protocol::TERMINAL_HISTORY_INTERVAL;
             let result = match body {
                 Body::TerminalHistory(history) if pending.revision == self.route.view_revision => {
                     validate_history(&history)?;

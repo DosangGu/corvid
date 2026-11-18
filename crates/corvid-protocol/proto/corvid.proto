@@ -1182,6 +1182,8 @@ message ViewRenamed {}
 
 message ReadTerminalHistory {
   optional uint64 expected_view_revision = 1;
+  // Wheel gestures request a snapshot only at a foreground shell.
+  bool shell_only = 2;
 }
 
 message DisconnectWorkspaceClients {
@@ -1196,6 +1198,8 @@ message TerminalHistory {
   repeated string lines = 1;
   uint32 columns = 2;
   bool truncated = 3;
+  // Positive confirmation for a shell-only read. Older daemons default to false.
+  bool shell_foreground = 4;
 }
 
 message ClaimWorkspaceWriter {

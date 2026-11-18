@@ -47,6 +47,7 @@ pub(super) enum Operation {
     CancelRetain = 9,
     Stop = 10,
     History = 11,
+    ShellHistory = 12,
 }
 
 #[derive(Clone, Message, PartialEq)]
@@ -176,8 +177,16 @@ impl HostConfig {
 }
 
 impl Client {
-    pub(super) fn history(&mut self) -> Result<corvid_protocol::wire::TerminalHistory> {
-        let response = self.command(Operation::History, Vec::new())?;
+    pub(super) fn history(
+        &mut self,
+        shell_only: bool,
+    ) -> Result<corvid_protocol::wire::TerminalHistory> {
+        let operation = if shell_only {
+            Operation::ShellHistory
+        } else {
+            Operation::History
+        };
+        let response = self.command(operation, Vec::new())?;
         ensure!(!response.rejected, "terminal host could not read history");
         response
             .history
@@ -651,7 +660,9 @@ impl Host {
                 response.rows = size.rows.get().into();
                 response.bytes = self.session.screen.redraw(size)?.into_bytes();
             }
-            Operation::History => response.history = Some(self.session.screen.history()),
+            operation @ (Operation::History | Operation::ShellHistory) => {
+                response.history = Some(self.session.history(operation == Operation::ShellHistory));
+            }
             Operation::Render => {
                 let size = viewport(request.cols, request.rows)?;
                 let footer = if request.footer_row == 0 {

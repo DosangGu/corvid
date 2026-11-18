@@ -554,9 +554,14 @@ returns a live selection to the current screen.
 
 In the focused pane, the wheel scrolls the running program when it has enabled
 terminal mouse reporting. This lets fullscreen agents scroll through their own
-conversation. For ordinary shell output, scrolling up opens terminal history.
-**Shift+Page Up** always opens a snapshot of the pane.
-Use the wheel, arrows, or Page Up and Page Down to move through the snapshot.
+conversation. At an interactive shell, scrolling up opens its previous output.
+While a foreground program is running, the pane stays live. If the daemon
+cannot confirm a foreground shell, use **Shift+Page Up** to open history explicitly.
+Shells can mark command execution with OSC 133 or 633. Without those markers,
+in-process shell builtins count as shell activity. On Windows, a shell with a
+background child can also require the explicit shortcut.
+Use the wheel, arrows, or Page Up and Page Down to browse. Scrolling down to
+the newest row, or pressing **End**, returns to live output and typing.
 **Ctrl+Shift+F** opens case-sensitive text search within rendered rows. Enter
 and Shift+Enter cycle through matches. Escape returns to the live terminal
 after clearing any selection. The history view consumes terminal input locally

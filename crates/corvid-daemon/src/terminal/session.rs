@@ -2,6 +2,7 @@ use std::io::{ErrorKind, Read};
 
 use anyhow::Result;
 use corvid_core::Viewport;
+use corvid_protocol::wire::TerminalHistory;
 use portable_pty::{CommandBuilder, ExitStatus};
 
 use super::input::{InputQueue, WriteFailure};
@@ -26,6 +27,25 @@ impl TerminalSession {
             screen: TerminalScreen::live(viewport),
             input: InputQueue::default(),
         })
+    }
+
+    pub(super) fn history(&mut self, shell_only: bool) -> TerminalHistory {
+        if !shell_only {
+            return self.screen.history();
+        }
+        if !self.screen.allows_shell_history()
+            || !self
+                .pty
+                .foreground_shell(self.screen.shell_prompt() == Some(true))
+        {
+            return TerminalHistory {
+                columns: self.screen.viewport().cols.get().into(),
+                ..Default::default()
+            };
+        }
+        let mut history = self.screen.history();
+        history.shell_foreground = true;
+        history
     }
 
     pub(super) fn resize(&mut self, viewport: Viewport) -> Result<()> {
@@ -88,5 +108,60 @@ impl TerminalSession {
 
     pub(super) fn stop(&mut self) -> Option<ExitStatus> {
         self.pty.stop()
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn wait_for(session: &mut TerminalSession, ready: impl Fn(&mut TerminalSession) -> bool) {
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            session.read_output().unwrap();
+            assert!(session.flush_input().is_ok());
+            if ready(session) {
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "PowerShell did not reach the expected shell phase: {:?}",
+                session.screen.shell_prompt()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn wheel_history_stays_live_while_powershell_runs_a_console_program() {
+        let mut command = CommandBuilder::new("powershell.exe");
+        command.args(["-NoLogo", "-NoProfile"]);
+        let mut session = TerminalSession::start(command, Viewport::new(80, 24).unwrap()).unwrap();
+        wait_for(&mut session, |session| {
+            session.screen.snapshot().contents().contains("PS ")
+                && session.history(true).shell_foreground
+        });
+
+        assert!(
+            session
+                .input
+                .user(b"cmd.exe /d /q /c 'echo CHILD^_READY&set /p answer='\r".to_vec())
+        );
+        wait_for(&mut session, |session| {
+            session
+                .screen
+                .snapshot()
+                .contents()
+                .lines()
+                .any(|line| line.trim() == "CHILD_READY")
+        });
+        assert!(!session.history(true).shell_foreground);
+        assert!(!session.history(false).lines.is_empty());
+        assert!(session.input.user(b"done\r".to_vec()));
+
+        wait_for(&mut session, |session| {
+            session.history(true).shell_foreground
+        });
     }
 }

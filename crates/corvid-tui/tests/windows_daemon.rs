@@ -1012,6 +1012,7 @@ async fn assert_history_after_detach(runtime: &Path) -> Result<()> {
     let revision = attached.route_token.context("missing route")?.view_revision;
     link.send(Body::ReadTerminalHistory(ReadTerminalHistory {
         expected_view_revision: Some(revision),
+        shell_only: false,
     }))
     .await?;
     loop {

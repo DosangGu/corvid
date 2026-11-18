@@ -347,7 +347,7 @@ impl TuiConnection<'_> {
                 self.preview(preview, request.request_id.clone()).await?
             }
             Body::ReadTerminalHistory(history) => {
-                let result = self.history(history.expected_view_revision).await;
+                let result = self.history(history).await;
                 match result {
                     Ok(history) => {
                         self.send(request.request_id, Body::TerminalHistory(history))
@@ -717,22 +717,24 @@ impl TuiConnection<'_> {
 
     async fn history(
         &mut self,
-        revision: Option<u64>,
+        request: &corvid_protocol::wire::ReadTerminalHistory,
     ) -> Result<corvid_protocol::wire::TerminalHistory, ProtocolFault> {
         let route = self.active.route;
-        require_view(revision, route.view_revision)?;
+        require_view(request.expected_view_revision, route.view_revision)?;
         let now = Instant::now();
-        if self
-            .last_history
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(180))
-        {
+        if self.last_history.is_some_and(|last| {
+            now.duration_since(last) < corvid_protocol::TERMINAL_HISTORY_INTERVAL
+        }) {
             return Err(ProtocolFault::new(
                 "LimitExceeded",
                 "terminal history reads are rate limited",
             ));
         }
         self.last_history = Some(now);
-        self.active.terminal.history(route).await
+        self.active
+            .terminal
+            .history(route, request.shell_only)
+            .await
     }
 
     async fn send(&mut self, id: Option<String>, body: Body) -> Result<()> {
