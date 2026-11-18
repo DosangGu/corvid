@@ -165,6 +165,7 @@ pub(super) struct Draft {
     listing: Option<DirectoryListing>,
     choice: usize,
     scroll: ScrollHandle,
+    reveal_folder: bool,
     status: Option<String>,
     connecting: bool,
     creating: Option<Option<String>>,
@@ -191,6 +192,7 @@ impl Draft {
             listing: None,
             choice: 0,
             scroll: ScrollHandle::new(),
+            reveal_folder: false,
             status: None,
             connecting: false,
             creating: None,
@@ -668,7 +670,29 @@ impl WorkspaceView {
         }
     }
 
-    pub(super) fn creation_panel(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn creation_panel(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let draft = self.creation.as_mut().expect("workspace editor");
+        if std::mem::take(&mut draft.reveal_folder) {
+            let revision = draft.revision;
+            let choice = draft.choice;
+            let view = cx.entity().downgrade();
+            // GPUI uses the scroll viewport bounds from the previous layout pass.
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    if let Some(draft) = &view.creation
+                        && draft.revision == revision
+                        && draft.choice == choice
+                    {
+                        if choice == 0 {
+                            draft.scroll.scroll_to_top_of_item(0);
+                        } else {
+                            draft.scroll.scroll_to_item(choice);
+                        }
+                        cx.notify();
+                    }
+                });
+            });
+        }
         let draft = self.creation.as_ref().expect("workspace editor");
         let offset = if self.focus_mode { 20. } else { 54. };
         let status = draft.status.as_deref().or(match draft.pending {

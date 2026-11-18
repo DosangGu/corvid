@@ -81,11 +81,7 @@ impl Draft {
         self.choice = reselect
             .and_then(|path| listing.entries.iter().position(|entry| entry.path == path))
             .unwrap_or(0);
-        if self.choice == 0 {
-            self.scroll.scroll_to_top_of_item(0);
-        } else {
-            self.scroll.scroll_to_item(self.choice);
-        }
+        self.reveal_folder = true;
         self.listing = Some(listing);
         false
     }
