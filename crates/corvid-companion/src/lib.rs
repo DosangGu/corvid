@@ -6,6 +6,7 @@ mod last_known;
 pub mod launch;
 pub mod monitor;
 mod platform;
+pub mod priority;
 mod remote;
 mod service;
 mod slots;
@@ -21,5 +22,5 @@ pub use ipc::{
 pub use ipc::{WEZTERM_CAPABILITY, WEZTERM_SELECTION_CAPABILITY};
 #[cfg(windows)]
 pub use platform::{WezTermCandidate, discover_wezterm_panes};
-pub use slots::{MAX_SLOTS, RunKey, RunObservation, Slot, SlotLayout};
+pub use slots::{MAX_SLOTS, MAX_TRACKED, RunKey, RunObservation, Slot, SlotLayout};
 pub use store::{Config, HostEndpoint, Recovery, Store, initialize};

@@ -6,7 +6,7 @@ Corvid Desktop opens a local terminal and connects to remote hosts over SSH.
 Its built-in Agents window (Corvid Agent Deck) shows observed Codex and Claude Code
 activity and opens the corresponding pane in Desktop. Agent Deck provides a Windows system tray
 and macOS menu-bar item with native notifications. Completed agents remain until their panes close;
-additional agents queue and fill slots in order. See [Agent Deck](docs/06_agent_deck.md).
+additional agents queue and can move into view as their priority changes. See [Agent Deck](docs/06_agent_deck.md).
 
 | Component | Supported platform |
 | --- | --- |

@@ -39,6 +39,7 @@ pub const WEZTERM_SELECTION_CAPABILITY: &str = "wezterm_selection.v1";
 const CAPABILITIES: &[&str] = &[
     crate::monitor::CAPABILITY,
     crate::monitor::EPOCH_RETIREMENT_CAPABILITY,
+    crate::monitor::DECK_PRIORITY_CAPABILITY,
     PRESENTATION_CAPABILITY,
     PRESENTATION_ATTENTION_CAPABILITY,
     LIST_HOSTS_CAPABILITY,

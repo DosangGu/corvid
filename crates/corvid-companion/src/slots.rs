@@ -4,8 +4,10 @@ use corvid_protocol::ProtocolFault;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::priority::{Priority, prioritize};
+
 pub const MAX_SLOTS: u32 = 64;
-const MAX_TRACKED: usize = 4096;
+pub const MAX_TRACKED: usize = 4096;
 const MAX_HISTORY: usize = 256;
 
 type Result<T> = std::result::Result<T, ProtocolFault>;
@@ -170,6 +172,16 @@ impl SlotLayout {
         runs: &BTreeMap<RunKey, RunObservation>,
         removed: &BTreeSet<RunKey>,
     ) -> Result<()> {
+        self.reconcile_prioritized(runs, removed, 0, |_| Priority::default())
+    }
+
+    pub(crate) fn reconcile_prioritized(
+        &mut self,
+        runs: &BTreeMap<RunKey, RunObservation>,
+        removed: &BTreeSet<RunKey>,
+        now: u64,
+        priority: impl Fn(&RunKey) -> Priority,
+    ) -> Result<()> {
         self.retire(removed)?;
         self.admit(runs)?;
         for run in self.order.iter().chain(&self.suppressed) {
@@ -181,7 +193,7 @@ impl SlotLayout {
                 }
             }
         }
-        self.compact()
+        self.reorder(now, priority)
     }
 
     fn retire(&mut self, removed: &BTreeSet<RunKey>) -> Result<()> {
@@ -225,6 +237,14 @@ impl SlotLayout {
     }
 
     fn compact(&mut self) -> Result<()> {
+        self.reorder(0, |_| Priority::default())
+    }
+
+    pub(crate) fn reorder(
+        &mut self,
+        now: u64,
+        priority: impl Fn(&RunKey) -> Priority,
+    ) -> Result<()> {
         // Preserve the displayed order, then admit queued runs in arrival order.
         // A pin follows its agent; it cannot reserve a hole in the packed queue.
         let pins: BTreeMap<_, _> = self
@@ -245,6 +265,9 @@ impl SlotLayout {
                 .copied()
                 .filter(|run| !placed.contains(run)),
         );
+        prioritize(&mut order, self.slots.len(), now, |key, _| {
+            (pins.get(key).copied().unwrap_or(false), priority(key))
+        });
         for (index, slot) in self.slots.iter_mut().enumerate() {
             let run = order.get(index).copied();
             let pinned = run.and_then(|run| pins.get(&run)).copied().unwrap_or(false);

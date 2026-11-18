@@ -6,6 +6,7 @@ use corvid_agent_deck_core::{
     actions::{Actions, FocusAction},
     gesture::{Gesture, Input},
 };
+use corvid_companion::RunKey;
 use corvid_presentation::ipc::{Display, Link};
 use corvid_presentation::model::Snapshot;
 use corvid_protocol::wire::envelope::Body;
@@ -46,6 +47,8 @@ pub(crate) struct DeckView {
     selected_notice: Option<Notice>,
     catalog: Option<Result<Catalog, String>>,
     catalog_view: crate::catalog::View,
+    deck_order: Vec<RunKey>,
+    queue_waiting: usize,
     window: crate::shell::Window,
     window_ready: bool,
     presentation: Option<Presentation>,
@@ -110,6 +113,8 @@ impl DeckView {
             selected_notice: None,
             catalog: None,
             catalog_view: Default::default(),
+            deck_order: Vec::new(),
+            queue_waiting: 0,
             window: preferences,
             window_ready: !cfg!(target_os = "linux"),
             presentation: None,
@@ -180,6 +185,7 @@ impl DeckView {
             }
         }
         self.view = next;
+        self.refresh_deck_order();
         let background = self.session.background.view.borrow().clone();
         if background.notifications_open != self.notifications_seen {
             self.notifications_seen = background.notifications_open;
@@ -188,10 +194,8 @@ impl DeckView {
             self.window.expanded = true;
         }
         self.actions.expire();
-        if let Some(snapshot) = &self.view.snapshot
-            && self.page >= snapshot.page_count()
-        {
-            self.set_page(snapshot.page_count() - 1);
+        if self.page >= self.queue_pages() {
+            self.set_page(self.queue_pages() - 1);
         }
     }
 

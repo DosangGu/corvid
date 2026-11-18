@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,16 +8,22 @@ use crate::parent::DesktopLink;
 use crate::ui_signal::UiSignal;
 use anyhow::Result;
 use corvid_agent_deck::connection::Client;
-use corvid_companion::{PresentationAddress, PresentationClient};
+use corvid_companion::{
+    MAX_TRACKED, PRESENTATION_PAGE_SIZE, PresentationAddress, PresentationClient, RunKey,
+};
 use corvid_presentation::desktop_focus::{self, EndpointUnavailable};
 use corvid_presentation::ipc::{Completion, Display, Link};
 use corvid_presentation::model::Snapshot;
 use corvid_protocol::ProtocolFault;
-use corvid_protocol::wire::{CompanionConnection, PresentedRun, PresentedRunKey, RunAvailability};
+use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{
+    CompanionConnection, GetPresentationSlots, PresentationSlots, PresentedRun, PresentedRunKey,
+    RunAvailability,
+};
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
-const MAX_RUNS: usize = 64;
+pub(crate) const HOST_PREVIEW_LIMIT: usize = 64;
 
 pub(crate) struct Catalog {
     pub views: watch::Receiver<View>,
@@ -37,8 +43,9 @@ pub(crate) struct Host {
     remote_epoch: Option<Uuid>,
     pub label: String,
     pub online: bool,
+    pub loaded: bool,
     pub runs: Vec<PresentedRun>,
-    pub omitted: usize,
+    pub pins: BTreeSet<RunKey>,
 }
 
 enum Request {
@@ -67,9 +74,14 @@ impl Host {
             label: profile.label.clone(),
             remote_epoch: None,
             online: false,
+            loaded: false,
             runs: Vec::new(),
-            omitted: 0,
+            pins: BTreeSet::new(),
         }
+    }
+
+    pub fn matches_epoch(&self, epoch: Option<&str>) -> bool {
+        self.remote_epoch == epoch.and_then(|epoch| Uuid::parse_str(epoch).ok())
     }
 
     pub fn focus_target<'a>(
@@ -252,25 +264,9 @@ fn current_target(display: &Display, shown: &Snapshot, run: &PresentedRunKey) ->
     if latest.desktop_run_target(run)? != controller {
         return None;
     }
-    if let Some(slot) = shown
-        .data
-        .slots
-        .iter()
-        .find(|slot| slot.run.as_ref().and_then(|entry| shown.live_key(entry)) == Some(run))
-    {
-        let capture = shown.focus_desktop(slot)?;
-        return latest
-            .desktop_target(&capture)
-            .map(|(controller, _)| controller);
-    }
-    let queued = |snapshot: &Snapshot| {
-        snapshot
-            .data
-            .overflow
-            .iter()
-            .any(|entry| snapshot.live_key(entry) == Some(run))
-    };
-    (!queued(shown) || queued(latest)).then_some(controller)
+    // Desktop validates the captured run in the matching epoch. Slot commands
+    // still use revisions, but a run can move while an exact focus is in flight.
+    Some(controller)
 }
 
 async fn focus_captured_run(
@@ -322,49 +318,110 @@ async fn poll_host(
         client.session().host_id == id.to_string(),
         "unexpected monitor host"
     );
+    let mut previous = None;
     loop {
-        let slots =
-            tokio::time::timeout(corvid_protocol::COMMAND_TIMEOUT, client.slots(None)).await??;
+        let slots = get_page(&mut client, 0).await?;
         anyhow::ensure!(
             slots.controller_id == controller.to_string(),
             "unexpected monitor controller"
         );
-        let hidden_overflow = (slots.overflow_count as usize).saturating_sub(slots.overflow.len());
-        let mut runs: Vec<_> = slots
-            .slots
-            .into_iter()
-            .filter_map(|slot| slot.run)
-            .chain(slots.overflow)
-            .collect();
-        let omitted = hidden_overflow + runs.len().saturating_sub(MAX_RUNS);
-        runs.truncate(MAX_RUNS);
-        let epoch = slots
-            .remote_epoch
-            .as_deref()
-            .and_then(|id| Uuid::parse_str(id).ok());
-        let online = slots.connection == CompanionConnection::Ready as i32
-            && slots
-                .control_generation
+        if previous.as_ref() != Some(&slots)
+            && let Some(runs) = collect_runs(&mut client, &slots).await?
+        {
+            let pins: BTreeSet<_> = slots
+                .slots
+                .iter()
+                .filter(|slot| slot.pinned)
+                .filter_map(|slot| slot.run.as_ref()?.key.as_ref())
+                .filter_map(|key| RunKey::try_from(key).ok())
+                .collect();
+            let epoch = slots
+                .remote_epoch
                 .as_deref()
-                .is_some_and(|id| Uuid::parse_str(id).is_ok());
-        if publish.send_if_modified(|view| {
-            let host = view.hosts.get_mut(&id).expect("configured host");
-            if host.remote_epoch == epoch
-                && host.online == online
-                && host.runs == runs
-                && host.omitted == omitted
-            {
-                return false;
+                .and_then(|id| Uuid::parse_str(id).ok());
+            let online = slots.connection == CompanionConnection::Ready as i32
+                && slots
+                    .control_generation
+                    .as_deref()
+                    .is_some_and(|id| Uuid::parse_str(id).is_ok());
+            if publish.send_if_modified(|view| {
+                let host = view.hosts.get_mut(&id).expect("configured host");
+                if host.loaded
+                    && host.remote_epoch == epoch
+                    && host.online == online
+                    && host.runs == runs
+                    && host.pins == pins
+                {
+                    return false;
+                }
+                let host = Arc::make_mut(host);
+                host.loaded = true;
+                host.remote_epoch = epoch;
+                host.online = online;
+                host.runs = runs;
+                host.pins = pins;
+                true
+            }) {
+                ctx.notify();
             }
-            let host = Arc::make_mut(host);
-            host.remote_epoch = epoch;
-            host.online = online;
-            host.runs = runs;
-            host.omitted = omitted;
-            true
-        }) {
-            ctx.notify();
+            previous = Some(slots);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+async fn get_page(
+    client: &mut PresentationClient,
+    overflow_page: u32,
+) -> Result<PresentationSlots> {
+    let query = GetPresentationSlots {
+        count: None,
+        overflow_page,
+    };
+    let body = tokio::time::timeout(
+        corvid_protocol::COMMAND_TIMEOUT,
+        client.request(Body::GetPresentationSlots(query)),
+    )
+    .await??;
+    let Body::PresentationSlots(slots) = body else {
+        anyhow::bail!("unexpected slot response");
+    };
+    Ok(slots)
+}
+
+async fn collect_runs(
+    client: &mut PresentationClient,
+    first: &PresentationSlots,
+) -> Result<Option<Vec<PresentedRun>>> {
+    anyhow::ensure!(
+        first.overflow_count as usize <= MAX_TRACKED
+            && first.slots.len() <= corvid_companion::MAX_SLOTS as usize,
+        "monitor returned too many runs"
+    );
+    let mut runs: Vec<_> = first
+        .slots
+        .iter()
+        .filter_map(|slot| slot.run.clone())
+        .collect();
+    let assigned = runs.len();
+    runs.extend(first.overflow.iter().cloned());
+    for index in 1..first.overflow_count.div_ceil(PRESENTATION_PAGE_SIZE) {
+        let page = get_page(client, index).await?;
+        if page.controller_id != first.controller_id
+            || page.remote_epoch != first.remote_epoch
+            || page.control_generation != first.control_generation
+            || page.remote_sequence != first.remote_sequence
+            || page.overflow_count != first.overflow_count
+            || page.slots != first.slots
+        {
+            // Retry on the next poll rather than publish a mixed queue.
+            return Ok(None);
+        }
+        runs.extend(page.overflow);
+    }
+    anyhow::ensure!(
+        runs.len() == assigned + first.overflow_count as usize,
+        "incomplete monitor queue"
+    );
+    Ok(Some(runs))
 }

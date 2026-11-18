@@ -48,6 +48,8 @@ impl LastKnown {
             last_response_unix_ms: self.last_response_unix_ms,
             last_observed_unix_ms: self.last_observed_unix_ms,
             prompt_observation: Default::default(),
+            pending_since_unix_ms: None,
+            new_result_unix_ms: None,
         }
     }
 

@@ -69,6 +69,23 @@ fn agent(run: Uuid, location: &ViewSelection, sequence: u64) -> AgentState {
     }
 }
 
+fn workspace(location: &ViewSelection) -> Body {
+    Body::Workspace(WorkspaceState {
+        workspace_id: location.workspace_id.clone(),
+        label: "Fixture".into(),
+        tabs: vec![TabState {
+            manual_name: None,
+            tab_id: location.tab_id.clone(),
+            label: "Fixture".into(),
+            nodes: vec![LayoutNodeState {
+                title: String::new(),
+                manual_name: None,
+                body: Some(layout_node_state::Body::PaneId(location.pane_id.clone())),
+            }],
+        }],
+    })
+}
+
 #[test]
 fn bounded_attention_includes_queued_runs_and_request_metadata() {
     let first = Uuid::new_v4();
@@ -80,20 +97,7 @@ fn bounded_attention_includes_queued_runs_and_request_metadata() {
     };
     let request = Uuid::new_v4().to_string();
     let mut bodies = vec![
-        Body::Workspace(WorkspaceState {
-            workspace_id: location.workspace_id.clone(),
-            label: "Fixture".into(),
-            tabs: vec![TabState {
-                manual_name: None,
-                tab_id: location.tab_id.clone(),
-                label: "Fixture".into(),
-                nodes: vec![LayoutNodeState {
-                    title: String::new(),
-                    manual_name: None,
-                    body: Some(layout_node_state::Body::PaneId(location.pane_id.clone())),
-                }],
-            }],
-        }),
+        workspace(&location),
         Body::Agent(Box::new(agent(first, &location, 1))),
         Body::Agent(Box::new(agent(queued, &location, 2))),
         Body::Request(RequestState {
@@ -159,4 +163,69 @@ fn bounded_attention_includes_queued_runs_and_request_metadata() {
         remote.panes,
         BTreeSet::from([Uuid::parse_str(&location.pane_id).unwrap()])
     );
+}
+
+#[test]
+fn priority_uses_request_opening_time_and_only_the_latest_unread_result() {
+    let [waiting, finished, working] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    let location = ViewSelection {
+        workspace_id: Uuid::new_v4().to_string(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let request = Uuid::new_v4().to_string();
+    let mut bodies = vec![workspace(&location)];
+    for (run, badge) in [
+        (waiting, AgentBadge::NeedsInput),
+        (finished, AgentBadge::ResponseObserved),
+        (working, AgentBadge::Working),
+    ] {
+        let mut state = agent(run, &location, 1);
+        state.summary.as_mut().unwrap().badge = badge as i32;
+        bodies.push(Body::Agent(Box::new(state)));
+    }
+    bodies.push(Body::Request(RequestState {
+        agent_run_id: waiting.to_string(),
+        request_id: request.clone(),
+        kind: InputRequestKind::Question as i32,
+        status: InputRequestStatus::Pending as i32,
+        evidence: Some(EvidenceState {
+            observed_unix_ms: 40,
+            ..evidence()
+        }),
+    }));
+    for (run, reason, created, acknowledged, request_id) in [
+        (waiting, AttentionReason::Input, 10, Some(30), Some(request)),
+        (finished, AttentionReason::Response, 20, None, None),
+        (finished, AttentionReason::Response, 30, Some(40), None),
+        (working, AttentionReason::Failure, 50, None, None),
+    ] {
+        bodies.push(Body::Attention(AttentionState {
+            agent_run_id: run.to_string(),
+            attention_id: Uuid::new_v4().to_string(),
+            reason: reason as i32,
+            created_unix_ms: created,
+            acknowledged_unix_ms: acknowledged,
+            request_id,
+        }));
+    }
+    let cache = snapshot(
+        bodies
+            .into_iter()
+            .map(|body| SnapshotEntity { body: Some(body) })
+            .collect(),
+    );
+    let remote = Remote::read(&cache, &Uuid::new_v4().to_string()).unwrap();
+    let display = |run| {
+        &remote
+            .runs
+            .iter()
+            .find(|(key, _)| key.run == run)
+            .unwrap()
+            .1
+            .display
+    };
+    assert_eq!(display(waiting).pending_since_unix_ms, Some(10));
+    assert_eq!(display(finished).new_result_unix_ms, None);
+    assert_eq!(display(working).new_result_unix_ms, None);
 }
