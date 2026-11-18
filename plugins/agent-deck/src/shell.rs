@@ -5,6 +5,8 @@ pub(crate) use corvid_agent_deck_core::layout::{
     BAR_HEIGHT, GAP, GridLayout, KEY_HEIGHT, KEY_WIDTH, Orientation, Preset,
 };
 pub(crate) use window::Window;
+#[cfg(target_os = "macos")]
+pub(crate) use window::macos_colors;
 
 pub(crate) fn prepare() {
     #[cfg(target_os = "macos")]
@@ -30,6 +32,7 @@ pub(crate) fn options(window: &Window, cx: &App) -> WindowOptions {
     };
     if cfg!(target_os = "macos") {
         options.kind = gpui::WindowKind::PopUp;
+        options.window_background = gpui::WindowBackgroundAppearance::Transparent;
         options.is_movable = false;
         options.is_resizable = false;
         options.is_minimizable = false;

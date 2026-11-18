@@ -2,49 +2,40 @@ use super::*;
 use gpui::{linear_color_stop, linear_gradient, svg};
 use std::sync::Arc;
 
-pub(super) const BACKGROUND: u32 = 0x0f1319;
-pub(super) const PANEL: u32 = 0x151b23;
-pub(super) const TEXT: u32 = 0xe5edf1;
-pub(super) const MUTED: u32 = 0x8594a3;
-pub(super) const MINT: u32 = 0x77d8b7;
-pub(super) const AMBER: u32 = 0xf4c065;
-pub(super) const RED: u32 = 0xf18590;
-const BLUE: u32 = 0x78bdee;
-const BORDER: u32 = 0x303b48;
-
 pub(super) fn column() -> Div {
     div().flex().flex_col().gap(px(8.))
 }
 pub(super) fn row() -> Div {
     div().flex().items_center().gap(px(8.))
 }
-pub(super) fn muted(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_color(rgb(MUTED))
-        .text_size(px(12.))
-        .child(text.into())
-}
-pub(super) fn button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    enabled: bool,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_shrink_0()
-        .px(px(8.))
-        .py(px(5.))
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(BORDER))
-        .bg(rgb(PANEL))
-        .text_color(rgb(if enabled { TEXT } else { MUTED }))
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(0x263541)))
-        })
-        .child(label.into())
+impl Colors {
+    pub(super) fn muted(self, text: impl Into<SharedString>) -> Div {
+        div()
+            .text_color(self.muted)
+            .text_size(px(12.))
+            .child(text.into())
+    }
+    pub(super) fn button(
+        self,
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        enabled: bool,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex_shrink_0()
+            .px(px(8.))
+            .py(px(5.))
+            .rounded_md()
+            .border_1()
+            .border_color(self.border)
+            .bg(self.panel)
+            .text_color(if enabled { self.text } else { self.muted })
+            .when(enabled, |button| {
+                button.cursor_pointer().hover(|style| style.bg(self.hover))
+            })
+            .child(label.into())
+    }
 }
 
 impl DeckView {
@@ -89,6 +80,7 @@ impl DeckView {
         width: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let colors = self.colors;
         let cached = self.view.link != Link::Online || snapshot.generation().is_none();
         let action = self.focus_action(snapshot, slot, run);
         let height = if self.window.expanded {
@@ -100,7 +92,7 @@ impl DeckView {
             .then(|| self.catalog_view.hosts.get(&snapshot.host))
             .flatten()
             .map(|host| host.label.as_str());
-        let face = card_face(run, cached, self.selected == index, width, height, host);
+        let face = colors.card_face(run, cached, self.selected == index, width, height, host);
         let mut card = self.attach_card_action(face, index, action, cx);
         if let Some(run) = run {
             card = card.when(self.menu.is_none(), |card| {
@@ -131,12 +123,13 @@ impl DeckView {
         action: Option<FocusAction>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let colors = self.colors;
         let mut card = face.id(("agent", index));
         if let Some(action) = action {
             card = card
                 .cursor_pointer()
                 .when(self.selected != index, |card| {
-                    card.hover(|style| style.border_color(rgb(MUTED)))
+                    card.hover(|style| style.border_color(colors.muted))
                 })
                 .on_mouse_down(
                     MouseButton::Left,
@@ -168,8 +161,9 @@ impl DeckView {
         action: Option<FocusAction>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let colors = self.colors;
         let cached = !host.online;
-        let face = card_face(
+        let face = colors.card_face(
             Some(run),
             cached,
             self.selected == index,
@@ -193,9 +187,10 @@ impl DeckView {
         body: Option<Body>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let colors = self.colors;
         let enabled = body.is_some() && self.ready(snapshot);
         let snapshot = snapshot.clone();
-        button(id, label, enabled).when(enabled, |button| {
+        colors.button(id, label, enabled).when(enabled, |button| {
             button.on_click(cx.listener(move |view, _, _, cx| {
                 if let Some(body) = &body {
                     view.submit(&snapshot, body.clone());
@@ -207,6 +202,7 @@ impl DeckView {
     }
 
     pub(super) fn menu_view(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let colors = self.colors;
         let (snapshot, slot) = self.menu.as_ref()?;
         let run = slot.run.as_ref()?;
         let cached = self.view.link != Link::Online || snapshot.generation().is_none();
@@ -219,9 +215,13 @@ impl DeckView {
             .overflow_y_scroll()
             .rounded_lg()
             .border_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(PANEL))
-            .child(describe(run, cached).child(muted(placement_label(Some(slot)))))
+            .border_color(colors.border)
+            .bg(colors.panel)
+            .child(
+                colors
+                    .describe(run, cached)
+                    .child(colors.muted(placement_label(Some(slot)))),
+            )
             .on_mouse_down_out(cx.listener(|view, _, _, cx| {
                 view.menu = None;
                 cx.notify();
@@ -253,12 +253,13 @@ impl DeckView {
                 .items_center()
                 .justify_center()
                 .p(px(8.))
-                .bg(rgba(0x00000088))
+                .bg(colors.scrim)
                 .child(menu),
         )
     }
 
     pub(super) fn expanded(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let colors = self.colors;
         let mut content = column().flex_1().min_h_0().p(px(16.));
         if self.section == Section::Hosts {
             content = content.child(self.hosts(cx));
@@ -273,19 +274,19 @@ impl DeckView {
             ];
             content = content.child(row().children(sections.into_iter().enumerate().map(
                 |(index, (section, label))| {
-                    button(("section", index), label, true).on_click(cx.listener(
-                        move |view, _, _, cx| {
+                    colors
+                        .button(("section", index), label, true)
+                        .on_click(cx.listener(move |view, _, _, cx| {
                             view.section = section;
                             view.held.cancel();
                             view.set_page(0);
                             cx.notify();
-                        },
-                    ))
+                        }))
                 },
             )));
             content = content.child(match self.section {
                 Section::Slots => snapshot.as_ref().map_or_else(
-                    || column().child(muted("Connecting to companion…")),
+                    || column().child(colors.muted("Connecting to companion…")),
                     |snapshot| self.board(snapshot, window, cx),
                 ),
                 Section::Overflow => self.overflow(snapshot.as_ref(), cx),
@@ -294,18 +295,20 @@ impl DeckView {
                         snapshot
                             .iter()
                             .flat_map(|snapshot| &snapshot.data.recent_ended)
-                            .map(|run| muted(format!("Run · {}", short_id(&run.agent_run_id)))),
+                            .map(|run| {
+                                colors.muted(format!("Run · {}", short_id(&run.agent_run_id)))
+                            }),
                     )
                     .when(
                         snapshot
                             .as_ref()
                             .is_none_or(|snapshot| snapshot.data.recent_ended.is_empty()),
-                        |view| view.child(muted("No runs removed from the Deck yet.")),
+                        |view| view.child(colors.muted("No runs removed from the Deck yet.")),
                     ),
                 _ => column(),
             });
         } else {
-            content = content.child(muted("Connecting to companion…"));
+            content = content.child(colors.muted("Connecting to companion…"));
         }
         #[cfg(windows)]
         if self.pairing.is_open() {
@@ -328,16 +331,19 @@ impl DeckView {
     }
 
     fn header(&self, cx: &mut Context<Self>) -> Div {
-        let mut header = column().flex_shrink_0().p(px(12.)).bg(rgb(PANEL)).child(
+        let colors = self.colors;
+        let mut header = column().flex_shrink_0().p(px(12.)).bg(colors.panel).child(
             row()
                 .flex_wrap()
-                .child(button("hosts", "Hosts", true).on_click(
+                .child(colors.button("hosts", "Hosts", true).on_click(
                     cx.listener(|view, _, window, cx| view.expand(Section::Hosts, window, cx)),
                 ))
                 .child(
-                    button("notifications", "Notifications", true).on_click(cx.listener(
-                        |view, _, window, cx| view.expand(Section::Notifications, window, cx),
-                    )),
+                    colors
+                        .button("notifications", "Notifications", true)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.expand(Section::Notifications, window, cx)
+                        })),
                 ),
         );
         if let Some(snapshot) = &self.view.snapshot {
@@ -347,10 +353,10 @@ impl DeckView {
                 .as_deref()
                 .filter(|code| safe_code(code))
             {
-                header = header.child(muted(format!("Connection issue ({code})")));
+                header = header.child(colors.muted(format!("Connection issue ({code})")));
             }
             if !self.session.background.desktop.connected() {
-                header = header.child(muted("Target terminal")).child(
+                header = header.child(colors.muted("Target terminal")).child(
                     row().flex_wrap().children(
                         snapshot
                             .data
@@ -361,37 +367,35 @@ impl DeckView {
                             .map(|(index, binding)| {
                                 let binding = binding.clone();
                                 let selected = self.binding.as_ref() == Some(&binding);
-                                button(
-                                    ("binding", index),
-                                    binding_label(&binding),
-                                    self.ready(snapshot),
-                                )
-                                .when(selected, |button| button.text_color(rgb(MINT)))
-                                .when(
-                                    self.ready(snapshot),
-                                    |button| {
+                                colors
+                                    .button(
+                                        ("binding", index),
+                                        binding_label(&binding),
+                                        self.ready(snapshot),
+                                    )
+                                    .when(selected, |button| button.text_color(colors.accent))
+                                    .when(self.ready(snapshot), |button| {
                                         button.on_click(cx.listener(move |view, _, _, cx| {
                                             view.binding = Some(binding.clone());
                                             view.held.cancel();
                                             cx.notify();
                                         }))
-                                    },
-                                )
+                                    })
                             }),
                     ),
                 );
                 #[cfg(windows)]
                 if snapshot.can_pair_wezterm {
-                    header =
-                        header.child(button("pair", "Pair WezTerm…", self.ready(snapshot)).when(
-                            self.ready(snapshot),
-                            |button| {
+                    header = header.child(
+                        colors
+                            .button("pair", "Pair WezTerm…", self.ready(snapshot))
+                            .when(self.ready(snapshot), |button| {
                                 button.on_click(cx.listener(|view, _, _, cx| {
                                     view.pairing.open(&view.session.signal);
                                     cx.notify();
                                 }))
-                            },
-                        ));
+                            }),
+                    );
                 }
             }
         }
@@ -413,32 +417,29 @@ impl DeckView {
     }
 
     fn overflow(&self, snapshot: Option<&Arc<Snapshot>>, cx: &mut Context<Self>) -> Div {
+        let colors = self.colors;
         let mut view = column().child(
             row()
                 .child(
-                    button("previous", "Previous", self.page > 0).on_click(cx.listener(
-                        |view, _, _, cx| {
+                    colors
+                        .button("previous", "Previous", self.page > 0)
+                        .on_click(cx.listener(|view, _, _, cx| {
                             view.set_page(view.page.saturating_sub(1));
                             view.held.cancel();
                             cx.notify();
-                        },
-                    )),
+                        })),
                 )
-                .child(muted(format!(
-                    "Page {} of {}",
-                    self.page + 1,
-                    self.queue_pages()
-                )))
+                .child(colors.muted(format!("Page {} of {}", self.page + 1, self.queue_pages())))
                 .child(
-                    button("next", "Next", self.page + 1 < self.queue_pages()).on_click(
-                        cx.listener(|view, _, _, cx| {
+                    colors
+                        .button("next", "Next", self.page + 1 < self.queue_pages())
+                        .on_click(cx.listener(|view, _, _, cx| {
                             if view.page + 1 < view.queue_pages() {
                                 view.set_page(view.page + 1);
                             }
                             view.held.cancel();
                             cx.notify();
-                        }),
-                    ),
+                        })),
                 ),
         );
         let tiles = self.queue_tiles();
@@ -464,32 +465,35 @@ impl DeckView {
             }
         }
         if tiles.is_empty() && !suppressed {
-            view = view.child(muted("No queued agents on this page."));
+            view = view.child(colors.muted("No queued agents on this page."));
         }
         view
     }
 
     fn hosts(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut content = column().child(button("refresh-hosts", "Refresh hosts", true).on_click(
-            cx.listener(|view, _, _, cx| {
-                view.catalog = None;
-                view.refresh_view();
-                cx.notify();
-            }),
-        ));
+        let colors = self.colors;
+        let mut content = column().child(
+            colors
+                .button("refresh-hosts", "Refresh hosts", true)
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.catalog = None;
+                    view.refresh_view();
+                    cx.notify();
+                })),
+        );
         let current = self.session.catalog.1;
         if let Some(Err(error)) = &self.catalog {
-            return content.child(muted(error.clone()));
+            return content.child(colors.muted(error.clone()));
         }
         let data = self.catalog_view.clone();
         if let Some(message) = data.message {
-            content = content.child(muted(message));
+            content = content.child(colors.muted(message));
         }
         for (index, (id, host)) in data.hosts.into_iter().enumerate() {
-            let mut entry = column().p(px(12.)).bg(rgb(PANEL)).rounded_lg().child(
+            let mut entry = column().p(px(12.)).bg(colors.panel).rounded_lg().child(
                 row()
                     .child(host.label.clone())
-                    .child(muted(if host.online {
+                    .child(colors.muted(if host.online {
                         "Live"
                     } else if host.runs.is_empty() {
                         "Offline"
@@ -497,27 +501,28 @@ impl DeckView {
                         "Cached"
                     }))
                     .child(
-                        button(
-                            ("open-host", index),
-                            if id == current {
-                                "This Deck's slots"
-                            } else {
-                                "Show host Deck"
-                            },
-                            true,
-                        )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            if id == view.session.catalog.1 {
-                                view.section = Section::Slots;
-                            } else if let Some(Ok(catalog)) = &view.catalog {
-                                catalog.open(id);
-                            }
-                            cx.notify();
-                        })),
+                        colors
+                            .button(
+                                ("open-host", index),
+                                if id == current {
+                                    "This Deck's slots"
+                                } else {
+                                    "Show host Deck"
+                                },
+                                true,
+                            )
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                if id == view.session.catalog.1 {
+                                    view.section = Section::Slots;
+                                } else if let Some(Ok(catalog)) = &view.catalog {
+                                    catalog.open(id);
+                                }
+                                cx.notify();
+                            })),
                     ),
             );
             for run in host.runs.iter().take(crate::catalog::HOST_PREVIEW_LIMIT) {
-                entry = entry.child(muted(format!(
+                entry = entry.child(colors.muted(format!(
                     "{} · {} · {} pending",
                     run.key
                         .as_ref()
@@ -531,7 +536,7 @@ impl DeckView {
                 .len()
                 .saturating_sub(crate::catalog::HOST_PREVIEW_LIMIT);
             if omitted > 0 {
-                entry = entry.child(muted(format!("{omitted} additional runs in the Deck")));
+                entry = entry.child(colors.muted(format!("{omitted} additional runs in the Deck")));
             }
             content = content.child(entry);
         }
@@ -539,6 +544,7 @@ impl DeckView {
     }
 
     fn notifications(&self, cx: &mut Context<Self>) -> Div {
+        let colors = self.colors;
         let background = self.session.background.view.borrow().clone();
         let settings = &background.settings;
         let capabilities = background.capabilities;
@@ -561,75 +567,76 @@ impl DeckView {
                         _ => true,
                     })
                     .map(|(index, (label, enabled))| {
-                        button(
-                            ("setting", index),
-                            format!("{} {label}", if enabled { "☑" } else { "☐" }),
-                            true,
-                        )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            let mut settings =
-                                view.session.background.view.borrow().settings.clone();
-                            let value = match index {
-                                0 => &mut settings.enabled,
-                                1 => &mut settings.input,
-                                2 => &mut settings.responses,
-                                3 => &mut settings.failures,
-                                4 => &mut settings.sound,
-                                _ => &mut settings.start_at_login,
-                            };
-                            *value = !*value;
-                            view.session.background.configure(settings);
-                            cx.notify();
-                        }))
+                        colors
+                            .button(
+                                ("setting", index),
+                                format!("{} {label}", if enabled { "☑" } else { "☐" }),
+                                true,
+                            )
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                let mut settings =
+                                    view.session.background.view.borrow().settings.clone();
+                                let value = match index {
+                                    0 => &mut settings.enabled,
+                                    1 => &mut settings.input,
+                                    2 => &mut settings.responses,
+                                    3 => &mut settings.failures,
+                                    4 => &mut settings.sound,
+                                    _ => &mut settings.start_at_login,
+                                };
+                                *value = !*value;
+                                view.session.background.configure(settings);
+                                cx.notify();
+                            }))
                     }),
             )
             .child(
                 row()
                     .flex_wrap()
                     .child(
-                        button(
-                            "pause",
-                            if settings.paused_until_ms > now_ms() {
-                                "Resume notifications"
-                            } else {
-                                "Pause for 1 hour"
-                            },
-                            true,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            let mut settings =
-                                view.session.background.view.borrow().settings.clone();
-                            settings.paused_until_ms = if settings.paused_until_ms > now_ms() {
-                                0
-                            } else {
-                                now_ms().saturating_add(3_600_000)
-                            };
-                            view.session.background.configure(settings);
-                            cx.notify();
-                        })),
+                        colors
+                            .button(
+                                "pause",
+                                if settings.paused_until_ms > now_ms() {
+                                    "Resume notifications"
+                                } else {
+                                    "Pause for 1 hour"
+                                },
+                                true,
+                            )
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                let mut settings =
+                                    view.session.background.view.borrow().settings.clone();
+                                settings.paused_until_ms = if settings.paused_until_ms > now_ms() {
+                                    0
+                                } else {
+                                    now_ms().saturating_add(3_600_000)
+                                };
+                                view.session.background.configure(settings);
+                                cx.notify();
+                            })),
                     )
                     .child(
-                        button(
-                            "test-notification",
-                            "Send test notification",
-                            capabilities.notifications.ready(),
-                        )
-                        .when(
-                            capabilities.notifications.ready(),
-                            |button| {
+                        colors
+                            .button(
+                                "test-notification",
+                                "Send test notification",
+                                capabilities.notifications.ready(),
+                            )
+                            .when(capabilities.notifications.ready(), |button| {
                                 button.on_click(cx.listener(|view, _, _, _| {
                                     view.session.background.test_notification()
                                 }))
-                            },
-                        ),
+                            }),
                     )
                     .child(
-                        button("quit", "Quit Corvid Agent Deck", true)
+                        colors
+                            .button("quit", "Quit Corvid Agent Deck", true)
                             .on_click(cx.listener(|view, _, _, _| view.session.signal.quit())),
                     ),
             );
         if !background.status.is_empty() {
-            view = view.child(muted(background.status));
+            view = view.child(colors.muted(background.status));
         }
         if let Some(notice) = &self.selected_notice {
             let focus_error = background
@@ -646,20 +653,23 @@ impl DeckView {
             view = view.child(
                 column()
                     .child(notice.title.clone())
-                    .child(muted(notice.body.clone()))
-                    .when_some(focus_error, |detail, error| detail.child(muted(error)))
+                    .child(colors.muted(notice.body.clone()))
+                    .when_some(focus_error, |detail, error| {
+                        detail.child(colors.muted(error))
+                    })
                     .child(
-                        button(
-                            "focus-notification",
-                            "Open existing terminal in Desktop",
-                            enabled,
-                        )
-                        .when(enabled, |button| {
-                            button.on_click(cx.listener(move |view, _, _, cx| {
-                                view.focus_run(key.clone());
-                                cx.notify();
-                            }))
-                        }),
+                        colors
+                            .button(
+                                "focus-notification",
+                                "Open existing terminal in Desktop",
+                                enabled,
+                            )
+                            .when(enabled, |button| {
+                                button.on_click(cx.listener(move |view, _, _, cx| {
+                                    view.focus_run(key.clone());
+                                    cx.notify();
+                                }))
+                            }),
                     ),
             );
         }
@@ -669,7 +679,7 @@ impl DeckView {
                 .child("Recent notifications"),
         );
         if background.history.is_empty() {
-            view = view.child(muted("New agent notifications will appear here."));
+            view = view.child(colors.muted("New agent notifications will appear here."));
         }
         view.children(
             background
@@ -678,81 +688,93 @@ impl DeckView {
                 .enumerate()
                 .map(|(index, notice)| {
                     column().child(
-                        button(("notice", index), notice.title.clone(), true).on_click(
-                            cx.listener(move |view, _, _, cx| {
+                        colors
+                            .button(("notice", index), notice.title.clone(), true)
+                            .on_click(cx.listener(move |view, _, _, cx| {
                                 view.selected_notice = Some(notice.clone());
                                 cx.notify();
-                            }),
-                        ),
+                            })),
                     )
                 }),
         )
     }
 }
 
-pub(super) fn card_face(
-    run: Option<&PresentedRun>,
-    cached: bool,
-    selected: bool,
-    width: f32,
-    height: f32,
-    host: Option<&str>,
-) -> Div {
-    let color = run.map(|run| status(run, cached).1);
-    let face = div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(host.is_some(), |face| face.flex_col())
-        .rounded_lg()
-        .border_color(rgb(color.unwrap_or(BORDER)))
-        .when(run.is_none(), |face| face.border_1())
-        .when_some(color, |face, color| {
-            let (top, bottom) = if color == MUTED {
-                (0x1e, 0x0c)
-            } else {
-                (0x3a, 0x13)
-            };
-            face.border_2().bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba((color << 8) | top), 0.),
-                linear_color_stop(rgba((color << 8) | bottom), 1.),
-            ))
-        })
-        .when_some(run, |face, run| {
-            face.child(
-                svg()
-                    .path(provider_logo(run.provider))
-                    .size(px((width.min(height) * 0.46).clamp(28., 72.)))
-                    .text_color(rgb(if color == Some(MUTED) { MUTED } else { TEXT })),
-            )
-        })
-        .when_some(host, |face, host| {
-            face.child(
-                muted(host.to_owned())
-                    .max_w_full()
-                    .px(px(3.))
-                    .text_size(px(10.))
-                    .truncate(),
-            )
-        });
+impl Colors {
+    pub(super) fn card_face(
+        self,
+        run: Option<&PresentedRun>,
+        cached: bool,
+        selected: bool,
+        width: f32,
+        height: f32,
+        host: Option<&str>,
+    ) -> Div {
+        let status = run.map(|run| status(run, cached).1);
+        let color = status.map(|status| self.status(status));
+        let face = div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(host.is_some(), |face| face.flex_col())
+            .rounded_lg()
+            .border_color(color.unwrap_or(self.border))
+            .when(run.is_none(), |face| face.border_1())
+            .when_some(color, |face, color| {
+                let (top, bottom) = if status == Some(StatusColor::Muted) {
+                    (0.118, 0.047)
+                } else {
+                    (0.227, 0.075)
+                };
+                face.border_2().bg(linear_gradient(
+                    180.,
+                    linear_color_stop(gpui::Rgba { a: top, ..color }, 0.),
+                    linear_color_stop(gpui::Rgba { a: bottom, ..color }, 1.),
+                ))
+            })
+            .when_some(run, |face, run| {
+                face.child(
+                    svg()
+                        .path(provider_logo(run.provider))
+                        .size(px((width.min(height) * 0.46).clamp(28., 72.)))
+                        .text_color(if status == Some(StatusColor::Muted) {
+                            self.muted
+                        } else {
+                            self.text
+                        }),
+                )
+            })
+            .when_some(host, |face, host| {
+                face.child(
+                    self.muted(host.to_owned())
+                        .max_w_full()
+                        .px(px(3.))
+                        .text_size(px(10.))
+                        .truncate(),
+                )
+            });
 
-    // Selection surrounds the status border instead of replacing its color.
-    div()
-        .w(px(width))
-        .h(px(height))
-        .flex_shrink_0()
-        .p(px(2.))
-        .rounded(px(11.))
-        .border_1()
-        .border_color(if selected && run.is_some() {
-            rgb(TEXT)
-        } else {
-            rgba(0x00000000)
-        })
-        .bg(rgb(if run.is_some() { PANEL } else { BACKGROUND }))
-        .child(face)
+        // Selection surrounds the status border instead of replacing its color.
+        div()
+            .w(px(width))
+            .h(px(height))
+            .flex_shrink_0()
+            .p(px(2.))
+            .rounded(px(11.))
+            .border_1()
+            .border_color(if selected && run.is_some() {
+                self.text
+            } else {
+                rgba(0x00000000)
+            })
+            .bg(if run.is_some() {
+                self.panel
+            } else {
+                self.empty_card
+            })
+            .child(face)
+    }
 }
 
 fn provider_logo(raw: i32) -> &'static str {
@@ -818,7 +840,11 @@ impl RunDetails {
             });
             if let Some(run) = run {
                 let cached = deck.view.link != Link::Online || snapshot.generation().is_none();
-                return Some(describe(run, cached).child(muted(placement_label(slot))));
+                return Some(
+                    deck.colors
+                        .describe(run, cached)
+                        .child(deck.colors.muted(placement_label(slot))),
+                );
             }
         }
         let host = deck.catalog_view.hosts.get(&host_id)?;
@@ -826,20 +852,26 @@ impl RunDetails {
             .runs
             .iter()
             .find(|run| run.key.as_ref() == Some(&self.key))?;
-        Some(describe(run, !host.online).child(muted(host.label.clone())))
+        Some(
+            deck.colors
+                .describe(run, !host.online)
+                .child(deck.colors.muted(host.label.clone())),
+        )
     }
 }
 
 impl Render for RunDetails {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.content(self.deck.read(cx))
-            .unwrap_or_else(|| muted("Agent no longer displayed"))
+        let deck = self.deck.read(cx);
+        let colors = deck.colors;
+        self.content(deck)
+            .unwrap_or_else(|| colors.muted("Agent no longer displayed"))
             .p(px(12.))
-            .bg(rgb(PANEL))
-            .text_color(rgb(TEXT))
+            .bg(colors.panel)
+            .text_color(colors.text)
             .text_size(px(12.))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(colors.border)
             .rounded_md()
     }
 }
@@ -851,50 +883,71 @@ fn provider(run: &PresentedRun) -> &'static str {
         _ => "Agent",
     }
 }
-fn badge(raw: i32) -> (&'static str, u32) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusColor {
+    Muted,
+    Working,
+    Attention,
+    Response,
+    Error,
+}
+
+fn badge(raw: i32) -> (&'static str, StatusColor) {
     match AgentBadge::try_from(raw) {
-        Ok(AgentBadge::Working) => ("Working", BLUE),
-        Ok(AgentBadge::NeedsInput) => ("Needs input", AMBER),
-        Ok(AgentBadge::ResponseObserved) => ("New response", MINT),
-        Ok(AgentBadge::Ready) => ("Ready", MUTED),
-        Ok(AgentBadge::Interrupted) => ("Interrupted", AMBER),
-        Ok(AgentBadge::Error) => ("Error", RED),
-        Ok(AgentBadge::Ended) => ("Ended", MUTED),
-        _ => ("Unknown", MUTED),
+        Ok(AgentBadge::Working) => ("Working", StatusColor::Working),
+        Ok(AgentBadge::NeedsInput) => ("Needs input", StatusColor::Attention),
+        Ok(AgentBadge::ResponseObserved) => ("New response", StatusColor::Response),
+        Ok(AgentBadge::Ready) => ("Ready", StatusColor::Muted),
+        Ok(AgentBadge::Interrupted) => ("Interrupted", StatusColor::Attention),
+        Ok(AgentBadge::Error) => ("Error", StatusColor::Error),
+        Ok(AgentBadge::Ended) => ("Ended", StatusColor::Muted),
+        _ => ("Unknown", StatusColor::Muted),
     }
 }
-fn status(run: &PresentedRun, cached: bool) -> (&'static str, u32) {
+fn status(run: &PresentedRun, cached: bool) -> (&'static str, StatusColor) {
     if let Some(label) =
         availability_label(RunAvailability::try_from(run.availability).ok(), cached)
     {
-        return (label, MUTED);
+        return (label, StatusColor::Muted);
     }
     if run.pending_requests == 0 && run.unverified_requests > 0 {
-        return ("Check terminal", AMBER);
+        return ("Check terminal", StatusColor::Attention);
     }
     match prompt_detail(run) {
-        Some(PromptObservation::Submitted) => ("Working (inferred)", BLUE),
+        Some(PromptObservation::Submitted) => ("Working (inferred)", StatusColor::Working),
         Some(PromptObservation::Responded) => badge(AgentBadge::ResponseObserved as i32),
         _ => badge(run.last_badge),
     }
 }
-fn describe(run: &PresentedRun, cached: bool) -> Div {
-    let (label, color) = status(run, cached);
-    let mut view = column()
-        .child(provider(run))
-        .child(div().text_color(rgb(color)).child(label))
-        .child(muted(evidence_label(run)))
-        .child(muted(format!(
-            "{} pending · {} unverified · {} unseen",
-            run.pending_requests, run.unverified_requests, run.unseen_attention
-        )));
-    if let Some(key) = &run.key {
-        view = view.child(muted(short_id(&key.agent_run_id)));
+impl Colors {
+    fn status(self, color: StatusColor) -> gpui::Rgba {
+        match color {
+            StatusColor::Muted => self.muted,
+            StatusColor::Working => self.working,
+            StatusColor::Attention => self.attention,
+            StatusColor::Response => self.response,
+            StatusColor::Error => self.error,
+        }
     }
-    if let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
-        view = view.child(muted(format!("Observed {age} ago")));
+
+    fn describe(self, run: &PresentedRun, cached: bool) -> Div {
+        let (label, color) = status(run, cached);
+        let mut view = column()
+            .child(provider(run))
+            .child(div().text_color(self.status(color)).child(label))
+            .child(self.muted(evidence_label(run)))
+            .child(self.muted(format!(
+                "{} pending · {} unverified · {} unseen",
+                run.pending_requests, run.unverified_requests, run.unseen_attention
+            )));
+        if let Some(key) = &run.key {
+            view = view.child(self.muted(short_id(&key.agent_run_id)));
+        }
+        if let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
+            view = view.child(self.muted(format!("Observed {age} ago")));
+        }
+        view
     }
-    view
 }
 
 #[cfg(test)]
@@ -913,20 +966,26 @@ mod tests {
     fn live_prompt_observations_fill_unknown_status_until_stronger_evidence_arrives() {
         let mut run = available(AgentBadge::Unknown);
         run.collection = AgentCollection::Healthy as i32;
-        assert_eq!(status(&run, false), ("Unknown", MUTED));
+        assert_eq!(status(&run, false), ("Unknown", StatusColor::Muted));
         run.prompt_observation = PromptObservation::Submitted as i32;
-        assert_eq!(status(&run, false), ("Working (inferred)", BLUE));
+        assert_eq!(
+            status(&run, false),
+            ("Working (inferred)", StatusColor::Working)
+        );
         run.prompt_observation = PromptObservation::Responded as i32;
-        assert_eq!(status(&run, false), ("New response", MINT));
-        assert_eq!(status(&run, true), ("Cached", MUTED));
+        assert_eq!(status(&run, false), ("New response", StatusColor::Response));
+        assert_eq!(status(&run, true), ("Cached", StatusColor::Muted));
         run.collection = AgentCollection::GapDetected as i32;
-        assert_eq!(status(&run, false), ("Unknown", MUTED));
+        assert_eq!(status(&run, false), ("Unknown", StatusColor::Muted));
         run.collection = AgentCollection::Healthy as i32;
         run.unverified_requests = 1;
-        assert_eq!(status(&run, false), ("Check terminal", AMBER));
+        assert_eq!(
+            status(&run, false),
+            ("Check terminal", StatusColor::Attention)
+        );
         run.pending_requests = 1;
         run.last_badge = AgentBadge::NeedsInput as i32;
-        assert_eq!(status(&run, false), ("Needs input", AMBER));
+        assert_eq!(status(&run, false), ("Needs input", StatusColor::Attention));
     }
 
     #[test]
@@ -943,7 +1002,7 @@ mod tests {
             AgentBadge::Unspecified,
         ] {
             assert_eq!(
-                status(&available(badge), false).1 == MINT,
+                status(&available(badge), false).1 == StatusColor::Response,
                 badge == AgentBadge::ResponseObserved,
             );
         }
@@ -957,7 +1016,7 @@ mod tests {
             AgentBadge::ResponseObserved,
         ] {
             let mut run = available(badge);
-            assert_eq!(status(&run, true), ("Cached", MUTED));
+            assert_eq!(status(&run, true), ("Cached", StatusColor::Muted));
             for availability in [
                 RunAvailability::Offline,
                 RunAvailability::Historical,
@@ -965,10 +1024,10 @@ mod tests {
                 RunAvailability::Unspecified,
             ] {
                 run.availability = availability as i32;
-                assert_eq!(status(&run, false).1, MUTED);
+                assert_eq!(status(&run, false).1, StatusColor::Muted);
             }
             run.availability = i32::MAX;
-            assert_eq!(status(&run, false), ("Check needed", MUTED));
+            assert_eq!(status(&run, false), ("Check needed", StatusColor::Muted));
         }
     }
 
@@ -976,9 +1035,12 @@ mod tests {
     fn unverified_requests_override_an_observed_response() {
         let mut run = available(AgentBadge::ResponseObserved);
         run.unverified_requests = 1;
-        assert_eq!(status(&run, false), ("Check terminal", AMBER));
+        assert_eq!(
+            status(&run, false),
+            ("Check terminal", StatusColor::Attention)
+        );
         run.availability = RunAvailability::Offline as i32;
-        assert_eq!(status(&run, false), ("Offline", MUTED));
+        assert_eq!(status(&run, false), ("Offline", StatusColor::Muted));
     }
 
     #[test]
@@ -986,6 +1048,6 @@ mod tests {
         assert_eq!(provider_logo(i32::MAX), chrome::AGENT);
         let mut run = available(AgentBadge::Unknown);
         run.last_badge = i32::MAX;
-        assert_eq!(status(&run, false), ("Unknown", MUTED));
+        assert_eq!(status(&run, false), ("Unknown", StatusColor::Muted));
     }
 }

@@ -225,6 +225,7 @@ jobs:
         env:
           CORVID_DESKTOP_MACOS_SCREENSHOT: target/desktop-macos.png
           CORVID_AGENT_DECK_MACOS_SCREENSHOT: target/agent-deck-macos.png
+          CORVID_AGENT_DECK_EXPECTED_SDK: "27.2"
         run: |
           python3 deploy/macos_package.py --archive target/dist/corvid-desktop-*-aarch64-apple-darwin.tar.gz --output target/dist
           python3 deploy/test_macos.py --assets target/dist

@@ -8,6 +8,7 @@ use crate::ui_signal::Presentation;
 
 unsafe extern "C" {
     fn corvid_panel_prepare();
+    fn corvid_panel_colors(view: *mut c_void, colors: *mut [u32; 9]);
     fn corvid_panel_hide(view: *mut c_void);
     fn corvid_panel_update(view: *mut c_void, width: f64, height: f64, presentation: u8);
 }
@@ -25,6 +26,13 @@ fn view(window: &Window) -> Result<*mut c_void> {
         bail!("Agent Deck requires an AppKit panel");
     };
     Ok(handle.ns_view.as_ptr())
+}
+
+pub(crate) fn colors(window: &Window) -> Option<[u32; 9]> {
+    let view = view(window).ok()?;
+    let mut colors = [0; 9];
+    unsafe { corvid_panel_colors(view, &raw mut colors) };
+    Some(colors)
 }
 
 pub(super) fn hide(window: &Window) -> Result<()> {

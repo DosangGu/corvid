@@ -18,6 +18,8 @@ mod macos;
 #[cfg(not(target_os = "macos"))]
 mod native;
 #[cfg(target_os = "macos")]
+pub(crate) use macos::colors as macos_colors;
+#[cfg(target_os = "macos")]
 pub(super) use macos::prepare as prepare_macos;
 
 #[derive(Clone, Default, Serialize)]

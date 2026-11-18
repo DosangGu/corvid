@@ -17,24 +17,27 @@ use corvid_protocol::wire::{
 };
 use gpui::{
     Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, KeyUpEvent, MouseButton,
-    Render, SharedString, Stateful, Window, div, prelude::*, px, rgb, rgba,
+    Render, SharedString, Stateful, Window, div, prelude::*, px, rgba,
 };
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 mod chrome;
+mod colors;
 mod deck;
 mod floating;
 #[cfg(windows)]
 #[path = "pairing.rs"]
 mod pairing;
 pub(crate) use chrome::DeckAssets;
-use deck::{BACKGROUND, MINT, PANEL, TEXT, button, column, muted, row};
+use colors::Colors;
+use deck::{column, row};
 
 pub(crate) struct DeckView {
     session: Rc<Session>,
     focus: FocusHandle,
+    colors: Colors,
     held: Gesture,
     selected: usize,
     menu: Option<(std::sync::Arc<Snapshot>, PresentedSlot)>,
@@ -102,8 +105,12 @@ impl DeckView {
             view.update(window, cx);
         });
         activation.detach();
+        #[cfg(target_os = "macos")]
+        cx.observe_window_appearance(window, |_, _, cx| cx.notify())
+            .detach();
         let mut result = Self {
             session,
+            colors: Colors::for_window(window),
             view: Display::default(),
             binding: None,
             section: Section::Slots,
@@ -303,6 +310,7 @@ impl DeckView {
 
 impl Render for DeckView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.colors = Colors::for_window(window);
         let content = if self.window.expanded {
             self.expanded(window, cx)
         } else {
@@ -312,8 +320,8 @@ impl Render for DeckView {
             .id("agent-deck")
             .size_full()
             .relative()
-            .bg(rgb(BACKGROUND))
-            .text_color(rgb(TEXT))
+            .bg(self.colors.background)
+            .text_color(self.colors.text)
             .text_size(px(13.))
             .line_height(gpui::relative(1.2))
             .when(!cfg!(target_os = "macos"), |view| {
