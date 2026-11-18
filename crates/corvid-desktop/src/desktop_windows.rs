@@ -173,7 +173,9 @@ impl DesktopWindows {
             app_id: Some(crate::app_icon::APP_ID.into()),
             titlebar: Some(TitlebarOptions {
                 title: Some("Corvid Desktop".into()),
-                ..Default::default()
+                appears_transparent: cfg!(target_os = "macos"),
+                traffic_light_position: cfg!(target_os = "macos")
+                    .then(|| gpui::point(px(12.), px(13.))),
             }),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(900.), px(620.))),

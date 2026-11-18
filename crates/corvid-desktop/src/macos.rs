@@ -1,7 +1,32 @@
+use std::ffi::c_void;
+
 use crate::desktop_windows::DesktopWindows;
-use gpui::{App, KeyBinding, Menu, MenuItem, SystemMenuType, actions};
+use gpui::{
+    App, Div, KeyBinding, Menu, MenuItem, MouseButton, SystemMenuType, actions, prelude::*,
+};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 actions!(corvid_macos, [Quit, NewWindow, CloseWindow]);
+
+unsafe extern "C" {
+    fn corvid_desktop_drag_window(view: *mut c_void);
+}
+
+pub(crate) fn window_drag_region(region: Div) -> Div {
+    region.on_mouse_down(MouseButton::Left, |event, window, _| {
+        if window.is_fullscreen() {
+            return;
+        }
+        if event.click_count == 2 {
+            window.titlebar_double_click();
+        } else if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::AppKit(handle) = handle.as_raw()
+        {
+            // GPUI dispatches mouse input on the AppKit thread with this view alive.
+            unsafe { corvid_desktop_drag_window(handle.ns_view.as_ptr()) };
+        }
+    })
+}
 
 pub fn menus(windows: &DesktopWindows, cx: &mut App) {
     let manager = windows.clone();

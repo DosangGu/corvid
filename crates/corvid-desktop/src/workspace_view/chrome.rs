@@ -190,6 +190,7 @@ impl WorkspaceView {
         &self,
         ui: Option<&Ui>,
         workspace: Option<&WorkspaceState>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let location = self
@@ -212,6 +213,36 @@ impl WorkspaceView {
                     })
                     .count()
             });
+        let switcher = |cx: &mut Context<Self>| {
+            div()
+                .flex_none()
+                .max_w(ui_px(250.))
+                .overflow_hidden()
+                .child(
+                    button("workspaces", title.clone(), self.switcher_open).on_click(
+                        cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
+                    ),
+                )
+        };
+        let tabs = div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .when_some(ui.zip(workspace), |bar, (ui, workspace)| {
+                bar.child(self.tabs(workspace, ui, cx))
+            });
+        #[cfg(target_os = "macos")]
+        let tabs = tabs.when(ui.zip(workspace).is_none(), |tabs| {
+            crate::macos::window_drag_region(tabs.self_stretch())
+        });
+        #[cfg(target_os = "macos")]
+        let drag_region = Some(crate::macos::window_drag_region(
+            div().w(px(18.)).flex_none().self_stretch(),
+        ));
+        #[cfg(not(target_os = "macos"))]
+        let drag_region: Option<Div> = None;
+
         div()
             .flex()
             .flex_none()
@@ -220,25 +251,18 @@ impl WorkspaceView {
             .gap(ui_px(5.))
             .px(ui_px(8.))
             .bg(rgb(PANEL))
-            .child(
-                div()
-                    .flex_none()
-                    .max_w(ui_px(250.))
-                    .overflow_hidden()
-                    .child(button("workspaces", title, self.switcher_open).on_click(
-                        cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
-                    )),
+            .when(cfg!(target_os = "macos"), |bar| bar.min_h(px(40.)))
+            .when(
+                cfg!(target_os = "macos") && !window.is_fullscreen(),
+                |bar| {
+                    // AppKit's controls are measured in unscaled points.
+                    bar.pl(px(76.))
+                },
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .items_center()
-                    .when_some(ui.zip(workspace), |bar, (ui, workspace)| {
-                        bar.child(self.tabs(workspace, ui, cx))
-                    }),
-            )
+            .when(!cfg!(target_os = "macos"), |bar| bar.child(switcher(cx)))
+            .child(tabs)
+            .children(drag_region)
+            .when(cfg!(target_os = "macos"), |bar| bar.child(switcher(cx)))
             .when(ui.is_some_and(Ui::can_write), |bar| {
                 bar.child(
                     button("create-menu", "+", self.menu_open && self.menu_create).on_click(
@@ -518,7 +542,7 @@ impl Render for WorkspaceView {
             .flex_col()
             .size_full()
             .bg(rgb(BACKGROUND))
-            .child(self.toolbar(ui.as_ref(), workspace, cx))
+            .child(self.toolbar(ui.as_ref(), workspace, window, cx))
             .when_some(
                 ui.as_ref().and_then(|ui| self.restore_errors(ui, cx)),
                 |root, errors| root.child(errors),
