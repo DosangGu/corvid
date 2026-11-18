@@ -4,6 +4,7 @@
 
 extern void corvid_native_ready(bool status_icon, bool notifications);
 extern void corvid_native_submitted(unsigned long long high, unsigned long long low, bool accepted);
+extern void corvid_native_activation_yielded(void *completion);
 
 static atomic_bool stopping;
 
@@ -34,8 +35,10 @@ extern void corvid_native_event(unsigned int kind, unsigned long long high, unsi
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
     didReceiveNotificationResponse:(UNNotificationResponse *)response
     withCompletionHandler:(void (^)(void))completion {
-    NSDictionary *scope = response.notification.request.content.userInfo;
-    corvid_native_event(5, [scope[@"corvid-high"] unsignedLongLongValue], [scope[@"corvid-low"] unsignedLongLongValue]);
+    if ([response.actionIdentifier isEqualToString:UNNotificationDefaultActionIdentifier]) {
+        NSDictionary *scope = response.notification.request.content.userInfo;
+        corvid_native_event(5, [scope[@"corvid-high"] unsignedLongLongValue], [scope[@"corvid-low"] unsignedLongLongValue]);
+    }
     completion();
 }
 @end
@@ -43,6 +46,16 @@ extern void corvid_native_event(unsigned int kind, unsigned long long high, unsi
 static CorvidDeckDelegate *delegate;
 
 NSStatusBarButton *corvid_status_button(void) { return delegate.item.button; }
+
+void corvid_native_yield_activation(unsigned int pid, void *completion) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!atomic_load(&stopping) && NSApp.isActive) {
+            NSRunningApplication *desktop = [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)pid];
+            if (desktop) [NSApp yieldActivationToApplication:desktop];
+        }
+        corvid_native_activation_yielded(completion);
+    });
+}
 
 void corvid_native_start(void) {
     dispatch_async(dispatch_get_main_queue(), ^{

@@ -389,6 +389,110 @@ async fn rejected_requests_keep_the_previous_login_setting_and_route_activation(
     Ok(())
 }
 
+#[tokio::test]
+async fn notification_clicks_route_to_exact_hosts_and_record_failure_without_opening_deck()
+-> Result<()> {
+    let (callbacks, native) = std::sync::mpsc::sync_channel(1);
+    let (root, background, signal) = start_fixture(move |callbacks_for_fixture, _, _, _| {
+        callbacks.send(callbacks_for_fixture.clone())?;
+        Ok(FakeNative {
+            _callbacks: callbacks_for_fixture,
+            login: std::sync::mpsc::channel().0,
+        })
+    })?;
+    let callbacks = native.try_recv()?;
+    let state = root.path().join("state");
+    let current = Config::read_if_present(&state)?.context("fixture config")?;
+    let remote_host = Uuid::new_v4();
+    let remote_state = state
+        .join("slot-board")
+        .join(remote_host.simple().to_string());
+    corvid_companion::initialize(&remote_state, remote_host, current.endpoint.clone(), 8)?;
+    let remote = Config::read_if_present(&remote_state)?.context("remote fixture config")?;
+    let common_run = Uuid::new_v4();
+    let mut jobs = tokio::task::JoinSet::new();
+    let mut targets = Vec::new();
+    for config in [current, remote] {
+        let mut notice = test_notice(config.host_id, true);
+        notice.summary = false;
+        notice.key.run = common_run;
+        let (send, receive) = mpsc::channel(1);
+        jobs.spawn(desktop_focus::serve(
+            config.host_id,
+            config.controller_id,
+            notice.key.epoch,
+            send,
+        ));
+        targets.push((notice, receive));
+    }
+    tokio::task::yield_now().await;
+
+    for (notice, requests) in targets.iter_mut().rev() {
+        callbacks.event(Event::Activate(notice.clone()))?;
+        let request = timeout(COMMAND_TIMEOUT, requests.recv())
+            .await
+            .with_context(|| {
+                let view = background.view.borrow();
+                let failure = view
+                    .history
+                    .iter()
+                    .find(|entry| entry.key == notice.key)
+                    .and_then(|entry| entry.focus_error.as_deref());
+                format!("focus for {} timed out: {failure:?}", notice.key.host)
+            })?
+            .context("expected the notification's Desktop to get its run")?;
+        assert_eq!(request.run, notice.key.run());
+        request.result.send(Ok(())).unwrap();
+    }
+
+    let (mut stale, mut requests) = targets.pop().unwrap();
+    stale.key.epoch = Uuid::new_v4();
+    stale.key.attention = Uuid::new_v4();
+    callbacks.event(Event::Activate(stale.clone()))?;
+    let mut view = background.view.clone();
+    timeout(
+        COMMAND_TIMEOUT,
+        view.wait_for(|state| {
+            state.history.iter().any(|entry| {
+                entry.key == stale.key
+                    && entry
+                        .focus_error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("different daemon session"))
+            })
+        }),
+    )
+    .await
+    .context("recording the stale notification")??;
+    assert!(requests.try_recv().is_err());
+    assert_eq!(view.borrow().notifications_open, 0);
+    assert_eq!(signal.take_presentation(), None);
+
+    jobs.shutdown().await;
+    let (notice, _) = targets.pop().unwrap();
+    callbacks.event(Event::Activate(notice.clone()))?;
+    timeout(
+        COMMAND_TIMEOUT,
+        view.wait_for(|state| {
+            state.history.iter().any(|entry| {
+                entry.key == notice.key
+                    && entry
+                        .focus_error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("Open this host in Corvid Desktop"))
+            })
+        }),
+    )
+    .await
+    .context("recording the disconnected Desktop")??;
+    let saved = std::fs::read(state.join("agent-deck/notifications.json"))?;
+    let ledger: Ledger = serde_json::from_slice(&saved)?;
+    ledger.validate()?;
+    assert_eq!(ledger.history.len(), 2);
+    assert_eq!(signal.take_presentation(), None);
+    Ok(())
+}
+
 #[test]
 fn saturated_callback_queue_reports_loss_and_closure() -> Result<()> {
     let (events, mut rx) = mpsc::channel(1);
