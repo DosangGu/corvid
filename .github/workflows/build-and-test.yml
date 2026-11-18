@@ -328,7 +328,7 @@ jobs:
         if: runner.os == 'macOS'
         with:
           name: agent-deck-macos-preview
-          path: target/agent-deck-macos.png
+          path: target/agent-deck-macos*.png
           if-no-files-found: ignore
       - name: Linux Desktop display smoke test
         if: runner.os == 'Linux'

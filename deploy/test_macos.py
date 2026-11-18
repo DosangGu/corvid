@@ -100,6 +100,9 @@ for window in windows where (window[kCGWindowOwnerPID as String] as? Int) == pid
         if screenshot := os.environ.get("CORVID_AGENT_DECK_MACOS_SCREENSHOT"):
             subprocess.run(["screencapture", "-x", "-l", window, screenshot],
                            timeout=10, check=False)
+            preview = Path(screenshot).with_name("agent-deck-macos-menu-bar.png")
+            subprocess.run(["screencapture", "-x", "-D", "1", preview],
+                           timeout=10, check=False)
 
 
 def check(assets):
