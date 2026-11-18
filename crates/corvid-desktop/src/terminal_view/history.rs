@@ -14,6 +14,7 @@ pub(super) struct History {
     result: Option<Result<TerminalHistory, String>>,
     first: usize,
     pending_back: usize,
+    pub(super) wheel_browse: bool,
     pub(super) search: Option<Search>,
 }
 
@@ -29,6 +30,7 @@ impl History {
             result: None,
             first: usize::MAX,
             pending_back: 0,
+            wheel_browse: false,
             search: search.then(Search::default),
         }
     }
@@ -37,12 +39,19 @@ impl History {
         result: Result<TerminalHistory, String>,
         back: usize,
         height: usize,
+        shell_only: bool,
     ) -> Option<Self> {
         let snapshot = result.ok()?;
-        if !snapshot.shell_foreground || back == 0 || snapshot.lines.len() <= height {
+        let eligible = if shell_only {
+            snapshot.shell_foreground
+        } else {
+            snapshot.alternate_screen == Some(false)
+        };
+        if !eligible || back == 0 || snapshot.lines.len() <= height {
             return None;
         }
         let mut history = Self::new(false);
+        history.wheel_browse = true;
         history.pending_back = back;
         history.loaded(Ok(snapshot), height);
         Some(history)
@@ -116,8 +125,20 @@ impl History {
         let cols = NonZeroU16::new(snapshot.columns as u16)?;
         let mut parser = Parser::new(grid.rows, cols, 0);
         for (row, line) in snapshot.lines.iter().skip(top).take(rows).enumerate() {
-            parser.process(format!("\x1b[{};1H", row + 1).as_bytes());
-            parser.process(line.as_bytes());
+            parser.process(format!("\x1b[0m\x1b[{};1H", row + 1).as_bytes());
+            let index = (top + row) as u32;
+            let first = snapshot.styles.partition_point(|change| change.row < index);
+            let mut from = 0;
+            for change in snapshot.styles[first..]
+                .iter()
+                .take_while(|change| change.row == index)
+            {
+                let offset = change.offset as usize;
+                parser.process(&line.as_bytes()[from..offset]);
+                parser.process(format!("\x1b[{}m", change.sgr).as_bytes());
+                from = offset;
+            }
+            parser.process(&line.as_bytes()[from..]);
         }
         parser.process(b"\x1b[?25l");
         let hit = self.search.as_ref().and_then(|search| {
@@ -202,14 +223,40 @@ mod tests {
             lines: (0..12).map(|row| row.to_string()).collect(),
             ..Default::default()
         };
-        assert!(History::from_wheel(Ok(snapshot.clone()), 3, 4).is_none());
+        assert!(History::from_wheel(Ok(snapshot.clone()), 3, 4, true).is_none());
         snapshot.shell_foreground = true;
-        assert!(History::from_wheel(Ok(snapshot.clone()), 3, 12).is_none());
-        assert!(History::from_wheel(Ok(snapshot.clone()), 0, 4).is_none());
-        let mut history = History::from_wheel(Ok(snapshot), 3, 4).unwrap();
+        assert!(History::from_wheel(Ok(snapshot.clone()), 3, 12, true).is_none());
+        assert!(History::from_wheel(Ok(snapshot.clone()), 0, 4, true).is_none());
+        let mut history = History::from_wheel(Ok(snapshot), 3, 4, true).unwrap();
         assert_eq!(history.first, 5);
         history.scroll(3, 4);
         assert!(history.at_bottom(4));
+    }
+
+    #[test]
+    fn inline_program_history_opens_with_colored_wide_text_but_alternate_history_does_not() {
+        let mut snapshot = TerminalHistory {
+            columns: 20,
+            lines: vec!["한글 diff".into(), "next".into(), "last".into()],
+            alternate_screen: Some(true),
+            styles: vec![corvid_protocol::wire::HistoryStyle {
+                row: 0,
+                offset: 0,
+                sgr: "31;4".into(),
+            }],
+            ..Default::default()
+        };
+        assert!(History::from_wheel(Ok(snapshot.clone()), 1, 2, false).is_none());
+        snapshot.alternate_screen = Some(false);
+        let mut history = History::from_wheel(Ok(snapshot), 1, 2, false).unwrap();
+        assert!(history.wheel_browse);
+        history.search = Some(Search::default());
+        history.edit_query(Some("diff"));
+        let (screen, hit) = history.screen(Grid::new(2, 20)).unwrap();
+        assert_eq!(hit.unwrap(), (0, 5)..(0, 9));
+        assert_eq!(screen.cell(0, 5).unwrap().fgcolor(), vt100::Color::Idx(1));
+        assert!(screen.cell(0, 5).unwrap().underline());
+        assert_eq!(screen.cell(1, 0).unwrap().fgcolor(), vt100::Color::Default);
     }
 
     #[test]

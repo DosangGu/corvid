@@ -1209,6 +1209,16 @@ message TerminalHistory {
   bool truncated = 3;
   // Positive confirmation for a shell-only read. Older daemons default to false.
   bool shell_foreground = 4;
+  // Sparse SGR changes ordered by row and UTF-8 byte offset in lines.
+  repeated HistoryStyle styles = 5;
+  optional bool alternate_screen = 6;
+}
+
+message HistoryStyle {
+  uint32 row = 1;
+  uint32 offset = 2;
+  // SGR parameters only, without CSI or the final m.
+  string sgr = 3;
 }
 
 message ClaimWorkspaceWriter {
@@ -1259,6 +1269,8 @@ message RenderHeader {
   PanePreviewFrame preview = 9;
   // Mouse wheel reporting requested by the program in this rendered view.
   WheelEncoding wheel_encoding = 10;
+  // Absent on old hosts and on frames without a live terminal.
+  optional bool alternate_screen = 11;
 }
 
 enum WheelEncoding {

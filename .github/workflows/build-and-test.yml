@@ -238,6 +238,7 @@ jobs:
             target/desktop-close-confirmation.png
             target/pane-close-before.png
             target/pane-close-after.png
+            target/agent-history.png
             target/scroll-history.png
             target/scroll-live.png
           if-no-files-found: error

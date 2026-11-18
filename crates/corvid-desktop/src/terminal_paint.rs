@@ -143,7 +143,9 @@ impl Frame {
                 let mut style = Style::from_cell(cell);
                 if selection.is_some_and(|selection| selection.contains(&(row, col))) {
                     style.bg = 0x315773;
-                    style.fg = FOREGROUND;
+                    if style.fg == style.bg {
+                        style.fg = FOREGROUND;
+                    }
                 }
                 if !cell.has_contents() && style.bg == BACKGROUND {
                     continue;
