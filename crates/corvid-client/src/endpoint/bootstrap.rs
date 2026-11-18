@@ -610,6 +610,101 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wsl_bootstrap_uses_a_private_runtime_when_xdg_is_unsafe() {
+        use std::fs;
+        use std::io::Write;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::path::Path;
+        use std::process::{Command, Stdio};
+
+        let directory = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+        let home = directory.path();
+        let managed = home.join(".corvid");
+        fs::create_dir(&managed).unwrap();
+        fs::set_permissions(&managed, fs::Permissions::from_mode(0o700)).unwrap();
+        let daemon = managed.join("corvid");
+        let binary = b"#!/bin/sh\ntest -z \"${CORVID_WSL_BOOTSTRAP+x}\" || exit 1\nprintf '%s\\n' \"${CORVID_RUNTIME_DIR:-$XDG_RUNTIME_DIR/corvid}\" \"$XDG_RUNTIME_DIR\"\n";
+        fs::write(&daemon, binary).unwrap();
+        fs::set_permissions(&daemon, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let writable = home.join("wslg");
+        let unsafe_xdg = writable.join("runtime-dir");
+        fs::create_dir_all(&unsafe_xdg).unwrap();
+        fs::set_permissions(&writable, fs::Permissions::from_mode(0o1777)).unwrap();
+        let safe_xdg = home.join("user runtime");
+        fs::create_dir(&safe_xdg).unwrap();
+        let symlink_xdg = home.join("linked runtime");
+        symlink(&safe_xdg, &symlink_xdg).unwrap();
+        let public_xdg = home.join("public socket directory");
+        fs::create_dir_all(public_xdg.join("corvid")).unwrap();
+        fs::set_permissions(public_xdg.join("corvid"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+        let fallback = managed.join(format!("r-{}", &boot_id[..23]));
+        let xdg_runtime = safe_xdg.join("corvid");
+        let explicit = home.join("explicit");
+        let digest = Command::new("sha256sum").arg(&daemon).output().unwrap();
+        assert!(digest.status.success());
+        let digest = std::str::from_utf8(&digest.stdout).unwrap();
+        let header = format!(
+            "{} {}\n",
+            binary.len(),
+            digest.split_whitespace().next().unwrap()
+        );
+
+        for (xdg, override_path, expected) in [
+            (unsafe_xdg.as_path(), None, &fallback),
+            (&symlink_xdg, None, &fallback),
+            (&public_xdg, None, &fallback),
+            (&safe_xdg, None, &xdg_runtime),
+            (Path::new(""), None, &fallback),
+            (&unsafe_xdg, Some(&explicit), &explicit),
+        ] {
+            for arguments in [
+                "auto control --stdio",
+                "managed terminal-relay",
+                "managed ensure-daemon",
+                "upgrade 0.2.5",
+            ] {
+                let remote = super::super::wsl::shell_command(&linux_command(arguments));
+                let mut command = Command::new("sh");
+                command
+                    .args(["-c", &remote])
+                    .env("HOME", home)
+                    .env("PATH", "/usr/bin:/bin")
+                    .env("XDG_RUNTIME_DIR", xdg)
+                    .env_remove("CORVID_RUNTIME_DIR")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if let Some(path) = override_path {
+                    command.env("CORVID_RUNTIME_DIR", path);
+                }
+                let mut child = command.spawn().unwrap();
+                let mut input = child.stdin.take().unwrap();
+                if arguments.starts_with("upgrade ") {
+                    input.write_all(header.as_bytes()).unwrap();
+                    input.write_all(binary).unwrap();
+                }
+                drop(input);
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{arguments} with {}: {}",
+                    xdg.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap(),
+                    format!("{}\n{}\n", expected.display(), xdg.display()),
+                    "{arguments}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn windows_commands_fit_the_default_ssh_shell_limit() {
         assert!(auto_control_command(HostPlatform::Windows).len() < 8000);

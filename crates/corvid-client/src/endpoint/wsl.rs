@@ -55,7 +55,7 @@ impl WslDistribution {
                 "--exec",
                 "/bin/sh",
                 "-c",
-                remote,
+                &shell_command(remote),
             ])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -92,6 +92,10 @@ impl WslDistribution {
         ensure!(bytes.len() <= 65536, "WSL distribution list is too large");
         parse_distributions(&bytes)
     }
+}
+
+pub(super) fn shell_command(remote: &str) -> String {
+    format!("CORVID_WSL_BOOTSTRAP=1 {remote}")
 }
 
 #[cfg(windows)]
@@ -181,7 +185,7 @@ mod tests {
                 "--exec",
                 "/bin/sh",
                 "-c",
-                "printf ready"
+                "CORVID_WSL_BOOTSTRAP=1 printf ready"
             ]
         );
     }

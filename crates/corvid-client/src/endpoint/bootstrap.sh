@@ -13,6 +13,29 @@ restore_runtime_locale() {
 }
 
 root=${HOME:-}/.corvid
+wsl_bootstrap=${CORVID_WSL_BOOTSTRAP:-}
+unset CORVID_WSL_BOOTSTRAP
+
+safe_parents() (
+    parent=$1
+    uid=$2
+    case $parent in /*) ;; *) return 1 ;; esac
+    while [ -n "$parent" ]; do
+        case ${parent##*/} in
+            ''|.) ;;
+            ..) return 1 ;;
+            *)
+                [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
+                metadata=$(stat -c %u:%a -- "$parent") || return 1
+                owner=${metadata%:*}
+                mode=${metadata#*:}
+                { [ "$owner" = 0 ] || [ "$owner" = "$uid" ]; } || return 1
+                [ "$((0$mode & 022))" -eq 0 ] || return 1
+                ;;
+        esac
+        parent=${parent%/*}
+    done
+)
 
 safe_home() {
     case ${HOME:-}/ in
@@ -22,16 +45,18 @@ safe_home() {
     esac
     user=$(id -u) || return 1
     [ "$(stat -c %u -- "$HOME")" = "$user" ] || return 1
-    parent=$HOME
-    while [ -n "$parent" ]; do
-        [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
-        owner=$(stat -c %u -- "$parent") || return 1
-        mode=$(stat -c %a -- "$parent") || return 1
-        { [ "$owner" = 0 ] || [ "$owner" = "$user" ]; } || return 1
-        [ "$((0$mode & 022))" -eq 0 ] || return 1
-        parent=${parent%/*}
-    done
+    safe_parents "$HOME" "$user"
 }
+
+safe_xdg_runtime() (
+    uid=$(id -u) || return 1
+    safe_parents "$XDG_RUNTIME_DIR" "$uid" || return 1
+    runtime=$XDG_RUNTIME_DIR/corvid
+    [ ! -L "$runtime" ] || return 1
+    [ ! -e "$runtime" ] || {
+        [ -d "$runtime" ] && [ "$(stat -c %u:%a -- "$runtime")" = "$uid:700" ]
+    }
+)
 
 private_root() {
     [ -d "$root" ] && [ ! -L "$root" ] &&
@@ -46,7 +71,11 @@ managed_binary() {
 prepare_runtime() {
     if [ -n "${CORVID_RUNTIME_DIR:-}" ]; then return; fi
     unset CORVID_RUNTIME_DIR
-    if [ -n "${XDG_RUNTIME_DIR:-}" ]; then return; fi
+    # WSLg can set XDG_RUNTIME_DIR below a writable shared mount.
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] &&
+        { [ "$wsl_bootstrap" != 1 ] || safe_xdg_runtime; }; then
+        return
+    fi
     safe_home || exit 71
     IFS= read -r boot < /proc/sys/kernel/random/boot_id || exit 71
     case "$boot" in ''|*[!a-f0-9-]*) exit 71 ;; esac
