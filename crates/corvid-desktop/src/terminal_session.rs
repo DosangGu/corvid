@@ -270,13 +270,43 @@ impl Ui {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WheelTarget {
+    Scrollback,
+    LegacyScrollback,
+    Mouse(WheelEncoding),
+    Cursor { application: bool },
+}
+
 struct Buffer {
     ui: Ui,
     deck_activation: Option<DeckActivation>,
     screen: Option<Arc<Screen>>,
     wheel_encoding: WheelEncoding,
+    alternate_screen: Option<bool>,
+    view_epoch: u64,
     revision: u64,
     previews: HashMap<String, Screen>,
+}
+
+impl Buffer {
+    fn wheel_target(&self, pane: &str) -> Option<WheelTarget> {
+        let screen = self.screen.as_ref()?;
+        if !self.ui.can_write() || self.ui.changing || !in_pane(&self.ui, pane) {
+            return None;
+        }
+        Some(if self.wheel_encoding != WheelEncoding::Disabled {
+            WheelTarget::Mouse(self.wheel_encoding)
+        } else {
+            match self.alternate_screen {
+                Some(true) => WheelTarget::Cursor {
+                    application: screen.application_cursor(),
+                },
+                Some(false) => WheelTarget::Scrollback,
+                None => WheelTarget::LegacyScrollback,
+            }
+        })
+    }
 }
 
 struct DeckActivation {
@@ -321,6 +351,8 @@ impl Shared {
                 deck_activation: None,
                 screen: None,
                 wheel_encoding: WheelEncoding::Disabled,
+                alternate_screen: None,
+                view_epoch: 0,
                 revision: 0,
                 previews: HashMap::new(),
             }),
@@ -351,12 +383,14 @@ impl Shared {
         parser: &mut Parser<impl vt100::Callbacks>,
         ansi: &[u8],
         wheel_encoding: WheelEncoding,
+        alternate_screen: Option<bool>,
     ) {
         parser.process(ansi);
         let screen = Arc::new(parser.screen().clone());
         let previous = {
             let mut buffer = self.buffer();
             buffer.wheel_encoding = wheel_encoding;
+            buffer.alternate_screen = alternate_screen;
             buffer.screen.replace(screen)
         };
         drop(previous);
@@ -615,17 +649,35 @@ impl Session {
         });
     }
 
-    pub fn send_wheel(&self, pane: &str, cell: (u16, u16), rows: isize, modifiers: u8) -> bool {
+    pub fn wheel_target(&self, pane: &str) -> Option<(u64, WheelTarget)> {
         let buffer = self.shared.buffer();
-        if !in_pane(&buffer.ui, pane) || buffer.screen.is_none() {
-            return false;
+        Some((buffer.view_epoch, buffer.wheel_target(pane)?))
+    }
+
+    pub fn send_wheel(
+        &self,
+        pane: &str,
+        route: (u64, WheelTarget),
+        cell: (u16, u16),
+        rows: isize,
+        modifiers: u8,
+    ) {
+        let buffer = self.shared.buffer();
+        if buffer.view_epoch != route.0 || buffer.wheel_target(pane) != Some(route.1) {
+            return;
         }
-        let Some(bytes) = wheel_report(buffer.wheel_encoding, cell, rows, modifiers) else {
-            return false;
+        let bytes = match route.1 {
+            WheelTarget::Mouse(encoding) => wheel_report(encoding, cell, rows, modifiers),
+            WheelTarget::Cursor { application } => {
+                let prefix = if application { b'O' } else { b'[' };
+                let key = if rows < 0 { b'A' } else { b'B' };
+                Some([0x1b, prefix, key].repeat(rows.unsigned_abs().min(32)))
+            }
+            _ => None,
         };
-        // A full input queue must not open history for an application-owned gesture.
-        self.queue_input(&buffer, pane, bytes, false);
-        true
+        if let Some(bytes) = bytes {
+            self.queue_input(&buffer, pane, bytes, false);
+        }
     }
 
     pub fn send(&self, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
@@ -1426,6 +1478,7 @@ impl Client<'_> {
             buffer.ui.changing = self.pending.is_some();
             buffer.ui.message = "Attached to Corvid daemon".into();
             buffer.revision = self.route.view_revision;
+            buffer.view_epoch = buffer.view_epoch.wrapping_add(1);
             buffer.screen.take()
         };
         drop(previous);
@@ -2040,8 +2093,12 @@ impl Client<'_> {
             }
             _ => bail!("daemon must start with a full render"),
         }
-        self.shared
-            .apply_ansi(&mut self.parser, &frame.ansi, header.wheel_encoding());
+        self.shared.apply_ansi(
+            &mut self.parser,
+            &frame.ansi,
+            header.wheel_encoding(),
+            header.alternate_screen,
+        );
         self.applied = Some((header.render_generation, header.frame_id));
         self.link
             .send(Body::FrameApplied(FrameApplied {
@@ -2083,20 +2140,40 @@ fn wheel_report(
 }
 
 fn validate_history(history: &TerminalHistory) -> Result<()> {
+    let mut size = history
+        .lines
+        .iter()
+        .map(|line| line.len() + 8)
+        .sum::<usize>();
     ensure!(
         (1..=1024).contains(&history.columns)
             && history.lines.len() <= TERMINAL_HISTORY_MAX_ROWS
-            && history
-                .lines
-                .iter()
-                .map(|line| line.len() + 8)
-                .sum::<usize>()
-                <= TERMINAL_HISTORY_MAX_BYTES
+            && size <= TERMINAL_HISTORY_MAX_BYTES
             && history
                 .lines
                 .iter()
                 .all(|line| !line.chars().any(char::is_control)),
         "invalid terminal history"
     );
+    let mut previous = (0, 0);
+    for style in &history.styles {
+        let position = (style.row, style.offset);
+        size += style.sgr.len() + 20;
+        ensure!(
+            size <= TERMINAL_HISTORY_MAX_BYTES
+                && position >= previous
+                && history
+                    .lines
+                    .get(style.row as usize)
+                    .is_some_and(|line| line.is_char_boundary(style.offset as usize))
+                && style.sgr.len() <= 96
+                && style
+                    .sgr
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b';'),
+            "invalid terminal history style"
+        );
+        previous = position;
+    }
     Ok(())
 }

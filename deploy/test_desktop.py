@@ -229,13 +229,60 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         program_input = root / "program-input"
         program = root / "reader.py"
         program.write_text(
-            f"from pathlib import Path\nPath({str(program_ready)!r}).write_text('ready')\n"
+            "from pathlib import Path\n"
+            "print('\\033[2J\\033[H\\033[3J', end='')\n"
+            "for row in range(1, 301): print(f'\\033[32magent-{row:03}\\033[0m')\n"
+            f"Path({str(program_ready)!r}).write_text('ready')\n"
             f"Path({str(program_input)!r}).write_text(input())\n", encoding="utf-8")
         type_command(f"python3 {shlex.quote(str(program))}")
         wait_for_marker(program_ready, "ready")
         wheel(4, 30)
+        key(window, "Home")
+        key(window, "ctrl+shift+c")
+        copied = subprocess.check_output(["xclip", "-selection", "clipboard", "-o"], timeout=10)
+        assert b"agent-001" in copied.splitlines(), "foreground program scrollback is unreachable"
+        if preview:
+            subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "agent-history.png")],
+                           check=True, timeout=10)
+        wheel(5, 260)
+        time.sleep(0.25)
+        wheel(4, 6)
         type_command("still-live")
         wait_for_marker(program_input, "still-live")
+
+        # Exercise both input protocols in a real foreground PTY. Record only
+        # the fixture's synthetic wheel bytes before restoring terminal modes.
+        probe = root / "wheel-probe.py"
+        probe.write_text(
+            "import os, sys, termios, tty\nfrom pathlib import Path\n"
+            "mode, ready, result = sys.argv[1:]\n"
+            "saved = termios.tcgetattr(0)\ntty.setraw(0)\n"
+            "try:\n"
+            "    os.write(1, b'\\x1b[?1049h' + (b'\\x1b[?1000h\\x1b[?1006h' if mode == 'mouse' else b'\\x1b[?1h'))\n"
+            "    Path(ready).write_text('ready')\n"
+            "    data = b''\n"
+            "    while b'!' not in data: data += os.read(0, 256)\n"
+            "    Path(result).write_text(data.partition(b'!')[0].hex())\n"
+            "finally:\n"
+            "    os.write(1, b'\\x1b[?1000l\\x1b[?1006l\\x1b[?1l\\x1b[?1049l')\n"
+            "    termios.tcsetattr(0, termios.TCSANOW, saved)\n", encoding="utf-8")
+        for mode in ("cursor", "mouse"):
+            ready = root / f"{mode}-ready"
+            result = root / f"{mode}-wheel"
+            type_command(shlex.join(["python3", str(probe), mode, str(ready), str(result)]))
+            wait_for_marker(ready, "ready")
+            time.sleep(0.3)  # Allow the new mode to reach the rendered frame.
+            wheel(4, 1)
+            wheel(5, 1)
+            subprocess.run(["xdotool", "type", "--clearmodifiers", "!"], check=True, timeout=10)
+            for _ in range(80):
+                if result.exists() and result.read_text():
+                    break
+                time.sleep(0.1)
+            data = bytes.fromhex(result.read_text())
+            pattern = (rb"(?:\x1bOA)+(?:\x1bOB)+" if mode == "cursor" else
+                       rb"(?:\x1b\[<64;\d+;\d+M)+(?:\x1b\[<65;\d+;\d+M)+")
+            assert re.fullmatch(pattern, data), f"unexpected {mode} wheel input: {data!r}"
 
         # Turn off the tty's literal-next handling so the shell can observe Ctrl+V.
         chord_marker = root / "terminal-chords"

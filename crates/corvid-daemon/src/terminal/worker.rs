@@ -174,6 +174,7 @@ pub(crate) struct Render {
     pub(crate) frame_id: u64,
     pub(crate) base_frame_id: Option<u64>,
     pub(crate) wheel_encoding: WheelEncoding,
+    pub(crate) alternate_screen: Option<bool>,
     pub(crate) ansi: Vec<u8>,
 }
 
@@ -1899,6 +1900,11 @@ impl Lease {
             generation: self.render_generation,
             frame_id,
             base_frame_id: self.previous.as_ref().map(|_| self.frame_id),
+            alternate_screen: if matches!(painted, LastFrame::Terminal(_)) {
+                terminal.session.rendered_alternate_screen()
+            } else {
+                None
+            },
             wheel_encoding: if matches!(painted, LastFrame::Terminal(_)) {
                 terminal.session.rendered_wheel_encoding()
             } else {

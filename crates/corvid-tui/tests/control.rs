@@ -86,6 +86,7 @@ async fn relays_daemon_terminal_frames_without_an_outer_tty() {
                 panic!("expected ANSI render")
             };
             if String::from_utf8_lossy(&frame.ansi).contains("DAEMON-RELAY-READY") {
+                assert!(frame.header.alternate_screen.is_some());
                 assert_eq!(frame.header.wheel_encoding(), corvid_protocol::wire::WheelEncoding::Sgr);
                 break;
             }

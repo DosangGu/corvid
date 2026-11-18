@@ -168,6 +168,13 @@ impl Backend {
         }
     }
 
+    pub(super) fn rendered_alternate_screen(&self) -> Option<bool> {
+        match self {
+            Self::Local(session) => Some(session.screen.alternate_screen()),
+            Self::Hosted(client) => client.rendered_alternate_screen,
+        }
+    }
+
     pub(super) fn rendered_wheel_encoding(&self) -> WheelEncoding {
         match self {
             Self::Local(session) => session.screen.wheel_encoding(),

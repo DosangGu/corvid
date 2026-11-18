@@ -103,6 +103,8 @@ pub(super) struct Response {
     pub(super) title: String,
     #[prost(enumeration = "WheelEncoding", tag = "16")]
     wheel_encoding: i32,
+    #[prost(bool, optional, tag = "17")]
+    alternate_screen: Option<bool>,
 }
 
 impl Response {
@@ -139,6 +141,7 @@ pub(super) struct Client {
     pub(super) paste_pending: bool,
     pub(super) retained: bool,
     pub(super) rendered_wheel_encoding: WheelEncoding,
+    pub(super) rendered_alternate_screen: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -267,6 +270,7 @@ impl Client {
             paste_pending: false,
             retained: false,
             rendered_wheel_encoding: WheelEncoding::Disabled,
+            rendered_alternate_screen: None,
         };
         let response = client.call(Request {
             operation: Operation::Hello as i32,
@@ -330,6 +334,7 @@ impl Client {
         })?;
         ensure!(!response.rejected, "terminal host could not render");
         self.rendered_wheel_encoding = response.wheel_encoding();
+        self.rendered_alternate_screen = response.alternate_screen;
         Ok(String::from_utf8(response.bytes)?)
     }
 
@@ -680,6 +685,7 @@ impl Host {
                     .render(previous, size, footer)?
                     .into_bytes();
                 response.wheel_encoding = self.session.screen.wheel_encoding().into();
+                response.alternate_screen = Some(self.session.screen.alternate_screen());
                 self.previous = Some(self.session.screen.snapshot());
             }
             Operation::Retain => {
