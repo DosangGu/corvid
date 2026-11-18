@@ -392,7 +392,9 @@ impl WorkspaceView {
         let (session, job, mut prompts) = match result {
             Ok(connection) => connection,
             Err(error) => {
-                self.error = Some(format!("{error:#}"));
+                let error = format!("{error:#}");
+                self.creation_failed(error.clone());
+                self.error = Some(error);
                 cx.notify();
                 return;
             }
@@ -858,6 +860,11 @@ impl WorkspaceView {
                 }
             }
             (true, "p") => self.toggle_switcher(window, cx),
+            (true, "n") => self.new_workspace(
+                self.destination.clone().unwrap_or(Destination::Local),
+                window,
+                cx,
+            ),
             (true, "r") => self.open_naming(window, cx),
             (false, ",") => self.open_management(management::Page::Connections, window, cx),
             (true, "f") => {
@@ -896,7 +903,6 @@ impl WorkspaceView {
                 .find(|workspace| workspace.workspace_id == selected.workspace_id)
         });
         match shortcut {
-            (true, "n") => self.new_workspace(window, cx),
             (true, "t") => self.create(Target::TabLabel(format!(
                 "Shell {}",
                 workspace.map_or(1, |workspace| workspace.tabs.len() + 1)

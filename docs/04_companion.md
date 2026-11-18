@@ -192,14 +192,15 @@ Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
 The initial attach joins a live pane in the default session or opens its shell.
 
-Use **+ → New workspace** or the workspace picker to create a workspace.
-Choose Local, an OpenSSH alias, or a WSL distribution. The folder field accepts
-a path and suggests matching folders. Use **Browse…** to navigate folders with
-the mouse, or use the arrow keys and Tab to choose a suggestion. Home and
-relative paths are resolved on the selected machine. You can leave the folder
-empty to use the usual starting location. Desktop opens the first terminal when
-you choose **Create**. A chosen folder also becomes the default for new tabs
-and splits, and the daemon saves it across restarts.
+Open the workspace picker and click **+** next to Local, an OpenSSH alias, or a
+WSL distribution. The popup starts in that machine's home folder. Scroll or use
+↑ and ↓ to highlight a folder. Use → to enter it and ← to go up to the parent.
+Click the path field or press Shift+Tab to edit the path. Tab completes the
+highlighted suggestion, and Esc returns to the picker. Home and relative paths
+are resolved on the selected machine. Choose **Use default** for the usual
+starting location. Desktop opens the first terminal when you choose **Create**.
+A chosen folder also becomes the default for new tabs and splits, and the daemon
+saves it across restarts.
 
 **+ → New tab** creates
 a shell within the selected workspace. Click a pane to focus it. Other live
@@ -260,7 +261,8 @@ Window size, position, and monitor restoration remain deferred to #49.
 
 ![Desktop's New window and Quit menu](images/desktop-window-menu.png)
 
-Ctrl+Shift+N creates a workspace, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
+Ctrl+Shift+N opens workspace creation for the current machine or the machine
+selected in the picker, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected workspace.
 

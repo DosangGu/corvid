@@ -34,41 +34,55 @@ impl Draft {
                 self.status = Some(error);
             }
             Update::Ready(prepared) => {
+                let supports_directory = prepared.supports_directory;
                 self.field = if prepared.supports_directory {
-                    Field::Folder
+                    Field::Folders
                 } else {
                     Field::Name
                 };
                 self.prepared = Some(prepared);
                 self.connecting = false;
                 self.status = None;
+                if supports_directory {
+                    self.browse_folder("~".into(), None);
+                }
             }
             Update::Listed(revision, result) if self.revision == revision => {
-                let validated = std::mem::take(&mut self.validating);
+                let Some(kind) = self.pending.take() else {
+                    return false;
+                };
                 match result {
                     Ok(listing) => {
-                        if validated {
-                            self.folder.set(listing.directory);
-                            if !self.name_edited {
-                                self.name.set(
-                                    listing
-                                        .folder_name
-                                        .unwrap_or_else(|| self.default_name.clone()),
-                                );
-                            }
-                            return true;
-                        }
-                        if self.folder.value == "~" && !listing.directory.is_empty() {
-                            self.folder.set(listing.directory.clone());
-                            self.propose_name();
-                        }
-                        self.listing = Some(listing);
+                        self.status = None;
+                        return self.apply_listing(kind, listing);
                     }
                     Err(error) => self.status = Some(error.to_string()),
                 }
             }
             Update::Listed(..) => {}
         }
+        false
+    }
+
+    fn apply_listing(&mut self, kind: FolderQuery, listing: DirectoryListing) -> bool {
+        let reselect = match kind {
+            FolderQuery::Validate => {
+                self.folder.set(listing.directory);
+                self.propose_name(listing.folder_name);
+                return true;
+            }
+            FolderQuery::Complete => None,
+            FolderQuery::Browse { reselect } => {
+                self.folder.set(listing.directory.clone());
+                self.propose_name(listing.folder_name.clone());
+                reselect
+            }
+        };
+        self.choice = reselect
+            .and_then(|path| listing.entries.iter().position(|entry| entry.path == path))
+            .unwrap_or(0);
+        self.reveal_folder = true;
+        self.listing = Some(listing);
         false
     }
 }
@@ -78,7 +92,6 @@ pub(super) fn start(
     state_dir: PathBuf,
     known: Option<ControlEndpoint>,
     host: Option<String>,
-    explicit: bool,
 ) -> Result<Channels> {
     let (queries, mut pending) = watch::channel((0, BrowseDirectories::default()));
     let (updates, receive) = mpsc::unbounded_channel();
@@ -101,7 +114,7 @@ pub(super) fn start(
                         Ok((endpoint, link))
                     }
                     None => prepare_destination(
-                        &destination, &state_dir, Vec::new(), explicit, host.as_deref(),
+                        &destination, &state_dir, Vec::new(), true, host.as_deref(),
                         &prompts, status,
                     ).await,
                 }

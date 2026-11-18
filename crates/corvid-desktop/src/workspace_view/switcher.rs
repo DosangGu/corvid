@@ -152,7 +152,7 @@ impl WorkspaceView {
             let status = if loading {
                 "Loading…"
             } else if current_ui.is_some_and(|ui| ui.connected) {
-                "Connected"
+                ""
             } else if live && inventory.is_some_and(|inventory| inventory.workspaces.is_empty()) {
                 "No workspaces"
             } else if live {
@@ -162,7 +162,7 @@ impl WorkspaceView {
             } else if inventory.is_some() {
                 "Cached"
             } else {
-                "Workspaces not loaded"
+                ""
             };
             rows.push(Row {
                 key: RowKey::Machine(destination.clone()),
@@ -332,6 +332,19 @@ impl WorkspaceView {
         let index = self.switcher.selected_index(&rows);
         let row = index.and_then(|index| rows.get(index));
         match key.key.as_str() {
+            key_name
+                if key_name.eq_ignore_ascii_case("n")
+                    && key.modifiers.control
+                    && key.modifiers.shift
+                    && !key.modifiers.alt
+                    && !key.modifiers.platform =>
+            {
+                if let Some(row) = row
+                    && !event.is_held
+                {
+                    self.new_workspace(row.key.destination().clone(), window, cx);
+                }
+            }
             "escape" => self.dismiss_overlay(window, cx),
             "up" => self.select_row(&rows, index.unwrap_or(0).saturating_sub(1)),
             "down" => {
@@ -383,7 +396,7 @@ impl WorkspaceView {
     pub(super) fn switcher(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let rows = self.picker_rows();
         let selected = self.switcher.selected_index(&rows);
-        let ui = self.session.as_ref().map(Session::ui);
+        let can_create = !self.connecting(self.session.as_ref().map(Session::ui).as_ref());
         let note = if self.host_scan.is_some() {
             Some("Reading SSH configuration…")
         } else if self.hosts.is_err() {
@@ -455,41 +468,35 @@ impl WorkspaceView {
                     .max_h(ui_px(330.))
                     .overflow_y_scroll()
                     .track_scroll(&self.switcher.scroll)
-                    .children(
-                        rows.iter()
-                            .enumerate()
-                            .map(|(index, row)| self.picker_row(row, selected == Some(index), cx)),
-                    ),
+                    .children(rows.iter().enumerate().map(|(index, row)| {
+                        self.picker_row(row, selected == Some(index), can_create, cx)
+                    })),
             )
-            .child(self.picker_actions(
-                selected.and_then(|index| rows.get(index)),
-                ui.as_ref(),
-                cx,
-            ));
+            .child(self.picker_actions(selected.and_then(|index| rows.get(index)), cx));
         self.overlay(panel, false, cx)
     }
 
-    fn picker_row(&self, row: &Row, selected: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn picker_row(
+        &self,
+        row: &Row,
+        selected: bool,
+        can_create: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let machine = matches!(row.key, RowKey::Machine(_));
         let key = row.key.clone();
         let expanded = row.expanded;
-        div()
-            .id(key.element_id())
+        let item = div()
+            .id("picker-row-body")
             .flex()
-            .flex_none()
+            .flex_1()
+            .min_w_0()
             .items_center()
             .gap(ui_px(8.))
             .pl(ui_px(if machine { 10. } else { 29. }))
             .pr(ui_px(10.))
             .py(ui_px(7.))
             .rounded_md()
-            .bg(rgb(if selected {
-                ACTIVE_FILL
-            } else if machine {
-                BACKGROUND
-            } else {
-                PANEL
-            }))
             .text_color(rgb(TEXT))
             .text_size(ui_px(13.))
             .cursor_pointer()
@@ -510,10 +517,35 @@ impl WorkspaceView {
             })
             .on_click(cx.listener(move |view, _, window, cx| {
                 view.activate_row(key.clone(), expanded, window, cx)
+            }));
+        div()
+            .id(row.key.element_id())
+            .flex()
+            .flex_none()
+            .items_center()
+            .rounded_md()
+            .bg(rgb(if selected {
+                ACTIVE_FILL
+            } else if machine {
+                BACKGROUND
+            } else {
+                PANEL
             }))
+            .child(item)
+            .when(machine, |row_element| {
+                let destination = row.key.destination().clone();
+                let add = button("add-workspace", "+", false);
+                row_element.pr(ui_px(4.)).child(if can_create {
+                    add.on_click(cx.listener(move |view, _, window, cx| {
+                        view.new_workspace(destination.clone(), window, cx);
+                    }))
+                } else {
+                    add.opacity(0.5)
+                })
+            })
     }
 
-    fn picker_actions(&self, row: Option<&Row>, ui: Option<&Ui>, cx: &mut Context<Self>) -> Div {
+    fn picker_actions(&self, row: Option<&Row>, cx: &mut Context<Self>) -> Div {
         let mut actions = div()
             .flex()
             .flex_none()
@@ -559,16 +591,6 @@ impl WorkspaceView {
                 }),
             ));
         }
-        if !self.connecting(ui) {
-            actions = actions.child(
-                button("picker-new-workspace", "+ New workspace", false).on_click(cx.listener(
-                    |view, _, window, cx| {
-                        view.dismiss_overlay(window, cx);
-                        view.new_workspace(window, cx);
-                    },
-                )),
-            );
-        }
         actions.child(
             button("picker-settings", "Connections…", false).on_click(cx.listener(
                 |view, _, window, cx| {
@@ -601,7 +623,11 @@ impl WorkspaceView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| {
-                            view.dismiss_overlay(window, cx);
+                            if view.creation.is_some() {
+                                view.cancel_creation(window, cx);
+                            } else {
+                                view.dismiss_overlay(window, cx);
+                            }
                             cx.stop_propagation();
                         }),
                     ),
