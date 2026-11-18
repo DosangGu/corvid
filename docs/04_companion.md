@@ -266,8 +266,9 @@ selected in the picker, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
 right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
 the selected workspace.
 
-Ctrl+Shift+X ends the active pane. Ctrl+Shift+W ends the active tab and its
-terminals. The pane and tab close controls and menu actions ask for
+Ctrl+Shift+W ends the active pane. Closing the last pane in a tab also closes
+that tab. To end all panes in a tab at once, use the tab’s **×** or
+**⋯ → End this tab…**. The pane and tab close controls and menu actions ask for
 confirmation. Enter chooses **End terminals**, and **Cancel** keeps them open.
 
 Each pane follows its terminal's OSC 0/2 title in real time and uses `Pane N`

@@ -244,10 +244,10 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             f'printf %s "$line" > {shlex.quote(str(chord_marker))}'
         )
         wait_for_marker(keyboard_ready, "chords")
-        for chord in ("shift+Return", "alt+b", "ctrl+Home", "shift+F5", "ctrl+v"):
+        for chord in ("shift+Return", "alt+b", "ctrl+Home", "shift+F5", "ctrl+shift+x", "ctrl+v"):
             key(window, chord)
         key(window, "Return")
-        wait_for_marker(chord_marker, "\x1b[13;2u\x1bb\x1b[1;5H\x1b[15;2~\x16")
+        wait_for_marker(chord_marker, "\x1b[13;2u\x1bb\x1b[1;5H\x1b[15;2~\x1b[120;6u\x16")
 
         # Use the real clipboard and keyboard path, with synthetic Unicode data.
         pasted = "한글 e\u0301 🐦"
@@ -265,15 +265,18 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         write_marker(window, second_tab_marker,
                      f"second=preserved; printf %s \"$second\" > {shlex.quote(str(second_tab_marker))}")
         if args.build:
-            key(window, "ctrl+shift+d")
-            wait_for_terminal(previous=second_terminal)
-            key(window, "ctrl+shift+x")
-            wait_for_terminal(expected=second_terminal)
-
             key(window, "ctrl+shift+t")
             added_tab = wait_for_terminal(previous=second_terminal)
             key(window, "ctrl+shift+d")
             wait_for_terminal(previous=added_tab)
+            if preview := os.environ.get("CORVID_PANE_CLOSE_PREVIEW_DIR"):
+                subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-before.png")],
+                               check=True, timeout=10)
+            key(window, "ctrl+shift+w")
+            wait_for_terminal(expected=added_tab)
+            if preview:
+                subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-after.png")],
+                               check=True, timeout=10)
             key(window, "ctrl+shift+w")
             wait_for_terminal(expected=first_terminal)
             key(window, "ctrl+Tab")

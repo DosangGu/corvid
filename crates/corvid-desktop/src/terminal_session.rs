@@ -667,7 +667,7 @@ impl Session {
         self.change(Action::Close(target));
     }
 
-    pub fn close_active(&self, pane: bool) {
+    pub fn close_active_pane(&self) {
         let target = {
             let buffer = self.shared.buffer();
             let Some(selected) = buffer
@@ -681,7 +681,7 @@ impl Session {
             CloseView {
                 workspace_id: selected.workspace_id.clone(),
                 tab_id: Some(selected.tab_id.clone()),
-                pane_id: pane.then(|| selected.pane_id.clone()),
+                pane_id: Some(selected.pane_id.clone()),
                 expected_view_revision: Some(buffer.revision),
             }
         };
