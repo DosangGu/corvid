@@ -559,6 +559,10 @@ Drag across terminal cells and press **Ctrl+Shift+C** to copy the selection.
 The selected cells stay stable while new output arrives. Escape or typing
 returns a live selection to the current screen.
 
+**Ctrl+click** a terminal URL to open it in its registered local app. On macOS,
+**Cmd+click** also works. Desktop recognizes `http:`, `https:`, `mailto:` and
+`vscode://` links. In history, click a URL that fits within a single row.
+
 In the focused pane, the wheel scrolls the running program when it has enabled
 terminal mouse reporting. This lets fullscreen agents scroll through their own
 conversation. At an interactive shell, scrolling up opens its previous output.

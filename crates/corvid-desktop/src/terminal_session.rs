@@ -571,14 +571,16 @@ impl Session {
     }
 
     pub fn screen<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
-        let screen = {
-            let buffer = self.shared.buffer();
-            if !in_pane(&buffer.ui, pane) {
-                return None;
-            }
-            Arc::clone(buffer.screen.as_ref()?)
-        };
+        let screen = self.screen_snapshot(pane)?;
         Some(read(&screen))
+    }
+
+    pub fn screen_snapshot(&self, pane: &str) -> Option<Arc<Screen>> {
+        let buffer = self.shared.buffer();
+        if !in_pane(&buffer.ui, pane) {
+            return None;
+        }
+        buffer.screen.clone()
     }
 
     pub fn preview<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
