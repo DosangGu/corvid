@@ -59,6 +59,8 @@ jobs:
           echo "CC=musl-gcc" >> "$GITHUB_ENV"
           target_key=$(echo '${{ matrix.runtime }}' | tr '[:lower:]-' '[:upper:]_')
           echo "CARGO_TARGET_${target_key}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.runtime }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -146,6 +148,8 @@ jobs:
           restore-keys: |
             desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
@@ -237,6 +241,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.runtime }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -294,6 +300,8 @@ jobs:
           restore-keys: |
             desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
@@ -340,6 +348,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.runtime }}
       - name: macOS build environment
         run: bash deploy/macos/prepare-build.sh
@@ -418,6 +428,8 @@ jobs:
           restore-keys: |
             desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update --features corvid-deck/stream-deck

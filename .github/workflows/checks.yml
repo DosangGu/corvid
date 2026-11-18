@@ -33,6 +33,8 @@ jobs:
       - run: python3 deploy/test_validate_changes.py
       - run: python3 deploy/test_macos_package.py
       - run: python3 deploy/test_package.py
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
       - run: cargo fmt --all -- --check
 
   package-fallback:

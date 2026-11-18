@@ -65,8 +65,8 @@ static NSImage *statusIcon(bool attention) {
         [crow moveToPoint:NSMakePoint(12.4, 8.9)];
         [crow lineToPoint:NSMakePoint(13.6, 8.6)];
         crow.lineWidth = 1.8;
-        crow.lineCapStyle = NSRoundLineCapStyle;
-        crow.lineJoinStyle = NSRoundLineJoinStyle;
+        crow.lineCapStyle = NSLineCapStyleRound;
+        crow.lineJoinStyle = NSLineJoinStyleRound;
 
         [NSGraphicsContext saveGraphicsState];
         NSAffineTransform *transform = [NSAffineTransform transform];

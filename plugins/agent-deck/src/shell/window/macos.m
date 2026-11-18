@@ -56,6 +56,7 @@ static void dismissOnOutsideClick(NSWindow *panel) {
     NSEventMask clicks = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown;
     __weak NSWindow *weakPanel = panel;
     globalMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:clicks handler:^(NSEvent *event) {
+        (void)event;
         if (!onStatusButton()) hidePanel(weakPanel);
     }];
     localMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:clicks handler:^NSEvent *(NSEvent *event) {
