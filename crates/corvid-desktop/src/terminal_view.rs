@@ -173,6 +173,7 @@ impl TerminalView {
         self.selection = None;
         self.marked.clear();
         let mut history = History::new(search);
+        history.scroll(-back, self.visible_rows());
         if let Some(receive) = self.session.history(&self.pane) {
             self.history_request = Some(cx.spawn(async move |view, cx| {
                 let result = receive
@@ -181,16 +182,16 @@ impl TerminalView {
                 let _ = view.update(cx, |view, cx| {
                     let height = view.visible_rows();
                     if let Some(history) = &mut view.history {
-                        history.loaded(result);
-                        if history.search.is_none() {
-                            history.scroll(-back, height);
-                        }
+                        history.loaded(result, height);
                         cx.notify();
                     }
                 });
             }));
         } else {
-            history.loaded(Err("Terminal history is unavailable.".into()));
+            history.loaded(
+                Err("Terminal history is unavailable.".into()),
+                self.visible_rows(),
+            );
         }
         self.history = Some(history);
         cx.notify();
@@ -203,18 +204,31 @@ impl TerminalView {
     }
 
     fn scroll_history(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let Some((_, metrics)) = self.surface.get() else {
+        let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
         let delta = event.delta.pixel_delta(metrics.row).y;
-        let rows = (delta / metrics.row).abs().ceil() as isize;
+        if delta == px(0.) {
+            return;
+        }
+        let count = (delta / metrics.row).abs().ceil() as isize;
+        let rows = if delta > px(0.) { -count } else { count };
         let height = self.visible_rows();
-        if delta > px(0.) && self.history.is_none() {
-            self.open_history(false, rows, cx);
-        } else if let Some(history) = &mut self.history {
-            history.scroll(if delta > px(0.) { -rows } else { rows }, height);
+        if let Some(history) = &mut self.history {
+            history.scroll(rows, height);
             self.selection = None;
             cx.notify();
+        } else if bounds.contains(&event.position) {
+            let cell = metrics.position(bounds, event.position);
+            let modifiers =
+                u8::from(event.modifiers.alt) * 8 + u8::from(event.modifiers.control) * 16;
+            if !event.modifiers.shift && self.session.send_wheel(&self.pane, cell, rows, modifiers)
+            {
+                self.selection = None;
+                cx.notify();
+            } else if rows < 0 {
+                self.open_history(false, count, cx);
+            }
         }
         cx.stop_propagation();
     }

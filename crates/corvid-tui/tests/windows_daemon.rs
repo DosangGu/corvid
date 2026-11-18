@@ -900,8 +900,8 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     contender.wait_for("workspace already has a writer")?;
     contender.expect_exit(1)?;
 
-    first.send(b"[Console]::WriteLine(('HISTORY_' + 'START')); 1..40 | ForEach-Object { [Console]::WriteLine(('HISTORY_' + $_)) }\r")?;
-    first.wait_for("HISTORY_40")?;
+    first.send(b"[Console]::WriteLine(('HISTORY_' + 'START')); 1..240 | ForEach-Object { [Console]::WriteLine(('HISTORY_' + $_)) }\r")?;
+    first.wait_for("HISTORY_240")?;
     first.send(b"\x1dd")?;
     first.expect_exit(0)?;
     ensure!(
@@ -1030,7 +1030,7 @@ async fn assert_history_after_detach(runtime: &Path) -> Result<()> {
         let newest = history
             .lines
             .iter()
-            .position(|line| line == "HISTORY_40")
+            .position(|line| line == "HISTORY_240")
             .context("missing live row")?;
         assert!(oldest < newest);
         break;

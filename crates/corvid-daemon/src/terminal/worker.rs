@@ -10,6 +10,7 @@ use corvid_core::agent::Source;
 use corvid_core::agent::{ProcessLiveness, Provider};
 use corvid_core::layout::{CwdSource, Layout, Location};
 use corvid_core::{InputRoute, KEY_LEADER, Viewport};
+use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use serde::{Deserialize, Serialize};
@@ -172,6 +173,7 @@ pub(crate) struct Render {
     pub(crate) generation: u64,
     pub(crate) frame_id: u64,
     pub(crate) base_frame_id: Option<u64>,
+    pub(crate) wheel_encoding: WheelEncoding,
     pub(crate) ansi: Vec<u8>,
 }
 
@@ -1888,6 +1890,11 @@ impl Lease {
             generation: self.render_generation,
             frame_id,
             base_frame_id: self.previous.as_ref().map(|_| self.frame_id),
+            wheel_encoding: if matches!(painted, LastFrame::Terminal(_)) {
+                terminal.session.rendered_wheel_encoding()
+            } else {
+                WheelEncoding::Disabled
+            },
             ansi: ansi.into_bytes(),
         };
         self.events

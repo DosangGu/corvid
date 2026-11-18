@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 pub(super) struct Normalizer(vte::Parser);
 
 impl Normalizer {
-    pub(super) fn process(&mut self, mut bytes: &[u8], mut process: impl FnMut(&[u8])) {
+    pub(super) fn process(&mut self, mut bytes: &[u8], mut process: impl FnMut(&[u8], bool)) {
         let mut sgr = Sgr::default();
         while !bytes.is_empty() {
             let consumed = self.0.advance_until_terminated(&mut sgr, bytes);
@@ -12,10 +12,10 @@ impl Normalizer {
             if let Some(replacement) = sgr.replacement.take() {
                 // Feed the prefix without the final 'm'. The replacement's ESC
                 // cancels the pending CSI, even when it began in an earlier chunk.
-                process(&chunk[..chunk.len() - 1]);
-                process(replacement.as_bytes());
+                process(&chunk[..chunk.len() - 1], false);
+                process(replacement.as_bytes(), false);
             } else {
-                process(chunk);
+                process(chunk, std::mem::take(&mut sgr.clear_history));
             }
             bytes = rest;
         }
@@ -25,10 +25,19 @@ impl Normalizer {
 #[derive(Default)]
 struct Sgr {
     replacement: Option<String>,
+    clear_history: bool,
 }
 
 impl vte::Perform for Sgr {
+    fn esc_dispatch(&mut self, intermediates: &[u8], _: bool, action: u8) {
+        self.clear_history = intermediates.is_empty() && action == b'c';
+    }
+
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], ignore: bool, c: char) {
+        // Match vt100's ED/DECSED dispatch, including fragmented CSI.
+        self.clear_history = c == 'J'
+            && matches!(intermediates.first(), None | Some(b'?'))
+            && params.iter().next().and_then(|group| group.first()) == Some(&3);
         if c != 'm' || ignore || !intermediates.is_empty() {
             return;
         }
@@ -60,7 +69,7 @@ impl vte::Perform for Sgr {
     }
 
     fn terminated(&self) -> bool {
-        self.replacement.is_some()
+        self.replacement.is_some() || self.clear_history
     }
 }
 

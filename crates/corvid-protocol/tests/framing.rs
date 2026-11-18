@@ -29,6 +29,7 @@ fn render() -> RenderFrame {
             base_frame_id: None,
             ansi_bytes: ansi.len() as u32,
             preview: None,
+            wheel_encoding: corvid_protocol::wire::WheelEncoding::Sgr.into(),
         },
         ansi,
     }

@@ -1244,6 +1244,15 @@ message RenderHeader {
   optional uint64 base_frame_id = 7;
   uint32 ansi_bytes = 8;
   PanePreviewFrame preview = 9;
+  // Mouse wheel reporting requested by the program in this rendered view.
+  WheelEncoding wheel_encoding = 10;
+}
+
+enum WheelEncoding {
+  WHEEL_ENCODING_DISABLED = 0;
+  WHEEL_ENCODING_LEGACY = 1;
+  WHEEL_ENCODING_UTF8 = 2;
+  WHEEL_ENCODING_SGR = 3;
 }
 
 message PanePreviewFrame {

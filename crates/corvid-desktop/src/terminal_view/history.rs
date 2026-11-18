@@ -13,6 +13,7 @@ type CellRange = Range<(u16, u16)>;
 pub(super) struct History {
     result: Option<Result<TerminalHistory, String>>,
     first: usize,
+    pending_back: usize,
     pub(super) search: Option<Search>,
 }
 
@@ -27,12 +28,14 @@ impl History {
         Self {
             result: None,
             first: usize::MAX,
+            pending_back: 0,
             search: search.then(Search::default),
         }
     }
 
-    pub(super) fn loaded(&mut self, result: Result<TerminalHistory, String>) {
+    pub(super) fn loaded(&mut self, result: Result<TerminalHistory, String>, height: usize) {
         self.result = Some(result);
+        self.first = self.last_top(height).saturating_sub(self.pending_back);
         self.find(true);
     }
 
@@ -64,7 +67,10 @@ impl History {
     }
 
     pub(super) fn scroll(&mut self, delta: isize, height: usize) {
-        if self.snapshot().is_none() {
+        if self.result.is_none() {
+            self.pending_back = self
+                .pending_back
+                .saturating_add_signed(delta.saturating_neg());
             return;
         }
         let end = self.last_top(height);
@@ -167,15 +173,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scrolls_by_the_entire_gesture_while_waiting_for_history() {
+        let mut history = History::new(false);
+        for delta in [-3, -5, -8, 2] {
+            history.scroll(delta, 4);
+        }
+        history.loaded(
+            Ok(TerminalHistory {
+                columns: 20,
+                lines: (0..80).map(|row| format!("row {row}")).collect(),
+                truncated: false,
+            }),
+            4,
+        );
+        assert_eq!(history.first, 62);
+        history.scroll(isize::MIN, 4);
+        assert_eq!(
+            history.screen(Grid::new(4, 20)).unwrap().0.contents(),
+            "row 0\nrow 1\nrow 2\nrow 3"
+        );
+    }
+
+    #[test]
     fn searches_snapshot_and_wraps_between_matches_after_wide_characters() {
         let mut history = History::new(true);
-        history.loaded(Ok(TerminalHistory {
-            lines: ["한글 hello", "earlier", "hello again", "latest"]
-                .map(str::to_owned)
-                .into(),
-            columns: 30,
-            truncated: false,
-        }));
+        history.loaded(
+            Ok(TerminalHistory {
+                lines: ["한글 hello", "earlier", "hello again", "latest"]
+                    .map(str::to_owned)
+                    .into(),
+                columns: 30,
+                truncated: false,
+            }),
+            2,
+        );
         history.edit_query(Some("hello"));
         assert_eq!(history.search.as_ref().unwrap().hit, Some((2, 0)));
         history.find(false);

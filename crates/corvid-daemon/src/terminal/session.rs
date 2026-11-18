@@ -7,8 +7,6 @@ use portable_pty::{CommandBuilder, ExitStatus};
 use super::input::{InputQueue, WriteFailure};
 use super::{TerminalPty, TerminalScreen};
 
-const LIVE_SCROLLBACK_ROWS: usize = 128;
-
 pub(super) enum ReadState {
     Drained,
     Eof,
@@ -25,7 +23,7 @@ impl TerminalSession {
     pub(super) fn start(command: CommandBuilder, viewport: Viewport) -> Result<Self> {
         Ok(Self {
             pty: TerminalPty::spawn(command, viewport)?,
-            screen: TerminalScreen::with_scrollback(viewport, LIVE_SCROLLBACK_ROWS),
+            screen: TerminalScreen::live(viewport),
             input: InputQueue::default(),
         })
     }

@@ -22,7 +22,7 @@ use corvid_protocol::wire::{
     CreateView, DisconnectWorkspaceClients, FocusViewAgent, FrameApplied, InputChunk,
     LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview, ReadTerminalHistory,
     ResizeViewport, RouteToken, SelectView, TerminalHistory, TerminalState, ViewSelection,
-    Viewport, WorkspaceState,
+    Viewport, WheelEncoding, WorkspaceState,
 };
 use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
@@ -274,6 +274,7 @@ struct Buffer {
     ui: Ui,
     deck_activation: Option<DeckActivation>,
     screen: Option<Arc<Screen>>,
+    wheel_encoding: WheelEncoding,
     revision: u64,
     previews: HashMap<String, Screen>,
 }
@@ -319,6 +320,7 @@ impl Shared {
                 },
                 deck_activation: None,
                 screen: None,
+                wheel_encoding: WheelEncoding::Disabled,
                 revision: 0,
                 previews: HashMap::new(),
             }),
@@ -344,10 +346,19 @@ impl Shared {
         self.ui_changed.send_replace(());
     }
 
-    fn apply_ansi(&self, parser: &mut Parser<impl vt100::Callbacks>, ansi: &[u8]) {
+    fn apply_ansi(
+        &self,
+        parser: &mut Parser<impl vt100::Callbacks>,
+        ansi: &[u8],
+        wheel_encoding: WheelEncoding,
+    ) {
         parser.process(ansi);
         let screen = Arc::new(parser.screen().clone());
-        let previous = self.buffer().screen.replace(screen);
+        let previous = {
+            let mut buffer = self.buffer();
+            buffer.wheel_encoding = wheel_encoding;
+            buffer.screen.replace(screen)
+        };
         drop(previous);
         self.screen_changed.send_replace(());
     }
@@ -600,8 +611,24 @@ impl Session {
         });
     }
 
-    pub fn send(&self, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
+    pub fn send_wheel(&self, pane: &str, cell: (u16, u16), rows: isize, modifiers: u8) -> bool {
         let buffer = self.shared.buffer();
+        if !in_pane(&buffer.ui, pane) || buffer.screen.is_none() {
+            return false;
+        }
+        let Some(bytes) = wheel_report(buffer.wheel_encoding, cell, rows, modifiers) else {
+            return false;
+        };
+        // A full input queue must not open history for an application-owned gesture.
+        self.queue_input(&buffer, pane, bytes, false);
+        true
+    }
+
+    pub fn send(&self, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
+        self.queue_input(&self.shared.buffer(), pane, bytes, paste)
+    }
+
+    fn queue_input(&self, buffer: &Buffer, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
         if !buffer.ui.can_write()
             || buffer.ui.changing
             || buffer.screen.is_none()
@@ -1981,7 +2008,8 @@ impl Client<'_> {
             }
             _ => bail!("daemon must start with a full render"),
         }
-        self.shared.apply_ansi(&mut self.parser, &frame.ansi);
+        self.shared
+            .apply_ansi(&mut self.parser, &frame.ansi, header.wheel_encoding());
         self.applied = Some((header.render_generation, header.frame_id));
         self.link
             .send(Body::FrameApplied(FrameApplied {
@@ -1991,6 +2019,35 @@ impl Client<'_> {
             .await?;
         Ok(())
     }
+}
+
+fn wheel_report(
+    encoding: WheelEncoding,
+    (row, col): (u16, u16),
+    rows: isize,
+    modifiers: u8,
+) -> Option<Vec<u8>> {
+    let button = (if rows < 0 { 64 } else { 65 }) | modifiers;
+    let x = u32::from(col) + 1;
+    let y = u32::from(row) + 1;
+    let report = match encoding {
+        WheelEncoding::Disabled => return None,
+        WheelEncoding::Sgr => format!("\x1b[<{button};{x};{y}M").into_bytes(),
+        WheelEncoding::Legacy => vec![
+            0x1b,
+            b'[',
+            b'M',
+            button + 32,
+            (x.min(223) + 32) as u8,
+            (y.min(223) + 32) as u8,
+        ],
+        WheelEncoding::Utf8 => {
+            let x = char::from_u32(x.min(2015) + 32).unwrap();
+            let y = char::from_u32(y.min(2015) + 32).unwrap();
+            format!("\x1b[M{}{x}{y}", char::from(button + 32)).into_bytes()
+        }
+    };
+    Some(report.repeat(rows.unsigned_abs().min(32)))
 }
 
 fn validate_history(history: &TerminalHistory) -> Result<()> {

@@ -10,6 +10,7 @@ use corvid_core::Viewport;
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 #[cfg(windows)]
 use corvid_protocol::windows::{DaemonPipe, StateDirectory};
+use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use prost::{Enumeration, Message};
@@ -99,6 +100,8 @@ pub(super) struct Response {
     process_created: Option<u64>,
     #[prost(string, tag = "15")]
     pub(super) title: String,
+    #[prost(enumeration = "WheelEncoding", tag = "16")]
+    wheel_encoding: i32,
 }
 
 impl Response {
@@ -134,6 +137,7 @@ pub(super) struct Client {
     pub(super) process_key: Option<crate::native_process::ProcessKey>,
     pub(super) paste_pending: bool,
     pub(super) retained: bool,
+    pub(super) rendered_wheel_encoding: WheelEncoding,
 }
 
 #[derive(Clone)]
@@ -253,6 +257,7 @@ impl Client {
             process_key: None,
             paste_pending: false,
             retained: false,
+            rendered_wheel_encoding: WheelEncoding::Disabled,
         };
         let response = client.call(Request {
             operation: Operation::Hello as i32,
@@ -315,6 +320,7 @@ impl Client {
             ..Default::default()
         })?;
         ensure!(!response.rejected, "terminal host could not render");
+        self.rendered_wheel_encoding = response.wheel_encoding();
         Ok(String::from_utf8(response.bytes)?)
     }
 
@@ -662,6 +668,7 @@ impl Host {
                     .screen
                     .render(previous, size, footer)?
                     .into_bytes();
+                response.wheel_encoding = self.session.screen.wheel_encoding().into();
                 self.previous = Some(self.session.screen.snapshot());
             }
             Operation::Retain => {

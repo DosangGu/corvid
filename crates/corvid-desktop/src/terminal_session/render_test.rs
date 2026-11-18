@@ -15,6 +15,28 @@ impl vt100::Callbacks for PauseOnBell {
 }
 
 #[test]
+fn wheel_reports_use_the_child_encoding_and_terminal_coordinates() {
+    let cell = (1, 254);
+    assert!(wheel_report(WheelEncoding::Disabled, cell, -3, 0).is_none());
+    assert_eq!(
+        wheel_report(WheelEncoding::Sgr, cell, -2, 0).unwrap(),
+        b"\x1b[<64;255;2M".repeat(2)
+    );
+    assert_eq!(
+        wheel_report(WheelEncoding::Sgr, cell, 1, 16).unwrap(),
+        b"\x1b[<81;255;2M"
+    );
+    assert_eq!(
+        wheel_report(WheelEncoding::Legacy, cell, 1, 0).unwrap(),
+        b"\x1b[Ma\xff\x22"
+    );
+    assert_eq!(
+        wheel_report(WheelEncoding::Utf8, cell, -1, 0).unwrap(),
+        "\x1b[M\u{60}\u{11f}\u{22}".as_bytes()
+    );
+}
+
+#[test]
 fn large_ansi_update_keeps_previous_screen_and_input_available() {
     let shared = Arc::new(Shared::new(&Destination::Local));
     let (actions, mut incoming) = mpsc::channel(1);
@@ -44,7 +66,12 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         let (resume_parsing, resume) = blocking::channel();
         let mut parser =
             Parser::new_with_callbacks(grid.rows, grid.cols, 0, PauseOnBell { parsing, resume });
-        shared.apply_ansi(&mut parser, b"before");
+        shared.apply_ansi(&mut parser, b"before", WheelEncoding::Sgr);
+        assert!(!session.send_wheel("other", (3, 4), -1, 0));
+        assert!(session.send_wheel("pane", (3, 4), -1, 0));
+        assert!(matches!(incoming.try_recv().unwrap(),
+            Action::Input { revision: 7, bytes, paste: false } if bytes == b"\x1b[<64;5;4M"
+        ));
         changes.borrow_and_update();
         let shared = &shared;
         let parsing = scope.spawn(move || {
@@ -53,7 +80,7 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
             ansi.extend_from_slice(b"\x1b[2J\x1b[Hafter ");
             let korean = "한".as_bytes();
             ansi.extend_from_slice(&korean[..1]);
-            shared.apply_ansi(&mut parser, &ansi);
+            shared.apply_ansi(&mut parser, &ansi, WheelEncoding::Disabled);
             parser
         });
 
@@ -76,12 +103,13 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         resume_parsing.send(()).unwrap();
         let mut parser = parsing.join().unwrap();
         assert!(changes.has_changed().unwrap());
+        assert!(!session.send_wheel("pane", (3, 4), -1, 0));
         assert_eq!(
             session.screen("pane", Screen::contents).as_deref(),
             Some("after ")
         );
 
-        shared.apply_ansi(&mut parser, &"한".as_bytes()[1..]);
+        shared.apply_ansi(&mut parser, &"한".as_bytes()[1..], WheelEncoding::Disabled);
         assert_eq!(
             session.screen("pane", Screen::contents).as_deref(),
             Some("after 한")

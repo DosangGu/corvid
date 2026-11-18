@@ -71,7 +71,7 @@ async fn relays_daemon_terminal_frames_without_an_outer_tty() {
                     argv: vec![
                         b"/bin/sh".to_vec(),
                         b"-c".to_vec(),
-                        b"printf 'DAEMON-RELAY-READY\\n'; read answer".to_vec(),
+                        b"printf '\\033[?1049h\\033[?1000h\\033[?1006hDAEMON-RELAY-READY\\n'; read answer".to_vec(),
                     ],
                     ..Default::default()
                 }),
@@ -86,6 +86,7 @@ async fn relays_daemon_terminal_frames_without_an_outer_tty() {
                 panic!("expected ANSI render")
             };
             if String::from_utf8_lossy(&frame.ansi).contains("DAEMON-RELAY-READY") {
+                assert_eq!(frame.header.wheel_encoding(), corvid_protocol::wire::WheelEncoding::Sgr);
                 break;
             }
             let applied = corvid_protocol::wire::FrameApplied {
