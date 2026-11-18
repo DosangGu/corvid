@@ -214,36 +214,39 @@ and release manifest generation. It validates runtime version, source revision,
 size, and checksum before including a payload. It rejects dynamic Linux daemon
 binaries and binaries exceeding the existing 32 MiB provisioning limit.
 
-| Changes or trigger | Corvid Checks | Package Corvid |
-| --- | --- | --- |
-| PR limited to `AGENTS.md`, `README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG under `docs/images/` | Run lightweight validation | — |
-| PR editing existing Rust source under `crates/`, `plugins/`, or `spikes/`, optionally with documentation | Run Linux and Windows builds, tests, and lints. This includes comment-only source edits. | — |
-| PR with dependencies, schemas, build scripts, new or removed Rust paths, packaging inputs, CI configuration, other paths, or an uncertain diff | Run builds, tests, lints, and package integration | — |
-| Push to `main` | Run lightweight validation | Run package integration when a packaging input changes |
-| Version tag or manual **Run workflow** | — | Run package integration and upload release assets |
+| Changes or trigger | Corvid Checks | Package Corvid | Publish Corvid Release |
+| --- | --- | --- | --- |
+| Documentation-only PR | Lightweight validation | — | — |
+| Ordinary source PR | Lightweight validation and native builds, tests, and lints on all five targets | — | — |
+| PR touching packaging, installers, updater implementation, or packaged assets | Lightweight validation and native checks | Build and verify installable packages on all five targets | — |
+| Push to `main` | Lightweight validation | Package integration when a packaging input changes | — |
+| Manual **Run workflow** on **Package Corvid** | — | Package integration and release assets | — |
+| Push of a `v*` tag | — | Package integration and release assets, called by the publisher | Publish validated release assets |
 
-Lightweight validation checks the version, shared icons, Rust formatting, change
-classification, and whitespace in the event diff. **Corvid Checks** compares the
-checked-out PR merge commit with its first parent.
-On `main` it compares the previous and pushed tips. The packaging path filter
-covers workspace code and Cargo configuration, release and installer inputs,
-assets, the bundled license, Git checkout rules, and the packaging workflows.
-Checks inspect both sides of a move and run package integration if the push
-comparison is unavailable or the path filter may miss a packaging input. Use
-the always-reported **Corvid checks** job as a required PR status check.
+**Corvid Checks** validates the version, shared icons, formatting, and whitespace.
+It compares the checked-out PR merge commit with its first parent. Regular changes
+limited to `AGENTS.md`, `README.md`, Markdown under `docs/`, or JPEG, PNG, and SVG
+under `docs/images/` use only lightweight validation. The always-reported
+**Corvid checks** job reports the native check result and can serve as a required
+PR status check.
 
-Both workflows call **Build and Test Corvid** for cross-platform validation.
-After version, icon, and formatting checks, the TUI/daemon and Desktop builds
-and tests run in parallel. TUI integration tests launch a daemon from the binary
-built by Cargo. Desktop packaging uses the Desktop build and all five runtime
-artifacts. Its integration checks cover installation with a live daemon,
-Desktop terminal input and reattachment under Xvfb, and Windows Setup.
+**Package Corvid** uses GitHub path filters for PRs and pushes to `main`. The
+`main` filter also covers ordinary workspace source, dependencies, and schemas. On `main`, **Corvid Checks**
+compares the previous and pushed tips and runs package integration as a fallback
+for unavailable comparisons, large diffs with packaging inputs, and changes that
+could be moves out of a packaging path.
 
-Full packaging runs assemble the archives, Setup, checksums, installation
-scripts, and release manifest. A version tag push then creates a draft, uploads
-and checks the asset inventory, and publishes the release. Only publication
-receives repository write permission. Re-running publication may repair an
-unpublished draft and refuses to overwrite an already published release.
+Both workflows call **Build and Test Corvid**, which runs native TUI/daemon and
+Desktop builds and tests in parallel. A PR that triggers both workflows builds
+separately in each run so the packaging workflow has its own binaries. Package runs also use the Desktop build
+and all five runtime artifacts to verify installation with a live daemon,
+Desktop terminal input and reattachment under Xvfb, and native installers.
+
+**Publish Corvid Release** calls **Package Corvid** for the tagged revision,
+then creates a draft, uploads and checks the asset inventory, and publishes the
+release. Only the publication job receives repository write permission.
+Re-running publication may repair an unpublished draft and refuses to overwrite
+an already published release.
 
 For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
 WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt

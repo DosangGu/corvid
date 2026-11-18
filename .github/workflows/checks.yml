@@ -36,6 +36,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   pipeline:
+    # On main, package integration here is a fallback for the push path filter.
     needs: validate
     if: needs.validate.outputs.level == 'build' || needs.validate.outputs.level == 'package'
     uses: ./.github/workflows/build-and-test.yml

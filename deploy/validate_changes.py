@@ -16,6 +16,7 @@ PACKAGE_FILES = {
     ".gitignore",
     ".github/workflows/build-and-test.yml",
     ".github/workflows/package.yml",
+    ".github/workflows/release.yml",
     "Cargo.lock",
     "Cargo.toml",
     "LICENSE",
@@ -67,16 +68,6 @@ def docs_change(old_mode, new_mode, path):
     )
 
 
-def rust_source_change(old_mode, new_mode, path):
-    return (
-        old_mode in REGULAR_OR_ABSENT
-        and new_mode in REGULAR_OR_ABSENT
-        and path.startswith(("crates/", "plugins/", "spikes/"))
-        and path.endswith(".rs")
-        and path.rsplit("/", 1)[-1] != "build.rs"
-    )
-
-
 def is_packaging_input(path):
     return path in PACKAGE_FILES or path.startswith(PACKAGE_DIRECTORIES)
 
@@ -101,35 +92,29 @@ def push_fallback(changes):
 
 def classify(event, ref, before):
     """Return the work to run in the Checks workflow for this event."""
+    # The separate package workflow uses native PR path filters.
+    fallback = PACKAGE if event == "push" else BUILD
     try:
         base = comparison_base(event, ref, before)
         if base is None:
-            print("No comparison for this event. Running package integration.")
-            return PACKAGE
+            print(f"No comparison for this event. Selecting {fallback} checks.")
+            return fallback
         # Treat moves as deletions and additions so both paths are considered.
         diff = subprocess.check_output(
             ["git", "diff", "--raw", "--no-renames", "-z", base, "HEAD", "--"]
         )
     except subprocess.CalledProcessError:
-        print("Could not compare the event commits. Running package integration.")
-        return PACKAGE
+        print(f"Could not compare the event commits. Selecting {fallback} checks.")
+        return fallback
 
     subprocess.run(["git", "diff", "--check", base, "HEAD", "--"], check=True)
     changes = list(changed_paths(diff))
     if event == "push":
         return PACKAGE if push_fallback(changes) else LIGHTWEIGHT
-    if not changes:
-        return PACKAGE
+    if changes and all(docs_change(*change) for change in changes):
+        return LIGHTWEIGHT
 
-    source = False
-    for old_mode, new_mode, path in changes:
-        if docs_change(old_mode, new_mode, path):
-            continue
-        if rust_source_change(old_mode, new_mode, path):
-            source = True
-            continue
-        return PACKAGE
-    return BUILD if source else LIGHTWEIGHT
+    return BUILD
 
 
 if __name__ == "__main__":

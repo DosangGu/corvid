@@ -1,10 +1,42 @@
 name: Package Corvid
 
 on:
+  workflow_call:
   workflow_dispatch:
+  pull_request:
+    # Verify installers early when their inputs or update paths change.
+    paths:
+      - '.cargo/**'
+      - '.gitattributes'
+      - '.github/workflows/package.yml'
+      - '.github/workflows/release.yml'
+      - 'LICENSE'
+      - 'assets/**'
+      - 'crates/corvid-client/src/endpoint/bootstrap*'
+      - 'crates/corvid-client/src/endpoint/install_windows.ps1'
+      - 'crates/corvid-client/src/upgrade.rs'
+      - 'crates/corvid-daemon/src/upgrade.rs'
+      - 'crates/corvid-desktop/src/workspace_view/update.rs'
+      - 'crates/corvid-desktop/src/workspace_view/update/state.rs'
+      - 'crates/corvid-protocol/src/upgrade.rs'
+      - 'crates/corvid-tui/src/update.rs'
+      - 'crates/corvid-update/**'
+      - 'deploy/cargo-desktop'
+      - 'deploy/install.ps1'
+      - 'deploy/install.sh'
+      - 'deploy/linux/**'
+      - 'deploy/macos/**'
+      - 'deploy/systemd/**'
+      - 'deploy/windows/**'
+      - 'deploy/*package*.py'
+      - 'deploy/release.py'
+      - 'deploy/release-notes.md'
+      - 'deploy/test_icons.py'
+      - 'deploy/test_install.py'
+      - 'deploy/test_macos.py'
+      - 'deploy/test_native.py'
   push:
     branches: [main]
-    tags: ['v*']
     # Keep these paths in sync with the push fallback in deploy/validate_changes.py.
     paths:
       - '.cargo/**'
@@ -12,6 +44,7 @@ on:
       - '.gitignore'
       - '.github/workflows/build-and-test.yml'
       - '.github/workflows/package.yml'
+      - '.github/workflows/release.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'LICENSE'
@@ -27,11 +60,10 @@ permissions:
 
 concurrency:
   group: package-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
-    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,30 +75,6 @@ jobs:
 
   pipeline:
     needs: validate
-    if: ${{
-      !cancelled() &&
-      (needs.validate.result == 'success' ||
-       (github.ref == 'refs/heads/main' && needs.validate.result == 'skipped'))
-      }}
     uses: ./.github/workflows/build-and-test.yml
     with:
       package: true
-
-  publish:
-    needs: pipeline
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: release-assets
-          path: dist
-      - name: Publish complete release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 deploy/release.py publish --assets dist
