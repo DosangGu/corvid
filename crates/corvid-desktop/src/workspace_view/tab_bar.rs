@@ -47,14 +47,14 @@ pub(super) struct TabBar {
     scroll: ScrollHandle,
     arrows: Rc<Cell<Arrows>>,
     selection: Option<String>,
-    reveal_pending: Rc<Cell<bool>>,
+    follow_selection: Rc<Cell<bool>>,
 }
 
 impl TabBar {
     pub(super) fn select(&mut self, tab: Option<&str>) {
         if self.selection.as_deref() != tab {
             self.selection = tab.map(str::to_owned);
-            self.reveal_pending.set(tab.is_some());
+            self.follow_selection.set(tab.is_some());
         }
     }
 
@@ -63,7 +63,9 @@ impl TabBar {
         let selected = self
             .selection
             .as_deref()
-            .filter(|_| self.reveal_pending.get());
+            .filter(|_| self.follow_selection.get());
+        let scroll = self.scroll.clone();
+        let follow_selection = self.follow_selection.clone();
         let strip = div()
             .id("daemon-tabs")
             .flex()
@@ -72,6 +74,11 @@ impl TabBar {
             .gap(ui_px(3.))
             .overflow_x_scroll()
             .track_scroll(&self.scroll)
+            .on_scroll_wheel(move |_, _, _| {
+                if scroll.max_offset().width > SCROLL_EPSILON {
+                    follow_selection.set(false);
+                }
+            })
             .children(tabs.enumerate().map(|(index, (id, tab))| {
                 if Some(id) == selected {
                     reveal_index = Some(index);
@@ -82,7 +89,6 @@ impl TabBar {
         let arrows = self.arrows.clone();
         let shown = arrows.get();
         let scroll = self.scroll.clone();
-        let reveal_pending = self.reveal_pending.clone();
         div()
             .flex()
             .flex_1()
@@ -98,12 +104,12 @@ impl TabBar {
                 let next = Arrows::for_scroll(max, offset, reserved_width);
                 let viewport = scroll.bounds();
                 // The arrow layout must settle before revealing the selected tab.
+                // Keep following it as the terminal publishes its title and the label grows.
                 let offset_changed = if (shown == Arrows::Hidden) == (next == Arrows::Hidden)
                     && let Some(index) = reveal_index
                     && viewport.size.width > px(0.)
                     && let Some(tab) = scroll.bounds_for_item(index)
                 {
-                    reveal_pending.set(false);
                     set_scroll_x(&scroll, reveal_offset(viewport, tab, offset))
                 } else {
                     false
@@ -128,6 +134,7 @@ impl TabBar {
             Direction::Right => ("scroll-tabs-right", "›"),
         };
         let scroll = self.scroll.clone();
+        let follow_selection = self.follow_selection.clone();
         div()
             .id(id)
             .flex_none()
@@ -136,7 +143,7 @@ impl TabBar {
             .rounded_md()
             .bg(rgb(PANEL))
             .text_color(rgb(MUTED))
-            .text_size(ui_px(13.))
+            .text_size(ui_px(17.))
             .text_center()
             .child(label)
             .when(!enabled, |arrow| arrow.opacity(0.4))
@@ -157,6 +164,7 @@ impl TabBar {
                         if let Some(next) = next
                             && set_scroll_x(&scroll, next)
                         {
+                            follow_selection.set(false);
                             window.refresh();
                         }
                     })
@@ -261,14 +269,14 @@ mod tests {
     }
 
     #[test]
-    fn repeated_selection_preserves_manual_scroll_after_reveal() {
+    fn repeated_selection_preserves_manual_scroll() {
         let mut bar = TabBar::default();
         bar.select(Some("tab-a"));
-        assert!(bar.reveal_pending.get());
-        bar.reveal_pending.set(false);
+        assert!(bar.follow_selection.get());
+        bar.follow_selection.set(false);
         bar.select(Some("tab-a"));
-        assert!(!bar.reveal_pending.get());
+        assert!(!bar.follow_selection.get());
         bar.select(Some("tab-b"));
-        assert!(bar.reveal_pending.get());
+        assert!(bar.follow_selection.get());
     }
 }
