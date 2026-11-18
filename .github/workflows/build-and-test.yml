@@ -194,6 +194,7 @@ jobs:
           CORVID_AGENT_DECK_SETTINGS_SCREENSHOT: target/agent-deck-settings.png
           CORVID_WORKSPACE_SCREENSHOT: target/workspace-directory.png
           CORVID_CLOSE_SCREENSHOT: target/desktop-close-confirmation.png
+          CORVID_PANE_CLOSE_PREVIEW_DIR: target
           CORVID_SCROLL_PREVIEW_DIR: target
         run: xvfb-run -a python3 deploy/test_desktop.py --build target/${{ matrix.target }}/release
       - name: Connected managed SSH updates
@@ -235,6 +236,8 @@ jobs:
           path: |
             target/workspace-directory.png
             target/desktop-close-confirmation.png
+            target/pane-close-before.png
+            target/pane-close-after.png
             target/scroll-history.png
             target/scroll-live.png
           if-no-files-found: error

@@ -274,8 +274,14 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             added_tab = wait_for_terminal(previous=second_terminal)
             key(window, "ctrl+shift+d")
             wait_for_terminal(previous=added_tab)
+            if preview := os.environ.get("CORVID_PANE_CLOSE_PREVIEW_DIR"):
+                subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-before.png")],
+                               check=True, timeout=10)
             key(window, "ctrl+shift+w")
             wait_for_terminal(expected=added_tab)
+            if preview:
+                subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-after.png")],
+                               check=True, timeout=10)
             key(window, "ctrl+shift+w")
             wait_for_terminal(expected=first_terminal)
             key(window, "ctrl+Tab")
