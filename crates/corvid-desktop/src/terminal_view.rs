@@ -1,9 +1,15 @@
-use std::{cell::Cell, ops::Range};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    sync::Arc,
+    time::Instant,
+};
 
 use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
-    IntoElement, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
-    Point, ScrollWheelEvent, Task, UTF16Selection, Window, canvas, div, prelude::*, rgb,
+    IntoElement, KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollWheelEvent, Task, UTF16Selection, Window, canvas, div,
+    prelude::*, rgb,
 };
 use tokio::sync::oneshot;
 use vt100::Screen;
@@ -11,14 +17,17 @@ use vt100::Screen;
 use crate::appearance::{Appearance, ui_px};
 use crate::terminal_fonts::TerminalFonts;
 use crate::terminal_paint::{self as paint, Frame, Metrics};
-use crate::terminal_session::{MAX_INPUT, Session, WheelTarget};
-use std::time::Instant;
+use crate::terminal_session::{Grid, MAX_INPUT, Session, WheelTarget};
 
 mod history;
 mod keyboard;
+mod links;
 mod wheel;
 use history::History;
 use wheel::WheelGesture;
+
+type CellPosition = (u16, u16);
+type CellRange = Range<CellPosition>;
 
 pub struct TerminalView {
     focus: FocusHandle,
@@ -26,6 +35,7 @@ pub struct TerminalView {
     pane: String,
     marked: String,
     surface: Cell<Option<(Bounds<Pixels>, Metrics)>>,
+    displayed: RefCell<Option<DisplayedScreen>>,
     selection: Option<Selection>,
     history: Option<History>,
     history_request: Option<Task<()>>,
@@ -42,19 +52,27 @@ enum HistoryOpen {
     Search,
 }
 
+#[derive(Clone)]
+struct DisplayedScreen {
+    screen: Arc<Screen>,
+    history: bool,
+}
+
 struct Selection {
-    screen: Screen,
-    anchor: (u16, u16),
-    head: (u16, u16),
+    displayed: DisplayedScreen,
+    anchor: CellPosition,
+    head: CellPosition,
     dragging: bool,
+    link: Option<String>,
 }
 
 impl Selection {
-    fn cell(&self, position: (u16, u16)) -> (u16, u16) {
-        let (rows, cols) = self.screen.size();
+    fn cell(&self, position: CellPosition) -> CellPosition {
+        let (rows, cols) = self.displayed.screen.size();
         let row = position.0.min(rows.get() - 1);
         let mut col = position.1.min(cols.get() - 1);
         if self
+            .displayed
             .screen
             .cell(row, col)
             .is_some_and(vt100::Cell::is_wide_continuation)
@@ -64,19 +82,61 @@ impl Selection {
         (row, col)
     }
 
-    fn range(&self) -> Range<(u16, u16)> {
+    fn range(&self) -> CellRange {
         let anchor = self.cell(self.anchor);
         let head = self.cell(self.head);
         let (row, col) = anchor.max(head);
-        let wide = self.screen.cell(row, col).is_some_and(vt100::Cell::is_wide);
+        let wide = self
+            .displayed
+            .screen
+            .cell(row, col)
+            .is_some_and(vt100::Cell::is_wide);
         anchor.min(head)..(row, col + 1 + u16::from(wide))
     }
 
     fn text(&self) -> String {
         let range = self.range();
-        self.screen
-            .contents_between(range.start.0, range.start.1, range.end.0, range.end.1)
+        self.displayed.screen.contents_between(
+            range.start.0,
+            range.start.1,
+            range.end.0,
+            range.end.1,
+        )
     }
+
+    fn drag_to(&mut self, head: CellPosition, inside: bool) {
+        if head != self.anchor || !inside {
+            self.link = None;
+        }
+        self.head = head;
+    }
+
+    fn finish(&mut self, release: Option<CellPosition>) -> Option<String> {
+        self.dragging = false;
+        self.link
+            .take()
+            .filter(|_| release == Some(self.anchor) && self.head == self.anchor)
+    }
+}
+
+fn link_modifier(modifiers: Modifiers) -> bool {
+    modifiers == Modifiers::control()
+        || (cfg!(target_os = "macos") && modifiers == Modifiers::command())
+}
+
+fn hit_cell(
+    bounds: Bounds<Pixels>,
+    metrics: Metrics,
+    position: Point<Pixels>,
+) -> Option<CellPosition> {
+    if !bounds.contains(&position) {
+        return None;
+    }
+    let (row, col) = metrics.position(bounds, position);
+    metrics
+        .cell(bounds.origin, row, col, 1)
+        .contains(&position)
+        .then_some((row, col))
 }
 
 impl TerminalView {
@@ -122,6 +182,7 @@ impl TerminalView {
             pane,
             marked: String::new(),
             surface: Cell::new(None),
+            displayed: RefCell::new(None),
             selection: None,
             history: None,
             history_request: None,
@@ -142,6 +203,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_link();
         self.cancel_pending_wheel();
         self.focus(window);
         let Some((bounds, metrics)) = self.surface.get() else {
@@ -152,18 +214,27 @@ impl TerminalView {
         }
         self.marked.clear();
         let anchor = metrics.position(bounds, event.position);
-        let screen = if let Some(history) = &self.history {
-            history
-                .screen(metrics.grid(bounds))
-                .map(|(screen, _)| screen)
-        } else {
-            self.session.screen(&self.pane, Clone::clone)
-        };
-        self.selection = screen.map(|screen| Selection {
-            screen,
-            anchor,
-            head: anchor,
-            dragging: true,
+        let displayed = self.displayed.borrow().clone();
+        self.selection = displayed.map(|displayed| {
+            let link = if link_modifier(event.modifiers) {
+                hit_cell(bounds, metrics, event.position).and_then(|cell| {
+                    links::at(
+                        &displayed.screen,
+                        metrics.grid(bounds),
+                        displayed.history,
+                        cell,
+                    )
+                })
+            } else {
+                None
+            };
+            Selection {
+                displayed,
+                anchor,
+                head: anchor,
+                dragging: true,
+                link,
+            }
         });
         cx.notify();
     }
@@ -177,19 +248,44 @@ impl TerminalView {
             return;
         };
         if let Some((bounds, metrics)) = self.surface.get() {
-            selection.head = metrics.position(bounds, event.position);
+            selection.drag_to(
+                metrics.position(bounds, event.position),
+                bounds.contains(&event.position),
+            );
             cx.notify();
         }
     }
 
-    fn end_selection(&mut self, cx: &mut Context<Self>) {
+    fn release_selection(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let release = self
+            .surface
+            .get()
+            .filter(|_| link_modifier(event.modifiers))
+            .and_then(|(bounds, metrics)| hit_cell(bounds, metrics, event.position));
+        self.end_selection(release, cx);
+    }
+
+    fn end_selection(&mut self, release: Option<CellPosition>, cx: &mut Context<Self>) {
+        let Some(selection) = self
+            .selection
+            .as_mut()
+            .filter(|selection| selection.dragging)
+        else {
+            return;
+        };
+        let link = selection.finish(release);
+        if selection.anchor == selection.head {
+            self.selection = None;
+        }
+        cx.notify();
+        if let Some(url) = link {
+            cx.open_url(&url);
+        }
+    }
+
+    fn cancel_link(&mut self) {
         if let Some(selection) = &mut self.selection {
-            if selection.anchor == selection.head {
-                self.selection = None;
-            } else {
-                selection.dragging = false;
-            }
-            cx.notify();
+            selection.link = None;
         }
     }
 
@@ -323,6 +419,7 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         };
+        self.cancel_link();
         if self.history.is_some() {
             self.move_in_history(rows, self.visible_rows());
             if self.history.is_none() {
@@ -413,6 +510,7 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_link();
         self.cancel_pending_wheel();
         if !self.marked.is_empty() {
             return;
@@ -468,6 +566,25 @@ impl TerminalView {
         }
         cx.stop_propagation();
     }
+
+    fn display(&self, grid: Grid) -> Option<(DisplayedScreen, Option<CellRange>)> {
+        if let Some(selection) = &self.selection {
+            return Some((selection.displayed.clone(), Some(selection.range())));
+        }
+        if let Some(history) = &self.history {
+            let (screen, hit) = history.screen(grid)?;
+            let displayed = DisplayedScreen {
+                screen: Arc::new(screen),
+                history: true,
+            };
+            return Some((displayed, hit));
+        }
+        let displayed = DisplayedScreen {
+            screen: self.session.screen_snapshot(&self.pane)?,
+            history: false,
+        };
+        Some((displayed, None))
+    }
 }
 
 impl Render for TerminalView {
@@ -485,18 +602,14 @@ impl Render for TerminalView {
                 if terminal.history.is_none() {
                     terminal.session.resize(&terminal.pane, grid);
                 }
-                let frame = if let Some(selection) = &terminal.selection {
-                    Frame::selected(&selection.screen, grid, Some(&selection.range()))
-                } else if let Some(history) = &terminal.history {
-                    history
-                        .screen(grid)
-                        .map(|(screen, hit)| Frame::selected(&screen, grid, hit.as_ref()))
-                        .unwrap_or_default()
+                let frame = if let Some((displayed, highlight)) = terminal.display(grid) {
+                    let frame = Frame::selected(&displayed.screen, grid, highlight.as_ref());
+                    // Hit testing needs the painted screen even when newer output is available.
+                    terminal.displayed.replace(Some(displayed));
+                    frame
                 } else {
-                    terminal
-                        .session
-                        .screen(&terminal.pane, |screen| Frame::new(screen, grid))
-                        .unwrap_or_default()
+                    terminal.displayed.replace(None);
+                    Frame::default()
                 };
                 (view, metrics, frame, terminal.marked.clone(), family)
             },
@@ -522,13 +635,10 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::start_selection))
             .on_mouse_move(cx.listener(Self::drag_selection))
             .on_scroll_wheel(cx.listener(Self::scroll_history))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.end_selection(cx)),
-            )
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::release_selection))
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.end_selection(cx)),
+                cx.listener(|view, _, _, cx| view.end_selection(None, cx)),
             )
             .size_full()
             .flex()
@@ -685,12 +795,48 @@ mod tests {
         let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
         parser.process("A한BCde\r\nend".as_bytes());
         let selection = Selection {
-            screen: parser.screen().clone(),
+            displayed: DisplayedScreen {
+                screen: Arc::new(parser.screen().clone()),
+                history: false,
+            },
             anchor: (2, 0),
             head: (0, 2),
             dragging: false,
+            link: None,
         };
         assert_eq!(selection.text(), "한BCde\ne");
+    }
+
+    #[test]
+    fn releases_a_link_only_once_and_never_after_dragging() {
+        let grid = Grid::new(2, 32);
+        let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+        parser.process(b"https://example.test/");
+        let make_selection = || Selection {
+            displayed: DisplayedScreen {
+                screen: Arc::new(parser.screen().clone()),
+                history: false,
+            },
+            anchor: (0, 0),
+            head: (0, 0),
+            dragging: true,
+            link: Some("https://example.test/".into()),
+        };
+
+        let mut click = make_selection();
+        assert_eq!(
+            click.finish(Some((0, 0))).as_deref(),
+            Some("https://example.test/")
+        );
+        assert_eq!(click.finish(Some((0, 0))), None);
+        assert_eq!(make_selection().finish(None), None);
+        assert_eq!(make_selection().finish(Some((0, 1))), None);
+
+        let mut drag = make_selection();
+        drag.drag_to((0, 5), true);
+        assert_eq!(drag.text(), "https:");
+        drag.drag_to((0, 0), true);
+        assert_eq!(drag.finish(Some((0, 0))), None);
     }
 
     #[cfg(windows)]
