@@ -13,6 +13,8 @@ extern void corvid_native_event(unsigned int kind, unsigned long long high, unsi
 @interface CorvidDeckDelegate : NSObject <UNUserNotificationCenterDelegate>
 @property NSStatusItem *item;
 @property NSMenu *menu;
+@property NSImage *icon;
+@property NSImage *attentionIcon;
 @end
 
 @implementation CorvidDeckDelegate
@@ -47,6 +49,43 @@ static CorvidDeckDelegate *delegate;
 
 NSStatusBarButton *corvid_status_button(void) { return delegate.item.button; }
 
+static NSImage *statusIcon(bool attention) {
+    NSImage *image = [NSImage imageWithSize:NSMakeSize(18, 18) flipped:YES drawingHandler:^BOOL(NSRect rect) {
+        // Corvid crow outline and eye from assets/icons/corvid.svg, without the app tile.
+        NSBezierPath *crow = [NSBezierPath bezierPath];
+        [crow moveToPoint:NSMakePoint(5, 19.5)];
+        const NSPoint outline[] = {
+            {6.6, 9.3}, {9.4, 5.5}, {14.1, 5.5}, {17.3, 8.1}, {21.3, 10.6},
+            {15.3, 11.6}, {14.5, 15.2}, {10.5, 19.5}, {10.7, 16.3},
+        };
+        for (NSUInteger i = 0; i < sizeof(outline) / sizeof(outline[0]); i++) {
+            [crow lineToPoint:outline[i]];
+        }
+        [crow closePath];
+        [crow moveToPoint:NSMakePoint(12.4, 8.9)];
+        [crow lineToPoint:NSMakePoint(13.6, 8.6)];
+        crow.lineWidth = 1.8;
+        crow.lineCapStyle = NSRoundLineCapStyle;
+        crow.lineJoinStyle = NSRoundLineJoinStyle;
+
+        [NSGraphicsContext saveGraphicsState];
+        NSAffineTransform *transform = [NSAffineTransform transform];
+        [transform translateXBy:NSMinX(rect) yBy:NSMinY(rect)];
+        [transform scaleXBy:NSWidth(rect) / 24 yBy:NSHeight(rect) / 24];
+        [transform concat];
+        [NSColor.blackColor set];
+        [crow stroke];
+        if (attention) {
+            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(18.5, 2, 4.5, 4.5)] fill];
+        }
+        [NSGraphicsContext restoreGraphicsState];
+        return YES;
+    }];
+    image.template = YES;
+    image.accessibilityDescription = attention ? @"Corvid Agent Deck, attention needed" : @"Corvid Agent Deck";
+    return image;
+}
+
 void corvid_native_yield_activation(unsigned int pid, void *completion) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!atomic_load(&stopping) && NSApp.isActive) {
@@ -62,7 +101,10 @@ void corvid_native_start(void) {
         if (atomic_load(&stopping)) return;
         delegate = [CorvidDeckDelegate new];
         delegate.item = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-        delegate.item.button.title = @"◈";
+        delegate.icon = statusIcon(false);
+        delegate.attentionIcon = statusIcon(true);
+        delegate.item.button.image = delegate.icon;
+        delegate.item.button.imagePosition = NSImageOnly;
         delegate.item.button.toolTip = @"Corvid Agent Deck";
         NSMenu *menu = [NSMenu new];
         NSArray *titles = @[@"Open Agent Deck", @"Notifications & Settings", @"Pause / Resume", @"Quit Corvid Agent Deck"];
@@ -127,7 +169,7 @@ void corvid_native_status(const char *text, bool attention) {
         }
         if (atomic_load(&stopping)) return;
         delegate.item.button.toolTip = latest;
-        delegate.item.button.title = showAttention ? @"◈ •" : @"◈";
+        delegate.item.button.image = showAttention ? delegate.attentionIcon : delegate.icon;
     });
 }
 
