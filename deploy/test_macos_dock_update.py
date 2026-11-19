@@ -2,6 +2,7 @@
 """Verify published macOS installs and their original Dock references after an update."""
 
 import argparse
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -34,7 +35,13 @@ on run argv
             if not (exists list 1) then return "waiting for Dock items"
             set entries to UI elements of list 1
             repeat with entry in entries
-                if name of entry is appName or name of entry is "Corvid" then
+                if name of entry is appName then
+                    perform action "AXPress" of entry
+                    return "pressed"
+                end if
+            end repeat
+            repeat with entry in entries
+                if name of entry is "Corvid" then
                     perform action "AXPress" of entry
                     return "pressed"
                 end if
@@ -50,6 +57,24 @@ end run
             return
         time.sleep(0.3)
     raise AssertionError("Could not find Corvid's existing Dock tile")
+
+
+@contextmanager
+def hide_recent_dock_apps():
+    # Both fixtures have Corvid's bundle name. Exclude recently launched apps
+    # so AXPress only sees the pinned tiles and currently running applications.
+    assert os.environ.get("GITHUB_ACTIONS") == "true"
+    key = ("com.apple.dock", "show-recents")
+    previous = subprocess.run(["defaults", "read", *key], capture_output=True, text=True, timeout=10)
+    run("defaults", "write", *key, "-bool", "false")
+    try:
+        yield
+    finally:
+        if previous.returncode == 0:
+            run("defaults", "write", *key, "-bool", "true" if previous.stdout.strip() == "1" else "false")
+        else:
+            run("defaults", "delete", *key)
+        run("killall", "Dock")
 
 
 def release_fixture(archive, directory):
@@ -222,12 +247,14 @@ if __name__ == "__main__":
     if not (args.previous_dmg or args.previous_archive):
         parser.error("provide --previous-dmg or --previous-archive")
     archive = args.archive.resolve()
-    if args.previous_archive:
-        live_dock = os.environ.get("GITHUB_ACTIONS") == "true"
-        with tempfile.TemporaryDirectory(prefix=".cv-managed-", dir=Path.home() if live_dock else None) as directory:
-            directory = Path(directory).resolve()
-            dock = directory / "dock-test"
-            run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
-            check_managed_update(args.previous_archive.resolve(), archive, directory, dock, live_dock)
-    if args.previous_dmg:
-        check(args.previous_dmg.resolve(), archive)
+    live_dock = os.environ.get("GITHUB_ACTIONS") == "true"
+    with hide_recent_dock_apps() if live_dock else nullcontext():
+        if args.previous_archive:
+            test_home = Path.home() if live_dock else None
+            with tempfile.TemporaryDirectory(prefix=".cv-managed-", dir=test_home) as directory:
+                directory = Path(directory).resolve()
+                dock = directory / "dock-test"
+                run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
+                check_managed_update(args.previous_archive.resolve(), archive, directory, dock, live_dock)
+        if args.previous_dmg:
+            check(args.previous_dmg.resolve(), archive)
