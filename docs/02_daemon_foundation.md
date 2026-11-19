@@ -314,6 +314,12 @@ corvid restore --workspace WORKSPACE_ID
 corvid restore --workspace WORKSPACE_ID --pane PANE_ID --retry
 ```
 
+Ordinary TUI startup and Desktop workspace or window recovery resume a verified
+saved conversation in the selected empty pane. The daemon returns the exact pane
+and its status through `attach.recovery.v1` before allocating a terminal. The
+client requests resume for that pane. If recovery fails or is unavailable, the
+client shows the reason and lets the user open a shell.
+
 Run these commands on the daemon host. Desktop provides the same action over its
 Local, SSH, or WSL interactive connection. The protocol capability is
 `workspace.restore_agents.v1`; the read-only control and external presentation

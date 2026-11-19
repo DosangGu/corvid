@@ -4,13 +4,94 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentRestoreMode, PaneRestoreStatus, RestoreWorkspace, WorkspaceRestored,
+    AgentRestoreMode, Attach, PaneRestoreResult, PaneRestoreStatus, RestoreWorkspace,
+    ViewSelection, WorkspaceRestored,
 };
-use corvid_protocol::{Frame, ProtocolFault, RESTORE_AGENTS_CAPABILITY, decode_envelope};
+use corvid_protocol::{
+    ATTACH_RECOVERY_CAPABILITY, Frame, ProtocolFault, RESTORE_AGENTS_CAPABILITY, Session,
+    decode_envelope,
+};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::InteractiveConnection;
+
+#[derive(Debug)]
+pub struct AttachRecovery {
+    pub view: ViewSelection,
+    pub pane: PaneRestoreResult,
+}
+
+impl AttachRecovery {
+    pub fn request(session: &Session, attach: &mut Attach) -> bool {
+        let supported = Self::supported(session);
+        if supported {
+            attach
+                .terminal_capabilities
+                .push(ATTACH_RECOVERY_CAPABILITY.into());
+        }
+        supported
+    }
+
+    pub fn supported(session: &Session) -> bool {
+        [ATTACH_RECOVERY_CAPABILITY, RESTORE_AGENTS_CAPABILITY]
+            .iter()
+            .all(|cap| session.capabilities.iter().any(|name| name == cap))
+    }
+
+    pub fn should_resume(&self) -> bool {
+        matches!(
+            self.pane.status(),
+            PaneRestoreStatus::Available | PaneRestoreStatus::Starting
+        )
+    }
+
+    pub fn from_reply(attach: &Attach, mut reply: WorkspaceRestored) -> Result<Self> {
+        ensure!(reply.panes.len() == 1, "expected a single recovery pane");
+        let pane = &reply.panes[0];
+        let view = pane.location.clone().context("missing recovery pane")?;
+        validate_result(
+            &RestoreWorkspace {
+                workspace_id: attach
+                    .workspace_id
+                    .clone()
+                    .unwrap_or_else(|| view.workspace_id.clone()),
+                pane_id: attach.pane_id.clone(),
+                mode: AgentRestoreMode::Inspect as i32,
+            },
+            &reply,
+        )?;
+        ensure!(
+            attach.tab_id.as_ref().is_none_or(|id| *id == view.tab_id)
+                && pane.terminal_id.is_none()
+                && matches!(
+                    pane.status(),
+                    PaneRestoreStatus::Available
+                        | PaneRestoreStatus::Failed
+                        | PaneRestoreStatus::Starting
+                ),
+            "invalid attach recovery offer"
+        );
+        Ok(Self {
+            view,
+            pane: reply.panes.remove(0),
+        })
+    }
+}
+
+impl std::fmt::Display for AttachRecovery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(error) = &self.pane.error {
+            return f.write_str(&error.message);
+        }
+        if self.pane.status() == PaneRestoreStatus::Starting {
+            return f.write_str("The saved agent conversation is being restored.");
+        }
+        f.write_str("A saved agent conversation is available in this pane.")
+    }
+}
+
+impl std::error::Error for AttachRecovery {}
 
 impl InteractiveConnection {
     /// Before attaching, restore exact saved conversations and wait for pane results.

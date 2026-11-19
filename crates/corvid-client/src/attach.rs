@@ -10,9 +10,10 @@ use corvid_core::Viewport;
 use corvid_protocol::controller::{PAIR_CAPABILITY, PAIRING_SECONDS};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentProvider, Attach, AttachRole, ClaimWorkspaceWriter, Detach, Envelope, FrameApplied,
-    InputChunk, LaunchCommand, MoveTab, PairingCode, PasteBegin, PasteChunk, PasteEnd, RedrawView,
-    ResizeViewport, RouteToken, ViewChanged, Viewport as WireViewport,
+    AgentProvider, AgentRestoreMode, Attach, AttachRole, ClaimWorkspaceWriter, Detach, Envelope,
+    FrameApplied, InputChunk, LaunchCommand, MoveTab, PairingCode, PaneRestoreResult,
+    PaneRestoreStatus, PasteBegin, PasteChunk, PasteEnd, RedrawView, ResizeViewport,
+    RestoreWorkspace, RouteToken, ViewChanged, ViewSelection, Viewport as WireViewport,
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
@@ -31,11 +32,13 @@ use crate::connection::{LocalConnection as Connection, LocalRead, LocalWrite, So
 use crate::keys::{Decoder, Input};
 use crate::tty::Tty;
 use crate::view_state::{self, Recorder, Target};
+use crate::{AttachRecovery, ControlEndpoint};
 
 const INPUT_CHUNK: usize = 8192;
 const LEGACY_MAX_COLS: u16 = 300;
 const LEGACY_MAX_ROWS: u16 = 120;
 
+#[derive(Clone)]
 pub struct AttachOptions {
     /// Persist TUI navigation separately from Desktop. Explicit targets override restoration.
     pub remember_view: bool,
@@ -115,7 +118,8 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     }
     let store = options.remember_view.then(view_state::tui_store).flatten();
     let saved_target = view_state::tui_target(runtime)?;
-    let restore = can_restore(&options)
+    let offer_recovery = can_restore(&options);
+    let restore = offer_recovery
         .then(|| {
             store
                 .as_ref()
@@ -141,7 +145,7 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     if options.pane.is_some() || restore.is_some() {
         required.push(CREATE_VIEW_CAPABILITY.into());
     }
-    let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
+    let connection = Connection::establish(stream, PeerRole::Tui, required.clone()).await?;
     if let Some(saved) = restore {
         ensure!(
             connection.session.host_id == saved.host_id.to_string(),
@@ -164,19 +168,69 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
         options.pane = Some(view.pane_id);
         options.launch_if_empty = false;
     }
-    let notification = ResponseNotification::negotiate(&connection.session);
     let escape_delay = options.escape_delay;
-    let (connection, route, selection) = timeout(
+    let scope = connection.session.clone();
+    let attached = timeout(
         COMMAND_TIMEOUT,
         request_attach(
             connection,
             viewport,
-            options,
-            notification.is_some(),
+            options.clone(),
             pane_writer,
+            offer_recovery,
+            true,
         ),
     )
-    .await??;
+    .await?;
+    let (connection, route, selection) = match attached {
+        Ok(attached) => attached,
+        Err(error) => {
+            let mut offer = error.downcast::<AttachRecovery>()?;
+            let mut expected_terminal = None;
+            if offer.should_resume() {
+                eprintln!("Restoring saved agent conversation…");
+                offer.pane = restore_pane(runtime, &scope, &offer.view).await?;
+                if matches!(
+                    offer.pane.status(),
+                    PaneRestoreStatus::Resumed | PaneRestoreStatus::Existing
+                ) {
+                    expected_terminal = Some(
+                        offer
+                            .pane
+                            .terminal_id
+                            .take()
+                            .context("missing recovered terminal")?,
+                    );
+                }
+            }
+            if expected_terminal.is_none() && !confirm_recovery_shell(&offer).await? {
+                return Ok(0);
+            }
+            let view = offer.view;
+            options.workspace = Some(view.workspace_id.clone());
+            options.tab = Some(view.tab_id.clone());
+            options.pane = Some(view.pane_id.clone());
+            options.launch_if_empty = false;
+            options.launch = expected_terminal.is_none().then(Vec::new);
+            let stream = open(runtime, SocketRole::Client).await?;
+            let connection = Connection::establish(stream, PeerRole::Tui, required).await?;
+            check_recovery_scope(&scope, &connection.session)?;
+            let attached = timeout(
+                COMMAND_TIMEOUT,
+                request_attach(connection, viewport, options, pane_writer, false, false),
+            )
+            .await??;
+            ensure!(
+                attached.2.as_ref() == Some(&view)
+                    && expected_terminal
+                        .as_ref()
+                        .is_none_or(|id| attached.1.terminal_id == *id),
+                ProtocolFault::new("TargetGone", "the recovery pane changed before attach")
+            );
+            attached
+        }
+    };
+    let notification = ResponseNotification::negotiate(&connection.session);
     if let (Some(recorder), Some(selection)) = (&recorder, selection) {
         recorder.record(
             saved_target.clone(),
@@ -232,12 +286,73 @@ fn can_restore(options: &AttachOptions) -> bool {
         && options.move_tab.is_none()
 }
 
+async fn confirm_recovery_shell(offer: &AttachRecovery) -> Result<bool> {
+    let tty = Tty::enter()?;
+    let reason = offer
+        .pane
+        .error
+        .as_ref()
+        .map_or("Could not restore the saved agent conversation.", |error| {
+            error.message.as_str()
+        });
+    tty.write_all(format!("{reason}\r\n[S] Open shell  [Esc] Cancel\r\n").as_bytes())
+        .await?;
+    let mut key = [0];
+    loop {
+        if tty.read(&mut key).await? == 0 {
+            return Ok(false);
+        }
+        match key[0].to_ascii_lowercase() {
+            b's' => return Ok(true),
+            3 | 4 | 27 => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn check_recovery_scope(original: &Session, current: &Session) -> Result<()> {
+    ensure!(
+        original.host_id == current.host_id && original.server_epoch == current.server_epoch,
+        ProtocolFault::new("TargetGone", "the daemon changed while recovering the pane")
+    );
+    Ok(())
+}
+
+async fn restore_pane(
+    runtime: &Path,
+    scope: &Session,
+    view: &ViewSelection,
+) -> Result<PaneRestoreResult> {
+    let mut link = ControlEndpoint::Local(runtime.to_owned())
+        .interactive(vec![corvid_protocol::RESTORE_AGENTS_CAPABILITY.into()])
+        .await?;
+    check_recovery_scope(scope, link.session())?;
+    let result = link
+        .restore_workspace(RestoreWorkspace {
+            workspace_id: view.workspace_id.clone(),
+            pane_id: Some(view.pane_id.clone()),
+            mode: AgentRestoreMode::Resume as i32,
+        })
+        .await?;
+    let pane = result
+        .panes
+        .into_iter()
+        .next()
+        .context("missing recovered pane")?;
+    ensure!(
+        pane.location.as_ref() == Some(view),
+        "the restore result targeted a different pane"
+    );
+    Ok(pane)
+}
+
 async fn request_attach(
     mut connection: Connection,
     viewport: Viewport,
     options: AttachOptions,
-    notifications: bool,
     pane_writer: bool,
+    offer_recovery: bool,
+    implicit_takeover: bool,
 ) -> Result<(
     Connection,
     RouteToken,
@@ -270,7 +385,7 @@ async fn request_attach(
     {
         terminal_capabilities.push(PANE_WRITERS_CAPABILITY.into());
     }
-    if notifications {
+    if ResponseNotification::negotiate(&connection.session).is_some() {
         terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
     }
     if connection
@@ -307,7 +422,7 @@ async fn request_attach(
                 .iter()
                 .any(|name| name == capability)
         });
-    let take_over = options.take_over || can_resume;
+    let take_over = options.take_over || (implicit_takeover && can_resume);
     let workspace_directory_supported = connection
         .session
         .capabilities
@@ -351,24 +466,27 @@ async fn request_attach(
     } else {
         None
     };
+    let mut attach = Attach {
+        agent_run_id: None,
+        workspace_id: options.workspace,
+        tab_id: options.tab,
+        pane_id: options.pane,
+        create_workspace: options.new_workspace,
+        workspace_directory: options.workspace_directory,
+        fallback_directory,
+        create_tab: options.new_tab,
+        take_over,
+        expected_terminal_id: None,
+        viewport: Some(wire_viewport(viewport)),
+        terminal_capabilities,
+        requested_role: AttachRole::Writer as i32,
+        launch,
+    };
+    let recovery_requested =
+        offer_recovery && AttachRecovery::request(&connection.session, &mut attach);
     let request = connection.session.envelope(
         Some(Uuid::new_v4().to_string()),
-        Body::Attach(Attach {
-            agent_run_id: None,
-            workspace_id: options.workspace,
-            tab_id: options.tab,
-            pane_id: options.pane,
-            create_workspace: options.new_workspace,
-            workspace_directory: options.workspace_directory,
-            fallback_directory,
-            create_tab: options.new_tab,
-            take_over,
-            expected_terminal_id: None,
-            viewport: Some(wire_viewport(viewport)),
-            terminal_capabilities,
-            requested_role: AttachRole::Writer as i32,
-            launch,
-        }),
+        Body::Attach(attach.clone()),
     );
     connection.writer.envelope(&request).await?;
     let reply = connection
@@ -384,6 +502,9 @@ async fn request_attach(
 
     let attached = match reply.body {
         Some(Body::Attached(attached)) => attached,
+        Some(Body::WorkspaceRestored(reply)) if recovery_requested => {
+            return Err(AttachRecovery::from_reply(&attach, reply)?.into());
+        }
         Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error).into()),
         _ => bail!("unexpected Attach response"),
     };

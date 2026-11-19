@@ -20,6 +20,14 @@ fn desktop_attaches_without_agent_restore_support() -> Result<()> {
     )
 }
 
+#[test]
+fn desktop_startup_attempts_recovery_and_leaves_failed_panes_empty() -> Result<()> {
+    isolated_fixture(
+        "terminal_session::restore_test::desktop_startup_attempts_recovery_and_leaves_failed_panes_empty",
+        verify_recovery_offers,
+    )
+}
+
 // Run the backend in a subprocess so environment overrides never affect other tests.
 fn isolated_fixture(test: &str, run: impl AsyncFnOnce(&Path) -> Result<()>) -> Result<()> {
     if let Some(root) = std::env::var_os("CORVID_DESKTOP_RESTORE_FIXTURE") {
@@ -46,6 +54,14 @@ fn isolated_fixture(test: &str, run: impl AsyncFnOnce(&Path) -> Result<()>) -> R
 }
 
 async fn run_fixture(root: &Path) -> Result<()> {
+    with_daemon(root, async |runtime| {
+        verify_restore(runtime, &root.join("desktop")).await?;
+        verify_window_restore(runtime, &root.join("windows")).await
+    })
+    .await
+}
+
+async fn with_daemon(root: &Path, run: impl AsyncFnOnce(&Path) -> Result<()>) -> Result<()> {
     let runtime = root.join("runtime");
     let state = root.join("daemon");
     let (stop, stopped) = oneshot::channel();
@@ -71,8 +87,7 @@ async fn run_fixture(root: &Path) -> Result<()> {
         })
         .await
         .context("starting the fixture daemon")?;
-        verify_restore(&runtime, &root.join("desktop")).await?;
-        verify_window_restore(&runtime, &root.join("windows")).await
+        run(&runtime).await
     }
     .await;
     let _ = stop.send(());
@@ -82,6 +97,102 @@ async fn run_fixture(root: &Path) -> Result<()> {
     result?;
     stopped???;
     Ok(())
+}
+
+async fn verify_recovery_offers(root: &Path) -> Result<()> {
+    use corvid_core::agent::{AgentSessionKey, Provider};
+    use corvid_core::layout::Layout;
+    use corvid_protocol::wire::PaneRestoreStatus;
+    use serde_json::json;
+
+    #[cfg(unix)]
+    use corvid_protocol::unix::RuntimeDir as StateDirectory;
+    #[cfg(windows)]
+    use corvid_protocol::windows::StateDirectory;
+
+    let mut layout = Layout::empty_terminal();
+    let first = layout.primary().unwrap();
+    let second = layout.add_tab(first.workspace, "Codex".into())?;
+    let saved = [(first, Provider::Claude), (second, Provider::Codex)]
+        .into_iter()
+        .map(|(location, provider)| {
+            let key = AgentSessionKey {
+                provider,
+                provider_session_id: "saved-id".into(),
+            };
+            (
+                location.pane.to_string(),
+                json!({ "key": key, "verified": true }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let directory = StateDirectory::create_all(&root.join("daemon"))?;
+    directory.replace_private_file(
+        "state.json",
+        &serde_json::to_vec(&json!({
+            "schema_version": 5, "layout": layout, "history": [], "resumes": saved,
+        }))?,
+    )?;
+    with_daemon(root, async |runtime| {
+        let endpoint = ControlEndpoint::Local(runtime.to_owned());
+        let snapshot = endpoint.current_snapshot(None).await?;
+        let host_id = snapshot.session().host_id.clone();
+        let state = root.join("desktop");
+        let picker = AttachTarget::Workspace {
+            id: first.workspace.to_string(),
+            host_id: host_id.clone(),
+            new_tab: None,
+        };
+        let selection = ViewSelection {
+            workspace_id: second.workspace.to_string(),
+            tab_id: second.tab.to_string(),
+            pane_id: second.pane.to_string(),
+        };
+        for (target, pane) in [
+            (picker, first.pane),
+            (AttachTarget::FreshDefault, first.pane),
+            (
+                AttachTarget::OpenPane {
+                    view: selection.clone(),
+                    host_id: host_id.clone(),
+                },
+                second.pane,
+            ),
+            (
+                AttachTarget::Restore(SavedView::new(SavedTarget::Local, &host_id, &selection)?),
+                second.pane,
+            ),
+        ] {
+            let desktop =
+                AttachedSession::with_target(&state, ViewStore::new(state.join("view")), target)?;
+            let ui = wait_disconnected(&desktop.session).await?;
+            let view = ui.selected.context("missing recovery selection")?;
+            ensure!(view.pane_id == pane.to_string());
+            ensure!(ui.inventory.is_some_and(|inventory| !inventory.live(&view)));
+            ensure!(
+                ui.restore_results.iter().any(|result| {
+                    result.location.as_ref() == Some(&view)
+                        && result.status() == PaneRestoreStatus::Failed
+                        && result
+                            .error
+                            .as_ref()
+                            .is_some_and(|error| error.code == "ResumeDirectoryUnavailable")
+                }),
+                "Desktop did not attempt to restore the selected pane: {}",
+                ui.message
+            );
+            drop(desktop);
+        }
+        let shell = AttachedSession::with_target(
+            &state,
+            ViewStore::new(state.join("view")),
+            AttachTarget::Pane(selection.clone(), true),
+        )?;
+        ensure!(wait_view(&shell.session, |_| true).await?.selected == Some(selection));
+        tokio::task::spawn_blocking(move || drop(shell)).await?;
+        Ok(())
+    })
+    .await
 }
 
 async fn verify_attach_without_agent_restore(runtime: &Path, state: &Path) -> Result<()> {
@@ -462,6 +573,7 @@ async fn verify_restore(runtime: &Path, state: &Path) -> Result<()> {
             view: view.clone(),
             host_id: selected.host_id.clone().unwrap(),
             pane_only: true,
+            automatic_epoch: None,
         },
     )?;
     let ui = wait_disconnected(&empty.session).await?;
@@ -543,6 +655,7 @@ async fn verify_window_restore(runtime: &Path, state: &Path) -> Result<()> {
             view: occupied.selected.clone().unwrap(),
             host_id: occupied.host_id.clone().unwrap(),
             pane_only: false,
+            automatic_epoch: None,
         },
     )?;
     let rejected = wait_disconnected(&duplicate.session).await?;

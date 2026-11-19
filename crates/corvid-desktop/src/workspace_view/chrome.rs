@@ -342,7 +342,7 @@ impl WorkspaceView {
                         button("select-tab", title, active).on_click(cx.listener(
                             move |view, _, window, cx| {
                                 view.dismiss_overlay(window, cx);
-                                view.select(target.clone(), open, window, cx);
+                                view.open_pane(target.clone(), open, window, cx);
                             },
                         )),
                     ))
@@ -426,6 +426,15 @@ impl WorkspaceView {
         if ui.changing {
             return Some("Updating terminal view…".into());
         }
+        if ui.restore_results.iter().any(|result| {
+            result.location == ui.selected
+                && result
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.message == ui.message)
+        }) {
+            return None;
+        }
         if !ui.connected || ui.message != "Attached to Corvid daemon" {
             return Some(ui.message.clone());
         }
@@ -440,7 +449,11 @@ impl WorkspaceView {
             .filter_map(|result| {
                 let target = result.location.as_ref()?;
                 let error = result.error.as_ref()?;
-                if inventory.live(target) {
+                let shown_in_pane = !(self.zoom_pane && ui.connected)
+                    && ui.selected.as_ref().is_some_and(|view| {
+                        view.workspace_id == target.workspace_id && view.tab_id == target.tab_id
+                    });
+                if inventory.live(target) || shown_in_pane {
                     return None;
                 }
                 let tab = inventory

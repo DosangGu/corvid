@@ -1,18 +1,25 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::collections::HashSet;
+use std::io::Read;
+#[cfg(windows)]
+use std::io::Write;
+use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_client::view_state::{ViewStore, tui_target};
 use corvid_client::{ControlEndpoint, InteractiveConnection};
 use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentProvider, AgentRestoreMode, Attach, AttachRole, Attached, LaunchCommand,
-    PaneRestoreStatus, RestoreWorkspace, Viewport,
+    PaneRestoreStatus, RestoreWorkspace, ViewSelection, Viewport,
 };
 use corvid_protocol::{Frame, PANE_WRITERS_CAPABILITY, RESTORE_AGENTS_CAPABILITY, decode_envelope};
+use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
@@ -328,4 +335,174 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
             .await?;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut daemon = fixture.start().await?;
+    let agents = [
+        (AgentProvider::Claude, "saved-claude"),
+        (AgentProvider::Codex, "saved-codex"),
+    ];
+    for (index, (provider, session)) in agents.into_iter().enumerate() {
+        fixture
+            .attach(
+                index,
+                Some(LaunchCommand {
+                    argv: vec![b"--fixture-session".to_vec(), session.as_bytes().to_vec()],
+                    agent_provider: Some(provider as i32),
+                    ..Default::default()
+                }),
+            )
+            .await?;
+    }
+    timeout(WAIT, async {
+        loop {
+            let stored = fixture.stored()?;
+            if agents.iter().enumerate().all(|(index, (_, session))| {
+                let pane = fixture.locations[index].pane.to_string();
+                stored["resumes"][pane]["key"]["provider_session_id"] == *session
+            }) {
+                return Ok::<_, anyhow::Error>(());
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .context("waiting for saved startup conversations")??;
+    daemon.kill().await?;
+
+    let _restarted = fixture.start().await?;
+    let host = fixture.connection().await?.session().host_id.clone();
+    for (index, (provider, session)) in agents.into_iter().enumerate() {
+        let location = fixture.locations[index];
+        let views = fixture.root.join(format!("views-{index}"));
+        if index != 0 {
+            let store = ViewStore::new(views.join("tui"));
+            let recorder = store.recorder()?;
+            recorder.record(
+                tui_target(&fixture.runtime)?,
+                &host,
+                &ViewSelection {
+                    workspace_id: location.workspace.to_string(),
+                    tab_id: location.tab.to_string(),
+                    pane_id: location.pane.to_string(),
+                },
+            );
+            drop(recorder);
+        }
+        let runtime = fixture.runtime.clone();
+        tokio::task::spawn_blocking(move || StartupTui::open(&runtime, &views, session)).await??;
+        let agents = corvid_client::agents(&fixture.runtime).await?;
+        ensure!(
+            agents.agents.iter().any(|agent| {
+                agent.provider == provider as i32
+                    && agent.provider_session_id.as_deref() == Some(session)
+                    && agent
+                        .location
+                        .as_ref()
+                        .is_some_and(|view| view.pane_id == location.pane.to_string())
+                    && agent.terminal_available
+            }),
+            "TUI startup did not restore {session} in its original pane"
+        );
+    }
+    Ok(())
+}
+
+struct StartupTui {
+    child: Box<dyn PtyChild + Send + Sync>,
+    _master: Box<dyn MasterPty + Send>,
+
+    output: Receiver<Vec<u8>>,
+    screen: vt100::Parser,
+}
+
+impl StartupTui {
+    fn open(runtime: &Path, views: &Path, session: &str) -> Result<()> {
+        let pair = native_pty_system().openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let mut reader = pair.master.try_clone_reader()?;
+        let _input = pair.master.take_writer()?;
+        let (sender, output) = sync_channel(16);
+        std::thread::spawn(move || {
+            let mut bytes = [0; 4096];
+            while let Ok(size @ 1..) = reader.read(&mut bytes) {
+                if sender.send(bytes[..size].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut command = CommandBuilder::new(BINARY);
+        command.arg("--runtime-dir");
+        command.arg(runtime);
+        command.env("CORVID_AGENT_MONITOR", "0");
+        command.env("CORVID_VIEW_STATE_DIR", views);
+        let child = pair.slave.spawn_command(command)?;
+        drop(pair.slave);
+        let mut tui = Self {
+            child,
+            _master: pair.master,
+            output,
+            screen: vt100::Parser::new(
+                NonZeroU16::new(24).unwrap(),
+                NonZeroU16::new(100).unwrap(),
+                0,
+            ),
+        };
+        #[cfg(windows)]
+        let mut _input = _input;
+        #[cfg(windows)]
+        {
+            tui.wait_for_cursor_query()?;
+            _input.write_all(b"\x1b[1;1R")?;
+            _input.flush()?;
+        }
+        tui.wait_for(&format!("READY-{session}"))
+    }
+
+    fn wait_for(&mut self, marker: &str) -> Result<()> {
+        let deadline = std::time::Instant::now() + WAIT;
+        while !self.screen.screen().contents().contains(marker) {
+            let bytes = self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .with_context(|| {
+                    format!(
+                        "waiting for {marker}, screen: {:?}",
+                        self.screen.screen().contents()
+                    )
+                })?;
+            self.screen.process(&bytes);
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn wait_for_cursor_query(&mut self) -> Result<()> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut tail = Vec::new();
+        loop {
+            let bytes = self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))?;
+            tail.extend_from_slice(&bytes);
+            if tail.windows(4).any(|window| window == b"\x1b[6n") {
+                return Ok(());
+            }
+            tail.drain(..tail.len().saturating_sub(3));
+        }
+    }
+}
+
+impl Drop for StartupTui {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }

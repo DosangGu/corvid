@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 #[cfg(windows)]
 use corvid_client::WslDistribution;
 use corvid_client::view_state::{Recorder, SavedView, Target as SavedTarget, ViewStore};
-use corvid_client::{ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias};
+use corvid_client::{AttachRecovery, ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias};
 use corvid_companion::{Config, HostEndpoint};
 use corvid_presentation::desktop_focus::{FocusFailure, FocusReply};
 use corvid_protocol::snapshot::SynchronizedSnapshot;
@@ -77,6 +77,7 @@ pub enum AttachTarget {
         view: ViewSelection,
         host_id: String,
         pane_only: bool,
+        automatic_epoch: Option<String>,
     },
     Default,
     FreshDefault,
@@ -88,6 +89,10 @@ pub enum AttachTarget {
     },
     Restore(SavedView),
     Pane(ViewSelection, bool),
+    OpenPane {
+        view: ViewSelection,
+        host_id: String,
+    },
     Workspace {
         id: String,
         host_id: String,
@@ -261,6 +266,7 @@ impl Inventory {
 #[derive(Clone)]
 pub struct Ui {
     pub restore_supported: bool,
+    pub recovery_supported: bool,
     pub restore_results: Vec<corvid_protocol::wire::PaneRestoreResult>,
     pub restore_unavailable: bool,
     pub naming_supported: bool,
@@ -356,6 +362,7 @@ impl Shared {
         let mut state = Snapshot {
             ui: Arc::new(Ui {
                 restore_supported: false,
+                recovery_supported: false,
                 restore_results: Vec::new(),
                 restore_unavailable: false,
                 naming_supported: false,
@@ -1132,6 +1139,40 @@ async fn run_reconnecting(
             Ok(message) => return Ok(message),
             Err(error) => error,
         };
+        if let Some(offer) = error.downcast_ref::<AttachRecovery>() {
+            let ui = &shared.snapshot().ui;
+            let endpoint = ui.endpoint.as_ref().context("missing recovery endpoint")?;
+            let host = ui.host_id.as_deref().context("missing recovery host")?;
+            let epoch = ui.epoch.as_deref().context("missing recovery epoch")?;
+            if offer.should_resume() {
+                target = AttachTarget::ResumeAgents {
+                    view: offer.view.clone(),
+                    host_id: host.to_owned(),
+                    pane_only: true,
+                    automatic_epoch: Some(epoch.to_owned()),
+                };
+                explicit = false;
+                requests.terminal = None;
+                shared.update_ui(|ui| {
+                    ui.connected = false;
+                    ui.changing = true;
+                    ui.message = "Restoring saved agent conversation…".into();
+                });
+                // A restored agent starts on a new route. Discard requests for the retired writer.
+                while requests.actions.try_recv().is_ok() {}
+                continue;
+            }
+            let snapshot = endpoint.view_snapshot(host, epoch).await?;
+            let inventory = Arc::new(Inventory::read(&snapshot));
+            let selected = offer.view.clone();
+            let restore_results = vec![offer.pane.clone()];
+            shared.update_ui(move |ui| {
+                ui.inventory = Some(inventory);
+                ui.selected = Some(selected);
+                ui.restore_results = restore_results;
+            });
+            return Ok(offer.to_string());
+        }
         let snapshot = shared.snapshot();
         let ui = &snapshot.ui;
         let transient = error
@@ -1237,6 +1278,7 @@ async fn run(
         AttachTarget::Workspace { host_id, .. }
         | AttachTarget::NewWorkspace { host_id, .. }
         | AttachTarget::Takeover { host_id, .. }
+        | AttachTarget::OpenPane { host_id, .. }
         | AttachTarget::ResumeAgents { host_id, .. } => Some(host_id.clone()),
         AttachTarget::Restore(saved) => Some(saved.host_id.to_string()),
         AttachTarget::Agent { run, .. } => Some(run.host_id.clone()),
@@ -1248,6 +1290,9 @@ async fn run(
     };
     let expected_epoch = match &target {
         AttachTarget::Agent { run, .. } => Some(run.remote_epoch.as_str()),
+        AttachTarget::ResumeAgents {
+            automatic_epoch, ..
+        } => automatic_epoch.as_deref(),
         _ => None,
     };
     let warmed = parked
@@ -1316,13 +1361,20 @@ async fn run(
         .capabilities
         .iter()
         .any(|cap| cap == corvid_protocol::RESTORE_AGENTS_CAPABILITY);
+    let recovery_supported = AttachRecovery::supported(link.session());
     shared.update_ui(move |ui| {
         ui.host_id = displayed_host;
+        ui.recovery_supported = recovery_supported;
         ui.epoch = Some(displayed_epoch);
         ui.endpoint = Some(displayed_endpoint);
         ui.restore_supported = restore_supported;
     });
     let restoring = matches!(target, AttachTarget::Restore(_));
+    let offer_recovery = !matches!(target, AttachTarget::ResumeAgents { .. });
+    let opening_pane = matches!(target, AttachTarget::OpenPane { .. });
+    if let AttachTarget::OpenPane { view, .. } = target {
+        target = AttachTarget::Pane(view, true);
+    }
     if let AttachTarget::Restore(saved) = &target {
         let snapshot = endpoint
             .view_snapshot(&link.session().host_id, &link.session().server_epoch)
@@ -1338,7 +1390,10 @@ async fn run(
         target = AttachTarget::Pane(view, false);
     }
     if let AttachTarget::ResumeAgents {
-        view, pane_only, ..
+        view,
+        pane_only,
+        automatic_epoch,
+        ..
     } = &target
     {
         let view = view.clone();
@@ -1353,14 +1408,42 @@ async fn run(
             ui.selected = Some(selected);
             ui.message = "Restoring saved agent sessions…".into();
         });
+        let automatic = automatic_epoch.is_some();
+        let mode = if automatic {
+            corvid_protocol::wire::AgentRestoreMode::Resume
+        } else {
+            corvid_protocol::wire::AgentRestoreMode::Retry
+        };
         let mut result = link
             .restore_workspace(corvid_protocol::wire::RestoreWorkspace {
                 workspace_id: view.workspace_id.clone(),
                 pane_id: pane_only.then(|| view.pane_id.clone()),
-                mode: corvid_protocol::wire::AgentRestoreMode::Retry as i32,
+                mode: mode as i32,
             })
             .await?;
-        if *pane_only {
+        if automatic {
+            let pane = result.panes.first().context("missing recovered pane")?;
+            if !matches!(
+                pane.status(),
+                corvid_protocol::wire::PaneRestoreStatus::Resumed
+                    | corvid_protocol::wire::PaneRestoreStatus::Existing
+            ) {
+                let message = pane
+                    .error
+                    .as_ref()
+                    .map_or("Could not restore the saved agent conversation.", |error| {
+                        error.message.as_str()
+                    })
+                    .to_owned();
+                shared.update_ui(move |ui| ui.restore_results = result.panes);
+                return Ok(message);
+            }
+            *terminal = Some(
+                pane.terminal_id
+                    .clone()
+                    .context("missing recovered terminal")?,
+            );
+        } else if *pane_only {
             result = link
                 .restore_workspace(corvid_protocol::wire::RestoreWorkspace {
                     workspace_id: view.workspace_id.clone(),
@@ -1392,7 +1475,9 @@ async fn run(
         terminal.is_none() && !restoring && shared.snapshot().ui.restore_results.is_empty();
     let attached = match &target {
         AttachTarget::Agent { run, .. } => attach_agent(&endpoint, &mut link, grid, run).await?,
-        AttachTarget::Restore(_) => unreachable!("saved view resolved before attach"),
+        AttachTarget::Restore(_) | AttachTarget::OpenPane { .. } => {
+            unreachable!("pane resolved before attach")
+        }
         AttachTarget::ResumeAgents { .. } => unreachable!("agent restore resolved before attach"),
         AttachTarget::NewWorkspace {
             label, directory, ..
@@ -1425,6 +1510,10 @@ async fn run(
                 launch: new_tab.as_ref().map(|_| LaunchCommand::default()),
                 ..Default::default()
             };
+            if new_tab.is_none() {
+                AttachRecovery::request(link.session(), &mut request);
+            }
+            let epoch = link.session().server_epoch.clone();
             match attach(&mut link, grid, resume, request.clone()).await {
                 Err(error)
                     if new_tab.is_none()
@@ -1435,8 +1524,8 @@ async fn run(
                     drop(link);
                     link = endpoint.interactive(capabilities).await?;
                     ensure!(
-                        link.session().host_id == *host_id,
-                        "The connection points to a different Corvid host"
+                        link.session().host_id == *host_id && link.session().server_epoch == epoch,
+                        "The Corvid daemon changed while opening the workspace"
                     );
                     request.launch = Some(LaunchCommand::default());
                     attach(&mut link, grid, resume, request).await?
@@ -1469,32 +1558,26 @@ async fn run(
             .await?
         }
         AttachTarget::Pane(view, open) => {
-            attach(
-                &mut link,
-                grid,
-                resume,
-                Attach {
-                    workspace_id: Some(view.workspace_id.clone()),
-                    tab_id: Some(view.tab_id.clone()),
-                    pane_id: Some(view.pane_id.clone()),
-                    launch: open.then(LaunchCommand::default),
-                    ..Default::default()
-                },
-            )
-            .await?
+            let mut request = Attach {
+                workspace_id: Some(view.workspace_id.clone()),
+                tab_id: Some(view.tab_id.clone()),
+                pane_id: Some(view.pane_id.clone()),
+                launch: open.then(LaunchCommand::default),
+                ..Default::default()
+            };
+            if (!open && offer_recovery) || opening_pane {
+                AttachRecovery::request(link.session(), &mut request);
+            }
+            attach(&mut link, grid, resume, request).await?
         }
         AttachTarget::Default | AttachTarget::FreshDefault => {
-            attach(
-                &mut link,
-                grid,
-                resume,
-                Attach {
-                    terminal_capabilities: vec![DEFAULT_SHELL_CAPABILITY.into()],
-                    launch: Some(LaunchCommand::default()),
-                    ..Default::default()
-                },
-            )
-            .await?
+            let mut request = Attach {
+                terminal_capabilities: vec![DEFAULT_SHELL_CAPABILITY.into()],
+                launch: Some(LaunchCommand::default()),
+                ..Default::default()
+            };
+            AttachRecovery::request(link.session(), &mut request);
+            attach(&mut link, grid, resume, request).await?
         }
     };
     let route = attached.route_token.context("missing input route")?;
@@ -1515,7 +1598,7 @@ async fn run(
             && valid_route(&route)
             && route.writer_lease_generation > 0
             && match &target {
-                AttachTarget::Restore(_) => false,
+                AttachTarget::Restore(_) | AttachTarget::OpenPane { .. } => false,
                 AttachTarget::ResumeAgents { .. } => false,
                 AttachTarget::Default
                 | AttachTarget::FreshDefault
@@ -1789,7 +1872,11 @@ async fn attach(
     if request.requested_role == AttachRole::Unspecified as i32 {
         request.requested_role = AttachRole::Writer as i32;
     }
-    let id = link.send(Body::Attach(request)).await?;
+    let recovery_requested = request
+        .terminal_capabilities
+        .iter()
+        .any(|cap| cap == corvid_protocol::ATTACH_RECOVERY_CAPABILITY);
+    let id = link.send(Body::Attach(request.clone())).await?;
     let reply = timeout(COMMAND_TIMEOUT, link.receive()).await??;
     let (reply_id, reply) = envelope(link, reply)?;
     ensure!(
@@ -1798,6 +1885,9 @@ async fn attach(
     );
     match reply {
         Body::Attached(attached) => Ok(attached),
+        Body::WorkspaceRestored(reply) if recovery_requested => {
+            Err(AttachRecovery::from_reply(&request, reply)?.into())
+        }
         Body::Error(error) => Err(ProtocolFault::from_wire(&error).into()),
         _ => bail!("unexpected attach response"),
     }
