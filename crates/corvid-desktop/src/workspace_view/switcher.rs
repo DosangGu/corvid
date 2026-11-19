@@ -394,7 +394,7 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    pub(super) fn switcher(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn switcher_panel(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let rows = self.picker_rows();
         let selected = self.switcher.selected_index(&rows);
         let can_create = !self.connecting(self.session.as_ref().map(Session::ui).as_ref());
@@ -407,14 +407,14 @@ impl WorkspaceView {
         } else {
             None
         };
-        let panel = div()
+        div()
             .id("workspace-picker")
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .flex()
             .flex_col()
             .w(ui_px(480.))
-            .max_w_full()
+            .max_w(window.viewport_size().width - ui_px(16.).to_pixels(window.rem_size()))
             .max_h(window.viewport_size().height - ui_px(54.).to_pixels(window.rem_size()))
             .p(ui_px(10.))
             .gap(ui_px(5.))
@@ -473,8 +473,7 @@ impl WorkspaceView {
                         self.picker_row(row, selected == Some(index), can_create, cx)
                     })),
             )
-            .child(self.picker_actions(selected.and_then(|index| rows.get(index)), cx));
-        self.overlay(panel, false, cx)
+            .child(self.picker_actions(selected.and_then(|index| rows.get(index)), cx))
     }
 
     fn picker_row(
@@ -615,25 +614,27 @@ impl WorkspaceView {
             .pt(ui_px(44.))
             .px(ui_px(8.))
             .when(right, |layer| layer.justify_end())
-            .child(
-                div()
-                    .id("overlay-dismiss")
-                    .absolute()
-                    .inset_0()
-                    .occlude()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.creation.is_some() {
-                                view.cancel_creation(window, cx);
-                            } else {
-                                view.dismiss_overlay(window, cx);
-                            }
-                            cx.stop_propagation();
-                        }),
-                    ),
-            )
+            .child(self.overlay_backdrop(cx))
             .child(panel)
+    }
+
+    pub(super) fn overlay_backdrop(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id("overlay-dismiss")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    if view.creation.is_some() {
+                        view.cancel_creation(window, cx);
+                    } else {
+                        view.dismiss_overlay(window, cx);
+                    }
+                    cx.stop_propagation();
+                }),
+            )
     }
 }
 

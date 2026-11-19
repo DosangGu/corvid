@@ -1,6 +1,6 @@
 use super::*;
 use corvid_protocol::wire::AgentBadge;
-use gpui::{MouseButton, px};
+use gpui::{Corner, MouseButton, anchored, deferred, px};
 
 #[cfg(windows)]
 use super::window_controls::{self, window_drag_region};
@@ -218,16 +218,34 @@ impl WorkspaceView {
                     })
                     .count()
             });
+        let switcher_on_right = cfg!(target_os = "macos");
         let switcher = |cx: &mut Context<Self>| {
             div()
+                .relative()
                 .flex_none()
                 .max_w(ui_px(250.))
-                .overflow_hidden()
-                .child(
+                .child(div().overflow_hidden().child(
                     button("workspaces", title.clone(), self.switcher_open).on_click(
                         cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
                     ),
-                )
+                ))
+                .when(self.switcher_open, |trigger| {
+                    let position = div().absolute().top_full().mt(ui_px(4.));
+                    let (position, anchor) = if switcher_on_right {
+                        (position.right_0(), Corner::TopRight)
+                    } else {
+                        (position.left_0(), Corner::TopLeft)
+                    };
+                    // Keep the picker above the backdrop while laying it out with the trigger.
+                    trigger.child(
+                        position.child(deferred(
+                            anchored()
+                                .anchor(anchor)
+                                .snap_to_window()
+                                .child(self.switcher_panel(window, cx)),
+                        )),
+                    )
+                })
         };
         let tabs = div()
             .flex()
@@ -262,10 +280,10 @@ impl WorkspaceView {
                     bar.pl(px(76.))
                 },
             )
-            .when(!cfg!(target_os = "macos"), |bar| bar.child(switcher(cx)))
+            .when(!switcher_on_right, |bar| bar.child(switcher(cx)))
             .child(tabs)
             .children(drag_region)
-            .when(cfg!(target_os = "macos"), |bar| bar.child(switcher(cx)))
+            .when(switcher_on_right, |bar| bar.child(switcher(cx)))
             .when(ui.is_some_and(Ui::can_write), |bar| {
                 bar.child(
                     button("create-menu", "+", self.menu_open && self.menu_create).on_click(
@@ -596,7 +614,7 @@ impl Render for WorkspaceView {
                 )
             })
             .when(self.switcher_open, |root| {
-                root.child(self.switcher(window, cx))
+                root.child(self.overlay_backdrop(cx))
             })
             .when(self.menu_open, |root| root.child(self.action_menu(cx)))
             .when(self.naming.is_some(), |root| {
