@@ -61,24 +61,15 @@ impl DeckView {
             .items_center()
             .gap(px(6.))
             .overflow_hidden()
-            .whitespace_nowrap();
-        let message = compact_macos.then(|| self.status_message()).flatten();
-        let title = if let Some(message) = message {
-            let message = SharedString::from(message.to_owned());
-            title
-                .child(colors.muted(message.clone()).min_w_0().truncate())
-                .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(message.clone())).into())
-        } else {
-            title
-                .child(div().font_weight(FontWeight::SEMIBOLD).child(if portrait {
-                    "Agents"
-                } else {
-                    "Agent Deck"
-                }))
-                .when(!expanded, |title| {
-                    title.child(colors.muted(layout.label()).flex_shrink_0())
-                })
-        };
+            .whitespace_nowrap()
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(if portrait {
+                "Agents"
+            } else {
+                "Agent Deck"
+            }))
+            .when(!expanded, |title| {
+                title.child(colors.muted(layout.label()).flex_shrink_0())
+            });
 
         #[cfg(not(target_os = "macos"))]
         let pinned = self.window.pinned();

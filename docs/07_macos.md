@@ -71,8 +71,10 @@ and terminal Control-key encoding remain in use.
 Agent Deck opens in a panel under its menu bar icon. Click the icon to toggle
 it, or right-click for settings and quit. The panel follows the system appearance,
 uses Liquid Glass on macOS 26 and later and the popover material on macOS 15,
-and uses a solid system background when Reduce Transparency is enabled. Agent
-Deck supports native notifications and an opt-in login LaunchAgent. Notification permission is controlled in System Settings.
+and uses a solid system background when Reduce Transparency is enabled.
+See **Deck status** in the expanded **Notifications** view for connection and
+action messages. Agent Deck supports native notifications and an opt-in login
+LaunchAgent. Notification permission is controlled in System Settings.
 Click actions are scoped to notices held by the live process and go through the
 existing run/binding fences. Notifications from an exited instance cannot select
 a different run. Login startup recomputes the boot-scoped socket directory.

@@ -327,7 +327,9 @@ impl DeckView {
                     .overflow_y_scroll()
                     .child(content),
             )
-            .child(self.footer(cx))
+            .when(!cfg!(target_os = "macos"), |view| {
+                view.child(self.footer(cx))
+            })
     }
 
     fn header(&self, cx: &mut Context<Self>) -> Div {
@@ -346,15 +348,12 @@ impl DeckView {
                         })),
                 ),
         );
+        if !cfg!(target_os = "macos")
+            && let Some(code) = self.connection_issue()
+        {
+            header = header.child(colors.muted(format!("Connection issue ({code})")));
+        }
         if let Some(snapshot) = &self.view.snapshot {
-            if let Some(code) = snapshot
-                .data
-                .issue_code
-                .as_deref()
-                .filter(|code| safe_code(code))
-            {
-                header = header.child(colors.muted(format!("Connection issue ({code})")));
-            }
             if !self.session.background.desktop.connected() {
                 header = header.child(colors.muted("Target terminal")).child(
                     row().flex_wrap().children(
@@ -400,6 +399,16 @@ impl DeckView {
             }
         }
         header.child(self.layout_controls(cx))
+    }
+
+    fn connection_issue(&self) -> Option<&str> {
+        self.view
+            .snapshot
+            .as_ref()?
+            .data
+            .issue_code
+            .as_deref()
+            .filter(|code| safe_code(code))
     }
 
     fn board(&self, snapshot: &Arc<Snapshot>, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -557,6 +566,21 @@ impl DeckView {
             ("Start Agent Deck at login", settings.start_at_login),
         ];
         let mut view = column()
+            .when(cfg!(target_os = "macos"), |view| {
+                view.child(
+                    column()
+                        .p(px(12.))
+                        .rounded_lg()
+                        .bg(colors.panel)
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child("Deck status"))
+                        .child(
+                            colors.muted(self.status_message().unwrap_or("Connected").to_owned()),
+                        )
+                        .when_some(self.connection_issue(), |status, code| {
+                            status.child(colors.muted(format!("Connection issue ({code})")))
+                        }),
+                )
+            })
             .children(
                 choices
                     .into_iter()

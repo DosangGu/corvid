@@ -119,7 +119,7 @@ def check_panel_placement(query, pid):
         output = run(query, pid).strip()
         if output:
             window, offset, height = output.split()
-            # The default 4 × 2 panel shows status in the header.
+            # The default 4 × 2 mini panel reserves space for the header and cards.
             if float(height) != 220:
                 time.sleep(0.1)
                 continue
