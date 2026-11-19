@@ -1,3 +1,8 @@
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+use std::sync::Arc;
+
 use corvid_core::agent::{
     Collection, Confidence, Lifecycle, ObservationKind, ProcessLiveness, Provider, Source,
 };
@@ -14,6 +19,8 @@ pub(crate) struct RetainedAgent {
     pub(crate) association: Uuid,
     pub(crate) observer_epoch: Uuid,
     pub(crate) owner: ProcessImage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restart_path: Option<Vec<u8>>,
     provider: Provider,
     producer: Option<HookProducer>,
     session: String,
@@ -35,6 +42,7 @@ impl RetainedAgent {
             association,
             observer_epoch,
             owner,
+            restart_path: None,
             provider: session.provider,
             producer: None,
             session: session.provider_session_id.clone(),
@@ -54,6 +62,18 @@ impl RetainedAgent {
             && self.sessions.iter().all(|id| valid_id(id))
             && self.sessions.contains(&self.session)
             && self.turn.as_deref().is_none_or(valid_id)
+            && self.restart_path.as_ref().is_none_or(|path| {
+                self.provider == Provider::Claude
+                    && path.len() <= 4096
+                    && !path.contains(&0)
+                    && Path::new(OsStr::from_bytes(path)).is_absolute()
+            })
+    }
+
+    pub(crate) fn restart_path(&self) -> Option<Arc<Path>> {
+        self.restart_path
+            .as_deref()
+            .map(|path| Arc::from(Path::new(OsStr::from_bytes(path))))
     }
 }
 
@@ -75,6 +95,10 @@ impl Agents {
                 association: *association,
                 observer_epoch: launch.observer_epoch.unwrap_or(epoch),
                 owner: launch.owner?,
+                restart_path: launch
+                    .restart_path
+                    .as_deref()
+                    .map(|path| path.as_os_str().as_bytes().to_vec()),
                 provider: record.run.identity.provider,
                 producer: launch.producer,
                 session: record.run.identity.provider_session.clone()?,
@@ -117,6 +141,7 @@ impl Agents {
         record.published = true;
         record.terminal_available = true;
         launch.owner = Some(saved.owner);
+        launch.restart_path = saved.restart_path();
         launch.producer = saved.producer;
         launch.observer_epoch = Some(saved.observer_epoch);
         launch.retained = true;

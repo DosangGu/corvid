@@ -480,6 +480,7 @@ impl Workspaces {
     pub(crate) async fn apply_hook(
         &self,
         hook: Hook,
+        previous: ProcessImage,
         owner: ProcessImage,
         producer: HookProducer,
     ) -> Reply<()> {
@@ -496,7 +497,16 @@ impl Workspaces {
                     "observer launch epoch was not retained",
                 ));
             }
-            let notice = registry.agents.apply_hook(hook, owner, producer)?;
+            let notice = if owner == previous {
+                registry.agents.apply_hook(hook, owner, producer)?
+            } else {
+                let association = hook.association;
+                let terminal = registry
+                    .agents
+                    .restart_hook(hook, previous, owner, producer)?;
+                registry.shells.restarted(terminal, association, owner);
+                None
+            };
             registry.publish(Vec::new());
             if let Some((location, provider)) = notice
                 && let Some(claim) = registry.writer_at(location)

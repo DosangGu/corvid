@@ -19,6 +19,13 @@ const MAX_CONTEXTS_PER_LAUNCH: usize = 256;
 const RESUME_WINDOW_MS: u64 = 5_000;
 
 impl Hook {
+    pub(crate) fn is_restart_start(&self) -> bool {
+        self.provider == Provider::Claude
+            && self.actor.is_none()
+            && self.session.is_some()
+            && matches!(self.event, HookEvent::Startup | HookEvent::Resume)
+    }
+
     fn child_event(&self) -> Option<ChildEvent> {
         Some(match self.event {
             HookEvent::SubagentStarted => ChildEvent::Started,
@@ -33,6 +40,59 @@ impl Hook {
 }
 
 impl Agents {
+    pub(crate) fn restart_hook(
+        &mut self,
+        hook: Hook,
+        previous: ProcessImage,
+        owner: ProcessImage,
+        producer: HookProducer,
+    ) -> Result<Uuid, ProtocolFault> {
+        let unauthorized = || ProtocolFault::new("Unauthorized", "hook owner is unavailable");
+        let session = hook
+            .session
+            .as_deref()
+            .filter(|_| hook.is_restart_start())
+            .ok_or_else(unauthorized)?;
+        let launch = self
+            .launches
+            .get_mut(&hook.association)
+            .filter(|launch| launch.owner == Some(previous) && launch.restart_path.is_some())
+            .ok_or_else(unauthorized)?;
+        let previous_id = launch.current;
+        let current = self.runs.get_mut(&previous_id).ok_or_else(unauthorized)?;
+        if current.run.identity.provider != hook.provider
+            || matches!(current.run.process.value, ProcessLiveness::Exited { .. })
+        {
+            return Err(unauthorized());
+        }
+
+        launch.owner = Some(owner);
+        launch.producer = Some(producer);
+        launch.sessions.clear();
+        launch.sessions.insert(session.to_owned());
+        launch.context_deliveries.clear();
+        launch.context_deliveries.push_back(hook.delivery);
+        launch.resume = None;
+        launch.resume_turns.clear();
+        launch.gap = false;
+        launch.ambiguous = false;
+        launch.retained = false;
+        launch.notified_turn = None;
+
+        let mut next = launch.replace_context(current, &hook, session);
+        next.observe_process(
+            ProcessLiveness::Running,
+            Some(owner.incarnation),
+            Source::ProcessProbe,
+        );
+        let terminal = next.run.identity.terminal_id;
+        launch.current = next.run.identity.id;
+        self.dirty.insert(launch.current);
+        self.runs.insert(launch.current, next);
+        self.retire(previous_id);
+        Ok(terminal)
+    }
+
     pub(crate) fn apply_hook(
         &mut self,
         hook: Hook,
@@ -313,7 +373,15 @@ impl Launch {
             self.establish_context(current, hook.delivery, session);
             return None;
         }
+        Some(self.replace_context(current, hook, session))
+    }
 
+    fn replace_context(
+        &mut self,
+        current: &mut ManagedRun,
+        hook: &Hook,
+        session: &str,
+    ) -> ManagedRun {
         if !matches!(current.run.lifecycle.value, Lifecycle::Ended(_)) {
             current.apply(
                 hook.delivery,
@@ -339,7 +407,7 @@ impl Launch {
             child_coverage_gap: false,
         };
         self.establish_context(&mut next, hook.delivery, session);
-        Some(next)
+        next
     }
 
     pub(super) fn establish_context(

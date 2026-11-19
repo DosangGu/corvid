@@ -458,9 +458,15 @@ mod tests {
         let location = target.location;
         let terminal = target.route.terminal_id;
         let managed = tokio::task::spawn_blocking(move || {
-            let managed =
-                ManagedLaunch::reserve(&registry, location, terminal, Provider::Claude, false)
-                    .unwrap();
+            let managed = ManagedLaunch::reserve(
+                &registry,
+                location,
+                terminal,
+                Provider::Claude,
+                false,
+                None,
+            )
+            .unwrap();
             let incarnation = process::incarnation(std::process::id(), process::boot_id().unwrap());
             let owner =
                 incarnation.and_then(|incarnation| ProcessImage::capture(incarnation, None));

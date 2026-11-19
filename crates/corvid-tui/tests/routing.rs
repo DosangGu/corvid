@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,13 +16,13 @@ use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
-    AgentBadge, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider, Attach, AttachRole,
-    ClaimWorkspaceWriter, ClientKeymap, ClientState, CloseView, CompanionConnection, CreateView,
-    EntityKind, Envelope, FocusAgentRequest, FocusApplied, FocusSlot, FrameApplied,
-    GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode, LaunchCommand, ListClients,
-    MoveTab, PairTerminal, PasteBegin, PasteChunk, PasteEnd, Ping, PresentationSlots,
-    PresentedSlot, PresentedSlotToken, ReadPanePreview, ResizeViewport, RouteToken, SelectView,
-    SnapshotWatch, SplitAxis, TuiInputMode, ViewSelection, Viewport,
+    AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
+    Attach, AttachRole, ClaimWorkspaceWriter, ClientKeymap, ClientState, CloseView,
+    CompanionConnection, CreateView, EntityKind, Envelope, FocusAgentRequest, FocusApplied,
+    FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode,
+    LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin, PasteChunk, PasteEnd, Ping,
+    PresentationSlots, PresentedSlot, PresentedSlotToken, ReadPanePreview, ResizeViewport,
+    RouteToken, SelectView, SnapshotWatch, SplitAxis, TuiInputMode, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
@@ -1202,6 +1202,102 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn claude_update_restart_resynchronizes_the_deck_in_the_same_pty() {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let first = fixture.path().join("first");
+    let updated = fixture.path().join("updated");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&updated).unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell_agent.rs");
+    let compiled = std::process::Command::new("rustc")
+        .args(["--edition", "2024"])
+        .arg(source)
+        .arg("-o")
+        .arg(first.join("claude"))
+        .env(
+            "CORVID_FIXTURE_CLAUDE",
+            corvid_protocol::collector::CLAUDE_VERSION,
+        )
+        .env(
+            "CORVID_FIXTURE_CODEX",
+            corvid_protocol::collector::CODEX_VERSION,
+        )
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    std::fs::copy(first.join("claude"), updated.join("claude")).unwrap();
+
+    for managed in [true, false] {
+        let directory = tempfile::tempdir_in(fixture.path()).unwrap();
+        let runtime = directory.path().join("run");
+        let launcher = directory.path().join("claude");
+        symlink(first.join("claude"), &launcher).unwrap();
+        let paths = std::iter::once(directory.path().to_owned())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap()))
+            .collect::<Vec<_>>();
+        let mut daemon_command = command(&runtime);
+        daemon_command
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .env("SHELL", "/bin/bash")
+            .env("CORVID_FIXTURE_BINARY", env!("CARGO_BIN_EXE_corvid"))
+            .env("CORVID_FIXTURE_RESTART", &launcher);
+        let _daemon = start_daemon(daemon_command, &runtime, &directory.path().join("state")).await;
+
+        timeout(WAIT, async {
+            let mut tui = Tui::attach_command(
+                &runtime,
+                Some(LaunchCommand {
+                    agent_provider: managed.then_some(AgentProvider::Claude as i32),
+                    ..Default::default()
+                }),
+            )
+            .await;
+            if !managed {
+                tui.input(tui.route.clone(), 1, b"claude\n").await;
+            }
+            let terminal = tui.route.terminal_id.clone();
+            let before =
+                wait_for_agent(&runtime, &terminal, |agent| agent.pending_requests == 1).await;
+            let (_companion, mut companion) =
+                start_companion(&runtime, directory.path(), &tui.session.host_id, 1).await;
+            presented(&mut companion, |view| {
+                slot_run(view, 0) == Some(before.agent_run_id.as_str())
+            })
+            .await;
+
+            let staging = directory.path().join("launcher-new");
+            symlink(updated.join("claude"), &staging).unwrap();
+            std::fs::rename(staging, launcher).unwrap();
+            let input_sequence = if managed { 1 } else { 2 };
+            tui.input(tui.route.clone(), input_sequence, b"/restart\n")
+                .await;
+            wait_for_text(&mut tui, &mut Vec::new(), "REEXECUTED").await;
+            let after = wait_for_agent(&runtime, &terminal, |agent| {
+                agent.agent_run_id != before.agent_run_id
+                    && agent.response_observed_unix_ms.is_some()
+            })
+            .await;
+            assert_eq!(after.location, before.location);
+            assert_eq!(after.provider_session_id, before.provider_session_id);
+            assert_eq!(after.process_identity, before.process_identity);
+            assert_eq!(after.collection, AgentCollection::Healthy as i32);
+            assert_eq!(after.pending_requests, 0);
+            assert!(after.terminal_available);
+            presented(&mut companion, |view| {
+                slot_run(view, 0) == Some(after.agent_run_id.as_str())
+            })
+            .await;
+        })
+        .await
+        .unwrap_or_else(|error| panic!("restart timed out (managed={managed}): {error}"));
+    }
 }
 
 #[tokio::test]
