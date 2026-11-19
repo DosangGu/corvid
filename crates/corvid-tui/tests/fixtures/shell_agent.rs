@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, Write};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -35,6 +36,10 @@ fn main() {
             .unwrap();
         std::process::exit(status.code().unwrap_or(1));
     }
+    if let Some(launcher) = env::var_os("CORVID_FIXTURE_RESTART") {
+        restart(provider, &args, &launcher);
+        return;
+    }
 
     observe(
         provider,
@@ -57,6 +62,51 @@ fn main() {
     // Replay the hook with a fresh delivery ID for the same turn.
     observe(provider, &stop);
     println!("DONE-{provider}");
+}
+
+fn restart(provider: &str, args: &[String], launcher: &std::ffi::OsStr) {
+    let resumed = args.iter().any(|arg| arg == "--resume");
+    if resumed {
+        // Let the daemon sample the new executable before its first hook.
+        println!("REEXECUTED");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        observe(
+            provider,
+            r#""hook_event_name":"SessionStart","source":"resume""#,
+        );
+        observe(
+            provider,
+            r#""hook_event_name":"UserPromptSubmit","prompt_id":"after-restart""#,
+        );
+        observe(
+            provider,
+            r#""hook_event_name":"Stop","stop_hook_active":false,"prompt_id":"after-restart""#,
+        );
+    } else {
+        observe(
+            provider,
+            r#""hook_event_name":"SessionStart","source":"startup""#,
+        );
+        observe(
+            provider,
+            r#""hook_event_name":"UserPromptSubmit","prompt_id":"before-restart""#,
+        );
+        observe(
+            provider,
+            r#""hook_event_name":"PreToolUse","prompt_id":"before-restart","tool_use_id":"question","tool_name":"AskUserQuestion","tool_input":{}"#,
+        );
+    }
+    println!("READY-{provider}");
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    if !resumed && input.trim() == "/restart" {
+        observe(provider, r#""hook_event_name":"SessionEnd","reason":"other""#);
+        let error = Command::new(launcher)
+            .args(["--resume", "fixture-claude"])
+            .args(args)
+            .exec();
+        panic!("fixture could not restart: {error}");
+    }
 }
 
 fn retained(provider: &str) {

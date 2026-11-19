@@ -3,7 +3,8 @@ mod hooks;
 mod retained;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::OnceLock;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -46,6 +47,7 @@ struct Launch {
     current: Uuid,
     qualified: bool,
     owner: Option<ProcessImage>,
+    restart_path: Option<Arc<Path>>,
     producer: Option<HookProducer>,
     sessions: BTreeSet<String>,
     context_deliveries: VecDeque<Uuid>,
@@ -63,7 +65,7 @@ struct PendingResume {
 
 pub(crate) enum HookBinding {
     Starting,
-    Owned(ProcessImage),
+    Owned(ProcessImage, Option<Arc<Path>>),
     Unavailable,
 }
 
@@ -123,12 +125,15 @@ impl Agents {
         terminal: Uuid,
         provider: Provider,
         owner: ProcessImage,
+        restart_path: Option<Arc<Path>>,
     ) -> Uuid {
         let association = self.reserve(location, terminal, provider, true);
-        self.launches
+        let launch = self
+            .launches
             .get_mut(&association)
-            .expect("reserved launch")
-            .owner = Some(owner);
+            .expect("reserved launch");
+        launch.owner = Some(owner);
+        launch.restart_path = restart_path;
         association
     }
 
@@ -184,6 +189,7 @@ impl Agents {
                 current: id,
                 qualified,
                 owner: None,
+                restart_path: None,
                 producer: None,
                 sessions: BTreeSet::new(),
                 context_deliveries: VecDeque::new(),
@@ -332,7 +338,7 @@ impl Agents {
         if launch.qualified
             && let Some(owner) = launch.owner
         {
-            return HookBinding::Owned(owner);
+            return HookBinding::Owned(owner, launch.restart_path.clone());
         }
         if launch.qualified
             && self
@@ -496,12 +502,18 @@ impl ManagedLaunch {
         terminal: Uuid,
         provider: Provider,
         qualified: bool,
+        restart_path: Option<Arc<Path>>,
     ) -> Result<Self> {
         let association = registry
             .request(move |registry| {
-                registry
-                    .agents
-                    .reserve(location, terminal, provider, qualified)
+                let agents = &mut registry.agents;
+                let association = agents.reserve(location, terminal, provider, qualified);
+                agents
+                    .launches
+                    .get_mut(&association)
+                    .expect("reserved launch")
+                    .restart_path = restart_path;
+                association
             })
             .context("workspace coordinator is shutting down")?;
         Ok(Self {

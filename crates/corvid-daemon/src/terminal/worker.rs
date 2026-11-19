@@ -1473,16 +1473,30 @@ impl TerminalProcess {
         id: Uuid,
     ) -> Result<(Backend, Self, bool, Option<Incarnation>)> {
         let shell = launch.provider.is_none() && launch.argv.is_empty();
-        let program = launch.provider.and_then(provider::installed_program);
+        let launcher = launch.provider.and_then(provider::installed_program);
+        let program = launcher
+            .as_deref()
+            .and_then(|path| path.canonicalize().ok());
         let executable = launch
             .provider
             .zip(program.as_deref())
             .and_then(|(provider, path)| provider::qualify(provider, path));
         let qualified = executable.is_some();
+        let restart_path = launcher
+            .as_deref()
+            .filter(|_| qualified && launch.provider == Some(Provider::Claude))
+            .map(Arc::from);
         let reservation = launch
             .provider
             .map(|provider| {
-                ManagedLaunch::reserve(&scope.registry, scope.location, id, provider, qualified)
+                ManagedLaunch::reserve(
+                    &scope.registry,
+                    scope.location,
+                    id,
+                    provider,
+                    qualified,
+                    restart_path.clone(),
+                )
             })
             .transpose()?;
         let association = executable
@@ -1495,7 +1509,11 @@ impl TerminalProcess {
             .configure(&mut command, association, shell.then_some(id));
 
         let mut session = Backend::start(scope.host.as_ref(), id, command, viewport)?;
-        let (process, identity) = Self::started(reservation, &mut session, scope, id, executable);
+        let (mut process, identity) =
+            Self::started(reservation, &mut session, scope, id, executable);
+        if let Some(probe) = &mut process.probe {
+            probe.allow_restart(restart_path);
+        }
         Ok((session, process, shell, identity))
     }
 

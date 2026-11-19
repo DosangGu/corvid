@@ -268,16 +268,73 @@ fn shell_exit_requires_process_absence_or_birth_exit_evidence() {
         (Ok(Sample::running(AGENT)), None),
     ] {
         assert_eq!(
-            owner().shell_exit_with(&Script::samples([sample]), false),
+            owner().shell_exit_with(&Script::samples([sample]), false, None),
             expected
         );
     }
     let helper = Script::samples([Ok(Sample::running(HELPER))]);
-    assert_eq!(owner().shell_exit_with(&helper, true), None);
+    assert_eq!(owner().shell_exit_with(&helper, true, None), None);
     assert_eq!(
-        owner().shell_exit_with(&helper, false),
+        owner().shell_exit_with(&helper, false, None),
         Some(ProcessLiveness::Unknown)
     );
+}
+
+#[test]
+fn restart_requires_the_updated_launcher_and_the_same_foreground_owner() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("claude");
+    fs::write(&launcher, b"updated fixture").unwrap();
+    let updated = Executable::read(&launcher).unwrap();
+    let observer = Stat {
+        parent_pid: PID,
+        ..stat()
+    };
+    let inspect = |observer, process, executable| {
+        Script::new([
+            (102, Ok(Sample::running(HELPER).with_stat(Ok(observer)))),
+            (PID, Ok(Sample::running(executable).with_stat(Ok(process)))),
+        ])
+    };
+    let verified = owner()
+        .verify_restart_with(&inspect(observer, stat(), updated), 102, &launcher)
+        .unwrap();
+    assert_eq!(verified.incarnation, identity());
+    assert_eq!(verified.executable, updated);
+
+    for inspector in [
+        inspect(observer, stat(), OTHER),
+        inspect(
+            observer,
+            Stat {
+                birth: BirthIdentity::from_raw(8),
+                ..stat()
+            },
+            updated,
+        ),
+        inspect(
+            observer,
+            Stat {
+                foreground_group: Some(11),
+                ..stat()
+            },
+            updated,
+        ),
+        inspect(
+            Stat {
+                parent_pid: PID + 40,
+                ..observer
+            },
+            stat(),
+            updated,
+        ),
+    ] {
+        assert!(
+            owner()
+                .verify_restart_with(&inspector, 102, &launcher)
+                .is_none()
+        );
+    }
 }
 
 #[test]

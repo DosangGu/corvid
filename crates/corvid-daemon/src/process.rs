@@ -201,14 +201,19 @@ impl ProcessImage {
             && (self.incarnation.pid == root.pid || owner.parent_pid == root.pid)
     }
 
-    pub(crate) fn shell_exit(self, pending: bool) -> Option<ProcessLiveness> {
-        self.shell_exit_with(&NativeInspector, pending)
+    pub(crate) fn shell_exit(
+        self,
+        pending: bool,
+        restart_path: Option<&Path>,
+    ) -> Option<ProcessLiveness> {
+        self.shell_exit_with(&NativeInspector, pending, restart_path)
     }
 
     fn shell_exit_with(
         self,
         inspector: &impl ProcessInspector,
         pending: bool,
+        restart_path: Option<&Path>,
     ) -> Option<ProcessLiveness> {
         let pid = self.incarnation.pid;
         let directory = match inspector.open(pid) {
@@ -218,15 +223,26 @@ impl ProcessImage {
             }
             Err(_) => return Some(ProcessLiveness::Unknown),
         };
-        let Ok(stat) = directory.stat() else {
-            return Some(ProcessLiveness::Unknown);
+        let stat = match directory.stat() {
+            Ok(stat) => stat,
+            Err(_) if restart_path.is_some() => return None,
+            Err(_) => return Some(ProcessLiveness::Unknown),
         };
         if stat.exited || stat.birth != self.incarnation.birth {
             return Some(ProcessLiveness::Exited { code: None });
         }
-        let image = directory.executable().ok();
+        let image = match directory.executable() {
+            Ok(image) => Some(image),
+            // The executable can briefly be unavailable during exec. The
+            // next sample or a verified startup will resolve the transition.
+            Err(_) if restart_path.is_some() => return None,
+            Err(_) => None,
+        };
         let starting = pending && image.is_some() && image == inspector.helper_image();
-        (image != Some(self.executable) && !starting).then_some(ProcessLiveness::Unknown)
+        (image != Some(self.executable)
+            && !starting
+            && !image.is_some_and(|image| matches_launcher(restart_path, image)))
+        .then_some(ProcessLiveness::Unknown)
     }
 
     fn current_stat_with(self, inspector: &impl ProcessInspector) -> Option<Stat> {
@@ -238,12 +254,48 @@ impl ProcessImage {
         .then_some(stat)
     }
 
-    /// Scope an observer to the managed launcher or its qualified local broker.
-    /// Tool descendants may inherit the launch association without owning it.
-    pub(crate) fn verify_peer(self, peer: u32, provider: Provider) -> Option<HookProducer> {
-        self.verify_peer_with(&NativeInspector, peer, provider)
+    pub(crate) fn verify_hook(
+        self,
+        peer: u32,
+        provider: Provider,
+        restart_path: Option<&Path>,
+    ) -> Option<(Self, HookProducer)> {
+        if let Some(producer) = self.verify_peer_with(&NativeInspector, peer, provider) {
+            return Some((self, producer));
+        }
+        let owner = self.verify_restart_with(&NativeInspector, peer, restart_path?)?;
+        let producer = owner.verify_peer_with(&NativeInspector, peer, provider)?;
+        Some((owner, producer))
     }
 
+    fn verify_restart_with(
+        self,
+        inspector: &impl ProcessInspector,
+        peer: u32,
+        launcher: &Path,
+    ) -> Option<Self> {
+        let pid = self.incarnation.pid;
+        let observer = inspector.open(peer).ok()?.stat().ok()?;
+        if observer.exited || observer.parent_pid != pid {
+            return None;
+        }
+        let process = inspector.open(pid).ok()?;
+        let stat = process.stat().ok()?;
+        stat.birth.verify(self.incarnation.birth).ok()?;
+        if stat.exited || stat.tty == 0 || stat.foreground_group != Some(stat.process_group) {
+            return None;
+        }
+        let executable = process.executable().ok()?;
+        (executable != self.executable && matches_launcher(Some(launcher), executable)).then(|| {
+            Self {
+                incarnation: stat.incarnation(pid, self.incarnation.boot_id),
+                executable,
+            }
+        })
+    }
+
+    /// Scope an observer to the managed launcher or its qualified local broker.
+    /// Tool descendants may inherit the launch association without owning it.
     fn verify_peer_with(
         self,
         inspector: &impl ProcessInspector,
@@ -268,6 +320,10 @@ impl ProcessImage {
         }
         codex_broker(inspector, observer.parent_pid, pid)
     }
+}
+
+fn matches_launcher(launcher: Option<&Path>, image: Executable) -> bool {
+    launcher.is_some_and(|path| Executable::read(path) == Some(image))
 }
 
 pub(crate) fn verify_shell_launcher(shell: Incarnation, peer: u32) -> Option<Incarnation> {
@@ -470,6 +526,7 @@ pub(crate) struct Probe {
     output_after: Instant,
     identity: Option<Incarnation>,
     executable: Option<Executable>,
+    restart_path: Option<Arc<Path>>,
     cwd: Option<PathBuf>,
 }
 
@@ -499,8 +556,13 @@ impl Probe {
             output_after: now + OUTPUT_DEBOUNCE,
             identity,
             executable,
+            restart_path: None,
             cwd: None,
         }
+    }
+
+    pub(crate) fn allow_restart(&mut self, launcher: Option<Arc<Path>>) {
+        self.restart_path = launcher;
     }
 
     pub(crate) fn sample(&mut self, output: bool) -> Option<(ProbeResult, Option<PathBuf>)> {
@@ -556,8 +618,13 @@ impl Probe {
                 return (unknown.0, cwd);
             };
             if executable != expected {
-                self.executable = None;
-                return (ProbeResult::ImageChanged(identity), cwd);
+                if !matches_launcher(self.restart_path.as_deref(), executable) {
+                    self.executable = None;
+                    return (ProbeResult::ImageChanged(identity), cwd);
+                }
+                // The startup hook independently authenticates the new image and
+                // establishes its run. The probe only keeps tracking this PTY.
+                self.executable = Some(executable);
             }
         }
         (

@@ -573,6 +573,13 @@ image. It accepts observations only after the expected provider takes over that
 process. Shell startup files and prompt hooks are left intact. Raw command lines
 are not persisted.
 
+Claude Code's native `/restart` can replace its executable in the same PTY.
+Corvid accepts a new top-level startup or resume hook when the process keeps
+its PID and birth identity, owns the foreground PTY, and runs the executable
+currently selected by the original launcher path. The verified restart publishes
+a fresh run for the conversation in the same pane. Requests from the previous
+run stay in its history.
+
 ## 7. Terminal runtime, rendering, and input
 
 ### 7.1 PTY and screen pipeline

@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -214,23 +216,29 @@ async fn collect(stream: Stream, identity: &Identity, workspaces: &Workspaces) -
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), ProtocolFault> {
     let unauthorized = || ProtocolFault::new("Unauthorized", "hook has no verified launch owner");
-    let owner = find_owner(workspaces, hook.association)
+    let (previous, restart_path) = find_owner(workspaces, hook.association)
         .await
         .ok_or_else(unauthorized)?;
     let provider = hook.provider;
-    let producer = tokio::task::spawn_blocking(move || owner.verify_peer(pid, provider))
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(unauthorized)?;
-    workspaces.apply_hook(hook, owner, producer).await
+    let restart_path = restart_path.filter(|_| hook.is_restart_start());
+    let (owner, producer) = tokio::task::spawn_blocking(move || {
+        previous.verify_hook(pid, provider, restart_path.as_deref())
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or_else(unauthorized)?;
+    workspaces.apply_hook(hook, previous, owner, producer).await
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<ProcessImage> {
+async fn find_owner(
+    workspaces: &Workspaces,
+    association: Uuid,
+) -> Option<(ProcessImage, Option<Arc<Path>>)> {
     loop {
         match workspaces.hook_binding(association).await {
-            HookBinding::Owned(owner) => return Some(owner),
+            HookBinding::Owned(owner, restart_path) => return Some((owner, restart_path)),
             HookBinding::Unavailable => return None,
             HookBinding::Starting => sleep(Duration::from_millis(2)).await,
         }

@@ -35,7 +35,7 @@ pub(crate) fn program(provider: Provider) -> &'static str {
 }
 
 pub(crate) fn installed_program(provider: Provider) -> Option<PathBuf> {
-    find_on_path(program(provider), None)?.canonicalize().ok()
+    find_on_path(program(provider), None)
 }
 
 pub(crate) fn observer_arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> {
