@@ -890,7 +890,7 @@ impl Render for RunDetails {
         let colors = deck.colors;
         self.content(deck)
             .unwrap_or_else(|| colors.muted("Agent no longer displayed"))
-            .max_w(window.viewport_size().width.min(px(280.)))
+            .w(window.viewport_size().width.min(px(280.)))
             .p(px(12.))
             .bg(colors.panel)
             .text_color(colors.text)
