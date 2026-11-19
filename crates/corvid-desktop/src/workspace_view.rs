@@ -8,6 +8,8 @@ mod naming;
 mod switcher;
 mod tab_bar;
 mod update;
+#[cfg(windows)]
+mod window_controls;
 mod workspace_creation;
 use std::collections::HashMap;
 use std::rc::Rc;

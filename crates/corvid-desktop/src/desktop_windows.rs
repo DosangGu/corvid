@@ -294,7 +294,7 @@ impl DesktopWindows {
             app_id: Some(crate::app_icon::APP_ID.into()),
             titlebar: Some(TitlebarOptions {
                 title: Some("Corvid Desktop".into()),
-                appears_transparent: cfg!(target_os = "macos"),
+                appears_transparent: cfg!(any(windows, target_os = "macos")),
                 traffic_light_position: cfg!(target_os = "macos")
                     .then(|| gpui::point(px(12.), px(13.))),
             }),
