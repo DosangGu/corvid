@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use url::Url;
 use vt100::Screen;
 
@@ -7,12 +9,13 @@ const MAX_CELLS: usize = 4096;
 const MAX_BYTES: usize = 8192;
 type Position = (u16, u16);
 
-pub(super) fn at(
-    screen: &Screen,
-    grid: Grid,
-    history: bool,
-    mut click: Position,
-) -> Option<String> {
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Link {
+    pub url: String,
+    pub cells: Range<Position>,
+}
+
+pub(super) fn at(screen: &Screen, grid: Grid, history: bool, mut click: Position) -> Option<Link> {
     let (rows, cols) = screen.size();
     let visible = LinkCells {
         screen,
@@ -36,17 +39,36 @@ pub(super) fn at(
         bytes: MAX_BYTES - clicked.len(),
     };
     let left = visible.scan(click, Direction::Left, &mut budget)?;
+    let clicked_byte = MAX_BYTES - budget.bytes - clicked.len();
     let right = visible.scan(click, Direction::Right, &mut budget)?;
+    let pieces = left
+        .iter()
+        .rev()
+        .copied()
+        .chain(std::iter::once((click, clicked)))
+        .chain(right.iter().copied());
     let mut token = String::with_capacity(MAX_BYTES - budget.bytes);
-    for contents in left.into_iter().rev() {
+    for (_, contents) in pieces.clone() {
         token.push_str(contents);
     }
-    let clicked_byte = token.len();
-    token.push_str(clicked);
-    for contents in right {
-        token.push_str(contents);
+    let (url, bytes) = parse(&token, clicked_byte)?;
+    let mut offset = 0;
+    let mut start = None;
+    for (position, contents) in pieces {
+        if bytes.contains(&offset) {
+            start.get_or_insert(position);
+        }
+        offset += contents.len();
+        if offset >= bytes.end {
+            let (row, col) = position;
+            let width = 1 + u16::from(screen.cell(row, col)?.is_wide());
+            return Some(Link {
+                url,
+                cells: start?..(row, col + width),
+            });
+        }
     }
-    parse(&token, clicked_byte)
+    None
 }
 
 struct Budget {
@@ -79,7 +101,7 @@ impl<'a> LinkCells<'a> {
         mut position: Position,
         direction: Direction,
         budget: &mut Budget,
-    ) -> Option<Vec<&'a str>> {
+    ) -> Option<Vec<(Position, &'a str)>> {
         let mut pieces = Vec::new();
         loop {
             position = match self.next(position, direction) {
@@ -97,7 +119,7 @@ impl<'a> LinkCells<'a> {
                 return Some(pieces);
             }
             budget.bytes = budget.bytes.checked_sub(contents.len())?;
-            pieces.push(contents);
+            pieces.push((position, contents));
         }
     }
 
@@ -133,7 +155,7 @@ fn is_boundary(contents: &str) -> bool {
         })
 }
 
-fn parse(token: &str, clicked_byte: usize) -> Option<String> {
+fn parse(token: &str, clicked_byte: usize) -> Option<(String, Range<usize>)> {
     let unwrapped = token
         .strip_prefix('[')
         .and_then(|markdown| markdown.split_once("]("))
@@ -143,7 +165,8 @@ fn parse(token: &str, clicked_byte: usize) -> Option<String> {
         );
     let candidate = trim_end(unwrapped);
     let start = token.len() - unwrapped.len();
-    if !(start..start + candidate.len()).contains(&clicked_byte)
+    let bytes = start..start + candidate.len();
+    if !bytes.contains(&clicked_byte)
         || candidate.chars().any(|ch| {
             ch.is_control()
                 || matches!(
@@ -163,9 +186,9 @@ fn parse(token: &str, clicked_byte: usize) -> Option<String> {
                 .is_some_and(|host| !host.starts_with('/'))
                 && uri.host_str().is_some() =>
         {
-            Some(uri.into())
+            Some((uri.into(), bytes))
         }
-        "mailto" if !uri.path().is_empty() && !target.starts_with('/') => Some(uri.into()),
+        "mailto" if !uri.path().is_empty() && !target.starts_with('/') => Some((uri.into(), bytes)),
         _ => None,
     }
 }
@@ -202,6 +225,20 @@ mod tests {
         parser.screen().clone()
     }
 
+    fn url_at(screen: &Screen, grid: Grid, history: bool, cell: Position) -> Option<String> {
+        at(screen, grid, history, cell).map(|link| link.url)
+    }
+
+    #[test]
+    fn reports_visible_cells_for_wrapped_wide_links_without_surrounding_punctuation() {
+        let grid = Grid::new(4, 16);
+        let display = screen(grid, "[go](https://example.test/한글).");
+        assert!(display.row_wrapped(0));
+        let link = at(&display, grid, false, (1, 13)).unwrap();
+        assert_eq!(link.url, "https://example.test/%ED%95%9C%EA%B8%80");
+        assert_eq!(link.cells, (0, 5)..(1, 14));
+    }
+
     #[test]
     fn opens_the_url_under_the_click_and_keeps_balanced_punctuation() {
         let grid = Grid::new(3, 100);
@@ -210,11 +247,11 @@ mod tests {
             "한 [go](https://example.test/a_(b)), <https://other.test/>.",
         );
         assert_eq!(
-            at(&display, grid, false, (0, 13)).as_deref(),
+            url_at(&display, grid, false, (0, 13)).as_deref(),
             Some("https://example.test/a_(b)")
         );
         assert_eq!(
-            at(&display, grid, false, (0, 45)).as_deref(),
+            url_at(&display, grid, false, (0, 45)).as_deref(),
             Some("https://other.test/")
         );
         for col in [1, 3, 34, 35] {
@@ -228,7 +265,7 @@ mod tests {
         let url = "https://example.test/a_(b)";
         for suffix in [")", ")입니다", ").(see next)"] {
             let display = screen(grid, &format!("({url}{suffix}"));
-            assert_eq!(at(&display, grid, false, (0, 12)).as_deref(), Some(url));
+            assert_eq!(url_at(&display, grid, false, (0, 12)).as_deref(), Some(url));
             assert_eq!(at(&display, grid, false, (0, url.len() as u16 + 1)), None);
         }
     }
@@ -240,7 +277,7 @@ mod tests {
         assert!(display.row_wrapped(0));
         for click in [(0, 8), (1, 4)] {
             assert_eq!(
-                at(&display, grid, false, click).as_deref(),
+                url_at(&display, grid, false, click).as_deref(),
                 Some("https://example.test/path")
             );
         }
@@ -249,7 +286,7 @@ mod tests {
 
         let display = screen(grid, "https://e.test/a\r\nsecond");
         assert_eq!(
-            at(&display, grid, false, (0, 8)).as_deref(),
+            url_at(&display, grid, false, (0, 8)).as_deref(),
             Some("https://e.test/a")
         );
         assert_eq!(at(&display, grid, true, (0, 8)), None);
@@ -264,15 +301,15 @@ mod tests {
             "https://example.test/한글\r\nmailto:hi@example.test\r\nvscode://file/home/dev/foo.rs:42",
         );
         assert_eq!(
-            at(&display, grid, true, (0, 22)).as_deref(),
+            url_at(&display, grid, true, (0, 22)).as_deref(),
             Some("https://example.test/%ED%95%9C%EA%B8%80")
         );
         assert_eq!(
-            at(&display, grid, true, (1, 3)).as_deref(),
+            url_at(&display, grid, true, (1, 3)).as_deref(),
             Some("mailto:hi@example.test")
         );
         assert_eq!(
-            at(&display, grid, true, (2, 12)).as_deref(),
+            url_at(&display, grid, true, (2, 12)).as_deref(),
             Some("vscode://file/home/dev/foo.rs:42")
         );
     }
