@@ -137,7 +137,7 @@ pub async fn run(
                 let _ = handoff::cancel(runtime.path(), &identity, &workspaces).await;
                 incoming_upgrade.set(upgrade::listen(upgrade_socket.as_ref(), &identity));
             }
-            _ = agent_clock.tick() => workspaces.tick_agents(),
+            _ = agent_clock.tick() => workspaces.tick_agents().await,
             peer = collector_socket.accept() => match peer {
                 Ok(Some(stream)) if collectors.len() < MAX_COLLECTOR_CONNECTIONS => {
                     let identity = Arc::clone(&identity);

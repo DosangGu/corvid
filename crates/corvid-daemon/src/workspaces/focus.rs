@@ -13,6 +13,7 @@ use super::{Active, Registry, Reply, ReservedSwitch, Workspaces, open_pane, targ
 use crate::projection::selection;
 use crate::terminal::InputMode;
 
+#[derive(Clone)]
 pub(super) struct FocusTarget {
     pub(super) client: Uuid,
     pub(super) run: Uuid,
@@ -20,6 +21,7 @@ pub(super) struct FocusTarget {
     pub(super) expires: Instant,
 }
 
+#[derive(Clone)]
 pub(super) enum FocusAuthorization {
     Binding { controller: String, revision: u64 },
     Writer { location: Location },
@@ -107,7 +109,7 @@ impl Workspaces {
         old: &Active,
         target: &FocusTarget,
     ) -> Result<Focused, FocusRejected> {
-        let (destination, reserved) = match self.prepare_focus(old, target)? {
+        let (destination, reserved) = match self.prepare_focus(old, target).await? {
             Prepared::Current(reply) => {
                 return Ok(Focused {
                     reply,
@@ -117,31 +119,39 @@ impl Workspaces {
             Prepared::Move(destination, reserved) => (destination, reserved),
         };
         let result = self.switch_focus(old, target, destination, reserved).await;
-        let mut registry = self.lock_registry();
-        if let Some(slot) = registry.slots.get_mut(&destination.location.pane) {
-            slot.reserved = false;
-        }
-        if result.is_err() {
-            registry.remove_pane_claim(destination.location.pane, old.route.client_id);
-        }
-        result
+        let client = old.route.client_id;
+        self.registry
+            .request(move |registry| {
+                if let Some(slot) = registry.slots.get_mut(&destination.location.pane) {
+                    slot.reserved = false;
+                }
+                if result.is_err() {
+                    registry.remove_pane_claim(destination.location.pane, client);
+                }
+                result
+            })
+            .await
     }
 
-    fn prepare_focus(&self, old: &Active, target: &FocusTarget) -> Reply<Prepared> {
-        let mut registry = self.lock_registry();
-        let destination = registry.focus_destination(target)?;
-        registry.require_route(old.route)?;
-        if old.route.terminal_id == destination.terminal {
-            return Ok(Prepared::Current(registry.focus_reply(target, old)?));
-        }
-        let reserved = self.reserve_view(
-            &mut registry,
-            old,
-            destination.location,
-            destination.lease,
-            None,
-        )?;
-        Ok(Prepared::Move(destination, reserved))
+    async fn prepare_focus(&self, old: &Active, target: &FocusTarget) -> Reply<Prepared> {
+        let old = old.view();
+        let target = target.clone();
+        self.transaction(move |registry, workspaces| {
+            let destination = registry.focus_destination(&target)?;
+            registry.require_route(old.route)?;
+            if old.route.terminal_id == destination.terminal {
+                return Ok(Prepared::Current(registry.focus_reply(&target, &old)?));
+            }
+            let reserved = workspaces.reserve_view(
+                registry,
+                &old,
+                destination.location,
+                destination.lease,
+                None,
+            )?;
+            Ok(Prepared::Move(destination, reserved))
+        })
+        .await
     }
 
     async fn switch_focus(
@@ -174,7 +184,7 @@ impl Workspaces {
         let committed = async {
             target.require_time()?;
             next.terminal.activate(next.route, next.viewport).await?;
-            self.commit_focus(old, &next, target, destination)
+            self.commit_focus(old, &next, target, destination).await
         }
         .await;
         match committed {
@@ -190,48 +200,60 @@ impl Workspaces {
         }
     }
 
-    fn commit_focus(
+    async fn commit_focus(
         &self,
         old: &Active,
         next: &Active,
         target: &FocusTarget,
         expected: FocusDestination,
     ) -> Reply<FocusApplied> {
-        let mut registry = self.lock_registry();
-        let destination = registry.focus_destination(target)?;
-        registry.require_route(old.route)?;
-        if destination != expected || next.route.writer_lease_generation != destination.lease {
-            return Err(target_gone());
-        }
-        registry.record_view(next);
-        registry.focus_reply(target, next)
+        let old = old.view();
+        let next = next.view();
+        let target = target.clone();
+        self.registry
+            .request(move |registry| {
+                let destination = registry.focus_destination(&target)?;
+                registry.require_route(old.route)?;
+                if destination != expected
+                    || next.route.writer_lease_generation != destination.lease
+                {
+                    return Err(target_gone());
+                }
+                registry.record_view(&next);
+                registry.focus_reply(&target, &next)
+            })
+            .await
     }
 
     async fn restore_source(&self, old: &Active) -> FocusRecovery {
         let restored = old.terminal.thaw(old.route).await;
-        let mut registry = self.lock_registry();
-        let Some(view) = registry
-            .clients
-            .get_mut(&old.route.client_id)
-            .and_then(|client| client.view.as_mut())
-            .filter(|view| view.route == old.route)
-        else {
-            return FocusRecovery::Lost;
-        };
-        let recovery = if let Ok(route) = restored {
-            view.route = route;
-            view.input_mode = InputMode::Passthrough;
-            FocusRecovery::Restored(route)
-        } else {
-            registry
-                .clients
-                .get_mut(&old.route.client_id)
-                .expect("client still exists")
-                .view = None;
-            FocusRecovery::Lost
-        };
-        registry.publish_client(old.route.client_id);
-        recovery
+        let old = old.view();
+        self.registry
+            .request(move |registry| {
+                let Some(view) = registry
+                    .clients
+                    .get_mut(&old.route.client_id)
+                    .and_then(|client| client.view.as_mut())
+                    .filter(|view| view.route == old.route)
+                else {
+                    return FocusRecovery::Lost;
+                };
+                let recovery = if let Ok(route) = restored {
+                    view.route = route;
+                    view.input_mode = InputMode::Passthrough;
+                    FocusRecovery::Restored(route)
+                } else {
+                    registry
+                        .clients
+                        .get_mut(&old.route.client_id)
+                        .expect("client still exists")
+                        .view = None;
+                    FocusRecovery::Lost
+                };
+                registry.publish_client(old.route.client_id);
+                recovery
+            })
+            .await
     }
 }
 
@@ -342,7 +364,7 @@ impl Registry {
         }
     }
 
-    fn focus_reply(&self, target: &FocusTarget, view: &Active) -> Reply<FocusApplied> {
+    fn focus_reply(&self, target: &FocusTarget, view: &super::View) -> Reply<FocusApplied> {
         Ok(FocusApplied {
             client_id: target.client.to_string(),
             agent_run_id: target.run.to_string(),
@@ -431,24 +453,28 @@ mod tests {
         (active, receiver)
     }
 
-    fn observe_agent(workspaces: &Workspaces, target: &Active) -> (Uuid, ManagedLaunch) {
-        let managed = ManagedLaunch::reserve(
-            &Arc::downgrade(&workspaces.registry),
-            target.location,
-            target.route.terminal_id,
-            Provider::Claude,
-            false,
-        )
+    async fn observe_agent(workspaces: &Workspaces, target: &Active) -> (Uuid, ManagedLaunch) {
+        let registry = workspaces.registry.downgrade();
+        let location = target.location;
+        let terminal = target.route.terminal_id;
+        let managed = tokio::task::spawn_blocking(move || {
+            let managed =
+                ManagedLaunch::reserve(&registry, location, terminal, Provider::Claude, false)
+                    .unwrap();
+            let incarnation = process::incarnation(std::process::id(), process::boot_id().unwrap());
+            let owner =
+                incarnation.and_then(|incarnation| ProcessImage::capture(incarnation, None));
+            managed.started(
+                ProcessLiveness::Running,
+                Source::ProcessProbe,
+                incarnation,
+                owner,
+            );
+            managed
+        })
+        .await
         .unwrap();
-        let incarnation = process::incarnation(std::process::id(), process::boot_id().unwrap());
-        let owner = incarnation.and_then(|incarnation| ProcessImage::capture(incarnation, None));
-        managed.started(
-            ProcessLiveness::Running,
-            Source::ProcessProbe,
-            incarnation,
-            owner,
-        );
-        let run = Uuid::parse_str(&workspaces.agents().agents[0].agent_run_id).unwrap();
+        let run = Uuid::parse_str(&workspaces.agents().await.agents[0].agent_run_id).unwrap();
         (run, managed)
     }
 
@@ -456,7 +482,7 @@ mod tests {
     async fn attaching_by_run_opens_its_exact_pane_and_respects_the_existing_writer() {
         let workspaces = workspaces();
         let (target, _mailbox) = attach(&workspaces, Some("Agent")).await;
-        let (run, _managed) = observe_agent(&workspaces, &target);
+        let (run, _managed) = observe_agent(&workspaces, &target).await;
         let (sender, _receiver) = mpsc::channel(1);
         let fault = workspaces
             .attach(
@@ -486,7 +512,7 @@ mod tests {
 
         let (location, terminal) = (target.location, target.route.terminal_id);
         target.terminal.retire_view(target.route).await.unwrap();
-        workspaces.release(target.route.client_id);
+        workspaces.release(target.route.client_id).await;
         let active = workspaces
             .attach(
                 Uuid::new_v4(),
@@ -505,14 +531,15 @@ mod tests {
     async fn revoking_binding_after_fence_restores_source_with_a_new_input_token() {
         let workspaces = workspaces();
         let (target, _target_mailbox) = attach(&workspaces, None).await;
-        let (run, managed) = observe_agent(&workspaces, &target);
-        workspaces.release(target.route.client_id);
+        let (run, managed) = observe_agent(&workspaces, &target).await;
+        workspaces.release(target.route.client_id).await;
         drop(target);
 
         let (mut old, _source_mailbox) = attach(&workspaces, Some("Source")).await;
         let client = old.route.client_id;
         let offer = workspaces
             .issue_pairing_code(client, old.route.connection_generation)
+            .await
             .unwrap();
         let code = Uuid::parse_str(&offer.code).unwrap();
         let Body::ClientBindingRegistered(binding) = workspaces
@@ -533,7 +560,7 @@ mod tests {
         };
 
         let Prepared::Move(destination, reserved) =
-            workspaces.prepare_focus(&old, &target).unwrap()
+            workspaces.prepare_focus(&old, &target).await.unwrap()
         else {
             panic!("focus must prepare a distinct view");
         };
@@ -559,7 +586,7 @@ mod tests {
             .unwrap();
         old.terminal.freeze(old.route).await.unwrap();
         assert_eq!(
-            workspaces.clients().clients[0].input_mode,
+            workspaces.clients().await.clients[0].input_mode,
             Some(TuiInputMode::Command as i32)
         );
         next.terminal
@@ -580,6 +607,7 @@ mod tests {
 
         let fault = workspaces
             .commit_focus(&old, &next, &target, destination)
+            .await
             .unwrap_err();
         assert_eq!(fault.code, "StaleBinding");
         drop(next);
@@ -588,7 +616,7 @@ mod tests {
         };
         assert_eq!(restored.terminal_id, old.route.terminal_id);
         assert_eq!(restored.view_revision, old.route.view_revision + 1);
-        let client_state = workspaces.clients().clients.pop().unwrap();
+        let client_state = workspaces.clients().await.clients.pop().unwrap();
         assert_eq!(client_state.view_revision, Some(restored.view_revision));
         assert_eq!(
             client_state.input_mode,
@@ -623,7 +651,7 @@ mod tests {
         })
         .await
         .unwrap();
-        workspaces.release(client);
+        workspaces.release(client).await;
         drop(old);
         drop(managed);
         workspaces.shutdown().await.unwrap();

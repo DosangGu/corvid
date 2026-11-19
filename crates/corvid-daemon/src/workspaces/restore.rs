@@ -37,7 +37,7 @@ impl Attempt {
 impl Workspaces {
     /// Reservation and launch decisions are atomic with ordinary pane operations.
     /// The bounded background attempt belongs to the daemon, not the requesting socket.
-    pub(crate) fn restore_workspace(
+    pub(crate) async fn restore_workspace(
         &self,
         request: &RestoreWorkspace,
         request_id: &str,
@@ -54,73 +54,79 @@ impl Workspaces {
         if mode == AgentRestoreMode::Unspecified {
             return Err(invalid());
         }
-        let mut registry = self.lock_registry();
-        registry.sweep();
-        let layout = self.metadata.layout();
-        let locations: Vec<_> = layout
-            .locations()
-            .filter(|location| {
-                location.workspace == workspace && pane.is_none_or(|pane| location.pane == pane)
-            })
-            .collect();
-        if locations.is_empty() {
-            return Err(super::target_gone());
-        }
-        let mut panes = Vec::with_capacity(locations.len());
-        for location in locations {
-            let mut result = registry.restore_result(location);
-            let status = result.status();
-            let duplicate = registry
-                .restores
-                .get(&location.pane)
-                .is_some_and(|attempt| attempt.request == request_id);
-            let start = !duplicate
-                && match mode {
-                    AgentRestoreMode::Resume => status == PaneRestoreStatus::Available,
-                    AgentRestoreMode::Retry => matches!(
-                        status,
-                        PaneRestoreStatus::Available | PaneRestoreStatus::Failed
-                    ),
-                    _ => false,
-                };
-            if start {
-                let prepared = registry
-                    .check_not_closing(location)
-                    .and_then(|()| prepare_launch(self.metadata.saved_session(location.pane)))
-                    .and_then(|plan| {
-                        self.reserve_slot(&mut registry, location, true)
-                            .map(|terminal| (plan, terminal))
-                    });
-                match prepared {
-                    Ok((plan, terminal)) => {
-                        result = pane_result(location, PaneRestoreStatus::Starting);
-                        registry.restores.insert(
-                            location.pane,
-                            Attempt {
-                                request: request_id.to_owned(),
-                                result: result.clone(),
-                            },
-                        );
-                        let workspaces = self.clone();
-                        tokio::spawn(async move {
-                            workspaces.run_restore(location, terminal, plan).await;
+        let request_id = request_id.to_owned();
+        self.transaction(move |registry, workspaces| {
+            registry.sweep();
+            let layout = registry.metadata.layout();
+            let locations: Vec<_> = layout
+                .locations()
+                .filter(|location| {
+                    location.workspace == workspace && pane.is_none_or(|pane| location.pane == pane)
+                })
+                .collect();
+            if locations.is_empty() {
+                return Err(super::target_gone());
+            }
+            let mut panes = Vec::with_capacity(locations.len());
+            for location in locations {
+                let mut result = registry.restore_result(location);
+                let status = result.status();
+                let duplicate = registry
+                    .restores
+                    .get(&location.pane)
+                    .is_some_and(|attempt| attempt.request == request_id);
+                let start = !duplicate
+                    && match mode {
+                        AgentRestoreMode::Resume => status == PaneRestoreStatus::Available,
+                        AgentRestoreMode::Retry => matches!(
+                            status,
+                            PaneRestoreStatus::Available | PaneRestoreStatus::Failed
+                        ),
+                        _ => false,
+                    };
+                if start {
+                    let prepared = registry
+                        .check_not_closing(location)
+                        .and_then(|()| {
+                            prepare_launch(registry.metadata.saved_session(location.pane))
+                        })
+                        .and_then(|plan| {
+                            workspaces
+                                .reserve_slot(registry, location, true)
+                                .map(|terminal| (plan, terminal))
                         });
-                    }
-                    Err(error) => {
-                        result = failed(location, error);
-                        registry.restores.insert(
-                            location.pane,
-                            Attempt {
-                                request: request_id.to_owned(),
-                                result: result.clone(),
-                            },
-                        );
+                    match prepared {
+                        Ok((plan, terminal)) => {
+                            result = pane_result(location, PaneRestoreStatus::Starting);
+                            registry.restores.insert(
+                                location.pane,
+                                Attempt {
+                                    request: request_id.to_owned(),
+                                    result: result.clone(),
+                                },
+                            );
+                            let workspaces = workspaces.clone();
+                            tokio::spawn(async move {
+                                workspaces.run_restore(location, terminal, plan).await;
+                            });
+                        }
+                        Err(error) => {
+                            result = failed(location, error);
+                            registry.restores.insert(
+                                location.pane,
+                                Attempt {
+                                    request: request_id.to_owned(),
+                                    result: result.clone(),
+                                },
+                            );
+                        }
                     }
                 }
+                panes.push(result);
             }
-            panes.push(result);
-        }
-        Ok(WorkspaceRestored { panes })
+            Ok(WorkspaceRestored { panes })
+        })
+        .await
     }
 
     async fn run_restore(&self, location: Location, terminal: TerminalHandle, plan: RestorePlan) {
@@ -161,13 +167,16 @@ impl Workspaces {
             }
             Err(error) => (failed(location, error), true),
         };
-        let mut registry = self.lock_registry();
-        if release && let Some(slot) = registry.slots.get_mut(&location.pane) {
-            slot.reserved = false;
-        }
-        if let Some(attempt) = registry.restores.get_mut(&location.pane) {
-            attempt.result = result;
-        }
+        self.registry
+            .request(move |registry| {
+                if release && let Some(slot) = registry.slots.get_mut(&location.pane) {
+                    slot.reserved = false;
+                }
+                if let Some(attempt) = registry.restores.get_mut(&location.pane) {
+                    attempt.result = result;
+                }
+            })
+            .await;
     }
 
     async fn confirm_restore(
@@ -184,7 +193,11 @@ impl Workspaces {
                     "provider exited before confirming the saved session; check session availability on the daemon host",
                 ));
             }
-            if let Some(observed) = self.lock_registry().agents.confirmed_session(id) {
+            if let Some(observed) = self
+                .registry
+                .request(move |registry| registry.agents.confirmed_session(id))
+                .await
+            {
                 return if observed == *key {
                     Ok(())
                 } else {
@@ -408,7 +421,10 @@ mod tests {
             pane_id: None,
             mode: AgentRestoreMode::Inspect as i32,
         };
-        let result = workspaces.restore_workspace(&inspect, "inspect").unwrap();
+        let result = workspaces
+            .restore_workspace(&inspect, "inspect")
+            .await
+            .unwrap();
         for (location, status, error_code) in [
             (exact, PaneRestoreStatus::Available, None),
             (manual, PaneRestoreStatus::Failed, Some("ResumeUnsupported")),
@@ -437,14 +453,19 @@ mod tests {
             ..inspect
         };
         for _ in 0..2 {
-            let result = workspaces.restore_workspace(&retry, "retry").unwrap();
+            let result = workspaces.restore_workspace(&retry, "retry").await.unwrap();
             assert_eq!(result.panes[0].status(), PaneRestoreStatus::Failed);
             assert_eq!(
                 result.panes[0].error.as_ref().unwrap().code,
                 "ResumeUnconfirmed"
             );
         }
-        assert!(workspaces.lock_registry().slots.is_empty());
+        assert!(
+            workspaces
+                .registry
+                .request(|registry| registry.slots.is_empty())
+                .await
+        );
         Ok(())
     }
 }

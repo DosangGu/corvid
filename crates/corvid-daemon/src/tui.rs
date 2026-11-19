@@ -158,15 +158,18 @@ async fn read_attach(
             continue;
         }
         if let Some(Body::RestoreWorkspace(_)) = &request.body {
-            let result = session.validate_request(&request).and_then(|body| {
-                let Body::RestoreWorkspace(restore) = body else {
-                    unreachable!()
-                };
-                workspaces.restore_workspace(
-                    restore,
-                    request.request_id.as_deref().expect("validated request ID"),
-                )
-            });
+            let result = match session.validate_request(&request) {
+                Ok(Body::RestoreWorkspace(restore)) => {
+                    workspaces
+                        .restore_workspace(
+                            restore,
+                            request.request_id.as_deref().expect("validated request ID"),
+                        )
+                        .await
+                }
+                Err(fault) => Err(fault),
+                Ok(_) => unreachable!(),
+            };
             let body = match result {
                 Ok(result) => Body::WorkspaceRestored(result),
                 Err(error) => Body::Error(error.into_wire()),
@@ -246,7 +249,7 @@ async fn serve_attachment(
         },
     )
     .await;
-    workspaces.release(client);
+    workspaces.release(client).await;
     result
 }
 
@@ -347,7 +350,7 @@ impl TuiConnection<'_> {
                     Ok(()) => Body::Detach(corvid_protocol::wire::Detach {}),
                     Err(error) => Body::Error(error.into_wire()),
                 };
-                self.workspaces.release(client);
+                self.workspaces.release(client).await;
                 let body = if detach.keep_connection
                     && self
                         .session
@@ -380,14 +383,18 @@ impl TuiConnection<'_> {
                 }
             }
             Body::RenameView(view) => {
-                let result =
-                    require_view(view.expected_view_revision, self.active.route.view_revision)
-                        .and_then(|_| {
-                            if view.pane {
-                                return Err(invalid("pane titles follow the terminal"));
-                            }
-                            self.workspaces.rename_tab(&self.active, view.name.clone())
-                        });
+                let result = match require_view(
+                    view.expected_view_revision,
+                    self.active.route.view_revision,
+                ) {
+                    Ok(()) if view.pane => Err(invalid("pane titles follow the terminal")),
+                    Ok(()) => {
+                        self.workspaces
+                            .rename_tab(&self.active, view.name.clone())
+                            .await
+                    }
+                    Err(fault) => Err(fault),
+                };
                 match result {
                     Ok(()) => {
                         self.send(
@@ -436,6 +443,7 @@ impl TuiConnection<'_> {
                     Ok(workspace) => {
                         self.workspaces
                             .claim(client, workspace, self.active.viewport.content())
+                            .await
                     }
                     Err(fault) => Err(fault),
                 };
@@ -450,7 +458,7 @@ impl TuiConnection<'_> {
                     Err(fault) => self.fault(request.request_id, fault).await?,
                 }
             }
-            Body::MoveTab(command) => match self.move_tab(command) {
+            Body::MoveTab(command) => match self.move_tab(command).await {
                 Ok(moved) => self.send(request.request_id, Body::TabMoved(moved)).await?,
                 Err(fault) => self.fault(request.request_id, fault).await?,
             },
@@ -465,20 +473,20 @@ impl TuiConnection<'_> {
         Ok(false)
     }
 
-    fn move_tab(&self, command: &MoveTab) -> Result<TabMoved, ProtocolFault> {
+    async fn move_tab(&self, command: &MoveTab) -> Result<TabMoved, ProtocolFault> {
         require_view(
             command.expected_view_revision,
             self.active.route.view_revision,
         )?;
         let tab = parse_id(&command.tab_id)?;
         let workspace = parse_id(&command.destination_workspace_id)?;
-        self.workspaces.move_tab(&self.active, tab, workspace)
+        self.workspaces.move_tab(&self.active, tab, workspace).await
     }
 
     async fn event(&mut self, event: Event) -> Result<bool> {
         match event {
             Event::RenameTab(route, name) if route == self.active.route => {
-                if let Err(fault) = self.workspaces.rename_tab(&self.active, name) {
+                if let Err(fault) = self.workspaces.rename_tab(&self.active, name).await {
                     self.fault(None, fault).await?;
                 }
             }
@@ -490,7 +498,7 @@ impl TuiConnection<'_> {
             Event::ViewChanged { route, viewport } => {
                 self.active.route = route;
                 self.active.viewport.outer = viewport;
-                self.workspaces.resize_hidden(&self.active);
+                self.workspaces.resize_hidden(&self.active).await;
                 self.view_changed(None, false).await?;
             }
             Event::Exited {
@@ -521,7 +529,7 @@ impl TuiConnection<'_> {
     }
 
     async fn disconnect_others(&mut self, id: Option<String>) -> Result<()> {
-        match self.workspaces.disconnect_others(&self.active) {
+        match self.workspaces.disconnect_others(&self.active).await {
             Ok(client_count) => {
                 self.send(
                     id,
@@ -540,6 +548,7 @@ impl TuiConnection<'_> {
         match self
             .workspaces
             .issue_pairing_code(route.client_id, route.connection_generation)
+            .await
         {
             Ok(code) => self.send(id, Body::PairingCode(code)).await,
             Err(fault) => self.fault(id, fault).await,

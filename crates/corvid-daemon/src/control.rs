@@ -88,7 +88,7 @@ impl Control<'_> {
                     continue;
                 }
             };
-            match self.workspaces.snapshot(watch) {
+            match self.workspaces.snapshot(watch).await {
                 Ok(capture) => {
                     let history = include_history.then(|| self.metadata.history.clone());
                     let live = snapshot::transfer(
@@ -124,11 +124,11 @@ impl Control<'_> {
             }),
             Ok(Body::GetCapabilities(_)) => Body::Capabilities(self.session.description()),
             Ok(Body::GetConnectionStatus(_)) => {
-                Body::ConnectionStatus(status(self.metadata, self.workspaces))
+                Body::ConnectionStatus(status(self.metadata, self.workspaces).await)
             }
             Ok(Body::ListWorkspaces(_)) => Body::WorkspaceList(inventory(self.metadata)),
-            Ok(Body::ListAgents(_)) => Body::AgentList(self.workspaces.agents()),
-            Ok(Body::ListClients(_)) => Body::ClientList(self.workspaces.clients()),
+            Ok(Body::ListAgents(_)) => Body::AgentList(self.workspaces.agents().await),
+            Ok(Body::ListClients(_)) => Body::ClientList(self.workspaces.clients().await),
             Ok(
                 body @ (Body::RegisterClientBinding(_)
                 | Body::UnregisterClientBinding(_)
@@ -209,7 +209,7 @@ impl Control<'_> {
     }
 }
 
-fn status(metadata: &MetadataView, workspaces: &Workspaces) -> ConnectionStatus {
+async fn status(metadata: &MetadataView, workspaces: &Workspaces) -> ConnectionStatus {
     let persistence = match metadata.save_state() {
         SaveState::Saved => PersistenceState::Saved,
         SaveState::Pending => PersistenceState::Pending,
@@ -220,7 +220,7 @@ fn status(metadata: &MetadataView, workspaces: &Workspaces) -> ConnectionStatus 
         Recovery::Backup => LayoutRecovery::Backup,
         Recovery::Fresh => LayoutRecovery::Fresh,
     };
-    let (terminal_live, collector) = workspaces.runtime_status();
+    let (terminal_live, collector) = workspaces.runtime_status().await;
     ConnectionStatus {
         terminal_live,
         persistence: persistence as i32,

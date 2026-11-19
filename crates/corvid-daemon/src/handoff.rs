@@ -31,7 +31,7 @@ pub(crate) async fn prepare(
 ) -> Result<()> {
     while clients.try_join_next().is_some() {}
     ensure!(
-        preserve_terminals || (clients.is_empty() && workspaces.is_idle()),
+        preserve_terminals || (clients.is_empty() && workspaces.is_idle().await),
         corvid_protocol::ProtocolFault::new("DaemonBusy", "this updater requires an idle daemon")
     );
     workspaces.retain_terminals(true).await?;

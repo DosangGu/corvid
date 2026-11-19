@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -14,7 +14,7 @@ use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
@@ -29,7 +29,7 @@ use crate::process::{
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::provider;
-use crate::workspaces::Registry;
+use crate::workspaces::WeakRegistry;
 
 use super::backend::Backend;
 use super::commands;
@@ -58,7 +58,7 @@ pub(crate) struct Launch {
 pub(crate) struct LaunchScope {
     pub(crate) location: Location,
     pub(crate) metadata: MetadataUpdates,
-    pub(crate) registry: Weak<Mutex<Registry>>,
+    pub(crate) registry: WeakRegistry,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) boot_id: Option<Uuid>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -84,16 +84,19 @@ pub(crate) struct RetainedTerminal {
 
 impl LaunchScope {
     fn tab_picker(&self, location: Location) -> Option<TabPicker> {
-        let registry = self.registry.upgrade()?;
-        let registry = registry.lock().ok()?;
-        let layout = self.metadata.display_layout();
-        let workspace = layout
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == location.workspace)?;
-        TabPicker::new(workspace, location.tab, |tab| {
-            registry.live_tab(&layout, workspace.id, tab).is_some()
-        })
+        let metadata = self.metadata.clone();
+        self.registry
+            .request(move |registry| {
+                let layout = metadata.display().layout;
+                let workspace = layout
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == location.workspace)?;
+                TabPicker::new(workspace, location.tab, |tab| {
+                    registry.live_tab(&layout, workspace.id, tab).is_some()
+                })
+            })
+            .flatten()
     }
 }
 
@@ -212,7 +215,7 @@ pub(crate) struct TerminalHandle {
     commands: mpsc::Sender<Command>,
     live: Arc<AtomicBool>,
     viewing: Arc<AtomicBool>,
-    hidden_viewport: Arc<Mutex<Option<Viewport>>>,
+    hidden_viewport: watch::Sender<Option<Viewport>>,
 }
 
 impl TerminalHandle {
@@ -252,14 +255,14 @@ impl TerminalHandle {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let live = Arc::new(AtomicBool::new(terminal.is_some()));
         let viewing = Arc::new(AtomicBool::new(false));
-        let hidden_viewport = Arc::new(Mutex::new(None));
+        let (hidden_viewport, pending_viewport) = watch::channel(None);
         let mut worker = Worker {
             scope,
             terminal,
             lease: None,
             live: Arc::clone(&live),
             viewing: Arc::clone(&viewing),
-            hidden_viewport: Arc::clone(&hidden_viewport),
+            hidden_viewport: pending_viewport,
             retaining: false,
         };
         let worker = tokio::task::spawn_blocking(move || worker.run(receiver));
@@ -283,9 +286,7 @@ impl TerminalHandle {
     }
 
     pub(crate) fn resize_hidden(&self, viewport: Viewport) {
-        if let Ok(mut pending) = self.hidden_viewport.lock() {
-            *pending = Some(viewport);
-        }
+        self.hidden_viewport.send_replace(Some(viewport));
     }
 
     pub(crate) async fn attach(&self, spec: AttachSpec) -> Reply<InputRoute> {
@@ -420,7 +421,7 @@ struct Worker {
     lease: Option<Lease>,
     live: Arc<AtomicBool>,
     viewing: Arc<AtomicBool>,
-    hidden_viewport: Arc<Mutex<Option<Viewport>>>,
+    hidden_viewport: watch::Receiver<Option<Viewport>>,
     retaining: bool,
 }
 
@@ -618,11 +619,11 @@ impl Worker {
             return;
         };
         let mode = lease.input_mode();
-        if previous.is_some_and(|previous| previous != mode)
-            && let Some(registry) = self.scope.registry.upgrade()
-            && let Ok(mut registry) = registry.lock()
-        {
-            registry.record_input_mode(lease.route, mode);
+        if previous.is_some_and(|previous| previous != mode) {
+            let route = lease.route;
+            self.scope
+                .registry
+                .request(move |registry| registry.record_input_mode(route, mode));
         }
     }
 
@@ -666,10 +667,17 @@ impl Worker {
         }
         self.retaining = retain;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let agent = self.scope.registry.upgrade().and_then(|registry| {
-            let epoch = Uuid::parse_str(&self.scope.hook_environment.identity.epoch).ok()?;
-            registry.lock().ok()?.agents.retain(terminal.id, epoch)
-        });
+        let agent = {
+            let id = terminal.id;
+            Uuid::parse_str(&self.scope.hook_environment.identity.epoch)
+                .ok()
+                .and_then(|epoch| {
+                    self.scope
+                        .registry
+                        .request(move |registry| registry.agents.retain(id, epoch))
+                        .flatten()
+                })
+        };
         Ok(live.then_some(RetainedTerminal {
             id: terminal.id,
             shell: terminal.shell,
@@ -1067,11 +1075,11 @@ impl Worker {
         let Some(terminal) = &mut self.terminal else {
             return;
         };
-        let viewport = self
-            .hidden_viewport
-            .lock()
-            .ok()
-            .and_then(|mut pending| pending.take());
+        let viewport = if self.hidden_viewport.has_changed().unwrap_or(false) {
+            *self.hidden_viewport.borrow_and_update()
+        } else {
+            None
+        };
         if self.lease.is_none()
             && terminal.exit.is_none()
             && let Some(viewport) = viewport
@@ -1194,7 +1202,7 @@ impl Worker {
 
 struct Running {
     id: Uuid,
-    registry: Weak<Mutex<Registry>>,
+    registry: WeakRegistry,
     session: Backend,
     shell: bool,
     dirty: bool,
@@ -1239,31 +1247,37 @@ impl Running {
                 provider.is_none(),
             )
         };
-        if (unmanaged || cwd.is_some())
-            && let Some(registry) = scope.registry.upgrade()
-        {
-            let mut registry = registry.lock().expect("workspace registry lock poisoned");
-            if unmanaged {
-                #[cfg(windows)]
-                if let Some(provider) = provider {
-                    registry
-                        .agents
-                        .started(id, scope.location, provider, ProcessLiveness::Running);
-                    if let Some(root) = session.process_key() {
-                        registry.agents.track_managed(id, root);
+        if unmanaged || cwd.is_some() {
+            let location = scope.location;
+            #[cfg(windows)]
+            let process_key = if unmanaged {
+                session.process_key()
+            } else {
+                None
+            };
+            scope.registry.request(move |registry| {
+                if unmanaged {
+                    #[cfg(windows)]
+                    if let Some(provider) = provider {
+                        registry
+                            .agents
+                            .started(id, location, provider, ProcessLiveness::Running);
+                        if let Some(root) = process_key {
+                            registry.agents.track_managed(id, root);
+                        }
+                    } else if let Some(root) = process_key {
+                        registry.agents.track_shell(id, root);
                     }
-                } else if let Some(root) = session.process_key() {
-                    registry.agents.track_shell(id, root);
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    if shell && let Some(root) = identity {
+                        registry.shell_started(id, root);
+                    }
+                    registry.terminal_started(id, location);
                 }
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                if shell && let Some(root) = identity {
-                    registry.shell_started(id, root);
+                if let Some(cwd) = cwd {
+                    registry.record_cwd(id, &cwd, CwdSource::LaunchDirectory);
                 }
-                registry.terminal_started(id, scope.location);
-            }
-            if let Some(cwd) = cwd {
-                registry.record_cwd(id, &cwd, CwdSource::LaunchDirectory);
-            }
+            });
         }
         Ok(Self {
             id,
@@ -1308,41 +1322,52 @@ impl Running {
                 Uuid::parse_str(&scope.hook_environment.identity.host_id).ok()?,
             )
         });
-        let registry = scope.registry.upgrade().ok_or_else(terminal_fault)?;
-        let mut registry = registry.lock().expect("workspace registry lock poisoned");
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if saved.shell
-            && let Some(root) = identity
-        {
-            registry.shell_started(saved.id, root);
-        }
+        let location = scope.location;
         #[cfg(windows)]
-        if let Some(provider) = saved.provider {
-            let liveness = match session.status() {
+        let liveness = if saved.provider.is_some() {
+            match session.status() {
                 Ok(None) => ProcessLiveness::Running,
                 Ok(Some(status)) => exited(&status),
                 Err(_) => ProcessLiveness::Unknown,
-            };
-            registry
-                .agents
-                .started(saved.id, scope.location, provider, liveness);
-            if let Some(root) = session.process_key() {
-                registry.agents.track_managed(saved.id, root);
             }
-        } else if let Some(root) = session.process_key() {
-            registry.agents.track_shell(saved.id, root);
-        }
-        registry.terminal_started(saved.id, scope.location);
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(agent) = recovered {
-            // Poll the retained owner independently of the shell/PTY process.
-            registry.recover_agent(
-                saved.id,
-                identity.expect("verified root"),
-                scope.location,
-                agent,
-            );
-        }
+        } else {
+            ProcessLiveness::Unknown
+        };
+        #[cfg(windows)]
+        let process_key = session.process_key();
+        scope
+            .registry
+            .request(move |registry| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if saved.shell
+                    && let Some(root) = identity
+                {
+                    registry.shell_started(saved.id, root);
+                }
+                #[cfg(windows)]
+                if let Some(provider) = saved.provider {
+                    registry
+                        .agents
+                        .started(saved.id, location, provider, liveness);
+                    if let Some(root) = process_key {
+                        registry.agents.track_managed(saved.id, root);
+                    }
+                } else if let Some(root) = process_key {
+                    registry.agents.track_shell(saved.id, root);
+                }
+                registry.terminal_started(saved.id, location);
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if let Some(agent) = recovered {
+                    // Poll the retained owner independently of the shell/PTY process.
+                    registry.recover_agent(
+                        saved.id,
+                        identity.expect("verified root"),
+                        location,
+                        agent,
+                    );
+                }
+            })
+            .ok_or_else(terminal_fault)?;
         Ok(Self {
             id: saved.id,
             registry: scope.registry.clone(),
@@ -1365,12 +1390,10 @@ impl Running {
         let tick = self.session.poll()?;
         if tick.title != self.reported_title {
             self.reported_title = tick.title;
-            if let Some(registry) = self.registry.upgrade() {
-                registry
-                    .lock()
-                    .expect("workspace registry lock poisoned")
-                    .record_title(self.id, self.reported_title.clone());
-            }
+            let id = self.id;
+            let title = self.reported_title.clone();
+            self.registry
+                .request(move |registry| registry.record_title(id, title));
         }
         self.dirty |= tick.output;
         if let Some(status) = tick.exit {
@@ -1386,13 +1409,11 @@ impl Running {
             self.exit = Some(status);
         } else {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            if let Some(cwd) = self.process.sample(tick.output)
-                && let Some(registry) = self.registry.upgrade()
-            {
-                registry
-                    .lock()
-                    .expect("workspace registry lock poisoned")
-                    .record_cwd(self.id, &cwd, CwdSource::ProcessDirectory);
+            if let Some(cwd) = self.process.sample(tick.output) {
+                let id = self.id;
+                self.registry.request(move |registry| {
+                    registry.record_cwd(id, &cwd, CwdSource::ProcessDirectory)
+                });
             }
         }
         Ok(tick.failure)
@@ -1400,12 +1421,12 @@ impl Running {
 
     #[cfg(windows)]
     fn observe(&self, liveness: ProcessLiveness) {
-        if self.provider.is_some()
-            && let Some(registry) = self.registry.upgrade()
-        {
-            let mut registry = registry.lock().expect("workspace registry lock poisoned");
-            registry.agents.observe(self.id, liveness);
-            registry.publish(Vec::new());
+        if self.provider.is_some() {
+            let id = self.id;
+            self.registry.request(move |registry| {
+                registry.agents.observe(id, liveness);
+                registry.publish(Vec::new());
+            });
         }
     }
 }
@@ -1429,20 +1450,17 @@ impl Drop for Running {
             };
             managed.observe(liveness, None, source);
         }
-        if let Some(registry) = self.registry.upgrade() {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            let association = self
-                .process
-                .managed
-                .as_ref()
-                .map(|managed| managed.association);
-            #[cfg(windows)]
-            let association = None;
-            registry
-                .lock()
-                .expect("workspace registry lock poisoned")
-                .terminal_closed(self.id, association);
-        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let association = self
+            .process
+            .managed
+            .as_ref()
+            .map(|managed| managed.association);
+        #[cfg(windows)]
+        let association = None;
+        let id = self.id;
+        self.registry
+            .request(move |registry| registry.terminal_closed(id, association));
     }
 }
 
@@ -1857,7 +1875,8 @@ impl Lease {
         if self.viewport.status_row().is_none() {
             return self.status.take().is_some();
         }
-        let layout = metadata.display_layout();
+        let display = metadata.display();
+        let layout = display.layout;
         let cols = self.viewport.outer.cols.get();
         let mode = self.input_mode();
         if self.status.as_ref().is_some_and(|previous| {
@@ -1874,7 +1893,7 @@ impl Lease {
                     && matches!(tab.root, corvid_core::layout::Node::Split { .. })
             });
         let pane = split
-            .then(|| layout.pane_title(self.location, &metadata.titles()))
+            .then(|| layout.pane_title(self.location, &display.titles))
             .flatten();
         let ansi = status::line(&layout, self.location, cols, mode, pane.as_deref());
         let changed = self
@@ -1949,7 +1968,7 @@ impl Lease {
             return Ok(Some((ansi, LastFrame::Naming)));
         }
         if let Some(picker) = &mut self.picker {
-            let layout = metadata.display_layout();
+            let layout = metadata.display().layout;
             if let Some(workspace) = layout
                 .workspaces
                 .iter()

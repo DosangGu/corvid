@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -92,7 +92,7 @@ pub(crate) enum SaveState {
 #[derive(Clone)]
 pub(crate) struct MetadataView {
     updates: watch::Receiver<Stored>,
-    display: watch::Receiver<Arc<Layout>>,
+    display: watch::Receiver<DisplayLayout>,
     saved: watch::Receiver<Saved>,
     pub(crate) history: Arc<Vec<HistoricalRun>>,
     pub(crate) recovery: Recovery,
@@ -100,7 +100,7 @@ pub(crate) struct MetadataView {
 
 impl MetadataView {
     pub(crate) fn display_layout(&self) -> Arc<Layout> {
-        Arc::clone(&self.display.borrow())
+        Arc::clone(&self.display.borrow().layout)
     }
 
     pub(crate) fn save_state(&self) -> SaveState {
@@ -130,11 +130,13 @@ impl MetadataView {
 }
 
 #[derive(Clone)]
-pub(crate) struct MetadataUpdates(
-    watch::Sender<Stored>,
-    Arc<Mutex<HashMap<Uuid, String>>>,
-    watch::Sender<Arc<Layout>>,
-);
+pub(crate) struct DisplayLayout {
+    pub(crate) layout: Arc<Layout>,
+    pub(crate) titles: Arc<HashMap<Uuid, String>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MetadataUpdates(watch::Sender<Stored>, watch::Sender<DisplayLayout>);
 
 impl MetadataUpdates {
     #[cfg(target_os = "linux")]
@@ -174,39 +176,21 @@ impl MetadataUpdates {
     }
 
     fn new(updates: watch::Sender<Stored>) -> Self {
-        let layout = Arc::new(updates.borrow().layout.display(&HashMap::new()));
-        Self(updates, Arc::default(), watch::channel(layout).0)
+        let titles = Arc::new(HashMap::new());
+        let layout = Arc::new(updates.borrow().layout.display(&titles));
+        Self(updates, watch::channel(DisplayLayout { layout, titles }).0)
     }
 
-    fn refresh_display(&self) {
-        self.2
-            .send_replace(Arc::new(self.layout().display(&self.titles())));
+    pub(crate) fn publish_display(&self, titles: &Arc<HashMap<Uuid, String>>) {
+        let layout = Arc::new(self.layout().display(titles));
+        self.1.send_replace(DisplayLayout {
+            layout,
+            titles: Arc::clone(titles),
+        });
     }
 
-    pub(crate) fn titles(&self) -> HashMap<Uuid, String> {
-        self.1
-            .lock()
-            .expect("terminal titles lock poisoned")
-            .clone()
-    }
-
-    pub(crate) fn display_layout(&self) -> Arc<Layout> {
-        Arc::clone(&self.2.borrow())
-    }
-
-    pub(crate) fn set_title(&self, pane: Uuid, title: String) -> bool {
-        let mut titles = self.1.lock().expect("terminal titles lock poisoned");
-        if titles.get(&pane).map(String::as_str).unwrap_or_default() == title {
-            return false;
-        }
-        if title.is_empty() {
-            titles.remove(&pane);
-        } else {
-            titles.insert(pane, title);
-        }
-        drop(titles);
-        self.refresh_display();
-        true
+    pub(crate) fn display(&self) -> DisplayLayout {
+        self.1.borrow().clone()
     }
 
     #[cfg(test)]
@@ -228,7 +212,6 @@ impl MetadataUpdates {
         if layout.is_none() && history.peek().is_none() {
             return;
         }
-        let update_display = layout.is_some();
         self.0.send_if_modified(|stored| {
             let mut changed = false;
             if let Some(layout) = layout {
@@ -255,9 +238,6 @@ impl MetadataUpdates {
             }
             changed
         });
-        if update_display {
-            self.refresh_display();
-        }
     }
 }
 
@@ -286,7 +266,7 @@ pub(crate) fn start(
     Ok((
         MetadataView {
             updates: snapshots,
-            display: updates.2.subscribe(),
+            display: updates.1.subscribe(),
             saved,
             history,
             recovery,

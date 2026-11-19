@@ -261,12 +261,19 @@ impl Journal {
 }
 
 impl Workspaces {
-    pub(crate) fn issue_pairing_code(&self, client: Uuid, generation: u64) -> Reply<PairingCode> {
-        let mut registry = self.lock_registry();
-        registry.require_attached(client, generation)?;
-        registry
-            .controllers
-            .offer(client, generation, Instant::now())
+    pub(crate) async fn issue_pairing_code(
+        &self,
+        client: Uuid,
+        generation: u64,
+    ) -> Reply<PairingCode> {
+        self.registry
+            .request(move |registry| {
+                registry.require_attached(client, generation)?;
+                registry
+                    .controllers
+                    .offer(client, generation, Instant::now())
+            })
+            .await
     }
 
     pub(crate) async fn controller_command(
@@ -275,37 +282,42 @@ impl Workspaces {
         request: &str,
         command: ControllerCommand,
     ) -> Outcome {
-        let receipt = {
-            let mut registry = self.lock_registry();
-            let now = Instant::now();
-            let (receipt, sender) = registry
-                .controllers
-                .journal
-                .begin(controller, request, &command, now)?;
-            if let Some(sender) = sender {
-                if let ControllerCommand::Focus {
-                    client,
-                    run,
-                    revision,
-                } = command
-                {
-                    let target = FocusTarget {
+        let controller = controller.to_owned();
+        let request = request.to_owned();
+        let receipt = self
+            .registry
+            .request(move |registry| {
+                let now = Instant::now();
+                let (receipt, sender) =
+                    registry
+                        .controllers
+                        .journal
+                        .begin(&controller, &request, &command, now)?;
+                if let Some(sender) = sender {
+                    if let ControllerCommand::Focus {
                         client,
                         run,
-                        authorization: super::focus::FocusAuthorization::Binding {
-                            controller: controller.to_owned(),
-                            revision,
-                        },
-                        expires: now + COMMAND_TIMEOUT,
-                    };
-                    registry.dispatch_focus(FocusDispatch::new(target, sender));
-                } else {
-                    let outcome = registry.execute_controller(controller, command);
-                    sender.send_replace(Some(outcome));
+                        revision,
+                    } = command
+                    {
+                        let target = FocusTarget {
+                            client,
+                            run,
+                            authorization: super::focus::FocusAuthorization::Binding {
+                                controller: controller.to_owned(),
+                                revision,
+                            },
+                            expires: now + COMMAND_TIMEOUT,
+                        };
+                        registry.dispatch_focus(FocusDispatch::new(target, sender));
+                    } else {
+                        let outcome = registry.execute_controller(&controller, command);
+                        sender.send_replace(Some(outcome));
+                    }
                 }
-            }
-            receipt
-        };
+                Ok(receipt)
+            })
+            .await?;
         timeout(COMMAND_TIMEOUT, wait_receipt(receipt))
             .await
             .map_err(|_| {

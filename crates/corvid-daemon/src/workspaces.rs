@@ -1,3 +1,4 @@
+mod actor;
 mod close;
 mod controllers;
 mod focus;
@@ -7,7 +8,7 @@ mod shell;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -42,6 +43,8 @@ use crate::terminal::{
     TabCommand, TerminalHandle, TuiViewport,
 };
 
+use actor::RegistryActor;
+pub(crate) use actor::WeakRegistry;
 pub(crate) use close::Closed;
 pub(crate) use controllers::ControllerCommand;
 use controllers::Controllers;
@@ -78,6 +81,23 @@ pub(crate) struct Active {
     pub(crate) events: mpsc::Receiver<Event>,
 }
 
+#[derive(Clone, Copy)]
+struct View {
+    location: Location,
+    viewport: TuiViewport,
+    route: InputRoute,
+}
+
+impl Active {
+    fn view(&self) -> View {
+        View {
+            location: self.location,
+            viewport: self.viewport,
+            route: self.route,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum Destination {
     Exact(Location),
@@ -103,7 +123,7 @@ struct ReservedSwitch {
 #[derive(Clone)]
 pub(crate) struct Workspaces {
     pub(crate) collector: Arc<CollectorDiagnostics>,
-    registry: Arc<Mutex<Registry>>,
+    registry: RegistryActor,
     metadata: MetadataUpdates,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     boot_id: Option<Uuid>,
@@ -119,6 +139,7 @@ pub(crate) struct Registry {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     epoch: Uuid,
     publication: Publication,
+    titles: Arc<HashMap<Uuid, String>>,
     terminals: HashMap<Uuid, Location>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     shells: Shells,
@@ -164,23 +185,27 @@ struct Slot {
 }
 
 impl Workspaces {
-    pub(crate) fn rename_tab(&self, active: &Active, name: String) -> Reply<()> {
-        let mut registry = self.lock_registry();
-        registry.require_pane_writer(active.route.client_id, active.location)?;
-        if !registry
-            .clients
-            .get(&active.route.client_id)
-            .and_then(|client| client.view.as_ref())
-            .is_some_and(|view| view.route == active.route)
-        {
-            return Err(target_gone());
-        }
-        let mut layout = self.metadata.layout();
-        Arc::make_mut(&mut layout)
-            .rename_tab(active.location, (!name.is_empty()).then_some(name))
-            .map_err(|_| ProtocolFault::new("InvalidMessage", "invalid view name"))?;
-        registry.publish_layout(layout, Vec::new());
-        Ok(())
+    pub(crate) async fn rename_tab(&self, active: &Active, name: String) -> Reply<()> {
+        let active = active.view();
+        self.registry
+            .request(move |registry| {
+                registry.require_pane_writer(active.route.client_id, active.location)?;
+                if !registry
+                    .clients
+                    .get(&active.route.client_id)
+                    .and_then(|client| client.view.as_ref())
+                    .is_some_and(|view| view.route == active.route)
+                {
+                    return Err(target_gone());
+                }
+                let mut layout = registry.metadata.layout();
+                Arc::make_mut(&mut layout)
+                    .rename_tab(active.location, (!name.is_empty()).then_some(name))
+                    .map_err(|_| ProtocolFault::new("InvalidMessage", "invalid view name"))?;
+                registry.publish_layout(layout, Vec::new());
+                Ok(())
+            })
+            .await
     }
     pub(crate) fn new(metadata: MetadataUpdates, hook_environment: Arc<HookEnvironment>) -> Self {
         let publication = Publication::seed(projection::layout(&metadata.layout()));
@@ -188,12 +213,13 @@ impl Workspaces {
         let epoch = Uuid::parse_str(&hook_environment.identity.epoch).expect("valid daemon epoch");
         Self {
             collector: Arc::default(),
-            registry: Arc::new(Mutex::new(Registry {
+            registry: RegistryActor::start(Registry {
                 agents: Agents::default(),
                 metadata: metadata.clone(),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 epoch,
                 publication,
+                titles: Arc::default(),
                 terminals: HashMap::new(),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 shells: Shells::default(),
@@ -206,7 +232,7 @@ impl Workspaces {
                 slots: HashMap::new(),
                 retired: Vec::new(),
                 restores: HashMap::new(),
-            })),
+            }),
             metadata,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             boot_id: process::boot_id(),
@@ -222,36 +248,41 @@ impl Workspaces {
         Ok(self)
     }
 
-    pub(crate) fn is_idle(&self) -> bool {
-        let mut registry = self.lock_registry();
-        registry.sweep();
-        registry.clients.is_empty()
-            && registry.claims.is_empty()
-            && registry.pane_claims.is_empty()
-            && registry.slots.is_empty()
-            && registry.retired.is_empty()
+    pub(crate) async fn is_idle(&self) -> bool {
+        self.registry
+            .request(move |registry| {
+                registry.sweep();
+                registry.clients.is_empty()
+                    && registry.claims.is_empty()
+                    && registry.pane_claims.is_empty()
+                    && registry.slots.is_empty()
+                    && registry.retired.is_empty()
+            })
+            .await
     }
 
     pub(crate) async fn retain_terminals(
         &self,
         retain: bool,
     ) -> Result<Vec<(Location, RetainedTerminal)>> {
-        let terminals: Vec<_> = {
-            let registry = self.lock_registry();
-            anyhow::ensure!(
-                !registry.slots.values().any(|slot| slot.reserved),
-                "terminal restoration or transition is in progress"
-            );
-            registry
-                .slots
-                .iter()
-                .filter_map(|(pane, slot)| {
-                    registry.terminals.iter().find_map(|(_, location)| {
-                        (location.pane == *pane).then(|| (*location, slot.terminal.clone()))
+        let terminals: Vec<_> = self
+            .registry
+            .request(|registry| {
+                anyhow::ensure!(
+                    !registry.slots.values().any(|slot| slot.reserved),
+                    "terminal restoration or transition is in progress"
+                );
+                Ok(registry
+                    .slots
+                    .iter()
+                    .filter_map(|(pane, slot)| {
+                        registry.terminals.iter().find_map(|(_, location)| {
+                            (location.pane == *pane).then(|| (*location, slot.terminal.clone()))
+                        })
                     })
-                })
-                .collect()
-        };
+                    .collect())
+            })
+            .await?;
         let mut saved = Vec::new();
         for (location, terminal) in &terminals {
             match terminal.retain(retain).await {
@@ -285,15 +316,19 @@ impl Workspaces {
                 Err(error) if terminal_host_ended(&error) => continue,
                 Err(error) => return Err(error),
             };
-            self.lock_registry().slots.insert(
-                location.pane,
-                Slot {
-                    workspace: location.workspace,
-                    terminal,
-                    task,
-                    reserved: false,
-                },
-            );
+            self.registry
+                .request(move |registry| {
+                    registry.slots.insert(
+                        location.pane,
+                        Slot {
+                            workspace: location.workspace,
+                            terminal,
+                            task,
+                            reserved: false,
+                        },
+                    )
+                })
+                .await;
         }
         Ok(())
     }
@@ -302,7 +337,7 @@ impl Workspaces {
         LaunchScope {
             location,
             metadata: self.metadata.clone(),
-            registry: Arc::downgrade(&self.registry),
+            registry: self.registry.downgrade(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             boot_id: self.boot_id,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -312,19 +347,28 @@ impl Workspaces {
         }
     }
 
-    fn lock_registry(&self) -> MutexGuard<'_, Registry> {
+    async fn transaction<T: Send + 'static>(
+        &self,
+        apply: impl FnOnce(&mut Registry, &Self) -> T + Send + 'static,
+    ) -> T {
+        let workspaces = self.clone();
         self.registry
-            .lock()
-            .expect("workspace registry lock poisoned")
+            .request(move |registry| apply(registry, &workspaces))
+            .await
     }
 
-    pub(crate) fn agents(&self) -> AgentList {
-        self.lock_registry().agents.inventory()
+    pub(crate) async fn agents(&self) -> AgentList {
+        self.registry
+            .request(|registry| registry.agents.inventory())
+            .await
     }
 
     #[cfg(windows)]
     pub(crate) async fn tick_native_agents(&self) {
-        let roots = self.lock_registry().agents.roots();
+        let roots = self
+            .registry
+            .request(|registry| registry.agents.roots())
+            .await;
         let found = if roots.is_empty() {
             Vec::new()
         } else {
@@ -332,13 +376,16 @@ impl Workspaces {
                 .await
                 .unwrap_or_default()
         };
-        let mut registry = self.lock_registry();
-        let Registry {
-            agents, terminals, ..
-        } = &mut *registry;
-        if agents.sample_shells(found, terminals) {
-            registry.publish(Vec::new());
-        }
+        self.registry
+            .request(move |registry| {
+                let Registry {
+                    agents, terminals, ..
+                } = registry;
+                if agents.sample_shells(found, terminals) {
+                    registry.publish(Vec::new());
+                }
+            })
+            .await;
     }
 
     #[cfg(windows)]
@@ -358,10 +405,11 @@ impl Workspaces {
         }
         let unauthorized =
             || ProtocolFault::new("Unauthorized", "hook has no verified Windows agent owner");
+        let association = hook.association;
         let root = self
-            .lock_registry()
-            .agents
-            .hook_root(hook.association)
+            .registry
+            .request(move |registry| registry.agents.hook_root(association))
+            .await
             .ok_or_else(unauthorized)?;
         let provider = hook.provider;
         let owner = tokio::task::spawn_blocking(move || {
@@ -371,92 +419,112 @@ impl Workspaces {
         .ok()
         .flatten()
         .ok_or_else(unauthorized)?;
-        let mut registry = self.lock_registry();
-        let location = *registry
-            .terminals
-            .get(&hook.association)
-            .ok_or_else(unauthorized)?;
-        let result = registry.agents.apply_hook(hook, owner, location);
-        registry.publish(Vec::new());
-        result
+        self.registry
+            .request(move |registry| {
+                let location = *registry
+                    .terminals
+                    .get(&hook.association)
+                    .ok_or_else(unauthorized)?;
+                let result = registry.agents.apply_hook(hook, owner, location);
+                registry.publish(Vec::new());
+                result
+            })
+            .await
     }
 
-    pub(crate) fn clients(&self) -> ClientList {
-        let registry = self.lock_registry();
-        let mut clients: Vec<_> = registry
-            .clients
-            .keys()
-            .filter_map(|id| registry.client_state(*id))
-            .collect();
-        clients.sort_by(|first, second| first.client_id.cmp(&second.client_id));
-        ClientList { clients }
+    pub(crate) async fn clients(&self) -> ClientList {
+        self.registry
+            .request(move |registry| {
+                let mut clients: Vec<_> = registry
+                    .clients
+                    .keys()
+                    .filter_map(|id| registry.client_state(*id))
+                    .collect();
+                clients.sort_by(|first, second| first.client_id.cmp(&second.client_id));
+                ClientList { clients }
+            })
+            .await
     }
 
-    pub(crate) fn snapshot(&self, watch: bool) -> Reply<Capture> {
-        self.lock_registry().publication.capture(watch)
+    pub(crate) async fn snapshot(&self, watch: bool) -> Reply<Capture> {
+        self.registry
+            .request(move |registry| registry.publication.capture(watch))
+            .await
     }
 
-    pub(crate) fn public_sequence(&self) -> Reply<u64> {
-        self.lock_registry().publication.sequence()
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn tick_agents(&self) {
-        self.poll_shell_agents();
-        let mut registry = self.lock_registry();
-        registry.agents.tick();
-        registry.publish(Vec::new());
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn hook_binding(&self, association: Uuid) -> HookBinding {
-        self.lock_registry().agents.binding(association)
+    pub(crate) async fn public_sequence(&self) -> Reply<u64> {
+        self.registry
+            .request(|registry| registry.publication.sequence())
+            .await
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn apply_hook(
+    pub(crate) async fn tick_agents(&self) {
+        self.poll_shell_agents().await;
+        self.registry
+            .request(|registry| {
+                registry.agents.tick();
+                registry.publish(Vec::new());
+            })
+            .await;
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) async fn hook_binding(&self, association: Uuid) -> HookBinding {
+        self.registry
+            .request(move |registry| registry.agents.binding(association))
+            .await
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) async fn apply_hook(
         &self,
         hook: Hook,
         owner: ProcessImage,
         producer: HookProducer,
     ) -> Reply<()> {
-        let mut registry = self.lock_registry();
-        let current = Uuid::parse_str(&self.hook_environment.identity.epoch).expect("daemon epoch");
-        if !registry.agents.accepts_observer_epoch(
-            hook.association,
-            hook.observer_epoch.unwrap_or(current),
-            current,
-        ) {
-            return Err(ProtocolFault::new(
-                "EpochMismatch",
-                "observer launch epoch was not retained",
-            ));
-        }
-        let notice = registry.agents.apply_hook(hook, owner, producer)?;
-        registry.publish(Vec::new());
-        if let Some((location, provider)) = notice
-            && let Some(claim) = registry.writer_at(location)
-            && let Some(client) = registry.clients.get(&claim.client)
-            && client.view.is_some()
-            && let Some(notices) = &client.notices
-        {
-            let _ = notices.try_send(provider);
-        }
-        Ok(())
+        self.transaction(move |registry, workspaces| {
+            let current =
+                Uuid::parse_str(&workspaces.hook_environment.identity.epoch).expect("daemon epoch");
+            if !registry.agents.accepts_observer_epoch(
+                hook.association,
+                hook.observer_epoch.unwrap_or(current),
+                current,
+            ) {
+                return Err(ProtocolFault::new(
+                    "EpochMismatch",
+                    "observer launch epoch was not retained",
+                ));
+            }
+            let notice = registry.agents.apply_hook(hook, owner, producer)?;
+            registry.publish(Vec::new());
+            if let Some((location, provider)) = notice
+                && let Some(claim) = registry.writer_at(location)
+                && let Some(client) = registry.clients.get(&claim.client)
+                && client.view.is_some()
+                && let Some(notices) = &client.notices
+            {
+                let _ = notices.try_send(provider);
+            }
+            Ok(())
+        })
+        .await
     }
 
-    pub(crate) fn runtime_status(&self) -> (bool, CollectorStatus) {
-        let registry = self.lock_registry();
-        let terminal_live = registry
-            .slots
-            .values()
-            .any(|slot| slot.terminal.has_live_terminal());
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let mut collector = registry.agents.collector_status();
-        #[cfg(windows)]
-        let mut collector = CollectorStatus::default();
-        collector.traffic = Some(self.collector.traffic());
-        (terminal_live, collector)
+    pub(crate) async fn runtime_status(&self) -> (bool, CollectorStatus) {
+        self.transaction(move |registry, workspaces| {
+            let terminal_live = registry
+                .slots
+                .values()
+                .any(|slot| slot.terminal.has_live_terminal());
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let mut collector = registry.agents.collector_status();
+            #[cfg(windows)]
+            let mut collector = CollectorStatus::default();
+            collector.traffic = Some(workspaces.collector.traffic());
+            (terminal_live, collector)
+        })
+        .await
     }
 
     pub(crate) async fn attach(
@@ -471,10 +539,21 @@ impl Workspaces {
     ) -> Reply<Active> {
         let mut checked = None;
         let (location, generation, terminal, previous) = loop {
-            match self.reserve(client, &mut target, checked.as_ref()) {
+            let validation = checked.clone();
+            let (original, reservation) = self
+                .transaction(move |registry, workspaces| {
+                    let reserved =
+                        workspaces.reserve(registry, client, &mut target, validation.as_deref());
+                    (target, reserved)
+                })
+                .await;
+            target = original;
+            match reservation {
                 Ok(reserved) => break reserved,
                 Err(ReservationError::Fault(fault)) => return Err(fault),
-                Err(ReservationError::Check(paths)) => checked = Some(paths.validate().await?),
+                Err(ReservationError::Check(paths)) => {
+                    checked = Some(Arc::new(paths.validate().await?))
+                }
             }
         };
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
@@ -509,85 +588,91 @@ impl Workspaces {
                 .map(|active| (active, None))
         };
 
-        let stale = {
-            let mut registry = self.lock_registry();
-            if let Some(slot) = registry.slots.get_mut(&location.pane) {
-                slot.reserved = false;
-            }
-            match opened {
-                Ok((active, _))
-                    if target.agent_run.is_some_and(|run| {
-                        !registry
-                            .agent_terminal(run)
-                            .is_ok_and(|found| found == (location, active.route.terminal_id))
-                    }) =>
-                {
-                    active
+        let outcome = self
+            .registry
+            .request(move |registry| {
+                if let Some(slot) = registry.slots.get_mut(&location.pane) {
+                    slot.reserved = false;
                 }
-                Ok((active, _previous_events)) => {
-                    if let Some(previous) = previous {
-                        registry.pane_claims.remove(&location.pane);
-                        registry.claims.remove(&location.workspace);
-                        registry.insert_claim(location, target.keymap, client, generation);
-                        if let Some(client) = registry.clients.get_mut(&previous.client_id) {
-                            client.view = None;
-                            disconnect_client(&mut client.disconnect);
+                match opened {
+                    Ok((active, _))
+                        if target.agent_run.is_some_and(|run| {
+                            !registry
+                                .agent_terminal(run)
+                                .is_ok_and(|found| found == (location, active.route.terminal_id))
+                        }) =>
+                    {
+                        Ok((active, true))
+                    }
+                    Ok((active, _previous_events)) => {
+                        if let Some(previous) = previous {
+                            registry.pane_claims.remove(&location.pane);
+                            registry.claims.remove(&location.workspace);
+                            registry.insert_claim(location, target.keymap, client, generation);
+                            if let Some(client) = registry.clients.get_mut(&previous.client_id) {
+                                client.view = None;
+                                disconnect_client(&mut client.disconnect);
+                            }
                         }
+                        registry.resize_hidden(
+                            client,
+                            active.viewport.content(),
+                            Some(active.location.pane),
+                        );
+                        registry.clients.insert(
+                            client,
+                            Client {
+                                generation,
+                                keymap: target.keymap,
+                                view: None,
+                                focuses,
+                                disconnect,
+                                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                                notices,
+                            },
+                        );
+                        if let Some(previous) = previous {
+                            registry.set_view(&active.view());
+                            let projections = vec![
+                                registry.client_projection(previous.client_id),
+                                registry.client_projection(client),
+                            ];
+                            registry.publish(projections);
+                        } else {
+                            registry.record_view(&active.view());
+                        }
+                        Ok((active, false))
                     }
-                    registry.resize_hidden(
-                        client,
-                        active.viewport.content(),
-                        Some(active.location.pane),
-                    );
-                    registry.clients.insert(
-                        client,
-                        Client {
-                            generation,
-                            keymap: target.keymap,
-                            view: None,
-                            focuses,
-                            disconnect,
-                            #[cfg(any(target_os = "linux", target_os = "macos"))]
-                            notices,
-                        },
-                    );
-                    if let Some(previous) = previous {
-                        registry.set_view(&active);
-                        let projections = vec![
-                            registry.client_projection(previous.client_id),
-                            registry.client_projection(client),
-                        ];
-                        registry.publish(projections);
-                    } else {
-                        registry.record_view(&active);
+                    Err(fault) => {
+                        registry.release_claims(client);
+                        Err(fault)
                     }
-                    return Ok(active);
                 }
-                Err(fault) => {
-                    registry.release_claims(client);
-                    return Err(fault);
-                }
-            }
-        };
+            })
+            .await?;
+        let (stale, changed) = outcome;
+        if !changed {
+            return Ok(stale);
+        }
         let _ = stale.terminal.retire_view(stale.route).await;
-        self.release(client);
+        self.release(client).await;
         Err(target_gone())
     }
 
     fn reserve(
         &self,
+        registry: &mut Registry,
         client: Uuid,
         target: &mut AttachTarget,
         checked: Option<&CheckedCwd>,
     ) -> Reservation<(Location, u64, TerminalHandle, Option<InputRoute>)> {
-        let mut registry = self.lock_registry();
         registry.sweep();
         let mut layout = self.metadata.layout();
         let mut location = if let Some(run) = target.agent_run {
             registry.agent_terminal(run)?.0
         } else {
             resolve(
-                &registry,
+                registry,
                 &mut layout,
                 target,
                 target.keymap.pane_writer && !target.take_over,
@@ -623,7 +708,7 @@ impl Workspaces {
             launch.cwd = paths.resolved(checked)?;
         }
         let generation = registry.next_generation()?;
-        let terminal = self.reserve_slot(&mut registry, location, target.launch.is_some())?;
+        let terminal = self.reserve_slot(registry, location, target.launch.is_some())?;
         if target.new_workspace.is_some() || target.new_tab.is_some() {
             registry.publish_layout(layout, Vec::new());
         }
@@ -633,151 +718,177 @@ impl Workspaces {
         Ok((location, generation, terminal, previous))
     }
 
-    pub(crate) fn disconnect_others(&self, active: &Active) -> Reply<u32> {
-        let mut registry = self.lock_registry();
-        let caller = active.route.client_id;
-        let workspace = active.location.workspace;
-        registry.require_route(active.route)?;
-        registry.require_pane_writer(caller, active.location)?;
-        let mut count = 0;
-        for (id, client) in &mut registry.clients {
-            if *id != caller
-                && client
-                    .view
-                    .as_ref()
-                    .is_some_and(|view| view.location.workspace == workspace)
-            {
-                count += u32::from(disconnect_client(&mut client.disconnect));
-            }
-        }
-        Ok(count)
+    pub(crate) async fn disconnect_others(&self, active: &Active) -> Reply<u32> {
+        let active = active.view();
+        self.registry
+            .request(move |registry| {
+                let caller = active.route.client_id;
+                let workspace = active.location.workspace;
+                registry.require_route(active.route)?;
+                registry.require_pane_writer(caller, active.location)?;
+                let mut count = 0;
+                for (id, client) in &mut registry.clients {
+                    if *id != caller
+                        && client
+                            .view
+                            .as_ref()
+                            .is_some_and(|view| view.location.workspace == workspace)
+                    {
+                        count += u32::from(disconnect_client(&mut client.disconnect));
+                    }
+                }
+                Ok(count)
+            })
+            .await
     }
 
-    pub(crate) fn release(&self, client: Uuid) {
-        let mut registry = self.lock_registry();
-        registry.release_claims(client);
-        registry.controllers.disconnect(client);
-        if registry.clients.remove(&client).is_some() {
-            registry.publish(vec![(Group::Client(client), Vec::new())]);
-        }
+    pub(crate) async fn release(&self, client: Uuid) {
+        self.registry
+            .request(move |registry| {
+                registry.release_claims(client);
+                registry.controllers.disconnect(client);
+                if registry.clients.remove(&client).is_some() {
+                    registry.publish(vec![(Group::Client(client), Vec::new())]);
+                }
+            })
+            .await
     }
 
-    pub(crate) fn claim(&self, client: Uuid, workspace: Uuid, viewport: Viewport) -> Reply<u64> {
-        let mut registry = self.lock_registry();
-        if self
-            .metadata
-            .layout()
-            .locate(Some(workspace), None)
-            .is_none()
-        {
-            return Err(target_gone());
-        }
-        if registry.clients[&client].keymap.pane_writer {
-            registry.check_workspace_writer(client, workspace)?;
-            return Ok(registry.clients[&client].generation);
-        }
-        if let Some(claim) = registry.claims.get(&workspace) {
-            return if claim.client == client {
-                Ok(claim.generation)
-            } else {
-                Err(busy())
-            };
-        }
-        if registry.has_shared_writer_or_reservation(workspace) {
-            return Err(busy());
-        }
-        let generation = registry.next_generation()?;
-        registry
-            .claims
-            .insert(workspace, Claim { client, generation });
-        registry.resize_hidden(client, viewport, None);
-        registry.publish_client(client);
-        Ok(generation)
+    pub(crate) async fn claim(
+        &self,
+        client: Uuid,
+        workspace: Uuid,
+        viewport: Viewport,
+    ) -> Reply<u64> {
+        self.registry
+            .request(move |registry| {
+                if registry
+                    .metadata
+                    .layout()
+                    .locate(Some(workspace), None)
+                    .is_none()
+                {
+                    return Err(target_gone());
+                }
+                if registry.clients[&client].keymap.pane_writer {
+                    registry.check_workspace_writer(client, workspace)?;
+                    return Ok(registry.clients[&client].generation);
+                }
+                if let Some(claim) = registry.claims.get(&workspace) {
+                    return if claim.client == client {
+                        Ok(claim.generation)
+                    } else {
+                        Err(busy())
+                    };
+                }
+                if registry.has_shared_writer_or_reservation(workspace) {
+                    return Err(busy());
+                }
+                let generation = registry.next_generation()?;
+                registry
+                    .claims
+                    .insert(workspace, Claim { client, generation });
+                registry.resize_hidden(client, viewport, None);
+                registry.publish_client(client);
+                Ok(generation)
+            })
+            .await
     }
 
-    pub(crate) fn move_tab(
+    pub(crate) async fn move_tab(
         &self,
         active: &Active,
         tab: Uuid,
         destination: Uuid,
     ) -> Reply<TabMoved> {
-        let mut registry = self.lock_registry();
-        registry.require_publication()?;
-        registry.require_route(active.route)?;
+        let active = active.view();
+        self.registry
+            .request(move |registry| {
+                registry.require_publication()?;
+                registry.require_route(active.route)?;
 
-        let source_workspace = active.location.workspace;
-        let client = active.route.client_id;
-        registry.require_pane_writer(client, active.location)?;
-        let pane_writer = registry.clients[&client].keymap.pane_writer;
-        if pane_writer {
-            registry.check_workspace_writer(client, destination)?;
-        } else {
-            registry.require_writer(client, destination)?;
-        }
+                let source_workspace = active.location.workspace;
+                let client = active.route.client_id;
+                registry.require_pane_writer(client, active.location)?;
+                let pane_writer = registry.clients[&client].keymap.pane_writer;
+                if pane_writer {
+                    registry.check_workspace_writer(client, destination)?;
+                } else {
+                    registry.require_writer(client, destination)?;
+                }
 
-        let mut layout = self.metadata.layout();
-        let source = layout
-            .locate(Some(source_workspace), Some(tab))
-            .ok_or_else(target_gone)?;
-        registry.check_pane_available(client, source)?;
-        if registry.closing.iter().any(|target| {
-            target.contains(source)
-                || matches!(target, CloseTarget::Workspace(id) if *id == destination)
-        }) {
-            return Err(input_busy());
-        }
-        let terminal = registry.movable_terminal(source)?;
-        let location = Arc::make_mut(&mut layout)
-            .move_pane_tab(source, destination)
-            .map_err(|_| {
-                ProtocolFault::new(
-                    "InvalidLayout",
-                    "move requires a single-pane tab and a different workspace",
-                )
-            })?;
+                let mut layout = registry.metadata.layout();
+                let source = layout
+                    .locate(Some(source_workspace), Some(tab))
+                    .ok_or_else(target_gone)?;
+                registry.check_pane_available(client, source)?;
+                if registry.closing.iter().any(|target| {
+                    target.contains(source)
+                        || matches!(target, CloseTarget::Workspace(id) if *id == destination)
+                }) {
+                    return Err(input_busy());
+                }
+                let terminal = registry.movable_terminal(source)?;
+                let location = Arc::make_mut(&mut layout)
+                    .move_pane_tab(source, destination)
+                    .map_err(|_| {
+                        ProtocolFault::new(
+                            "InvalidLayout",
+                            "move requires a single-pane tab and a different workspace",
+                        )
+                    })?;
 
-        registry
-            .slots
-            .get_mut(&location.pane)
-            .expect("validated terminal slot")
-            .workspace = destination;
-        registry.terminals.insert(terminal, location);
-        registry.agents.relocate_terminal(terminal, location);
-        registry.publish_layout(layout, vec![terminal_projection(terminal, location)]);
-        Ok(TabMoved {
-            location: Some(projection::selection(location)),
-            commit_sequence: registry.publication.sequence()?,
-        })
+                registry
+                    .slots
+                    .get_mut(&location.pane)
+                    .expect("validated terminal slot")
+                    .workspace = destination;
+                registry.terminals.insert(terminal, location);
+                registry.agents.relocate_terminal(terminal, location);
+                registry.publish_layout(layout, vec![terminal_projection(terminal, location)]);
+                Ok(TabMoved {
+                    location: Some(projection::selection(location)),
+                    commit_sequence: registry.publication.sequence()?,
+                })
+            })
+            .await
     }
 
-    pub(crate) fn resize_hidden(&self, active: &Active) {
-        let mut registry = self.lock_registry();
-        registry.resize_hidden(
-            active.route.client_id,
-            active.viewport.content(),
-            Some(active.location.pane),
-        );
-        registry.record_view(active);
+    pub(crate) async fn resize_hidden(&self, active: &Active) {
+        let active = active.view();
+        self.registry
+            .request(move |registry| {
+                registry.resize_hidden(
+                    active.route.client_id,
+                    active.viewport.content(),
+                    Some(active.location.pane),
+                );
+                registry.record_view(&active);
+            })
+            .await
     }
 
     pub(crate) async fn preview(&self, active: &Active, pane: Uuid) -> Reply<(Viewport, Vec<u8>)> {
-        let terminal = {
-            let registry = self.lock_registry();
-            registry.require_route(active.route)?;
-            let location = Location {
-                pane,
-                ..active.location
-            };
-            if location == active.location || !self.metadata.layout().contains(location) {
-                return Err(target_gone());
-            }
-            registry
-                .slots
-                .get(&pane)
-                .filter(|slot| slot.terminal.has_live_terminal())
-                .map(|slot| slot.terminal.clone())
-                .ok_or_else(target_gone)?
-        };
+        let active = active.view();
+        let terminal = self
+            .registry
+            .request(move |registry| {
+                registry.require_route(active.route)?;
+                let location = Location {
+                    pane,
+                    ..active.location
+                };
+                if location == active.location || !registry.metadata.layout().contains(location) {
+                    return Err(target_gone());
+                }
+                registry
+                    .slots
+                    .get(&pane)
+                    .filter(|slot| slot.terminal.has_live_terminal())
+                    .map(|slot| slot.terminal.clone())
+                    .ok_or_else(target_gone)
+            })
+            .await?;
         terminal.preview().await
     }
 
@@ -793,79 +904,92 @@ impl Workspaces {
             spec,
             events,
         } = loop {
-            match self.reserve_switch(old, destination.clone(), checked.as_ref()) {
+            match self
+                .reserve_switch(old, destination.clone(), checked.clone())
+                .await
+            {
                 Ok(Some(reserved)) => break reserved,
                 Ok(None) => return Ok(None),
                 Err(ReservationError::Fault(fault)) => return Err(fault),
-                Err(ReservationError::Check(paths)) => checked = Some(paths.validate().await?),
+                Err(ReservationError::Check(paths)) => {
+                    checked = Some(Arc::new(paths.validate().await?))
+                }
             }
         };
         let result = transition(old, terminal, location, spec, events).await;
-        let mut registry = self.lock_registry();
-        if let Some(slot) = registry.slots.get_mut(&location.pane) {
-            slot.reserved = false;
-        }
-        if let Ok(switched) = &result {
-            registry.record_view(&switched.active);
-        } else {
-            registry.remove_pane_claim(location.pane, old.route.client_id);
-        }
-        result.map(Some)
+        let client = old.route.client_id;
+        self.registry
+            .request(move |registry| {
+                if let Some(slot) = registry.slots.get_mut(&location.pane) {
+                    slot.reserved = false;
+                }
+                if let Ok(switched) = &result {
+                    registry.record_view(&switched.active.view());
+                } else {
+                    registry.remove_pane_claim(location.pane, client);
+                }
+                result.map(Some)
+            })
+            .await
     }
 
-    fn reserve_switch(
+    async fn reserve_switch(
         &self,
         old: &Active,
         destination: Destination,
-        checked: Option<&CheckedCwd>,
+        checked: Option<Arc<CheckedCwd>>,
     ) -> Reservation<Option<ReservedSwitch>> {
-        let mut registry = self.lock_registry();
-        registry.require_route(old.route)?;
-        registry.sweep();
-        let mut layout = self.metadata.layout();
-        let Some((location, launch)) =
-            resolve_switch(&registry, &mut layout, old, destination, checked)?
-        else {
-            return Ok(None);
-        };
-        if location == old.location {
-            return Ok(None);
-        }
-        let client = old.route.client_id;
-        let creates_workspace = self
-            .metadata
-            .layout()
-            .locate(Some(location.workspace), None)
-            .is_none();
-        let pane_writer = registry.clients[&client].keymap.pane_writer;
-        let lease_generation = if pane_writer {
-            registry.check_pane_available(client, location)?;
-            old.route.writer_lease_generation
-        } else if creates_workspace {
-            registry.next_generation()?
-        } else {
-            registry.require_writer(client, location.workspace)?
-        };
-        let reserved = self.reserve_view(&mut registry, old, location, lease_generation, launch)?;
-        if creates_workspace && !pane_writer {
-            registry.claims.insert(
-                location.workspace,
-                Claim {
-                    client,
-                    generation: lease_generation,
-                },
-            );
-        }
-        if reserved.spec.launch.is_some() {
-            registry.publish_layout(layout, Vec::new());
-        }
-        Ok(Some(reserved))
+        let old = old.view();
+        self.transaction(move |registry, workspaces| {
+            registry.require_route(old.route)?;
+            registry.sweep();
+            let mut layout = workspaces.metadata.layout();
+            let Some((location, launch)) =
+                resolve_switch(registry, &mut layout, &old, destination, checked.as_deref())?
+            else {
+                return Ok(None);
+            };
+            if location == old.location {
+                return Ok(None);
+            }
+            let client = old.route.client_id;
+            let creates_workspace = workspaces
+                .metadata
+                .layout()
+                .locate(Some(location.workspace), None)
+                .is_none();
+            let pane_writer = registry.clients[&client].keymap.pane_writer;
+            let lease_generation = if pane_writer {
+                registry.check_pane_available(client, location)?;
+                old.route.writer_lease_generation
+            } else if creates_workspace {
+                registry.next_generation()?
+            } else {
+                registry.require_writer(client, location.workspace)?
+            };
+            let reserved =
+                workspaces.reserve_view(registry, &old, location, lease_generation, launch)?;
+            if creates_workspace && !pane_writer {
+                registry.claims.insert(
+                    location.workspace,
+                    Claim {
+                        client,
+                        generation: lease_generation,
+                    },
+                );
+            }
+            if reserved.spec.launch.is_some() {
+                registry.publish_layout(layout, Vec::new());
+            }
+            Ok(Some(reserved))
+        })
+        .await
     }
 
     fn reserve_view(
         &self,
         registry: &mut Registry,
-        old: &Active,
+        old: &View,
         location: Location,
         lease_generation: u64,
         launch: Option<Launch>,
@@ -899,13 +1023,15 @@ impl Workspaces {
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
-        let (slots, mut workers) = {
-            let mut registry = self.lock_registry();
-            (
-                std::mem::take(&mut registry.slots),
-                std::mem::take(&mut registry.retired),
-            )
-        };
+        let (slots, mut workers) = self
+            .registry
+            .request(|registry| {
+                (
+                    std::mem::take(&mut registry.slots),
+                    std::mem::take(&mut registry.retired),
+                )
+            })
+            .await;
         for slot in slots.into_values() {
             workers.push(slot.task);
         }
@@ -982,7 +1108,7 @@ impl Registry {
     fn publish_layout(&mut self, layout: Arc<Layout>, mut projections: Vec<Projection>) {
         self.restores
             .retain(|pane, _| layout.locations().any(|location| location.pane == *pane));
-        projections.push(projection::named_layout(&layout, &self.metadata.titles()));
+        projections.push(projection::named_layout(&layout, &self.titles));
         self.commit(projections, Some(layout));
     }
 
@@ -997,11 +1123,15 @@ impl Registry {
                 self.metadata.observe_session(location, key);
             }
         }
+        let layout_changed = layout.is_some();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.metadata
             .update(layout, self.agents.changed_history(self.epoch));
         #[cfg(windows)]
         self.metadata.update(layout, std::iter::empty());
+        if layout_changed {
+            self.metadata.publish_display(&self.titles);
+        }
         projections.extend(self.agents.take_projections());
         self.publication.commit(projections);
     }
@@ -1015,12 +1145,17 @@ impl Registry {
         let Some(location) = self.terminals.get(&id) else {
             return;
         };
-        if self.metadata.set_title(location.pane, title) {
-            self.publish(vec![projection::named_layout(
-                &self.metadata.layout(),
-                &self.metadata.titles(),
-            )]);
+        let titles = Arc::make_mut(&mut self.titles);
+        if title.is_empty() {
+            titles.remove(&location.pane);
+        } else {
+            titles.insert(location.pane, title);
         }
+        self.metadata.publish_display(&self.titles);
+        self.publish(vec![projection::named_layout(
+            &self.metadata.layout(),
+            &self.titles,
+        )]);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1054,6 +1189,7 @@ impl Registry {
             .is_ok()
         {
             self.metadata.update(Some(layout), std::iter::empty());
+            self.metadata.publish_display(&self.titles);
         }
     }
 
@@ -1071,12 +1207,15 @@ impl Registry {
         if let Some(agent) = self.shells.remove(id) {
             self.agents.retire_shell(agent, ProcessLiveness::Unknown);
         }
-        if let Some(location) = self.terminals.remove(&id) {
-            self.metadata.set_title(location.pane, String::new());
+        if let Some(location) = self.terminals.remove(&id)
+            && self.titles.contains_key(&location.pane)
+        {
+            Arc::make_mut(&mut self.titles).remove(&location.pane);
+            self.metadata.publish_display(&self.titles);
         }
         let mut projections = vec![
             (Group::Terminal(id), Vec::new()),
-            projection::named_layout(&self.metadata.layout(), &self.metadata.titles()),
+            projection::named_layout(&self.metadata.layout(), &self.titles),
         ];
         let mut cleared = Vec::new();
         for (client_id, client) in &mut self.clients {
@@ -1100,13 +1239,13 @@ impl Registry {
         self.publish(projections);
     }
 
-    fn record_view(&mut self, active: &Active) {
+    fn record_view(&mut self, active: &View) {
         if self.set_view(active) {
             self.publish_client(active.route.client_id);
         }
     }
 
-    fn set_view(&mut self, active: &Active) -> bool {
+    fn set_view(&mut self, active: &View) -> bool {
         let route = active.route;
         let view = self
             .terminals
@@ -1434,7 +1573,7 @@ async fn transition(
 fn resolve_switch(
     registry: &Registry,
     layout: &mut Arc<Layout>,
-    old: &Active,
+    old: &View,
     destination: Destination,
     checked: Option<&CheckedCwd>,
 ) -> Reservation<Option<(Location, Option<Launch>)>> {
@@ -1528,7 +1667,7 @@ fn new_shell() -> Launch {
 fn select_tab(
     registry: &Registry,
     layout: &Layout,
-    active: &Active,
+    active: &View,
     command: TabCommand,
 ) -> Option<Location> {
     let old = active.location;
