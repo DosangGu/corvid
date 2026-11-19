@@ -332,6 +332,15 @@ then ran the real PowerShell installer successfully with verified local assets
 and an installation path containing spaces. Desktop, updater, and CLI checks
 passed on Windows (30 tests, one WSL-profile test ignored) and Linux (49 tests),
 along with builds, Clippy, formatting, and whitespace checks.
+On 2026-11-19, a Linux Xvfb test with a local release fixture verified that
+**Later** closed Settings while the same Desktop PID and selected package stayed
+active. Reopening Settings preserved the prepared update. **Restart to apply**
+then ran the fixture installer, opened the replacement Desktop, and closed the
+previous process. The available and prepared screenshots show this test.
+An isolated Windows integration test used the published 0.3.2 and 0.3.4 runtime
+binaries. After handoff, the host ID, terminal ID, and PowerShell PID survived.
+The old package was collected after the last shell exited.
+
 On 2026-11-13, the Windows Settings screenshots above were captured using
 local release fixtures in a separate Setup installation. The app rejected a
 checksum mismatch, then verified and ran the real Setup. Restart opened the
