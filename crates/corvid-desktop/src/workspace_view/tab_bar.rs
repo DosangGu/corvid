@@ -3,9 +3,14 @@ use std::rc::Rc;
 
 use gpui::{Bounds, Div, Pixels, ScrollHandle, Stateful, div, point, prelude::*, px, rgb};
 
+#[cfg(windows)]
+use super::window_controls::window_drag_region;
 use super::{MUTED, PANEL, TEXT, ui_px};
+#[cfg(target_os = "macos")]
+use crate::macos::window_drag_region;
 
 const SCROLL_EPSILON: Pixels = px(0.01);
+const TABS_IN_TITLEBAR: bool = cfg!(any(windows, target_os = "macos"));
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Arrows {
@@ -71,7 +76,7 @@ impl TabBar {
             .flex()
             .flex_1()
             .min_w_0()
-            .when(!cfg!(target_os = "macos"), |strip| strip.gap(ui_px(3.)))
+            .when(!TABS_IN_TITLEBAR, |strip| strip.gap(ui_px(3.)))
             .overflow_x_scroll()
             .track_scroll(&self.scroll)
             .on_scroll_wheel(move |_, _, _| {
@@ -83,18 +88,14 @@ impl TabBar {
                 if Some(id) == selected {
                     reveal_index = Some(index);
                 }
-                tab.when(cfg!(target_os = "macos") && index > 0, |tab| {
-                    tab.ml(ui_px(3.))
-                })
+                tab.when(TABS_IN_TITLEBAR && index > 0, |tab| tab.ml(ui_px(3.)))
             }));
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(windows, target_os = "macos"))]
         let strip = strip
             .h_full()
             .items_center()
-            .child(crate::macos::window_drag_region(
-                div().flex_1().min_w_0().h_full(),
-            ));
+            .child(window_drag_region(div().flex_1().min_w_0().h_full()));
 
         let arrows = self.arrows.clone();
         let shown = arrows.get();
@@ -104,7 +105,7 @@ impl TabBar {
             .flex_1()
             .min_w_0()
             .items_center()
-            .when(cfg!(target_os = "macos"), |row| row.h_full())
+            .when(TABS_IN_TITLEBAR, |row| row.h_full())
             .on_children_prepainted(move |children, window, _| {
                 let reserved_width = match children.as_slice() {
                     [left, _, right] => left.size.width + right.size.width,

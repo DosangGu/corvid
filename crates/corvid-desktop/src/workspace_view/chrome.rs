@@ -2,6 +2,11 @@ use super::*;
 use corvid_protocol::wire::AgentBadge;
 use gpui::{MouseButton, px};
 
+#[cfg(windows)]
+use super::window_controls::{self, window_drag_region};
+#[cfg(target_os = "macos")]
+use crate::macos::window_drag_region;
+
 #[derive(Clone, Copy)]
 pub(super) enum MenuAction {
     RestoreAgents,
@@ -232,18 +237,16 @@ impl WorkspaceView {
             .when_some(ui.zip(workspace), |bar, (ui, workspace)| {
                 bar.child(self.tabs(workspace, ui, cx))
             });
-        #[cfg(target_os = "macos")]
-        let tabs = tabs.h_full().when(ui.zip(workspace).is_none(), |tabs| {
-            crate::macos::window_drag_region(tabs)
-        });
-        #[cfg(target_os = "macos")]
-        let drag_region = Some(crate::macos::window_drag_region(
-            div().w(px(18.)).flex_none().h_full(),
-        ));
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos"))]
+        let tabs = tabs
+            .h_full()
+            .when(ui.zip(workspace).is_none(), window_drag_region);
+        #[cfg(any(windows, target_os = "macos"))]
+        let drag_region = Some(window_drag_region(div().w(px(18.)).flex_none().h_full()));
+        #[cfg(not(any(windows, target_os = "macos")))]
         let drag_region: Option<Div> = None;
 
-        div()
+        let bar = div()
             .flex()
             .flex_none()
             .items_center()
@@ -293,7 +296,15 @@ impl WorkspaceView {
                 button("workspace-menu", "⋯", self.menu_open && !self.menu_create).on_click(
                     cx.listener(|view, _, window, cx| view.toggle_menu(false, window, cx)),
                 ),
-            )
+            );
+        #[cfg(windows)]
+        let bar = bar.when(!window.is_fullscreen(), |bar| {
+            bar.pr_0()
+                // Leave GPUI's top-edge resize hit test clear in restored windows.
+                .when(!window.is_maximized(), |bar| bar.pt(px(5.)))
+                .child(window_controls::render(window))
+        });
+        bar
     }
 
     fn tabs(&self, workspace: &WorkspaceState, ui: &Ui, cx: &mut Context<Self>) -> Div {
