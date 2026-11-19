@@ -163,7 +163,7 @@ impl AttachedSession {
     }
 
     fn with_target(state: &Path, store: ViewStore, target: AttachTarget) -> Result<Self> {
-        let (session, job, _prompts) = Session::start(
+        let (session, job, _prompts, _activations) = Session::start(
             Destination::Local,
             state.to_owned(),
             store,

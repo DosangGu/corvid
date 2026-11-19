@@ -30,7 +30,7 @@ use crate::appearance::{self, Appearance, ui_px};
 use crate::desktop_windows::{DesktopWindows, WindowLaunch};
 use crate::ssh_hosts;
 use crate::terminal_session::{
-    AttachTarget, Destination, Inventory, Job, ParkedConnections, Session, Ui,
+    AttachTarget, Connection, Destination, Inventory, Job, ParkedConnections, Session, Ui,
 };
 use crate::terminal_view::{TerminalView, preview};
 use corvid_client::view_state::ViewStore;
@@ -130,7 +130,6 @@ pub struct WorkspaceView {
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
     error: Option<String>,
-    deck_focus: u64,
     agent_deck: agent_deck::Settings,
     switcher_open: bool,
     switcher: switcher::Picker,
@@ -208,7 +207,6 @@ impl WorkspaceView {
             preferred_panes: HashMap::new(),
             updates: None,
             error: None,
-            deck_focus: 0,
             agent_deck,
             switcher_open: false,
             switcher: switcher::Picker::default(),
@@ -421,7 +419,7 @@ impl WorkspaceView {
             explicit,
             self.lifetime.parked(),
         );
-        let (session, job, prompts) = match result {
+        let connection = match result {
             Ok(connection) => connection,
             Err(error) => {
                 let error = format!("{error:#}");
@@ -431,17 +429,13 @@ impl WorkspaceView {
                 return;
             }
         };
-        self.show_connection(destination, (session, job, prompts), window, cx);
+        self.show_connection(destination, connection, window, cx);
     }
 
     fn show_connection(
         &mut self,
         destination: Destination,
-        (session, job, mut prompts): (
-            Session,
-            Job,
-            tokio::sync::mpsc::UnboundedReceiver<crate::daemon_prompt::Prompt>,
-        ),
+        (session, job, mut prompts, mut activations): Connection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -453,7 +447,6 @@ impl WorkspaceView {
         self.terminal = None;
         self.selected = None;
         self.tab_bar = tab_bar::TabBar::default();
-        self.deck_focus = 0;
         if self.destination.as_ref() != Some(&destination) {
             self.preferred_tabs.clear();
             self.preferred_panes.clear();
@@ -483,6 +476,23 @@ impl WorkspaceView {
                         if change.is_err() {
                             break;
                         }
+                    }
+                    Some(activation) = activations.recv() => {
+                        let _ = view.update_in(cx, |view, window, cx| {
+                            if activation.reply.is_closed() {
+                                return;
+                            }
+                            if view.session.as_ref().is_some_and(|session| {
+                                session.matches_view(activation.view_epoch, activation.revision)
+                            }) {
+                                view.sync(window, cx);
+                                view.focus_from_deck(window, cx, activation.reply);
+                            } else {
+                                let _ = activation.reply.send(Err(
+                                    "The selected Desktop pane changed before it could receive focus.".into(),
+                                ));
+                            }
+                        });
                     }
                     Some(prompt) = prompts.recv() => {
                         let reply = view.update_in(cx, |_, window, cx| prompt.show(window, cx));
@@ -616,16 +626,6 @@ impl WorkspaceView {
             self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, window, cx)));
             if !self.switcher_open && !self.menu_open && self.creation.is_none() {
                 self.focus_terminal(window, cx);
-            }
-        }
-        if self.deck_focus != ui.deck_focus {
-            self.deck_focus = ui.deck_focus;
-            if let Some(reply) = self
-                .session
-                .as_ref()
-                .and_then(|session| session.take_deck_activation(ui.deck_focus))
-            {
-                self.focus_from_deck(window, cx, reply);
             }
         }
         cx.notify();

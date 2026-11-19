@@ -105,9 +105,8 @@ async fn synchronize(
 }
 
 fn publish(shared: &Shared, inventory: Inventory) {
-    {
-        let mut buffer = shared.buffer();
-        buffer.previews.retain(|pane, _| {
+    shared.edit(move |state| {
+        Arc::make_mut(&mut state.previews).retain(|pane, _| {
             inventory.terminals.iter().any(|terminal| {
                 terminal
                     .location
@@ -115,10 +114,11 @@ fn publish(shared: &Shared, inventory: Inventory) {
                     .is_some_and(|location| &location.pane_id == pane)
             })
         });
-        buffer.ui.inventory = Some(Arc::new(inventory));
-        buffer.ui.inventory_ready = true;
-    }
-    shared.ui_changed.send_replace(());
+        let ui = Arc::make_mut(&mut state.ui);
+        ui.inventory = Some(Arc::new(inventory));
+        ui.inventory_ready = true;
+        Changed::Ui
+    });
 }
 
 #[cfg(test)]

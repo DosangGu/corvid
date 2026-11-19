@@ -71,7 +71,7 @@ impl WorkspaceView {
                     lifetime.parked(),
                 ))
             };
-            let (session, job, prompts) = match start {
+            let (session, job, prompts, activations) = match start {
                 Some(Ok(connection)) => connection,
                 start => {
                     let _ = view.update_in(cx, |view, _, cx| {
@@ -89,7 +89,7 @@ impl WorkspaceView {
             let outcome = loop {
                 let ui = session.ui();
                 if ui.can_write() {
-                    break Some(Ok((session, job, prompts)));
+                    break Some(Ok((session, job, prompts, activations)));
                 }
                 if !ui.changing {
                     break Some(Err(ui.message));
