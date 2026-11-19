@@ -125,15 +125,13 @@ fn startup_capture_waits_for_exec_before_binding_process_image() {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
 
-    // Copies have distinct inodes even on multicall coreutils installations.
+    // Launch the system image directly so the exec probe does not also depend
+    // on first-launch validation of a newly copied executable.
+    let program = Path::new("/bin/sleep");
     let fixture = tempfile::tempdir().unwrap();
-    let program = fixture.path().join("expected/sleep");
-    let other = fixture.path().join("other/sleep");
-    fs::create_dir_all(program.parent().unwrap()).unwrap();
-    fs::create_dir_all(other.parent().unwrap()).unwrap();
-    fs::copy("/bin/sleep", &program).unwrap();
-    fs::copy("/bin/sleep", &other).unwrap();
-    let executable = Executable::read(&program).unwrap();
+    let other = fixture.path().join("sleep");
+    fs::copy(program, &other).unwrap();
+    let executable = Executable::read(program).unwrap();
     let different = Executable::read(&other).unwrap();
     assert_ne!(executable, different);
     for (expected, should_bind) in [
@@ -147,7 +145,7 @@ fn startup_capture_waits_for_exec_before_binding_process_image() {
                 "process::tests::delayed_exec_child",
                 "--nocapture",
             ])
-            .env("CORVID_TEST_DELAYED_EXEC", &program)
+            .env("CORVID_TEST_DELAYED_EXEC", program)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
