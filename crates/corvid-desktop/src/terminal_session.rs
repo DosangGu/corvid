@@ -304,7 +304,7 @@ struct Buffer {
     alternate_screen: Option<bool>,
     view_epoch: u64,
     revision: u64,
-    previews: HashMap<String, Screen>,
+    previews: HashMap<String, Arc<Screen>>,
 }
 
 impl Buffer {
@@ -704,7 +704,8 @@ impl Session {
     }
 
     pub fn preview<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
-        self.shared.buffer().previews.get(pane).map(read)
+        let screen = self.shared.buffer().previews.get(pane)?.clone();
+        Some(read(&screen))
     }
 
     pub fn history(&self, pane: &str, shell_only: bool) -> Option<oneshot::Receiver<HistoryReply>> {
@@ -2293,10 +2294,9 @@ impl Client<'_> {
             if let Ok(grid) = Grid::read(preview.viewport.context("pane preview has no size")?) {
                 let mut parser = Parser::new(grid.rows, grid.cols, 0);
                 parser.process(&frame.ansi);
-                self.shared
-                    .buffer()
-                    .previews
-                    .insert(expected, parser.screen().clone());
+                let screen = Arc::new(parser.screen().clone());
+                let previous = self.shared.buffer().previews.insert(expected, screen);
+                drop(previous);
                 self.shared.ui_changed.send_replace(());
             }
             return Ok(());

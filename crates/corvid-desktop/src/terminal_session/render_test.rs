@@ -23,6 +23,54 @@ struct PauseOnBell {
     resume: blocking::Receiver<()>,
 }
 
+#[test]
+fn preview_snapshot_allows_publication_during_rendering() {
+    let shared = Arc::new(Shared::new(&Destination::Local));
+    let (actions, _) = mpsc::channel(1);
+    let grid = Grid::new(2, 24);
+    let (size, _) = watch::channel((0, grid));
+    let session = Session {
+        shared: Arc::clone(&shared),
+        actions,
+        size,
+    };
+    let mut parser = Parser::new(grid.rows, grid.cols, 0);
+    parser.process(b"before");
+    shared
+        .buffer()
+        .previews
+        .insert("pane".into(), Arc::new(parser.screen().clone()));
+
+    thread::scope(|scope| {
+        let (reading, started) = blocking::channel();
+        let (published, resume) = blocking::channel();
+        let session = &session;
+        let reader = scope.spawn(move || {
+            session.preview("pane", |screen| {
+                reading.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                screen.contents()
+            })
+        });
+
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        parser.process(b" after");
+        shared
+            .buffer
+            .try_lock()
+            .expect("preview rendering must not hold the publication lock")
+            .previews
+            .insert("pane".into(), Arc::new(parser.screen().clone()));
+        published.send(()).unwrap();
+        assert_eq!(reader.join().unwrap().as_deref(), Some("before"));
+    });
+
+    assert_eq!(
+        session.preview("pane", Screen::contents).as_deref(),
+        Some("before after")
+    );
+}
+
 impl vt100::Callbacks for PauseOnBell {
     fn audible_bell(&mut self, _: &mut Screen) {
         self.parsing.send(()).unwrap();
