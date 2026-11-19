@@ -110,11 +110,10 @@ impl Workspaces {
         if !path.is_absolute() {
             return Err(unauthorized());
         }
-        let shell = *self
-            .lock_registry()
-            .shells
-            .terminals
-            .get(&terminal)
+        let shell = self
+            .registry
+            .request(move |registry| registry.shells.terminals.get(&terminal).copied())
+            .await
             .ok_or_else(unauthorized)?;
 
         let (owner, previous) = tokio::task::spawn_blocking(move || {
@@ -137,51 +136,66 @@ impl Workspaces {
         .flatten()
         .ok_or_else(unauthorized)?;
 
-        let mut registry = self.lock_registry();
-        let current = registry
-            .shells
-            .terminals
-            .get(&terminal)
-            .ok_or_else(unauthorized)?;
-        if current.root != shell.root || current.agent.is_some() && current.agent != shell.agent {
-            return Err(unauthorized());
-        }
-        let location = *registry.terminals.get(&terminal).ok_or_else(unauthorized)?;
-        if let Some((agent, liveness)) = current.agent.zip(previous) {
-            registry.agents.retire_shell(agent.association, liveness);
-            registry.publish(Vec::new());
-        }
-        let association = registry
-            .agents
-            .reserve_shell(location, terminal, provider, owner);
-        registry.shells.terminals.insert(
-            terminal,
-            Shell {
-                agent: Some(ShellAgent {
-                    association,
-                    owner,
-                    registered: Instant::now(),
-                }),
-                ..shell
-            },
-        );
-        Ok(association)
+        self.registry
+            .request(move |registry| {
+                let current = registry
+                    .shells
+                    .terminals
+                    .get(&terminal)
+                    .ok_or_else(unauthorized)?;
+                if current.root != shell.root
+                    || current.agent.is_some() && current.agent != shell.agent
+                {
+                    return Err(unauthorized());
+                }
+                let location = *registry.terminals.get(&terminal).ok_or_else(unauthorized)?;
+                if let Some((agent, liveness)) = current.agent.zip(previous) {
+                    registry.agents.retire_shell(agent.association, liveness);
+                    registry.publish(Vec::new());
+                }
+                let association = registry
+                    .agents
+                    .reserve_shell(location, terminal, provider, owner);
+                registry.shells.terminals.insert(
+                    terminal,
+                    Shell {
+                        agent: Some(ShellAgent {
+                            association,
+                            owner,
+                            registered: Instant::now(),
+                        }),
+                        ..shell
+                    },
+                );
+                Ok(association)
+            })
+            .await
     }
 
-    pub(super) fn poll_shell_agents(&self) {
-        let sample = self.lock_registry().shells.next_sample();
+    pub(super) async fn poll_shell_agents(&self) {
+        let sample = self
+            .registry
+            .request(|registry| registry.shells.next_sample())
+            .await;
         let Some((terminal, agent)) = sample else {
             return;
         };
-        let Some(liveness) = agent.stopped() else {
+        let Some(liveness) = tokio::task::spawn_blocking(move || agent.stopped())
+            .await
+            .ok()
+            .flatten()
+        else {
             return;
         };
-        let mut registry = self.lock_registry();
-        if let Some(shell) = registry.shells.terminals.get_mut(&terminal)
-            && shell.agent == Some(agent)
-        {
-            shell.agent = None;
-            registry.agents.retire_shell(agent.association, liveness);
-        }
+        self.registry
+            .request(move |registry| {
+                if let Some(shell) = registry.shells.terminals.get_mut(&terminal)
+                    && shell.agent == Some(agent)
+                {
+                    shell.agent = None;
+                    registry.agents.retire_shell(agent.association, liveness);
+                }
+            })
+            .await;
     }
 }

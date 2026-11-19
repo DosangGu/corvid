@@ -3,7 +3,7 @@ mod hooks;
 mod retained;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Mutex, OnceLock, Weak};
+use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -23,7 +23,7 @@ use crate::process::{HookProducer, Incarnation, ProcessImage};
 use crate::projection;
 use crate::provider::qualified_version;
 use crate::publication::{Group, Projection};
-use crate::workspaces::Registry;
+use crate::workspaces::WeakRegistry;
 use children::{ChildEntry, ChildKey};
 
 pub(crate) use crate::hook_data::Hook;
@@ -485,26 +485,25 @@ fn monotonic_ms() -> u64 {
 }
 
 pub(crate) struct ManagedLaunch {
-    registry: Weak<Mutex<Registry>>,
+    registry: WeakRegistry,
     pub(crate) association: Uuid,
 }
 
 impl ManagedLaunch {
     pub(crate) fn reserve(
-        registry: &Weak<Mutex<Registry>>,
+        registry: &WeakRegistry,
         location: Location,
         terminal: Uuid,
         provider: Provider,
         qualified: bool,
     ) -> Result<Self> {
-        let coordinator = registry
-            .upgrade()
+        let association = registry
+            .request(move |registry| {
+                registry
+                    .agents
+                    .reserve(location, terminal, provider, qualified)
+            })
             .context("workspace coordinator is shutting down")?;
-        let association = coordinator
-            .lock()
-            .expect("workspace registry lock poisoned")
-            .agents
-            .reserve(location, terminal, provider, qualified);
         Ok(Self {
             registry: registry.clone(),
             association,
@@ -518,9 +517,10 @@ impl ManagedLaunch {
         incarnation: Option<Incarnation>,
         owner: Option<ProcessImage>,
     ) {
-        self.with_registry(|registry| {
+        let association = self.association;
+        self.registry.request(move |registry| {
             let agents = &mut registry.agents;
-            let Some(launch) = agents.launches.get_mut(&self.association) else {
+            let Some(launch) = agents.launches.get_mut(&association) else {
                 return;
             };
             launch.owner = owner;
@@ -557,9 +557,10 @@ impl ManagedLaunch {
     }
 
     pub(crate) fn image_changed(&self, identity: Incarnation) {
-        self.with_registry(|registry| {
+        let association = self.association;
+        self.registry.request(move |registry| {
             let agents = &mut registry.agents;
-            let Some(launch) = agents.launches.get_mut(&self.association) else {
+            let Some(launch) = agents.launches.get_mut(&association) else {
                 return;
             };
             launch.owner = None;
@@ -593,10 +594,11 @@ impl ManagedLaunch {
         identity: Option<Incarnation>,
         source: Source,
     ) {
-        self.with_registry(|registry| {
+        let association = self.association;
+        self.registry.request(move |registry| {
             let agents = &mut registry.agents;
             for record in agents.runs.values_mut().filter(|record| {
-                record.run.identity.launch_association == self.association
+                record.run.identity.launch_association == association
                     && record.run.identity.parent_run_id.is_none()
             }) {
                 if record.observe_process(liveness, identity, source) {
@@ -606,18 +608,13 @@ impl ManagedLaunch {
             registry.publish(Vec::new());
         });
     }
-
-    fn with_registry(&self, apply: impl FnOnce(&mut Registry)) {
-        if let Some(registry) = self.registry.upgrade() {
-            apply(&mut registry.lock().expect("workspace registry lock poisoned"));
-        }
-    }
 }
 
 impl Drop for ManagedLaunch {
     fn drop(&mut self) {
-        self.with_registry(|registry| {
-            registry.agents.retire_launch(self.association);
+        let association = self.association;
+        self.registry.defer(move |registry| {
+            registry.agents.retire_launch(association);
             registry.publish(Vec::new());
         });
     }

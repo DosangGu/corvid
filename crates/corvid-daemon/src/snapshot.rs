@@ -96,7 +96,7 @@ impl Stream<'_> {
             return Ok(None);
         };
 
-        let watermark = workspaces.public_sequence()?;
+        let watermark = workspaces.public_sequence().await?;
         let mut sent = sequence;
         while sent < watermark {
             let delta = watch.next().await?;

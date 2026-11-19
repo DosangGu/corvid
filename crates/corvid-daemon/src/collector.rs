@@ -223,13 +223,13 @@ async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), Pro
         .ok()
         .flatten()
         .ok_or_else(unauthorized)?;
-    workspaces.apply_hook(hook, owner, producer)
+    workspaces.apply_hook(hook, owner, producer).await
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn find_owner(workspaces: &Workspaces, association: Uuid) -> Option<ProcessImage> {
     loop {
-        match workspaces.hook_binding(association) {
+        match workspaces.hook_binding(association).await {
             HookBinding::Owned(owner) => return Some(owner),
             HookBinding::Unavailable => return None,
             HookBinding::Starting => sleep(Duration::from_millis(2)).await,
