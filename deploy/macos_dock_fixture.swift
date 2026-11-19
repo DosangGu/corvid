@@ -56,6 +56,13 @@ func quit() {
 }
 
 switch args[1] {
+case "save-bookmark":
+    try app.bookmarkData().write(to: bookmark)
+case "resolve-bookmark":
+    var stale = false
+    let resolved = try URL(resolvingBookmarkData: Data(contentsOf: bookmark), options: .withoutUI,
+                           relativeTo: nil, bookmarkDataIsStale: &stale)
+    print(resolved.resolvingSymlinksInPath().path)
 case "pin":
     let reference = try app.bookmarkData()
     try reference.write(to: bookmark)

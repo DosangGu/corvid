@@ -172,6 +172,27 @@ printf '%s\n' "$receipt" > "$stage/install.json"
 printf '%s\n' "$bin_dir" > "$stage/bin-dir"
 mv -f -- "$stage/install.json" "$install_root/install.json"
 mv -f -- "$stage/bin-dir" "$install_root/bin-dir"
+managed_app=false
+if [ "$platform:$product" = Darwin:desktop ] &&
+   grep -Eq '"macos_managed_bundle":[[:space:]]*true([[:space:]]*[,}]|[[:space:]]*$)' "$destination/package.json"; then
+    managed_app=true
+    if [ -L "$install_root/macos-app" ]; then
+        app=$(readlink "$install_root/macos-app")
+    else
+        applications="$install_root"
+        if [ "$install_root" = "$default_root" ]; then applications="$HOME/Applications"; fi
+        mkdir -p -- "$applications"
+        applications=$(cd -- "$applications" && pwd -P)
+        app="$applications/Corvid.app"
+        if [ -e "$app" ] || [ -L "$app" ]; then
+            if [ ! -L "$app" ] || [ "$(readlink "$app")" != "$install_root/current/Corvid.app" ]; then
+                app="$install_root/Corvid.app"
+                [ ! -e "$app" ] && [ ! -L "$app" ] || fail "Existing $app belongs to another installation"
+            fi
+        fi
+    fi
+    "$destination/${payload}corvid" publish-macos-desktop --root "$install_root" --app "$app"
+fi
 ln -s "versions/$release_version" "$stage/current"
 if "$retirement"; then touch "$install_root/.retirement-$release_version.pending"; fi
 replace_link "$stage/current" "$install_root/current"
@@ -182,7 +203,7 @@ if [ "$product" = desktop ] && [ -f "$destination/install-desktop.sh" ]; then
     sh "$destination/install-desktop.sh" "$install_root"
 fi
 printf 'Installed Corvid %s (%s).\n' "$release_version" "$product"
-if [ "$platform:$product" = Darwin:desktop ]; then
+if [ "$platform:$product" = Darwin:desktop ] && ! "$managed_app"; then
     # Explicit installation roots stay self-contained (CI and portable installs).
     applications="$install_root"
     if [ "$install_root" = "$default_root" ]; then applications="$HOME/Applications"; fi
@@ -194,7 +215,9 @@ if [ "$platform:$product" = Darwin:desktop ]; then
         printf 'Open the updated app at %s/current/Corvid.app. Existing %s was preserved.\n' "$install_root" "$app"
     fi
 fi
-printf 'CORVID_EXECUTABLE=%s/%scorvid\n' "$destination" "$payload"
+if ! "$managed_app"; then
+    printf 'CORVID_EXECUTABLE=%s/%scorvid\n' "$destination" "$payload"
+fi
 case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add %s to PATH to run Corvid.\n' "$bin_dir" ;; esac
 trap - EXIT INT TERM
 cleanup

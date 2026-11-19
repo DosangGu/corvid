@@ -52,6 +52,7 @@ def previous_fixture(assets, archive, temporary):
     run(["rustc", "--target", metadata["target"], *linker, "--crate-name", "previous", source,
          "-o", package_binary / ("corvid.exe" if WINDOWS else "corvid")])
     metadata["version"] = "0.0.0"
+    metadata.pop("macos_managed_bundle", None)
     (stage / "package.json").write_text(json.dumps(metadata, indent=2) + "\n")
     if package_binary != stage:
         (stage / "Corvid.app/Contents/Resources/package.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -163,7 +164,8 @@ def main():
             if shutil.which("desktop-file-validate"):
                 run(["desktop-file-validate", entry])
         if MACOS and args.product == "desktop":
-            assert (root / "Corvid.app").resolve() == root / "versions" / version / "Corvid.app"
+            assert not (root / "Corvid.app").is_symlink()
+            assert run([root / "Corvid.app" / "Contents/MacOS/corvid", "--version"]).stdout.strip() == f"corvid {version}"
             run(["codesign", "--verify", "--deep", "--strict", root / "Corvid.app"])
         install()
         with installer_lock(root):

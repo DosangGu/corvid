@@ -5,6 +5,8 @@ use std::fs;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::symlink;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,6 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{Installation, Product};
 
+const BUNDLE: &str = "Corvid.app";
+const APP_LINK: &str = "macos-app";
+const DESKTOP: &str = "Contents/MacOS/corvid-desktop";
 const CLI: &str = "Contents/MacOS/corvid";
 const METADATA: &str = "Contents/Resources/package.json";
 const IDENTIFIER: &str = "=identifier \"org.corvid.desktop\"";
@@ -93,6 +98,155 @@ pub fn replace_from_installer(caller: i32) -> Result<u32> {
     Ok(0)
 }
 
+/// Publish the GUI bundle while the script holds the managed installation lock.
+pub fn publish_managed(root: &Path, app: &Path) -> Result<u32> {
+    let executable = env::current_exe()?;
+    let incoming = executable
+        .ancestors()
+        .nth(3)
+        .context("locating the incoming app")?;
+    ensure!(
+        incoming.join(CLI) == executable
+            && incoming.parent().and_then(Path::parent) == Some(root.join("versions").as_path()),
+        "expected a managed Corvid Desktop package"
+    );
+    ensure!(
+        app.is_absolute() && app.file_name() == Some(OsStr::new(BUNDLE)),
+        "invalid managed Corvid app path"
+    );
+    verify(incoming)?;
+    let link = root.join(APP_LINK);
+    if link.symlink_metadata().is_ok() {
+        ensure!(
+            fs::read_link(&link)? == app,
+            "Corvid's registered app path changed"
+        );
+    } else {
+        symlink(app, &link)?;
+    }
+
+    let installed = match app.symlink_metadata() {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if installed.as_ref().is_some_and(|file| !file.is_symlink()) {
+        verify(app)?;
+        if digest(app)? == digest(incoming)? {
+            return report_managed_app(app);
+        }
+    }
+
+    let parent = app.parent().context("locating the app directory")?;
+    let staging = tempfile::Builder::new()
+        .prefix(".corvid-update-")
+        .tempdir_in(parent)?;
+    let next = staging.path().join(BUNDLE);
+    copy_bundle(incoming, &next)?;
+    verify(&next)?;
+
+    match installed {
+        None => rename(&next, app, libc::RENAME_EXCL).context("installing the Corvid app")?,
+        Some(file) if file.is_symlink() => migrate_bundle(root, app, &next)?,
+        Some(_) => exchange_contents(app, &next)?,
+    }
+    report_managed_app(app)
+}
+
+fn report_managed_app(app: &Path) -> Result<u32> {
+    println!("CORVID_EXECUTABLE={}", app.join(CLI).display());
+    Ok(0)
+}
+
+fn migrate_bundle(root: &Path, app: &Path, next: &Path) -> Result<()> {
+    let current = root.join("current").join(BUNDLE);
+    ensure!(
+        fs::read_link(app)? == current,
+        "the existing app link belongs to another installation"
+    );
+    let previous = fs::canonicalize(current)?;
+    ensure!(
+        previous.parent().and_then(Path::parent) == Some(root.join("versions").as_path()),
+        "invalid previous app directory"
+    );
+    verify(&previous)?;
+
+    // Keep the outer directory recognized by the Dock. Put the old Contents back
+    // under its version directory so retirement can still identify running images.
+    exchange_contents(&previous, next)?;
+    if let Err(error) = rename(&previous, app, libc::RENAME_SWAP) {
+        exchange_contents(&previous, next).context("restoring the previous app contents")?;
+        return Err(error).context("moving the bookmarked app to its permanent location");
+    }
+    if let Err(error) = rename(next, &previous, libc::RENAME_SWAP) {
+        rename(app, &previous, libc::RENAME_SWAP).context("restoring the previous app link")?;
+        exchange_contents(&previous, next).context("restoring the previous app contents")?;
+        return Err(error).context("returning the previous executables to their package");
+    }
+    Ok(())
+}
+
+/// Resolve the installer receipt for a stable app. A bundle installed from a
+/// disk image has no matching registration.
+pub(crate) fn managed_root(app: &Path) -> Option<PathBuf> {
+    let parent = app.parent()?;
+    let default_root = env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Application Support/Corvid/install/desktop"));
+    std::iter::once(parent.to_owned())
+        .chain(default_root)
+        .find_map(|root| {
+            let root = fs::canonicalize(root).ok()?;
+            (root.join("install.json").is_file() && fs::read_link(root.join(APP_LINK)).ok()? == app)
+                .then_some(root)
+        })
+}
+
+/// Launch persistent services from the version store so the package retirement
+/// worker can identify them even after the public bundle's contents change.
+pub(crate) fn versioned_runtime(executable: &Path) -> Option<PathBuf> {
+    let app = executable.ancestors().nth(3)?;
+    let root = managed_root(app)?;
+    let install = Installation::at(executable).ok()?;
+    let path = root
+        .join("versions")
+        .join(install.package.version)
+        .join(BUNDLE)
+        .join(CLI);
+    path.is_file().then_some(path)
+}
+
+/// Older Desktop builds and saved launch paths may still open a versioned GUI.
+pub fn use_registered_desktop() -> Result<()> {
+    let executable = env::current_exe()?;
+    let Some(versions) = executable
+        .ancestors()
+        .nth(5)
+        .filter(|dir| dir.file_name() == Some(OsStr::new("versions")))
+    else {
+        return Ok(());
+    };
+    let Some(root) = versions.parent() else {
+        return Ok(());
+    };
+    let Ok(app) = fs::read_link(root.join(APP_LINK)) else {
+        return Ok(());
+    };
+    let Some(versioned) = executable.ancestors().nth(3) else {
+        return Ok(());
+    };
+    let same_release = fs::read(app.join(METADATA))
+        .ok()
+        .zip(fs::read(versioned.join(METADATA)).ok())
+        .is_some_and(|(public, package)| public == package);
+    if managed_root(&app).as_deref() != Some(root) || !same_release {
+        return Ok(());
+    }
+    let error = Command::new(app.join(DESKTOP))
+        .args(env::args_os().skip(1))
+        .exec();
+    Err(error).context("opening the registered Corvid app")
+}
+
 fn calling_bundle(caller: i32) -> Result<Option<PathBuf>> {
     if caller <= 1 {
         return Ok(None);
@@ -152,39 +306,61 @@ fn replace(app: &Path, incoming: &Path, expected: &str) -> Result<()> {
         .prefix(".corvid-update-")
         .tempdir_in(app)?;
     let staged_app = staging.path().join("Corvid.app");
-    let copy = Command::new("/usr/bin/ditto")
-        .arg(incoming)
-        .arg(&staged_app)
-        .output()?;
-    ensure!(
-        copy.status.success(),
-        "copying the verified app: {}",
-        String::from_utf8_lossy(&copy.stderr).trim()
-    );
+    copy_bundle(incoming, &staged_app)?;
     verify(&staged_app)?;
     ensure!(
         digest(app)? == expected,
         "Corvid changed while the update was being prepared"
     );
 
-    let old = CString::new(app.join("Contents").as_os_str().as_bytes())?;
-    let new = CString::new(staged_app.join("Contents").as_os_str().as_bytes())?;
-    // Both directories are on the destination filesystem. The outer app retains its
-    // name and file identity, including bookmarks made by Finder and the Dock.
+    exchange_contents(app, &staged_app)?;
+    if let Err(error) = staging.close() {
+        eprintln!("Installed Corvid. Could not remove the previous app contents: {error}");
+    }
+    Ok(())
+}
+
+fn copy_bundle(incoming: &Path, destination: &Path) -> Result<()> {
+    // Preserve the sealed bundle. APFS can share its data with the versioned
+    // package until either copy changes.
+    let copy = Command::new("/bin/cp")
+        .args(["-cRp"])
+        .arg(incoming)
+        .arg(destination)
+        .output()?;
+    ensure!(
+        copy.status.success(),
+        "copying the verified app: {}",
+        String::from_utf8_lossy(&copy.stderr).trim()
+    );
+    Ok(())
+}
+
+fn exchange_contents(app: &Path, next: &Path) -> Result<()> {
+    // Keep the outer directory's file identity for Finder and Dock bookmarks.
+    rename(
+        &app.join("Contents"),
+        &next.join("Contents"),
+        libc::RENAME_SWAP,
+    )
+    .context("exchanging Corvid app contents")
+}
+
+fn rename(from: &Path, to: &Path, flag: u32) -> io::Result<()> {
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // The paths are NUL terminated and live through the call.
     if unsafe {
         libc::renameatx_np(
             libc::AT_FDCWD,
-            old.as_ptr(),
+            from.as_ptr(),
             libc::AT_FDCWD,
-            new.as_ptr(),
-            libc::RENAME_SWAP,
+            to.as_ptr(),
+            flag,
         )
     } != 0
     {
-        return Err(io::Error::last_os_error()).context("exchanging Corvid app contents");
-    }
-    if let Err(error) = staging.close() {
-        eprintln!("Installed Corvid. Could not remove the previous app contents: {error}");
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }

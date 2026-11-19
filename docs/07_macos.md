@@ -26,9 +26,12 @@ curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.s
 ```
 
 The installer detects Darwin/arm64 and uses BSD utilities and `shasum`. Add
-`~/.local/bin` to PATH. `--product desktop` installs an app into versioned storage
-and creates `~/Applications/Corvid.app`. Explicit `--install-root` installations
-keep their app link under that root. Desktop **About & updates** and
+`~/.local/bin` to PATH. `--product desktop` installs a persistent
+`~/Applications/Corvid.app` bundle and keeps executable packages in versioned
+storage for background service handoff. Explicit `--install-root` installations
+keep their app bundle under that root. The first update of an earlier script
+installation moves its existing app bundle into the permanent location so
+Finder and Dock bookmarks can follow it. Desktop **About & updates** and
 `corvid update` use this installer, verify the selected release's checksums, and
 collect unused earlier managed packages after activation. An update started
 from a DMG-installed app replaces its contents in the same application bundle,

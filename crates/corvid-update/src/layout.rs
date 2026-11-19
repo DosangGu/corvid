@@ -130,12 +130,20 @@ fn local_daemon_for_platform(executable: &Path, os: &str) -> Result<PathBuf> {
     {
         return Ok(executable.to_owned());
     }
+    #[cfg(target_os = "macos")]
+    if let Some(runtime) = crate::macos::versioned_runtime(executable) {
+        return Ok(runtime);
+    }
     let runtime = layout.local_daemon();
     ensure!(runtime.is_file(), "the packaged Corvid runtime is missing");
     Ok(runtime)
 }
 
 pub fn agent_deck_executable(executable: &Path) -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let versioned = crate::macos::versioned_runtime(executable);
+    #[cfg(target_os = "macos")]
+    let executable = versioned.as_deref().unwrap_or(executable);
     agent_deck_for_platform(executable, std::env::consts::OS)
 }
 

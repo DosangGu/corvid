@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update a published DMG copy and reopen its pre-update Dock reference on macOS."""
+"""Verify published macOS installs and their original Dock references after an update."""
 
 import argparse
 import json
@@ -97,6 +97,58 @@ def update(app, release):
     return version
 
 
+def check_managed_update(previous, archive, directory, dock, live_dock):
+    # Lay out the legacy installation directly so the candidate installer always
+    # exercises migration, even when the previous release uses a different installer.
+    user = directory / "managed-home"
+    root = user / "Library/Application Support/Corvid/install/desktop"
+    binaries = user / ".local/bin"
+    applications = user / "Applications"
+    binaries.mkdir(parents=True)
+    applications.mkdir()
+    old_version = previous.name.removeprefix("corvid-desktop-").removesuffix("-aarch64-apple-darwin.tar.gz")
+    old = root / "versions" / old_version
+    old.mkdir(parents=True)
+    with tarfile.open(previous) as package:
+        package.extractall(old, filter="data")
+    (root / "current").symlink_to(Path("versions") / old_version)
+    (root / "install.json").write_text('{"schema_version":1,"product":"desktop"}\n')
+    (root / "bin-dir").write_text(f"{binaries}\n")
+    app = applications / "Corvid.app"
+    app.symlink_to(root / "current/Corvid.app")
+    for binary in ("corvid", "corvid-desktop"):
+        (binaries / binary).symlink_to(root / "current/Corvid.app/Contents/MacOS" / binary)
+
+    bookmark = directory / "managed-bookmark"
+    run(dock, "save-bookmark", app, bookmark)
+    tile_bookmark = directory / "managed-dock-tile"
+    tile = run(dock, "pin", app, tile_bookmark) if live_dock else None
+    try:
+        original_inode = app.stat().st_ino
+        version = archive.name.removeprefix("corvid-desktop-").removesuffix("-aarch64-apple-darwin.tar.gz")
+        with tempfile.TemporaryDirectory(dir=directory) as source:
+            source = Path(source)
+            (source / archive.name).symlink_to(archive)
+            (source / f"{archive.name}.sha256").write_text(f"{digest(archive)}  {archive.name}\n")
+            for _ in range(2):
+                run("sh", ROOT / "deploy/install.sh", "--product", "desktop", "--source-dir", source,
+                    "--version", version, env=dict(os.environ, HOME=str(user)))
+                assert not app.is_symlink(), "Desktop must launch from a stable, real app bundle"
+                assert app.stat().st_ino == original_inode, "The legacy app directory identity was lost"
+                assert not old.exists(), "Unused version directories must still be retired"
+                resolved = Path(run(dock, "resolve-bookmark", app, bookmark)).resolve()
+                assert resolved == app, f"Original Dock bookmark points to {resolved}"
+                assert run(app / CLI, "--version") == f"corvid {version}"
+                assert run(binaries / "corvid", "--version") == f"corvid {version}"
+                run("codesign", "--verify", "--deep", "--strict", app)
+        if tile:
+            launch_dock_tile(dock, app, tile_bookmark, tile)
+    finally:
+        if tile:
+            run(dock, "remove", app, bookmark)
+    print("PASS legacy managed Desktop bookmark survives migration and reinstall")
+
+
 def check_protected_bundle(app, archive, directory):
     stage = directory / "protected-update"
     stage.mkdir()
@@ -166,7 +218,19 @@ def check(dmg, archive):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--previous-dmg", type=Path, required=True)
+    parser.add_argument("--previous-dmg", type=Path)
+    parser.add_argument("--previous-archive", type=Path)
     parser.add_argument("--archive", type=Path, required=True)
     args = parser.parse_args()
-    check(args.previous_dmg.resolve(), args.archive.resolve())
+    if not (args.previous_dmg or args.previous_archive):
+        parser.error("provide --previous-dmg or --previous-archive")
+    archive = args.archive.resolve()
+    if args.previous_archive:
+        live_dock = os.environ.get("GITHUB_ACTIONS") == "true"
+        with tempfile.TemporaryDirectory(prefix=".cv-managed-", dir=Path.home() if live_dock else None) as directory:
+            directory = Path(directory).resolve()
+            dock = directory / "dock-test"
+            run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
+            check_managed_update(args.previous_archive.resolve(), archive, directory, dock, live_dock)
+    if args.previous_dmg:
+        check(args.previous_dmg.resolve(), archive)
