@@ -259,7 +259,9 @@ impl WorkspaceView {
         let tabs = tabs
             .h_full()
             .when(ui.zip(workspace).is_none(), window_drag_region);
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(windows)]
+        let drag_region = Some(window_controls::caption_spacer());
+        #[cfg(target_os = "macos")]
         let drag_region = Some(window_drag_region(div().w(px(18.)).flex_none().h_full()));
         #[cfg(not(any(windows, target_os = "macos")))]
         let drag_region: Option<Div> = None;

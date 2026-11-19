@@ -5,8 +5,18 @@ use gpui::{
 
 use super::{BORDER, PANEL, TEXT};
 
+#[cfg(test)]
+mod tests;
+
+pub(super) fn caption_spacer() -> Div {
+    window_drag_region(div().w(px(64.)).flex_none().h_full())
+}
+
 pub(super) fn window_drag_region(region: Div) -> Div {
-    region.window_control_area(WindowControlArea::Drag)
+    // Keep the workspace focus handler from cancelling the native caption action.
+    region
+        .window_control_area(WindowControlArea::Drag)
+        .block_mouse_except_scroll()
 }
 
 pub(super) fn render(window: &Window) -> Deferred {
