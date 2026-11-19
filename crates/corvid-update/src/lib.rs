@@ -2,6 +2,8 @@
 mod download;
 mod install;
 pub mod layout;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 use anyhow::{Context, Result, ensure};
 use semver::Version;

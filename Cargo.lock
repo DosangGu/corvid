@@ -1491,6 +1491,7 @@ dependencies = [
  "anyhow",
  "embed-resource",
  "hex",
+ "libc",
  "semver",
  "serde",
  "serde_json",
