@@ -92,6 +92,7 @@ pub(super) fn start(
     state_dir: PathBuf,
     known: Option<ControlEndpoint>,
     host: Option<String>,
+    store: corvid_client::view_state::ViewStore,
 ) -> Result<Channels> {
     let (queries, mut pending) = watch::channel((0, BrowseDirectories::default()));
     let (updates, receive) = mpsc::unbounded_channel();
@@ -104,6 +105,9 @@ pub(super) fn start(
                 return;
             }
         };
+        let host = host.or_else(|| {
+            store.for_target(&destination.saved_target()).map(|saved| saved.host_id.to_string())
+        });
         runtime.block_on(async {
             let status = |status: &str| { let _ = updates.send(Update::Status(status.into())); };
             let prompts = Prompts(prompts);

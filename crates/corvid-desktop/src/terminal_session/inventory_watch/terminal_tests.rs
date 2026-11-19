@@ -269,9 +269,10 @@ async fn parked_transport_releases_its_writer_and_reattaches_with_a_fresh_route(
     .await??;
 
     let cache = ParkedConnections::default();
+    cache.start(crate::terminal_session::session_runtime()?);
     let host = link.session().host_id.clone();
     let epoch = link.session().server_epoch.clone();
-    cache.insert(Destination::Local, endpoint, link);
+    cache.insert(Destination::Local, endpoint, link).await;
     let (_, mut link) = cache
         .take(&Destination::Local, Some(&host), Some(&epoch))
         .await

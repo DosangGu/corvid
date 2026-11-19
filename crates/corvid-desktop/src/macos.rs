@@ -35,9 +35,9 @@ pub fn menus(windows: &DesktopWindows, cx: &mut App) {
     cx.on_action(move |_: &CloseWindow, cx| manager.close_active(cx));
     let manager = windows.clone();
     cx.on_action(move |_: &NewWindow, cx| {
-        if let Err(error) = manager.new_window(cx) {
+        manager.new_window(cx, |error, _| {
             eprintln!("Could not open Desktop window: {error:#}");
-        }
+        });
     });
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),

@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     if let Err(error) = agent_deck.refresh_in_background() {
         eprintln!("Could not refresh Agent Deck: {error:#}");
     }
-    let windows = DesktopWindows::new(agent_deck);
+    let windows = DesktopWindows::new(agent_deck)?;
     let app_windows = windows.clone();
 
     let application = Application::new();
@@ -112,10 +112,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     {
         let reopened = windows.clone();
         application.on_reopen(move |cx| {
-            if cx.windows().is_empty()
-                && let Err(error) = reopened.new_window(cx)
-            {
-                eprintln!("Could not reopen Corvid: {error:#}");
+            if cx.windows().is_empty() {
+                reopened.new_window(cx, |error, _| {
+                    eprintln!("Could not reopen Corvid: {error:#}");
+                });
             }
             cx.activate(true);
         });
@@ -133,10 +133,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         let quitting = app_windows.clone();
         cx.on_app_quit(move |_| desktop_windows::wait_for_shutdown(quitting.start_shutdown()))
             .detach();
-        if let Err(error) = app_windows.restore(destination, cx) {
-            eprintln!("Could not restore Desktop windows: {error:#}");
-            app_windows.quit(cx);
-        }
+        app_windows.restore(destination, cx);
         if let Err(error) = app_windows.listen_for_deck(cx) {
             eprintln!("Could not listen for Agent Deck: {error:#}");
         }
