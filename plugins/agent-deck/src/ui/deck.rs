@@ -353,49 +353,49 @@ impl DeckView {
         {
             header = header.child(colors.muted(format!("Connection issue ({code})")));
         }
-        if let Some(snapshot) = &self.view.snapshot {
-            if !self.session.background.desktop.connected() {
-                header = header.child(colors.muted("Target terminal")).child(
-                    row().flex_wrap().children(
-                        snapshot
-                            .data
-                            .bindings
-                            .iter()
-                            .filter(|binding| snapshot.contains_binding(binding))
-                            .enumerate()
-                            .map(|(index, binding)| {
-                                let binding = binding.clone();
-                                let selected = self.binding.as_ref() == Some(&binding);
-                                colors
-                                    .button(
-                                        ("binding", index),
-                                        binding_label(&binding),
-                                        self.ready(snapshot),
-                                    )
-                                    .when(selected, |button| button.text_color(colors.accent))
-                                    .when(self.ready(snapshot), |button| {
-                                        button.on_click(cx.listener(move |view, _, _, cx| {
-                                            view.binding = Some(binding.clone());
-                                            view.held.cancel();
-                                            cx.notify();
-                                        }))
-                                    })
-                            }),
-                    ),
+        if let Some(snapshot) = &self.view.snapshot
+            && !self.session.background.desktop.connected()
+        {
+            header = header.child(colors.muted("Target terminal")).child(
+                row().flex_wrap().children(
+                    snapshot
+                        .data
+                        .bindings
+                        .iter()
+                        .filter(|binding| snapshot.contains_binding(binding))
+                        .enumerate()
+                        .map(|(index, binding)| {
+                            let binding = binding.clone();
+                            let selected = self.binding.as_ref() == Some(&binding);
+                            colors
+                                .button(
+                                    ("binding", index),
+                                    binding_label(&binding),
+                                    self.ready(snapshot),
+                                )
+                                .when(selected, |button| button.text_color(colors.accent))
+                                .when(self.ready(snapshot), |button| {
+                                    button.on_click(cx.listener(move |view, _, _, cx| {
+                                        view.binding = Some(binding.clone());
+                                        view.held.cancel();
+                                        cx.notify();
+                                    }))
+                                })
+                        }),
+                ),
+            );
+            #[cfg(windows)]
+            if snapshot.can_pair_wezterm {
+                header = header.child(
+                    colors
+                        .button("pair", "Pair WezTerm…", self.ready(snapshot))
+                        .when(self.ready(snapshot), |button| {
+                            button.on_click(cx.listener(|view, _, _, cx| {
+                                view.pairing.open(&view.session.signal);
+                                cx.notify();
+                            }))
+                        }),
                 );
-                #[cfg(windows)]
-                if snapshot.can_pair_wezterm {
-                    header = header.child(
-                        colors
-                            .button("pair", "Pair WezTerm…", self.ready(snapshot))
-                            .when(self.ready(snapshot), |button| {
-                                button.on_click(cx.listener(|view, _, _, cx| {
-                                    view.pairing.open(&view.session.signal);
-                                    cx.notify();
-                                }))
-                            }),
-                    );
-                }
             }
         }
         header.child(self.layout_controls(cx))
