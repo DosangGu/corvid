@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use corvid_client::ControlEndpoint;
 use corvid_client::view_state::ViewStore;
 use corvid_client::view_state::windows::{WindowRegistry, WindowState};
@@ -11,7 +11,7 @@ use corvid_presentation::desktop_focus::{FocusRequest, serve_routed};
 use gpui::{
     App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions, px, size,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use crate::agent_deck;
@@ -35,7 +35,8 @@ struct Entry {
 pub struct DesktopWindows(Rc<Inner>);
 
 struct Inner {
-    registry: WindowRegistry,
+    storage: WindowStorage,
+    opening: Cell<usize>,
     settings: agent_deck::Settings,
     entries: RefCell<HashMap<Uuid, Entry>>,
     quitting: Cell<bool>,
@@ -43,16 +44,63 @@ struct Inner {
     closing: RefCell<Vec<watch::Receiver<()>>>,
 }
 
+type StorageOperation = Box<dyn FnOnce(&WindowRegistry) + Send>;
+
+#[derive(Clone)]
+struct WindowStorage(mpsc::Sender<StorageOperation>);
+
+impl WindowStorage {
+    fn start(registry: WindowRegistry) -> Result<Self> {
+        let (sender, mut incoming) = mpsc::channel::<StorageOperation>(16);
+        std::thread::Builder::new()
+            .name("corvid-window-storage".into())
+            .spawn(move || {
+                while let Some(operation) = incoming.blocking_recv() {
+                    operation(&registry);
+                }
+            })?;
+        Ok(Self(sender))
+    }
+
+    fn request<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&WindowRegistry) -> Result<T> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<T>>> {
+        let (reply, result) = oneshot::channel();
+        self.0
+            .try_send(Box::new(move |registry| {
+                let _ = reply.send(operation(registry));
+            }))
+            .map_err(|_| anyhow::anyhow!("Desktop window storage is busy or stopped"))?;
+        Ok(result)
+    }
+
+    fn close(&self, state: WindowState) -> Result<()> {
+        let (reply, result) = oneshot::channel();
+        self.0
+            .blocking_send(Box::new(move |registry| {
+                let _ = reply.send(registry.close(state));
+            }))
+            .map_err(|_| anyhow::anyhow!("Desktop window storage stopped"))?;
+        result
+            .blocking_recv()
+            .context("Desktop window storage stopped")?
+    }
+}
+
 impl DesktopWindows {
-    pub fn new(settings: agent_deck::Settings) -> Self {
-        Self(Rc::new(Inner {
-            registry: WindowRegistry::new(settings.state.join("desktop-view")),
+    pub fn new(settings: agent_deck::Settings) -> Result<Self> {
+        let storage =
+            WindowStorage::start(WindowRegistry::new(settings.state.join("desktop-view")))?;
+        Ok(Self(Rc::new(Inner {
+            storage,
+            opening: Cell::new(0),
             settings,
             entries: RefCell::new(HashMap::new()),
             quitting: Cell::new(false),
             ready_to_quit: Cell::new(false),
             closing: RefCell::new(Vec::new()),
-        }))
+        })))
     }
 
     pub fn settings(&self) -> agent_deck::Settings {
@@ -89,13 +137,25 @@ impl DesktopWindows {
         if self.0.quitting.get() || request.result.is_closed() {
             return;
         }
-        if self.0.entries.borrow().is_empty()
-            && let Err(error) = self.new_window(cx)
-        {
-            let _ = request
-                .result
-                .send(Err("Could not open a Desktop window.".into()));
-            eprintln!("Could not open a Desktop window: {error:#}");
+        if self.0.entries.borrow().is_empty() {
+            if self.0.opening.get() != 0 {
+                let _ = request
+                    .result
+                    .send(Err("Desktop is opening a window. Try again.".into()));
+                return;
+            }
+            let allocation = self.0.storage.request(WindowRegistry::create);
+            let windows = self.clone();
+            self.complete_open(allocation, cx, move |state, cx| {
+                if let Err(error) = state.and_then(|state| windows.open(state, None, true, cx)) {
+                    let _ = request
+                        .result
+                        .send(Err("Could not open a Desktop window.".into()));
+                    eprintln!("Could not open a Desktop window: {error:#}");
+                    return;
+                }
+                windows.route_deck_focus(endpoint, request, cx);
+            });
             return;
         }
         let active = cx.active_window().map(|window| window.window_id());
@@ -126,35 +186,89 @@ impl DesktopWindows {
         }
     }
 
-    pub fn restore(&self, destination: Option<Destination>, cx: &mut App) -> Result<()> {
-        let mut windows = self.0.registry.restore()?;
-        if let Some(destination) = destination {
-            let target = destination.saved_target();
-            let existing = windows.iter().position(|state| {
-                state.store.for_target(&target).is_some()
-                    || (state.first_launch && state.store.last().is_none())
+    pub fn restore(&self, destination: Option<Destination>, cx: &mut App) {
+        let requested = destination.clone();
+        let restored = self.0.storage.request(move |registry| {
+            let mut states = registry.restore()?;
+            if let Some(destination) = requested {
+                let target = destination.saved_target();
+                let existing = states.iter().position(|state| {
+                    state.store.for_target(&target).is_some()
+                        || (state.first_launch && state.store.last().is_none())
+                });
+                let state = match existing {
+                    Some(index) => states.remove(index),
+                    None => registry.create()?,
+                };
+                return Ok(vec![(state, false)]);
+            }
+            if states.is_empty() {
+                return Ok(vec![(registry.create()?, true)]);
+            }
+            Ok(states
+                .into_iter()
+                .map(|state| {
+                    let picker = !state.first_launch && state.store.last().is_none();
+                    (state, picker)
+                })
+                .collect())
+        });
+        let windows = self.clone();
+        self.complete_open(restored, cx, move |states, cx| {
+            let result = states.and_then(|states| {
+                for (state, picker) in states {
+                    windows.open(state, destination.clone(), picker, cx)?;
+                }
+                Ok(())
             });
-            let state = match existing {
-                Some(index) => windows.remove(index),
-                None => self.0.registry.create()?,
-            };
-            return self.open(state, Some(destination), false, cx);
-        }
-        if windows.is_empty() {
-            return self.new_window(cx);
-        }
-        for state in windows {
-            let picker = !state.first_launch && state.store.last().is_none();
-            self.open(state, None, picker, cx)?;
-        }
-        Ok(())
+            if let Err(error) = result {
+                eprintln!("Could not restore Desktop windows: {error:#}");
+                windows.quit(cx);
+            }
+        });
     }
 
-    pub fn new_window(&self, cx: &mut App) -> Result<()> {
+    pub fn new_window(&self, cx: &mut App, failed: impl FnOnce(anyhow::Error, &mut App) + 'static) {
         if self.0.quitting.get() {
-            return Ok(());
+            return;
         }
-        self.open(self.0.registry.create()?, None, true, cx)
+        let created = self.0.storage.request(WindowRegistry::create);
+        let windows = self.clone();
+        self.complete_open(created, cx, move |state, cx| {
+            if let Err(error) = state.and_then(|state| windows.open(state, None, true, cx)) {
+                failed(error, cx);
+            }
+        });
+    }
+
+    fn complete_open<T: 'static>(
+        &self,
+        request: Result<oneshot::Receiver<Result<T>>>,
+        cx: &mut App,
+        complete: impl FnOnce(Result<T>, &mut App) + 'static,
+    ) {
+        let request = match request {
+            Ok(request) => request,
+            Err(error) => {
+                complete(Err(error), cx);
+                return;
+            }
+        };
+        self.0.opening.set(self.0.opening.get() + 1);
+        let windows = self.clone();
+        cx.spawn(async move |cx| {
+            let result = request
+                .await
+                .context("Desktop window storage stopped")
+                .and_then(|result| result);
+            let _ = cx.update(|cx| {
+                windows.0.opening.set(windows.0.opening.get() - 1);
+                if !windows.0.quitting.get() {
+                    complete(result, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn open(
@@ -225,11 +339,11 @@ impl DesktopWindows {
         let Some(mut entry) = self.0.entries.borrow_mut().remove(&id) else {
             return true;
         };
-        let registry = self.0.registry.clone();
+        let storage = self.0.storage.clone();
         let state = entry.state.take();
         let closing = entry.lifetime.start_shutdown(move || {
             if let Some(state) = state
-                && let Err(error) = registry.close(state)
+                && let Err(error) = storage.close(state)
             {
                 eprintln!("Could not remove closed Desktop window: {error:#}");
             }
@@ -331,40 +445,69 @@ impl DesktopWindows {
                 Ok(())
             }
             Err(error) => {
-                self.0.quitting.set(false);
-                let (handles, displaced) = {
-                    let mut entries = self.0.entries.borrow_mut();
-                    let mut handles = Vec::new();
-                    let mut displaced = Vec::new();
-                    entries.retain(|id, entry| match self.0.registry.reclaim(*id) {
-                        Ok(state) => {
-                            entry.state = Some(state);
-                            handles.push(entry.handle);
-                            true
-                        }
-                        Err(error) => {
-                            eprintln!("Could not resume Desktop window: {error:#}");
-                            displaced.push(entry.handle);
-                            false
-                        }
-                    });
-                    (handles, displaced)
-                };
-                // A deferred update also covers the window currently handling Restart.
-                let windows = self.clone();
-                cx.defer(move |cx| {
-                    for handle in displaced {
-                        let _ = handle.update(cx, |_, window, _| window.remove_window());
-                    }
-                    for handle in handles {
-                        let _ = handle.update(cx, |view, window, cx| view.resume(window, cx));
-                    }
-                    if windows.0.entries.borrow().is_empty() {
-                        windows.quit(cx);
-                    }
+                let ids: Vec<_> = self.0.entries.borrow().keys().copied().collect();
+                let reclaimed = self.0.storage.request(move |registry| {
+                    Ok(ids
+                        .into_iter()
+                        .map(|id| (id, registry.reclaim(id)))
+                        .collect::<Vec<_>>())
                 });
+                let windows = self.clone();
+                cx.spawn(async move |cx| {
+                    let states = match reclaimed {
+                        Ok(reclaimed) => reclaimed
+                            .await
+                            .context("Desktop window storage stopped")
+                            .and_then(|result| result),
+                        Err(error) => Err(error),
+                    };
+                    let _ = cx.update(|cx| windows.resume_windows(states, cx));
+                })
+                .detach();
                 Err(error)
             }
+        }
+    }
+    fn resume_windows(&self, states: Result<Vec<(Uuid, Result<WindowState>)>>, cx: &mut App) {
+        self.0.quitting.set(false);
+        let states = match states {
+            Ok(states) => states,
+            Err(error) => {
+                eprintln!("Could not reclaim Desktop windows: {error:#}");
+                self.quit(cx);
+                return;
+            }
+        };
+        for (id, state) in states {
+            let handle = {
+                let mut entries = self.0.entries.borrow_mut();
+                let Some(entry) = entries.get_mut(&id) else {
+                    continue;
+                };
+                match state {
+                    Ok(state) => {
+                        entry.state = Some(state);
+                        Ok(entry.handle)
+                    }
+                    Err(error) => {
+                        eprintln!("Could not resume Desktop window: {error:#}");
+                        let handle = entry.handle;
+                        entries.remove(&id);
+                        Err(handle)
+                    }
+                }
+            };
+            match handle {
+                Ok(handle) => {
+                    let _ = handle.update(cx, |view, window, cx| view.resume(window, cx));
+                }
+                Err(handle) => {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                }
+            }
+        }
+        if self.0.entries.borrow().is_empty() {
+            self.quit(cx);
         }
     }
 }

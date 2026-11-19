@@ -348,12 +348,12 @@ impl WorkspaceView {
         let windows = self.windows.clone();
         let owner = cx.entity().downgrade();
         cx.defer(move |cx| {
-            if let Err(error) = windows.new_window(cx) {
+            windows.new_window(cx, move |error, cx| {
                 let _ = owner.update(cx, |view, cx| {
                     view.error = Some(format!("{error:#}"));
                     cx.notify();
                 });
-            }
+            });
         });
     }
 

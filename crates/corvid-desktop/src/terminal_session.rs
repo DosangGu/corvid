@@ -503,22 +503,78 @@ pub(crate) fn session_runtime() -> Result<&'static tokio::runtime::Runtime> {
 
 type ParkedLink = (Destination, ControlEndpoint, InteractiveConnection);
 
+enum ParkedCommand {
+    Insert(Box<ParkedLink>),
+    Take {
+        destination: Destination,
+        host: Option<String>,
+        epoch: Option<String>,
+        reply: oneshot::Sender<Option<ParkedLink>>,
+    },
+    Clear(oneshot::Sender<()>),
+}
+
 #[derive(Clone, Default)]
-pub struct ParkedConnections(Arc<std::sync::Mutex<Vec<ParkedLink>>>);
+pub struct ParkedConnections(Arc<std::sync::OnceLock<mpsc::Sender<ParkedCommand>>>);
 
 impl ParkedConnections {
-    fn insert(
+    fn start(&self, runtime: &tokio::runtime::Runtime) {
+        self.0.get_or_init(|| {
+            let (sender, mut incoming) = mpsc::channel(8);
+            runtime.spawn(async move {
+                let mut links: Vec<ParkedLink> = Vec::new();
+                while let Some(command) = incoming.recv().await {
+                    match command {
+                        ParkedCommand::Insert(link) => {
+                            links.retain(|(destination, _, _)| *destination != link.0);
+                            if links.len() == 8 {
+                                links.remove(0);
+                            }
+                            links.push(*link);
+                        }
+                        ParkedCommand::Take {
+                            destination,
+                            host,
+                            epoch,
+                            reply,
+                        } => {
+                            let index = links.iter().position(|(key, _, link)| {
+                                *key == destination
+                                    && host
+                                        .as_deref()
+                                        .is_none_or(|host| host == link.session().host_id)
+                                    && epoch
+                                        .as_deref()
+                                        .is_none_or(|epoch| epoch == link.session().server_epoch)
+                            });
+                            let _ = reply.send(index.map(|index| links.remove(index)));
+                        }
+                        ParkedCommand::Clear(reply) => {
+                            links.clear();
+                            let _ = reply.send(());
+                        }
+                    }
+                }
+            });
+            sender
+        });
+    }
+
+    async fn insert(
         &self,
         destination: Destination,
         endpoint: ControlEndpoint,
         link: InteractiveConnection,
     ) {
-        let mut connections = self.0.lock().expect("parked connections");
-        connections.retain(|(key, _, _)| key != &destination);
-        if connections.len() == 8 {
-            connections.remove(0);
+        if let Some(sender) = self.0.get() {
+            let _ = sender
+                .send(ParkedCommand::Insert(Box::new((
+                    destination,
+                    endpoint,
+                    link,
+                ))))
+                .await;
         }
-        connections.push((destination, endpoint, link));
     }
 
     async fn take(
@@ -527,15 +583,18 @@ impl ParkedConnections {
         host: Option<&str>,
         epoch: Option<&str>,
     ) -> Option<(ControlEndpoint, InteractiveConnection)> {
-        let (_, endpoint, mut link) = {
-            let mut connections = self.0.lock().expect("parked connections");
-            let index = connections.iter().position(|(key, _, link)| {
-                key == destination
-                    && host.is_none_or(|host| host == link.session().host_id)
-                    && epoch.is_none_or(|epoch| epoch == link.session().server_epoch)
-            })?;
-            connections.remove(index)
-        };
+        let (reply, result) = oneshot::channel();
+        self.0
+            .get()?
+            .send(ParkedCommand::Take {
+                destination: destination.clone(),
+                host: host.map(str::to_owned),
+                epoch: epoch.map(str::to_owned),
+                reply,
+            })
+            .await
+            .ok()?;
+        let (_, endpoint, mut link) = result.await.ok()??;
         let alive = timeout(Duration::from_millis(750), async {
             let id = link
                 .send(Body::Ping(corvid_protocol::wire::Ping {}))
@@ -549,7 +608,12 @@ impl ParkedConnections {
     }
 
     pub fn clear(&self) {
-        self.0.lock().expect("parked connections").clear();
+        if let Some(sender) = self.0.get() {
+            let (reply, result) = oneshot::channel();
+            if sender.blocking_send(ParkedCommand::Clear(reply)).is_ok() {
+                let _ = result.blocking_recv();
+            }
+        }
     }
 }
 
@@ -640,17 +704,9 @@ impl Session {
         parked: ParkedConnections,
     ) -> Result<Connection> {
         let runtime = session_runtime()?;
+        parked.start(runtime);
         let settings = settings.into();
         let state_dir = settings.state.clone();
-        let target = if matches!(target, AttachTarget::Default) {
-            store
-                .for_target(&destination.saved_target())
-                .map(AttachTarget::Restore)
-                .unwrap_or(target)
-        } else {
-            target
-        };
-        let restoring = matches!(target, AttachTarget::Restore(_));
         let grid = Grid::new(26, 112);
         let shared = Arc::new(Shared::new(&destination, runtime));
         let (actions, incoming) = mpsc::channel(32);
@@ -658,29 +714,38 @@ impl Session {
         let (size, sizes) = watch::channel((0, 0, grid));
         let (activation, activations) = mpsc::channel(1);
         let (close, closing) = oneshot::channel();
-        let requests = Requests {
-            monitor: settings,
-            recorder: match store.recorder() {
-                Ok(recorder) => Some(recorder),
-                Err(error) => {
-                    eprintln!("corvid: could not save Desktop views: {error:#}");
-                    None
-                }
-            },
-            actions: incoming,
-            sizes,
-            activation,
-            prompts: Prompts(prompt_sender),
-            host: None,
-            terminal: None,
-            closing,
-            parked,
-        };
         let (stop, mut stopped) = oneshot::channel();
         let state = Arc::clone(&shared);
         let thread = thread::Builder::new()
             .name("corvid-desktop-client".into())
             .spawn(move || {
+                let target = if matches!(target, AttachTarget::Default) {
+                    store
+                        .for_target(&destination.saved_target())
+                        .map(AttachTarget::Restore)
+                        .unwrap_or(target)
+                } else {
+                    target
+                };
+                let restoring = matches!(target, AttachTarget::Restore(_));
+                let requests = Requests {
+                    monitor: settings,
+                    recorder: match store.recorder() {
+                        Ok(recorder) => Some(recorder),
+                        Err(error) => {
+                            eprintln!("corvid: could not save Desktop views: {error:#}");
+                            None
+                        }
+                    },
+                    actions: incoming,
+                    sizes,
+                    activation,
+                    prompts: Prompts(prompt_sender),
+                    host: None,
+                    terminal: None,
+                    closing,
+                    parked,
+                };
                 let result = runtime.block_on(async {
                     let mut agent_deck = agent_deck::Job::default();
                     let result = {
@@ -1580,7 +1645,7 @@ async fn run(
             .iter()
             .any(|cap| cap == corvid_protocol::PARK_TERMINAL_CAPABILITY);
     match timeout(DETACH_TIMEOUT, client.detach(keep_connection)).await {
-        Ok(Ok(true)) => parked.insert(destination, endpoint, client.link),
+        Ok(Ok(true)) => parked.insert(destination, endpoint, client.link).await,
         Ok(Ok(false)) => {}
         Ok(Err(error)) => eprintln!("Desktop detach was not acknowledged: {error:#}"),
         Err(_) => eprintln!("Timed out waiting for Desktop detach"),

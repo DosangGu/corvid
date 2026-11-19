@@ -443,18 +443,11 @@ impl WorkspaceView {
             .map(Session::ui)
             .filter(|ui| ui.connected && self.destination.as_ref() == Some(&destination));
         let known_endpoint = current.as_ref().and_then(|ui| ui.endpoint.clone());
-        let expected_host = current
-            .and_then(|ui| ui.host_id)
-            .or_else(|| {
-                self.known_sessions
-                    .get(&destination)
-                    .map(|known| known.host_id.clone())
-            })
-            .or_else(|| {
-                self.store
-                    .for_target(&destination.saved_target())
-                    .map(|saved| saved.host_id.to_string())
-            });
+        let expected_host = current.and_then(|ui| ui.host_id).or_else(|| {
+            self.known_sessions
+                .get(&destination)
+                .map(|known| known.host_id.clone())
+        });
         draft.prepared = None;
         draft.browser = None;
         draft.queries = None;
@@ -467,6 +460,7 @@ impl WorkspaceView {
             self.agent_deck.state.clone(),
             known_endpoint,
             expected_host,
+            self.store.clone(),
         );
         let (queries, mut updates, mut prompts) = match result {
             Ok(channels) => channels,
