@@ -13,7 +13,8 @@ use crate::terminal_session::Grid;
 mod graphic;
 
 pub const BACKGROUND: u32 = 0x12151a;
-const FOREGROUND: u32 = 0xe2e8f0;
+const FOREGROUND: u32 = 0xcdd3dc;
+const DIM_FOREGROUND: u32 = 0x8993a2;
 
 #[cfg(test)]
 mod performance;
@@ -106,7 +107,14 @@ impl Style {
             std::mem::swap(&mut fg, &mut bg);
         }
         if cell.dim() {
-            fg = dim_foreground(fg, bg);
+            fg = if !cell.inverse()
+                && cell.fgcolor() == Color::Default
+                && cell.bgcolor() == Color::Default
+            {
+                DIM_FOREGROUND
+            } else {
+                dim_foreground(fg, bg)
+            };
         }
         Self {
             fg,
@@ -383,8 +391,8 @@ fn text_run(len: usize, style: Style, family: &SharedString) -> TextRun {
 
 fn color(color: Color, default: u32) -> u32 {
     const ANSI: [u32; 16] = [
-        0x000000, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
-        0xf14c4c, 0x23d18b, 0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
+        0x000000, 0xeb777d, 0x0dbc79, 0xe5e510, 0x6ca9ec, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
+        0xffa0a5, 0x23d18b, 0xf5f543, 0x9ccbff, 0xd670d6, 0x29b8db, 0xffffff,
     ];
     let rgb = |r: u8, g: u8, b: u8| u32::from_be_bytes([0, r, g, b]);
     match color {
@@ -422,7 +430,7 @@ mod tests {
         assert_eq!(
             colors,
             [
-                ("A", 0x7a7e85, BACKGROUND),
+                ("A", 0x8993a2, BACKGROUND),
                 ("B", 0x888480, 0x204060),
                 ("C", 0x888480, 0xf0c8a0),
                 ("D", 0x204060, 0xf0c8a0),
