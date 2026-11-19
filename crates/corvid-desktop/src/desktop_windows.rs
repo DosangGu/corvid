@@ -40,6 +40,7 @@ struct Inner {
     settings: agent_deck::Settings,
     entries: RefCell<HashMap<Uuid, Entry>>,
     quitting: Cell<bool>,
+    applying: Cell<bool>,
     ready_to_quit: Cell<bool>,
     closing: RefCell<Vec<watch::Receiver<()>>>,
 }
@@ -98,6 +99,7 @@ impl DesktopWindows {
             settings,
             entries: RefCell::new(HashMap::new()),
             quitting: Cell::new(false),
+            applying: Cell::new(false),
             ready_to_quit: Cell::new(false),
             closing: RefCell::new(Vec::new()),
         })))
@@ -186,7 +188,51 @@ impl DesktopWindows {
         }
     }
 
-    pub fn restore(&self, destination: Option<Destination>, cx: &mut App) {
+    pub fn set_applying(&self, value: bool) {
+        self.0.applying.set(value);
+    }
+
+    pub fn watch_installed_version(&self, cx: &mut App) {
+        let Ok(Some(install)) = corvid_update::Installation::detect() else {
+            return;
+        };
+        if install.root.is_none() {
+            return;
+        }
+        if let Err(error) = install.resume_retirement() {
+            eprintln!("Could not resume Corvid cleanup: {error:#}");
+        }
+        let windows = self.clone();
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |cx| {
+            loop {
+                executor.timer(std::time::Duration::from_secs(3)).await;
+                let install = install.clone();
+                let replacement = executor
+                    .spawn(async move { install.selected_replacement() })
+                    .await;
+                if let Ok(Some(next)) = replacement {
+                    let _ = cx.update(|cx| {
+                        if !windows.0.applying.get() && !windows.0.quitting.get() {
+                            windows.restart(
+                                Rc::new(next),
+                                |e, _| eprintln!("Could not switch Desktop versions: {e:#}"),
+                                cx,
+                            );
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub fn restore(
+        &self,
+        destination: Option<Destination>,
+        ready_dir: Option<std::path::PathBuf>,
+        cx: &mut App,
+    ) {
         let requested = destination.clone();
         let restored = self.0.storage.request(move |registry| {
             let mut states = registry.restore()?;
@@ -218,6 +264,16 @@ impl DesktopWindows {
             let result = states.and_then(|states| {
                 for (state, picker) in states {
                     windows.open(state, destination.clone(), picker, cx)?;
+                }
+                if let Some(path) = ready_dir {
+                    anyhow::ensure!(
+                        path.parent() == Some(std::env::temp_dir().as_path())
+                            && path.file_name().is_some_and(|n| n
+                                .to_string_lossy()
+                                .starts_with("corvid-desktop-ready-")),
+                        "invalid Desktop startup acknowledgment directory"
+                    );
+                    std::fs::File::create_new(path.join("ready"))?;
                 }
                 Ok(())
             });
@@ -415,21 +471,7 @@ impl DesktopWindows {
         }
         let pending = self.start_shutdown();
         let windows = self.clone();
-        cx.spawn(async move |cx| {
-            wait_for_shutdown(pending).await;
-            let _ = cx.update(|cx| {
-                if let Err(error) = windows.finish_restart(&installed, cx) {
-                    failed(error, cx);
-                }
-            });
-        })
-        .detach();
-    }
-
-    fn finish_restart(&self, installed: &corvid_update::Installed, cx: &mut App) -> Result<()> {
-        for entry in self.0.entries.borrow_mut().values_mut() {
-            entry.state.take();
-        }
+        let installed = (*installed).clone();
         let args = vec![
             std::ffi::OsString::from("--state-dir"),
             self.0.settings.state.clone().into_os_string(),
@@ -439,7 +481,31 @@ impl DesktopWindows {
             "--pipe-instance".into(),
             self.0.settings.pipe_instance.clone().into(),
         ]);
-        match installed.start_desktop_with_args(args) {
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |cx| {
+            wait_for_shutdown(pending).await;
+            let released = cx.update(|_| {
+                for entry in windows.0.entries.borrow_mut().values_mut() {
+                    entry.state.take();
+                }
+            });
+            if released.is_err() {
+                return;
+            }
+            let started = executor
+                .spawn(async move { installed.start_desktop_with_args(args) })
+                .await;
+            let _ = cx.update(|cx| {
+                if let Err(error) = windows.finish_restart(started, cx) {
+                    failed(error, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn finish_restart(&self, started: Result<()>, cx: &mut App) -> Result<()> {
+        match started {
             Ok(()) => {
                 self.quit_after_shutdown(cx);
                 Ok(())

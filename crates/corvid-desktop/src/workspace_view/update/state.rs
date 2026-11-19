@@ -24,28 +24,39 @@ pub(crate) struct State {
     pub(super) installation: Result<Option<Installation>, String>,
     pub(super) phase: Phase,
     pub(super) release: Option<Release>,
+    pub(super) prepared: Option<std::sync::Arc<corvid_update::Prepared>>,
     pub(super) installed: Option<Rc<Installed>>,
     pub(super) last_checked: Option<SystemTime>,
     pub(super) error: Option<Failure>,
     pub(super) details_open: bool,
+    pub(super) cleanup_pending: bool,
 }
 
 impl Default for State {
     fn default() -> Self {
+        let installation = Installation::detect()
+            .and_then(|installation| {
+                anyhow::ensure!(
+                    installation.as_ref().is_none_or(|install| {
+                        install.package.product == corvid_update::Product::Desktop
+                    }),
+                    "Desktop package metadata identifies another product"
+                );
+                Ok(installation)
+            })
+            .map_err(|error| format!("{error:#}"));
+        let cleanup_pending = installation
+            .as_ref()
+            .ok()
+            .and_then(|i| i.as_ref())
+            .and_then(Installation::pending_retirement)
+            .is_some_and(|p| p.is_file());
         Self {
-            installation: Installation::detect()
-                .and_then(|installation| {
-                    anyhow::ensure!(
-                        installation.as_ref().is_none_or(|install| {
-                            install.package.product == corvid_update::Product::Desktop
-                        }),
-                        "Desktop package metadata identifies another product"
-                    );
-                    Ok(installation)
-                })
-                .map_err(|error| format!("{error:#}")),
+            installation,
+            cleanup_pending,
             phase: Phase::Idle,
             release: None,
+            prepared: None,
             installed: None,
             last_checked: None,
             error: None,
@@ -108,16 +119,31 @@ impl State {
         Some((installation, release))
     }
 
+    pub(super) fn prepared(&mut self, result: anyhow::Result<corvid_update::Prepared>) {
+        match result {
+            Ok(prepared) => {
+                self.prepared = Some(std::sync::Arc::new(prepared));
+                self.phase = Phase::Ready;
+            }
+            Err(error) => self.installed(Err(error)),
+        }
+    }
+
     pub(super) fn installed(&mut self, result: anyhow::Result<Installed>) {
         match result {
             Ok(installed) => {
+                self.prepared = None;
                 self.installed = Some(Rc::new(installed));
                 self.phase = Phase::Ready;
             }
             Err(error) => {
-                self.phase = Phase::Available;
+                self.phase = if self.prepared.is_some() {
+                    Phase::Ready
+                } else {
+                    Phase::Available
+                };
                 self.error = Some(Failure {
-                    summary: "Could not prepare the update. Try again when you are ready.",
+                    summary: "Could not apply the update. Try again when you are ready.",
                     detail: format!("{error:#}"),
                 });
             }

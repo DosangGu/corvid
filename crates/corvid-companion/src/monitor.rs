@@ -165,12 +165,30 @@ impl Scope {
     }
 
     pub async fn ensure_running(&self, executable: &Path) -> Result<()> {
+        self.start_monitor(executable, false).await
+    }
+
+    pub async fn refresh_running(&self, executable: &Path) -> Result<()> {
+        self.start_monitor(executable, true).await
+    }
+
+    async fn start_monitor(&self, executable: &Path, running_only: bool) -> Result<()> {
         let directory = StateDirectory::create_all(&self.state.join("monitor"))?;
         let _startup = wait_for_lock(|| directory.lock_startup())
             .await
             .context("waiting for agent monitor startup")?;
         if let Some(mut client) = self.connected().await? {
-            if supports_current_layout(&client) {
+            if supports_current_layout(&client)
+                && client
+                    .session()
+                    .daemon_version
+                    .as_deref()
+                    .and_then(|v| semver::Version::parse(v).ok())
+                    .is_some_and(|v| {
+                        v >= semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                            .expect("valid workspace version")
+                    })
+            {
                 return Ok(());
             }
             let reply = timeout(
@@ -190,6 +208,8 @@ impl Scope {
             let _retired = wait_for_lock(|| state.lock_storage())
                 .await
                 .context("waiting for the previous agent monitor to exit")?;
+        } else if running_only {
+            return Ok(());
         }
 
         let mut command = Command::new(executable);

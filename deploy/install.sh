@@ -91,6 +91,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+if [ -n "${CORVID_EXPECT_CURRENT:-}" ]; then
+    [ "$(readlink "$install_root/current")" = "versions/$CORVID_EXPECT_CURRENT" ] || fail 'The active version changed while preparing this update'
+fi
 receipt="{\"schema_version\":1,\"product\":\"$product\"}"
 if [ -f "$install_root/install.json" ]; then
     [ "$(cat "$install_root/install.json")" = "$receipt" ] || fail 'This directory belongs to another installation'
@@ -174,4 +177,6 @@ if [ "$platform:$product" = Darwin:desktop ]; then
 fi
 printf 'CORVID_EXECUTABLE=%s/%scorvid\n' "$destination" "$payload"
 case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add %s to PATH to run Corvid.\n' "$bin_dir" ;; esac
-printf 'Running daemons were left unchanged. Use corvid upgrade for an automatically started daemon; use the service manager for a supervised daemon.\n'
+trap - EXIT INT TERM
+cleanup
+"$destination/${payload}corvid" finish-update

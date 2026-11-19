@@ -48,7 +48,7 @@ pub(super) fn run(options: Options) -> Result<u32> {
     })?;
     print!("{}", installed.message);
     println!(
-        "Update installed. Reopen Corvid when you are ready. Running terminal jobs continue; server updates are separate."
+        "The selected Corvid package is active. Existing terminal sessions finish on their retained hosts."
     );
     Ok(0)
 }

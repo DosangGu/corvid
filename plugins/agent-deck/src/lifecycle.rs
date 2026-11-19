@@ -16,6 +16,19 @@ use crate::connection::Client;
 mod process;
 use process::Process;
 
+/// Older Desktop packages use the same GPUI message loop as Deck.
+pub async fn close_legacy_desktop(pid: u32, image: &Path) -> Result<()> {
+    let process = Process::open(pid)?;
+    ensure!(
+        image
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("corvid-desktop.exe"))
+            && std::fs::canonicalize(process.image_path()?)? == std::fs::canonicalize(image)?,
+        "the running Desktop image changed"
+    );
+    process.quit().await
+}
+
 /// Reuse a current/newer Deck or replace an older one from this controller's
 /// private endpoint. A startup sweep never starts a previously stopped Deck.
 pub async fn ensure_current(

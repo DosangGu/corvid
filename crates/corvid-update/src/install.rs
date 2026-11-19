@@ -26,6 +26,14 @@ struct Receipt {
     product: Product,
 }
 
+pub struct Prepared {
+    installation: Installation,
+    release: Release,
+    assets: tempfile::TempDir,
+    expected: Option<String>,
+}
+
+#[derive(Clone)]
 pub struct Installed {
     pub executable: PathBuf,
     pub message: String,
@@ -132,6 +140,91 @@ impl Installation {
         })
     }
 
+    /// Resolve the installer-selected CLI, including the CLI inside a macOS bundle.
+    pub fn active_executable(&self) -> Result<Option<PathBuf>> {
+        let Some(root) = &self.root else {
+            return Ok(None);
+        };
+        let directory = if cfg!(windows) {
+            let install = WindowsInstall { root };
+            install.version_directory(&current_windows_version(&install)?)
+        } else {
+            let current = fs::read_link(root.join("current"))?;
+            let name = current
+                .file_name()
+                .and_then(|n| n.to_str())
+                .context("invalid current link")?;
+            ensure!(
+                name == version(name)?.to_string() && current == Path::new("versions").join(name),
+                "invalid current link"
+            );
+            root.join(current)
+        };
+        let executable = if self.package.product == Product::Desktop && cfg!(target_os = "macos") {
+            directory.join("Corvid.app/Contents/MacOS/corvid")
+        } else {
+            directory.join(format!("corvid{}", std::env::consts::EXE_SUFFIX))
+        };
+        Ok(Some(executable))
+    }
+
+    pub fn selected_replacement(&self) -> Result<Option<Installed>> {
+        let Some(executable) = self.active_executable()? else {
+            return Ok(None);
+        };
+        let current = layout::for_executable(&executable)?
+            .package_directory()
+            .to_owned();
+        if current
+            .file_name()
+            .is_some_and(|n| n == self.package.version.as_str())
+        {
+            return Ok(None);
+        }
+        let selected = Installation::at(&executable)?;
+        ensure!(
+            selected.root == self.root && selected.package.product == self.package.product,
+            "replacement belongs to another installation"
+        );
+        Ok(Some(Installed {
+            executable,
+            message: String::new(),
+        }))
+    }
+
+    pub fn pending_retirement(&self) -> Option<PathBuf> {
+        self.root
+            .as_ref()
+            .map(|root| root.join(format!(".retirement-{}.pending", self.package.version)))
+    }
+
+    /// A pending marker survives logout or a machine restart.
+    pub fn resume_retirement(&self) -> Result<()> {
+        if self.pending_retirement().is_some_and(|p| p.is_file())
+            && let Some(active) = self.active_executable()?
+            && self.selected_replacement()?.is_none()
+        {
+            Self::start_retirement_worker(&active)?;
+        }
+        Ok(())
+    }
+
+    pub fn start_retirement_worker(executable: &Path) -> Result<()> {
+        let mut child = download::command(executable);
+        child
+            .args(["finish-update", "--retry"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            child.process_group(0);
+        }
+        child.spawn().context("starting deferred update cleanup")?;
+        Ok(())
+    }
+
     pub fn is_windows_setup(&self) -> bool {
         self.windows_setup
     }
@@ -146,11 +239,30 @@ impl Installation {
         release: &Release,
         mut progress: impl FnMut(InstallProgress),
     ) -> Result<Installed> {
+        let prepared = self.prepare(release, &mut progress)?;
+        progress(InstallProgress::Installing);
+        prepared.apply()
+    }
+
+    pub fn prepare(
+        &self,
+        release: &Release,
+        mut progress: impl FnMut(InstallProgress),
+    ) -> Result<Prepared> {
+        let prepared = Prepared {
+            installation: self.clone(),
+            release: release.clone(),
+            expected: self
+                .active_executable()?
+                .map(|p| Self::at(&p).map(|i| i.package.version))
+                .transpose()?,
+            assets: tempfile::tempdir()?,
+        };
         #[cfg(windows)]
         if self.is_windows_setup() {
-            return windows_setup::install(self, release, progress);
+            windows_setup::prepare(self, release, prepared.assets.path(), &mut progress)?;
+            return Ok(prepared);
         }
-
         let product = self.package.product;
         let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
         let archive = format!(
@@ -177,7 +289,7 @@ impl Installation {
             256 * 1024,
         )?;
         download::verify(&script, script_asset.size, &script_asset.sha256)?;
-        let temporary = tempfile::tempdir()?;
+        let temporary = &prepared.assets;
         let script_path = temporary.path().join(script_name);
         fs::write(&script_path, script)?;
         let archive_path = temporary.path().join(&archive);
@@ -192,21 +304,7 @@ impl Installation {
             temporary.path().join(format!("{archive}.sha256")),
             format!("{}  {archive}\n", asset.sha256),
         )?;
-        let mut command = self.installer_command(&script_path, temporary.path(), release, asset);
-        progress(InstallProgress::Installing);
-        let output = command.output().context("running the Corvid installer")?;
-        ensure!(
-            output.status.success(),
-            "installation failed: {}\n{}",
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
-        );
-        let message = String::from_utf8(output.stdout).context("reading installer result")?;
-        let installed = message
-            .lines()
-            .find_map(|line| line.strip_prefix("CORVID_EXECUTABLE="))
-            .context("installer did not return its executable")?;
-        self.installed(PathBuf::from(installed), release, message)
+        Ok(prepared)
     }
 
     fn installed(
@@ -290,6 +388,58 @@ impl Installation {
     }
 }
 
+impl Prepared {
+    pub fn apply(&self) -> Result<Installed> {
+        #[cfg(windows)]
+        if self.installation.is_windows_setup() {
+            return windows_setup::apply(
+                &self.installation,
+                &self.release,
+                self.assets.path(),
+                self.expected.as_deref(),
+            );
+        }
+        let release = &self.release;
+        let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
+        let product = self.installation.package.product;
+        let archive = format!(
+            "corvid-{}-{}-{}.{}",
+            product.as_str(),
+            release.version,
+            target(product)?,
+            extension
+        );
+        let asset = release.asset(&archive)?;
+        let script = self.assets.path().join(if cfg!(windows) {
+            "install.ps1"
+        } else {
+            "install.sh"
+        });
+        let mut command =
+            self.installation
+                .installer_command(&script, self.assets.path(), release, asset);
+        if let Some(expected) = &self.expected {
+            command.env("CORVID_EXPECT_CURRENT", expected);
+        } else {
+            command.env_remove("CORVID_EXPECT_CURRENT");
+        }
+        let output = command.output().context("running the Corvid installer")?;
+        ensure!(
+            output.status.success(),
+            "installation failed: {}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let message = String::from_utf8(output.stdout).context("reading installer result")?;
+        let installed = message
+            .lines()
+            .find_map(|line| line.strip_prefix("CORVID_EXECUTABLE="))
+            .context("installer did not return its executable")?;
+        self.installation
+            .installed(PathBuf::from(installed), release, message)
+    }
+}
+
 impl Installed {
     pub fn start_desktop(&self) -> Result<()> {
         self.start_desktop_with_args(env::args_os().skip(1))
@@ -302,8 +452,32 @@ impl Installed {
         let binary = layout::for_executable(&self.executable)?.desktop();
         let mut command = download::command(binary);
         command.args(args);
-        command.spawn().context("restarting Corvid Desktop")?;
-        Ok(())
+        let metadata = layout::for_executable(&self.executable)?.package_metadata();
+        let package: serde_json::Value = serde_json::from_slice(&fs::read(metadata)?)?;
+        if package["update_protocol"].as_u64() != Some(1) {
+            command.spawn().context("restarting Corvid Desktop")?;
+            return Ok(());
+        }
+        let signal = tempfile::Builder::new()
+            .prefix("corvid-desktop-ready-")
+            .tempdir()?;
+        command.arg("--update-ready-directory").arg(signal.path());
+        let mut child = command.spawn().context("restarting Corvid Desktop")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                anyhow::bail!("replacement Desktop exited during startup: {status}");
+            }
+            if signal.path().join("ready").is_file() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                child.wait()?;
+                anyhow::bail!("replacement Desktop did not open its windows");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
 

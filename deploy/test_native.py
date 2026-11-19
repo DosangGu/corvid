@@ -113,7 +113,11 @@ def windows(previous, current, fixture):
         version = (root / "current.txt").read_text().strip()
         assert version != PREVIOUS
         check_payload(root / "versions" / version, "windows-setup")
-        assert old.is_dir()
+        # The old foreground daemon owns its image until run_lifecycle closes it.
+        deadline = time.monotonic() + 35
+        while old.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not old.exists(), "retirement worker did not collect the released package"
         result = command([executable, "--version"], capture_output=True)
         assert result.stdout.strip() == f"corvid {version}".encode()
     finally:

@@ -48,11 +48,30 @@ Name: "{group}\Corvid Terminal"; Filename: "{app}\bin\corvid.exe"; IconFilename:
 Name: "{autodesktop}\Corvid Desktop"; Filename: "{app}\bin\corvid-desktop.exe"; IconFilename: "{app}\corvid.ico"; AppUserModelID: "Corvid.Desktop"; Tasks: desktopicon
 
 [UninstallDelete]
+Type: files; Name: "{app}\.install-lock"
+Type: files; Name: "{app}\.retirement-*.pending"
+Type: dirifempty; Name: "{app}\.retiring"
 Type: files; Name: "{app}\current.txt"
 Type: files; Name: "{app}\current.txt.pending"
 Type: files; Name: "{app}\setup-update.lock"
 
 [Code]
+var
+  PublicationLock: TFileStream;
+
+procedure ReleasePublicationLock;
+begin
+  if PublicationLock <> nil then
+  begin
+    PublicationLock.Free;
+    PublicationLock := nil;
+  end;
+end;
+
+procedure DeinitializeSetup;
+begin
+  ReleasePublicationLock;
+end;
 function MoveFileEx(ExistingFile, NewFile: string; Flags: Cardinal): Boolean;
   external 'MoveFileExW@kernel32.dll stdcall';
 
@@ -64,6 +83,22 @@ begin
   if FileExists(ExpandConstant('{app}\install.json')) then
   begin
     Result := 'This folder belongs to the Corvid script installer. Select a different folder.';
+    exit;
+  end;
+
+  if not ForceDirectories(ExpandConstant('{app}')) then
+  begin
+    Result := 'Could not create the installation directory.';
+    exit;
+  end;
+  try
+    ReleasePublicationLock;
+    if FileExists(ExpandConstant('{app}\.install-lock')) then
+      PublicationLock := TFileStream.Create(ExpandConstant('{app}\.install-lock'), fmOpenReadWrite or fmShareExclusive)
+    else
+      PublicationLock := TFileStream.Create(ExpandConstant('{app}\.install-lock'), fmCreate);
+  except
+    Result := 'Another process is updating this installation. Retry shortly.';
     exit;
   end;
 
@@ -79,6 +114,7 @@ end;
 procedure CurStepChanged(Step: TSetupStep);
 var
   PointerFile, TemporaryFile: String;
+  Code: Integer;
 begin
   if Step <> ssPostInstall then
     exit;
@@ -88,6 +124,10 @@ begin
     RaiseException('Could not write the Corvid version pointer.');
   if not MoveFileEx(TemporaryFile, PointerFile, 9) then
     RaiseException('Could not activate this Corvid version.');
+  ReleasePublicationLock;
+  if not Exec(ExpandConstant('{app}\versions\{#Release}\corvid.exe'), 'finish-update', '',
+      SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+    RaiseException('Corvid was activated, but update cleanup could not finish.');
 end;
 
 procedure RemoveOwnedLinks(const Folder: String);

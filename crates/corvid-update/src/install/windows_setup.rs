@@ -3,10 +3,47 @@ use std::ffi::OsString;
 
 use super::*;
 
-pub(super) fn install(
+pub(super) fn prepare(
     installation: &Installation,
     release: &Release,
+    assets: &Path,
     mut progress: impl FnMut(InstallProgress),
+) -> Result<()> {
+    let root = installation
+        .root
+        .as_deref()
+        .context("missing Windows Setup root")?;
+    let current = current_windows_version(&WindowsInstall { root })?;
+    if release.version == current {
+        return Ok(());
+    }
+    ensure!(
+        release.version.cmp_precedence(&current) == Ordering::Greater,
+        "a newer version is already active"
+    );
+    let name = format!(
+        "corvid-desktop-{}-{}-setup.exe",
+        release.version, installation.package.target
+    );
+    let asset = release.asset(&name)?;
+    let setup = assets.join("setup.exe");
+    progress(InstallProgress::Downloading);
+    download::file(
+        &format!("{RELEASES}/download/v{}/{name}", release.version),
+        &setup,
+        asset.size,
+    )?;
+    progress(InstallProgress::Verifying);
+    download::verify_file(&setup, asset.size, &asset.sha256)?;
+
+    Ok(())
+}
+
+pub(super) fn apply(
+    installation: &Installation,
+    release: &Release,
+    assets: &Path,
+    expected: Option<&str>,
 ) -> Result<Installed> {
     let root = installation
         .root
@@ -32,29 +69,13 @@ pub(super) fn install(
         "a newer version is already active"
     );
 
-    let name = format!(
-        "corvid-desktop-{}-{}-setup.exe",
-        release.version, installation.package.target
-    );
-    let asset = release.asset(&name)?;
-    let temporary = tempfile::tempdir()?;
-    let setup = temporary.path().join(&name);
-    progress(InstallProgress::Downloading);
-    download::file(
-        &format!("{RELEASES}/download/v{}/{name}", release.version),
-        &setup,
-        asset.size,
-    )?;
-    progress(InstallProgress::Verifying);
-    download::verify_file(&setup, asset.size, &asset.sha256)?;
-
+    let setup = assets.join("setup.exe");
     let mut destination = OsString::from("/DIR=");
     destination.push(root);
     ensure!(
-        current_windows_version(&windows)? == current,
+        expected == Some(current.to_string().as_str()),
         "the active Windows Setup version changed during the download"
     );
-    progress(InstallProgress::Installing);
     let status = download::command(&setup)
         .args([
             "/SP-",

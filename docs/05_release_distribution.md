@@ -86,7 +86,7 @@ installation. A bin directory already owned by a different Corvid product or
 installation is not overwritten; use separate bin directories to keep both.
 
 Re-running the script performs an update through the same installation path.
-Existing version directories are verified and retained. A damaged version is
+The selected version is verified. Unused earlier packages are collected after activation. A damaged selected version is
 reported instead of overwritten while its processes may still use it. Linux
 installation uses a directory lock; after an interrupted installer, remove the
 reported stale lock only after verifying that no installer remains running.
@@ -123,10 +123,12 @@ updating an older installation, while the selected app carries the new icon.
 
 Stable launchers in `bin` read `current.txt` and start the selected executable
 under `versions\VERSION`. Updating atomically replaces this pointer, not a running
-EXE. Launchers are installed once and retain the v1 pointer contract. Previous
-application versions are retained; no automatic cleanup removes files that a
-terminal host or other process might still need. A future launcher-protocol change
-must include its own migration, rather than overwrite a live launcher.
+EXE. Launchers are installed once and retain the v1 pointer contract.
+The installer removes obsolete packages it owns. A retained terminal host,
+foreground daemon, or open client can pin a package until it exits. A background
+worker retries under the installation lock. A pending record also resumes cleanup
+on a subsequent Desktop or interactive CLI launch. Directories containing
+unrecognized files are reported and preserved.
 
 ## Check and install updates
 
@@ -151,18 +153,18 @@ with expandable technical details. Release notes open the selected release page.
 ![Last update check time in Settings](images/release-update-last-checked.png)
 
 For installations from Windows Setup, the scripts, or a portable archive,
-**Download update** downloads, verifies, and installs the selected release in
+**Download update** downloads and verifies the selected release in
 the background. The panel shows a loading indicator during checks and installation.
 Work continues when Settings is closed. Reopening Settings shows the current status.
 Repeated clicks cannot start concurrent checks or installations.
 
 Once prepared, the update offers **Restart to apply** and **Later**. Later closes
 Settings and keeps the prepared update available in the current app session.
-The managed installation's next launch also uses the new version. A restart
-failure leaves the app open, restores its terminal connection, and permits a retry.
-Terminal jobs remain owned by their existing daemon throughout this flow.
-On Windows, the restarted Desktop also replaces older running Agent Deck
-instances with its bundled version, including Decks hidden in the tray.
+**Restart to apply** runs the verified installer. New Desktop versions acknowledge
+startup after restoring their windows. A startup failure lets the previous
+Desktop reclaim its windows and reconnect. Managed Desktops also follow an
+external installation change. Existing Agent Deck instances refresh in their
+original scopes, including Decks hidden in the tray.
 Stopped Decks remain stopped. See [Deck lifetime](06_agent_deck.md#launch-and-lifetime).
 
 ![Available update in Settings](images/release-update-available.png)
@@ -193,9 +195,13 @@ the archive and its `.sha256` file from the same trusted release.
 
 ## Daemon lifecycle
 
-Package installation changes the installed files. When Desktop connects to an
-older local daemon, it attempts an automatic upgrade through the authenticated
-terminal handoff protocol. If the daemon declines the handoff or requires a
+After activation, the installer identifies processes by their installed executable.
+It requests authenticated handoff for older autostarted daemons, checks the replacement
+version and host epoch, and preserves live terminal hosts. Running companions and Decks
+refresh in their existing scopes. Windows Setup can also request a graceful exit from
+older Desktop releases. On Unix, a Desktop predating the update watcher finishes
+its switch the next time the user restarts it. Desktop also attempts handoff when it
+connects directly to an older local daemon. If the daemon declines the handoff or requires a
 service manager, Desktop connects using the capabilities that daemon supports.
 
 `corvid upgrade`, invoked through the newly installed executable, separately
@@ -274,10 +280,9 @@ directory to your user PATH. Setup builds are currently unsigned.
 
 Use **Settings → About & updates → Check for updates** to find available releases.
 **Download update** downloads the selected release's Windows Setup executable and
-verifies its exact size and SHA-256 against the release manifest. Desktop runs
-Setup in the background in the existing installation directory. When the new
-version becomes active, Desktop offers **Restart to apply**. Setup keeps older
-version directories and running terminal jobs continue through the update.
+verifies its exact size and SHA-256 against the release manifest. **Restart to
+apply** runs Setup in the existing installation directory. The installer collects
+unused versions and schedules cleanup for images that still serve active sessions.
 `corvid update` also supports forward updates for Setup installations.
 
 ![Windows Setup update available in Desktop](images/release-setup-update-available.jpg)

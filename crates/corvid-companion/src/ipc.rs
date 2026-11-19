@@ -10,7 +10,7 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, GetPresentationSlots, Pong, PresentationSlots};
 use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole,
-    ProtocolFault, Session, accept_hello, check_hello_result, hello,
+    ProtocolFault, Session, accept_hello_with_profiles, check_hello_result, hello,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -218,23 +218,30 @@ async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(
         .next_envelope()
         .await?
         .context("missing presentation Hello")?;
-    let (session, reply) =
-        match accept_hello(&request, PeerRole::Presentation, host, epoch, CAPABILITIES) {
-            Ok(accepted) => accepted,
-            Err(fault) => {
-                let reply = Envelope {
-                    protocol_major: PROTOCOL_MAJOR,
-                    protocol_minor: PROTOCOL_MINOR,
-                    request_id: request
-                        .request_id
-                        .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
-                    body: Some(Body::Error(fault.clone().into_wire())),
-                    ..Default::default()
-                };
-                writer.envelope(&reply).await?;
-                return Err(fault.into());
-            }
-        };
+    let (session, reply) = match accept_hello_with_profiles(
+        &request,
+        PeerRole::Presentation,
+        host,
+        epoch,
+        CAPABILITIES,
+        &[],
+        Some(env!("CARGO_PKG_VERSION")),
+    ) {
+        Ok(accepted) => accepted,
+        Err(fault) => {
+            let reply = Envelope {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: PROTOCOL_MINOR,
+                request_id: request
+                    .request_id
+                    .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
+                body: Some(Body::Error(fault.clone().into_wire())),
+                ..Default::default()
+            };
+            writer.envelope(&reply).await?;
+            return Err(fault.into());
+        }
+    };
     writer.envelope(&reply).await?;
     Ok(Peer {
         session,

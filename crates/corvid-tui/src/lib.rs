@@ -3,6 +3,7 @@ mod companion;
 mod hooks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux;
+mod retirement;
 mod update;
 #[cfg(windows)]
 mod windows;
@@ -63,7 +64,13 @@ enum Command {
         #[arg(long)]
         epoch: Uuid,
     },
-    /// Check for or install a GitHub release without restarting the daemon.
+    /// Finish activation using the package surrounding this executable.
+    #[command(hide = true)]
+    FinishUpdate {
+        #[arg(long)]
+        retry: bool,
+    },
+    /// Check for or install a GitHub release.
     Update(update::Options),
     /// Run or use the local controller companion.
     Companion(companion::Options),
@@ -223,6 +230,15 @@ pub fn run() -> ExitCode {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let started = Instant::now();
     let options = Options::parse();
+    if (options.command.is_none()
+        || std::env::args_os()
+            .nth(1)
+            .is_some_and(|arg| arg == "attach"))
+        && let Ok(Some(installation)) = corvid_update::Installation::detect()
+        && let Err(error) = installation.resume_retirement()
+    {
+        eprintln!("Could not resume Corvid cleanup: {error:#}");
+    }
     let daemon_runtime = options.runtime_dir;
 
     let result = match options.command {
@@ -280,6 +296,7 @@ pub fn run() -> ExitCode {
             windows::desktop_handoff(&runtime, host, epoch).await?;
             Ok(0)
         }),
+        Some(Command::FinishUpdate { retry }) => execute(retirement::run(retry)),
         Some(Command::Update(options)) => update::run(options),
         Some(Command::Companion(companion)) => execute(async move {
             companion::execute(companion, daemon_runtime).await?;

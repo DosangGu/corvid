@@ -111,7 +111,8 @@ fn observer_hooks(provider: Provider, executable: &str) -> Map<String, Value> {
 }
 
 fn observer_executable() -> Result<String> {
-    let executable = env::current_exe()?.canonicalize()?;
+    let executable =
+        corvid_update::layout::observer_executable(&env::current_exe()?.canonicalize()?);
     let executable = executable
         .to_str()
         .context("hook executable path must be UTF-8")?;

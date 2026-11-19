@@ -39,6 +39,9 @@ struct Options {
     companion_service: bool,
     #[arg(long, hide = true)]
     managed_start: bool,
+    /// Refresh a running instance in its existing scope, preserving visibility.
+    #[arg(long, hide = true)]
+    refresh_running: bool,
 }
 
 fn main() -> Result<()> {
@@ -72,6 +75,20 @@ fn main() -> Result<()> {
             &state,
             std::future::pending(),
         ));
+    }
+    if options.refresh_running {
+        #[cfg(windows)]
+        use corvid_agent_deck::lifecycle::ensure_current;
+        #[cfg(not(windows))]
+        use corvid_agent_deck::unix_lifecycle::ensure_current;
+        runtime.block_on(ensure_current(
+            &std::env::current_exe()?,
+            &state,
+            &address,
+            &config,
+            false,
+        ))?;
+        return Ok(());
     }
     #[cfg(windows)]
     if !options.managed_start

@@ -300,11 +300,16 @@ pub(super) async fn upgrade_local_daemon(runtime: &Path, desktop: bool) -> Resul
     verify_replacement(runtime, target.as_ref()).await
 }
 
+pub(crate) async fn daemon_image(runtime: &Path) -> Result<PathBuf> {
+    Ok(DaemonProcess::open(runtime).await?.image_path()?)
+}
+
 pub(super) async fn desktop_handoff(runtime: &Path, host_id: Uuid, epoch: Uuid) -> Result<()> {
     let directory = StateDirectory::open(runtime)?;
     let _startup = lock_startup(&directory).await?;
     let executable = crate::local_daemon_executable()?;
-    let image = std::fs::read(executable).context("reading the Desktop daemon image")?;
+    let packaged =
+        corvid_update::Installation::at(&executable).is_ok_and(|install| install.root.is_some());
     let previous = DaemonProcess::open(runtime).await?;
     let previous_image = previous.image_path()?;
     // Stage in the other slot so the running executable stays available for rollback.
@@ -314,11 +319,16 @@ pub(super) async fn desktop_handoff(runtime: &Path, host_id: Uuid, epoch: Uuid) 
     } else {
         alternate
     };
-    directory.replace_private_file(name, &image)?;
+    let next_image = if packaged {
+        executable
+    } else {
+        directory.replace_private_file(name, &std::fs::read(executable)?)?;
+        runtime.join(name)
+    };
     let target = corvid_client::prepare_daemon_handoff(runtime, host_id, epoch).await?;
     wait_for_upgrade_shutdown(&directory, &previous).await?;
     let state = &target.state_directory;
-    if let Err(error) = start_image(&runtime.join(name), runtime, state, false).await {
+    if let Err(error) = start_image(&next_image, runtime, state, false).await {
         start_image(&previous_image, runtime, state, false)
             .await
             .context("restarting the previous daemon after the Desktop update failed")?;
@@ -520,7 +530,9 @@ async fn start_daemon(
     desktop_image: Option<&str>,
 ) -> Result<()> {
     let mut executable = crate::local_daemon_executable()?;
-    if let Some(name) = desktop_image {
+    if let Some(name) = desktop_image
+        && !corvid_update::Installation::at(&executable).is_ok_and(|install| install.root.is_some())
+    {
         // Keep the detached daemon from locking the GUI binary across rebuilds.
         let image = std::fs::read(&executable).context("reading the Desktop daemon image")?;
         directory.replace_private_file(name, &image)?;

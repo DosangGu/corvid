@@ -30,13 +30,13 @@ The installer detects Darwin/arm64 and uses BSD utilities and `shasum`. Add
 and creates `~/Applications/Corvid.app`. Explicit `--install-root` installations
 keep their app link under that root. Desktop **About & updates** and
 `corvid update` use this installer, verify the selected release's checksums, and
-retain older executables. Updating a drag-installed app creates a user-managed
+collect unused earlier packages after activation. Updating a drag-installed app creates a user-managed
 installation; the original Applications copy is preserved. Open the updated app
 from `~/Applications` afterward. Existing CLI commands from another installation
 are preserved; use a separate `--bin-dir` when needed.
 
-Package updates do not restart the daemon. Use `corvid upgrade` separately to
-replace an automatically started daemon while retaining hosted PTYs.
+Package updates request handoff for an older daemon started from that installation.
+Hosted PTYs continue running. A supervised daemon follows its service manager's restart procedure.
 
 ## Runtime and desktop behavior
 

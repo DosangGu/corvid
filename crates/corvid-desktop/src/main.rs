@@ -53,6 +53,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     #[derive(Parser)]
     #[command(about = "Attach to a Corvid multiplexer daemon")]
     struct Options {
+        #[arg(long, hide = true)]
+        update_ready_directory: Option<PathBuf>,
         #[cfg(windows)]
         #[arg(long, hide = true, default_value = "main")]
         pipe_instance: String,
@@ -133,7 +135,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         let quitting = app_windows.clone();
         cx.on_app_quit(move |_| desktop_windows::wait_for_shutdown(quitting.start_shutdown()))
             .detach();
-        app_windows.restore(destination, cx);
+        app_windows.watch_installed_version(cx);
+        app_windows.restore(destination, options.update_ready_directory, cx);
         if let Err(error) = app_windows.listen_for_deck(cx) {
             eprintln!("Could not listen for Agent Deck: {error:#}");
         }

@@ -143,9 +143,14 @@ def main():
 
         install("0.0.0")
         assert installed_version() == "corvid 0.0.0"
+        unrelated = root / "versions/7.6.5"
+        unrelated.mkdir()
+        sentinel = unrelated / "personal.txt"
+        sentinel.write_text("keep", encoding="utf-8")
         install()
+        assert sentinel.read_text(encoding="utf-8") == "keep"
         assert installed_version() == f"corvid {version}"
-        assert (root / "versions/0.0.0").is_dir(), "Previous executables must be retained"
+        assert not (root / "versions/0.0.0").exists(), "Unused packages must be retired"
         if WINDOWS:
             assert (root / "corvid.ico").read_bytes() == (ROOT / "assets/icons/corvid.ico").read_bytes()
         elif args.product == "desktop" and not MACOS:

@@ -20,6 +20,8 @@ corvid-protocol.workspace = true
 corvid-update.workspace = true
 corvid-core.workspace = true
 crossterm = { workspace = true, features = ["bracketed-paste", "events", "windows"] }
+dunce.workspace = true
+sysinfo.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "time"] }
@@ -30,6 +32,7 @@ nix = { workspace = true, features = ["fs", "poll"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+sha2.workspace = true
 corvid-agent-deck.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console",
