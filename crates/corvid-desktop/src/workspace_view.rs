@@ -21,8 +21,9 @@ use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::{CloseView, SplitAxis, TabState, ViewSelection, WorkspaceState};
 use gpui::{
-    AppContext, Context, Div, Entity, FocusHandle, IntoElement, KeyDownEvent, PromptButton,
-    PromptLevel, SharedString, Stateful, Task, Window, WindowHandle, div, prelude::*, rgb,
+    App, AppContext, AsyncWindowContext, Context, Div, Entity, FocusHandle, IntoElement,
+    KeyDownEvent, PromptButton, PromptLevel, SharedString, Stateful, Task, Window, WindowHandle,
+    div, prelude::*, rgb,
 };
 
 use crate::agent_deck;
@@ -34,6 +35,7 @@ use crate::terminal_session::{
 };
 use crate::terminal_view::{TerminalView, preview};
 use corvid_client::view_state::ViewStore;
+use tokio::sync::{oneshot, watch};
 
 const BACKGROUND: u32 = 0x101318;
 const PANEL: u32 = 0x191c23;
@@ -43,6 +45,33 @@ const MUTED: u32 = 0xa4adbc;
 const ACTIVE: u32 = 0x83dec0;
 const ACTIVE_FILL: u32 = 0x20332f;
 const MAX_BACKGROUND_HOSTS: usize = 8;
+
+async fn watch_on_frames<T: Clone + 'static>(
+    mut changes: watch::Receiver<T>,
+    cx: &mut AsyncWindowContext,
+    update: impl Fn(T, &mut Window, &mut App) -> bool + Clone + 'static,
+) {
+    while changes.changed().await.is_ok() {
+        let (complete, frame) = oneshot::channel();
+        let update = update.clone();
+        cx.on_next_frame(move |window, cx| {
+            if complete.is_closed() {
+                return;
+            }
+            let latest = changes.borrow_and_update().clone();
+            if update(latest, window, cx) {
+                let _ = complete.send(changes);
+            }
+        });
+        let Ok(receiver) = frame.await else {
+            break;
+        };
+        changes = receiver;
+    }
+}
+
+#[cfg(all(test, windows))]
+mod frame_tests;
 
 #[derive(Clone, Default)]
 pub struct Lifetime(Rc<RefCell<WindowConnections>>);
@@ -129,6 +158,7 @@ pub struct WorkspaceView {
     preferred_tabs: HashMap<String, String>,
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
+    events: Option<Task<()>>,
     error: Option<String>,
     agent_deck: agent_deck::Settings,
     switcher_open: bool,
@@ -206,6 +236,7 @@ impl WorkspaceView {
             preferred_tabs: HashMap::new(),
             preferred_panes: HashMap::new(),
             updates: None,
+            events: None,
             error: None,
             agent_deck,
             switcher_open: false,
@@ -459,24 +490,20 @@ impl WorkspaceView {
             known.live = false;
         }
         if let Some(previous) = previous.filter(|previous| previous != &destination) {
-            self.watch_host(previous, cx);
+            self.watch_host(previous, window, cx);
         }
-        let mut changes = session.changes();
+        let changes = session.changes();
         self.session = Some(session);
+        self.sync(window, cx);
         self.updates = Some(cx.spawn_in(window, async move |view, cx| {
+            watch_on_frames(changes, cx, move |(), window, cx| {
+                view.update(cx, |view, cx| view.sync(window, cx)).is_ok()
+            })
+            .await;
+        }));
+        self.events = Some(cx.spawn_in(window, async move |view, cx| {
             loop {
-                if view
-                    .update_in(cx, |view, window, cx| view.sync(window, cx))
-                    .is_err()
-                {
-                    break;
-                }
                 tokio::select! {
-                    change = changes.changed() => {
-                        if change.is_err() {
-                            break;
-                        }
-                    }
                     Some(activation) = activations.recv() => {
                         let _ = view.update_in(cx, |view, window, cx| {
                             if activation.reply.is_closed() {
@@ -485,7 +512,9 @@ impl WorkspaceView {
                             if view.session.as_ref().is_some_and(|session| {
                                 session.matches_view(activation.view_epoch, activation.revision)
                             }) {
-                                view.sync(window, cx);
+                                if view.session.as_ref().and_then(|session| session.ui().selected) != view.selected {
+                                    view.sync(window, cx);
+                                }
                                 view.focus_from_deck(window, cx, activation.reply);
                             } else {
                                 let _ = activation.reply.send(Err(
@@ -500,13 +529,14 @@ impl WorkspaceView {
                             reply.await;
                         }
                     }
+                    else => break,
                 }
             }
         }));
         cx.notify();
     }
 
-    fn watch_host(&mut self, destination: Destination, cx: &mut Context<Self>) {
+    fn watch_host(&mut self, destination: Destination, window: &Window, cx: &mut Context<Self>) {
         let Some(known) = self
             .known_sessions
             .get(&destination)
@@ -514,8 +544,7 @@ impl WorkspaceView {
         else {
             return;
         };
-        let Ok(mut updates) = host_watch::start(known.endpoint.clone(), known.host_id.clone())
-        else {
+        let Ok(updates) = host_watch::start(known.endpoint.clone(), known.host_id.clone()) else {
             return;
         };
         if self
@@ -534,24 +563,20 @@ impl WorkspaceView {
             oldest.live = false;
         }
         let target = destination.clone();
-        let task = cx.spawn(async move |view, cx| {
-            while updates.changed().await.is_ok() {
-                let inventory = updates.borrow_and_update().clone();
-                if view
-                    .update(cx, |view, cx| {
-                        if let Some(known) = view.known_sessions.get_mut(&target) {
-                            known.live = inventory.is_some();
-                            if let Some(inventory) = inventory {
-                                known.inventory = Some(inventory);
-                            }
-                            cx.notify();
+        let task = cx.spawn_in(window, async move |view, cx| {
+            watch_on_frames(updates, cx, move |inventory, _, cx| {
+                view.update(cx, |view, cx| {
+                    if let Some(known) = view.known_sessions.get_mut(&target) {
+                        known.live = inventory.is_some();
+                        if let Some(inventory) = inventory {
+                            known.inventory = Some(inventory);
                         }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
+                        cx.notify();
+                    }
+                })
+                .is_ok()
+            })
+            .await;
         });
         let known = self
             .known_sessions
@@ -605,7 +630,7 @@ impl WorkspaceView {
                         watch: None,
                     });
             }
-            self.watch_host(destination.clone(), cx);
+            self.watch_host(destination.clone(), window, cx);
         }
         if ui.restore_unavailable && ui.selected.is_none() && !self.restore_picker_shown {
             self.restore_picker_shown = true;
