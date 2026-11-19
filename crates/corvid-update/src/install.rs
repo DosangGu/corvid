@@ -549,7 +549,8 @@ mod tests {
     #[test]
     fn finds_bundle_resources_and_preserves_managed_installation_root() {
         let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
+        let root = temporary.path().canonicalize().unwrap();
+        let root = root.as_path();
         let contents = root.join("versions/0.2.0/Corvid.app/Contents");
         fs::create_dir_all(contents.join("MacOS")).unwrap();
         fs::create_dir_all(contents.join("Resources")).unwrap();
@@ -576,6 +577,27 @@ mod tests {
             assert_eq!(installation.root.as_deref(), Some(root));
             assert_eq!(installation.bin_dir, Some(root.join("bin")));
             assert_eq!(installation.package.product, Product::Desktop);
+        }
+
+        let public = root.join("Corvid.app");
+        fs::create_dir_all(public.join("Contents/Resources")).unwrap();
+        fs::create_dir_all(public.join("Contents/MacOS")).unwrap();
+        fs::copy(
+            contents.join("Resources/package.json"),
+            public.join("Contents/Resources/package.json"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&public, root.join("macos-app")).unwrap();
+        let daemon = contents.join("MacOS/corvid");
+        fs::write(&daemon, b"daemon").unwrap();
+        for binary in ["corvid", "corvid-desktop"] {
+            let executable = public.join("Contents/MacOS").join(binary);
+            let installation = Installation::at(&executable).unwrap();
+            assert_eq!(installation.root.as_deref(), Some(root));
+            assert_eq!(
+                layout::local_daemon_executable(&executable).unwrap(),
+                daemon
+            );
         }
     }
 

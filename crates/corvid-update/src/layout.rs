@@ -124,15 +124,15 @@ pub fn local_daemon_executable(executable: &Path) -> Result<PathBuf> {
 }
 
 fn local_daemon_for_platform(executable: &Path, os: &str) -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if let Some(runtime) = crate::macos::versioned_runtime(executable) {
+        return Ok(runtime);
+    }
     let layout = for_platform(executable, os)?;
     if executable.file_stem() != Some("corvid-desktop".as_ref())
         || !layout.package_metadata().is_file()
     {
         return Ok(executable.to_owned());
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(runtime) = crate::macos::versioned_runtime(executable) {
-        return Ok(runtime);
     }
     let runtime = layout.local_daemon();
     ensure!(runtime.is_file(), "the packaged Corvid runtime is missing");
