@@ -578,7 +578,9 @@ Corvid accepts a new top-level startup or resume hook when the process keeps
 its PID and birth identity, owns the foreground PTY, and runs the executable
 currently selected by the original launcher path. The verified restart publishes
 a fresh run for the conversation in the same pane. Requests from the previous
-run stay in its history.
+run stay in its history. When older handoff metadata lacks a launcher path,
+Corvid can recover it from the invocation or PATH when the launcher still
+identifies the verified executable before the restart.
 
 ## 7. Terminal runtime, rendering, and input
 

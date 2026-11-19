@@ -1322,6 +1322,11 @@ impl Running {
                 Uuid::parse_str(&scope.hook_environment.identity.host_id).ok()?,
             )
         });
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let recovered = recovered.map(|mut agent| {
+            agent.recover_restart_path();
+            agent
+        });
         let location = scope.location;
         #[cfg(windows)]
         let liveness = if saved.provider.is_some() {

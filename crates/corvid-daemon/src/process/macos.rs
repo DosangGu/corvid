@@ -3,9 +3,10 @@ use super::inspection::{
     ProcessObservation,
 };
 use super::{Executable, Stat};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::mem::{MaybeUninit, size_of};
+use std::ops::Range;
 use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::path::PathBuf;
 
@@ -81,6 +82,13 @@ impl ProcessObservation for ProcessDirectory {
     }
 
     fn arguments(&self) -> Observation<Vec<u8>> {
+        let bytes = self.procargs()?;
+        Ok(bytes[argument_range(&bytes)?].to_vec())
+    }
+}
+
+impl ProcessDirectory {
+    fn procargs(&self) -> Observation<Vec<u8>> {
         self.stat()?;
         let mut mib = [
             libc::CTL_KERN,
@@ -108,14 +116,19 @@ impl ProcessObservation for ProcessDirectory {
             return Err(ObservationError::TooLarge);
         }
         bytes.truncate(length);
-        let arguments = parse_arguments(&bytes)?;
         self.stat()?;
-        Ok(arguments)
+        Ok(bytes)
+    }
+
+    pub(super) fn search_path(&self) -> Option<OsString> {
+        let bytes = self.procargs().ok()?;
+        let end = argument_range(&bytes).ok()?.end;
+        super::environment_path(&bytes[end..])
     }
 }
 
 /// KERN_PROCARGS2 contains argc, executable, padding, argv, then environment.
-fn parse_arguments(bytes: &[u8]) -> Observation<Vec<u8>> {
+fn argument_range(bytes: &[u8]) -> Observation<Range<usize>> {
     let invalid = ObservationError::Invalid;
     let argc = i32::from_ne_bytes(
         bytes
@@ -147,7 +160,7 @@ fn parse_arguments(bytes: &[u8]) -> Observation<Vec<u8>> {
             return Err(ObservationError::TooLarge);
         }
     }
-    Ok(bytes[start..offset].to_vec())
+    Ok(start..offset)
 }
 
 fn stat(pid: u32) -> Observation<Stat> {
@@ -215,6 +228,8 @@ mod tests {
 
     #[test]
     fn arguments_exclude_environment_and_reject_malformed_or_oversized_argv() {
+        let parse_arguments =
+            |bytes: &[u8]| argument_range(bytes).map(|range| bytes[range].to_vec());
         assert_eq!(
             parse_arguments(&procargs(b"agent\0run\0", 2)),
             Ok(b"agent\0run\0".to_vec())
