@@ -5,6 +5,7 @@ use super::inspection::{
 use super::{Executable, Stat};
 use nix::fcntl::{AtFlags, OFlag, openat, readlinkat};
 use nix::sys::stat::{Mode, SFlag, fstatat};
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
@@ -57,21 +58,7 @@ pub(crate) fn legacy_observer(
 
 fn observer_scope(process: &ProcessDirectory) -> Option<[Uuid; 3]> {
     use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH};
-    let fd = openat(
-        &process.directory,
-        "environ",
-        OFlag::O_RDONLY | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    )
-    .ok()?;
-    let mut bytes = Vec::new();
-    File::from(fd)
-        .take(128 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() > 128 * 1024 || !bytes.ends_with(&[0]) {
-        return None;
-    }
+    let bytes = process.environment()?;
     let mut ids = [None; 3];
     for entry in bytes.split(|byte| *byte == 0) {
         let Some(split) = entry.iter().position(|byte| *byte == b'=') else {
@@ -101,6 +88,29 @@ fn observer_scope(process: &ProcessDirectory) -> Option<[Uuid; 3]> {
 pub(super) struct ProcessDirectory {
     pid: u32,
     pub(super) directory: File,
+}
+
+impl ProcessDirectory {
+    fn environment(&self) -> Option<Vec<u8>> {
+        let fd = openat(
+            &self.directory,
+            "environ",
+            OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .ok()?;
+        let limit = 128 * 1024;
+        let mut bytes = Vec::new();
+        File::from(fd)
+            .take(limit + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() as u64 <= limit && bytes.ends_with(&[0])).then_some(bytes)
+    }
+
+    pub(super) fn search_path(&self) -> Option<OsString> {
+        super::environment_path(&self.environment()?)
+    }
 }
 
 pub(super) struct Inspector;

@@ -20,12 +20,11 @@ pub async fn daemon(runtime: &Path, state: &Path) -> Child {
 }
 
 pub async fn start_daemon(mut command: Command, runtime: &Path, state: &Path) -> Child {
-    let mut daemon = command
-        .arg("daemon")
-        .arg("--state-dir")
-        .arg(state)
-        .spawn()
-        .unwrap();
+    command.arg("daemon").arg("--state-dir").arg(state);
+    wait_for_daemon(command.spawn().unwrap(), runtime).await
+}
+
+pub async fn wait_for_daemon(mut daemon: Child, runtime: &Path) -> Child {
     timeout(WAIT, async {
         loop {
             assert!(

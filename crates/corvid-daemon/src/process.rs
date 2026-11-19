@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::{
+    ffi::{OsStrExt, OsStringExt},
+    fs::MetadataExt,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -181,6 +185,36 @@ impl ProcessImage {
         self.current_stat_with(&NativeInspector).is_some()
     }
 
+    pub(crate) fn recover_launcher(self, provider: Provider) -> Option<PathBuf> {
+        self.current_stat_with(&NativeInspector)?;
+        let process = NativeInspector.open(self.incarnation.pid).ok()?;
+        let arguments = process.arguments().ok();
+        let program = OsStr::new(crate::provider::program(provider));
+        let matches_image = |path: &Path| Executable::read(path) == Some(self.executable);
+        let argv0 = arguments
+            .as_deref()
+            .and_then(|bytes| bytes.split(|&byte| byte == 0).next())
+            .map(|bytes| Path::new(OsStr::from_bytes(bytes)))
+            .filter(|path| path.is_absolute() && path.file_name() == Some(program))
+            .filter(|path| matches_image(path));
+        // Shell launches pass the launcher itself. Managed launches resolve
+        // symlinks before exec, so prefer the process PATH in that case.
+        let launcher = argv0
+            .filter(|path| process.path().is_ok_and(|image| image != *path))
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                std::env::split_paths(&process.search_path()?)
+                    .filter(|directory| directory.is_absolute())
+                    .map(|directory| directory.join(program))
+                    .find(|path| matches_image(path))
+            })
+            .or_else(|| {
+                crate::provider::installed_program(provider).filter(|path| matches_image(path))
+            })
+            .or_else(|| argv0.map(Path::to_path_buf))?;
+        self.is_current().then_some(launcher)
+    }
+
     pub(crate) fn belongs_to(self, root: Incarnation) -> bool {
         if root.boot_id != self.incarnation.boot_id || boot_id() != Some(root.boot_id) {
             return false;
@@ -320,6 +354,13 @@ impl ProcessImage {
         }
         codex_broker(inspector, observer.parent_pid, pid)
     }
+}
+
+fn environment_path(bytes: &[u8]) -> Option<OsString> {
+    bytes
+        .split(|&byte| byte == 0)
+        .find_map(|entry| entry.strip_prefix(b"PATH="))
+        .map(|path| OsString::from_vec(path.to_vec()))
 }
 
 fn matches_launcher(launcher: Option<&Path>, image: Executable) -> bool {

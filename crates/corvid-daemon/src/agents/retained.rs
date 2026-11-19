@@ -75,6 +75,16 @@ impl RetainedAgent {
             .as_deref()
             .map(|path| Arc::from(Path::new(OsStr::from_bytes(path))))
     }
+
+    pub(crate) fn recover_restart_path(&mut self) {
+        if self.provider == Provider::Claude && self.restart_path.is_none() {
+            self.restart_path = self
+                .owner
+                .recover_launcher(self.provider)
+                .map(|path| path.as_os_str().as_bytes().to_vec())
+                .filter(|path| path.len() <= 4096);
+        }
+    }
 }
 
 impl Agents {

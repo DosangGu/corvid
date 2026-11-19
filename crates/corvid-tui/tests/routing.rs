@@ -33,7 +33,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{Instant, sleep, timeout};
 use uuid::Uuid;
 
-use common::{WAIT, command, daemon, start_daemon};
+use common::{WAIT, command, daemon, start_daemon, wait_for_daemon};
 
 const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
@@ -1206,6 +1206,15 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
 
 #[tokio::test]
 async fn claude_update_restart_resynchronizes_the_deck_in_the_same_pty() {
+    verify_claude_update_restart(false).await;
+}
+
+#[tokio::test]
+async fn claude_update_restart_resynchronizes_after_a_legacy_handoff() {
+    verify_claude_update_restart(true).await;
+}
+
+async fn verify_claude_update_restart(legacy_handoff: bool) {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let first = fixture.path().join("first");
     let updated = fixture.path().join("updated");
@@ -1237,18 +1246,25 @@ async fn claude_update_restart_resynchronizes_the_deck_in_the_same_pty() {
     for managed in [true, false] {
         let directory = tempfile::tempdir_in(fixture.path()).unwrap();
         let runtime = directory.path().join("run");
+        let state = directory.path().join("state");
         let launcher = directory.path().join("claude");
         symlink(first.join("claude"), &launcher).unwrap();
         let paths = std::iter::once(directory.path().to_owned())
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap()))
             .collect::<Vec<_>>();
-        let mut daemon_command = command(&runtime);
-        daemon_command
-            .env("PATH", std::env::join_paths(paths).unwrap())
-            .env("SHELL", "/bin/bash")
-            .env("CORVID_FIXTURE_BINARY", env!("CARGO_BIN_EXE_corvid"))
-            .env("CORVID_FIXTURE_RESTART", &launcher);
-        let _daemon = start_daemon(daemon_command, &runtime, &directory.path().join("state")).await;
+        let mut daemon = wait_for_daemon(
+            command(&runtime)
+                .env("PATH", std::env::join_paths(paths).unwrap())
+                .env("SHELL", "/bin/bash")
+                .env("CORVID_FIXTURE_BINARY", env!("CARGO_BIN_EXE_corvid"))
+                .env("CORVID_FIXTURE_RESTART", &launcher)
+                .args(["daemon", "--autostarted", "--state-dir"])
+                .arg(&state)
+                .spawn()
+                .unwrap(),
+            &runtime,
+        )
+        .await;
 
         timeout(WAIT, async {
             let mut tui = Tui::attach_command(
@@ -1263,8 +1279,58 @@ async fn claude_update_restart_resynchronizes_the_deck_in_the_same_pty() {
                 tui.input(tui.route.clone(), 1, b"claude\n").await;
             }
             let terminal = tui.route.terminal_id.clone();
-            let before =
+            let original =
                 wait_for_agent(&runtime, &terminal, |agent| agent.pending_requests == 1).await;
+            let (before, input_sequence) = if legacy_handoff {
+                corvid_client::prepare_upgrade(&RuntimeDir::open(&runtime).unwrap())
+                    .await
+                    .unwrap();
+                assert!(daemon.wait().await.unwrap().success());
+                let handoff = runtime.join("handoff.json");
+                let mut payload: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&handoff).unwrap()).unwrap();
+                let retained = &mut payload["terminals"][0][1]["agent"];
+                assert!(
+                    retained
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("restart_path")
+                        .is_some()
+                );
+                std::fs::write(handoff, serde_json::to_vec(&payload).unwrap()).unwrap();
+
+                // The new daemon does not inherit the previous launcher's PATH.
+                daemon = wait_for_daemon(
+                    command(&runtime)
+                        .args(["daemon", "--autostarted", "--state-dir"])
+                        .arg(&state)
+                        .spawn()
+                        .unwrap(),
+                    &runtime,
+                )
+                .await;
+                let old_epoch = tui.session.server_epoch.clone();
+                tui = Tui::attach_target(
+                    &runtime,
+                    Attach {
+                        workspace_id: Some(tui.selection.workspace_id.clone()),
+                        tab_id: Some(tui.selection.tab_id.clone()),
+                        pane_id: Some(tui.selection.pane_id.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await;
+                assert_ne!(tui.session.server_epoch, old_epoch);
+                assert_eq!(tui.route.terminal_id, terminal);
+                let recovered = wait_for_agent(&runtime, &terminal, |agent| {
+                    agent.collection == AgentCollection::Degraded as i32
+                })
+                .await;
+                assert_eq!(recovered.process_identity, original.process_identity);
+                (recovered, 1)
+            } else {
+                (original, if managed { 1 } else { 2 })
+            };
             let (_companion, mut companion) =
                 start_companion(&runtime, directory.path(), &tui.session.host_id, 1).await;
             presented(&mut companion, |view| {
@@ -1275,7 +1341,6 @@ async fn claude_update_restart_resynchronizes_the_deck_in_the_same_pty() {
             let staging = directory.path().join("launcher-new");
             symlink(updated.join("claude"), &staging).unwrap();
             std::fs::rename(staging, launcher).unwrap();
-            let input_sequence = if managed { 1 } else { 2 };
             tui.input(tui.route.clone(), input_sequence, b"/restart\n")
                 .await;
             wait_for_text(&mut tui, &mut Vec::new(), "REEXECUTED").await;
@@ -1293,6 +1358,12 @@ async fn claude_update_restart_resynchronizes_the_deck_in_the_same_pty() {
             presented(&mut companion, |view| {
                 slot_run(view, 0) == Some(after.agent_run_id.as_str())
             })
+            .await;
+            tui.input(
+                tui.route.clone(),
+                input_sequence + 1,
+                if managed { b"\n" } else { b"\nexit\n" },
+            )
             .await;
         })
         .await
