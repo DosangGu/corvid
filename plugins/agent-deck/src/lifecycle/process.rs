@@ -29,6 +29,10 @@ impl Process {
         let mut pid = 0;
         // The authenticated private pipe stays open throughout this lookup.
         checked(unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) })?;
+        Self::open(pid)
+    }
+
+    pub(super) fn open(pid: u32) -> Result<Self> {
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,

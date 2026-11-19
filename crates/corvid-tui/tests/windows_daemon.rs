@@ -793,6 +793,115 @@ async fn verify_windows_shell_handoff(desktop: bool) -> Result<()> {
 }
 
 #[tokio::test]
+async fn installed_update_hands_off_a_live_shell_and_collects_the_released_package() -> Result<()> {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    let fixture = tempfile::tempdir()?;
+    let root = fixture.path().join("installed with spaces");
+    let previous = std::env::var_os("CORVID_TEST_PREVIOUS_RUNTIME").map(std::path::PathBuf::from);
+    let current = env!("CARGO_PKG_VERSION");
+    let target = corvid_update::target(corvid_update::Product::Tui)?;
+    for (version, source) in [
+        (
+            "0.0.0-test",
+            previous.as_deref().unwrap_or(Path::new(CORVID)),
+        ),
+        (current, Path::new(CORVID)),
+    ] {
+        let dir = root.join("versions").join(version);
+        fs::create_dir_all(&dir)?;
+        fs::copy(source, dir.join("corvid.exe"))?;
+        let metadata = serde_json::json!({"schema_version":1, "product":"tui", "version":version, "target":target, "source_revision":"a".repeat(40)});
+        fs::write(dir.join("package.json"), metadata.to_string())?;
+        let mut manifest = String::new();
+        for name in ["corvid.exe", "package.json"] {
+            let digest = Sha256::digest(fs::read(dir.join(name))?);
+            use std::fmt::Write;
+            for byte in digest {
+                write!(manifest, "{byte:02x}")?;
+            }
+            writeln!(manifest, "  {name}")?;
+        }
+        fs::write(dir.join("files.sha256"), manifest)?;
+    }
+    let old = root.join("versions/0.0.0-test");
+    let selected = root.join("versions").join(current).join("corvid.exe");
+    fs::write(
+        root.join("bin-dir"),
+        root.join("bin").to_string_lossy().as_bytes(),
+    )?;
+    fs::write(
+        root.join("install.json"),
+        r#"{"schema_version":1,"product":"tui"}"#,
+    )?;
+    fs::write(root.join("current.txt"), "0.0.0-test")?;
+    let runtime = fixture.path().join("run");
+    let status = tokio::process::Command::new(old.join("corvid.exe"))
+        .arg("--runtime-dir")
+        .arg(&runtime)
+        .args(["ensure-daemon", "--state-dir"])
+        .arg(fixture.path().join("state"))
+        .status()
+        .await?;
+    ensure!(status.success(), "could not start previous package");
+    let old_daemon = BackgroundDaemon::open(&runtime).await?;
+    let original = corvid_client::host(&runtime).await?;
+    let mut first = Tui::open(
+        &runtime,
+        ["attach", "--new", "--", "powershell.exe", "-NoProfile"].map(OsString::from),
+    )?;
+    first.wait_for("PS ")?;
+    first.send(b"$env:CORVID_PREVIOUS_SHELL=$PID; [Console]::WriteLine(('SA'+'VED_PID'))\r")?;
+    first.wait_for("SAVED_PID")?;
+    let original_terminal = terminal_id(&runtime).await?;
+
+    fs::write(root.join("current.txt"), current)?;
+    let applied = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new(&selected)
+            .arg("finish-update")
+            .env("CORVID_RUNTIME_DIR", &runtime)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .context("waiting for activation helper")??;
+    let messages = String::from_utf8_lossy(&applied.stderr);
+    ensure!(applied.status.success(), "update failed: {messages}");
+    let replacement = BackgroundDaemon::open(&runtime).await?;
+    let after = corvid_client::host(&runtime).await?;
+    ensure!(
+        after.host_id == original.host_id && after.server_epoch != original.server_epoch,
+        "expected a new daemon epoch: {messages}"
+    );
+    ensure!(terminal_id(&runtime).await? == original_terminal);
+    ensure!(
+        old.is_dir(),
+        "a retained host still owns the original observer path"
+    );
+    drop(old_daemon);
+    drop(first);
+    let mut second = Tui::open(&runtime, [])?;
+    second.wait_for("SAVED_PID")?;
+    second.send(
+        b"[Console]::WriteLine(('SAME_'+'SHELL_'+($PID -eq $env:CORVID_PREVIOUS_SHELL)))\r",
+    )?;
+    second.wait_for("SAME_SHELL_True")?;
+    second.send(b"exit\r")?;
+    second.expect_exit(0)?;
+    tokio::time::timeout(Duration::from_secs(45), async {
+        while old.exists() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .context("old package was not collected after shell exit")?;
+    drop(replacement);
+    Ok(())
+}
+
+#[tokio::test]
 async fn managed_upgrade_replaces_the_windows_image_after_terminal_handoff() -> Result<()> {
     use corvid_protocol::windows::StateDirectory;
 

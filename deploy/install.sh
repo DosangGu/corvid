@@ -91,6 +91,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+if [ -n "${CORVID_EXPECT_CURRENT:-}" ]; then
+    [ "$(readlink "$install_root/current")" = "versions/$CORVID_EXPECT_CURRENT" ] || fail 'The active version changed while preparing this update'
+fi
 receipt="{\"schema_version\":1,\"product\":\"$product\"}"
 if [ -f "$install_root/install.json" ]; then
     [ "$(cat "$install_root/install.json")" = "$receipt" ] || fail 'This directory belongs to another installation'
@@ -124,6 +127,10 @@ tar -xzf "$stage/archive.tar.gz" --no-same-owner --no-same-permissions -C "$stag
 (cd -- "$stage/package" && verify files.sha256) || fail 'Package file checksum mismatch'
 field() { sed -n "s/.*\"$1\":[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$stage/package/package.json"; }
 [ "$(field version)" = "$release_version" ] && [ "$(field product)" = "$product" ] && [ "$(field target)" = "$target" ] || fail 'Package metadata mismatch'
+retirement=false
+if grep -Eq '"update_protocol":[[:space:]]*1([[:space:]]*[,}]|[[:space:]]*$)' "$stage/package/package.json"; then
+    retirement=true
+fi
 chmod 755 "$stage/package/${payload}corvid"
 [ "$("$stage/package/${payload}corvid" --version)" = "corvid $release_version" ] || fail 'Executable version mismatch'
 if [ "$product" = desktop ]; then
@@ -152,6 +159,7 @@ printf '%s\n' "$bin_dir" > "$stage/bin-dir"
 mv -f -- "$stage/install.json" "$install_root/install.json"
 mv -f -- "$stage/bin-dir" "$install_root/bin-dir"
 ln -s "versions/$release_version" "$stage/current"
+if "$retirement"; then touch "$install_root/.retirement-$release_version.pending"; fi
 replace_link "$stage/current" "$install_root/current"
 for name in $commands; do
     if [ ! -L "$bin_dir/$name" ]; then ln -s "$install_root/current/$payload$name" "$bin_dir/$name"; fi
@@ -174,4 +182,6 @@ if [ "$platform:$product" = Darwin:desktop ]; then
 fi
 printf 'CORVID_EXECUTABLE=%s/%scorvid\n' "$destination" "$payload"
 case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add %s to PATH to run Corvid.\n' "$bin_dir" ;; esac
-printf 'Running daemons were left unchanged. Use corvid upgrade for an automatically started daemon; use the service manager for a supervised daemon.\n'
+trap - EXIT INT TERM
+cleanup
+if "$retirement"; then "$destination/${payload}corvid" finish-update; fi

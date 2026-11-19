@@ -201,6 +201,9 @@ fn status(state: &State) -> String {
 }
 
 fn installation_hint(state: &State) -> &'static str {
+    if state.cleanup_pending {
+        return "Update applied. Earlier Corvid sessions are still in use. Cleanup resumes automatically.";
+    }
     if state.phase == Phase::Ready {
         if state
             .installation
@@ -211,7 +214,7 @@ fn installation_hint(state: &State) -> &'static str {
         {
             return "Restart to open the updated managed copy. Your original portable directory is kept. Terminal jobs keep running.";
         }
-        return "Restarting Desktop keeps your terminal jobs running. You can also apply the update the next time you open Corvid.";
+        return "Restart to install the verified update and reconnect your terminal jobs. Later keeps the download ready in this session.";
     }
     match &state.installation {
         Ok(Some(install)) if install.root.is_none() => {

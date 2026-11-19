@@ -156,27 +156,55 @@ impl HostConfig {
         #[cfg(windows)]
         let executable = {
             let runtime = StateDirectory::open(root)?;
-            let name = format!("pty-host-{}.exe", Uuid::new_v4().simple());
-            for entry in std::fs::read_dir(root)? {
-                let entry = entry?;
-                if entry.file_name().to_str().is_some_and(|name| {
-                    name.strip_prefix("pty-host-")
-                        .and_then(|name| name.strip_suffix(".exe"))
-                        .is_some_and(|id| id.len() == 32 && Uuid::parse_str(id).is_ok())
-                }) && entry.file_type()?.is_file()
-                {
-                    // Images still mapped by a host remain available across the upgrade.
-                    let _ = std::fs::remove_file(entry.path());
-                }
+            retire_host_copies(root)?;
+            if corvid_update::Installation::at(&executable)
+                .is_ok_and(|install| install.root.is_some())
+            {
+                executable
+            } else {
+                // In-place SSH updates and development builds still need a private image.
+                let name = format!("pty-host-{}.exe", Uuid::new_v4().simple());
+                runtime.replace_private_file(&name, &std::fs::read(&executable)?)?;
+                root.join(name)
             }
-            runtime.replace_private_file(&name, &std::fs::read(&executable)?)?;
-            root.join(name)
         };
         Ok(Self {
             root: root.into(),
             executable,
         })
     }
+}
+
+#[cfg(windows)]
+fn retire_host_copies(root: &Path) -> Result<()> {
+    let mut pending = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && entry.file_name().to_str().is_some_and(|name| {
+                name.strip_prefix("pty-host-")
+                    .and_then(|s| s.strip_suffix(".exe"))
+                    .is_some_and(|s| s.len() == 32 && Uuid::parse_str(s).is_ok())
+            })
+            && std::fs::remove_file(entry.path()).is_err()
+        {
+            pending.push(entry.path());
+        }
+    }
+    if !pending.is_empty() {
+        // The daemon instance lock protects enumeration. Retry only these old UUIDs,
+        // so newly created host images remain available for future pane creation.
+        tokio::spawn(async move {
+            while !pending.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                pending.retain(|path| match std::fs::remove_file(path) {
+                    Ok(()) => false,
+                    Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+                });
+            }
+        });
+    }
+    Ok(())
 }
 
 impl Client {

@@ -3,10 +3,92 @@ use std::ffi::OsString;
 
 use super::*;
 
-pub(super) fn install(
+/// A worker outlives the installer. Inherit no handles, including the caller's
+/// redirected stdout/stderr pipes, so captured installer output reaches EOF.
+pub(super) fn start_worker(executable: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let application: Vec<_> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut args: Vec<_> = "corvid finish-update --retry"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut process = PROCESS_INFORMATION::default();
+    let started = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            args.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_NO_WINDOW,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut process,
+        )
+    };
+    if started == 0 {
+        return Err(std::io::Error::last_os_error()).context("starting deferred update cleanup");
+    }
+    // A successful CreateProcessW gives the caller ownership of both handles.
+    let _process = unsafe { OwnedHandle::from_raw_handle(process.hProcess) };
+    let _thread = unsafe { OwnedHandle::from_raw_handle(process.hThread) };
+    Ok(())
+}
+
+pub(super) fn prepare(
     installation: &Installation,
     release: &Release,
+    assets: &Path,
     mut progress: impl FnMut(InstallProgress),
+) -> Result<()> {
+    let root = installation
+        .root
+        .as_deref()
+        .context("missing Windows Setup root")?;
+    let current = current_windows_version(&WindowsInstall { root })?;
+    if release.version == current {
+        return Ok(());
+    }
+    ensure!(
+        release.version.cmp_precedence(&current) == Ordering::Greater,
+        "a newer version is already active"
+    );
+    let name = format!(
+        "corvid-desktop-{}-{}-setup.exe",
+        release.version, installation.package.target
+    );
+    let asset = release.asset(&name)?;
+    let setup = assets.join("setup.exe");
+    progress(InstallProgress::Downloading);
+    download::file(
+        &format!("{RELEASES}/download/v{}/{name}", release.version),
+        &setup,
+        asset.size,
+    )?;
+    progress(InstallProgress::Verifying);
+    download::verify_file(&setup, asset.size, &asset.sha256)?;
+
+    Ok(())
+}
+
+pub(super) fn apply(
+    installation: &Installation,
+    release: &Release,
+    assets: &Path,
+    expected: Option<&str>,
 ) -> Result<Installed> {
     let root = installation
         .root
@@ -32,29 +114,13 @@ pub(super) fn install(
         "a newer version is already active"
     );
 
-    let name = format!(
-        "corvid-desktop-{}-{}-setup.exe",
-        release.version, installation.package.target
-    );
-    let asset = release.asset(&name)?;
-    let temporary = tempfile::tempdir()?;
-    let setup = temporary.path().join(&name);
-    progress(InstallProgress::Downloading);
-    download::file(
-        &format!("{RELEASES}/download/v{}/{name}", release.version),
-        &setup,
-        asset.size,
-    )?;
-    progress(InstallProgress::Verifying);
-    download::verify_file(&setup, asset.size, &asset.sha256)?;
-
+    let setup = assets.join("setup.exe");
     let mut destination = OsString::from("/DIR=");
     destination.push(root);
     ensure!(
-        current_windows_version(&windows)? == current,
+        expected == Some(current.to_string().as_str()),
         "the active Windows Setup version changed during the download"
     );
-    progress(InstallProgress::Installing);
     let status = download::command(&setup)
         .args([
             "/SP-",

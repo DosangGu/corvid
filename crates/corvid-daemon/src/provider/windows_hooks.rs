@@ -54,7 +54,7 @@ fn codex_handler(executable: &str, event: &str) -> Value {
 }
 
 pub fn observer_settings(provider: Provider) -> Result<Value> {
-    let executable = std::env::current_exe()?;
+    let executable = corvid_update::layout::observer_executable(&std::env::current_exe()?);
     let executable = executable
         .to_str()
         .context("hook executable path must be UTF-8")?;

@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-pub use install::{InstallProgress, Installation, Installed, launch};
+pub use install::{InstallProgress, Installation, Installed, Prepared, launch};
 
 pub const REPOSITORY: &str = "DosangGu/corvid";
 pub const RELEASES: &str = "https://github.com/DosangGu/corvid/releases";

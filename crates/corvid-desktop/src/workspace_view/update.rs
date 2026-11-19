@@ -8,6 +8,13 @@ pub(super) use state::State;
 use state::{Failure, Phase};
 
 impl WorkspaceView {
+    pub(crate) fn show_pending_cleanup(&mut self, pending: bool, cx: &mut Context<Self>) {
+        if self.update.cleanup_pending != pending {
+            self.update.cleanup_pending = pending;
+            cx.notify();
+        }
+    }
+
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         if !self.update.start_check() {
             return;
@@ -33,11 +40,11 @@ impl WorkspaceView {
         };
         let install = cx
             .background_executor()
-            .spawn(async move { installation.install(&release) });
+            .spawn(async move { installation.prepare(&release, |_| {}) });
         self.release_update = Some(cx.spawn(async move |view, cx| {
             let result = install.await;
             let _ = view.update(cx, |view, cx| {
-                view.update.installed(result);
+                view.update.prepared(result);
                 view.release_update = None;
                 cx.notify();
             });
@@ -49,6 +56,32 @@ impl WorkspaceView {
         if self.update.phase != Phase::Ready {
             return;
         }
+        if let Some(prepared) = self.update.prepared.clone() {
+            let windows = self.windows.clone();
+            windows.set_applying(true);
+            self.update.phase = Phase::Installing;
+            self.update.error = None;
+            let apply = cx
+                .background_executor()
+                .spawn(async move { prepared.apply() });
+            cx.spawn(async move |view, cx| {
+                let result = apply.await;
+                windows.set_applying(false);
+                let _ = view.update(cx, |view, cx| {
+                    view.update.installed(result);
+                    view.release_update = None;
+                    view.launch_updated_desktop(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
+        self.launch_updated_desktop(cx);
+    }
+
+    fn launch_updated_desktop(&self, cx: &mut Context<Self>) {
         let Some(installed) = &self.update.installed else {
             return;
         };

@@ -240,6 +240,23 @@ impl<'a> WindowsInstall<'a> {
     }
 }
 
+/// Keep observer commands embedded in agent sessions usable after a managed update.
+pub fn observer_executable(executable: &Path) -> PathBuf {
+    if cfg!(windows) {
+        if let Some(package) = executable.parent().and_then(VersionedPackage::at)
+            && (package.receipt().is_file() || WindowsInstall::marker(package.directory).is_file())
+        {
+            let launcher = package.root.join("bin/corvid.exe");
+            if launcher.is_file() {
+                return launcher;
+            }
+        }
+        executable.to_owned()
+    } else {
+        unix_startup_executable(executable)
+    }
+}
+
 /// Locate the Windows Setup launcher for a packaged Agent Deck shortcut.
 pub fn windows_setup_deck_launcher(executable: &Path) -> Option<PathBuf> {
     let binary_dir = executable.parent()?;

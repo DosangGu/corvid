@@ -132,6 +132,7 @@ def package(args):
         write_json(stage / "package.json", {
             "schema_version": 1, "version": version, "source_revision": revision,
             "product": args.product, "target": args.target,
+            "update_protocol": 1,
         })
         if macos and args.product == "desktop":
             import macos_package
