@@ -486,6 +486,8 @@ message PresentedRun {
   optional uint64 pending_since_unix_ms = 14;
   // Time of the latest unacknowledged result or failure when the run is idle.
   optional uint64 new_result_unix_ms = 15;
+  // Display title of the run's pane, or the custom name of its single-pane tab.
+  optional string session_title = 16;
 }
 
 message PresentedSlot {

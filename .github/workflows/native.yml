@@ -175,7 +175,9 @@ jobs:
         run: xvfb-run -a python3 deploy/test_remote_update.py --build target/${{ matrix.desktop }}/release --target ${{ matrix.desktop }} --screenshot target/remote-update-prompt.png
       - name: Linux Agent Deck card focus
         timeout-minutes: 5
-        run: xvfb-run -a python3 deploy/test_deck_focus.py --build target/${{ matrix.desktop }}/release --history-screenshot target/agent-deck-run-history.png
+        run: |
+          xvfb-run -a python3 deploy/test_deck_focus.py --build target/${{ matrix.desktop }}/release \
+            --history-screenshot target/agent-deck-run-history.png --tooltip-screenshot target/agent-deck-tooltip.png
       - name: Linux Agent Deck multi-host grid
         timeout-minutes: 5
         env:
@@ -197,6 +199,7 @@ jobs:
             target/agent-deck-settings.png
             target/agent-deck-run-history.png
             target/agent-deck-multi-host.png
+            target/agent-deck-tooltip.png
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

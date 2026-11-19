@@ -87,6 +87,73 @@ fn workspace(location: &ViewSelection) -> Body {
 }
 
 #[test]
+fn run_titles_follow_the_owning_pane_or_its_custom_single_pane_tab_name() {
+    let location = ViewSelection {
+        workspace_id: Uuid::new_v4().to_string(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let Body::Workspace(mut layout) = workspace(&location) else {
+        unreachable!();
+    };
+    layout.tabs[0].manual_name = Some("Release checklist".into());
+    layout.tabs[0].nodes[0].title = "Shell".into();
+
+    let split_tab = Uuid::new_v4().to_string();
+    let [first, second] = std::array::from_fn(|_| ViewSelection {
+        tab_id: split_tab.clone(),
+        pane_id: Uuid::new_v4().to_string(),
+        ..location.clone()
+    });
+    layout.tabs.push(TabState {
+        tab_id: split_tab,
+        label: "Reviews".into(),
+        manual_name: Some("Reviews".into()),
+        nodes: vec![
+            LayoutNodeState {
+                body: Some(layout_node_state::Body::Split(SplitState {
+                    axis: SplitAxis::Horizontal as i32,
+                    children: vec![1, 2],
+                })),
+                ..Default::default()
+            },
+            LayoutNodeState {
+                body: Some(layout_node_state::Body::PaneId(first.pane_id.clone())),
+                title: "Review SSH reconnect".into(),
+                ..Default::default()
+            },
+            LayoutNodeState {
+                body: Some(layout_node_state::Body::PaneId(second.pane_id.clone())),
+                ..Default::default()
+            },
+        ],
+    });
+
+    let cases = [
+        (Uuid::new_v4(), &location, Some("Release checklist")),
+        (Uuid::new_v4(), &first, Some("Review SSH reconnect")),
+        (Uuid::new_v4(), &second, None),
+    ];
+    let bodies = std::iter::once(Body::Workspace(layout)).chain(
+        cases
+            .iter()
+            .map(|(run, location, _)| Body::Agent(Box::new(agent(*run, location, 1)))),
+    );
+    let cache = snapshot(
+        bodies
+            .map(|body| SnapshotEntity { body: Some(body) })
+            .collect(),
+    );
+    let remote = Remote::read(&cache, &Uuid::new_v4().to_string()).unwrap();
+
+    for (id, _, title) in cases {
+        let (_, run) = remote.runs.iter().find(|(key, _)| key.run == id).unwrap();
+        assert!(run.observation.eligible);
+        assert_eq!(run.display.session_title.as_deref(), title);
+    }
+}
+
+#[test]
 fn bounded_attention_includes_queued_runs_and_request_metadata() {
     let first = Uuid::new_v4();
     let queued = Uuid::new_v4();
