@@ -350,7 +350,6 @@ def check_monitored_ssh(ssh, command, directory, scope, local):
                 break
             assert time.monotonic() < deadline, (initial, reply.stderr)
             time.sleep(0.02)
-        check_companion_ssh(ssh, local, directory)
         assert first.process.poll() is None
         progress_during_disconnect(progress)
         first.send(b"\x1dd")
@@ -421,6 +420,7 @@ def run(binary, *, measure_keys=False):
                 check_control(ssh, command, schema)
                 check_workspace_directories(ssh, command, schema, directory)
                 check_working_ssh(ssh, command, directory)
+                check_companion_ssh(ssh, command, directory)
                 for release in ("older", "newer"):
                     verify_shell_agent_notifications(
                         command[0], directory, database, ssh, release=release, broker=True,
