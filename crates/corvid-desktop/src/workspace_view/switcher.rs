@@ -246,9 +246,10 @@ impl WorkspaceView {
 
         self.lookup_errors.remove(&destination);
         let machine = destination.clone();
-        let task = cx.spawn(async move |view, cx| {
+        let terminal = self.terminal_window;
+        let task = cx.spawn(async move |_, cx| {
             let result = result.await.unwrap_or(Err("Could not load workspaces"));
-            let _ = view.update(cx, |view, cx| {
+            let _ = terminal.update(cx, |view, window, cx| {
                 view.host_lookups.remove(&machine);
                 if !view
                     .known_sessions
@@ -258,7 +259,7 @@ impl WorkspaceView {
                     match result {
                         Ok(known) => {
                             view.known_sessions.insert(machine.clone(), known);
-                            view.watch_host(machine, cx);
+                            view.watch_host(machine, window, cx);
                         }
                         Err(error) => {
                             view.lookup_errors.insert(machine, error);
