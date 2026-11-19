@@ -497,9 +497,6 @@ def verify_default_start(binary, directory):
             OuterTerminal(command, cols=319, rows=80, env=env) as second,
         ):
             sessions = [first, second]
-            startup = rb"CORVID-PROMPT>|WorkspaceBusy"
-            for terminal in sessions:
-                terminal.expect(startup)
             deadline = time.monotonic() + 5
             while all(terminal.process.poll() is None for terminal in sessions):
                 assert time.monotonic() < deadline, "both clients retained input ownership"
@@ -507,8 +504,11 @@ def verify_default_start(binary, directory):
             active, = [terminal for terminal in sessions if terminal.process.poll() is None]
             retired, = [terminal for terminal in sessions if terminal is not active]
             # A concurrent shell creation can still be reserved; an established
-            # terminal is resumed and the previous client exits successfully.
+            # terminal is resumed and the previous client can exit successfully
+            # before it renders the shell prompt.
             assert retired.process.returncode in (0, 1)
+            if retired.process.returncode == 1:
+                retired.expect(b"WorkspaceBusy")
             retired.wait(retired.process.returncode)
             pid = shell_pid(active)
             daemon = background_daemon_pid(runtime)

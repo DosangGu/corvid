@@ -1,10 +1,11 @@
-Corvid v0.3.4 improves Desktop responsiveness and keeps Claude Code visible in Agent Deck after an in-place restart.
+Corvid v0.3.5 improves SSH session recovery, preserves running sessions during updates, and makes Desktop terminals easier to read and navigate.
 
-- Desktop renders terminal previews without holding up session updates, groups workspace notifications by frame, and moves session cleanup and storage operations off the window thread. [#173](https://github.com/DosangGu/corvid/pull/173) · [#174](https://github.com/DosangGu/corvid/pull/174) · [#175](https://github.com/DosangGu/corvid/pull/175) · [#176](https://github.com/DosangGu/corvid/pull/176) · [#177](https://github.com/DosangGu/corvid/pull/177)
-- The daemon keeps directory checks outside workspace state updates and processes workspace changes in order. [#178](https://github.com/DosangGu/corvid/pull/178) · [#179](https://github.com/DosangGu/corvid/pull/179)
-- Desktop terminal links end before unmatched closing brackets. [#180](https://github.com/DosangGu/corvid/pull/180)
-- Agent Deck resumes tracking Claude Code when its update restarts it in the same terminal. [#181](https://github.com/DosangGu/corvid/pull/181)
+- SSH clients restore input to attached terminals after reconnecting and stop automatic retries after a prolonged outage. When an old terminal cannot be restored, Corvid can resume a verified saved agent conversation or offer recovery choices before opening a shell. [#189](https://github.com/DosangGu/corvid/pull/189) · [#191](https://github.com/DosangGu/corvid/pull/191) · [#197](https://github.com/DosangGu/corvid/pull/197)
+- Updates retire obsolete packages when their processes release them. A retained Claude Code terminal can restart Claude after a daemon upgrade. [#184](https://github.com/DosangGu/corvid/pull/184) · [#186](https://github.com/DosangGu/corvid/pull/186)
+- Windows Desktop integrates window controls into the tab bar. Desktop anchors the host picker to its button, underlines terminal links on hover, and improves text contrast in the dark terminal theme. [#183](https://github.com/DosangGu/corvid/pull/183) · [#185](https://github.com/DosangGu/corvid/pull/185) · [#190](https://github.com/DosangGu/corvid/pull/190) · [#194](https://github.com/DosangGu/corvid/pull/194) · [#196](https://github.com/DosangGu/corvid/pull/196)
+- macOS Desktop updates Finder-installed app bundles in place and keeps their existing Dock items working. [#199](https://github.com/DosangGu/corvid/pull/199)
+- Agent Deck shows session titles in tooltips that fit narrow windows. [#192](https://github.com/DosangGu/corvid/pull/192)
 
 To update, open **Settings → About & updates** in Desktop or run `corvid update` for a script installation.
 
-[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.3.4/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.3.3...v0.3.4)
+[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.3.5/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.3.4...v0.3.5)
