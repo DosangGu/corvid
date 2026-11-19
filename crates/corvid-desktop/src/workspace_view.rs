@@ -788,6 +788,33 @@ impl WorkspaceView {
         }
     }
 
+    fn open_pane(
+        &mut self,
+        target: ViewSelection,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if open
+            && let Some(destination) = self.destination.clone()
+            && let Some(ui) = self.session.as_ref().map(Session::ui)
+            && ui.recovery_supported
+            && let Some(host_id) = ui.host_id
+        {
+            self.switch_to(
+                destination,
+                AttachTarget::OpenPane {
+                    view: target,
+                    host_id,
+                },
+                window,
+                cx,
+            );
+        } else {
+            self.select(target, open, window, cx);
+        }
+    }
+
     fn open_workspace(
         &mut self,
         destination: Destination,
@@ -813,7 +840,7 @@ impl WorkspaceView {
                     .or_else(|| workspace.tabs.first())
                 && let Some((target, open)) = self.choose(workspace, tab, &inventory)
             {
-                self.select(target, open, window, cx);
+                self.open_pane(target, open, window, cx);
             }
             return;
         }
@@ -1064,7 +1091,7 @@ impl WorkspaceView {
                 }
                 let tab = &workspace.tabs[(index + if reverse { len - 1 } else { 1 }) % len];
                 if let Some((target, open)) = self.choose(workspace, tab, &inventory) {
-                    self.select(target, open, window, cx);
+                    self.open_pane(target, open, window, cx);
                 }
             }
             _ => return,

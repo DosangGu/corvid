@@ -421,6 +421,7 @@ mod tests {
             pane: None,
             take_over: false,
             expected_terminal: None,
+            offer_recovery: false,
             workspace: None,
             tab: None,
             new_workspace: None,
@@ -501,7 +502,9 @@ mod tests {
             .await
             .err()
             .expect("an attached agent pane must keep its writer");
-        assert_eq!(fault.code, "WorkspaceBusy");
+        assert!(
+            matches!(fault, crate::workspaces::AttachFailure::Fault(fault) if fault.code == "WorkspaceBusy")
+        );
 
         let fault = workspaces
             .attach(
@@ -514,7 +517,9 @@ mod tests {
             .await
             .err()
             .expect("an unknown run must never attach a default pane");
-        assert_eq!(fault.code, "TargetGone");
+        assert!(
+            matches!(fault, crate::workspaces::AttachFailure::Fault(fault) if fault.code == "TargetGone")
+        );
 
         let (location, terminal) = (target.location, target.route.terminal_id);
         target.terminal.retire_view(target.route).await.unwrap();

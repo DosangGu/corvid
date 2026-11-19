@@ -40,6 +40,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+portable-pty.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process"] }
 vt100.workspace = true
@@ -48,7 +49,6 @@ vt100.workspace = true
 embed-resource.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
-portable-pty.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
 
 [lints]

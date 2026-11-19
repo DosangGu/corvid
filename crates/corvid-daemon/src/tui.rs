@@ -12,7 +12,7 @@ use corvid_protocol::wire::{
     AgentResponded, Attach, AttachRole, Attached, CloseView, CreateView, Envelope, FocusViewAgent,
     LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader, RouteToken,
     SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
-    WorkspaceClientsDisconnected, WriterClaimed,
+    WorkspaceClientsDisconnected, WorkspaceRestored, WriterClaimed,
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
@@ -31,11 +31,13 @@ use crate::incoming::Incoming;
 use crate::projection::selection;
 use crate::terminal::{Action, Event, Keymap, Launch, Render, TuiViewport};
 use crate::workspaces::{
-    Active, AttachTarget, Closed, Destination, FocusDispatch, FocusRecovery, Workspaces,
+    Active, AttachFailure, AttachTarget, Closed, Destination, FocusDispatch, FocusRecovery,
+    Workspaces,
 };
 
 const CAPABILITIES: &[&str] = &[
     corvid_protocol::RESTORE_AGENTS_CAPABILITY,
+    corvid_protocol::ATTACH_RECOVERY_CAPABILITY,
     corvid_protocol::VIEW_TITLES_CAPABILITY,
     "attach.v1",
     corvid_protocol::PANE_WRITERS_CAPABILITY,
@@ -219,18 +221,18 @@ async fn serve_attachment(
                 )
                 .await
         }
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     };
     let active = match active {
         Ok(active) => active,
         Err(error) => {
-            send(
-                session,
-                writer,
-                request.request_id,
-                Body::Error(error.into_wire()),
-            )
-            .await?;
+            let reply = match error {
+                AttachFailure::Fault(fault) => Body::Error(fault.into_wire()),
+                AttachFailure::Recovery(pane) => {
+                    Body::WorkspaceRestored(WorkspaceRestored { panes: vec![*pane] })
+                }
+            };
+            send(session, writer, request.request_id, reply).await?;
             return Ok(parked);
         }
     };
@@ -1067,6 +1069,19 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
             .transpose()?,
         new_tab: attach.create_tab.clone(),
         take_over: attach.take_over,
+        offer_recovery: attach.create_workspace.is_none()
+            && attach.create_tab.is_none()
+            && attach.agent_run_id.is_none()
+            && attach.expected_terminal_id.is_none()
+            && attach.requested_role == AttachRole::Writer as i32
+            && attach
+                .launch
+                .as_ref()
+                .is_none_or(|launch| launch.argv.is_empty() && launch.agent_provider.is_none())
+            && attach
+                .terminal_capabilities
+                .iter()
+                .any(|cap| cap == corvid_protocol::ATTACH_RECOVERY_CAPABILITY),
         expected_terminal: parse_optional_id(attach.expected_terminal_id.as_deref())?,
         keymap: Keymap {
             naming: attach

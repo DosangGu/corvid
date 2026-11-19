@@ -40,6 +40,7 @@ pub use endpoint::{
 };
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use relay::{relay, relay_tui};
+pub use restore::AttachRecovery;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use runtime::{daemon_missing, runtime_path};
 pub use snapshot::SnapshotWatch;

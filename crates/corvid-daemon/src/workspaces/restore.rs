@@ -219,6 +219,15 @@ impl Workspaces {
 }
 
 impl Registry {
+    pub(super) fn attach_recovery(&self, location: Location) -> Option<PaneRestoreResult> {
+        let pane = self.restore_result(location);
+        matches!(
+            pane.status(),
+            PaneRestoreStatus::Available | PaneRestoreStatus::Starting | PaneRestoreStatus::Failed
+        )
+        .then_some(pane)
+    }
+
     fn restore_result(&self, location: Location) -> PaneRestoreResult {
         let attempt = self.restores.get(&location.pane);
         if let Some(attempt) =
@@ -350,6 +359,22 @@ mod tests {
     use crate::identity::Identity;
     use crate::metadata;
     use crate::platform::StateDirectory;
+
+    #[test]
+    fn registered_resume_providers_have_startup_fixture_cases() {
+        // Each of these contracts is exercised through the client startup tests.
+        // Add a fixture case when enabling verified resume for another provider.
+        let fixtures = [Provider::Claude, Provider::Codex];
+        for contract in provider::CONTRACTS {
+            if resume_contract(contract.provider).is_ok() {
+                assert!(
+                    fixtures.contains(&contract.provider),
+                    "missing startup recovery fixture for {:?}",
+                    contract.provider
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn registered_fixture_recovers_sessions_and_reports_per_pane_limits() -> anyhow::Result<()>

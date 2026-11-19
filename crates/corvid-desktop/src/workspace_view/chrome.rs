@@ -342,7 +342,7 @@ impl WorkspaceView {
                         button("select-tab", title, active).on_click(cx.listener(
                             move |view, _, window, cx| {
                                 view.dismiss_overlay(window, cx);
-                                view.select(target.clone(), open, window, cx);
+                                view.open_pane(target.clone(), open, window, cx);
                             },
                         )),
                     ))

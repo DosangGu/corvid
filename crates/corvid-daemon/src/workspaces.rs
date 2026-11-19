@@ -71,6 +71,19 @@ pub(crate) struct AttachTarget {
     pub(crate) launch: Option<Launch>,
     pub(crate) take_over: bool,
     pub(crate) expected_terminal: Option<Uuid>,
+    pub(crate) offer_recovery: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum AttachFailure {
+    Fault(ProtocolFault),
+    Recovery(Box<corvid_protocol::wire::PaneRestoreResult>),
+}
+
+impl From<ProtocolFault> for AttachFailure {
+    fn from(fault: ProtocolFault) -> Self {
+        Self::Fault(fault)
+    }
 }
 
 pub(crate) struct Active {
@@ -546,7 +559,7 @@ impl Workspaces {
         #[cfg(any(target_os = "linux", target_os = "macos"))] notices: Option<
             mpsc::Sender<Provider>,
         >,
-    ) -> Reply<Active> {
+    ) -> Result<Active, AttachFailure> {
         let mut checked = None;
         let (location, generation, terminal, previous) = loop {
             let validation = checked.clone();
@@ -560,7 +573,8 @@ impl Workspaces {
             target = original;
             match reservation {
                 Ok(reserved) => break reserved,
-                Err(ReservationError::Fault(fault)) => return Err(fault),
+                Err(ReservationError::Fault(fault)) => return Err(fault.into()),
+                Err(ReservationError::Recovery(pane)) => return Err(AttachFailure::Recovery(pane)),
                 Err(ReservationError::Check(paths)) => {
                     checked = Some(Arc::new(paths.validate().await?))
                 }
@@ -666,7 +680,7 @@ impl Workspaces {
         }
         let _ = stale.terminal.retire_view(stale.route).await;
         self.release(client).await;
-        Err(target_gone())
+        Err(target_gone().into())
     }
 
     fn reserve(
@@ -709,6 +723,11 @@ impl Workspaces {
         };
         if previous.is_none() {
             registry.check_attach(location, target.keymap)?;
+        }
+        if target.offer_recovery
+            && let Some(pane) = registry.attach_recovery(location)
+        {
+            return Err(ReservationError::Recovery(Box::new(pane)));
         }
         if let Some(launch) = &mut target.launch
             && (!launch.if_empty || !registry.has_live_at(location))
@@ -921,6 +940,9 @@ impl Workspaces {
                 Ok(Some(reserved)) => break reserved,
                 Ok(None) => return Ok(None),
                 Err(ReservationError::Fault(fault)) => return Err(fault),
+                Err(ReservationError::Recovery(_)) => {
+                    unreachable!("selection does not offer recovery")
+                }
                 Err(ReservationError::Check(paths)) => {
                     checked = Some(Arc::new(paths.validate().await?))
                 }
@@ -1808,6 +1830,7 @@ type Reservation<T> = Result<T, ReservationError>;
 
 enum ReservationError {
     Fault(ProtocolFault),
+    Recovery(Box<corvid_protocol::wire::PaneRestoreResult>),
     Check(CwdPaths),
 }
 
