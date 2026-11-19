@@ -19,7 +19,7 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameWriter,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
-    TERMINAL_HISTORY_CAPABILITY,
+    TERMINAL_HISTORY_CAPABILITY, WRITER_RESUME_CAPABILITY,
 };
 use tokio::sync::{Semaphore, SemaphorePermit, mpsc, oneshot};
 use tokio::time::timeout;
@@ -42,6 +42,7 @@ const CAPABILITIES: &[&str] = &[
     "attach.v1",
     corvid_protocol::PANE_WRITERS_CAPABILITY,
     corvid_protocol::SESSION_CLIENTS_CAPABILITY,
+    WRITER_RESUME_CAPABILITY,
     corvid_protocol::GRACEFUL_DETACH_CAPABILITY,
     corvid_protocol::PARK_TERMINAL_CAPABILITY,
     corvid_protocol::ATTACH_AGENT_CAPABILITY,
@@ -271,6 +272,7 @@ async fn serve_active(
         route_token: Some(wire_route(route)),
         writer_leases: vec![active.location.workspace.to_string()],
         selection: Some(selection(active.location)),
+        writer_resume_token: active.resume_token.map(|token| token.as_bytes().to_vec()),
     };
     send(session, writer, request_id, Body::Attached(attached)).await?;
     TuiConnection {
@@ -1030,8 +1032,40 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
             "pane takeover requires a writer attach to an existing pane",
         ));
     }
-    if attach.expected_terminal_id.is_some() && (!attach.take_over || attach.pane_id.is_none()) {
-        return Err(invalid("terminal identity requires an exact pane takeover"));
+    let pane_writer = attach
+        .terminal_capabilities
+        .iter()
+        .any(|name| name == corvid_protocol::PANE_WRITERS_CAPABILITY);
+    let issue_resume_token = pane_writer
+        && attach
+            .terminal_capabilities
+            .iter()
+            .any(|name| name == WRITER_RESUME_CAPABILITY);
+    let resume_token = if let Some(token) = &attach.writer_resume_token {
+        if !issue_resume_token
+            || attach.take_over
+            || attach.workspace_id.is_none()
+            || attach.tab_id.is_none()
+            || attach.pane_id.is_none()
+            || attach.expected_terminal_id.is_none()
+            || attach.launch.is_some()
+            || attach.create_workspace.is_some()
+            || attach.create_tab.is_some()
+            || attach.agent_run_id.is_some()
+        {
+            return Err(invalid("writer resume requires an exact terminal attach"));
+        }
+        Some(Uuid::from_slice(token).map_err(|_| invalid("invalid writer resume token"))?)
+    } else {
+        None
+    };
+    if attach.expected_terminal_id.is_some()
+        && resume_token.is_none()
+        && (!attach.take_over || attach.pane_id.is_none())
+    {
+        return Err(invalid(
+            "terminal identity requires an exact pane takeover or resume",
+        ));
     }
     if attach.agent_run_id.is_some()
         && (attach.take_over
@@ -1083,6 +1117,8 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
                 .iter()
                 .any(|cap| cap == corvid_protocol::ATTACH_RECOVERY_CAPABILITY),
         expected_terminal: parse_optional_id(attach.expected_terminal_id.as_deref())?,
+        resume_token,
+        issue_resume_token,
         keymap: Keymap {
             naming: attach
                 .terminal_capabilities
@@ -1092,10 +1128,7 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
                 .terminal_capabilities
                 .iter()
                 .any(|cap| cap == corvid_protocol::SESSION_CLIENTS_CAPABILITY),
-            pane_writer: attach
-                .terminal_capabilities
-                .iter()
-                .any(|name| name == corvid_protocol::PANE_WRITERS_CAPABILITY),
+            pane_writer,
             tabs: attach
                 .terminal_capabilities
                 .iter()

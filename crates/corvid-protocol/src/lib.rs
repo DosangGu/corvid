@@ -40,6 +40,7 @@ pub const TERMINAL_HISTORY_CAPABILITY: &str = "terminal_history.v1";
 pub const PROCESS_AGENT_LAUNCH_CAPABILITY: &str = "agent_launch.process.v1";
 pub const PANE_WRITERS_CAPABILITY: &str = "pane_writers.v1";
 pub const SESSION_CLIENTS_CAPABILITY: &str = "session_clients.v1";
+pub const WRITER_RESUME_CAPABILITY: &str = "writer_resume.v1";
 pub const ATTACH_AGENT_CAPABILITY: &str = "attach_agent.v1";
 pub const PARK_TERMINAL_CAPABILITY: &str = "park_terminal.v1";
 pub const GRACEFUL_DETACH_CAPABILITY: &str = "graceful_detach.v1";

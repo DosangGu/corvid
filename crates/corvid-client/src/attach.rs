@@ -467,6 +467,7 @@ async fn request_attach(
         None
     };
     let mut attach = Attach {
+        writer_resume_token: None,
         agent_run_id: None,
         workspace_id: options.workspace,
         tab_id: options.tab,

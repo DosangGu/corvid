@@ -31,10 +31,14 @@ async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -
     };
     let (session, job, _prompts, _activations) = start(AttachTarget::Default, false)?;
     let original = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
-    disconnect()?;
-    wait_for_ssh_ui(&session, |ui| !ui.connected && ui.changing).await?;
-    std::fs::remove_file(root.join("offline"))?;
-    let recovered = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
+    let recovered = {
+        // Keep the daemon-side transport open while the local SSH process exits.
+        let _relay = StoppedRelay::stop(&root)?;
+        disconnect()?;
+        wait_for_ssh_ui(&session, |ui| !ui.connected && ui.changing).await?;
+        std::fs::remove_file(root.join("offline"))?;
+        wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?
+    };
     assert_eq!(recovered.terminal_id, original.terminal_id);
     assert_eq!(recovered.selected, original.selected);
 
@@ -57,6 +61,34 @@ async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -
     job.stop(false);
     job.join();
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+struct StoppedRelay(String);
+
+#[cfg(target_os = "linux")]
+impl StoppedRelay {
+    fn stop(root: &Path) -> Result<Self> {
+        let pid = std::fs::read_to_string(root.join("relay-pid"))?;
+        ensure!(pid.parse::<u32>()? > 1, "invalid SSH fixture relay PID");
+        ensure!(
+            std::process::Command::new("kill")
+                .args(["-STOP", &pid])
+                .status()?
+                .success(),
+            "could not stop the remote relay"
+        );
+        Ok(Self(pid))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for StoppedRelay {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .args(["-CONT", &self.0])
+            .status();
+    }
 }
 
 #[cfg(target_os = "linux")]

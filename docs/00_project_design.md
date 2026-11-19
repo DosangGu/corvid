@@ -657,7 +657,11 @@ user-initiated attaches use the `session_clients.v1` takeover option to resume a
 pane directly, selecting the most recently connected writer when no tab or pane
 is specified. The default-shell attach may create a shell only when no live
 terminal exists. Desktop also uses exact, terminal-ID-checked takeover when the
-user selects an occupied pane. Automatic reconnection does not request takeover.
+user selects an occupied pane. With `writer_resume.v1`, Desktop reconnects over SSH
+to the exact terminal using the token issued to its previous writer. The daemon
+checks the current claim and fences that writer's route before attaching the new
+connection. If the pane has a different writer, reconnect returns `WorkspaceBusy`.
+If the pane is free, the client can attach to the surviving terminal.
 There is no observer role or opt-in writer promotion. Their retired wire values
 remain reserved, and older observer requests are rejected.
 
@@ -1515,6 +1519,12 @@ discards queued input, and keeps last PTY sizes. The daemon continues parsing ou
 collecting agent observations with no attached TUI. A subsequent attach gets a new
 ClientId, explicit writer claim, current state, and full redraw; it never restores an old
 input queue or a previous connection's terminal-mode assumptions.
+
+The writer resume token lives in the client and daemon's memory. The daemon links
+it to the current writer's view and terminal, and retains the most recent token
+with a detached PTY. A successful resume keeps the token so the same window can
+retry if it loses the attach response. An intervening writer replaces the token
+for that terminal. Every successful attach still gets a new client ID and input route.
 
 On clean Desktop shutdown, a daemon advertising `graceful_detach.v1` retires
 the terminal input route and releases the client's writer claims before

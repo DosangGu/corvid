@@ -1059,6 +1059,8 @@ message Attach {
   // Initial directory supplied by the CLI when no workspace default applies.
   optional bytes fallback_directory = 13;
   optional string agent_run_id = 14;
+  // Daemon-issued secret for resuming the previous writer of an exact terminal.
+  optional bytes writer_resume_token = 15;
 }
 
 message BrowseDirectories {
@@ -1105,6 +1107,7 @@ message Attached {
   RouteToken route_token = 3;
   repeated string writer_leases = 4;
   ViewSelection selection = 5;
+  optional bytes writer_resume_token = 6;
 }
 
 message RouteToken {

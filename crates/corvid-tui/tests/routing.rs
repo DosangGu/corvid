@@ -321,6 +321,124 @@ async fn takeover_checks_the_terminal_identity_and_refuses_a_pending_paste() {
 }
 
 #[tokio::test]
+async fn resumes_only_the_previous_writer_of_the_exact_terminal() {
+    use corvid_protocol::{PANE_WRITERS_CAPABILITY, WRITER_RESUME_CAPABILITY};
+
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let runtime = fixture.path().join("run");
+    let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    let capabilities = vec![
+        PANE_WRITERS_CAPABILITY.into(),
+        WRITER_RESUME_CAPABILITY.into(),
+    ];
+    let mut original = Tui::attach_target(
+        &runtime,
+        Attach {
+            launch: Some(echo_fixture("RESUMED")),
+            terminal_capabilities: capabilities.clone(),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut output = Vec::new();
+    wait_for_text(&mut original, &mut output, "RESUMED-READY").await;
+    let route = original.route.clone();
+    let token = original.writer_resume_token.clone().unwrap();
+    let resume = Attach {
+        workspace_id: Some(original.selection.workspace_id.clone()),
+        tab_id: Some(original.selection.tab_id.clone()),
+        pane_id: Some(original.selection.pane_id.clone()),
+        terminal_capabilities: capabilities,
+        expected_terminal_id: Some(route.terminal_id.clone()),
+        writer_resume_token: Some(token.clone()),
+        ..Default::default()
+    };
+    for (request, code) in [
+        (
+            Attach {
+                writer_resume_token: Some(vec![1]),
+                ..resume.clone()
+            },
+            "InvalidMessage",
+        ),
+        (
+            Attach {
+                writer_resume_token: Some(Uuid::new_v4().as_bytes().to_vec()),
+                ..resume.clone()
+            },
+            "WorkspaceBusy",
+        ),
+        (
+            Attach {
+                expected_terminal_id: Some(Uuid::new_v4().to_string()),
+                ..resume.clone()
+            },
+            "TargetGone",
+        ),
+    ] {
+        assert!(
+            matches!(Tui::try_attach_target(&runtime, request).await, Err(fault) if fault.code == code)
+        );
+    }
+
+    // Keep the original connection open, then retry with the original token
+    // while the first successor is still connected (as after a lost reply).
+    let mut first = Tui::attach_target(&runtime, resume.clone()).await;
+    assert_eq!(first.route.terminal_id, route.terminal_id);
+    assert_ne!(
+        first.route.writer_lease_generation,
+        route.writer_lease_generation
+    );
+    original.wait_for_detach().await;
+    let mut second = Tui::attach_target(&runtime, resume.clone()).await;
+    first.wait_for_detach().await;
+    assert_eq!(second.route.terminal_id, route.terminal_id);
+    assert_ne!(second.route.client_id, first.route.client_id);
+    assert!(
+        second
+            .writer_resume_token
+            .as_ref()
+            .is_some_and(|value| *value == token)
+    );
+
+    second.input(route, 1, b"STALE\n").await;
+    assert!(
+        matches!(second.next_body(&mut output).await, Body::Error(error) if error.code == "StaleRoute")
+    );
+    second.input(second.route.clone(), 1, b"FRESH\n").await;
+    wait_for_text(&mut second, &mut output, "RESUMED=FRESH").await;
+    assert!(!String::from_utf8_lossy(&output).contains("RESUMED=STALE"));
+
+    second
+        .send(Body::Detach(corvid_protocol::wire::Detach {}))
+        .await;
+    while second.reader.next_frame().await.unwrap().is_some() {}
+    let mut resumed = Tui::attach_target(&runtime, resume.clone()).await;
+    assert_eq!(resumed.route.terminal_id, second.route.terminal_id);
+    assert!(
+        resumed
+            .writer_resume_token
+            .as_ref()
+            .is_some_and(|value| *value == token)
+    );
+
+    let new_writer = Attach {
+        take_over: true,
+        writer_resume_token: None,
+        ..resume.clone()
+    };
+    let mut new_writer = Tui::attach_target(&runtime, new_writer).await;
+    resumed.wait_for_detach().await;
+    assert!(
+        matches!(Tui::try_attach_target(&runtime, resume).await, Err(fault) if fault.code == "WorkspaceBusy")
+    );
+    new_writer
+        .input(new_writer.route.clone(), 1, b"NEW-WRITER\n")
+        .await;
+    wait_for_text(&mut new_writer, &mut output, "RESUMED=NEW-WRITER").await;
+}
+
+#[tokio::test]
 async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let home = fixture.path();
@@ -494,6 +612,7 @@ struct Tui {
     session: Session,
     route: RouteToken,
     selection: ViewSelection,
+    writer_resume_token: Option<Vec<u8>>,
 }
 
 impl Tui {
@@ -560,6 +679,7 @@ impl Tui {
             session,
             route: attached.route_token.unwrap(),
             selection: attached.selection.unwrap(),
+            writer_resume_token: attached.writer_resume_token,
         })
     }
 
@@ -631,6 +751,21 @@ impl Tui {
         assert_eq!(view.selection.as_ref(), Some(destination));
         self.route = view.route_token.unwrap();
         self.selection = view.selection.unwrap();
+    }
+
+    async fn wait_for_detach(&mut self) {
+        loop {
+            match self.reader.next_frame().await.unwrap().unwrap() {
+                Frame::Render(_) => {}
+                Frame::Structured(payload) => {
+                    assert!(matches!(
+                        decode_envelope(&payload).unwrap().body,
+                        Some(Body::Detach(_))
+                    ));
+                    return;
+                }
+            }
+        }
     }
 
     async fn event(&mut self, output: &mut Vec<u8>) -> Option<Body> {

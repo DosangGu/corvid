@@ -32,7 +32,8 @@ use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
     DEFAULT_SHELL_CAPABILITY, Frame, GRACEFUL_DETACH_CAPABILITY, PANE_PREVIEW_CAPABILITY,
     ProtocolFault, RenderFrame, SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY,
-    TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, decode_envelope,
+    TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, WRITER_RESUME_CAPABILITY,
+    decode_envelope,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout};
@@ -95,6 +96,7 @@ pub enum AttachTarget {
         host_id: String,
         epoch: String,
         terminal_id: String,
+        writer_resume_token: Option<Uuid>,
     },
     Pane(ViewSelection, bool),
     OpenPane {
@@ -713,6 +715,7 @@ struct Requests {
     prompts: Prompts,
     host: Option<String>,
     terminal: Option<String>,
+    writer_resume_token: Option<Uuid>,
     closing: oneshot::Receiver<bool>,
     parked: ParkedConnections,
     attached: Option<oneshot::Sender<()>>,
@@ -769,6 +772,7 @@ impl Session {
                     prompts: Prompts(prompt_sender),
                     host: None,
                     terminal: None,
+                    writer_resume_token: None,
                     closing,
                     parked,
                     attached: None,
@@ -1165,9 +1169,9 @@ async fn run_reconnecting(
     agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
     let ssh = matches!(destination, Destination::Ssh(_));
-    let mut reconnecting = false;
-    let mut retry: Option<SshRetry> = None;
-    if matches!(target, AttachTarget::Reconnect { .. }) {
+    let mut reconnecting = matches!(target, AttachTarget::Reconnect { .. });
+    let mut retry = reconnecting.then(SshRetry::default);
+    if reconnecting {
         let retry_target = target.clone();
         shared.update_ui(move |ui| ui.reconnect_target = Some(retry_target));
     }
@@ -1269,6 +1273,7 @@ async fn run_reconnecting(
                         .terminal_id
                         .clone()
                         .context("missing reconnect terminal")?,
+                    writer_resume_token: requests.writer_resume_token,
                 };
             } else if let Some(previous) = &ui.reconnect_target {
                 target = previous.clone();
@@ -1352,6 +1357,7 @@ async fn run(
         prompts,
         host,
         terminal,
+        writer_resume_token,
         closing,
         parked,
         attached: attach_ready,
@@ -1446,14 +1452,25 @@ async fn run(
     );
     *host = Some(link.session().host_id.clone());
     let reconnect_attempt = matches!(target, AttachTarget::Reconnect { .. });
+    let mut resume_token = None;
     let reconnecting_terminal = match target {
         AttachTarget::Reconnect {
             view,
             epoch,
             terminal_id,
+            writer_resume_token,
             ..
         } => {
             *terminal = (epoch == link.session().server_epoch).then_some(terminal_id);
+            if terminal.is_some()
+                && link
+                    .session()
+                    .capabilities
+                    .iter()
+                    .any(|cap| cap == WRITER_RESUME_CAPABILITY)
+            {
+                resume_token = writer_resume_token;
+            }
             target = AttachTarget::Pane(view, false);
             terminal.is_some()
         }
@@ -1675,6 +1692,8 @@ async fn run(
                 tab_id: Some(view.tab_id.clone()),
                 pane_id: Some(view.pane_id.clone()),
                 launch: open.then(LaunchCommand::default),
+                writer_resume_token: resume_token.map(|token| token.as_bytes().to_vec()),
+                expected_terminal_id: resume_token.and(terminal.clone()),
                 ..Default::default()
             };
             if (!open && offer_recovery) || opening_pane {
@@ -1722,6 +1741,12 @@ async fn run(
             },
         "invalid initial daemon route"
     );
+    *writer_resume_token = attached
+        .writer_resume_token
+        .as_deref()
+        .map(Uuid::from_slice)
+        .transpose()
+        .context("invalid daemon writer resume token")?;
 
     let host = link.session().host_id.clone();
     let epoch = link.session().server_epoch.clone();
@@ -1998,6 +2023,16 @@ async fn attach(
         request
             .terminal_capabilities
             .push(corvid_protocol::PANE_WRITERS_CAPABILITY.into());
+    }
+    if link
+        .session()
+        .capabilities
+        .iter()
+        .any(|cap| cap == WRITER_RESUME_CAPABILITY)
+    {
+        request
+            .terminal_capabilities
+            .push(WRITER_RESUME_CAPABILITY.into());
     }
     if request.requested_role == AttachRole::Unspecified as i32 {
         request.requested_role = AttachRole::Writer as i32;

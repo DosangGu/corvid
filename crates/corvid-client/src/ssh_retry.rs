@@ -43,7 +43,11 @@ impl SshRetry {
         if let Some(fault) = error.downcast_ref::<ProtocolFault>() {
             return matches!(
                 fault.code.as_str(),
-                "Offline" | "DaemonUnavailable" | "ResyncRequired" | "ConnectionRequired"
+                "Offline"
+                    | "DaemonUnavailable"
+                    | "ResyncRequired"
+                    | "ConnectionRequired"
+                    | "WriterResumePending"
             );
         }
         error.is::<tokio::time::error::Elapsed>()
