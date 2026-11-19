@@ -28,7 +28,7 @@ done
 /usr/bin/codesign --verify --deep --strict -R='identifier "org.corvid.desktop"' "$app"
 
 lock="$app/.corvid-authorized-update"
-mkdir "$lock" || fail 'Another administrator is updating Corvid.'
+/bin/mkdir "$lock" || fail 'Another administrator is updating Corvid.'
 # Keep rollback material in the existing app directory until publication.
 restore() {
     if [ -d "$lock/previous" ] && [ ! -e "$app/Contents" ]; then
@@ -43,7 +43,7 @@ digest=$(/usr/bin/shasum -a 256 "$app/Contents/Resources/package.json")
 [ "${digest%% *}" = "$expected" ] || fail 'Corvid changed while the update was being prepared.'
 /usr/bin/ditto --noacl --noqtn "$incoming" "$lock/Corvid.app"
 # Allow users of the shared installation to read its new resources.
-chmod -R a+rX "$lock/Corvid.app"
+/bin/chmod -R a+rX "$lock/Corvid.app"
 /usr/bin/codesign --verify --deep --strict -R='identifier "org.corvid.desktop"' "$lock/Corvid.app"
 actual=$(/usr/bin/codesign --display --verbose=4 "$lock/Corvid.app" 2>&1 | /usr/bin/sed -n 's/^CDHash=//p')
 [ "$actual" = "$cdhash" ] || fail 'The staged Corvid code signature changed.'

@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import Foundation
 
 let args = CommandLine.arguments
@@ -56,18 +55,6 @@ func quit() {
     }
 }
 
-func pressTile(_ element: AXUIElement, depth: Int = 0) -> Bool {
-    guard depth < 5 else { return false }
-    var value: CFTypeRef?
-    if AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &value) == .success,
-       value as? String == label {
-        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
-    }
-    AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
-    let children = value as? [AXUIElement] ?? []
-    return children.contains { pressTile($0, depth: depth + 1) }
-}
-
 switch args[1] {
 case "pin":
     let reference = try app.bookmarkData()
@@ -86,7 +73,7 @@ case "pin":
     ]])
     try reloadDock()
     print(guid)
-case "launch":
+case "resolve":
     let guid = Int(args[4])!
     let tile = tiles().first { ($0["GUID"] as? Int) == guid }!
     let saved = try data(tile)["book"] as? Data ?? Data(contentsOf: bookmark)
@@ -95,26 +82,8 @@ case "launch":
                            relativeTo: nil, bookmarkDataIsStale: &stale)
     precondition(resolved.resolvingSymlinksInPath().path == app.path)
 
-    if AXIsProcessTrusted() {
-        for _ in 0..<30 {
-            if let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first,
-               pressTile(AXUIElementCreateApplication(dock.processIdentifier)),
-               waitForApplication() {
-                print("Dock AXPress")
-                exit(0)
-            }
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
-        }
-    }
-    // Hosted runners can resolve the saved Dock bookmark even when macOS denies
-    // Accessibility control of Dock tiles.
-    let open = Process()
-    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    open.arguments = [resolved.path]
-    try open.run()
-    open.waitUntilExit()
-    precondition(open.terminationStatus == 0 && waitForApplication())
-    print("LaunchServices with the original Dock bookmark")
+case "running":
+    precondition(waitForApplication(), "Corvid did not launch from the Dock")
 case "quit":
     quit()
     precondition(application() == nil)

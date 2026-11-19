@@ -27,6 +27,17 @@ pub fn replace_from_installer(caller: i32) -> Result<u32> {
         );
         return Ok(3);
     };
+    let path = CString::new(app.as_os_str().as_bytes())?;
+    let mut volume = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // statfs initializes the output on success.
+    if unsafe { libc::statfs(path.as_ptr(), volume.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error()).context("inspecting Corvid's installation volume");
+    }
+    let volume = unsafe { volume.assume_init() };
+    ensure!(
+        volume.f_flags & libc::MNT_RDONLY as u32 == 0,
+        "Copy Corvid.app from the disk image to Applications and reopen it before updating."
+    );
     let binary = app.join(CLI);
     let installed = Installation::at(&binary)?;
     ensure!(
@@ -173,7 +184,7 @@ fn replace(app: &Path, incoming: &Path, expected: &str) -> Result<()> {
         return Err(io::Error::last_os_error()).context("exchanging Corvid app contents");
     }
     if let Err(error) = staging.close() {
-        eprintln!("Installed Corvid. Removing the previous app contents: {error}");
+        eprintln!("Installed Corvid. Could not remove the previous app contents: {error}");
     }
     Ok(())
 }

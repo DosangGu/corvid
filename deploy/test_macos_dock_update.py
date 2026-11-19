@@ -5,9 +5,9 @@ import argparse
 import json
 import os
 from pathlib import Path
-import plistlib
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import uuid
@@ -23,7 +23,34 @@ def run(*args, **kwargs):
     return subprocess.check_output([str(arg) for arg in args], text=True, timeout=120, **kwargs).strip()
 
 
-def update(app, archive, directory):
+def launch_dock_tile(dock, app, alias, tile):
+    run(dock, "resolve", app, alias, tile)
+    script = """
+on run argv
+    set appName to item 1 of argv
+    tell application "System Events"
+        tell process "Dock"
+            set entries to UI elements of list 1
+            repeat with entry in entries
+                if name of entry is appName or name of entry is "Corvid" then
+                    perform action "AXPress" of entry
+                    return "pressed"
+                end if
+            end repeat
+        end tell
+    end tell
+    return "missing"
+end run
+"""
+    for _ in range(20):
+        if run("/usr/bin/osascript", "-e", script, app.stem) == "pressed":
+            run(dock, "running", app, alias, tile)
+            return
+        time.sleep(0.3)
+    raise AssertionError("Could not find Corvid's existing Dock tile")
+
+
+def release_fixture(archive, directory):
     release = directory / "release"
     release.mkdir()
     version = archive.name.removeprefix("corvid-desktop-").removesuffix("-aarch64-apple-darwin.tar.gz")
@@ -48,8 +75,18 @@ shutil.copyfile(root / sys.argv[-1].rsplit("/", 1)[1], sys.argv[sys.argv.index("
     fixture_home = directory / "install-home"
     fixture_home.mkdir()
     env = dict(os.environ, HOME=str(fixture_home), PATH=f"{release}:{os.environ['PATH']}")
-    result = subprocess.run([app / CLI, "update", "--version", version], env=env,
-                            capture_output=True, text=True, timeout=120)
+    return version, revision, fixture_home, env
+
+
+def run_update(app, release):
+    version, _, _, env = release
+    return subprocess.run([app / CLI, "update", "--version", version], env=env,
+                          capture_output=True, text=True, timeout=120)
+
+
+def update(app, release):
+    version, revision, fixture_home, _ = release
+    result = run_update(app, release)
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (fixture_home / "Applications/Corvid.app").exists(), result.stdout
     metadata = json.loads((app / "Contents/Resources/package.json").read_text())
@@ -58,37 +95,71 @@ shutil.copyfile(root / sys.argv[-1].rsplit("/", 1)[1], sys.argv[sys.argv.index("
     return version
 
 
+def check_protected_bundle(app, archive, directory):
+    stage = directory / "protected-update"
+    stage.mkdir()
+    with tarfile.open(archive) as package:
+        package.extractall(stage, filter="data")
+    incoming = stage / "Corvid.app"
+    expected = digest(app / "Contents/Resources/package.json")
+    result = subprocess.run(["codesign", "--display", "--verbose=4", incoming],
+                            capture_output=True, text=True, check=True, timeout=30)
+    cdhash, = [line.removeprefix("CDHash=") for line in result.stderr.splitlines()
+               if line.startswith("CDHash=")]
+    before = app.stat().st_ino
+    run("sudo", "-n", "/usr/sbin/chown", "root:wheel", app)
+    run("sudo", "-n", "/bin/chmod", "755", app)
+    assert not os.access(app, os.W_OK), "fixture must require administrator write access"
+    script = ROOT / "crates/corvid-update/src/macos_authorized_install.sh"
+    # Hosted runners have passwordless sudo. Exercise the exact authorized
+    # filesystem transaction without driving or filling the system auth panel.
+    run("sudo", "-n", "/bin/sh", script, app, incoming, expected, cdhash)
+    assert app.stat().st_ino == before
+    assert digest(app / "Contents/Resources/package.json") == digest(incoming / "Contents/Resources/package.json")
+    run("codesign", "--verify", "--deep", "--strict", app)
+    print("PASS authorized replacement of an administrator-owned Corvid.app")
+
+
 def check(dmg, archive):
     # Pin an isolated copy in the disposable macOS runner's real Dock.
     assert os.environ.get("GITHUB_ACTIONS") == "true"
     with tempfile.TemporaryDirectory(prefix=".cv-dock-", dir=Path.home()) as temp:
         directory = Path(temp).resolve()
         mount = directory / "volume"
+        release = release_fixture(archive, directory)
         app = Path("/Applications") / f"Corvid Dock Fixture {uuid.uuid4().hex[:10]}.app"
+        protected = app.with_name(f"{app.stem} protected.app")
         dock = directory / "dock-test"
         alias = directory / "Corvid bookmark"
         run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
         run("hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", mount, dmg)
         try:
+            read_only = run_update(mount / "Corvid.app", release)
+            assert read_only.returncode != 0
+            assert "Copy Corvid.app from the disk image" in read_only.stderr, read_only.stderr
             run("ditto", mount / "Corvid.app", app)
+            run("ditto", mount / "Corvid.app", protected)
         finally:
             run("hdiutil", "detach", mount)
         try:
             old = run(app / CLI, "--version")
             original_inode = app.stat().st_ino
             tile = run(dock, "pin", app, alias)
-            run(dock, "launch", app, alias, tile)
+            launch_dock_tile(dock, app, alias, tile)
             run(dock, "quit", app, alias, tile)
-            new = update(app, archive, directory)
+            new = update(app, release)
             assert app.stat().st_ino == original_inode, "Dock's original app directory was replaced"
             run("codesign", "--verify", "--deep", "--strict", app)
-            method = run(dock, "launch", app, alias, tile)
+            launch_dock_tile(dock, app, alias, tile)
             assert f"corvid {new}" != old, "the test needs a newer version than the published DMG"
-            print(f"PASS {old} → corvid {new}; original Dock tile {tile}; opened via {method}")
+            print(f"PASS {old} -> corvid {new}; opened the original Dock tile {tile}")
+            check_protected_bundle(protected, archive, directory)
         finally:
             run(dock, "remove", app, alias)
             if app.is_dir():
                 shutil.rmtree(app)
+            if protected.is_dir():
+                run("sudo", "-n", "/bin/rm", "-rf", protected)
 
 
 if __name__ == "__main__":
