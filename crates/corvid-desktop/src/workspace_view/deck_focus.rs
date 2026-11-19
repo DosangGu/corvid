@@ -59,7 +59,7 @@ impl WorkspaceView {
                     .timer(std::time::Duration::from_millis(25))
                     .await;
             }
-            let start = if result.is_closed() {
+            let start = if result.is_closed() || !lifetime.retirement_done() {
                 None
             } else {
                 Some(Session::start(
@@ -85,11 +85,14 @@ impl WorkspaceView {
                     return;
                 }
             };
+            lifetime.stage(job);
             let mut changes = session.changes();
             let outcome = loop {
                 let ui = session.ui();
                 if ui.can_write() {
-                    break Some(Ok((session, job, prompts, activations)));
+                    break lifetime
+                        .take_staged()
+                        .map(|job| Ok((session, job, prompts, activations)));
                 }
                 if !ui.changing {
                     break Some(Err(ui.message));
@@ -103,6 +106,7 @@ impl WorkspaceView {
                     }
                 }
             };
+            lifetime.discard_staged();
             let _ = view.update_in(cx, |view, window, cx| {
                 view.host_switch = None;
                 match outcome {
@@ -112,6 +116,7 @@ impl WorkspaceView {
                         view.sync(window, cx);
                         view.focus_from_deck(window, cx, result);
                     }
+                    Some(Ok((_, job, _, _))) => lifetime.discard_job(job),
                     Some(Err(error)) => {
                         let fault = corvid_protocol::ProtocolFault::new("FocusUnavailable", &error);
                         let _ = result.send(Err(fault.into()));

@@ -131,11 +131,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             cx.text_system(),
         ));
         let quitting = app_windows.clone();
-        cx.on_app_quit(move |_| {
-            quitting.shutdown();
-            async {}
-        })
-        .detach();
+        cx.on_app_quit(move |_| desktop_windows::wait_for_shutdown(quitting.start_shutdown()))
+            .detach();
         if let Err(error) = app_windows.restore(destination, cx) {
             eprintln!("Could not restore Desktop windows: {error:#}");
             app_windows.quit(cx);
@@ -146,6 +143,9 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         cx.activate(true);
     });
 
-    windows.shutdown();
+    let pending = windows.start_shutdown();
+    if !pending.is_empty() {
+        terminal_session::session_runtime()?.block_on(desktop_windows::wait_for_shutdown(pending));
+    }
     Ok(std::process::ExitCode::SUCCESS)
 }

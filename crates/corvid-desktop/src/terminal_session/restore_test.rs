@@ -163,8 +163,17 @@ impl AttachedSession {
     }
 
     fn with_target(state: &Path, store: ViewStore, target: AttachTarget) -> Result<Self> {
+        Self::with_destination(state, store, target, Destination::Local)
+    }
+
+    fn with_destination(
+        state: &Path,
+        store: ViewStore,
+        target: AttachTarget,
+        destination: Destination,
+    ) -> Result<Self> {
         let (session, job, _prompts, _activations) = Session::start(
-            Destination::Local,
+            destination,
             state.to_owned(),
             store,
             target,
@@ -185,6 +194,84 @@ impl Drop for AttachedSession {
             job.join();
         }
     }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires an isolated Linux SSH daemon and CORVID_DESKTOP_TEST_SSH_ALIAS"]
+async fn ssh_split_preview_and_input_survive_reattach() -> Result<()> {
+    let alias = SshAlias::new(std::env::var("CORVID_DESKTOP_TEST_SSH_ALIAS")?)?;
+    let fixture = tempfile::tempdir()?;
+    let state = fixture.path().join("desktop");
+    let store = ViewStore::new(state.join("desktop-view"));
+    let start = || {
+        AttachedSession::with_destination(
+            &state,
+            store.clone(),
+            AttachTarget::Default,
+            Destination::Ssh(alias.clone()),
+        )
+    };
+    let first = start()?;
+    let initial = wait_view(&first.session, |_| true).await?.selected.unwrap();
+    wait_screen(&first.session, &initial.pane_id, "").await?;
+    ensure!(first.session.send(
+        &initial.pane_id,
+        b"printf 'SSH_FIRST_%s\\n' ready\r".to_vec(),
+        false
+    ));
+    wait_screen(&first.session, &initial.pane_id, "SSH_FIRST_ready").await?;
+    first.session.create(Target::SplitAxis(
+        corvid_protocol::wire::SplitAxis::Horizontal as i32,
+    ));
+    let split = wait_view(&first.session, |ui| {
+        ui.selected
+            .as_ref()
+            .is_some_and(|view| view.pane_id != initial.pane_id)
+    })
+    .await?;
+    let pane = split.selected.as_ref().unwrap();
+    wait_screen(&first.session, &pane.pane_id, "").await?;
+
+    let mut updates = first.session.changes();
+    timeout(Duration::from_secs(20), async {
+        loop {
+            if first.session.preview(&initial.pane_id, |screen| {
+                screen.contents().contains("SSH_FIRST_ready")
+            }) == Some(true)
+            {
+                break Ok::<_, anyhow::Error>(());
+            }
+            updates.changed().await?;
+        }
+    })
+    .await
+    .context("waiting for the SSH split preview")??;
+    ensure!(
+        !first
+            .session
+            .send(&initial.pane_id, b"wrong pane".to_vec(), false)
+    );
+    ensure!(first.session.send(
+        &pane.pane_id,
+        b"printf 'SSH_SPLIT_%s\\n' ready\r".to_vec(),
+        false
+    ));
+    wait_screen(&first.session, &pane.pane_id, "SSH_SPLIT_ready").await?;
+    tokio::task::spawn_blocking(move || drop(first)).await?;
+
+    let resumed = start()?;
+    let restored = wait_view(&resumed.session, |_| true).await?;
+    ensure!(restored.selected == split.selected && restored.terminal_id == split.terminal_id);
+    wait_screen(&resumed.session, &pane.pane_id, "SSH_SPLIT_ready").await?;
+    ensure!(resumed.session.send(
+        &pane.pane_id,
+        b"printf 'SSH_RESUMED_%s\\n' ready\r".to_vec(),
+        false
+    ));
+    wait_screen(&resumed.session, &pane.pane_id, "SSH_RESUMED_ready").await?;
+    tokio::task::spawn_blocking(move || drop(resumed)).await?;
+    Ok(())
 }
 
 async fn wait_view(session: &Session, ready: impl Fn(&Ui) -> bool) -> Result<Ui> {

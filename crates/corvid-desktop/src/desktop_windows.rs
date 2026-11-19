@@ -11,7 +11,7 @@ use corvid_presentation::desktop_focus::{FocusRequest, serve_routed};
 use gpui::{
     App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions, px, size,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use crate::agent_deck;
@@ -39,6 +39,8 @@ struct Inner {
     settings: agent_deck::Settings,
     entries: RefCell<HashMap<Uuid, Entry>>,
     quitting: Cell<bool>,
+    ready_to_quit: Cell<bool>,
+    closing: RefCell<Vec<watch::Receiver<()>>>,
 }
 
 impl DesktopWindows {
@@ -48,6 +50,8 @@ impl DesktopWindows {
             settings,
             entries: RefCell::new(HashMap::new()),
             quitting: Cell::new(false),
+            ready_to_quit: Cell::new(false),
+            closing: RefCell::new(Vec::new()),
         }))
     }
 
@@ -147,6 +151,9 @@ impl DesktopWindows {
     }
 
     pub fn new_window(&self, cx: &mut App) -> Result<()> {
+        if self.0.quitting.get() {
+            return Ok(());
+        }
         self.open(self.0.registry.create()?, None, true, cx)
     }
 
@@ -204,7 +211,7 @@ impl DesktopWindows {
 
     fn close(&self, id: Uuid, cx: &mut App) -> bool {
         if self.0.quitting.get() {
-            return true;
+            return self.0.ready_to_quit.get();
         }
         if !cfg!(target_os = "macos") && self.0.entries.borrow().len() == 1 {
             // X11 invokes this callback while borrowing its platform state.
@@ -218,17 +225,36 @@ impl DesktopWindows {
         let Some(mut entry) = self.0.entries.borrow_mut().remove(&id) else {
             return true;
         };
-        entry.lifetime.shutdown();
-        if let Some(state) = entry.state.take()
-            && let Err(error) = self.0.registry.close(state)
-        {
-            eprintln!("Could not remove closed Desktop window: {error:#}");
-        }
+        let registry = self.0.registry.clone();
+        let state = entry.state.take();
+        let closing = entry.lifetime.start_shutdown(move || {
+            if let Some(state) = state
+                && let Err(error) = registry.close(state)
+            {
+                eprintln!("Could not remove closed Desktop window: {error:#}");
+            }
+        });
+        let mut pending = self.0.closing.borrow_mut();
+        pending.retain(|closed| closed.has_changed().is_ok());
+        pending.push(closing);
         true
     }
 
     pub fn quit(&self, cx: &mut App) {
-        self.shutdown();
+        if self.0.quitting.replace(true) {
+            return;
+        }
+        let pending = self.start_shutdown();
+        let windows = self.clone();
+        cx.spawn(async move |cx| {
+            wait_for_shutdown(pending).await;
+            let _ = cx.update(|cx| windows.quit_after_shutdown(cx));
+        })
+        .detach();
+    }
+
+    fn quit_after_shutdown(&self, cx: &App) {
+        self.0.ready_to_quit.set(true);
         cx.quit();
     }
 
@@ -251,19 +277,42 @@ impl DesktopWindows {
         }
     }
 
-    pub fn shutdown(&self) {
+    pub fn start_shutdown(&self) -> Vec<watch::Receiver<()>> {
         self.0.quitting.set(true);
-        let entries = self.0.entries.borrow();
-        for entry in entries.values() {
-            entry.lifetime.stop();
-        }
-        for entry in entries.values() {
-            entry.lifetime.shutdown();
-        }
+        let mut pending = self.0.closing.borrow().clone();
+        pending.extend(
+            self.0
+                .entries
+                .borrow()
+                .values()
+                .map(|entry| entry.lifetime.start_shutdown(|| {})),
+        );
+        pending
     }
 
-    pub fn restart(&self, installed: &corvid_update::Installed, cx: &mut App) -> Result<()> {
-        self.shutdown();
+    pub fn restart(
+        &self,
+        installed: Rc<corvid_update::Installed>,
+        failed: impl FnOnce(anyhow::Error, &mut App) + 'static,
+        cx: &mut App,
+    ) {
+        if self.0.quitting.replace(true) {
+            return;
+        }
+        let pending = self.start_shutdown();
+        let windows = self.clone();
+        cx.spawn(async move |cx| {
+            wait_for_shutdown(pending).await;
+            let _ = cx.update(|cx| {
+                if let Err(error) = windows.finish_restart(&installed, cx) {
+                    failed(error, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn finish_restart(&self, installed: &corvid_update::Installed, cx: &mut App) -> Result<()> {
         for entry in self.0.entries.borrow_mut().values_mut() {
             entry.state.take();
         }
@@ -278,7 +327,7 @@ impl DesktopWindows {
         ]);
         match installed.start_desktop_with_args(args) {
             Ok(()) => {
-                cx.quit();
+                self.quit_after_shutdown(cx);
                 Ok(())
             }
             Err(error) => {
@@ -317,6 +366,12 @@ impl DesktopWindows {
                 Err(error)
             }
         }
+    }
+}
+
+pub async fn wait_for_shutdown(pending: Vec<watch::Receiver<()>>) {
+    for mut shutdown in pending {
+        let _ = shutdown.changed().await;
     }
 }
 

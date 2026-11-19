@@ -487,7 +487,7 @@ pub struct Session {
 }
 
 // The reader and SSH relay tasks must outlive any one attached session.
-fn session_runtime() -> Result<&'static tokio::runtime::Runtime> {
+pub(crate) fn session_runtime() -> Result<&'static tokio::runtime::Runtime> {
     static RUNTIME: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
         std::sync::OnceLock::new();
     RUNTIME
@@ -559,6 +559,26 @@ pub struct Job {
 }
 
 impl Job {
+    #[cfg(test)]
+    pub(crate) fn delayed_shutdown() -> (Self, blocking::Receiver<bool>, blocking::Sender<()>) {
+        let (stop, stopped) = oneshot::channel();
+        let (entered, stopping) = blocking::channel();
+        let (release, resume) = blocking::channel();
+        let thread = thread::spawn(move || {
+            let park = stopped.blocking_recv().unwrap();
+            entered.send(park).unwrap();
+            resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        (
+            Self {
+                stop: Some(stop),
+                thread,
+            },
+            stopping,
+            release,
+        )
+    }
+
     pub fn stop(&mut self, park: bool) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(park);
