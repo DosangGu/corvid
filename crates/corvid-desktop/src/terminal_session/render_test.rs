@@ -5,10 +5,10 @@ use super::*;
 #[cfg(windows)]
 impl Session {
     pub(crate) fn screen_change_fixture() -> (Self, watch::Sender<()>) {
-        let shared = Arc::new(Shared::new(&Destination::Local));
+        let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
         let changes = shared.screen_changed.clone();
         let (actions, _) = mpsc::channel(1);
-        let (size, _) = watch::channel((0, Grid::new(2, 24)));
+        let (size, _) = watch::channel((0, 0, Grid::new(2, 24)));
         let session = Self {
             shared,
             actions,
@@ -25,10 +25,10 @@ struct PauseOnBell {
 
 #[test]
 fn preview_snapshot_allows_publication_during_rendering() {
-    let shared = Arc::new(Shared::new(&Destination::Local));
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
     let (actions, _) = mpsc::channel(1);
     let grid = Grid::new(2, 24);
-    let (size, _) = watch::channel((0, grid));
+    let (size, _) = watch::channel((0, 0, grid));
     let session = Session {
         shared: Arc::clone(&shared),
         actions,
@@ -36,10 +36,11 @@ fn preview_snapshot_allows_publication_during_rendering() {
     };
     let mut parser = Parser::new(grid.rows, grid.cols, 0);
     parser.process(b"before");
-    shared
-        .buffer()
-        .previews
-        .insert("pane".into(), Arc::new(parser.screen().clone()));
+    let screen = Arc::new(parser.screen().clone());
+    shared.edit(move |state| {
+        Arc::make_mut(&mut state.previews).insert("pane".into(), screen);
+        Changed::Ui
+    });
 
     thread::scope(|scope| {
         let (reading, started) = blocking::channel();
@@ -55,12 +56,11 @@ fn preview_snapshot_allows_publication_during_rendering() {
 
         started.recv_timeout(Duration::from_secs(5)).unwrap();
         parser.process(b" after");
-        shared
-            .buffer
-            .try_lock()
-            .expect("preview rendering must not hold the publication lock")
-            .previews
-            .insert("pane".into(), Arc::new(parser.screen().clone()));
+        let screen = Arc::new(parser.screen().clone());
+        shared.edit(move |state| {
+            Arc::make_mut(&mut state.previews).insert("pane".into(), screen);
+            Changed::Ui
+        });
         published.send(()).unwrap();
         assert_eq!(reader.join().unwrap().as_deref(), Some("before"));
     });
@@ -68,6 +68,67 @@ fn preview_snapshot_allows_publication_during_rendering() {
     assert_eq!(
         session.preview("pane", Screen::contents).as_deref(),
         Some("before after")
+    );
+}
+
+#[test]
+fn snapshot_reads_do_not_wait_for_the_state_actor() {
+    let shared = Shared::new(&Destination::Local, session_runtime().unwrap());
+    thread::scope(|scope| {
+        let (editing, started) = blocking::channel();
+        let (publish, ready) = blocking::channel();
+        let producer = scope.spawn(|| {
+            shared.edit(move |state| {
+                Arc::make_mut(&mut state.ui).connected = true;
+                editing.send(()).unwrap();
+                ready.recv_timeout(Duration::from_secs(5)).unwrap();
+                state.revision = 7;
+                Changed::View
+            });
+        });
+
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        let previous = shared.snapshot();
+        assert!(!previous.ui.connected);
+        assert_eq!(previous.revision, 0);
+        publish.send(()).unwrap();
+        producer.join().unwrap();
+
+        let current = shared.snapshot();
+        assert!(current.ui.connected);
+        assert_eq!(current.revision, 7);
+        assert!(!previous.ui.connected);
+    });
+}
+
+#[test]
+fn rejected_view_change_releases_its_input_gate() {
+    let shared = Shared::new(&Destination::Local, session_runtime().unwrap());
+    shared.update_ui(|ui| {
+        ui.connected = true;
+        ui.changing = false;
+    });
+    let (actions, mut incoming) = mpsc::channel(1);
+    let (size, _) = watch::channel((0, 0, Grid::new(2, 24)));
+    let session = Session {
+        shared: Arc::new(shared),
+        actions,
+        size,
+    };
+    session.select(ViewSelection::default(), false);
+    assert!(session.ui().changing);
+    session.select(ViewSelection::default(), false);
+    let queued = incoming.try_recv().unwrap();
+    assert!(matches!(queued, Action::Change { .. }));
+    assert!(incoming.try_recv().is_err());
+
+    drop(queued);
+    assert!(!session.ui().changing);
+    session.commit_navigation();
+    session.select(ViewSelection::default(), false);
+    assert!(
+        !session.ui().changing,
+        "a full queue cannot reserve the view"
     );
 }
 
@@ -102,25 +163,26 @@ fn wheel_reports_use_the_child_encoding_and_terminal_coordinates() {
 
 #[test]
 fn large_ansi_update_keeps_previous_screen_and_input_available() {
-    let shared = Arc::new(Shared::new(&Destination::Local));
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
     let (actions, mut incoming) = mpsc::channel(1);
     let grid = Grid::new(2, 24);
-    let (size, _) = watch::channel((7, grid));
+    let (size, _) = watch::channel((0, 7, grid));
     let session = Session {
         shared: Arc::clone(&shared),
         actions,
         size,
     };
-    {
-        let mut buffer = shared.buffer();
-        buffer.ui.selected = Some(ViewSelection {
+    shared.edit(|state| {
+        let ui = Arc::make_mut(&mut state.ui);
+        ui.selected = Some(ViewSelection {
             pane_id: "pane".into(),
             ..Default::default()
         });
-        buffer.ui.connected = true;
-        buffer.ui.changing = false;
-        buffer.revision = 7;
-    }
+        ui.connected = true;
+        ui.changing = false;
+        state.revision = 7;
+        Changed::View
+    });
     assert_eq!(session.screen("pane", Screen::contents), None);
     assert!(!session.send("pane", b"key".to_vec(), false));
 
@@ -135,7 +197,7 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         let route = session.wheel_target("pane").unwrap();
         session.send_wheel("pane", route, (3, 4), -1, 0);
         assert!(matches!(incoming.try_recv().unwrap(),
-            Action::Input { revision: 7, bytes, paste: false } if bytes == b"\x1b[<64;5;4M"
+            Action::Input { revision: 7, bytes, paste: false, .. } if bytes == b"\x1b[<64;5;4M"
         ));
         changes.borrow_and_update();
         let shared = &shared;
@@ -152,7 +214,6 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         parsing_started
             .recv_timeout(Duration::from_secs(5))
             .unwrap();
-        assert!(shared.buffer.try_lock().is_ok());
         assert!(!changes.has_changed().unwrap());
         assert_eq!(
             session.screen("pane", Screen::contents).as_deref(),
@@ -162,7 +223,7 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         assert!(session.send("pane", b"key".to_vec(), false));
         assert!(matches!(
             incoming.try_recv().unwrap(),
-            Action::Input { revision: 7, bytes, paste: false } if bytes == b"key"
+            Action::Input { revision: 7, bytes, paste: false, .. } if bytes == b"key"
         ));
 
         resume_parsing.send(()).unwrap();

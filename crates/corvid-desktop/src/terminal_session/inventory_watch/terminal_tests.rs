@@ -111,7 +111,7 @@ async fn open(
 }
 
 fn title(shared: &Shared, pane: &str) -> Option<String> {
-    let buffer = shared.buffer();
+    let buffer = shared.snapshot();
     if !buffer.ui.inventory_ready {
         return None;
     }
@@ -162,7 +162,7 @@ async fn verify_titles(endpoint: ControlEndpoint) -> Result<()> {
     let (mut link, attached) = open(&endpoint, None).await?;
     let target = attached.selection.context("missing selection")?;
     let route = attached.route_token.context("missing route")?;
-    let shared = Arc::new(Shared::new(&Destination::Local));
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
     let watcher = InventoryWatch::start(
         endpoint.clone(),
         link.session().host_id.clone(),
@@ -199,7 +199,7 @@ async fn verify_titles(endpoint: ControlEndpoint) -> Result<()> {
     // No new OSC is emitted on reattach: the daemon's recorded title is sufficient.
     let (mut link, resumed) = open(&endpoint, Some(target.clone())).await?;
     ensure!(resumed.route_token.as_ref().unwrap().terminal_id == route.terminal_id);
-    let shared = Arc::new(Shared::new(&Destination::Local));
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
     let _watcher = InventoryWatch::start(
         endpoint,
         link.session().host_id.clone(),

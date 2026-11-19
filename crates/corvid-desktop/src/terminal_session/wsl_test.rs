@@ -80,7 +80,7 @@ async fn wsl_session_installs_and_reconnects_to_the_same_shell() -> Result<()> {
         )
     };
 
-    let (session, job, mut prompts) = start()?;
+    let (session, job, mut prompts, _activations) = start()?;
     install_prompt(&session, &mut prompts)
         .await?
         .decision
@@ -90,7 +90,7 @@ async fn wsl_session_installs_and_reconnects_to_the_same_shell() -> Result<()> {
     assert!(session.ui().message.contains("canceled"));
     ensure!(remote.probe_daemon(HostPlatform::Linux).await?.is_none());
 
-    let (session, mut job, mut prompts) = start()?;
+    let (session, mut job, mut prompts, _activations) = start()?;
     let result = verify_live_session(&session, &mut prompts, distro).await;
     job.stop(false);
     job.join();

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc as blocking;
 use std::thread;
 use std::time::Duration;
 
@@ -275,7 +277,6 @@ pub struct Ui {
     pub close_supported: bool,
     pub session_clients_supported: bool,
     pub closed_view: bool,
-    pub deck_focus: u64,
 }
 
 impl Ui {
@@ -296,18 +297,18 @@ pub enum WheelTarget {
     Cursor { application: bool },
 }
 
-struct Buffer {
-    ui: Ui,
-    deck_activation: Option<DeckActivation>,
+#[derive(Clone)]
+struct Snapshot {
+    ui: Arc<Ui>,
     screen: Option<Arc<Screen>>,
     wheel_encoding: WheelEncoding,
     alternate_screen: Option<bool>,
     view_epoch: u64,
     revision: u64,
-    previews: HashMap<String, Arc<Screen>>,
+    previews: Arc<HashMap<String, Arc<Screen>>>,
 }
 
-impl Buffer {
+impl Snapshot {
     fn wheel_target(&self, pane: &str) -> Option<WheelTarget> {
         let screen = self.screen.as_ref()?;
         if !self.ui.can_write() || self.ui.changing || !in_pane(&self.ui, pane) {
@@ -327,74 +328,118 @@ impl Buffer {
     }
 }
 
-struct DeckActivation {
-    revision: u64,
-    reply: FocusReply,
+pub struct DeckActivation {
+    pub view_epoch: u64,
+    pub revision: u64,
+    pub reply: FocusReply,
 }
 
+#[derive(Clone, Copy)]
+enum Changed {
+    Ui,
+    Screen,
+    View,
+}
+
+type StateEdit = Box<dyn FnOnce(&mut Snapshot) -> Changed + Send>;
+
 struct Shared {
-    buffer: Mutex<Buffer>,
+    edits: mpsc::Sender<(StateEdit, blocking::SyncSender<()>)>,
+    snapshots: watch::Receiver<Arc<Snapshot>>,
     screen_changed: watch::Sender<()>,
     ui_changed: watch::Sender<()>,
+    view_change: Arc<AtomicBool>,
 }
 
 impl Shared {
-    fn new(destination: &Destination) -> Self {
+    fn new(destination: &Destination, runtime: &tokio::runtime::Runtime) -> Self {
+        let mut state = Snapshot {
+            ui: Arc::new(Ui {
+                restore_supported: false,
+                restore_results: Vec::new(),
+                restore_unavailable: false,
+                naming_supported: false,
+                host_id: None,
+                epoch: None,
+                endpoint: None,
+                terminal_id: None,
+                selected: None,
+                inventory: None,
+                inventory_ready: false,
+                message: match destination {
+                    Destination::Local => "Opening the local terminal…".into(),
+                    _ => "Connecting to Corvid…".into(),
+                },
+                connected: false,
+                changing: true,
+                close_supported: false,
+                session_clients_supported: false,
+                closed_view: false,
+            }),
+            screen: None,
+            wheel_encoding: WheelEncoding::Disabled,
+            alternate_screen: None,
+            view_epoch: 0,
+            revision: 0,
+            previews: Arc::new(HashMap::new()),
+        };
+        let (snapshots, latest) = watch::channel(Arc::new(state.clone()));
+        let (edits, mut incoming) = mpsc::channel::<(StateEdit, blocking::SyncSender<()>)>(2);
         let (screen_changed, _) = watch::channel(());
         let (ui_changed, _) = watch::channel(());
+        let screen = screen_changed.clone();
+        let ui = ui_changed.clone();
+        runtime.spawn(async move {
+            while let Some((edit, committed)) = incoming.recv().await {
+                let changed = edit(&mut state);
+                snapshots.send_replace(Arc::new(state.clone()));
+                if matches!(changed, Changed::Screen | Changed::View) {
+                    screen.send_replace(());
+                }
+                if matches!(changed, Changed::Ui | Changed::View) {
+                    ui.send_replace(());
+                }
+                let _ = committed.send(());
+            }
+        });
         Self {
-            buffer: Mutex::new(Buffer {
-                ui: Ui {
-                    restore_supported: false,
-                    restore_results: Vec::new(),
-                    restore_unavailable: false,
-                    naming_supported: false,
-                    host_id: None,
-                    epoch: None,
-                    endpoint: None,
-                    terminal_id: None,
-                    selected: None,
-                    inventory: None,
-                    inventory_ready: false,
-                    message: match destination {
-                        Destination::Local => "Opening the local terminal…".into(),
-                        _ => "Connecting to Corvid…".into(),
-                    },
-                    connected: false,
-                    changing: true,
-                    close_supported: false,
-                    session_clients_supported: false,
-                    closed_view: false,
-                    deck_focus: 0,
-                },
-                deck_activation: None,
-                screen: None,
-                wheel_encoding: WheelEncoding::Disabled,
-                alternate_screen: None,
-                view_epoch: 0,
-                revision: 0,
-                previews: HashMap::new(),
-            }),
+            edits,
+            snapshots: latest,
             screen_changed,
             ui_changed,
+            view_change: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn buffer(&self) -> MutexGuard<'_, Buffer> {
-        self.buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn snapshot(&self) -> Arc<Snapshot> {
+        Arc::clone(&self.snapshots.borrow())
     }
 
-    fn update_ui(&self, edit: impl FnOnce(&mut Ui)) {
-        {
-            let mut buffer = self.buffer();
-            edit(&mut buffer.ui);
-            if !buffer.ui.connected {
-                buffer.deck_activation = None;
-            }
-        }
-        self.ui_changed.send_replace(());
+    // The Desktop client and inventory each have a dedicated caller thread and
+    // at most one outstanding edit. GPUI only reads the published snapshot.
+    fn edit(&self, edit: impl FnOnce(&mut Snapshot) -> Changed + Send + 'static) {
+        let (committed, confirmation) = blocking::sync_channel(1);
+        self.edits
+            .try_send((Box::new(edit), committed))
+            .unwrap_or_else(|_| panic!("Desktop state actor unavailable"));
+        confirmation.recv().expect("Desktop state actor stopped");
+    }
+
+    fn update_ui(&self, edit: impl FnOnce(&mut Ui) + Send + 'static) {
+        self.edit(move |state| {
+            edit(Arc::make_mut(&mut state.ui));
+            Changed::Ui
+        });
+    }
+
+    fn reserve_view_change(&self) -> Option<ViewChange> {
+        self.view_change
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(ViewChange {
+            busy: Arc::clone(&self.view_change),
+            changed: self.ui_changed.clone(),
+        })
     }
 
     fn apply_ansi(
@@ -406,22 +451,39 @@ impl Shared {
     ) {
         parser.process(ansi);
         let screen = Arc::new(parser.screen().clone());
-        let previous = {
-            let mut buffer = self.buffer();
-            buffer.wheel_encoding = wheel_encoding;
-            buffer.alternate_screen = alternate_screen;
-            buffer.screen.replace(screen)
-        };
-        drop(previous);
-        self.screen_changed.send_replace(());
+        self.edit(move |state| {
+            state.wheel_encoding = wheel_encoding;
+            state.alternate_screen = alternate_screen;
+            state.screen = Some(screen);
+            Changed::Screen
+        });
     }
 }
+
+struct ViewChange {
+    busy: Arc<AtomicBool>,
+    changed: watch::Sender<()>,
+}
+
+impl Drop for ViewChange {
+    fn drop(&mut self) {
+        self.busy.store(false, Ordering::Release);
+        self.changed.send_replace(());
+    }
+}
+
+pub type Connection = (
+    Session,
+    Job,
+    mpsc::UnboundedReceiver<Prompt>,
+    mpsc::Receiver<DeckActivation>,
+);
 
 #[derive(Clone)]
 pub struct Session {
     shared: Arc<Shared>,
     actions: mpsc::Sender<Action>,
-    size: watch::Sender<(u64, Grid)>,
+    size: watch::Sender<(u64, u64, Grid)>,
 }
 
 // The reader and SSH relay tasks must outlive any one attached session.
@@ -515,9 +577,15 @@ impl Job {
 enum Action {
     Rename(corvid_protocol::wire::RenameView),
     Input {
+        view_epoch: u64,
         revision: u64,
         bytes: Vec<u8>,
         paste: bool,
+    },
+    Change {
+        action: Box<Action>,
+        view_epoch: u64,
+        reservation: ViewChange,
     },
     ReadHistory(HistoryRead),
     DisconnectOthers(u64),
@@ -533,7 +601,8 @@ struct Requests {
     monitor: agent_deck::Settings,
     recorder: Option<Recorder>,
     actions: mpsc::Receiver<Action>,
-    sizes: watch::Receiver<(u64, Grid)>,
+    sizes: watch::Receiver<(u64, u64, Grid)>,
+    activation: mpsc::Sender<DeckActivation>,
     prompts: Prompts,
     host: Option<String>,
     terminal: Option<String>,
@@ -542,24 +611,6 @@ struct Requests {
 }
 
 impl Session {
-    pub fn take_deck_activation(&self, sequence: u64) -> Option<FocusReply> {
-        let mut buffer = self.shared.buffer();
-        if buffer.ui.deck_focus != sequence {
-            return None;
-        }
-        let activation = buffer.deck_activation.take()?;
-        if activation.reply.is_closed() {
-            return None;
-        }
-        if !buffer.ui.connected || activation.revision != buffer.revision {
-            let _ = activation.reply.send(Err(
-                "The selected Desktop pane changed before it could receive focus.".into(),
-            ));
-            return None;
-        }
-        Some(activation.reply)
-    }
-
     pub fn start(
         destination: Destination,
         settings: impl Into<agent_deck::Settings>,
@@ -567,7 +618,7 @@ impl Session {
         target: AttachTarget,
         explicit: bool,
         parked: ParkedConnections,
-    ) -> Result<(Self, Job, mpsc::UnboundedReceiver<Prompt>)> {
+    ) -> Result<Connection> {
         let runtime = session_runtime()?;
         let settings = settings.into();
         let state_dir = settings.state.clone();
@@ -581,10 +632,11 @@ impl Session {
         };
         let restoring = matches!(target, AttachTarget::Restore(_));
         let grid = Grid::new(26, 112);
-        let shared = Arc::new(Shared::new(&destination));
+        let shared = Arc::new(Shared::new(&destination, runtime));
         let (actions, incoming) = mpsc::channel(32);
         let (prompt_sender, prompts) = mpsc::unbounded_channel();
-        let (size, sizes) = watch::channel((0, grid));
+        let (size, sizes) = watch::channel((0, 0, grid));
+        let (activation, activations) = mpsc::channel(1);
         let (close, closing) = oneshot::channel();
         let requests = Requests {
             monitor: settings,
@@ -597,6 +649,7 @@ impl Session {
             },
             actions: incoming,
             sizes,
+            activation,
             prompts: Prompts(prompt_sender),
             host: None,
             terminal: None,
@@ -635,7 +688,7 @@ impl Session {
                     agent_deck.close().await;
                     result
                 });
-                state.update_ui(|ui| {
+                state.update_ui(move |ui| {
                     ui.restore_unavailable = restoring
                         && result
                             .as_ref()
@@ -670,16 +723,24 @@ impl Session {
                 thread,
             },
             prompts,
+            activations,
         ))
     }
 
     pub fn ui(&self) -> Ui {
-        self.shared.buffer().ui.clone()
+        self.ui_with_revision().0
     }
 
     pub fn ui_with_revision(&self) -> (Ui, u64) {
-        let buffer = self.shared.buffer();
-        (buffer.ui.clone(), buffer.revision)
+        let snapshot = self.shared.snapshot();
+        let mut ui = (*snapshot.ui).clone();
+        ui.changing |= self.shared.view_change.load(Ordering::Acquire);
+        (ui, snapshot.revision)
+    }
+
+    pub fn matches_view(&self, view_epoch: u64, revision: u64) -> bool {
+        let snapshot = self.shared.snapshot();
+        snapshot.ui.connected && view_epoch == snapshot.view_epoch && revision == snapshot.revision
     }
 
     pub fn changes(&self) -> watch::Receiver<()> {
@@ -696,27 +757,32 @@ impl Session {
     }
 
     pub fn screen_snapshot(&self, pane: &str) -> Option<Arc<Screen>> {
-        let buffer = self.shared.buffer();
-        if !in_pane(&buffer.ui, pane) {
+        let snapshot = self.shared.snapshot();
+        if !in_pane(&snapshot.ui, pane) {
             return None;
         }
-        buffer.screen.clone()
+        snapshot.screen.clone()
     }
 
     pub fn preview<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
-        let screen = self.shared.buffer().previews.get(pane)?.clone();
+        let screen = self.shared.snapshot().previews.get(pane)?.clone();
         Some(read(&screen))
     }
 
     pub fn history(&self, pane: &str, shell_only: bool) -> Option<oneshot::Receiver<HistoryReply>> {
-        let buffer = self.shared.buffer();
-        if !buffer.ui.can_write() || buffer.screen.is_none() || !in_pane(&buffer.ui, pane) {
+        let snapshot = self.shared.snapshot();
+        if !snapshot.ui.can_write()
+            || self.changing(&snapshot)
+            || snapshot.screen.is_none()
+            || !in_pane(&snapshot.ui, pane)
+        {
             return None;
         }
         let (send, receive) = oneshot::channel();
         self.actions
             .try_send(Action::ReadHistory(HistoryRead {
-                revision: buffer.revision,
+                view_epoch: snapshot.view_epoch,
+                revision: snapshot.revision,
                 shell_only,
                 reply: send,
             }))
@@ -725,13 +791,12 @@ impl Session {
     }
 
     pub fn resize(&self, pane: &str, grid: Grid) {
-        let buffer = self.shared.buffer();
-        if !in_pane(&buffer.ui, pane) {
+        let snapshot = self.shared.snapshot();
+        if !in_pane(&snapshot.ui, pane) {
             return;
         }
-        let revision = buffer.revision;
         self.size.send_if_modified(|last| {
-            let desired = (revision, grid);
+            let desired = (snapshot.view_epoch, snapshot.revision, grid);
             let changed = *last != desired;
             *last = desired;
             changed
@@ -739,8 +804,11 @@ impl Session {
     }
 
     pub fn wheel_target(&self, pane: &str) -> Option<(u64, WheelTarget)> {
-        let buffer = self.shared.buffer();
-        Some((buffer.view_epoch, buffer.wheel_target(pane)?))
+        let snapshot = self.shared.snapshot();
+        if self.changing(&snapshot) {
+            return None;
+        }
+        Some((snapshot.view_epoch, snapshot.wheel_target(pane)?))
     }
 
     pub fn send_wheel(
@@ -751,8 +819,8 @@ impl Session {
         rows: isize,
         modifiers: u8,
     ) {
-        let buffer = self.shared.buffer();
-        if buffer.view_epoch != route.0 || buffer.wheel_target(pane) != Some(route.1) {
+        let snapshot = self.shared.snapshot();
+        if snapshot.view_epoch != route.0 || snapshot.wheel_target(pane) != Some(route.1) {
             return;
         }
         let bytes = match route.1 {
@@ -765,19 +833,19 @@ impl Session {
             _ => None,
         };
         if let Some(bytes) = bytes {
-            self.queue_input(&buffer, pane, bytes, false);
+            self.queue_input(&snapshot, pane, bytes, false);
         }
     }
 
     pub fn send(&self, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
-        self.queue_input(&self.shared.buffer(), pane, bytes, paste)
+        self.queue_input(&self.shared.snapshot(), pane, bytes, paste)
     }
 
-    fn queue_input(&self, buffer: &Buffer, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
-        if !buffer.ui.can_write()
-            || buffer.ui.changing
-            || buffer.screen.is_none()
-            || !in_pane(&buffer.ui, pane)
+    fn queue_input(&self, snapshot: &Snapshot, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
+        if !snapshot.ui.can_write()
+            || self.changing(snapshot)
+            || snapshot.screen.is_none()
+            || !in_pane(&snapshot.ui, pane)
             || bytes.is_empty()
             || bytes.len() > MAX_INPUT
         {
@@ -785,7 +853,8 @@ impl Session {
         }
         self.actions
             .try_send(Action::Input {
-                revision: buffer.revision,
+                view_epoch: snapshot.view_epoch,
+                revision: snapshot.revision,
                 bytes,
                 paste,
             })
@@ -801,7 +870,7 @@ impl Session {
     }
 
     pub fn view_revision(&self) -> u64 {
-        self.shared.buffer().revision
+        self.shared.snapshot().revision
     }
 
     pub fn close(&self, target: CloseView) {
@@ -810,12 +879,12 @@ impl Session {
 
     pub fn close_active_pane(&self) {
         let target = {
-            let buffer = self.shared.buffer();
-            let Some(selected) = buffer
+            let snapshot = self.shared.snapshot();
+            let Some(selected) = snapshot
                 .ui
                 .selected
                 .as_ref()
-                .filter(|_| buffer.ui.can_close())
+                .filter(|_| snapshot.ui.can_close())
             else {
                 return;
             };
@@ -823,7 +892,7 @@ impl Session {
                 workspace_id: selected.workspace_id.clone(),
                 tab_id: Some(selected.tab_id.clone()),
                 pane_id: Some(selected.pane_id.clone()),
-                expected_view_revision: Some(buffer.revision),
+                expected_view_revision: Some(snapshot.revision),
             }
         };
         self.close(target);
@@ -858,18 +927,32 @@ impl Session {
     }
 
     pub fn open_agent_deck(&self, settings: agent_deck::Settings) {
-        if self.shared.buffer().ui.connected {
+        if self.shared.snapshot().ui.connected {
             let _ = self.actions.try_send(Action::OpenAgentDeck(settings));
         }
     }
 
+    fn changing(&self, snapshot: &Snapshot) -> bool {
+        snapshot.ui.changing || self.shared.view_change.load(Ordering::Acquire)
+    }
+
     fn change(&self, action: Action) {
-        let mut buffer = self.shared.buffer();
-        if !buffer.ui.can_write() || buffer.ui.changing {
+        let snapshot = self.shared.snapshot();
+        if !snapshot.ui.can_write() || self.changing(&snapshot) {
             return;
         }
-        if self.actions.try_send(action).is_ok() {
-            buffer.ui.changing = true;
+        let Some(reservation) = self.shared.reserve_view_change() else {
+            return;
+        };
+        if self
+            .actions
+            .try_send(Action::Change {
+                action: Box::new(action),
+                view_epoch: snapshot.view_epoch,
+                reservation,
+            })
+            .is_ok()
+        {
             self.shared.ui_changed.send_replace(());
         }
     }
@@ -898,6 +981,8 @@ struct Client<'a> {
     applied: Option<(u64, u64)>,
     sequence: u64,
     pending: Option<Pending>,
+    view_change: Option<ViewChange>,
+    activation: mpsc::Sender<DeckActivation>,
     preview: Option<(String, Pending)>,
     history: Option<HistoryRequest>,
     queued_history: Option<HistoryRead>,
@@ -907,6 +992,7 @@ struct Client<'a> {
 }
 
 struct HistoryRead {
+    view_epoch: u64,
     revision: u64,
     shell_only: bool,
     reply: oneshot::Sender<HistoryReply>,
@@ -961,20 +1047,21 @@ async fn run_reconnecting(
             Ok(message) => return Ok(message),
             Err(error) => error,
         };
-        let ui = shared.buffer().ui.clone();
+        let snapshot = shared.snapshot();
+        let ui = &snapshot.ui;
         let transient = error
             .downcast_ref::<ProtocolFault>()
             .is_none_or(|fault| matches!(fault.code.as_str(), "Offline" | "DaemonUnavailable"));
         if !transient || (!reconnecting && !ui.connected) {
             return Err(error);
         }
-        let Some(selected) = ui.selected else {
+        let Some(selected) = ui.selected.clone() else {
             return Err(error);
         };
         target = AttachTarget::Pane(selected, false);
         explicit = false;
         reconnecting = true;
-        requests.terminal = ui.terminal_id;
+        requests.terminal = ui.terminal_id.clone();
         shared.update_ui(|ui| {
             ui.connected = false;
             ui.inventory_ready = false;
@@ -1033,6 +1120,7 @@ async fn run(
         recorder,
         actions,
         sizes,
+        activation,
         prompts,
         host,
         terminal,
@@ -1069,7 +1157,10 @@ async fn run(
         AttachTarget::Agent { run, .. } => Some(run.host_id.clone()),
         _ => None,
     };
-    let progress = |message: &str| shared.update_ui(|ui| ui.message = message.into());
+    let progress = |message: &str| {
+        let message = message.to_owned();
+        shared.update_ui(move |ui| ui.message = message);
+    };
     let expected_epoch = match &target {
         AttachTarget::Agent { run, .. } => Some(run.remote_epoch.as_str()),
         _ => None,
@@ -1132,27 +1223,33 @@ async fn run(
             .await
     });
     // Keep the verified endpoint available to Sessions even when attach is busy.
-    shared.update_ui(|ui| {
-        ui.host_id = host.clone();
-        ui.epoch = Some(link.session().server_epoch.clone());
-        ui.endpoint = Some(endpoint.clone());
-        ui.restore_supported = link
-            .session()
-            .capabilities
-            .iter()
-            .any(|cap| cap == corvid_protocol::RESTORE_AGENTS_CAPABILITY);
+    let displayed_host = host.clone();
+    let displayed_epoch = link.session().server_epoch.clone();
+    let displayed_endpoint = endpoint.clone();
+    let restore_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|cap| cap == corvid_protocol::RESTORE_AGENTS_CAPABILITY);
+    shared.update_ui(move |ui| {
+        ui.host_id = displayed_host;
+        ui.epoch = Some(displayed_epoch);
+        ui.endpoint = Some(displayed_endpoint);
+        ui.restore_supported = restore_supported;
     });
     let restoring = matches!(target, AttachTarget::Restore(_));
     if let AttachTarget::Restore(saved) = &target {
         let snapshot = endpoint
             .view_snapshot(&link.session().host_id, &link.session().server_epoch)
             .await?;
-        shared.update_ui(|ui| {
-            ui.inventory = Some(Arc::new(Inventory::read(&snapshot)));
+        let inventory = Arc::new(Inventory::read(&snapshot));
+        shared.update_ui(move |ui| {
+            ui.inventory = Some(inventory);
             ui.inventory_ready = true;
         });
         let view = saved.resolve(&snapshot)?;
-        shared.update_ui(|ui| ui.selected = Some(view.clone()));
+        let selected = view.clone();
+        shared.update_ui(move |ui| ui.selected = Some(selected));
         target = AttachTarget::Pane(view, false);
     }
     if let AttachTarget::ResumeAgents {
@@ -1163,10 +1260,12 @@ async fn run(
         let snapshot = endpoint
             .view_snapshot(&link.session().host_id, &link.session().server_epoch)
             .await?;
-        shared.update_ui(|ui| {
-            ui.inventory = Some(Arc::new(Inventory::read(&snapshot)));
+        let selected = view.clone();
+        let inventory = Arc::new(Inventory::read(&snapshot));
+        shared.update_ui(move |ui| {
+            ui.inventory = Some(inventory);
             ui.inventory_ready = true;
-            ui.selected = Some(view.clone());
+            ui.selected = Some(selected);
             ui.message = "Restoring saved agent sessions…".into();
         });
         let mut result = link
@@ -1185,7 +1284,8 @@ async fn run(
                 })
                 .await?;
         }
-        shared.update_ui(|ui| ui.restore_results = result.panes.clone());
+        let restore_results = result.panes.clone();
+        shared.update_ui(move |ui| ui.restore_results = restore_results);
         // A workspace can recover partially. Prefer the requested pane, then a live sibling.
         let restored = result.panes.iter().filter(|pane| {
             matches!(
@@ -1202,8 +1302,9 @@ async fn run(
             .unwrap_or(view);
         target = AttachTarget::Pane(selected, false);
     }
-    let grid = sizes.borrow().1;
-    let resume = terminal.is_none() && !restoring && shared.buffer().ui.restore_results.is_empty();
+    let grid = sizes.borrow().2;
+    let resume =
+        terminal.is_none() && !restoring && shared.snapshot().ui.restore_results.is_empty();
     let attached = match &target {
         AttachTarget::Agent { run, .. } => attach_agent(&endpoint, &mut link, grid, run).await?,
         AttachTarget::Restore(_) => unreachable!("saved view resolved before attach"),
@@ -1354,13 +1455,14 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == SESSION_CLIENTS_CAPABILITY);
-    shared.update_ui(|ui| {
+    let naming_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == corvid_protocol::VIEW_TITLES_CAPABILITY);
+    shared.update_ui(move |ui| {
         ui.close_supported = close_supported;
-        ui.naming_supported = link
-            .session()
-            .capabilities
-            .iter()
-            .any(|name| name == corvid_protocol::VIEW_TITLES_CAPABILITY);
+        ui.naming_supported = naming_supported;
         ui.session_clients_supported = session_clients_supported;
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
@@ -1400,6 +1502,8 @@ async fn run(
         applied: None,
         sequence: 0,
         pending: None,
+        view_change: None,
+        activation: activation.clone(),
         preview: None,
         history: None,
         queued_history: None,
@@ -1418,7 +1522,7 @@ async fn run(
             result = &mut monitor_task, if monitor_pending => {
                 monitor_pending = false;
                 if let Err(error) = result.unwrap_or_else(|error| Err(error.into())) {
-                    shared.update_ui(|ui| ui.message = format!("Agent monitor unavailable: {error:#}"));
+                    shared.update_ui(move |ui| ui.message = format!("Agent monitor unavailable: {error:#}"));
                 }
             }
             frame = client.link.receive() => {
@@ -1433,7 +1537,7 @@ async fn run(
             Some(request) = deck_focus.recv() => client.focus_from_deck(request).await?,
             result = client.agent_deck.tasks.join_next(), if !client.agent_deck.tasks.is_empty() => {
                 match result {
-                    Some(Ok(Err(error))) => shared.update_ui(|ui| ui.message = format!("{error:#}")),
+                    Some(Ok(Err(error))) => shared.update_ui(move |ui| ui.message = format!("{error:#}")),
                     Some(Err(_)) => shared.update_ui(|ui| ui.message = "Corvid Agent Deck stopped unexpectedly.".into()),
                     _ => {}
                 }
@@ -1443,6 +1547,9 @@ async fn run(
                 client.tick(size).await?;
             }
             _ = &mut inventory.finished => bail!("workspace synchronization stopped"),
+        }
+        if client.pending.is_none() {
+            client.view_change = None;
         }
     };
     let keep_connection = keep_connection
@@ -1681,31 +1788,33 @@ impl Client<'_> {
 
     fn publish_view(&self) {
         self.record_view();
-        let previous = {
-            let mut buffer = self.shared.buffer();
-            if buffer
-                .ui
-                .selected
-                .as_ref()
-                .is_some_and(|previous| previous.tab_id != self.selected.tab_id)
+        let selected = self.selected.clone();
+        let terminal_id = self.route.terminal_id.clone();
+        let changing = self.pending.is_some();
+        let revision = self.route.view_revision;
+        self.shared.edit(move |state| {
+            let ui = Arc::make_mut(&mut state.ui);
+            if !ui.connected
+                || ui
+                    .selected
+                    .as_ref()
+                    .is_some_and(|previous| previous.tab_id != selected.tab_id)
             {
-                buffer.previews.clear();
+                state.previews = Arc::new(HashMap::new());
             }
-            buffer.ui.selected = Some(self.selected.clone());
-            buffer.ui.terminal_id = Some(self.route.terminal_id.clone());
-            buffer.ui.connected = true;
-            buffer.ui.changing = self.pending.is_some();
-            buffer.ui.message = "Attached to Corvid daemon".into();
-            buffer.revision = self.route.view_revision;
-            buffer.view_epoch = buffer.view_epoch.wrapping_add(1);
-            buffer.screen.take()
-        };
-        drop(previous);
-        self.shared.ui_changed.send_replace(());
-        self.shared.screen_changed.send_replace(());
+            ui.selected = Some(selected);
+            ui.terminal_id = Some(terminal_id);
+            ui.connected = true;
+            ui.changing = changing;
+            ui.message = "Attached to Corvid daemon".into();
+            state.revision = revision;
+            state.view_epoch = state.view_epoch.wrapping_add(1);
+            state.screen = None;
+            Changed::View
+        });
     }
 
-    async fn tick(&mut self, (revision, grid): (u64, Grid)) -> Result<()> {
+    async fn tick(&mut self, (view_epoch, revision, grid): (u64, u64, Grid)) -> Result<()> {
         let now = Instant::now();
         if let Some((_, preview)) = &self.preview {
             ensure!(now < preview.deadline, "daemon pane preview timed out");
@@ -1721,7 +1830,7 @@ impl Client<'_> {
         }
         if let Some(pending) = &self.pending {
             ensure!(now < pending.deadline, "daemon view change timed out");
-        } else if revision == self.route.view_revision && self.grid != grid {
+        } else if self.matches_view(view_epoch, revision) && self.grid != grid {
             self.resize(grid).await?;
         } else if self.preview.is_none() && now >= self.next_preview && self.applied.is_some() {
             self.next_preview = now + PREVIEW_INTERVAL;
@@ -1733,7 +1842,7 @@ impl Client<'_> {
     async fn read_preview(&mut self) -> Result<()> {
         let panes = self
             .shared
-            .buffer()
+            .snapshot()
             .ui
             .inventory
             .as_ref()
@@ -1763,8 +1872,27 @@ impl Client<'_> {
         Ok(())
     }
 
+    fn matches_view(&self, view_epoch: u64, revision: u64) -> bool {
+        revision == self.route.view_revision && view_epoch == self.shared.snapshot().view_epoch
+    }
+
     async fn action(&mut self, action: Action) -> Result<()> {
+        let action = match action {
+            Action::Change {
+                action,
+                view_epoch,
+                reservation,
+            } => {
+                if self.pending.is_some() || view_epoch != self.shared.snapshot().view_epoch {
+                    return Ok(());
+                }
+                self.view_change = Some(reservation);
+                *action
+            }
+            action => action,
+        };
         match action {
+            Action::Change { .. } => unreachable!("view change already unwrapped"),
             Action::FocusAgent(request) => self.focus_from_deck(request).await?,
             Action::CommitNavigation => {
                 self.record_navigation = true;
@@ -1803,12 +1931,13 @@ impl Client<'_> {
             }
             Action::OpenAgentDeck(_) => self.agent_deck.show(),
             Action::Input {
+                view_epoch,
                 revision,
                 bytes,
                 paste,
             } if self.pending.is_none()
                 && self.applied.is_some()
-                && revision == self.route.view_revision =>
+                && self.matches_view(view_epoch, revision) =>
             {
                 self.input(bytes, paste).await?;
             }
@@ -1834,6 +1963,7 @@ impl Client<'_> {
 
     async fn read_history(&mut self, read: HistoryRead) -> Result<()> {
         let HistoryRead {
+            view_epoch,
             revision,
             shell_only,
             reply,
@@ -1849,7 +1979,7 @@ impl Client<'_> {
             .any(|name| name == TERMINAL_HISTORY_CAPABILITY);
         let error = if !available {
             Some("This daemon does not support terminal history.")
-        } else if self.pending.is_some() || revision != self.route.view_revision {
+        } else if self.pending.is_some() || !self.matches_view(view_epoch, revision) {
             Some("The terminal view changed. Open history again.")
         } else {
             None
@@ -1886,34 +2016,36 @@ impl Client<'_> {
             ));
             return Ok(());
         }
-        let selection = {
-            let mut buffer = self.shared.buffer();
-            if buffer.ui.changing || self.pending.is_some() {
-                let _ = request
-                    .result
-                    .send(Err("Desktop is changing views. Try again.".into()));
-                return Ok(());
-            }
-            let selection = buffer
-                .ui
-                .inventory
-                .as_ref()
-                .filter(|_| buffer.ui.inventory_ready)
-                .and_then(|inventory| {
-                    inventory.agents.iter().find(|agent| {
-                        agent.agent_run_id == run.agent_run_id && agent.terminal_available
-                    })
-                })
-                .and_then(|agent| agent.location.clone());
-            let Some(selection) = selection else {
-                let _ = request
-                    .result
-                    .send(Err("The agent pane is no longer available.".into()));
-                return Ok(());
-            };
-            buffer.ui.changing = true;
-            selection
+        let state = self.shared.snapshot();
+        let reservation = if state.ui.changing || self.pending.is_some() {
+            None
+        } else {
+            self.shared.reserve_view_change()
         };
+        let Some(reservation) = reservation else {
+            let _ = request
+                .result
+                .send(Err("Desktop is changing views. Try again.".into()));
+            return Ok(());
+        };
+        let selection = state
+            .ui
+            .inventory
+            .as_ref()
+            .filter(|_| state.ui.inventory_ready)
+            .and_then(|inventory| {
+                inventory.agents.iter().find(|agent| {
+                    agent.agent_run_id == run.agent_run_id && agent.terminal_available
+                })
+            })
+            .and_then(|agent| agent.location.clone());
+        let Some(selection) = selection else {
+            let _ = request
+                .result
+                .send(Err("The agent pane is no longer available.".into()));
+            return Ok(());
+        };
+        self.view_change = Some(reservation);
         self.shared.ui_changed.send_replace(());
         self.deck_result = Some(request.result);
         self.begin_select(selection, false, Some(run.agent_run_id))
@@ -1928,20 +2060,17 @@ impl Client<'_> {
             let _ = reply.send(Err(error));
             return;
         }
-        let previous = {
-            let mut buffer = self.shared.buffer();
-            buffer.ui.deck_focus = buffer.ui.deck_focus.wrapping_add(1);
-            buffer.deck_activation.replace(DeckActivation {
-                revision: self.route.view_revision,
-                reply,
-            })
+        let activation = DeckActivation {
+            view_epoch: self.shared.snapshot().view_epoch,
+            revision: self.route.view_revision,
+            reply,
         };
-        if let Some(previous) = previous {
-            let _ = previous.reply.send(Err(
-                "Desktop focus was superseded by another request.".into()
-            ));
+        if let Err(error) = self.activation.try_send(activation) {
+            let _ = error
+                .into_inner()
+                .reply
+                .send(Err("Desktop could not receive focus.".into()));
         }
-        self.shared.ui_changed.send_replace(());
     }
 
     async fn begin_select(
@@ -1962,7 +2091,7 @@ impl Client<'_> {
     }
 
     fn has_run(&self, run: &str, selection: &ViewSelection) -> bool {
-        let buffer = self.shared.buffer();
+        let buffer = self.shared.snapshot();
         buffer.ui.inventory_ready
             && buffer.ui.inventory.as_ref().is_some_and(|inventory| {
                 inventory.agents.iter().any(|agent| {
@@ -2007,12 +2136,13 @@ impl Client<'_> {
     }
 
     async fn create(&mut self, target: Target) -> Result<()> {
-        let target =
-            if matches!(target, Target::TabLabel(_)) && self.shared.buffer().ui.naming_supported {
-                Target::TabLabel(String::new())
-            } else {
-                target
-            };
+        let target = if matches!(target, Target::TabLabel(_))
+            && self.shared.snapshot().ui.naming_supported
+        {
+            Target::TabLabel(String::new())
+        } else {
+            target
+        };
         self.request(
             Body::CreateView(CreateView {
                 expected_view_revision: Some(self.route.view_revision),
@@ -2029,13 +2159,11 @@ impl Client<'_> {
             connection_generation: self.route.connection_generation,
             viewport: Some(grid.wire()),
         });
-        {
-            let mut buffer = self.shared.buffer();
-            if buffer.ui.changing {
-                return Ok(());
-            }
-            buffer.ui.changing = true;
-        }
+        let Some(reservation) = self.shared.reserve_view_change() else {
+            return Ok(());
+        };
+        self.view_change = Some(reservation);
+        self.shared.ui_changed.send_replace(());
         self.request(body, Operation::Resize).await
     }
 
@@ -2221,7 +2349,7 @@ impl Client<'_> {
                 if matched {
                     self.finish_deck_focus(Err(fault.into()));
                 }
-                self.shared.update_ui(|ui| {
+                self.shared.update_ui(move |ui| {
                     if matched {
                         ui.changing = false;
                     }
@@ -2229,11 +2357,12 @@ impl Client<'_> {
                 });
             }
             Body::TerminalExited(exit) if exit.terminal_id == self.route.terminal_id => {
-                self.shared.update_ui(|ui| {
+                let terminal_id = exit.terminal_id;
+                self.shared.update_ui(move |ui| {
                     if let Some(inventory) = &mut ui.inventory {
                         Arc::make_mut(inventory)
                             .terminals
-                            .retain(|terminal| terminal.terminal_id != exit.terminal_id);
+                            .retain(|terminal| terminal.terminal_id != terminal_id);
                     }
                 });
                 return Ok(Some(format!("Shell exited ({}).", exit.exit_code)));
@@ -2248,7 +2377,7 @@ impl Client<'_> {
                         && matches!(pending.kind, Operation::DisconnectOthers),
                     "disconnect result targets another request"
                 );
-                self.shared.update_ui(|ui| {
+                self.shared.update_ui(move |ui| {
                     ui.changing = false;
                     ui.message = match reply.client_count {
                         0 => "No other clients in this session.".into(),
@@ -2295,9 +2424,10 @@ impl Client<'_> {
                 let mut parser = Parser::new(grid.rows, grid.cols, 0);
                 parser.process(&frame.ansi);
                 let screen = Arc::new(parser.screen().clone());
-                let previous = self.shared.buffer().previews.insert(expected, screen);
-                drop(previous);
-                self.shared.ui_changed.send_replace(());
+                self.shared.edit(move |state| {
+                    Arc::make_mut(&mut state.previews).insert(expected, screen);
+                    Changed::Ui
+                });
             }
             return Ok(());
         }

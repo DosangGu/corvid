@@ -246,7 +246,7 @@ async fn serve_watch(
 }
 
 fn has_title(shared: &Shared, pane: usize, title: &str) -> bool {
-    let buffer = shared.buffer();
+    let buffer = shared.snapshot();
     buffer.ui.inventory_ready
         && buffer.ui.inventory.as_ref().is_some_and(|inventory| {
             inventory.workspaces[0].tabs[pane].label == title
@@ -268,7 +268,7 @@ async fn wait_for(shared: &Shared, ready: impl Fn() -> bool) {
 #[tokio::test]
 async fn titles_keep_up_with_bursts_and_reconnect_to_the_latest_snapshot() -> Result<()> {
     let server = Server::start()?;
-    let shared = Arc::new(Shared::new(&Destination::Local));
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
     let watcher = server.watch(&shared)?;
     wait_for(&shared, || has_title(&shared, 0, "Initial A")).await;
     let started = Instant::now();
@@ -292,11 +292,11 @@ async fn titles_keep_up_with_bursts_and_reconnect_to_the_latest_snapshot() -> Re
     assert!(has_title(&shared, 1, "B 127"));
     assert_eq!(server.connections.load(Ordering::SeqCst), 2);
     server.send(Update::ChangeEpoch);
-    wait_for(&shared, || !shared.buffer().ui.inventory_ready).await;
+    wait_for(&shared, || !shared.snapshot().ui.inventory_ready).await;
     tokio::time::sleep(Duration::from_millis(350)).await;
-    assert!(!shared.buffer().ui.inventory_ready);
+    assert!(!shared.snapshot().ui.inventory_ready);
     assert_eq!(
-        shared.buffer().ui.inventory.as_ref().unwrap().workspaces[0].tabs[0].label,
+        shared.snapshot().ui.inventory.as_ref().unwrap().workspaces[0].tabs[0].label,
         "Changed while offline"
     );
 
@@ -316,7 +316,7 @@ async fn titles_keep_up_with_bursts_and_reconnect_to_the_latest_snapshot() -> Re
 #[tokio::test]
 async fn title_publication_progresses_while_the_render_thread_is_blocked() -> Result<()> {
     let server = Server::start()?;
-    let shared = Arc::new(Shared::new(&Destination::Local));
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
     let _watcher = server.watch(&shared)?;
     wait_for(&shared, || has_title(&shared, 0, "Initial A")).await;
     let started = Instant::now();
@@ -339,7 +339,7 @@ async fn title_publication_progresses_while_the_render_thread_is_blocked() -> Re
 #[tokio::test]
 async fn delayed_title_delivery_does_not_add_a_retry_or_polling_interval() -> Result<()> {
     let server = Server::start()?;
-    let shared = Arc::new(Shared::new(&Destination::Local));
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
     let _watcher = server.watch(&shared)?;
     wait_for(&shared, || has_title(&shared, 0, "Initial A")).await;
     let delay = Duration::from_millis(40);
