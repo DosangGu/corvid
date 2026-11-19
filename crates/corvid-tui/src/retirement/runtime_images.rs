@@ -23,6 +23,63 @@ fn hash(path: &Path) -> Result<Vec<u8>> {
     Ok(digest.finalize().to_vec())
 }
 
+/// Legacy observer hooks in a retained Windows shell can still name their original
+/// package even when its daemon has already moved. This also covers custom runtimes.
+pub(super) fn pin_legacy_hosts(
+    running: &[Running],
+    packages: &[PathBuf],
+    selected: &Path,
+    runtime: &Path,
+    pinned: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    let mut scopes = HashSet::from([runtime.to_owned()]);
+    for daemon in running.iter().filter(|p| {
+        p.daemon() && (p.image == selected || packages.iter().any(|d| p.image.starts_with(d)))
+    }) {
+        if let Some(path) = daemon
+            .option("--runtime-dir")
+            .and_then(|p| dunce::canonicalize(p).ok())
+        {
+            scopes.insert(path);
+        }
+    }
+    let hosts: HashSet<_> = running
+        .iter()
+        .filter(|p| {
+            p.image.parent().is_some_and(|dir| scopes.contains(dir))
+                && p.args.first().is_some_and(|a| a == "terminal-host")
+                && p.image
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("pty-host-"))
+        })
+        .map(|p| &p.image)
+        .collect();
+    if hosts.is_empty() {
+        return Ok(());
+    }
+    let mut images = HashMap::<u64, Vec<Vec<u8>>>::new();
+    for host in hosts {
+        if let Ok(metadata) = fs::metadata(host) {
+            images.entry(metadata.len()).or_default().push(hash(host)?);
+        }
+    }
+    for dir in packages {
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("package.json"))?)?;
+        if metadata["update_protocol"].as_u64().is_some() {
+            continue;
+        }
+        let exe = dir.join("corvid.exe");
+        if exe.is_file()
+            && let Some(matches) = images.get(&fs::metadata(&exe)?.len())
+            && matches.contains(&hash(&exe)?)
+        {
+            pinned.insert(dir.clone());
+        }
+    }
+    Ok(())
+}
+
 pub(super) struct Copies {
     /// Match bytes with a runtime from this exact package set before acting on a legacy copy.
     pub owners: HashMap<PathBuf, Vec<PathBuf>>,

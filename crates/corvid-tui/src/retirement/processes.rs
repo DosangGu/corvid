@@ -44,7 +44,11 @@ pub(super) fn snapshot(packages: &[PathBuf], runtime: &Path) -> Result<Vec<Runni
         if let Some(image) = p.exe()
             && let Ok(image) = dunce::canonicalize(image)
             && (packages.iter().any(|dir| image.starts_with(dir))
-                || image.parent() == Some(runtime))
+                || image.parent() == Some(runtime)
+                || (cfg!(windows)
+                    && image
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with("pty-host-"))))
         {
             selected.push((*pid, image));
         }
@@ -97,7 +101,7 @@ pub(super) async fn handoff(process: &Running, runtime: &Path) -> Result<()> {
     let link = endpoint.interactive(Vec::new()).await?;
     let session = link.session();
     if let Some(version) = session.daemon_version.as_deref()
-        && corvid_update::version(version)? >= corvid_update::version(env!("CARGO_PKG_VERSION"))?
+        && corvid_update::version(version)? > corvid_update::version(env!("CARGO_PKG_VERSION"))?
     {
         return Ok(());
     }

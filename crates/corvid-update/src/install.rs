@@ -210,26 +210,30 @@ impl Installation {
     }
 
     pub fn start_retirement_worker(executable: &Path) -> Result<()> {
-        let mut child = download::command(executable);
-        child
-            .args(["finish-update", "--retry"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            windows_setup::start_worker(executable)
+        }
         #[cfg(unix)]
         {
+            let mut child = download::command(executable);
+            child
+                .args(["finish-update", "--retry"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             use std::os::unix::process::CommandExt;
             child.process_group(0);
+            child.spawn().context("starting deferred update cleanup")?;
+            Ok(())
         }
-        child.spawn().context("starting deferred update cleanup")?;
-        Ok(())
     }
 
     pub fn is_windows_setup(&self) -> bool {
         self.windows_setup
     }
 
-    /// Runs a verified, version-pinned installer. Never contacts or restarts a daemon.
+    /// Runs a verified, version-pinned installer and its post-activation cleanup.
     pub fn install(&self, release: &Release) -> Result<Installed> {
         self.install_with_progress(release, |_| {})
     }
@@ -449,11 +453,19 @@ impl Installed {
         &self,
         args: impl IntoIterator<Item = std::ffi::OsString>,
     ) -> Result<()> {
-        let binary = layout::for_executable(&self.executable)?.desktop();
-        let mut command = download::command(binary);
+        self.start_desktop_restoring(args, &[])
+    }
+
+    pub fn start_desktop_restoring(
+        &self,
+        args: impl IntoIterator<Item = std::ffi::OsString>,
+        windows: &[String],
+    ) -> Result<()> {
+        let layout = layout::for_executable(&self.executable)?;
+        let mut command = download::command(layout.desktop());
         command.args(args);
-        let metadata = layout::for_executable(&self.executable)?.package_metadata();
-        let package: serde_json::Value = serde_json::from_slice(&fs::read(metadata)?)?;
+        let package: serde_json::Value =
+            serde_json::from_slice(&fs::read(layout.package_metadata())?)?;
         if package["update_protocol"].as_u64() != Some(1) {
             command.spawn().context("restarting Corvid Desktop")?;
             return Ok(());
@@ -462,6 +474,9 @@ impl Installed {
             .prefix("corvid-desktop-ready-")
             .tempdir()?;
         command.arg("--update-ready-directory").arg(signal.path());
+        for id in windows {
+            command.arg("--restore-window").arg(id);
+        }
         let mut child = command.spawn().context("restarting Corvid Desktop")?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {

@@ -113,7 +113,7 @@ end;
 
 procedure CurStepChanged(Step: TSetupStep);
 var
-  PointerFile, TemporaryFile: String;
+  PointerFile, TemporaryFile, Marker: String;
   Code: Integer;
 begin
   if Step <> ssPostInstall then
@@ -122,6 +122,9 @@ begin
   TemporaryFile := PointerFile + '.pending';
   if not SaveStringToFile(TemporaryFile, '{#Release}' + #13#10, False) then
     RaiseException('Could not write the Corvid version pointer.');
+  Marker := ExpandConstant('{app}\.retirement-{#Release}.pending');
+  if not FileExists(Marker) and not SaveStringToFile(Marker, '', False) then
+    RaiseException('Could not schedule Corvid update cleanup.');
   if not MoveFileEx(TemporaryFile, PointerFile, 9) then
     RaiseException('Could not activate this Corvid version.');
   ReleasePublicationLock;

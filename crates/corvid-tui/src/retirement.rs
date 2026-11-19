@@ -27,11 +27,18 @@ pub(super) async fn run(retry: bool) -> Result<u32> {
     if retry {
         return retry_pending(&installation, &root, &executable).await;
     }
+    let marker = installation
+        .pending_retirement()
+        .context("missing retirement marker path")?;
     let pending = match InstallLock::acquire(&root) {
         Ok(_lock) => {
             is_selected(&installation, &executable)?
                 && match reconcile(&installation, &root, &executable, false).await {
-                    Ok(pending) => pending,
+                    Ok(false) => match fs::remove_file(&marker) {
+                        Ok(()) => false,
+                        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+                    },
+                    Ok(true) => true,
                     Err(error) => {
                         eprintln!("Corvid cleanup pending: {error:#}");
                         true
@@ -44,9 +51,6 @@ pub(super) async fn run(retry: bool) -> Result<u32> {
         println!(
             "Update applied. Cleanup is pending while previous Corvid sessions or files are in use."
         );
-        let marker = installation
-            .pending_retirement()
-            .context("missing retirement marker path")?;
         fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -194,9 +198,14 @@ async fn reconcile(
     }
     // Repeat enumeration after handoffs. PTY hosts and supervised instances can
     // outlive a daemon; never unlink a Unix image merely because unlink succeeds.
-    let running = processes::snapshot(&obsolete, runtime)?;
+    let mut roots = obsolete.clone();
+    roots.push(root.join("versions").join(&installation.package.version));
+    let running = processes::snapshot(&roots, runtime)?;
     #[cfg(windows)]
-    let copies_pending = copies.sweep(&running, runtime, &mut pinned).await?;
+    let copies_pending = {
+        runtime_images::pin_legacy_hosts(&running, &obsolete, executable, runtime, &mut pinned)?;
+        copies.sweep(&running, runtime, &mut pinned).await?
+    };
     #[cfg(unix)]
     let copies_pending = false;
     for process in running {

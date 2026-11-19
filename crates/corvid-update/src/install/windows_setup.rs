@@ -3,6 +3,51 @@ use std::ffi::OsString;
 
 use super::*;
 
+/// A worker outlives the installer. Inherit no handles, including the caller's
+/// redirected stdout/stderr pipes, so captured installer output reaches EOF.
+pub(super) fn start_worker(executable: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let application: Vec<_> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut args: Vec<_> = "corvid finish-update --retry"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut process = PROCESS_INFORMATION::default();
+    let started = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            args.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_NO_WINDOW,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut process,
+        )
+    };
+    if started == 0 {
+        return Err(std::io::Error::last_os_error()).context("starting deferred update cleanup");
+    }
+    // A successful CreateProcessW gives the caller ownership of both handles.
+    let _process = unsafe { OwnedHandle::from_raw_handle(process.hProcess) };
+    let _thread = unsafe { OwnedHandle::from_raw_handle(process.hThread) };
+    Ok(())
+}
+
 pub(super) fn prepare(
     installation: &Installation,
     release: &Release,

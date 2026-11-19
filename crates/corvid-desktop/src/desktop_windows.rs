@@ -41,6 +41,7 @@ struct Inner {
     entries: RefCell<HashMap<Uuid, Entry>>,
     quitting: Cell<bool>,
     applying: Cell<bool>,
+    failed_replacement: RefCell<Option<std::path::PathBuf>>,
     ready_to_quit: Cell<bool>,
     closing: RefCell<Vec<watch::Receiver<()>>>,
 }
@@ -100,6 +101,7 @@ impl DesktopWindows {
             entries: RefCell::new(HashMap::new()),
             quitting: Cell::new(false),
             applying: Cell::new(false),
+            failed_replacement: RefCell::default(),
             ready_to_quit: Cell::new(false),
             closing: RefCell::new(Vec::new()),
         })))
@@ -208,20 +210,32 @@ impl DesktopWindows {
             loop {
                 executor.timer(std::time::Duration::from_secs(3)).await;
                 let install = install.clone();
-                let replacement = executor
-                    .spawn(async move { install.selected_replacement() })
+                let (replacement, pending) = executor
+                    .spawn(async move {
+                        (
+                            install.selected_replacement(),
+                            install.pending_retirement().is_some_and(|p| p.is_file()),
+                        )
+                    })
                     .await;
-                if let Ok(Some(next)) = replacement {
-                    let _ = cx.update(|cx| {
-                        if !windows.0.applying.get() && !windows.0.quitting.get() {
-                            windows.restart(
-                                Rc::new(next),
-                                |e, _| eprintln!("Could not switch Desktop versions: {e:#}"),
-                                cx,
-                            );
-                        }
-                    });
-                }
+                let _ = cx.update(|cx| {
+                    for entry in windows.0.entries.borrow().values() {
+                        let _ = entry
+                            .handle
+                            .update(cx, |view, _, cx| view.show_pending_cleanup(pending, cx));
+                    }
+                    if let Ok(Some(next)) = replacement
+                        && !windows.0.applying.get()
+                        && !windows.0.quitting.get()
+                        && windows.0.failed_replacement.borrow().as_ref() != Some(&next.executable)
+                    {
+                        windows.restart(
+                            Rc::new(next),
+                            |e, _| eprintln!("Could not switch Desktop versions: {e:#}"),
+                            cx,
+                        );
+                    }
+                });
             }
         })
         .detach();
@@ -231,10 +245,21 @@ impl DesktopWindows {
         &self,
         destination: Option<Destination>,
         ready_dir: Option<std::path::PathBuf>,
+        window_ids: Vec<Uuid>,
         cx: &mut App,
     ) {
         let requested = destination.clone();
         let restored = self.0.storage.request(move |registry| {
+            if !window_ids.is_empty() {
+                return window_ids
+                    .into_iter()
+                    .map(|id| {
+                        let state = registry.reclaim(id)?;
+                        let picker = state.store.last().is_none();
+                        Ok((state, picker))
+                    })
+                    .collect();
+            }
             let mut states = registry.restore()?;
             if let Some(destination) = requested {
                 let target = destination.saved_target();
@@ -472,6 +497,13 @@ impl DesktopWindows {
         let pending = self.start_shutdown();
         let windows = self.clone();
         let installed = (*installed).clone();
+        let ids: Vec<_> = self
+            .0
+            .entries
+            .borrow()
+            .keys()
+            .map(ToString::to_string)
+            .collect();
         let args = vec![
             std::ffi::OsString::from("--state-dir"),
             self.0.settings.state.clone().into_os_string(),
@@ -492,11 +524,13 @@ impl DesktopWindows {
             if released.is_err() {
                 return;
             }
+            let target = installed.executable.clone();
             let started = executor
-                .spawn(async move { installed.start_desktop_with_args(args) })
+                .spawn(async move { installed.start_desktop_restoring(args, &ids) })
                 .await;
             let _ = cx.update(|cx| {
                 if let Err(error) = windows.finish_restart(started, cx) {
+                    *windows.0.failed_replacement.borrow_mut() = Some(target);
                     failed(error, cx);
                 }
             });

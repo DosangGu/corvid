@@ -8,6 +8,13 @@ pub(super) use state::State;
 use state::{Failure, Phase};
 
 impl WorkspaceView {
+    pub(crate) fn show_pending_cleanup(&mut self, pending: bool, cx: &mut Context<Self>) {
+        if self.update.cleanup_pending != pending {
+            self.update.cleanup_pending = pending;
+            cx.notify();
+        }
+    }
+
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         if !self.update.start_check() {
             return;
@@ -50,22 +57,24 @@ impl WorkspaceView {
             return;
         }
         if let Some(prepared) = self.update.prepared.clone() {
-            self.windows.set_applying(true);
+            let windows = self.windows.clone();
+            windows.set_applying(true);
             self.update.phase = Phase::Installing;
             self.update.error = None;
             let apply = cx
                 .background_executor()
                 .spawn(async move { prepared.apply() });
-            self.release_update = Some(cx.spawn(async move |view, cx| {
+            cx.spawn(async move |view, cx| {
                 let result = apply.await;
+                windows.set_applying(false);
                 let _ = view.update(cx, |view, cx| {
-                    view.windows.set_applying(false);
                     view.update.installed(result);
                     view.release_update = None;
                     view.launch_updated_desktop(cx);
                     cx.notify();
                 });
-            }));
+            })
+            .detach();
             cx.notify();
             return;
         }

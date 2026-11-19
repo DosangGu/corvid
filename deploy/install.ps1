@@ -143,14 +143,20 @@ try {
     [IO.File]::WriteAllText((Join-Path $stage 'current.txt'), $Version, $utf8)
     Set-AtomicFile (Join-Path $stage 'install.json') $receiptPath
     Set-AtomicFile (Join-Path $stage 'bin-dir') (Join-Path $InstallRoot 'bin-dir')
+    if ($metadata.update_protocol -eq 1) {
+        $marker = Join-Path $InstallRoot ".retirement-$Version.pending"
+        if (!(Test-Path -LiteralPath $marker)) { [IO.File]::WriteAllText($marker, '', $utf8) }
+    }
     Set-AtomicFile (Join-Path $stage 'current.txt') (Join-Path $InstallRoot 'current.txt')
     Write-Output "Installed Corvid $Version ($Product)."
     Write-Output "CORVID_EXECUTABLE=$(Join-Path $destination 'corvid.exe')"
     Write-Output "Add $bin to PATH. Desktop users can launch $(Join-Path $bin 'corvid-desktop.exe')."
     $lock.Dispose()
     $lock = $null
-    & (Join-Path $destination 'corvid.exe') finish-update
-    if ($LASTEXITCODE -ne 0) { throw 'The update was activated, but cleanup could not finish.' }
+    if ($metadata.update_protocol -eq 1) {
+        & (Join-Path $destination 'corvid.exe') finish-update
+        if ($LASTEXITCODE -ne 0) { throw 'The update was activated, but cleanup could not finish.' }
+    }
 } finally {
     if ($stage -and (Test-Path -LiteralPath $stage)) {
         $resolvedStage = [IO.Path]::GetFullPath($stage)
