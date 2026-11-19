@@ -168,6 +168,13 @@ impl Scope {
         self.start_monitor(executable, false).await
     }
 
+    pub async fn reconnect(&self) -> Result<()> {
+        if let Some(mut client) = self.connected().await? {
+            timeout(STARTUP_TIMEOUT, client.reconnect_monitor()).await??;
+        }
+        Ok(())
+    }
+
     pub async fn refresh_running(&self, executable: &Path) -> Result<()> {
         self.start_monitor(executable, true).await
     }
@@ -178,7 +185,7 @@ impl Scope {
             .await
             .context("waiting for agent monitor startup")?;
         if let Some(mut client) = self.connected().await? {
-            if supports_current_layout(&client)
+            if self.supports_monitor(&client)
                 && client
                     .session()
                     .daemon_version
@@ -251,7 +258,7 @@ impl Scope {
             loop {
                 if let Some(client) = self.connected().await? {
                     ensure!(
-                        supports_current_layout(&client),
+                        self.supports_monitor(&client),
                         "the started agent monitor does not support the current slot layout"
                     );
                     return Ok::<_, anyhow::Error>(());
@@ -279,6 +286,16 @@ impl Scope {
         );
         timeout(STARTUP_TIMEOUT, client.slots(Some(&self.config))).await??;
         Ok(Some(client))
+    }
+
+    fn supports_monitor(&self, client: &PresentationClient) -> bool {
+        supports_current_layout(client)
+            && (!matches!(self.config.endpoint, HostEndpoint::Ssh { .. })
+                || client
+                    .session()
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == crate::ipc::MONITOR_RECONNECT_CAPABILITY))
     }
 }
 

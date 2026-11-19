@@ -150,6 +150,8 @@ impl SshAlias {
             "-oStrictHostKeyChecking=yes",
             "-oConnectTimeout=10",
             "-oConnectionAttempts=1",
+            "-oServerAliveInterval=5",
+            "-oServerAliveCountMax=3",
             "-oForwardAgent=no",
             "-oForwardX11=no",
             "-oClearAllForwardings=yes",
@@ -313,10 +315,9 @@ impl InteractiveConnection {
     }
 
     pub async fn receive(&mut self) -> Result<Frame> {
-        self.incoming
-            .recv()
-            .await
-            .context("daemon closed the interactive connection")?
+        self.incoming.recv().await.unwrap_or_else(|| {
+            Err(ProtocolFault::new("Offline", "daemon closed the interactive connection").into())
+        })
     }
 
     pub async fn browse_directories(

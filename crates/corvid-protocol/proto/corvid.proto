@@ -95,6 +95,7 @@ message Envelope {
     AgentDeckOpened agent_deck_opened = 121;
     RetireAgentDeck retire_agent_deck = 135;
     AgentDeckRetired agent_deck_retired = 136;
+    ReconnectAgentMonitor reconnect_agent_monitor = 137;
     ReadTerminalHistory read_terminal_history = 122;
     TerminalHistory terminal_history = 123;
     DisconnectWorkspaceClients disconnect_workspace_clients = 125;
@@ -178,6 +179,8 @@ message Ping {}
 message Pong {}
 // Presentation socket only. Stops the local companion, never the execution daemon.
 message StopAgentMonitor {}
+// Presentation socket only. Wakes a paused watch for the companion's configured host.
+message ReconnectAgentMonitor {}
 message GetHost {}
 message GetCapabilities {}
 message UpgradeDaemon {

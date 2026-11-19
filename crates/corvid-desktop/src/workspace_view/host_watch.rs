@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use corvid_client::{ControlEndpoint, daemon_missing, runtime_path};
+use corvid_client::{ControlEndpoint, SshRetry, daemon_missing, runtime_path};
 use tokio::sync::{oneshot, watch};
+use tokio::time::{Instant, sleep_until, timeout_at};
 use uuid::Uuid;
 
 use crate::terminal_session::Inventory;
@@ -108,16 +109,40 @@ async fn monitor(
     publish: &watch::Sender<Option<Arc<Inventory>>>,
 ) {
     let controller = Uuid::new_v4().to_string();
+    let ssh = matches!(endpoint, ControlEndpoint::Ssh(_));
+    let mut retry = ssh.then(SshRetry::default);
     loop {
-        if let Ok(mut watch) = endpoint.watch(&controller, host, || {}).await {
-            loop {
-                publish.send_replace(Some(Arc::new(Inventory::read(watch.state()))));
-                if watch.next_change().await.is_err() {
-                    break;
+        let connect = endpoint.watch(&controller, host, || {});
+        let result = match &retry {
+            Some(retry) => timeout_at(retry.deadline(), connect)
+                .await
+                .unwrap_or_else(|_| Err(SshRetry::exhausted().into())),
+            None => connect.await,
+        };
+        let error = match result {
+            Ok(mut watch) => {
+                retry = None;
+                loop {
+                    publish.send_replace(Some(Arc::new(Inventory::read(watch.state()))));
+                    if let Err(error) = watch.next_change().await {
+                        break error;
+                    }
                 }
             }
-        }
+            Err(error) => error,
+        };
         publish.send_replace(None);
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        if ssh {
+            let retry = retry.get_or_insert_with(SshRetry::default);
+            let Some(next) = retry.next_attempt(&error) else {
+                return;
+            };
+            sleep_until(next).await;
+            if Instant::now() >= retry.deadline() {
+                return;
+            }
+        } else {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
     }
 }

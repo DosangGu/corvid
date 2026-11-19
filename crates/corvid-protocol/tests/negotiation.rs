@@ -321,6 +321,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
         Body::GetPresentationAttention(GetPresentationAttention {}),
         Body::FocusSlot(FocusSlot::default()),
         Body::StopAgentMonitor(StopAgentMonitor {}),
+        Body::ReconnectAgentMonitor(corvid_protocol::wire::ReconnectAgentMonitor {}),
     ] {
         let request = session.envelope(Some("presentation".into()), body);
         assert!(session.validate_request(&request).is_ok());
@@ -343,6 +344,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
     for body in [
         Body::ListHosts(ListHosts {}),
         Body::StopAgentMonitor(StopAgentMonitor {}),
+        Body::ReconnectAgentMonitor(corvid_protocol::wire::ReconnectAgentMonitor {}),
         Body::FocusSlot(FocusSlot::default()),
         Body::GetPresentationAttention(GetPresentationAttention {}),
         Body::OpenAgentDeck(OpenAgentDeck::default()),

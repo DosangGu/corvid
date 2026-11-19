@@ -438,10 +438,13 @@ impl WorkspaceView {
             return Some(error.clone());
         }
         let ui = ui?;
+        if ui.connected && ui.inventory_offline {
+            return Some("Workspace updates stopped. The terminal is still connected.".into());
+        }
         if ui.connected && !ui.inventory_ready {
             return Some("Syncing workspaces…".into());
         }
-        if ui.changing {
+        if ui.connected && ui.changing {
             return Some("Updating terminal view…".into());
         }
         if ui.restore_results.iter().any(|result| {
@@ -563,6 +566,10 @@ impl Render for WorkspaceView {
                     .find(|workspace| workspace.workspace_id == selected.workspace_id)
             });
         let status = self.status_message(ui.as_ref());
+        let reconnect = !self.connecting(ui.as_ref())
+            && ui
+                .as_ref()
+                .is_some_and(|ui| ui.ssh_offline || ui.inventory_offline);
         let content = if let Some((ui, inventory)) = ui.as_ref().zip(inventory) {
             self.terminal_layout(ui, inventory, cx).into_any_element()
         } else if ui.as_ref().is_some_and(|ui| ui.connected) {
@@ -610,7 +617,16 @@ impl Render for WorkspaceView {
                         .bg(rgb(PANEL))
                         .text_size(ui_px(12.))
                         .text_color(rgb(TEXT))
-                        .child(message),
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(ui_px(8.))
+                        .child(message)
+                        .when(reconnect, |row| {
+                            row.child(button("reconnect-ssh", "Reconnect", true).on_click(
+                                cx.listener(|view, _, window, cx| view.reconnect_ssh(window, cx)),
+                            ))
+                        }),
                 )
             })
             .when(self.switcher_open, |root| {

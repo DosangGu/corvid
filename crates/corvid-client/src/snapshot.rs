@@ -219,7 +219,7 @@ async fn receive_initial(
             .reader
             .next_envelope()
             .await?
-            .context("daemon closed during snapshot")?;
+            .ok_or_else(offline)?;
         if let Some(cache) = assembler.push(frame)? {
             return Ok(cache);
         }
@@ -287,7 +287,7 @@ impl Heartbeat {
         loop {
             tokio::select! {
                 _ = sleep_until(self.idle) => return Err(offline().into()),
-                frame = &mut pending_read => return frame?.context("watch stream closed"),
+                frame = &mut pending_read => return frame?.ok_or_else(|| offline().into()),
                 _ = sleep_until(self.next_ping) => {
                     if self.pending.len() == 3 {
                         return Err(offline().into());

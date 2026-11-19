@@ -235,6 +235,31 @@ def check_companion_ssh(ssh, command, directory):
             "unpair", "--binding", f"{first['control_capture']}/{uuid.uuid4()}/1", check=False,
         )
         assert stale.returncode != 0 and "StaleBinding" in stale.stderr
+
+        # A sustained outage pauses background SSH even after the server returns.
+        blocked.touch()
+        os.kill(int(attempts.read_text().splitlines()[-1]), signal.SIGKILL)
+        deadline = time.monotonic() + 75
+        while True:
+            offline = fields(companion.run("hosts").stdout.strip())
+            if offline.get("issue") == "SshRetryExhausted":
+                break
+            assert time.monotonic() < deadline, offline
+            time.sleep(0.2)
+        assert offline["connection"] == "Offline", offline
+        paused = attempts.read_text()
+        blocked.unlink()
+        time.sleep(3)
+        assert attempts.read_text() == paused
+
+        companion.run("reconnect")
+        companion.run("reconnect")
+        resumed = companion.wait(
+            lambda view: view["header"]["connection"] == "Ready"
+        )["header"]
+        assert resumed["remote_epoch"] == first["remote_epoch"]
+        assert resumed["companion_epoch"] == first["companion_epoch"]
+        assert len(attempts.read_text().splitlines()) == len(paused.splitlines()) + 1
     finally:
         companion.close()
 
@@ -325,7 +350,6 @@ def check_monitored_ssh(ssh, command, directory, scope, local):
                 break
             assert time.monotonic() < deadline, (initial, reply.stderr)
             time.sleep(0.02)
-        check_companion_ssh(ssh, local, directory)
         assert first.process.poll() is None
         progress_during_disconnect(progress)
         first.send(b"\x1dd")
@@ -396,6 +420,7 @@ def run(binary, *, measure_keys=False):
                 check_control(ssh, command, schema)
                 check_workspace_directories(ssh, command, schema, directory)
                 check_working_ssh(ssh, command, directory)
+                check_companion_ssh(ssh, command, directory)
                 for release in ("older", "newer"):
                     verify_shell_agent_notifications(
                         command[0], directory, database, ssh, release=release, broker=True,

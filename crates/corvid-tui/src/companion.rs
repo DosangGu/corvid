@@ -66,6 +66,8 @@ enum Command {
     Run,
     /// Stop this companion's monitoring without stopping terminals or agents.
     Stop,
+    /// Resume the companion's SSH watch after automatic retries stopped.
+    Reconnect,
     /// Open the Windows desktop app and start its companion when needed.
     #[cfg(windows)]
     Open {
@@ -196,6 +198,11 @@ pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -
             .await;
     }
     let mut client = PresentationClient::connect(&address).await?;
+    if matches!(options.command, Command::Reconnect) {
+        client.reconnect_monitor().await?;
+        println!("Agent monitor reconnect requested.");
+        return Ok(());
+    }
     let request = options.command.request(&client.session().server_epoch)?;
     #[cfg(windows)]
     if matches!(&request, Body::PairTerminal(pair) if pair.wezterm.is_some()) {
@@ -264,7 +271,9 @@ fn shutdown() -> Result<impl Future<Output = ()>> {
 impl Command {
     fn request(self, epoch: &str) -> Result<Body> {
         let body = match self {
-            Self::Init { .. } | Self::Run => unreachable!("handled by companion execute"),
+            Self::Init { .. } | Self::Run | Self::Reconnect => {
+                unreachable!("handled by companion execute")
+            }
             Self::Stop => Body::StopAgentMonitor(corvid_protocol::wire::StopAgentMonitor {}),
             #[cfg(windows)]
             Self::Doctor | Self::Open { .. } => unreachable!("handled by companion execute"),

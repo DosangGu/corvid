@@ -11,7 +11,9 @@ use anyhow::{Context, Result, bail, ensure};
 #[cfg(windows)]
 use corvid_client::WslDistribution;
 use corvid_client::view_state::{Recorder, SavedView, Target as SavedTarget, ViewStore};
-use corvid_client::{AttachRecovery, ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias};
+use corvid_client::{
+    AttachRecovery, ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias, SshRetry,
+};
 use corvid_companion::{Config, HostEndpoint};
 use corvid_presentation::desktop_focus::{FocusFailure, FocusReply};
 use corvid_protocol::snapshot::SynchronizedSnapshot;
@@ -88,6 +90,12 @@ pub enum AttachTarget {
         host_id: String,
     },
     Restore(SavedView),
+    Reconnect {
+        view: ViewSelection,
+        host_id: String,
+        epoch: String,
+        terminal_id: String,
+    },
     Pane(ViewSelection, bool),
     OpenPane {
         view: ViewSelection,
@@ -283,6 +291,9 @@ pub struct Ui {
     pub close_supported: bool,
     pub session_clients_supported: bool,
     pub closed_view: bool,
+    pub ssh_offline: bool,
+    pub reconnect_target: Option<AttachTarget>,
+    pub inventory_offline: bool,
 }
 
 impl Ui {
@@ -354,6 +365,7 @@ struct Shared {
     snapshots: watch::Receiver<Arc<Snapshot>>,
     screen_changed: watch::Sender<()>,
     ui_changed: watch::Sender<()>,
+    inventory_reconnect: watch::Sender<()>,
     view_change: Arc<AtomicBool>,
 }
 
@@ -382,6 +394,9 @@ impl Shared {
                 close_supported: false,
                 session_clients_supported: false,
                 closed_view: false,
+                ssh_offline: false,
+                reconnect_target: None,
+                inventory_offline: false,
             }),
             screen: None,
             wheel_encoding: WheelEncoding::Disabled,
@@ -414,6 +429,7 @@ impl Shared {
             snapshots: latest,
             screen_changed,
             ui_changed,
+            inventory_reconnect: watch::channel(()).0,
             view_change: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -699,6 +715,8 @@ struct Requests {
     terminal: Option<String>,
     closing: oneshot::Receiver<bool>,
     parked: ParkedConnections,
+    attached: Option<oneshot::Sender<()>>,
+    wake_monitor: bool,
 }
 
 impl Session {
@@ -723,6 +741,7 @@ impl Session {
         let (close, closing) = oneshot::channel();
         let (stop, mut stopped) = oneshot::channel();
         let state = Arc::clone(&shared);
+        let ssh = matches!(destination, Destination::Ssh(_));
         let thread = thread::Builder::new()
             .name("corvid-desktop-client".into())
             .spawn(move || {
@@ -752,6 +771,8 @@ impl Session {
                     terminal: None,
                     closing,
                     parked,
+                    attached: None,
+                    wake_monitor: explicit && ssh,
                 };
                 let result = runtime.block_on(async {
                     let mut agent_deck = agent_deck::Job::default();
@@ -781,6 +802,18 @@ impl Session {
                     result
                 });
                 state.update_ui(move |ui| {
+                    ui.ssh_offline = ssh
+                        && result.as_ref().is_err_and(|error| {
+                            SshRetry::is_transient(error)
+                                || error.downcast_ref::<ProtocolFault>().is_some_and(|fault| {
+                                    matches!(
+                                        fault.code.as_str(),
+                                        "AuthenticationRequired"
+                                            | "HostKeyRequired"
+                                            | "HostMismatch"
+                                    )
+                                })
+                        });
                     ui.restore_unavailable = restoring
                         && result
                             .as_ref()
@@ -797,9 +830,13 @@ impl Session {
                             });
                     ui.connected = false;
                     ui.inventory_ready = false;
+                    ui.inventory_offline = false;
                     ui.changing = false;
                     ui.message = match result {
                         Ok(message) => message,
+                        Err(error) if ui.ssh_offline => error
+                            .downcast_ref::<ProtocolFault>()
+                            .map_or_else(|| format!("{error:#}"), |fault| fault.message.clone()),
                         Err(error) => format!("{error:#}"),
                     };
                 });
@@ -821,6 +858,10 @@ impl Session {
 
     pub fn ui(&self) -> Ui {
         self.ui_with_revision().0
+    }
+
+    pub fn reconnect_inventory(&self) {
+        self.shared.inventory_reconnect.send_replace(());
     }
 
     pub fn ui_with_revision(&self) -> (Ui, u64) {
@@ -1123,18 +1164,40 @@ async fn run_reconnecting(
     shared: &Arc<Shared>,
     agent_deck: &mut agent_deck::Job,
 ) -> Result<String> {
+    let ssh = matches!(destination, Destination::Ssh(_));
     let mut reconnecting = false;
+    let mut retry: Option<SshRetry> = None;
+    if matches!(target, AttachTarget::Reconnect { .. }) {
+        let retry_target = target.clone();
+        shared.update_ui(move |ui| ui.reconnect_target = Some(retry_target));
+    }
     loop {
-        let result = run(
-            destination.clone(),
-            state_dir.clone(),
-            target.clone(),
-            explicit,
-            &mut requests,
-            shared,
-            agent_deck,
-        )
-        .await;
+        let result = {
+            let (attached, mut ready) = oneshot::channel();
+            requests.attached = Some(attached);
+            let attempt = run(
+                destination.clone(),
+                state_dir.clone(),
+                target.clone(),
+                explicit,
+                &mut requests,
+                shared,
+                agent_deck,
+            );
+            tokio::pin!(attempt);
+            if let Some(retry) = &retry {
+                tokio::select! {
+                    biased;
+                    result = &mut attempt => result,
+                    _ = &mut ready => attempt.await,
+                    _ = tokio::time::sleep_until(retry.deadline()) => {
+                        Err(SshRetry::exhausted().into())
+                    }
+                }
+            } else {
+                attempt.await
+            }
+        };
         let error = match result {
             Ok(message) => return Ok(message),
             Err(error) => error,
@@ -1162,7 +1225,14 @@ async fn run_reconnecting(
                 while requests.actions.try_recv().is_ok() {}
                 continue;
             }
-            let snapshot = endpoint.view_snapshot(host, epoch).await?;
+            let snapshot = match &retry {
+                Some(retry) => {
+                    tokio::time::timeout_at(retry.deadline(), endpoint.view_snapshot(host, epoch))
+                        .await
+                        .map_err(|_| SshRetry::exhausted())??
+                }
+                None => endpoint.view_snapshot(host, epoch).await?,
+            };
             let inventory = Arc::new(Inventory::read(&snapshot));
             let selected = offer.view.clone();
             let restore_results = vec![offer.pane.clone()];
@@ -1175,28 +1245,60 @@ async fn run_reconnecting(
         }
         let snapshot = shared.snapshot();
         let ui = &snapshot.ui;
-        let transient = error
-            .downcast_ref::<ProtocolFault>()
-            .is_none_or(|fault| matches!(fault.code.as_str(), "Offline" | "DaemonUnavailable"));
+        let transient = if ssh {
+            SshRetry::is_transient(&error)
+        } else {
+            error
+                .downcast_ref::<ProtocolFault>()
+                .is_none_or(|fault| matches!(fault.code.as_str(), "Offline" | "DaemonUnavailable"))
+        };
         if !transient || (!reconnecting && !ui.connected) {
             return Err(error);
         }
         let Some(selected) = ui.selected.clone() else {
             return Err(error);
         };
-        target = AttachTarget::Pane(selected, false);
+        if ssh {
+            if ui.connected {
+                retry = Some(SshRetry::default());
+                target = AttachTarget::Reconnect {
+                    view: selected,
+                    host_id: ui.host_id.clone().context("missing reconnect host")?,
+                    epoch: ui.epoch.clone().context("missing reconnect epoch")?,
+                    terminal_id: ui
+                        .terminal_id
+                        .clone()
+                        .context("missing reconnect terminal")?,
+                };
+            } else if let Some(previous) = &ui.reconnect_target {
+                target = previous.clone();
+            }
+        } else {
+            target = AttachTarget::Pane(selected, false);
+            requests.terminal = ui.terminal_id.clone();
+        }
         explicit = false;
         reconnecting = true;
-        requests.terminal = ui.terminal_id.clone();
-        shared.update_ui(|ui| {
+        let retry_target = ssh.then(|| target.clone());
+        shared.update_ui(move |ui| {
             ui.connected = false;
             ui.inventory_ready = false;
-            ui.changing = false;
+            ui.inventory_offline = false;
+            ui.changing = ssh;
+            ui.reconnect_target = retry_target;
             ui.message = "Reconnecting to the existing Corvid terminal…".into();
         });
         // Disable new input before draining requests for the retired writer.
         while requests.actions.try_recv().is_ok() {}
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Some(retry) = &mut retry {
+            let Some(next) = retry.next_attempt(&error) else {
+                return Err(SshRetry::exhausted().into());
+            };
+            tokio::time::sleep_until(next).await;
+            ensure!(Instant::now() < retry.deadline(), SshRetry::exhausted());
+        } else {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 }
 
@@ -1252,6 +1354,8 @@ async fn run(
         terminal,
         closing,
         parked,
+        attached: attach_ready,
+        wake_monitor,
     }: &mut Requests,
     shared: &Arc<Shared>,
     agent_deck: &mut agent_deck::Job,
@@ -1279,6 +1383,7 @@ async fn run(
         | AttachTarget::NewWorkspace { host_id, .. }
         | AttachTarget::Takeover { host_id, .. }
         | AttachTarget::OpenPane { host_id, .. }
+        | AttachTarget::Reconnect { host_id, .. }
         | AttachTarget::ResumeAgents { host_id, .. } => Some(host_id.clone()),
         AttachTarget::Restore(saved) => Some(saved.host_id.to_string()),
         AttachTarget::Agent { run, .. } => Some(run.host_id.clone()),
@@ -1340,18 +1445,20 @@ async fn run(
         )
     );
     *host = Some(link.session().host_id.clone());
-    let monitor_settings = monitor.clone();
-    let monitor_endpoint = endpoint.clone();
-    let monitor_host = Uuid::parse_str(&link.session().host_id)?;
-    let (focus_scope, focus_controller) = oneshot::channel();
-    let monitor_task = tokio::spawn(async move {
-        let scope = monitor_settings.scope(&monitor_endpoint, monitor_host)?;
-        scope.configure(&monitor_endpoint)?;
-        let _ = focus_scope.send(scope.config.controller_id);
-        scope
-            .ensure_running(&corvid_tui::monitor_executable()?)
-            .await
-    });
+    let reconnect_attempt = matches!(target, AttachTarget::Reconnect { .. });
+    let reconnecting_terminal = match target {
+        AttachTarget::Reconnect {
+            view,
+            epoch,
+            terminal_id,
+            ..
+        } => {
+            *terminal = (epoch == link.session().server_epoch).then_some(terminal_id);
+            target = AttachTarget::Pane(view, false);
+            terminal.is_some()
+        }
+        _ => false,
+    };
     // Keep the verified endpoint available to Sessions even when attach is busy.
     let displayed_host = host.clone();
     let displayed_epoch = link.session().server_epoch.clone();
@@ -1370,7 +1477,8 @@ async fn run(
         ui.restore_supported = restore_supported;
     });
     let restoring = matches!(target, AttachTarget::Restore(_));
-    let offer_recovery = !matches!(target, AttachTarget::ResumeAgents { .. });
+    let offer_recovery =
+        !reconnecting_terminal && !matches!(target, AttachTarget::ResumeAgents { .. });
     let opening_pane = matches!(target, AttachTarget::OpenPane { .. });
     if let AttachTarget::OpenPane { view, .. } = target {
         target = AttachTarget::Pane(view, true);
@@ -1471,11 +1579,15 @@ async fn run(
         target = AttachTarget::Pane(selected, false);
     }
     let grid = sizes.borrow().2;
-    let resume =
-        terminal.is_none() && !restoring && shared.snapshot().ui.restore_results.is_empty();
+    let resume = terminal.is_none()
+        && !restoring
+        && !reconnect_attempt
+        && shared.snapshot().ui.restore_results.is_empty();
     let attached = match &target {
         AttachTarget::Agent { run, .. } => attach_agent(&endpoint, &mut link, grid, run).await?,
-        AttachTarget::Restore(_) | AttachTarget::OpenPane { .. } => {
+        AttachTarget::Restore(_)
+        | AttachTarget::OpenPane { .. }
+        | AttachTarget::Reconnect { .. } => {
             unreachable!("pane resolved before attach")
         }
         AttachTarget::ResumeAgents { .. } => unreachable!("agent restore resolved before attach"),
@@ -1599,7 +1711,7 @@ async fn run(
             && route.writer_lease_generation > 0
             && match &target {
                 AttachTarget::Restore(_) | AttachTarget::OpenPane { .. } => false,
-                AttachTarget::ResumeAgents { .. } => false,
+                AttachTarget::ResumeAgents { .. } | AttachTarget::Reconnect { .. } => false,
                 AttachTarget::Default
                 | AttachTarget::FreshDefault
                 | AttachTarget::NewWorkspace { .. }
@@ -1632,6 +1744,24 @@ async fn run(
         ui.close_supported = close_supported;
         ui.naming_supported = naming_supported;
         ui.session_clients_supported = session_clients_supported;
+    });
+    let monitor_settings = monitor.clone();
+    let monitor_endpoint = endpoint.clone();
+    let monitor_host = Uuid::parse_str(&host)?;
+    let wake_monitor = std::mem::take(wake_monitor);
+    let (focus_scope, focus_controller) = oneshot::channel();
+    let mut monitor_tasks = tokio::task::JoinSet::new();
+    monitor_tasks.spawn(async move {
+        let scope = monitor_settings.scope(&monitor_endpoint, monitor_host)?;
+        scope.configure(&monitor_endpoint)?;
+        let _ = focus_scope.send(scope.config.controller_id);
+        scope
+            .ensure_running(&corvid_tui::monitor_executable()?)
+            .await?;
+        if wake_monitor {
+            scope.reconnect().await?;
+        }
+        Ok::<_, anyhow::Error>(())
     });
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
     let focus_epoch = Uuid::parse_str(&epoch)?;
@@ -1680,15 +1810,15 @@ async fn run(
         next_preview: Instant::now(),
     };
     client.publish_view();
+    if let Some(attached) = attach_ready.take() {
+        let _ = attached.send(());
+    }
     let mut inventory = InventoryWatch::start(endpoint.clone(), host, epoch, Arc::clone(shared))?;
-    let mut monitor_task = monitor_task;
-    let mut monitor_pending = true;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let keep_connection = loop {
         tokio::select! {
             close = &mut *closing => break close.unwrap_or(false),
-            result = &mut monitor_task, if monitor_pending => {
-                monitor_pending = false;
+            Some(result) = monitor_tasks.join_next(), if !monitor_tasks.is_empty() => {
                 if let Err(error) = result.unwrap_or_else(|error| Err(error.into())) {
                     shared.update_ui(move |ui| ui.message = format!("Agent monitor unavailable: {error:#}"));
                 }
@@ -1980,6 +2110,7 @@ impl Client<'_> {
             ui.selected = Some(selected);
             ui.terminal_id = Some(terminal_id);
             ui.connected = true;
+            ui.reconnect_target = None;
             ui.changing = changing;
             ui.message = "Attached to Corvid daemon".into();
             state.revision = revision;

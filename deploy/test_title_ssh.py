@@ -47,13 +47,23 @@ def verify(binary, root, cargo_options):
     (root / "home").mkdir(mode=0o700)
     (root / "bin").mkdir(mode=0o700)
     remote = root / "remote.py"
+    script = Path(__file__).resolve().parents[1] / "crates/corvid-client/src/endpoint/bootstrap.sh"
+    quoted = script.read_bytes().decode().replace("'", "'\\''")
+    bootstrap = f"sh -c '{quoted}' corvid-ssh"
+    commands = {
+        "corvid terminal-relay": ["terminal-relay"],
+        "corvid control --stdio": ["control", "--stdio"],
+        f"{bootstrap} path terminal-relay": ["terminal-relay"],
+        f"{bootstrap} path control --stdio": ["control", "--stdio"],
+    }
     remote.write_text(
         "import os\n"
-        "commands = {'corvid terminal-relay': ['terminal-relay'], "
-        "'corvid control --stdio': ['control', '--stdio']}\n"
+        f"commands = {commands!r}\n"
         f"binary = {str(binary)!r}\n"
         f"runtime = {str(runtime)!r}\n"
-        "args = commands[os.environ['SSH_ORIGINAL_COMMAND']]\n"
+        "command = os.environ['SSH_ORIGINAL_COMMAND']\n"
+        "if command == 'uname -s': os.execv('/usr/bin/uname', ['uname', '-s'])\n"
+        "args = commands[command]\n"
         "os.execv(binary, [binary, '--runtime-dir', runtime, *args])\n"
     )
     config = root / "sshd_config"
@@ -76,7 +86,13 @@ def verify(binary, root, cargo_options):
     )
     wrapper = root / "bin/ssh"
     wrapper.write_text(
-        f"#!/bin/sh\nexec {shlex.quote(ssh)} "
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$$\" >> {shlex.quote(str(root / 'attempts'))}\n"
+        f"if [ -e {shlex.quote(str(root / 'offline'))} ]; then exit 255; fi\n"
+        "for remote do :; done\n"
+        f"case \"$remote\" in *terminal-relay) printf '%s\\n' \"$$\" > "
+        f"{shlex.quote(str(root / 'writer-pid'))};; esac\n"
+        f"exec {shlex.quote(ssh)} "
         f"-F {shlex.quote(str(client_config))} \"$@\"\n"
     )
     wrapper.chmod(0o700)
@@ -110,12 +126,13 @@ def verify(binary, root, cargo_options):
             raise RuntimeError("Fixture daemon did not start")
         run(
             "cargo", "test", "--locked", "--offline", *cargo_options,
-            "-p", "corvid-desktop",
-            "terminal_session::inventory_watch::terminal_tests::ssh_pty_titles_reach_desktop_and_survive_reattach",
-            "--", "--ignored", "--exact", "--nocapture",
+            "-p", "corvid-desktop", "--bin", "corvid-desktop",
+            "terminal_session::inventory_watch::terminal_tests::ssh_",
+            "--", "--ignored", "--nocapture", "--test-threads=1",
             env=os.environ | {
                 "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
                 "CORVID_TITLE_TEST_SSH_ALIAS": "corvid-title-test",
+                "CORVID_SSH_TEST_ROOT": str(root),
             },
         )
     finally:

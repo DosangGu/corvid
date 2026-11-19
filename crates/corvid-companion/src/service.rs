@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use corvid_client::{ControlEndpoint, SnapshotWatch};
+use corvid_client::{ControlEndpoint, SnapshotWatch, SshRetry};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::CompanionConnection;
 use corvid_protocol::wire::envelope::Body;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, sleep, sleep_until};
+use tokio::time::{Instant, sleep_until, timeout_at};
 use uuid::Uuid;
 
 use crate::last_known::LastKnown;
@@ -80,12 +80,21 @@ impl Service {
 
     pub(crate) async fn run(&mut self, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let mut failures = 0;
+        let ssh = matches!(self.endpoint, ControlEndpoint::Ssh(_));
+        let mut retry = ssh.then(SshRetry::default);
         loop {
             self.connection = CompanionConnection::Connecting;
-            let fault = match self.connect(&mut calls).await {
+            let link = match &retry {
+                Some(retry) => timeout_at(retry.deadline(), self.connect(&mut calls))
+                    .await
+                    .unwrap_or_else(|_| Err(SshRetry::exhausted().into())),
+                None => self.connect(&mut calls).await,
+            };
+            let fault = match link {
                 Ok(mut watch) => match self.synchronize(&watch, false) {
                     Ok(()) => {
                         failures = 0;
+                        retry = None;
                         self.generation = Some(Uuid::new_v4());
                         self.connection = CompanionConnection::Ready;
                         self.issue = None;
@@ -101,15 +110,62 @@ impl Service {
                 Err(error) => store_fault(error).into(),
             };
             (self.connection, self.issue) = disconnected(&fault);
-            let delay = sleep(backoff(failures));
+            let next = if ssh {
+                retry
+                    .get_or_insert_with(SshRetry::default)
+                    .next_attempt(&fault)
+            } else {
+                Some(Instant::now() + backoff(failures))
+            };
             failures = (failures + 1).min(6);
-            tokio::pin!(delay);
-            loop {
-                tokio::select! {
-                    _ = &mut delay => break,
-                    call = calls.recv() => {
-                        let Some(call) = call else { return Ok(()) };
-                        self.handle(call).await;
+            if let Some(next) = next {
+                if !self.wait_to_reconnect(Some(next), &mut calls).await {
+                    return Ok(());
+                }
+                if retry
+                    .as_ref()
+                    .is_none_or(|retry| Instant::now() < retry.deadline())
+                {
+                    continue;
+                }
+            }
+            if retry
+                .as_ref()
+                .is_some_and(|retry| Instant::now() >= retry.deadline())
+            {
+                self.connection = CompanionConnection::Offline;
+                self.issue = Some("SshRetryExhausted");
+            }
+            if !self.wait_to_reconnect(None, &mut calls).await {
+                return Ok(());
+            }
+            retry = Some(SshRetry::default());
+        }
+    }
+
+    async fn wait_to_reconnect(
+        &mut self,
+        next: Option<Instant>,
+        calls: &mut mpsc::Receiver<Call>,
+    ) -> bool {
+        let delay = async {
+            match next {
+                Some(next) => sleep_until(next).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(delay);
+        loop {
+            tokio::select! {
+                _ = &mut delay => return true,
+                call = calls.recv() => {
+                    let Some(call) = call else { return false };
+                    let reconnect = next.is_none()
+                        && !call.reply.is_closed()
+                        && matches!(call.body, Body::ReconnectAgentMonitor(_));
+                    self.handle(call).await;
+                    if reconnect {
+                        return true;
                     }
                 }
             }
