@@ -83,7 +83,7 @@ for window in windows where (window[kCGWindowOwnerPID as String] as? Int) == pid
         let center = CGPoint(x: bounds.midX, y: primaryTop - bounds.midY)
         let screen = NSScreen.screens.first { $0.frame.contains(center) }!
         let offset = bounds.minY - (primaryTop - screen.visibleFrame.maxY)
-        print(id, offset)
+        print(id, offset, bounds.height)
     }
 }
 ''')
@@ -118,12 +118,16 @@ def check_panel_placement(query, pid):
     for _ in range(40):
         output = run(query, pid).strip()
         if output:
-            window, offset = output.split()
+            window, offset, height = output.split()
+            # The default 4 × 2 panel contracts after the connection status clears.
+            if float(height) != 220:
+                time.sleep(0.1)
+                continue
             assert window.isdigit(), "Agent Deck did not show a single AppKit panel"
             assert -1 <= float(offset) <= 12, f"Agent Deck is {offset} pt below the visible area's top"
             return window
         time.sleep(0.1)
-    raise AssertionError("Agent Deck did not show a panel")
+    raise AssertionError("Agent Deck did not show a compact 220 pt panel")
 
 
 def check(assets):

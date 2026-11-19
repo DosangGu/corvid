@@ -141,9 +141,10 @@ impl DeckView {
                 )
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(move |view, _, _, cx| {
+                    cx.listener(move |view, _, window, cx| {
                         if let Some(action) = view.held.release(Input::Pointer, index) {
                             view.activate(action);
+                            view.refresh_window(window, cx);
                         }
                         cx.notify();
                     }),
@@ -191,9 +192,10 @@ impl DeckView {
         let enabled = body.is_some() && self.ready(snapshot);
         let snapshot = snapshot.clone();
         colors.button(id, label, enabled).when(enabled, |button| {
-            button.on_click(cx.listener(move |view, _, _, cx| {
+            button.on_click(cx.listener(move |view, _, window, cx| {
                 if let Some(body) = &body {
                     view.submit(&snapshot, body.clone());
+                    view.refresh_window(window, cx);
                 }
                 view.menu = None;
                 cx.notify();

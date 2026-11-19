@@ -65,7 +65,9 @@ impl DeckView {
                     .overflow_y_scroll()
                     .child(grid),
             )
-            .child(self.footer(cx))
+            .when(self.show_compact_footer(), |view| {
+                view.child(self.footer(cx))
+            })
     }
 
     fn mini_tiles(&self) -> Vec<Tile<'_>> {
@@ -179,17 +181,25 @@ impl DeckView {
         }
     }
 
+    pub(super) fn show_compact_footer(&self) -> bool {
+        !cfg!(target_os = "macos") || self.footer_message().is_some() || self.queue_len() > 0
+    }
+
+    fn footer_message(&self) -> Option<&str> {
+        if let Some(error) = &self.window.error {
+            Some(error)
+        } else if self.actions.is_pending() {
+            Some("Waiting for the action…")
+        } else if let Some(notice) = self.actions.notice() {
+            Some(&notice.message)
+        } else {
+            connection_text(&self.view)
+        }
+    }
+
     pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
         let colors = self.colors;
-        let text = if let Some(error) = &self.window.error {
-            error.clone()
-        } else if self.actions.is_pending() {
-            "Waiting for the action…".into()
-        } else if let Some(notice) = self.actions.notice() {
-            notice.message.clone()
-        } else {
-            connection_text(&self.view).unwrap_or_default().into()
-        };
+        let text = self.footer_message().unwrap_or_default().to_owned();
         let overflow = self.queue_len();
         row()
             .h(px(BAR_HEIGHT))

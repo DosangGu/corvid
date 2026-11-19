@@ -16,7 +16,7 @@ use corvid_protocol::wire::{
     RunAvailability,
 };
 use gpui::{
-    Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, KeyUpEvent, MouseButton,
+    App, Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, KeyUpEvent, MouseButton,
     Render, SharedString, Stateful, Window, div, prelude::*, px, rgba,
 };
 use std::rc::Rc;
@@ -255,6 +255,16 @@ impl DeckView {
         if !self.held.active() && self.menu.is_none() {
             self.refresh_view();
         }
+        #[cfg(windows)]
+        self.pairing.poll();
+        self.refresh_window(window, cx);
+        cx.notify();
+    }
+
+    fn refresh_window(&mut self, window: &mut Window, cx: &App) {
+        if !self.window_ready {
+            return;
+        }
         let tray = self
             .session
             .background
@@ -262,13 +272,9 @@ impl DeckView {
             .borrow()
             .capabilities
             .can_start_hidden();
-        #[cfg(windows)]
-        self.pairing.poll();
-        if self.window_ready {
-            self.window
-                .update(window, tray, self.presentation.take(), cx);
-        }
-        cx.notify();
+        let compact_footer = self.show_compact_footer();
+        self.window
+            .update(window, tray, self.presentation.take(), compact_footer, cx);
     }
 
     fn activate(&mut self, action: FocusAction) {
@@ -373,11 +379,12 @@ impl Render for DeckView {
                 }
                 cx.notify();
             }))
-            .on_key_up(cx.listener(|view, event: &KeyUpEvent, _, cx| {
+            .on_key_up(cx.listener(|view, event: &KeyUpEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space")
                     && let Some(action) = view.held.release(Input::Keyboard, view.selected)
                 {
                     view.activate(action);
+                    view.refresh_window(window, cx);
                 }
                 cx.notify();
             }))
