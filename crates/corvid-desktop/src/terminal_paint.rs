@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, FontStyle, FontWeight, Pixels, Point, SharedString, TextRun, UnderlineStyle,
-    Window, fill, font, point, px, rgb, size,
+    App, Bounds, FontStyle, FontWeight, PathBuilder, Pixels, Point, SharedString, TextRun,
+    UnderlineStyle, Window, fill, font, point, px, rgb, size,
 };
 use vt100::{Cell, Color, Screen};
 
@@ -268,6 +268,40 @@ impl Frame {
             }
         }
     }
+}
+
+pub fn link_underline(
+    bounds: Bounds<Pixels>,
+    metrics: Metrics,
+    range: Range<(u16, u16)>,
+    columns: u16,
+    window: &mut Window,
+) {
+    window.paint_layer(bounds, |window| {
+        for row in range.start.0..=range.end.0 {
+            let start = if row == range.start.0 {
+                range.start.1
+            } else {
+                0
+            };
+            let end = if row == range.end.0 {
+                range.end.1
+            } else {
+                columns
+            };
+            if end <= start {
+                continue;
+            }
+            let line = metrics.cell(bounds.origin, row, start, end - start);
+            let mut path = PathBuilder::stroke(px(1.25)).dash_array(&[px(1.5), px(2.)]);
+            let origin = line.origin + point(px(0.), metrics.row - px(2.));
+            path.move_to(origin);
+            path.line_to(origin + point(line.size.width, px(0.)));
+            if let Ok(path) = path.build() {
+                window.paint_path(path, rgb(0x8bc9ff));
+            }
+        }
+    });
 }
 
 fn paint_text(
