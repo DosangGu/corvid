@@ -222,8 +222,9 @@ for an observed response, and red for errors. Ready, ended, unknown, offline,
 cached, and historical observations use gray with a muted logo. A green key means
 a response was observed, not that the whole task succeeded. Availability takes
 precedence over the last activity color, so stale observations never appear live.
-Tooltips and the action menu retain exact text labels; unverified input requests
-use amber and say **Check terminal**.
+Tooltips and the action menu show the terminal pane title, or the custom tab
+name for a single-pane tab. Unverified input requests use amber and say
+**Check terminal**.
 
 For monitored Claude and Codex sessions, submitting a prompt turns the key blue.
 The tooltip says **Working (inferred)** because another provider hook can still

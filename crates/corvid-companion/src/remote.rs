@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::snapshot::SynchronizedSnapshot;
+use corvid_protocol::wire::layout_node_state::Body as NodeBody;
 use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{
     AgentBadge, AgentLifecycle, AgentProcessState, AgentState, AttentionReason, EvidenceConfidence,
@@ -49,14 +50,20 @@ impl Remote {
             attention: Vec::new(),
             omitted_attention: 0,
         };
+        let mut pane_titles = BTreeMap::new();
         for entry in snapshot.entities() {
             match &entry.body {
                 Some(Body::Workspace(workspace)) => {
-                    for node in workspace.tabs.iter().flat_map(|tab| &tab.nodes) {
-                        if let Some(corvid_protocol::wire::layout_node_state::Body::PaneId(pane)) =
-                            &node.body
-                        {
-                            remote.panes.insert(parse_id(pane)?);
+                    for tab in &workspace.tabs {
+                        for node in &tab.nodes {
+                            if let Some(NodeBody::PaneId(pane)) = &node.body {
+                                let title = if tab.nodes.len() == 1 {
+                                    tab.manual_name.as_deref().unwrap_or(&node.title)
+                                } else {
+                                    &node.title
+                                };
+                                pane_titles.insert(parse_id(pane)?, title.trim());
+                            }
                         }
                     }
                 }
@@ -83,11 +90,14 @@ impl Remote {
                 _ => {}
             }
         }
+        remote.panes.extend(pane_titles.keys().copied());
         for run in remote.runs.values_mut() {
-            run.observation.eligible = run
+            let title = run
                 .observation
                 .pane
-                .is_some_and(|pane| remote.panes.contains(&pane));
+                .and_then(|pane| pane_titles.get(&pane).copied());
+            run.observation.eligible = title.is_some();
+            run.display.session_title = title.filter(|title| !title.is_empty()).map(str::to_owned);
         }
         let requests: BTreeMap<_, _> = snapshot
             .entities()

@@ -50,6 +50,7 @@ impl LastKnown {
             prompt_observation: Default::default(),
             pending_since_unix_ms: None,
             new_result_unix_ms: None,
+            session_title: None,
         }
     }
 

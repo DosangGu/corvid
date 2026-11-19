@@ -123,11 +123,12 @@ def open_deck(desktop):
 
 
 def launch_agent(corvid, env, root, name):
+    title = {"first": "SSH reconnect review", "second": "Release checklist"}[name]
     pid, master = pty.fork()
     if pid == 0:
         os.chdir(root)
         fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
-        os.execve(corvid, [corvid, "attach", "--new-tab", name, "--agent", "claude", "--", name], env)
+        os.execve(corvid, [corvid, "attach", "--new-tab", title, "--agent", "claude", "--", name], env)
     os.set_blocking(master, False)
     output = bytearray()
 
@@ -203,7 +204,7 @@ def capture_history(deck, scale, screenshot):
     run("scrot", "--overwrite", "--focused", str(screenshot))
 
 
-def main(build, screenshot, history_screenshot):
+def main(build, screenshot, history_screenshot, tooltip_screenshot):
     with ExitStack() as stack:
         root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".deck-focus-", dir=Path.home())))
         runtime = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".cvf-", dir=Path.home())))
@@ -282,6 +283,8 @@ def main(build, screenshot, history_screenshot):
                     until("open working tooltip", lambda: tooltip_color(frame, blue))
                     (root / "finish-turn").touch()
                     until("same open tooltip showing a response", lambda: tooltip_color(frame, mint))
+                    if tooltip_screenshot:
+                        run("scrot", "--overwrite", "--focused", str(tooltip_screenshot))
                 run("xdotool", "mousemove", "--window", deck, str(round(200 * scale)), str(round(20 * scale)))
                 colors = (blue, blue) if index == 0 else (mint, blue)
                 until(f"live prompt status for {name}", lambda: key_colors(frame, colors))
@@ -315,5 +318,6 @@ if __name__ == "__main__":
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--history-screenshot", type=Path)
+    parser.add_argument("--tooltip-screenshot", type=Path)
     args = parser.parse_args()
-    main(args.build.resolve(), args.screenshot, args.history_screenshot)
+    main(args.build.resolve(), args.screenshot, args.history_screenshot, args.tooltip_screenshot)

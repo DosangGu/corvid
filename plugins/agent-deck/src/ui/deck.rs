@@ -956,17 +956,16 @@ impl Colors {
 
     fn describe(self, run: &PresentedRun, cached: bool) -> Div {
         let (label, color) = status(run, cached);
+        let title = run.session_title.as_deref().unwrap_or("Untitled session");
         let mut view = column()
-            .child(provider(run))
+            .child(div().max_w(px(256.)).truncate().child(title.to_owned()))
             .child(div().text_color(self.status(color)).child(label))
+            .child(self.muted(provider(run)))
             .child(self.muted(evidence_label(run)))
             .child(self.muted(format!(
                 "{} pending · {} unverified · {} unseen",
                 run.pending_requests, run.unverified_requests, run.unseen_attention
             )));
-        if let Some(key) = &run.key {
-            view = view.child(self.muted(short_id(&key.agent_run_id)));
-        }
         if let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
             view = view.child(self.muted(format!("Observed {age} ago")));
         }
