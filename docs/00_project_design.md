@@ -1545,7 +1545,7 @@ actual deployment, including service/cgroup policy and runtime-directory lifetim
 | D. SSH connection loss | Preserved remotely | Working-channel loss detaches TUI; control-only loss merely disconnects watch | Reattach/full redraw for working channel; full snapshot for control; register new TUI client if applicable |
 | E. Remote control relay restart | Preserved | Daemon and working client unchanged | Reconnect background stdio SSH and full snapshot; retain/revalidate existing binding |
 | F. PTY-owning daemon crash/restart | **Not preserved/recoverable by contract**; an orphan process might survive, but PTY ownership/screen continuity is lost | New epoch; saved layout only, old runs historical/Unknown; old focus rejected | Reconcile stale slots; explicitly create new PTYs/runs; no silent process adoption |
-| G. Remote OS reboot | Old processes/PTYs do not survive | HostId/layout may survive; new epoch, no old Live run | Restore layout/CWD/labels; explicit new shell/agent or saved conversation resume |
+| G. Remote OS reboot | Old processes/PTYs do not survive | HostId/layout may survive; new epoch, no old Live run | Restore the layout and resume a verified conversation when its pane is opened |
 | H. Agent process exits | That run ends; shell/PTY may remain | Record exit evidence and cancel its pending requests with reason | Retain its card until pane closure; next agent gets a distinct run ID and queues even in the same pane |
 
 Planned replacement of an automatically started daemon is implemented on Linux and Windows.
@@ -1613,14 +1613,14 @@ reinterpret incompatible fields using current Rust defaults.
 
 After daemon restart, persisted Live/Working/Pending values are **last-known historical**
 facts. Current run/process state is Unknown (or confirmed exited with separate reboot
-proof), and old requests are Unverified/nonactionable. Agent-native conversation resume
-is an explicit opt-in action creating a new TerminalId and AgentRunId for an empty pane.
+proof), and old requests are Unverified/nonactionable. Opening an empty pane with a
+verified saved conversation can resume it with a new TerminalId and AgentRunId.
 The daemon stores the last verified AgentSessionKey and directory per PaneId, updates
 verified context changes, and removes associations with deleted panes. Restore reuses
 surviving terminals and reserves empty panes before spawning. Provider confirmation must
 match the exact saved session; failures remain pane-specific and explicitly retryable.
-No old approval is answered, no resume command is executed by automatic window recovery,
-and a stored CWD is validated before use. See the
+Recovery keeps old approvals inactive and validates the stored CWD before launching.
+See the
 [implemented restore contract](02_daemon_foundation.md#restore-saved-agent-conversations).
 
 ## 13. Dependency decisions and evidence
@@ -1783,7 +1783,7 @@ negative assertions (including no unexpected process/window/input creation).
 | A20 | Focus/resize/disconnect while keys or paste are buffered; input ownership transfer | Fenced old tokens rejected; accepted paste stays at original target; partial delivery not retried; no stale-key replay | P1, Later |
 | A21 | Long-running child; abrupt SSH disconnect and clean last logout | Same daemon/PTY/process survives on documented deployment; reattach observes continued progress | P1 |
 | A22 | Collector gap followed by full control resync | Cache consistent but affected activity/request remains Unknown/Unverified until actual evidence | P2 |
-| A23 | Kill PTY-owning daemon mid-work, restart with saved layout | New epoch and empty PTY slots; historical state labeled; no process continuity claim or automatic resume | P1 |
+| A23 | Kill PTY-owning daemon mid-work, restart with saved layout | New epoch and empty PTY slots until a client opens a pane. A verified saved conversation resumes as a new run and old state stays historical | P1 |
 | A24 | Unauthorized UID, unsafe runtime path, oversized/partial frames, malformed Protobuf, missing capability | Reject safely, bound memory, preserve daemon and existing work; no automatic upgrade/restart | P1 |
 | A25 | Restart desktop, companion, PC, and relay separately | Apply distinct recovery matrix; preserve slots through connection loss; revalidate/re-pair runtime terminal identifiers. Desktop restores open windows independently without taking over occupied panes; explicitly closed windows stay closed | P2, P3 |
 | A26 | Resume same provider conversation; compact current conversation | Resume creates new run; pure compaction retains current run; old requests never migrate | P2, P3 |

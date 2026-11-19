@@ -21,9 +21,9 @@ fn desktop_attaches_without_agent_restore_support() -> Result<()> {
 }
 
 #[test]
-fn desktop_opening_a_workspace_offers_recovery_before_opening_a_shell() -> Result<()> {
+fn desktop_startup_attempts_recovery_and_leaves_failed_panes_empty() -> Result<()> {
     isolated_fixture(
-        "terminal_session::restore_test::desktop_opening_a_workspace_offers_recovery_before_opening_a_shell",
+        "terminal_session::restore_test::desktop_startup_attempts_recovery_and_leaves_failed_panes_empty",
         verify_recovery_offers,
     )
 }
@@ -172,9 +172,13 @@ async fn verify_recovery_offers(root: &Path) -> Result<()> {
             ensure!(
                 ui.restore_results.iter().any(|result| {
                     result.location.as_ref() == Some(&view)
-                        && result.status() == PaneRestoreStatus::Available
+                        && result.status() == PaneRestoreStatus::Failed
+                        && result
+                            .error
+                            .as_ref()
+                            .is_some_and(|error| error.code == "ResumeDirectoryUnavailable")
                 }),
-                "Desktop did not expose restore for the selected pane: {}",
+                "Desktop did not attempt to restore the selected pane: {}",
                 ui.message
             );
             drop(desktop);
@@ -569,6 +573,7 @@ async fn verify_restore(runtime: &Path, state: &Path) -> Result<()> {
             view: view.clone(),
             host_id: selected.host_id.clone().unwrap(),
             pane_only: true,
+            automatic_epoch: None,
         },
     )?;
     let ui = wait_disconnected(&empty.session).await?;
@@ -650,6 +655,7 @@ async fn verify_window_restore(runtime: &Path, state: &Path) -> Result<()> {
             view: occupied.selected.clone().unwrap(),
             host_id: occupied.host_id.clone().unwrap(),
             pane_only: false,
+            automatic_epoch: None,
         },
     )?;
     let rejected = wait_disconnected(&duplicate.session).await?;

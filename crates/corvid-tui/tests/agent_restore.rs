@@ -1,7 +1,9 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::collections::HashSet;
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(windows)]
+use std::io::Write;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -336,7 +338,7 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
 }
 
 #[tokio::test]
-async fn tui_startup_offers_exact_agent_recovery_after_daemon_loss() -> Result<()> {
+async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut daemon = fixture.start().await?;
     let agents = [
@@ -412,7 +414,7 @@ async fn tui_startup_offers_exact_agent_recovery_after_daemon_loss() -> Result<(
 struct StartupTui {
     child: Box<dyn PtyChild + Send + Sync>,
     _master: Box<dyn MasterPty + Send>,
-    input: Box<dyn Write + Send>,
+
     output: Receiver<Vec<u8>>,
     screen: vt100::Parser,
 }
@@ -426,7 +428,7 @@ impl StartupTui {
             pixel_height: 0,
         })?;
         let mut reader = pair.master.try_clone_reader()?;
-        let input = pair.master.take_writer()?;
+        let _input = pair.master.take_writer()?;
         let (sender, output) = sync_channel(16);
         std::thread::spawn(move || {
             let mut bytes = [0; 4096];
@@ -446,7 +448,6 @@ impl StartupTui {
         let mut tui = Self {
             child,
             _master: pair.master,
-            input,
             output,
             screen: vt100::Parser::new(
                 NonZeroU16::new(24).unwrap(),
@@ -455,14 +456,13 @@ impl StartupTui {
             ),
         };
         #[cfg(windows)]
+        let mut _input = _input;
+        #[cfg(windows)]
         {
             tui.wait_for_cursor_query()?;
-            tui.input.write_all(b"\x1b[1;1R")?;
-            tui.input.flush()?;
+            _input.write_all(b"\x1b[1;1R")?;
+            _input.flush()?;
         }
-        tui.wait_for("[R] Restore conversation")?;
-        tui.input.write_all(b"r")?;
-        tui.input.flush()?;
         tui.wait_for(&format!("READY-{session}"))
     }
 

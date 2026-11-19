@@ -500,6 +500,7 @@ impl WorkspaceView {
                 view,
                 host_id,
                 pane_only,
+                automatic_epoch: None,
             },
             window,
             cx,

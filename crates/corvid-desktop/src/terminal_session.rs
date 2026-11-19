@@ -77,6 +77,7 @@ pub enum AttachTarget {
         view: ViewSelection,
         host_id: String,
         pane_only: bool,
+        automatic_epoch: Option<String>,
     },
     Default,
     FreshDefault,
@@ -1143,6 +1144,24 @@ async fn run_reconnecting(
             let endpoint = ui.endpoint.as_ref().context("missing recovery endpoint")?;
             let host = ui.host_id.as_deref().context("missing recovery host")?;
             let epoch = ui.epoch.as_deref().context("missing recovery epoch")?;
+            if offer.should_resume() {
+                target = AttachTarget::ResumeAgents {
+                    view: offer.view.clone(),
+                    host_id: host.to_owned(),
+                    pane_only: true,
+                    automatic_epoch: Some(epoch.to_owned()),
+                };
+                explicit = false;
+                requests.terminal = None;
+                shared.update_ui(|ui| {
+                    ui.connected = false;
+                    ui.changing = true;
+                    ui.message = "Restoring saved agent conversation…".into();
+                });
+                // A restored agent starts on a new route. Discard requests for the retired writer.
+                while requests.actions.try_recv().is_ok() {}
+                continue;
+            }
             let snapshot = endpoint.view_snapshot(host, epoch).await?;
             let inventory = Arc::new(Inventory::read(&snapshot));
             let selected = offer.view.clone();
@@ -1271,6 +1290,9 @@ async fn run(
     };
     let expected_epoch = match &target {
         AttachTarget::Agent { run, .. } => Some(run.remote_epoch.as_str()),
+        AttachTarget::ResumeAgents {
+            automatic_epoch, ..
+        } => automatic_epoch.as_deref(),
         _ => None,
     };
     let warmed = parked
@@ -1368,7 +1390,10 @@ async fn run(
         target = AttachTarget::Pane(view, false);
     }
     if let AttachTarget::ResumeAgents {
-        view, pane_only, ..
+        view,
+        pane_only,
+        automatic_epoch,
+        ..
     } = &target
     {
         let view = view.clone();
@@ -1383,14 +1408,42 @@ async fn run(
             ui.selected = Some(selected);
             ui.message = "Restoring saved agent sessions…".into();
         });
+        let automatic = automatic_epoch.is_some();
+        let mode = if automatic {
+            corvid_protocol::wire::AgentRestoreMode::Resume
+        } else {
+            corvid_protocol::wire::AgentRestoreMode::Retry
+        };
         let mut result = link
             .restore_workspace(corvid_protocol::wire::RestoreWorkspace {
                 workspace_id: view.workspace_id.clone(),
                 pane_id: pane_only.then(|| view.pane_id.clone()),
-                mode: corvid_protocol::wire::AgentRestoreMode::Retry as i32,
+                mode: mode as i32,
             })
             .await?;
-        if *pane_only {
+        if automatic {
+            let pane = result.panes.first().context("missing recovered pane")?;
+            if !matches!(
+                pane.status(),
+                corvid_protocol::wire::PaneRestoreStatus::Resumed
+                    | corvid_protocol::wire::PaneRestoreStatus::Existing
+            ) {
+                let message = pane
+                    .error
+                    .as_ref()
+                    .map_or("Could not restore the saved agent conversation.", |error| {
+                        error.message.as_str()
+                    })
+                    .to_owned();
+                shared.update_ui(move |ui| ui.restore_results = result.panes);
+                return Ok(message);
+            }
+            *terminal = Some(
+                pane.terminal_id
+                    .clone()
+                    .context("missing recovered terminal")?,
+            );
+        } else if *pane_only {
             result = link
                 .restore_workspace(corvid_protocol::wire::RestoreWorkspace {
                     workspace_id: view.workspace_id.clone(),

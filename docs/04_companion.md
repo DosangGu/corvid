@@ -233,19 +233,16 @@ connection remains selected so it can be retried or changed through Settings.
 
 Restoration reads a fresh layout snapshot. If the pane was deleted, Desktop chooses
 the first remaining pane in its tab; if the tab was deleted, it chooses the first tab
-in the same workspace. A removed workspace opens the workspace picker. An empty or
-occupied saved pane remains visible with explicit recovery controls. Restoration never
-takes input away from another writer.
-Selecting a workspace there explicitly may open a shell, but restoration
-itself never launches a shell or agent. Live terminals keep their existing processes
-and receive fresh client identities and input routes on reattach.
+in the same workspace. A removed workspace opens the workspace picker. When the
+selected pane is empty and has a verified saved conversation, Desktop resumes that
+conversation. Existing terminals keep their processes and writer ownership during
+saved-window recovery.
 
-Choose **⋯ → Restore workspace agent sessions** to explicitly resume the last verified
-conversation in each empty pane. Each empty pane also offers **Restore / retry agent
-session** and **Open shell**. Errors appear on the affected pane while other sessions
-recover. Existing terminals are reused without taking their writer. This action is
-separate from automatic window restoration and requires a daemon advertising
-`workspace.restore_agents.v1`. See [saved conversation restoration](02_daemon_foundation.md#restore-saved-agent-conversations)
+If the selected conversation cannot be recovered, Desktop shows the pane error
+and offers **Restore / retry agent session** and **Open shell**. Choose **⋯ →
+Restore workspace agent sessions** to restore the verified conversations in other
+empty panes. These actions use the daemon's `workspace.restore_agents.v1`
+capability. See [saved conversation restoration](02_daemon_foundation.md#restore-saved-agent-conversations)
 for provider setup, identity rules, and unsupported conversation transitions.
 
 These preferences are independent of TUI navigation and daemon metadata. Desktop

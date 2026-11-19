@@ -11,9 +11,9 @@ use corvid_protocol::controller::{PAIR_CAPABILITY, PAIRING_SECONDS};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentProvider, AgentRestoreMode, Attach, AttachRole, ClaimWorkspaceWriter, Detach, Envelope,
-    FrameApplied, InputChunk, LaunchCommand, MoveTab, PairingCode, PaneRestoreStatus, PasteBegin,
-    PasteChunk, PasteEnd, RedrawView, ResizeViewport, RestoreWorkspace, RouteToken, ViewChanged,
-    ViewSelection, Viewport as WireViewport,
+    FrameApplied, InputChunk, LaunchCommand, MoveTab, PairingCode, PaneRestoreResult,
+    PaneRestoreStatus, PasteBegin, PasteChunk, PasteEnd, RedrawView, ResizeViewport,
+    RestoreWorkspace, RouteToken, ViewChanged, ViewSelection, Viewport as WireViewport,
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
@@ -185,15 +185,28 @@ pub async fn attach(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
     let (connection, route, selection) = match attached {
         Ok(attached) => attached,
         Err(error) => {
-            let offer = error.downcast::<AttachRecovery>()?;
-            let Some(choice) = recovery_choice(&offer).await? else {
+            let mut offer = error.downcast::<AttachRecovery>()?;
+            let mut expected_terminal = None;
+            if offer.should_resume() {
+                eprintln!("Restoring saved agent conversation…");
+                offer.pane = restore_pane(runtime, &scope, &offer.view).await?;
+                if matches!(
+                    offer.pane.status(),
+                    PaneRestoreStatus::Resumed | PaneRestoreStatus::Existing
+                ) {
+                    expected_terminal = Some(
+                        offer
+                            .pane
+                            .terminal_id
+                            .take()
+                            .context("missing recovered terminal")?,
+                    );
+                }
+            }
+            if expected_terminal.is_none() && !confirm_recovery_shell(&offer).await? {
                 return Ok(0);
-            };
+            }
             let view = offer.view;
-            let expected_terminal = match choice {
-                RecoveryChoice::Restore => Some(restore_pane(runtime, &scope, &view).await?),
-                RecoveryChoice::Shell => None,
-            };
             options.workspace = Some(view.workspace_id.clone());
             options.tab = Some(view.tab_id.clone());
             options.pane = Some(view.pane_id.clone());
@@ -273,35 +286,25 @@ fn can_restore(options: &AttachOptions) -> bool {
         && options.move_tab.is_none()
 }
 
-enum RecoveryChoice {
-    Restore,
-    Shell,
-}
-
-async fn recovery_choice(offer: &AttachRecovery) -> Result<Option<RecoveryChoice>> {
+async fn confirm_recovery_shell(offer: &AttachRecovery) -> Result<bool> {
     let tty = Tty::enter()?;
-    let can_restore = offer.pane.error.as_ref().is_none_or(|error| {
-        !matches!(
-            error.code.as_str(),
-            "ResumeUnsupported" | "SessionUnverified"
-        )
-    });
-    let actions = if can_restore {
-        "[R] Restore conversation  [S] Open shell  [Esc] Cancel"
-    } else {
-        "[S] Open shell  [Esc] Cancel"
-    };
-    tty.write_all(format!("{offer}\r\n{actions}\r\n").as_bytes())
+    let reason = offer
+        .pane
+        .error
+        .as_ref()
+        .map_or("Could not restore the saved agent conversation.", |error| {
+            error.message.as_str()
+        });
+    tty.write_all(format!("{reason}\r\n[S] Open shell  [Esc] Cancel\r\n").as_bytes())
         .await?;
     let mut key = [0];
     loop {
         if tty.read(&mut key).await? == 0 {
-            return Ok(None);
+            return Ok(false);
         }
         match key[0].to_ascii_lowercase() {
-            b'r' if can_restore => return Ok(Some(RecoveryChoice::Restore)),
-            b's' => return Ok(Some(RecoveryChoice::Shell)),
-            3 | 4 | 27 => return Ok(None),
+            b's' => return Ok(true),
+            3 | 4 | 27 => return Ok(false),
             _ => {}
         }
     }
@@ -315,7 +318,11 @@ fn check_recovery_scope(original: &Session, current: &Session) -> Result<()> {
     Ok(())
 }
 
-async fn restore_pane(runtime: &Path, scope: &Session, view: &ViewSelection) -> Result<String> {
+async fn restore_pane(
+    runtime: &Path,
+    scope: &Session,
+    view: &ViewSelection,
+) -> Result<PaneRestoreResult> {
     let mut link = ControlEndpoint::Local(runtime.to_owned())
         .interactive(vec![corvid_protocol::RESTORE_AGENTS_CAPABILITY.into()])
         .await?;
@@ -324,7 +331,7 @@ async fn restore_pane(runtime: &Path, scope: &Session, view: &ViewSelection) -> 
         .restore_workspace(RestoreWorkspace {
             workspace_id: view.workspace_id.clone(),
             pane_id: Some(view.pane_id.clone()),
-            mode: AgentRestoreMode::Retry as i32,
+            mode: AgentRestoreMode::Resume as i32,
         })
         .await?;
     let pane = result
@@ -332,14 +339,11 @@ async fn restore_pane(runtime: &Path, scope: &Session, view: &ViewSelection) -> 
         .into_iter()
         .next()
         .context("missing recovered pane")?;
-    if let Some(error) = pane.error.as_ref() {
-        return Err(ProtocolFault::from_wire(error).into());
-    }
     ensure!(
-        pane.location.as_ref() == Some(view) && pane.status() == PaneRestoreStatus::Resumed,
-        "the saved conversation did not resume in the selected pane"
+        pane.location.as_ref() == Some(view),
+        "the restore result targeted a different pane"
     );
-    pane.terminal_id.context("missing recovered terminal")
+    Ok(pane)
 }
 
 async fn request_attach(

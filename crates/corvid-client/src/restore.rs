@@ -39,6 +39,13 @@ impl AttachRecovery {
             .all(|cap| session.capabilities.iter().any(|name| name == cap))
     }
 
+    pub fn should_resume(&self) -> bool {
+        matches!(
+            self.pane.status(),
+            PaneRestoreStatus::Available | PaneRestoreStatus::Starting
+        )
+    }
+
     pub fn from_reply(attach: &Attach, mut reply: WorkspaceRestored) -> Result<Self> {
         ensure!(reply.panes.len() == 1, "expected a single recovery pane");
         let pane = &reply.panes[0];
