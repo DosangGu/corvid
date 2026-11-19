@@ -1198,6 +1198,7 @@ struct Running {
     session: Backend,
     shell: bool,
     dirty: bool,
+    reported_title: String,
     exit: Option<ExitStatus>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     process: TerminalProcess,
@@ -1270,6 +1271,7 @@ impl Running {
             session,
             shell,
             dirty: true,
+            reported_title: String::new(),
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             process,
@@ -1347,6 +1349,7 @@ impl Running {
             session,
             shell: saved.shell,
             dirty: true,
+            reported_title: String::new(),
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             process,
@@ -1360,11 +1363,14 @@ impl Running {
             return Ok(None);
         }
         let tick = self.session.poll()?;
-        if let Some(registry) = self.registry.upgrade() {
-            registry
-                .lock()
-                .expect("workspace registry lock poisoned")
-                .record_title(self.id, tick.title);
+        if tick.title != self.reported_title {
+            self.reported_title = tick.title;
+            if let Some(registry) = self.registry.upgrade() {
+                registry
+                    .lock()
+                    .expect("workspace registry lock poisoned")
+                    .record_title(self.id, self.reported_title.clone());
+            }
         }
         self.dirty |= tick.output;
         if let Some(status) = tick.exit {
