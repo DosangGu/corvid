@@ -73,37 +73,41 @@ impl Pairing {
 
 impl DeckView {
     pub(super) fn pair_form(&self, cx: &mut Context<Self>) -> Div {
+        let colors = self.colors;
         let Some(draft) = &self.pairing.draft else {
             return column();
         };
         let mut view = column()
             .child("Pair WezTerm terminal")
-            .child(muted(
+            .child(colors.muted(
                 "In the attached Corvid TUI, press Ctrl-] then r to show its one-time code.",
             ))
             .child(
-                button("refresh-panes", "Refresh panes", true).on_click(cx.listener(
-                    |view, _, _, cx| {
+                colors
+                    .button("refresh-panes", "Refresh panes", true)
+                    .on_click(cx.listener(|view, _, _, cx| {
                         view.pairing.open(&view.session.signal);
                         cx.notify();
-                    },
-                )),
+                    })),
             );
         match &draft.discovery {
             Discovery::Loading(_) => {
-                view = view.child(muted("Looking for verified WezTerm panes…"))
+                view = view.child(colors.muted("Looking for verified WezTerm panes…"))
             }
             Discovery::Failed => {
-                view = view.child(muted("Could not list WezTerm panes. Refresh to try again."))
+                view =
+                    view.child(colors.muted("Could not list WezTerm panes. Refresh to try again."))
             }
             Discovery::Ready(panes) => {
                 if panes.is_empty() {
-                    view = view.child(muted("No verified panes found. Open WezTerm and refresh."));
+                    view = view
+                        .child(colors.muted("No verified panes found. Open WezTerm and refresh."));
                 }
                 view = view.children(panes.iter().enumerate().map(|(index, pane)| {
-                    button(("pane", index), pane_label(pane), true)
+                    colors
+                        .button(("pane", index), pane_label(pane), true)
                         .when(draft.selected == Some(index), |button| {
-                            button.text_color(rgb(MINT))
+                            button.text_color(colors.accent)
                         })
                         .on_click(cx.listener(move |view, _, _, cx| {
                             if let Some(draft) = &mut view.pairing.draft {
@@ -136,7 +140,7 @@ impl DeckView {
                 .id("pair-code")
                 .p(px(12.))
                 .border_1()
-                .border_color(rgb(MINT))
+                .border_color(colors.accent)
                 .child(if draft.code.is_empty() {
                     "Type or paste the one-time code".to_owned()
                 } else {
@@ -145,34 +149,37 @@ impl DeckView {
         )
         .child(
             row()
-                .child(button("cancel-pair", "Cancel", true).on_click(cx.listener(
-                    |view, _, _, cx| {
-                        view.pairing.close();
-                        cx.notify();
-                    },
-                )))
-                .child(button("submit-pair", "Pair terminal", can_submit).when(
-                    can_submit,
-                    |button| {
-                        button.on_click(cx.listener(move |view, _, _, cx| {
-                            if let Some(snapshot) = view.view.snapshot.clone()
-                                && let Some(generation) = snapshot.generation()
-                                && view.ready(&snapshot)
-                            {
-                                view.submit(
-                                    &snapshot,
-                                    Body::PairTerminal(PairTerminal {
-                                        code: code.unwrap().to_string(),
-                                        wezterm: target.clone(),
-                                        control_generation: Some(generation.to_string()),
-                                    }),
-                                );
-                                view.pairing.close();
-                                cx.notify();
-                            }
-                        }))
-                    },
-                )),
+                .child(
+                    colors
+                        .button("cancel-pair", "Cancel", true)
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.pairing.close();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    colors
+                        .button("submit-pair", "Pair terminal", can_submit)
+                        .when(can_submit, |button| {
+                            button.on_click(cx.listener(move |view, _, _, cx| {
+                                if let Some(snapshot) = view.view.snapshot.clone()
+                                    && let Some(generation) = snapshot.generation()
+                                    && view.ready(&snapshot)
+                                {
+                                    view.submit(
+                                        &snapshot,
+                                        Body::PairTerminal(PairTerminal {
+                                            code: code.unwrap().to_string(),
+                                            wezterm: target.clone(),
+                                            control_generation: Some(generation.to_string()),
+                                        }),
+                                    );
+                                    view.pairing.close();
+                                    cx.notify();
+                                }
+                            }))
+                        }),
+                ),
         )
     }
 }

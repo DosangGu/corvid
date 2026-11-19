@@ -18,6 +18,8 @@ mod macos;
 #[cfg(not(target_os = "macos"))]
 mod native;
 #[cfg(target_os = "macos")]
+pub(crate) use macos::colors as macos_colors;
+#[cfg(target_os = "macos")]
 pub(super) use macos::prepare as prepare_macos;
 
 #[derive(Clone, Default, Serialize)]
@@ -230,9 +232,14 @@ fn window_size(state: Applied) -> gpui::Size<gpui::Pixels> {
 
 pub(super) fn layout_size(layout: GridLayout) -> gpui::Size<gpui::Pixels> {
     let (columns, rows) = layout.dimensions();
+    let bar_height = if cfg!(target_os = "macos") {
+        BAR_HEIGHT
+    } else {
+        2.0 * BAR_HEIGHT
+    };
     size(
         px(24.0 + columns as f32 * KEY_WIDTH + (columns - 1) as f32 * GAP),
-        px(2.0 * BAR_HEIGHT + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP),
+        px(bar_height + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP),
     )
 }
 

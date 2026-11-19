@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#include <stdint.h>
 
 extern NSStatusBarButton *corvid_status_button(void);
 
@@ -8,6 +9,112 @@ static id globalMonitor;
 static id localMonitor;
 static NSUInteger presentationGeneration;
 static NSSize requestedSize;
+
+static const CGFloat backdropRadius = 16;
+
+@interface CorvidPanelBackdrop : NSView
+@property(nonatomic, strong) NSView *material;
+@end
+
+@implementation CorvidPanelBackdrop
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+    if (@available(macOS 26.0, *)) {
+        NSGlassEffectView *glass = [[NSGlassEffectView alloc] initWithFrame:self.bounds];
+        glass.cornerRadius = backdropRadius;
+        self.material = glass;
+    }
+#endif
+    if (!self.material) {
+        NSVisualEffectView *popover = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
+        popover.material = NSVisualEffectMaterialPopover;
+        popover.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        popover.state = NSVisualEffectStateActive;
+        self.material = popover;
+    }
+    self.material.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [self addSubview:self.material];
+
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self
+        selector:@selector(displayOptionsChanged:)
+        name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+        object:nil];
+    [self displayOptionsChanged:nil];
+    return self;
+}
+
+- (void)dealloc {
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
+}
+
+- (NSView *)hitTest:(NSPoint)point {
+    return nil;
+}
+
+- (void)displayOptionsChanged:(NSNotification *)notification {
+    // Workspace notifications may arrive on a background thread.
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self displayOptionsChanged:nil]; });
+        return;
+    }
+    self.material.hidden = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
+    self.needsDisplay = YES;
+    [self.window invalidateShadow];
+}
+
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    self.needsDisplay = YES;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    if (self.material.hidden) {
+        [NSColor.windowBackgroundColor setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:self.bounds
+            xRadius:backdropRadius yRadius:backdropRadius] fill];
+    }
+}
+@end
+
+static void installBackdrop(NSView *view) {
+    NSView *container = view.superview;
+    for (NSView *subview in container.subviews) {
+        if ([subview isKindOfClass:CorvidPanelBackdrop.class]) return;
+    }
+
+    CorvidPanelBackdrop *backdrop = [[CorvidPanelBackdrop alloc] initWithFrame:container.bounds];
+    [container addSubview:backdrop positioned:NSWindowBelow relativeTo:view];
+}
+
+static uint32_t colorRGBA(NSColor *color) {
+    NSColor *rgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    return ((uint32_t)lround(rgb.redComponent * 255) << 24)
+        | ((uint32_t)lround(rgb.greenComponent * 255) << 16)
+        | ((uint32_t)lround(rgb.blueComponent * 255) << 8)
+        | (uint32_t)lround(rgb.alphaComponent * 255);
+}
+
+void corvid_panel_colors(void *view, uint32_t colors[9]) {
+    NSAppearance *appearance = ((__bridge NSView *)view).effectiveAppearance;
+    [appearance performAsCurrentDrawingAppearance:^{
+        colors[0] = colorRGBA(NSColor.controlBackgroundColor);
+        colors[1] = colorRGBA(NSColor.labelColor);
+        colors[2] = colorRGBA(NSColor.secondaryLabelColor);
+        colors[3] = colorRGBA(NSColor.separatorColor);
+        colors[4] = colorRGBA(NSColor.controlAccentColor);
+        colors[5] = colorRGBA(NSColor.quaternaryLabelColor);
+        colors[6] = colorRGBA(NSColor.unemphasizedSelectedContentBackgroundColor);
+        colors[7] = colorRGBA(NSColor.quaternaryLabelColor);
+    }];
+    NSString *match = [appearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    colors[8] = [match isEqualToString:NSAppearanceNameDarkAqua];
+}
 
 void corvid_panel_prepare(void) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -126,16 +233,18 @@ void corvid_panel_hide(void *view) {
 }
 
 void corvid_panel_update(void *view, double width, double height, uint8_t presentation) {
-    __weak NSWindow *weakPanel = [(__bridge NSView *)view window];
+    __weak NSView *weakView = (__bridge NSView *)view;
     // Resize, measure and position after GPUI releases the current update.
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSPanel *panel = (NSPanel *)weakPanel;
+        NSView *content = weakView;
+        NSPanel *panel = (NSPanel *)content.window;
         if (!panel) return;
         if (presentation == PanelHide || (presentation == PanelToggle && panel.visible)) {
             hidePanel(panel);
             return;
         }
 
+        installBackdrop(content);
         panel.hidesOnDeactivate = NO;
         panel.movable = NO;
         panel.titleVisibility = NSWindowTitleHidden;

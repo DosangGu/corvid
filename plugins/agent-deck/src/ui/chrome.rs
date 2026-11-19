@@ -39,8 +39,10 @@ impl AssetSource for DeckAssets {
 
 impl DeckView {
     pub(super) fn window_header(&self, cx: &mut Context<Self>) -> Div {
+        let colors = self.colors;
         let expanded = self.window.expanded;
         let layout = self.window.layout();
+        let compact_macos = cfg!(target_os = "macos") && !expanded;
         let portrait = !expanded && layout.orientation == Orientation::Portrait;
         let tray = self
             .session
@@ -66,7 +68,7 @@ impl DeckView {
                 "Agent Deck"
             }))
             .when(!expanded, |title| {
-                title.child(muted(layout.label()).flex_shrink_0())
+                title.child(colors.muted(layout.label()).flex_shrink_0())
             });
 
         #[cfg(not(target_os = "macos"))]
@@ -95,20 +97,23 @@ impl DeckView {
             .flex_shrink_0()
             .gap(px(4.))
             .px(px(8.))
-            .bg(rgb(PANEL))
+            .bg(colors.bar)
             .child(title);
         #[cfg(not(target_os = "macos"))]
         let header = header.child(
-            icon_button(PIN, pin_tip, pinned, if pinned { 0. } else { 35. }).on_click(cx.listener(
-                |view, _, window, cx| {
+            icon_button(colors, PIN, pin_tip, pinned, if pinned { 0. } else { 35. }).on_click(
+                cx.listener(|view, _, window, cx| {
                     view.window.toggle_pin();
                     view.update(window, cx);
-                },
-            )),
+                }),
+            ),
         );
         header
+            .when(compact_macos && self.queue_len() > 0, |header| {
+                header.child(self.queue_button(true, cx))
+            })
             .child(
-                icon_button(size_icon, size_tip, false, 0.).on_click(cx.listener(
+                icon_button(colors, size_icon, size_tip, false, 0.).on_click(cx.listener(
                     |view, _, window, cx| {
                         view.switch_view(!view.window.expanded, Section::Slots, window, cx);
                     },
@@ -116,6 +121,7 @@ impl DeckView {
             )
             .child(
                 icon_button(
+                    colors,
                     CLOSE,
                     if tray && !cfg!(target_os = "macos") {
                         "Hide to tray"
@@ -142,15 +148,41 @@ impl DeckView {
                 })),
             )
     }
+
+    pub(super) fn queue_button(&self, compact: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+        let overflow = self.queue_len();
+        let pending = self.queue_waiting;
+        let label = if compact || pending == 0 {
+            format!("+{overflow}")
+        } else {
+            format!("+{overflow} · {pending} waiting")
+        };
+        self.colors
+            .button("open-queue", label, true)
+            .when(compact, |button| {
+                let tooltip = SharedString::from(if pending == 0 {
+                    format!("{overflow} queued")
+                } else {
+                    format!("{overflow} queued · {pending} waiting")
+                });
+                button
+                    .when(pending > 0, |button| {
+                        button.text_color(self.colors.attention)
+                    })
+                    .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(tooltip.clone())).into())
+            })
+            .on_click(cx.listener(|view, _, window, cx| view.expand(Section::Overflow, window, cx)))
+    }
 }
 
 fn icon_button(
+    colors: Colors,
     icon: &'static str,
     tip: &'static str,
     selected: bool,
     degrees: f32,
 ) -> Stateful<Div> {
-    let color = if selected { MINT } else { TEXT };
+    let color = if selected { colors.accent } else { colors.text };
     div()
         .id(icon)
         .flex()
@@ -160,29 +192,37 @@ fn icon_button(
         .size(px(30.))
         .rounded_md()
         .cursor_pointer()
-        .when(selected, |button| button.bg(rgb(0x234238)))
-        .hover(|style| style.bg(rgb(if selected { 0x31574a } else { 0x263541 })))
-        .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(tip)).into())
+        .when(selected, |button| button.bg(colors.selection))
+        .hover(|style| {
+            style.bg(if selected {
+                colors.selection_hover
+            } else {
+                colors.hover
+            })
+        })
+        .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(tip.into())).into())
         .child(
             svg()
                 .path(icon)
                 .size(px(16.))
-                .text_color(rgb(color))
+                .text_color(color)
                 .with_transformation(Transformation::rotate(radians(degrees.to_radians()))),
         )
 }
 
-struct HeaderTooltip(&'static str);
+struct HeaderTooltip(SharedString);
 
 impl Render for HeaderTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let colors = Colors::for_window(window);
         div()
             .px(px(8.))
             .py(px(4.))
             .rounded_md()
-            .bg(rgb(PANEL))
-            .text_color(rgb(TEXT))
+            .bg(colors.panel)
+            .text_color(colors.text)
             .text_size(px(12.))
-            .child(self.0)
+            .max_w(px(270.))
+            .child(self.0.clone())
     }
 }

@@ -65,7 +65,9 @@ impl DeckView {
                     .overflow_y_scroll()
                     .child(grid),
             )
-            .child(self.footer(cx))
+            .when(!cfg!(target_os = "macos"), |view| {
+                view.child(self.footer(cx))
+            })
     }
 
     fn mini_tiles(&self) -> Vec<Tile<'_>> {
@@ -161,6 +163,7 @@ impl DeckView {
         width: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let colors = self.colors;
         match tile {
             Tile::Slot(snapshot, slot) => self.card(snapshot, slot, index, width, cx),
             Tile::Queued(snapshot, run) => {
@@ -170,7 +173,7 @@ impl DeckView {
                 self.host_card(host, run, index, width, self.tile_action(tile), cx)
             }
             Tile::Empty => self.attach_card_action(
-                super::deck::card_face(None, false, false, width, crate::shell::KEY_HEIGHT, None),
+                colors.card_face(None, false, false, width, crate::shell::KEY_HEIGHT, None),
                 index,
                 None,
                 cx,
@@ -178,48 +181,46 @@ impl DeckView {
         }
     }
 
-    pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
-        let text = if let Some(error) = &self.window.error {
-            error.clone()
+    pub(super) fn status_message(&self) -> Option<&str> {
+        if let Some(error) = &self.window.error {
+            Some(error)
         } else if self.actions.is_pending() {
-            "Waiting for the action…".into()
+            Some("Waiting for the action…")
         } else if let Some(notice) = self.actions.notice() {
-            notice.message.clone()
+            Some(&notice.message)
         } else {
-            connection_text(&self.view).unwrap_or_default().into()
-        };
-        let overflow = self.queue_len();
+            connection_text(&self.view)
+        }
+    }
+
+    pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
+        let colors = self.colors;
+        let text = self.status_message().unwrap_or_default().to_owned();
         row()
             .h(px(BAR_HEIGHT))
             .flex_shrink_0()
             .px(px(12.))
             .overflow_hidden()
-            .bg(rgb(PANEL))
-            .child(muted(text).flex_1().min_w_0().overflow_hidden())
-            .when(!self.window.expanded && overflow > 0, |footer| {
-                let pending = self.queue_waiting;
-                let label = if pending == 0 {
-                    format!("+{overflow}")
-                } else {
-                    format!("+{overflow} · {pending} waiting")
-                };
-                footer.child(button("open-queue", label, true).on_click(
-                    cx.listener(|view, _, window, cx| view.expand(Section::Overflow, window, cx)),
-                ))
+            .bg(colors.bar)
+            .child(colors.muted(text).flex_1().min_w_0().overflow_hidden())
+            .when(!self.window.expanded && self.queue_len() > 0, |footer| {
+                footer.child(self.queue_button(false, cx))
             })
     }
 
     pub(super) fn layout_controls(&self, cx: &mut Context<Self>) -> Div {
+        let colors = self.colors;
         let current = self.window.layout();
         column().child(
             row()
                 .flex_wrap()
-                .child(muted("Columns × rows"))
+                .child(colors.muted("Columns × rows"))
                 .children(Preset::ALL.into_iter().enumerate().map(|(index, preset)| {
                     let layout = GridLayout { preset, ..current };
-                    button(("layout", index), layout.label(), true)
+                    colors
+                        .button(("layout", index), layout.label(), true)
                         .when(current.preset == preset, |button| {
-                            button.text_color(rgb(MINT))
+                            button.text_color(colors.accent)
                         })
                         .on_click(cx.listener(move |view, _, window, cx| {
                             view.window.set_layout(GridLayout {
@@ -230,27 +231,28 @@ impl DeckView {
                         }))
                 }))
                 .child(
-                    button(
-                        "orientation",
-                        if current.orientation == Orientation::Landscape {
-                            "Landscape"
-                        } else {
-                            "Portrait"
-                        },
-                        true,
-                    )
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        let current = view.window.layout();
-                        let orientation = match current.orientation {
-                            Orientation::Landscape => Orientation::Portrait,
-                            Orientation::Portrait => Orientation::Landscape,
-                        };
-                        view.window.set_layout(GridLayout {
-                            orientation,
-                            ..current
-                        });
-                        view.update(window, cx);
-                    })),
+                    colors
+                        .button(
+                            "orientation",
+                            if current.orientation == Orientation::Landscape {
+                                "Landscape"
+                            } else {
+                                "Portrait"
+                            },
+                            true,
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            let current = view.window.layout();
+                            let orientation = match current.orientation {
+                                Orientation::Landscape => Orientation::Portrait,
+                                Orientation::Portrait => Orientation::Landscape,
+                            };
+                            view.window.set_layout(GridLayout {
+                                orientation,
+                                ..current
+                            });
+                            view.update(window, cx);
+                        })),
                 ),
         )
     }
