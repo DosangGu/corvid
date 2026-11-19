@@ -3,8 +3,10 @@ name = "corvid-presentation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
-publish.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Shared presentation logic for Corvid clients"
+publish = ["crates-io"]
 
 [dependencies]
 anyhow.workspace = true

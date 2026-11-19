@@ -838,7 +838,7 @@ class CorvidFixture:
         self.focus_capture = None
         environment["PATH"] = f"{claude.parent}:{environment['PATH']}"
         environment["TERMINFO"] = str(directory / "terminfo")
-        profile = Path(__file__).resolve().parents[3] / "spikes/terminal/corvid.terminfo"
+        profile = Path(__file__).resolve().parents[3] / "crates/corvid-tui/assets/corvid.terminfo"
         subprocess.run(["tic", "-x", "-o", environment["TERMINFO"], profile], check=True, timeout=3)
         self.environment = environment
         self.project = project

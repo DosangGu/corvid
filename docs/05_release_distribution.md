@@ -130,6 +130,21 @@ worker retries under the installation lock. A pending record also resumes cleanu
 on a subsequent Desktop or interactive CLI launch. Directories containing
 unrecognized files are reported and preserved.
 
+## Install with Cargo
+
+For releases published to crates.io, use Rust 1.93 or newer and a native
+linker. Install `tic` on Linux and macOS (the `ncurses-bin` package on Debian
+and Ubuntu). On Windows, use the MSVC Rust toolchain and the Windows SDK.
+
+```sh
+cargo install --locked corvid-tui
+corvid --version
+```
+
+Run the same Cargo command to update this installation. To select a specific
+release, add `--version VERSION`. Use `corvid upgrade` separately for a
+running autostarted daemon.
+
 ## Check and install updates
 
 ```sh
@@ -245,6 +260,8 @@ packaging inputs, and changes that could be moves out of a packaging path.
 
 Package runs call **Corvid Native Checks** to produce the TUI and Desktop
 binaries for that run. Desktop packages then bundle all five runtime artifacts.
+The Cargo source package jobs build the extracted crates and check
+`corvid --version` on Linux, Windows, and macOS.
 Integration tests cover installation with a live daemon, Desktop terminal input
 and reattachment under Xvfb, and native installers.
 
@@ -253,6 +270,28 @@ then creates a draft, uploads and checks the asset inventory, and publishes the
 release. Only the publication job receives repository write permission.
 Re-running publication may repair an unpublished draft and refuses to overwrite
 an already published release.
+
+### Publish TUI source packages to crates.io
+
+When preparing a release, update the workspace version and the exact version
+requirements for the local dependencies in `Cargo.toml`. Regenerate
+`Cargo.lock` with `cargo update --workspace` before committing and tagging.
+
+The published set consists of `corvid-tui` and its internal dependencies,
+marked by `publish = ["crates-io"]` in their manifests. Cargo packages these
+crates in dependency order. Verify the set locally with
+`python deploy/crates_io.py verify`.
+
+For the first publication, check out the release tag on Linux, authenticate
+with `cargo login`, and run `python deploy/crates_io.py publish`. Configure
+[Trusted Publishing](https://crates.io/docs/trusted-publishing) on each published
+crate for `DosangGu/corvid`, workflow `release.yml`, and environment
+`crates-io`. Set the GitHub repository variable `PUBLISH_CRATES_IO` to `true`
+after all the publishers are configured.
+
+On subsequent tags, the crates.io job runs after the GitHub release publishes.
+It uses a short-lived token. If some crates were uploaded before a failure,
+rerun the failed job to publish the remaining versions.
 
 For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
 WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt

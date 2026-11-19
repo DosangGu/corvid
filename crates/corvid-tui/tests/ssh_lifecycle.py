@@ -401,7 +401,7 @@ def run(binary, *, measure_keys=False):
     with tempfile.TemporaryDirectory(prefix="corvid-ssh-", dir=root) as temporary:
         directory = Path(temporary)
         database = directory / "terminfo"
-        subprocess.run(["tic", "-x", "-o", database, root / "spikes/terminal/corvid.terminfo"], check=True)
+        subprocess.run(["tic", "-x", "-o", database, root / "crates/corvid-tui/assets/corvid.terminfo"], check=True)
         command = [str(Path(binary).resolve()), "--runtime-dir", str(directory / "runtime")]
         unit = f"corvid-fixture-{uuid.uuid4().hex}.service"
         subprocess.run(

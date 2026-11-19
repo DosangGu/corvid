@@ -3,8 +3,10 @@ name = "corvid-update"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
-publish.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Release installation and update support for Corvid"
+publish = ["crates-io"]
 
 [dependencies]
 anyhow.workspace = true

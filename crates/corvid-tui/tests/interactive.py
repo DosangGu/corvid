@@ -752,7 +752,7 @@ def run(binary, *, tty_only=False):
     binary = str(Path(binary).resolve())
     os.environ["TERM"] = "xterm-256color"
     root = Path(__file__).resolve().parents[3]
-    profile = root / "spikes/terminal/corvid.terminfo"
+    profile = root / "crates/corvid-tui/assets/corvid.terminfo"
     with tempfile.TemporaryDirectory(prefix="corvid-test-", dir=root) as temporary:
         directory = Path(temporary)
         os.environ["CORVID_VIEW_STATE_DIR"] = str(directory / "views")

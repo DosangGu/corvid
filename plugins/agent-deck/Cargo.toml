@@ -3,8 +3,10 @@ name = "corvid-agent-deck"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
-publish.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Agent activity and focus controls for Corvid"
+publish = ["crates-io"]
 
 [features]
 default = ["ui"]

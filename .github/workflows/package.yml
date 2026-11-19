@@ -84,6 +84,29 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: cargo fmt --all -- --check
 
+  source-packages:
+    name: Cargo source packages (${{ matrix.os }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: target/crates-io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install terminfo compiler
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ncurses-bin
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - run: python deploy/crates_io.py verify
+
   native:
     needs: validate
     uses: ./.github/workflows/native.yml

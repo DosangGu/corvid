@@ -101,7 +101,7 @@ peers support it.
 
 Use `corvid attach -- program arg` to start an explicit command on the running
 daemon. When starting a daemon directly, install the terminfo entry with
-`tic -x -o "$HOME/.terminfo" spikes/terminal/corvid.terminfo` first.
+`tic -x -o "$HOME/.terminfo" crates/corvid-tui/assets/corvid.terminfo` first.
 
 New Linux PTYs use `TERM=xterm-corvid-256color`. The name enables title output
 in shells that recognize the `xterm*` prefix, while the bundled entry advertises
@@ -395,7 +395,7 @@ terminal profile, and unit on the execution host.
 
 ```sh
 cargo install --locked --path crates/corvid-tui --root "$HOME/.local"
-tic -x -o "$HOME/.terminfo" spikes/terminal/corvid.terminfo
+tic -x -o "$HOME/.terminfo" crates/corvid-tui/assets/corvid.terminfo
 install -Dm644 deploy/systemd/corvid.service "$HOME/.config/systemd/user/corvid.service"
 systemctl --user daemon-reload
 systemctl --user enable --now corvid.service
@@ -744,7 +744,7 @@ unshare --user --map-root-user bwrap --unshare-pid --as-pid-1 \
   --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 --dir /run \
   --ro-bind "$PWD/target/debug/corvid" /corvid \
   --ro-bind "$PWD/crates/corvid-tui/tests" /fixtures \
-  --ro-bind "$PWD/spikes/terminal/corvid.terminfo" /corvid.terminfo \
+  --ro-bind "$PWD/crates/corvid-tui/assets/corvid.terminfo" /corvid.terminfo \
   --clearenv --setenv PATH /usr/bin --setenv PYTHONDONTWRITEBYTECODE 1 --chdir / \
   -- /usr/bin/python3 /fixtures/pid_reuse.py /corvid /corvid.terminfo
 ```

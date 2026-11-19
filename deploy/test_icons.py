@@ -24,6 +24,9 @@ BINARIES = [
 
 def artwork():
     data = (ROOT / "assets/icons/corvid.ico").read_bytes()
+    for directory in ["crates/corvid-tui", "crates/corvid-update", "plugins/agent-deck"]:
+        icon = ROOT / directory / "assets/corvid.ico"
+        assert icon.read_bytes() == data, f"Regenerate the packaged icon at {icon}"
     assert struct.unpack_from("<HHH", data) == (0, 1, len(SIZES))
     images = []
     for index, size in enumerate(SIZES):
@@ -36,6 +39,7 @@ def artwork():
         assert struct.unpack_from(">II", png, 16) == (size, size)
         images.append(png)
     assert images[-1] == (ROOT / "assets/icons/corvid.png").read_bytes()
+    assert images[-1] == (ROOT / "plugins/agent-deck/assets/corvid.png").read_bytes()
     return images
 
 
