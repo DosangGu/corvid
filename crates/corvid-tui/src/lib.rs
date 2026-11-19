@@ -70,6 +70,12 @@ enum Command {
         #[arg(long)]
         retry: bool,
     },
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    ReplaceMacosBundle {
+        #[arg(long)]
+        caller: i32,
+    },
     /// Check for or install a GitHub release.
     Update(update::Options),
     /// Run or use the local controller companion.
@@ -297,6 +303,10 @@ pub fn run() -> ExitCode {
             Ok(0)
         }),
         Some(Command::FinishUpdate { retry }) => execute(retirement::run(retry)),
+        #[cfg(target_os = "macos")]
+        Some(Command::ReplaceMacosBundle { caller }) => {
+            corvid_update::macos::replace_from_installer(caller)
+        }
         Some(Command::Update(options)) => update::run(options),
         Some(Command::Companion(companion)) => execute(async move {
             companion::execute(companion, daemon_runtime).await?;

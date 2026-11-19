@@ -427,6 +427,14 @@ impl Prepared {
         } else {
             command.env_remove("CORVID_EXPECT_CURRENT");
         }
+        #[cfg(target_os = "macos")]
+        if self.installation.root.is_none() && self.installation.package.product == Product::Desktop
+        {
+            command.env(
+                "CORVID_EXPECT_APP_REVISION",
+                &self.installation.package.source_revision,
+            );
+        }
         let output = command.output().context("running the Corvid installer")?;
         ensure!(
             output.status.success(),

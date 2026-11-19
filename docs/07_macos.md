@@ -30,9 +30,11 @@ The installer detects Darwin/arm64 and uses BSD utilities and `shasum`. Add
 and creates `~/Applications/Corvid.app`. Explicit `--install-root` installations
 keep their app link under that root. Desktop **About & updates** and
 `corvid update` use this installer, verify the selected release's checksums, and
-collect unused earlier packages after activation. Updating a drag-installed app creates a user-managed
-installation; the original Applications copy is preserved. Open the updated app
-from `~/Applications` afterward. Existing CLI commands from another installation
+collect unused earlier managed packages after activation. An update started
+from a DMG-installed app replaces its contents in the same application bundle,
+so an existing Dock item continues to open it. macOS asks for administrator
+authorization if the bundle requires it. Copy the app to Applications before
+updating from a mounted disk image. Existing CLI commands from another installation
 are preserved; use a separate `--bin-dir` when needed.
 
 Package updates request handoff for an older daemon started from that installation.

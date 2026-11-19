@@ -36,6 +36,8 @@ on:
       - 'deploy/test_icons.py'
       - 'deploy/test_install.py'
       - 'deploy/test_macos.py'
+      - 'deploy/test_macos_dock_update.py'
+      - 'deploy/macos_dock_fixture.swift'
       - 'deploy/test_native.py'
   push:
     branches: [main]
@@ -228,6 +230,15 @@ jobs:
         run: |
           python3 deploy/macos_package.py --archive target/dist/corvid-desktop-*-aarch64-apple-darwin.tar.gz --output target/dist
           python3 deploy/test_macos.py --assets target/dist
+      - name: Upgrade the previous DMG and reopen the pinned app
+        run: |
+          dmg=target/corvid-previous.dmg
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/DosangGu/corvid/releases/download/v0.3.3/corvid-desktop-0.3.3-aarch64-apple-darwin.dmg \
+            --output "$dmg"
+          printf '%s  %s\n' '22b75cb30cbfeff6bba273f95012994f1844e14e5d03b85f6cc954907e76018d' "$dmg" | shasum -a 256 -c
+          python3 deploy/test_macos_dock_update.py --previous-dmg "$dmg" \
+            --archive target/dist/corvid-desktop-*-aarch64-apple-darwin.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: agent-deck-macos-preview
