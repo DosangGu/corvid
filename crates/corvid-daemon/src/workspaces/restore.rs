@@ -124,7 +124,18 @@ impl Workspaces {
     }
 
     async fn run_restore(&self, location: Location, terminal: TerminalHandle, plan: RestorePlan) {
-        let started = terminal.restore(plan.launch).await;
+        let launch = plan.launch;
+        let directory_exists = {
+            let cwd = launch.cwd.clone();
+            tokio::task::spawn_blocking(move || cwd.is_some_and(|cwd| cwd.is_dir()))
+                .await
+                .unwrap_or(false)
+        };
+        let started = if directory_exists {
+            terminal.restore(launch).await
+        } else {
+            Err(resume_directory_unavailable())
+        };
         let (result, release) = match started {
             Ok(id) => {
                 let confirmed = match plan.confirmation {
@@ -248,11 +259,13 @@ fn prepare_launch(saved: Option<SavedSession>) -> Reply<RestorePlan> {
             )
         })?;
     let (resume, confirmation) = resume_contract(saved.key.provider)?;
-    let cwd = saved.cwd.as_ref()
+    let cwd = saved
+        .cwd
+        .as_ref()
         .and_then(|cwd| crate::platform::decode_os_string(&cwd.path))
         .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.is_dir())
-        .ok_or_else(|| ProtocolFault::new("ResumeDirectoryUnavailable", "the saved session directory is unavailable on the daemon host; restore it or open a shell"))?;
+        .filter(|path| path.is_absolute())
+        .ok_or_else(resume_directory_unavailable)?;
     let launch = Launch {
         argv: (resume.arguments)(&saved.key.provider_session_id),
         cwd: Some(cwd),
@@ -264,6 +277,13 @@ fn prepare_launch(saved: Option<SavedSession>) -> Reply<RestorePlan> {
         session: saved.key,
         confirmation,
     })
+}
+
+fn resume_directory_unavailable() -> ProtocolFault {
+    ProtocolFault::new(
+        "ResumeDirectoryUnavailable",
+        "the saved session directory is unavailable on the daemon host; restore it or open a shell",
+    )
 }
 
 fn resume_contract(provider: Provider) -> Reply<(&'static Resume, ResumeConfirmation)> {

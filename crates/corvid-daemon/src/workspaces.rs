@@ -78,6 +78,7 @@ pub(crate) struct Active {
     pub(crate) events: mpsc::Receiver<Event>,
 }
 
+#[derive(Clone)]
 pub(crate) enum Destination {
     Exact(Location),
     Open(Location),
@@ -468,7 +469,14 @@ impl Workspaces {
             mpsc::Sender<Provider>,
         >,
     ) -> Reply<Active> {
-        let (location, generation, terminal, previous) = self.reserve(client, &mut target)?;
+        let mut checked = None;
+        let (location, generation, terminal, previous) = loop {
+            match self.reserve(client, &mut target, checked.as_ref()) {
+                Ok(reserved) => break reserved,
+                Err(ReservationError::Fault(fault)) => return Err(fault),
+                Err(ReservationError::Check(paths)) => checked = Some(paths.validate().await?),
+            }
+        };
         let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
         let spec = AttachSpec {
             location,
@@ -570,7 +578,8 @@ impl Workspaces {
         &self,
         client: Uuid,
         target: &mut AttachTarget,
-    ) -> Reply<(Location, u64, TerminalHandle, Option<InputRoute>)> {
+        checked: Option<&CheckedCwd>,
+    ) -> Reservation<(Location, u64, TerminalHandle, Option<InputRoute>)> {
         let mut registry = self.lock_registry();
         registry.sweep();
         let mut layout = self.metadata.layout();
@@ -594,10 +603,9 @@ impl Workspaces {
         if let Some(terminal) = target.expected_terminal
             && registry.terminals.get(&terminal) != Some(&location)
         {
-            return Err(ProtocolFault::new(
-                "TargetGone",
-                "the selected terminal has changed",
-            ));
+            return Err(
+                ProtocolFault::new("TargetGone", "the selected terminal has changed").into(),
+            );
         }
         let previous = if target.take_over {
             registry.takeover_source(location)?
@@ -610,7 +618,9 @@ impl Workspaces {
         if let Some(launch) = &mut target.launch
             && (!launch.if_empty || !registry.has_live_at(location))
         {
-            prepare_cwd(&layout, location, launch, target.fallback_directory.take())?;
+            let paths =
+                CwdPaths::for_launch(&layout, location, launch, target.fallback_directory.clone());
+            launch.cwd = paths.resolved(checked)?;
         }
         let generation = registry.next_generation()?;
         let terminal = self.reserve_slot(&mut registry, location, target.launch.is_some())?;
@@ -776,14 +786,19 @@ impl Workspaces {
         old: &Active,
         destination: Destination,
     ) -> Reply<Option<Switched>> {
-        let Some(ReservedSwitch {
+        let mut checked = None;
+        let ReservedSwitch {
             location,
             terminal,
             spec,
             events,
-        }) = self.reserve_switch(old, destination)?
-        else {
-            return Ok(None);
+        } = loop {
+            match self.reserve_switch(old, destination.clone(), checked.as_ref()) {
+                Ok(Some(reserved)) => break reserved,
+                Ok(None) => return Ok(None),
+                Err(ReservationError::Fault(fault)) => return Err(fault),
+                Err(ReservationError::Check(paths)) => checked = Some(paths.validate().await?),
+            }
         };
         let result = transition(old, terminal, location, spec, events).await;
         let mut registry = self.lock_registry();
@@ -802,12 +817,14 @@ impl Workspaces {
         &self,
         old: &Active,
         destination: Destination,
-    ) -> Reply<Option<ReservedSwitch>> {
+        checked: Option<&CheckedCwd>,
+    ) -> Reservation<Option<ReservedSwitch>> {
         let mut registry = self.lock_registry();
         registry.require_route(old.route)?;
         registry.sweep();
         let mut layout = self.metadata.layout();
-        let Some((location, launch)) = resolve_switch(&registry, &mut layout, old, destination)?
+        let Some((location, launch)) =
+            resolve_switch(&registry, &mut layout, old, destination, checked)?
         else {
             return Ok(None);
         };
@@ -1419,17 +1436,19 @@ fn resolve_switch(
     layout: &mut Arc<Layout>,
     old: &Active,
     destination: Destination,
-) -> Reply<Option<(Location, Option<Launch>)>> {
+    checked: Option<&CheckedCwd>,
+) -> Reservation<Option<(Location, Option<Launch>)>> {
     match destination {
         Destination::Exact(location) | Destination::Open(location) => {
             if !layout.contains(location) {
-                return Err(target_gone());
+                return Err(target_gone().into());
             }
             let launch =
                 if matches!(destination, Destination::Open(_)) && !registry.has_live_at(location) {
                     let mut shell = new_shell();
                     shell.if_empty = true;
-                    prepare_cwd(layout, location, &mut shell, None)?;
+                    shell.cwd =
+                        CwdPaths::for_launch(layout, location, &shell, None).resolved(checked)?;
                     Some(shell)
                 } else {
                     None
@@ -1443,7 +1462,13 @@ fn resolve_switch(
                 .find(|item| item.id == old.location.workspace)
                 .ok_or_else(target_gone)?;
             let label = format!("Shell {}", workspace.tabs.len() + 1);
-            let result = resolve_switch(registry, layout, old, Destination::CreateTab(label))?;
+            let result = resolve_switch(
+                registry,
+                layout,
+                old,
+                Destination::CreateTab(label),
+                checked,
+            )?;
             if let Some((location, _)) = &result {
                 Arc::make_mut(layout)
                     .rename_tab(*location, None)
@@ -1452,12 +1477,12 @@ fn resolve_switch(
             Ok(result)
         }
         Destination::Tab(TabCommand::Split(axis)) => {
-            resolve_switch(registry, layout, old, Destination::Split(axis))
+            resolve_switch(registry, layout, old, Destination::Split(axis), checked)
         }
         Destination::Tab(TabCommand::NextPane) => {
             let panes = layout.panes(old.location.workspace, old.location.tab);
             let Some(index) = panes.iter().position(|pane| *pane == old.location) else {
-                return Err(target_gone());
+                return Err(target_gone().into());
             };
             let client = old.route.client_id;
             Ok((1..panes.len())
@@ -1484,7 +1509,8 @@ fn resolve_switch(
                 _ => unreachable!("all other destinations have already been handled"),
             }
             .map_err(|_| invalid_layout())?;
-            prepare_cwd(layout, location, &mut launch, inherited)?;
+            let fallback = inherited.map(CwdFallback::Inherited);
+            launch.cwd = CwdPaths::defaults(layout, location, None, fallback).resolved(checked)?;
             Ok(Some((location, Some(launch))))
         }
     }
@@ -1627,46 +1653,158 @@ fn saved_directory(layout: &Layout, location: Location) -> Option<PathBuf> {
         .last_cwd(location)
         .and_then(|cwd| crate::platform::decode_os_string(&cwd.path))
         .map(PathBuf::from)
-        .filter(|path| path.is_dir())
 }
 
-fn prepare_cwd(
-    layout: &Layout,
-    location: Location,
-    launch: &mut Launch,
-    fallback: Option<PathBuf>,
-) -> Reply<()> {
-    if launch.cwd.is_some() {
-        if launch.cwd.as_ref().is_some_and(|path| !path.is_dir()) {
-            return Err(ProtocolFault::new(
-                "InvalidMessage",
-                "launch directory does not exist",
-            ));
+type Reservation<T> = Result<T, ReservationError>;
+
+enum ReservationError {
+    Fault(ProtocolFault),
+    Check(CwdPaths),
+}
+
+impl From<ProtocolFault> for ReservationError {
+    fn from(fault: ProtocolFault) -> Self {
+        Self::Fault(fault)
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum CwdFallback {
+    Provided(PathBuf),
+    Inherited(PathBuf),
+}
+
+#[derive(PartialEq, Eq)]
+enum CwdPaths {
+    Explicit(PathBuf),
+    Defaults {
+        preferred: Option<PathBuf>,
+        workspace: Option<Vec<u8>>,
+        fallback: Option<CwdFallback>,
+    },
+}
+
+struct CheckedCwd {
+    paths: CwdPaths,
+    result: Reply<Option<PathBuf>>,
+}
+
+impl CwdPaths {
+    fn for_launch(
+        layout: &Layout,
+        location: Location,
+        launch: &Launch,
+        fallback: Option<PathBuf>,
+    ) -> Self {
+        if let Some(path) = &launch.cwd {
+            return Self::Explicit(path.clone());
         }
-        return Ok(());
+        let preferred = fallback
+            .is_none()
+            .then(|| saved_directory(layout, location))
+            .flatten();
+        Self::defaults(
+            layout,
+            location,
+            preferred,
+            fallback.map(CwdFallback::Provided),
+        )
     }
-    let directory = if fallback.is_none() {
-        saved_directory(layout, location)
-    } else {
-        None
-    };
-    let directory = if directory.is_some() {
-        directory
-    } else if let Some(path) = layout.workspace_directory(location.workspace) {
-        let path = crate::platform::decode_os_string(path)
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                ProtocolFault::new("InvalidDirectory", "The saved workspace folder is invalid.")
-            })?;
-        Some(path)
-    } else {
-        fallback
-    };
-    if let Some(path) = &directory {
-        crate::directories::validate(path)?;
+
+    fn defaults(
+        layout: &Layout,
+        location: Location,
+        preferred: Option<PathBuf>,
+        fallback: Option<CwdFallback>,
+    ) -> Self {
+        Self::Defaults {
+            preferred,
+            workspace: layout
+                .workspace_directory(location.workspace)
+                .map(<[u8]>::to_vec),
+            fallback,
+        }
     }
-    launch.cwd = directory;
-    Ok(())
+
+    fn resolved(self, checked: Option<&CheckedCwd>) -> Reservation<Option<PathBuf>> {
+        // Re-resolve under the registry after checking the filesystem. A concurrent
+        // layout edit can change the selected paths while the check is in flight.
+        if let Some(checked) = checked.filter(|checked| checked.paths == self) {
+            return Ok(checked.result.clone()?);
+        }
+        if matches!(
+            &self,
+            Self::Defaults {
+                preferred: None,
+                workspace: None,
+                fallback: None
+            }
+        ) {
+            return Ok(None);
+        }
+        Err(ReservationError::Check(self))
+    }
+
+    async fn validate(self) -> Reply<CheckedCwd> {
+        tokio::task::spawn_blocking(move || {
+            let result = self.check();
+            CheckedCwd {
+                paths: self,
+                result,
+            }
+        })
+        .await
+        .map_err(|_| {
+            ProtocolFault::new(
+                "DirectoryUnavailable",
+                "could not check the launch directory",
+            )
+        })
+    }
+
+    fn check(&self) -> Reply<Option<PathBuf>> {
+        match self {
+            Self::Explicit(path) => {
+                if !path.is_dir() {
+                    return Err(ProtocolFault::new(
+                        "InvalidMessage",
+                        "launch directory does not exist",
+                    ));
+                }
+                Ok(Some(path.clone()))
+            }
+            Self::Defaults {
+                preferred,
+                workspace,
+                fallback,
+            } => {
+                let directory = if let Some(path) = preferred.as_ref().filter(|path| path.is_dir())
+                {
+                    Some(path.clone())
+                } else if let Some(path) = workspace {
+                    let path = crate::platform::decode_os_string(path)
+                        .map(PathBuf::from)
+                        .ok_or_else(|| {
+                            ProtocolFault::new(
+                                "InvalidDirectory",
+                                "The saved workspace folder is invalid.",
+                            )
+                        })?;
+                    Some(path)
+                } else {
+                    match fallback {
+                        Some(CwdFallback::Provided(path)) => Some(path.clone()),
+                        Some(CwdFallback::Inherited(path)) if path.is_dir() => Some(path.clone()),
+                        _ => None,
+                    }
+                };
+                if let Some(path) = &directory {
+                    crate::directories::validate(path)?;
+                }
+                Ok(directory)
+            }
+        }
+    }
 }
 
 fn target_gone() -> ProtocolFault {
@@ -1701,4 +1839,32 @@ fn invalid_layout() -> ProtocolFault {
         "InvalidMessage",
         "invalid workspace label, tab label, or layout size",
     )
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::{CwdFallback, CwdPaths};
+
+    #[test]
+    fn workspace_directory_takes_priority_over_the_source_pane_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let paths = CwdPaths::Defaults {
+            preferred: None,
+            workspace: Some(workspace.path().as_os_str().as_encoded_bytes().to_vec()),
+            fallback: Some(CwdFallback::Inherited(source.path().to_owned())),
+        };
+        assert_eq!(paths.check().unwrap().as_deref(), Some(workspace.path()));
+    }
+
+    #[test]
+    fn a_missing_inherited_directory_leaves_the_shell_default() {
+        let workspace = tempfile::tempdir().unwrap();
+        let paths = CwdPaths::Defaults {
+            preferred: None,
+            workspace: None,
+            fallback: Some(CwdFallback::Inherited(workspace.path().join("missing"))),
+        };
+        assert_eq!(paths.check().unwrap(), None);
+    }
 }
