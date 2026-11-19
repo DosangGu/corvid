@@ -52,15 +52,19 @@ impl WorkspaceView {
         let Some(installed) = &self.update.installed else {
             return;
         };
-        match self.windows.restart(installed, cx) {
-            Ok(()) => {}
-            Err(error) => {
-                self.update.error = Some(Failure {
-                    summary: "Could not restart Desktop. Try again or reopen Corvid.",
-                    detail: format!("{error:#}"),
+        let owner = cx.entity().downgrade();
+        self.windows.restart(
+            Rc::clone(installed),
+            move |error, cx| {
+                let _ = owner.update(cx, |view, cx| {
+                    view.update.error = Some(Failure {
+                        summary: "Could not restart Desktop. Try again or reopen Corvid.",
+                        detail: format!("{error:#}"),
+                    });
+                    cx.notify();
                 });
-                cx.notify();
-            }
-        }
+            },
+            cx,
+        );
     }
 }

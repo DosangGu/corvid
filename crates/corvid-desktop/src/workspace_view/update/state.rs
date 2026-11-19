@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use std::time::SystemTime;
 
 use super::*;
@@ -22,7 +24,7 @@ pub(crate) struct State {
     pub(super) installation: Result<Option<Installation>, String>,
     pub(super) phase: Phase,
     pub(super) release: Option<Release>,
-    pub(super) installed: Option<Installed>,
+    pub(super) installed: Option<Rc<Installed>>,
     pub(super) last_checked: Option<SystemTime>,
     pub(super) error: Option<Failure>,
     pub(super) details_open: bool,
@@ -109,7 +111,7 @@ impl State {
     pub(super) fn installed(&mut self, result: anyhow::Result<Installed>) {
         match result {
             Ok(installed) => {
-                self.installed = Some(installed);
+                self.installed = Some(Rc::new(installed));
                 self.phase = Phase::Ready;
             }
             Err(error) => {

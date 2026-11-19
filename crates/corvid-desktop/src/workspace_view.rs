@@ -79,6 +79,8 @@ pub struct Lifetime(Rc<RefCell<WindowConnections>>);
 #[derive(Default)]
 struct WindowConnections {
     active: Option<Job>,
+    preparing: Option<Job>,
+    shutdown: Option<watch::Receiver<()>>,
     retiring: Vec<Job>,
     parked: ParkedConnections,
 }
@@ -98,15 +100,22 @@ impl Lifetime {
     }
 
     fn retirement_done(&self) -> bool {
-        self.0.borrow().retiring.iter().all(Job::finished)
+        let connections = self.0.borrow();
+        connections.shutdown.is_none() && connections.retiring.iter().all(Job::finished)
     }
 
     fn available(&self) -> bool {
-        self.retirement_done() && self.0.borrow().active.as_ref().is_none_or(Job::finished)
+        let connections = self.0.borrow();
+        self.retirement_done()
+            && connections.preparing.is_none()
+            && connections.active.as_ref().is_none_or(Job::finished)
     }
 
     pub(crate) fn stop(&self) {
         self.retire(false);
+        if let Some(job) = self.0.borrow_mut().preparing.as_mut() {
+            job.stop(false);
+        }
     }
 
     fn retire(&self, park: bool) {
@@ -115,17 +124,79 @@ impl Lifetime {
         }
     }
 
-    pub fn shutdown(&self) {
+    fn stage(&self, job: Job) {
+        self.0.borrow_mut().preparing = Some(job);
+    }
+
+    fn take_staged(&self) -> Option<Job> {
+        self.0.borrow_mut().preparing.take()
+    }
+
+    fn discard_staged(&self) {
+        if let Some(job) = self.take_staged() {
+            self.discard_job(job);
+        }
+    }
+
+    fn discard_job(&self, mut job: Job) {
+        job.stop(false);
+        self.0.borrow_mut().retiring.push(job);
+    }
+
+    pub fn start_shutdown(&self, after: impl FnOnce() + Send + 'static) -> watch::Receiver<()> {
         self.stop();
         let mut connections = self.0.borrow_mut();
-        if let Some(job) = connections.active.take() {
-            job.join();
+        if let Some(shutdown) = &connections.shutdown {
+            return shutdown.clone();
         }
-        for job in connections.retiring.drain(..) {
-            job.join();
-        }
-        connections.parked.clear();
+
+        let active = connections.active.take();
+        let preparing = connections.preparing.take();
+        let retiring = std::mem::take(&mut connections.retiring);
+        let parked = std::mem::take(&mut connections.parked);
+        let (finished, shutdown) = watch::channel(());
+        connections.shutdown = Some(shutdown.clone());
+        std::thread::spawn(move || {
+            for job in active.into_iter().chain(preparing).chain(retiring) {
+                job.join();
+            }
+            parked.clear();
+            after();
+            drop(finished);
+        });
+        shutdown
     }
+
+    fn resume(&self) {
+        self.0.borrow_mut().shutdown = None;
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shutdown_tracks_preparing_sessions_and_retains_ownership_until_cleanup() {
+    let lifetime = Lifetime::default();
+    let (job, stopping, release) = Job::delayed_shutdown();
+    lifetime.stage(job);
+    let (removed, cleaned) = std::sync::mpsc::channel();
+
+    let shutdown = lifetime.start_shutdown(move || removed.send(()).unwrap());
+    let duplicate = lifetime.start_shutdown(|| panic!("shutdown cleanup runs once"));
+    assert!(!stopping.recv_timeout(Duration::from_secs(5)).unwrap());
+    assert!(!lifetime.available());
+    assert!(cleaned.try_recv().is_err());
+    assert!(!shutdown.has_changed().unwrap());
+    assert!(!duplicate.has_changed().unwrap());
+
+    release.send(()).unwrap();
+    cleaned.recv_timeout(Duration::from_secs(5)).unwrap();
+    crate::terminal_session::session_runtime()
+        .unwrap()
+        .block_on(crate::desktop_windows::wait_for_shutdown(vec![
+            shutdown, duplicate,
+        ]));
+    lifetime.resume();
+    assert!(lifetime.available());
 }
 
 pub struct WorkspaceView {
@@ -266,6 +337,8 @@ impl WorkspaceView {
     }
 
     pub(crate) fn resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.host_switch = None;
+        self.lifetime.resume();
         if let Some(destination) = self.destination.clone() {
             self.connect(destination, AttachTarget::Default, false, window, cx);
         }
