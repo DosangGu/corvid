@@ -12,7 +12,7 @@ use crate::terminal_session::Grid;
 
 mod graphic;
 
-pub const BACKGROUND: u32 = 0x12151a;
+pub const BACKGROUND: u32 = 0x20242b;
 const FOREGROUND: u32 = 0xcdd3dc;
 const DIM_FOREGROUND: u32 = 0x8993a2;
 
