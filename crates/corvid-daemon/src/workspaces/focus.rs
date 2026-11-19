@@ -421,6 +421,8 @@ mod tests {
             pane: None,
             take_over: false,
             expected_terminal: None,
+            resume_token: None,
+            issue_resume_token: false,
             offer_recovery: false,
             workspace: None,
             tab: None,

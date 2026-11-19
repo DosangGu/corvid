@@ -64,6 +64,8 @@ def verify(binary, root, cargo_options):
         "command = os.environ['SSH_ORIGINAL_COMMAND']\n"
         "if command == 'uname -s': os.execv('/usr/bin/uname', ['uname', '-s'])\n"
         "args = commands[command]\n"
+        "if args == ['terminal-relay']:\n"
+        f"    with open({str(root / 'relay-pid')!r}, 'w') as pid: pid.write(str(os.getpid()))\n"
         "os.execv(binary, [binary, '--runtime-dir', runtime, *args])\n"
     )
     config = root / "sshd_config"

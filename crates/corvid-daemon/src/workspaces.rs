@@ -71,6 +71,8 @@ pub(crate) struct AttachTarget {
     pub(crate) launch: Option<Launch>,
     pub(crate) take_over: bool,
     pub(crate) expected_terminal: Option<Uuid>,
+    pub(crate) resume_token: Option<Uuid>,
+    pub(crate) issue_resume_token: bool,
     pub(crate) offer_recovery: bool,
 }
 
@@ -92,6 +94,7 @@ pub(crate) struct Active {
     pub(crate) route: InputRoute,
     pub(crate) terminal: TerminalHandle,
     pub(crate) events: mpsc::Receiver<Event>,
+    pub(crate) resume_token: Option<Uuid>,
 }
 
 #[derive(Clone, Copy)]
@@ -124,6 +127,14 @@ pub(crate) enum Destination {
 pub(crate) struct Switched {
     pub(crate) active: Active,
     pub(crate) paste_discarded: bool,
+}
+
+struct ReservedAttach {
+    location: Location,
+    generation: u64,
+    terminal: TerminalHandle,
+    previous: Option<InputRoute>,
+    resume_token: Option<Uuid>,
 }
 
 struct ReservedSwitch {
@@ -170,6 +181,7 @@ pub(crate) struct Registry {
 struct Client {
     generation: u64,
     keymap: Keymap,
+    resume_token: Option<Uuid>,
     view: Option<ClientView>,
     focuses: mpsc::Sender<FocusDispatch>,
     disconnect: Option<oneshot::Sender<()>>,
@@ -195,6 +207,9 @@ struct Slot {
     terminal: TerminalHandle,
     task: JoinHandle<()>,
     reserved: bool,
+    // Keep the last writer's token while this PTY is detached so a lost attach
+    // reply can be retried with the same token.
+    resume_token: Option<(Uuid, Uuid)>,
 }
 
 impl Workspaces {
@@ -338,6 +353,7 @@ impl Workspaces {
                             terminal,
                             task,
                             reserved: false,
+                            resume_token: None,
                         },
                     )
                 })
@@ -561,7 +577,13 @@ impl Workspaces {
         >,
     ) -> Result<Active, AttachFailure> {
         let mut checked = None;
-        let (location, generation, terminal, previous) = loop {
+        let ReservedAttach {
+            location,
+            generation,
+            terminal,
+            previous,
+            resume_token,
+        } = loop {
             let validation = checked.clone();
             let (original, reservation) = self
                 .transaction(move |registry, workspaces| {
@@ -602,6 +624,7 @@ impl Workspaces {
                         route,
                         terminal,
                         events: receiver,
+                        resume_token: None,
                     },
                     Some(events),
                 )
@@ -628,7 +651,8 @@ impl Workspaces {
                     {
                         Ok((active, true))
                     }
-                    Ok((active, _previous_events)) => {
+                    Ok((mut active, _previous_events)) => {
+                        active.resume_token = resume_token;
                         if let Some(previous) = previous {
                             registry.pane_claims.remove(&location.pane);
                             registry.claims.remove(&location.workspace);
@@ -648,6 +672,7 @@ impl Workspaces {
                             Client {
                                 generation,
                                 keymap: target.keymap,
+                                resume_token,
                                 view: None,
                                 focuses,
                                 disconnect,
@@ -669,6 +694,14 @@ impl Workspaces {
                     }
                     Err(fault) => {
                         registry.release_claims(client);
+                        if target.resume_token.is_some()
+                            && matches!(
+                                fault.code.as_str(),
+                                "StaleRoute" | "InputBusy" | "WorkspaceBusy"
+                            )
+                        {
+                            return Err(resume_pending());
+                        }
                         Err(fault)
                     }
                 }
@@ -689,7 +722,7 @@ impl Workspaces {
         client: Uuid,
         target: &mut AttachTarget,
         checked: Option<&CheckedCwd>,
-    ) -> Reservation<(Location, u64, TerminalHandle, Option<InputRoute>)> {
+    ) -> Reservation<ReservedAttach> {
         registry.sweep();
         let mut layout = self.metadata.layout();
         let mut location = if let Some(run) = target.agent_run {
@@ -716,7 +749,17 @@ impl Workspaces {
                 ProtocolFault::new("TargetGone", "the selected terminal has changed").into(),
             );
         }
-        let previous = if target.take_over {
+        let resume_token = registry
+            .slots
+            .get(&location.pane)
+            .and_then(|slot| slot.resume_token)
+            .filter(|(terminal, token)| {
+                Some(*terminal) == target.expected_terminal && Some(*token) == target.resume_token
+            })
+            .map(|(_, token)| token);
+        let previous = if target.resume_token.is_some() {
+            registry.resume_source(location, resume_token)?
+        } else if target.take_over {
             registry.takeover_source(location)?
         } else {
             None
@@ -737,14 +780,31 @@ impl Workspaces {
             launch.cwd = paths.resolved(checked)?;
         }
         let generation = registry.next_generation()?;
-        let terminal = self.reserve_slot(registry, location, target.launch.is_some())?;
+        let resume_token = target
+            .issue_resume_token
+            .then(|| resume_token.unwrap_or_else(Uuid::new_v4));
+        let terminal = self
+            .reserve_slot(registry, location, target.launch.is_some())
+            .map_err(|fault| {
+                if target.resume_token.is_some() && fault.code == "WorkspaceBusy" {
+                    resume_pending()
+                } else {
+                    fault
+                }
+            })?;
         if target.new_workspace.is_some() || target.new_tab.is_some() {
             registry.publish_layout(layout, Vec::new());
         }
         if previous.is_none() {
             registry.insert_claim(location, target.keymap, client, generation);
         }
-        Ok((location, generation, terminal, previous))
+        Ok(ReservedAttach {
+            location,
+            generation,
+            terminal,
+            previous,
+            resume_token,
+        })
     }
 
     pub(crate) async fn disconnect_others(&self, active: &Active) -> Reply<u32> {
@@ -1104,6 +1164,7 @@ impl Workspaces {
                 terminal: terminal.clone(),
                 task,
                 reserved: true,
+                resume_token: None,
             },
         );
         Ok(terminal)
@@ -1291,6 +1352,11 @@ impl Registry {
         if let Some(client) = self.clients.get_mut(&route.client_id)
             && client.generation == route.connection_generation
         {
+            if view.is_some()
+                && let Some(slot) = self.slots.get_mut(&active.location.pane)
+            {
+                slot.resume_token = client.resume_token.map(|token| (route.terminal_id, token));
+            }
             client.view = view;
             self.pane_claims.retain(|pane, claim| {
                 claim.client != route.client_id || *pane == active.location.pane
@@ -1469,6 +1535,23 @@ impl Registry {
             .ok_or_else(busy)
     }
 
+    fn resume_source(&self, location: Location, token: Option<Uuid>) -> Reply<Option<InputRoute>> {
+        self.check_not_closing(location)?;
+        let Some(claim) = self.writer_at(location) else {
+            return Ok(None);
+        };
+        let token = token.ok_or_else(busy)?;
+        self.clients
+            .get(&claim.client)
+            .filter(|client| client.resume_token == Some(token))
+            .and_then(|client| client.view.as_ref())
+            .filter(|view| {
+                view.location == location && view.route.writer_lease_generation == claim.generation
+            })
+            .map(|view| Some(view.route))
+            .ok_or_else(busy)
+    }
+
     fn require_pane_writer(&self, client: Uuid, location: Location) -> Reply<u64> {
         let claim = self.writer_at(location).ok_or_else(writer_required)?;
         if claim.client != client {
@@ -1580,6 +1663,7 @@ async fn open_pane(
         route,
         terminal,
         events: receiver,
+        resume_token: None,
     })
 }
 
@@ -1989,6 +2073,13 @@ fn disconnect_client(signal: &mut Option<oneshot::Sender<()>>) -> bool {
 
 fn busy() -> ProtocolFault {
     ProtocolFault::new("WorkspaceBusy", "pane or workspace already has a writer")
+}
+
+fn resume_pending() -> ProtocolFault {
+    ProtocolFault::new(
+        "WriterResumePending",
+        "waiting for the terminal input route to settle",
+    )
 }
 
 fn input_busy() -> ProtocolFault {
