@@ -125,28 +125,25 @@ def check_managed_update(previous, archive, directory, dock, live_dock):
     tile = run(dock, "pin", app, tile_bookmark) if live_dock else None
     try:
         original_inode = app.stat().st_ino
-        version = archive.name.removeprefix("corvid-desktop-").removesuffix("-aarch64-apple-darwin.tar.gz")
-        with tempfile.TemporaryDirectory(dir=directory) as source:
-            source = Path(source)
-            (source / archive.name).symlink_to(archive)
-            (source / f"{archive.name}.sha256").write_text(f"{digest(archive)}  {archive.name}\n")
-            for _ in range(2):
-                run("sh", ROOT / "deploy/install.sh", "--product", "desktop", "--source-dir", source,
-                    "--version", version, env=dict(os.environ, HOME=str(user)))
-                assert not app.is_symlink(), "Desktop must launch from a stable, real app bundle"
-                assert app.stat().st_ino == original_inode, "The legacy app directory identity was lost"
-                assert not old.exists(), "Unused version directories must still be retired"
-                resolved = Path(run(dock, "resolve-bookmark", app, bookmark)).resolve()
-                assert resolved == app, f"Original Dock bookmark points to {resolved}"
-                assert run(app / CLI, "--version") == f"corvid {version}"
-                assert run(binaries / "corvid", "--version") == f"corvid {version}"
-                run("codesign", "--verify", "--deep", "--strict", app)
+        release = release_fixture(archive, directory)
+        version, _, _, environment = release
+        environment["HOME"] = str(user)
+        result = run_update(app, release)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not app.is_symlink(), "Desktop must launch from a stable, real app bundle"
+        assert app.stat().st_ino == original_inode, "The legacy app directory identity was lost"
+        assert not old.exists(), "Unused version directories must still be retired"
+        resolved = Path(run(dock, "resolve-bookmark", app, bookmark)).resolve()
+        assert resolved == app, f"Original Dock bookmark points to {resolved}"
+        assert run(app / CLI, "--version") == f"corvid {version}"
+        assert run(binaries / "corvid", "--version") == f"corvid {version}"
+        run("codesign", "--verify", "--deep", "--strict", app)
         if tile:
             launch_dock_tile(dock, app, tile_bookmark, tile)
     finally:
         if tile:
             run(dock, "remove", app, bookmark)
-    print("PASS legacy managed Desktop bookmark survives migration and reinstall")
+    print("PASS legacy managed Desktop bookmark survives its in-place CLI update")
 
 
 def check_protected_bundle(app, archive, directory):

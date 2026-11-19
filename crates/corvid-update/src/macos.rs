@@ -46,8 +46,8 @@ pub fn replace_from_installer(caller: i32) -> Result<u32> {
     let binary = app.join(CLI);
     let installed = Installation::at(&binary)?;
     ensure!(
-        installed.root.is_none() && installed.package.product == Product::Desktop,
-        "the app belongs to a script installation; use its original installer"
+        installed.package.product == Product::Desktop,
+        "the app is not a Corvid Desktop package"
     );
     if let Some(expected) = env::var_os("CORVID_EXPECT_APP_REVISION") {
         ensure!(
@@ -55,12 +55,21 @@ pub fn replace_from_installer(caller: i32) -> Result<u32> {
             "Corvid changed while the update was being prepared"
         );
     }
+    let incoming_cli = env::current_exe()?.canonicalize()?;
+    if let Some(root) = installed.root {
+        // Older updaters launched through the legacy app symlink can omit
+        // --install-root. Continue only if the installer staged in that root.
+        ensure!(
+            incoming_cli.ancestors().nth(6) == Some(root.as_path()),
+            "the app belongs to another script installation; use its original installer"
+        );
+        return Ok(3);
+    }
     ensure!(
         !app.as_os_str().as_bytes().contains(&b'\n'),
         "Corvid cannot update an app path containing a newline"
     );
 
-    let incoming_cli = env::current_exe()?;
     let incoming = incoming_cli
         .ancestors()
         .nth(3)
@@ -217,7 +226,7 @@ pub(crate) fn versioned_runtime(executable: &Path) -> Option<PathBuf> {
 
 /// Older Desktop builds and saved launch paths may still open a versioned GUI.
 pub fn use_registered_desktop() -> Result<()> {
-    let executable = env::current_exe()?;
+    let executable = env::current_exe()?.canonicalize()?;
     let Some(versions) = executable
         .ancestors()
         .nth(5)

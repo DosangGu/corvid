@@ -55,6 +55,8 @@ impl Installation {
 
     pub fn detect() -> Result<Option<Self>> {
         let executable = env::current_exe()?;
+        #[cfg(target_os = "macos")]
+        let executable = executable.canonicalize()?;
         let layout = layout::for_executable(&executable)?;
         if !layout.package_metadata().try_exists()? {
             return Ok(None);
