@@ -7,6 +7,7 @@ repository=DosangGu/corvid
 release_version=
 product=tui
 install_root=
+explicit_root=false
 bin_dir=
 source_dir=
 expected_hash=
@@ -24,7 +25,7 @@ while [ "$#" -gt 0 ]; do
             case "$option" in
                 --version) release_version=${value#v} ;;
                 --product) product=$value ;;
-                --install-root) install_root=$value ;;
+                --install-root) install_root=$value; explicit_root=true ;;
                 --bin-dir) bin_dir=$value ;;
                 --source-dir) source_dir=$value ;;
                 --archive-sha256) expected_hash=$value ;;
@@ -94,21 +95,6 @@ trap 'exit 143' TERM
 if [ -n "${CORVID_EXPECT_CURRENT:-}" ]; then
     [ "$(readlink "$install_root/current")" = "versions/$CORVID_EXPECT_CURRENT" ] || fail 'The active version changed while preparing this update'
 fi
-receipt="{\"schema_version\":1,\"product\":\"$product\"}"
-if [ -f "$install_root/install.json" ]; then
-    [ "$(cat "$install_root/install.json")" = "$receipt" ] || fail 'This directory belongs to another installation'
-    [ "$(cat "$install_root/bin-dir")" = "$bin_dir" ] || fail 'Use the original --bin-dir for this installation'
-else
-    [ ! -e "$install_root/current" ] && [ ! -e "$install_root/versions" ] || fail 'Unrecognized installation directory'
-fi
-commands=corvid
-if [ "$product" = desktop ]; then commands='corvid corvid-desktop'; fi
-for name in $commands; do
-    destination="$bin_dir/$name"
-    if [ -e "$destination" ] || [ -L "$destination" ]; then
-        [ -L "$destination" ] && [ "$(readlink "$destination")" = "$install_root/current/$payload$name" ] || fail "$destination is managed by another installation. Choose another --bin-dir."
-    fi
-done
 stage=$(mktemp -d "$install_root/.stage.XXXXXXXX")
 archive="corvid-$product-$release_version-$target.tar.gz"
 fetch "$archive.sha256" "$stage/checksum"
@@ -146,6 +132,34 @@ if [ "$product" = desktop ]; then
         done
     fi
 fi
+# Older in-app updaters already pass local verified assets. Their running app
+# is the shell's parent, which lets the new installer identify the exact copy.
+if [ "$platform:$product" = Darwin:desktop ] && ! "$explicit_root" &&
+   [ -n "$source_dir" ] && [ -n "$expected_hash" ] &&
+   grep -Eq '"macos_bundle_update":[[:space:]]*true([[:space:]]*[,}]|[[:space:]]*$)' "$stage/package/package.json"; then
+    status=0
+    "$stage/package/Corvid.app/Contents/MacOS/corvid" replace-macos-bundle --caller "$PPID" || status=$?
+    case "$status" in
+        0) exit 0 ;;
+        3) ;; # A standalone installer has no packaged Corvid caller.
+        *) exit "$status" ;;
+    esac
+fi
+receipt="{\"schema_version\":1,\"product\":\"$product\"}"
+if [ -f "$install_root/install.json" ]; then
+    [ "$(cat "$install_root/install.json")" = "$receipt" ] || fail 'This directory belongs to another installation'
+    [ "$(cat "$install_root/bin-dir")" = "$bin_dir" ] || fail 'Use the original --bin-dir for this installation'
+else
+    [ ! -e "$install_root/current" ] && [ ! -e "$install_root/versions" ] || fail 'Unrecognized installation directory'
+fi
+commands=corvid
+if [ "$product" = desktop ]; then commands='corvid corvid-desktop'; fi
+for name in $commands; do
+    destination="$bin_dir/$name"
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+        [ -L "$destination" ] && [ "$(readlink "$destination")" = "$install_root/current/$payload$name" ] || fail "$destination is managed by another installation. Choose another --bin-dir."
+    fi
+done
 mkdir -p -- "$install_root/versions"
 destination="$install_root/versions/$release_version"
 if [ -e "$destination" ]; then
