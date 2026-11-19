@@ -50,7 +50,6 @@ impl<'de> Deserialize<'de> for Preferences {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Applied {
     expanded: bool,
-    compact_footer: bool,
     pinned: bool,
     layout: GridLayout,
 }
@@ -146,7 +145,6 @@ impl Window {
         window: &mut gpui::Window,
         tray: bool,
         presentation: Option<Presentation>,
-        compact_footer: bool,
         cx: &gpui::App,
     ) {
         // Both presentation requests reveal the existing native window.
@@ -154,7 +152,6 @@ impl Window {
         let first = self.applied.is_none();
         let state = Applied {
             expanded: self.expanded,
-            compact_footer: !self.expanded && compact_footer,
             pinned: self.pinned(),
             layout: self.layout(),
         };
@@ -184,12 +181,10 @@ impl Window {
         window: &mut gpui::Window,
         background: bool,
         presentation: Option<Presentation>,
-        compact_footer: bool,
         _: &gpui::App,
     ) {
         let state = Applied {
             expanded: self.expanded,
-            compact_footer: !self.expanded && compact_footer,
             pinned: self.preferences.pinned,
             layout: self.layout(),
         };
@@ -200,16 +195,10 @@ impl Window {
             return;
         }
 
-        let footer_only = presentation.is_none()
-            && self
-                .applied
-                .is_some_and(|old| old.expanded == state.expanded && old.layout == state.layout);
         match macos::update(window, window_size(state), presentation) {
             Ok(()) => {
                 self.applied = Some(state);
-                if !footer_only {
-                    self.error = None;
-                }
+                self.error = None;
             }
             Err(error) => self.error = Some(error.to_string()),
         }
@@ -237,20 +226,20 @@ fn window_size(state: Applied) -> gpui::Size<gpui::Pixels> {
     if state.expanded {
         size(px(800.), px(560.))
     } else {
-        layout_size(state.layout, state.compact_footer)
+        layout_size(state.layout)
     }
 }
 
-pub(super) fn layout_size(layout: GridLayout, compact_footer: bool) -> gpui::Size<gpui::Pixels> {
-    let chrome_height = if compact_footer {
-        2.0 * BAR_HEIGHT
-    } else {
-        BAR_HEIGHT
-    };
+pub(super) fn layout_size(layout: GridLayout) -> gpui::Size<gpui::Pixels> {
     let (columns, rows) = layout.dimensions();
+    let bar_height = if cfg!(target_os = "macos") {
+        BAR_HEIGHT
+    } else {
+        2.0 * BAR_HEIGHT
+    };
     size(
         px(24.0 + columns as f32 * KEY_WIDTH + (columns - 1) as f32 * GAP),
-        px(chrome_height + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP),
+        px(bar_height + 16.0 + rows as f32 * KEY_HEIGHT + (rows - 1) as f32 * GAP),
     )
 }
 

@@ -42,6 +42,7 @@ impl DeckView {
         let colors = self.colors;
         let expanded = self.window.expanded;
         let layout = self.window.layout();
+        let compact_macos = cfg!(target_os = "macos") && !expanded;
         let portrait = !expanded && layout.orientation == Orientation::Portrait;
         let tray = self
             .session
@@ -60,15 +61,24 @@ impl DeckView {
             .items_center()
             .gap(px(6.))
             .overflow_hidden()
-            .whitespace_nowrap()
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(if portrait {
-                "Agents"
-            } else {
-                "Agent Deck"
-            }))
-            .when(!expanded, |title| {
-                title.child(colors.muted(layout.label()).flex_shrink_0())
-            });
+            .whitespace_nowrap();
+        let message = compact_macos.then(|| self.status_message()).flatten();
+        let title = if let Some(message) = message {
+            let message = SharedString::from(message.to_owned());
+            title
+                .child(colors.muted(message.clone()).min_w_0().truncate())
+                .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(message.clone())).into())
+        } else {
+            title
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(if portrait {
+                    "Agents"
+                } else {
+                    "Agent Deck"
+                }))
+                .when(!expanded, |title| {
+                    title.child(colors.muted(layout.label()).flex_shrink_0())
+                })
+        };
 
         #[cfg(not(target_os = "macos"))]
         let pinned = self.window.pinned();
@@ -108,6 +118,9 @@ impl DeckView {
             ),
         );
         header
+            .when(compact_macos && self.queue_len() > 0, |header| {
+                header.child(self.queue_button(true, cx))
+            })
             .child(
                 icon_button(colors, size_icon, size_tip, false, 0.).on_click(cx.listener(
                     |view, _, window, cx| {
@@ -144,6 +157,31 @@ impl DeckView {
                 })),
             )
     }
+
+    pub(super) fn queue_button(&self, compact: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+        let overflow = self.queue_len();
+        let pending = self.queue_waiting;
+        let label = if compact || pending == 0 {
+            format!("+{overflow}")
+        } else {
+            format!("+{overflow} · {pending} waiting")
+        };
+        self.colors
+            .button("open-queue", label, true)
+            .when(compact, |button| {
+                let tooltip = SharedString::from(if pending == 0 {
+                    format!("{overflow} queued")
+                } else {
+                    format!("{overflow} queued · {pending} waiting")
+                });
+                button
+                    .when(pending > 0, |button| {
+                        button.text_color(self.colors.attention)
+                    })
+                    .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(tooltip.clone())).into())
+            })
+            .on_click(cx.listener(|view, _, window, cx| view.expand(Section::Overflow, window, cx)))
+    }
 }
 
 fn icon_button(
@@ -171,7 +209,7 @@ fn icon_button(
                 colors.hover
             })
         })
-        .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(tip)).into())
+        .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(tip.into())).into())
         .child(
             svg()
                 .path(icon)
@@ -181,7 +219,7 @@ fn icon_button(
         )
 }
 
-struct HeaderTooltip(&'static str);
+struct HeaderTooltip(SharedString);
 
 impl Render for HeaderTooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -193,6 +231,7 @@ impl Render for HeaderTooltip {
             .bg(colors.panel)
             .text_color(colors.text)
             .text_size(px(12.))
-            .child(self.0)
+            .max_w(px(270.))
+            .child(self.0.clone())
     }
 }

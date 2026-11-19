@@ -65,7 +65,7 @@ impl DeckView {
                     .overflow_y_scroll()
                     .child(grid),
             )
-            .when(self.show_compact_footer(), |view| {
+            .when(!cfg!(target_os = "macos"), |view| {
                 view.child(self.footer(cx))
             })
     }
@@ -181,11 +181,7 @@ impl DeckView {
         }
     }
 
-    pub(super) fn show_compact_footer(&self) -> bool {
-        !cfg!(target_os = "macos") || self.footer_message().is_some() || self.queue_len() > 0
-    }
-
-    fn footer_message(&self) -> Option<&str> {
+    pub(super) fn status_message(&self) -> Option<&str> {
         if let Some(error) = &self.window.error {
             Some(error)
         } else if self.actions.is_pending() {
@@ -199,8 +195,7 @@ impl DeckView {
 
     pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
         let colors = self.colors;
-        let text = self.footer_message().unwrap_or_default().to_owned();
-        let overflow = self.queue_len();
+        let text = self.status_message().unwrap_or_default().to_owned();
         row()
             .h(px(BAR_HEIGHT))
             .flex_shrink_0()
@@ -208,16 +203,8 @@ impl DeckView {
             .overflow_hidden()
             .bg(colors.bar)
             .child(colors.muted(text).flex_1().min_w_0().overflow_hidden())
-            .when(!self.window.expanded && overflow > 0, |footer| {
-                let pending = self.queue_waiting;
-                let label = if pending == 0 {
-                    format!("+{overflow}")
-                } else {
-                    format!("+{overflow} · {pending} waiting")
-                };
-                footer.child(colors.button("open-queue", label, true).on_click(
-                    cx.listener(|view, _, window, cx| view.expand(Section::Overflow, window, cx)),
-                ))
+            .when(!self.window.expanded && self.queue_len() > 0, |footer| {
+                footer.child(self.queue_button(false, cx))
             })
     }
 

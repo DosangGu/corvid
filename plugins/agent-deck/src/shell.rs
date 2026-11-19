@@ -22,7 +22,7 @@ pub(crate) fn options(window: &Window, cx: &App) -> WindowOptions {
             ..Default::default()
         }),
         window_bounds: Some(WindowBounds::centered(
-            window::layout_size(window.layout(), !cfg!(target_os = "macos")),
+            window::layout_size(window.layout()),
             cx,
         )),
         focus: false,
