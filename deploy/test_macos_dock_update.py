@@ -29,7 +29,9 @@ def launch_dock_tile(dock, app, alias, tile):
 on run argv
     set appName to item 1 of argv
     tell application "System Events"
+        if not (exists process "Dock") then return "waiting for Dock"
         tell process "Dock"
+            if not (exists list 1) then return "waiting for Dock items"
             set entries to UI elements of list 1
             repeat with entry in entries
                 if name of entry is appName or name of entry is "Corvid" then
