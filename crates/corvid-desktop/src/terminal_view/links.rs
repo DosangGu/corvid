@@ -170,37 +170,26 @@ fn parse(token: &str, clicked_byte: usize) -> Option<String> {
     }
 }
 
-fn trim_end(mut text: &str) -> &str {
+fn trim_end(text: &str) -> &str {
     let mut balance = [0_i32; 3];
-    for ch in text.bytes() {
-        match ch {
-            b'(' => balance[0] += 1,
-            b')' => balance[0] -= 1,
-            b'[' => balance[1] += 1,
-            b']' => balance[1] -= 1,
-            b'{' => balance[2] += 1,
-            b'}' => balance[2] -= 1,
-            _ => {}
-        }
-    }
-    while let Some(ch) = text.as_bytes().last() {
-        let bracket = match ch {
-            b')' => 0,
-            b']' => 1,
-            b'}' => 2,
-            b'.' | b',' | b';' | b':' | b'!' | b'?' => {
-                text = &text[..text.len() - 1];
-                continue;
-            }
-            _ => break,
+    let mut end = text.len();
+    for (index, ch) in text.bytes().enumerate() {
+        let (bracket, change) = match ch {
+            b'(' => (0, 1),
+            b')' => (0, -1),
+            b'[' => (1, 1),
+            b']' => (1, -1),
+            b'{' => (2, 1),
+            b'}' => (2, -1),
+            _ => continue,
         };
-        if balance[bracket] >= 0 {
+        balance[bracket] += change;
+        if balance[bracket] < 0 {
+            end = index;
             break;
         }
-        balance[bracket] += 1;
-        text = &text[..text.len() - 1];
     }
-    text
+    text[..end].trim_end_matches(['.', ',', ';', ':', '!', '?'])
 }
 
 #[cfg(test)]
@@ -230,6 +219,17 @@ mod tests {
         );
         for col in [1, 3, 34, 35] {
             assert_eq!(at(&display, grid, false, (0, col)), None);
+        }
+    }
+
+    #[test]
+    fn stops_at_an_unmatched_closing_parenthesis_before_adjacent_text() {
+        let grid = Grid::new(3, 100);
+        let url = "https://example.test/a_(b)";
+        for suffix in [")", ")입니다", ").(see next)"] {
+            let display = screen(grid, &format!("({url}{suffix}"));
+            assert_eq!(at(&display, grid, false, (0, 12)).as_deref(), Some(url));
+            assert_eq!(at(&display, grid, false, (0, url.len() as u16 + 1)), None);
         }
     }
 
