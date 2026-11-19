@@ -1,6 +1,80 @@
 use super::*;
 use corvid_protocol::wire::Detach;
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires the isolated deploy/test_title_ssh.py fixture"]
+async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -> Result<()> {
+    let root = PathBuf::from(std::env::var_os("CORVID_SSH_TEST_ROOT").context("SSH fixture root")?);
+    let alias = SshAlias::new(std::env::var("CORVID_TITLE_TEST_SSH_ALIAS")?)?;
+    let state = root.join("desktop");
+    let start = |target, explicit| {
+        Session::start(
+            Destination::Ssh(alias.clone()),
+            state.clone(),
+            ViewStore::new(state.join("views")),
+            target,
+            explicit,
+            ParkedConnections::default(),
+        )
+    };
+    let disconnect = || -> Result<()> {
+        std::fs::write(root.join("offline"), "")?;
+        let pid = std::fs::read_to_string(root.join("writer-pid"))?;
+        ensure!(
+            std::process::Command::new("kill")
+                .arg(pid.trim())
+                .status()?
+                .success()
+        );
+        Ok(())
+    };
+    let (session, job, _prompts, _activations) = start(AttachTarget::Default, false)?;
+    let original = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
+    disconnect()?;
+    wait_for_ssh_ui(&session, |ui| !ui.connected && ui.changing).await?;
+    std::fs::remove_file(root.join("offline"))?;
+    let recovered = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
+    assert_eq!(recovered.terminal_id, original.terminal_id);
+    assert_eq!(recovered.selected, original.selected);
+
+    disconnect()?;
+    let offline = wait_for_ssh_ui(&session, |ui| ui.ssh_offline).await?;
+    assert!(offline.message.contains("Automatic reconnect stopped"));
+    job.join();
+    let attempts = std::fs::read(root.join("attempts"))?;
+    std::fs::remove_file(root.join("offline"))?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(std::fs::read(root.join("attempts"))?, attempts);
+
+    let target = offline
+        .reconnect_target
+        .context("missing manual reconnect target")?;
+    let (session, mut job, _prompts, _activations) = start(target, true)?;
+    let recovered = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
+    assert_eq!(recovered.terminal_id, original.terminal_id);
+    assert_eq!(recovered.selected, original.selected);
+    job.stop(false);
+    job.join();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_ssh_ui(session: &Session, matches: impl Fn(&Ui) -> bool) -> Result<Ui> {
+    let mut changes = session.changes();
+    timeout(Duration::from_secs(75), async {
+        loop {
+            let ui = session.ui();
+            if matches(&ui) {
+                return Ok(ui);
+            }
+            changes.changed().await?;
+        }
+    })
+    .await
+    .with_context(|| format!("waiting for SSH workspace: {}", session.ui().message))?
+}
+
 struct Daemon {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<Result<()>>>,

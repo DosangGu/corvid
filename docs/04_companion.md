@@ -337,6 +337,14 @@ one input owner at a time, and the daemon rejects input from retired routes.
 Automatic Desktop reconnection does not take a pane back from another client.
 External agent-focus controls cannot transfer input ownership.
 
+Desktop and the companion try to recover an SSH connection for up to 60 seconds
+after a detected interruption. When retries stop, choose **Reconnect** in the
+Desktop terminal window after the host is reachable. Desktop reconnects to the
+same pane and uses saved conversation recovery if the host rebooted. For a
+standalone companion, run `corvid companion reconnect` with the same profile
+options used to start it. For a TUI launched inside a separate SSH terminal,
+reopen that SSH connection and run `corvid attach`.
+
 A writer can use **⋯ → Disconnect other clients** in Desktop or
 Ctrl-] then uppercase D in the TUI. This detaches other interactive clients
 currently viewing that session. Shells, agents, and clients viewing other

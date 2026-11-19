@@ -13,6 +13,7 @@ mod restore;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod runtime;
 mod snapshot;
+mod ssh_retry;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tty;
 #[cfg(windows)]
@@ -46,6 +47,7 @@ pub use runtime::{daemon_missing, runtime_path};
 pub use snapshot::SnapshotWatch;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use snapshot::{snapshot, watch_snapshot};
+pub use ssh_retry::SshRetry;
 #[cfg(windows)]
 pub use upgrade::UpgradeTarget;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

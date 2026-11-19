@@ -5,7 +5,7 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::edit_slot_layout::Action;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AckPresentedAttention, FocusSlot, LocalActivation, PairTerminal, PresentedBinding,
+    AckPresentedAttention, FocusSlot, LocalActivation, PairTerminal, Pong, PresentedBinding,
     PresentedSlotToken, SlotFocused, SlotLayoutEdited,
 };
 use uuid::Uuid;
@@ -24,6 +24,7 @@ impl Service {
             Body::GetPresentationSlots(query) => self.presentation(query),
             Body::GetPresentationAttention(_) => Ok(self.attention()),
             Body::ListHosts(_) => Ok(self.list_hosts()),
+            Body::ReconnectAgentMonitor(_) => Ok(Body::Pong(Pong {})),
             Body::PairTerminal(pair) => self.pair(pair).await,
             Body::UnpairTerminal(unpair) => {
                 let remote = self.require_generation(&unpair.control_generation)?;

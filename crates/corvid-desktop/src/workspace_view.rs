@@ -414,6 +414,23 @@ impl WorkspaceView {
         self.switch_to(Destination::Ssh(alias), AttachTarget::Default, window, cx);
     }
 
+    fn reconnect_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else { return };
+        let ui = session.ui();
+        if ui.connected && ui.inventory_offline {
+            session.reconnect_inventory();
+        } else if ui.ssh_offline
+            && let Some(destination) = self.destination.clone()
+        {
+            self.switch_to(
+                destination,
+                ui.reconnect_target.unwrap_or(AttachTarget::Default),
+                window,
+                cx,
+            );
+        }
+    }
+
     fn switch_to(
         &mut self,
         destination: Destination,
@@ -706,7 +723,14 @@ impl WorkspaceView {
                         watch: None,
                     });
             }
-            self.watch_host(destination.clone(), window, cx);
+            if ui.ssh_offline {
+                if let Some(known) = self.known_sessions.get_mut(destination) {
+                    known.watch = None;
+                    known.live = false;
+                }
+            } else {
+                self.watch_host(destination.clone(), window, cx);
+            }
         }
         if ui.restore_unavailable && ui.selected.is_none() && !self.restore_picker_shown {
             self.restore_picker_shown = true;
@@ -1131,7 +1155,7 @@ impl WorkspaceView {
                         .child(message.to_owned()),
                 )
             })
-            .when(!changing, |panel| {
+            .when(!changing && !ui.is_some_and(|ui| ui.ssh_offline), |panel| {
                 panel.child(
                     button("open-terminal", "Open Terminal", true).on_click(cx.listener(
                         move |view, _, window, cx| {

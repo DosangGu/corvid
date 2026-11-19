@@ -858,8 +858,9 @@ Use the user's SSH configuration, known_hosts, keys, and authentication agent. P
 host-key checking; changed or unknown keys require the normal user trust workflow.
 Background reconnection uses noninteractive authentication and reports `AuthenticationRequired`
 instead of looping password prompts.
-Do not automatically enable SSH agent forwarding. Bound initial connection to 10 seconds;
-retry with jittered backoff capped at 30 seconds, cancellable by the user.
+Do not automatically enable SSH agent forwarding. Bound each OpenSSH connection
+attempt to 10 seconds. Automatically reconnect with jittered backoff for up to
+60 seconds after detecting an outage, then wait for the user to reconnect.
 
 Invoke the local SSH executable with structured arguments and an explicitly configured
 host alias (reject aliases beginning with `-`). The remote command is fixed, since SSH

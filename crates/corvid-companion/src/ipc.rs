@@ -32,6 +32,7 @@ pub const PRESENTATION_PAGE_SIZE: u32 = 32;
 pub const PRESENTATION_ATTENTION_CAPABILITY: &str = "presentation_attention.v1";
 pub const PRESENTATION_ATTENTION_LIMIT: usize = 512;
 const LIST_HOSTS_CAPABILITY: &str = "list_hosts.v1";
+pub(crate) const MONITOR_RECONNECT_CAPABILITY: &str = "monitor_reconnect.v1";
 #[cfg(windows)]
 pub const WEZTERM_CAPABILITY: &str = "wezterm_local.v1";
 #[cfg(windows)]
@@ -43,6 +44,7 @@ const CAPABILITIES: &[&str] = &[
     PRESENTATION_CAPABILITY,
     PRESENTATION_ATTENTION_CAPABILITY,
     LIST_HOSTS_CAPABILITY,
+    MONITOR_RECONNECT_CAPABILITY,
     #[cfg(windows)]
     WEZTERM_CAPABILITY,
     #[cfg(windows)]
@@ -313,6 +315,26 @@ impl PresentationClient {
 
     pub fn session(&self) -> &Session {
         &self.0.session
+    }
+
+    pub async fn reconnect_monitor(&mut self) -> Result<()> {
+        ensure!(
+            self.session()
+                .capabilities
+                .iter()
+                .any(|capability| capability == MONITOR_RECONNECT_CAPABILITY),
+            "companion does not support manual reconnect"
+        );
+        let reply = self
+            .request(Body::ReconnectAgentMonitor(
+                corvid_protocol::wire::ReconnectAgentMonitor {},
+            ))
+            .await?;
+        ensure!(
+            matches!(reply, Body::Pong(_)),
+            "unexpected reconnect response"
+        );
+        Ok(())
     }
 
     pub async fn slots(&mut self, config: Option<&crate::Config>) -> Result<PresentationSlots> {

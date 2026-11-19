@@ -55,13 +55,23 @@ impl Drop for InventoryWatch {
 
 async fn monitor(endpoint: ControlEndpoint, host: String, epoch: String, shared: &Shared) {
     let controller = Uuid::new_v4().to_string();
+    let ssh = matches!(endpoint, ControlEndpoint::Ssh(_));
+    let mut ssh_retry = ssh.then(SshRetry::default);
+    let mut manual = shared.inventory_reconnect.subscribe();
     let mut retry = RETRY_MIN;
     let mut last_failure = None;
     loop {
         let started = Instant::now();
-        let error = synchronize(&endpoint, &controller, &host, &epoch, shared)
-            .await
-            .expect_err("a workspace watch ends only on failure");
+        let error = synchronize(
+            &endpoint,
+            &controller,
+            &host,
+            &epoch,
+            shared,
+            &mut ssh_retry,
+        )
+        .await
+        .expect_err("a workspace watch ends only on failure");
         shared.update_ui(|ui| ui.inventory_ready = false);
 
         // Diagnostics contain only a category, never remote error text or titles.
@@ -78,6 +88,23 @@ async fn monitor(endpoint: ControlEndpoint, host: String, epoch: String, shared:
             eprintln!("corvid: workspace synchronization interrupted: {reason}");
             last_failure = Some(reason);
         }
+        if ssh {
+            let retry = ssh_retry.get_or_insert_with(SshRetry::default);
+            if let Some(next) = retry.next_attempt(&error) {
+                tokio::time::sleep_until(next).await;
+                if Instant::now() < retry.deadline() {
+                    continue;
+                }
+            }
+            manual.borrow_and_update();
+            shared.update_ui(|ui| ui.inventory_offline = true);
+            if manual.changed().await.is_err() {
+                return;
+            }
+            shared.update_ui(|ui| ui.inventory_offline = false);
+            ssh_retry = Some(SshRetry::default());
+            continue;
+        }
         if started.elapsed() >= RETRY_MAX {
             retry = RETRY_MIN;
         }
@@ -92,12 +119,18 @@ async fn synchronize(
     host: &str,
     epoch: &str,
     shared: &Shared,
+    retry: &mut Option<SshRetry>,
 ) -> Result<()> {
-    let mut watch = endpoint.watch(controller, host, || {}).await?;
+    let connection = endpoint.watch(controller, host, || {});
+    let mut watch = match retry {
+        Some(retry) => tokio::time::timeout_at(retry.deadline(), connection).await??,
+        None => connection.await?,
+    };
     ensure!(
         watch.state().session().server_epoch == epoch,
         ProtocolFault::new("EpochMismatch", "daemon restarted during attach")
     );
+    *retry = None;
     loop {
         publish(shared, Inventory::read(watch.state()));
         watch.next_change().await?;
