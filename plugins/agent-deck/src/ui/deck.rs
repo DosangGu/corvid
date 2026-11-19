@@ -885,11 +885,12 @@ impl RunDetails {
 }
 
 impl Render for RunDetails {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let deck = self.deck.read(cx);
         let colors = deck.colors;
         self.content(deck)
             .unwrap_or_else(|| colors.muted("Agent no longer displayed"))
+            .max_w(window.viewport_size().width.min(px(280.)))
             .p(px(12.))
             .bg(colors.panel)
             .text_color(colors.text)
@@ -958,7 +959,7 @@ impl Colors {
         let (label, color) = status(run, cached);
         let title = run.session_title.as_deref().unwrap_or("Untitled session");
         let mut view = column()
-            .child(div().max_w(px(256.)).truncate().child(title.to_owned()))
+            .child(div().truncate().child(title.to_owned()))
             .child(div().text_color(self.status(color)).child(label))
             .child(self.muted(provider(run)))
             .child(self.muted(evidence_label(run)))
