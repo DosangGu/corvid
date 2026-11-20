@@ -30,8 +30,8 @@ impl Running {
 
 pub(super) fn snapshot(packages: &[PathBuf], runtime: &Path) -> Result<Vec<Running>> {
     let mut system = System::new();
-    let images = ProcessRefreshKind::new().with_exe(UpdateKind::Always);
-    system.refresh_processes_specifics(ProcessesToUpdate::All, images);
+    let images = ProcessRefreshKind::nothing().with_exe(UpdateKind::Always);
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, images);
     ensure!(
         system
             .process(sysinfo::Pid::from_u32(std::process::id()))
@@ -57,6 +57,7 @@ pub(super) fn snapshot(packages: &[PathBuf], runtime: &Path) -> Result<Vec<Runni
     if !pids.is_empty() {
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&pids),
+            true,
             images.with_cmd(UpdateKind::Always),
         );
     }
