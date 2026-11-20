@@ -31,13 +31,11 @@ pub fn decode_state_path(bytes: Vec<u8>) -> Option<PathBuf> {
     };
     #[cfg(windows)]
     let path = {
-        let pairs = bytes.chunks_exact(2);
-        if !pairs.remainder().is_empty() {
+        let (pairs, remainder) = bytes.as_chunks::<2>();
+        if !remainder.is_empty() {
             return None;
         }
-        let units: Vec<_> = pairs
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
+        let units: Vec<_> = pairs.iter().copied().map(u16::from_le_bytes).collect();
         if units.contains(&0) {
             return None;
         }
