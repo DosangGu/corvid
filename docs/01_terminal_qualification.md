@@ -13,7 +13,7 @@ cargo test --locked
 python3 spikes/terminal/tests/interactive.py target/debug/corvid-terminal-spike
 
 mkdir -p target/terminfo
-tic -x -o target/terminfo spikes/terminal/corvid.terminfo
+tic -x -o target/terminfo crates/corvid-tui/assets/corvid.terminfo
 TERMINFO="$PWD/target/terminfo" cargo run --locked -p corvid-terminal-spike -- /bin/sh -i
 ```
 

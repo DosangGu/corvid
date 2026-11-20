@@ -73,7 +73,7 @@ def verify_retained_terminal(old, compatible, incompatible, daemon, progress):
 
 def run(old, compatible, incompatible):
     root = Path(__file__).resolve().parents[3]
-    profile = root / "spikes/terminal/corvid.terminfo"
+    profile = root / "crates/corvid-tui/assets/corvid.terminfo"
     with tempfile.TemporaryDirectory(prefix="corvid-skew-", dir=root) as temporary:
         directory = Path(temporary)
         database = directory / "terminfo"

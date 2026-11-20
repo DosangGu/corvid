@@ -5,21 +5,16 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("cargo:rerun-if-changed=../../assets/icons");
+    println!("cargo:rerun-if-changed=assets");
     if env::var("CARGO_CFG_TARGET_OS")? == "windows" {
-        embed_resource::compile_for(
-            "../../assets/icons/app.rc",
-            ["corvid"],
-            embed_resource::NONE,
-        )
-        .manifest_required()?;
+        embed_resource::compile_for("assets/app.rc", ["corvid"], embed_resource::NONE)
+            .manifest_required()?;
     }
     if !matches!(env::var("CARGO_CFG_TARGET_OS")?.as_str(), "linux" | "macos") {
         return Ok(());
     }
 
-    let profile = "../../spikes/terminal/corvid.terminfo";
-    println!("cargo:rerun-if-changed={profile}");
+    let profile = "assets/corvid.terminfo";
     let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("missing Cargo OUT_DIR")?);
     let status = Command::new("tic")
         .args(["-x", "-o"])

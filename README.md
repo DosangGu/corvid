@@ -35,6 +35,10 @@ Re-running the installer updates the same installation. Once installed, use
 Desktop provides **Settings → About & updates → Check for updates**. Package updates leave running
 daemons unchanged; use `corvid upgrade` separately for automatically started daemons.
 
+For versions published to crates.io, install or update the TUI with
+`cargo install --locked corvid-tui` and run `corvid`. See the
+[Cargo installation requirements](docs/05_release_distribution.md#install-with-cargo).
+
 See the [distribution guide](docs/05_release_distribution.md) for Desktop and
 Windows installation, custom paths, system requirements, and daemon lifecycle.
 

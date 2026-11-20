@@ -13,6 +13,9 @@ Regenerate the application and Agent Deck tray assets from the workspace root:
 cargo run -p corvid-agent-deck --example render-icons
 ```
 
+The generator also updates the copies in the TUI, updater, and Agent Deck
+crates so their source packages can build independently of the workspace.
+
 Windows embeds resource 1 in Desktop, Deck, the terminal executable, Agent Deck,
 and all three stable launchers. GPUI uses it for every native window, including
 Settings. Setup and shortcuts also use the ICO. Existing installed launchers

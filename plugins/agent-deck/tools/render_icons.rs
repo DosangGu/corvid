@@ -42,5 +42,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         fs::write(directory.join(format!("{name}.ico")), ico)?;
     }
+    let artwork = root.join("assets/icons");
+    for directory in [
+        "crates/corvid-tui/assets",
+        "crates/corvid-update/assets",
+        "plugins/agent-deck/assets",
+    ] {
+        fs::copy(
+            artwork.join("corvid.ico"),
+            root.join(directory).join("corvid.ico"),
+        )?;
+    }
+    fs::copy(
+        artwork.join("corvid.png"),
+        root.join("plugins/agent-deck/assets/corvid.png"),
+    )?;
     Ok(())
 }

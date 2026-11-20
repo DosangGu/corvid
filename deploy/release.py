@@ -14,12 +14,18 @@ REPOSITORY = "DosangGu/corvid"
 
 
 def validate():
-    version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+    workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]
+    version = workspace["package"]["version"]
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?", version):
         raise ValueError("Invalid workspace release version")
     ref = os.environ.get("GITHUB_REF", "")
     if ref.startswith("refs/tags/") and ref != f"refs/tags/v{version}":
         raise ValueError("Tag and workspace version differ")
+    for name, dependency in workspace["dependencies"].items():
+        if isinstance(dependency, dict) and "path" in dependency:
+            requirement = dependency.get("version")
+            if requirement is not None and requirement != f"={version}":
+                raise ValueError(f"Update the workspace dependency {name} to ={version}")
     return version
 
 
