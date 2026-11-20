@@ -2,26 +2,6 @@ name: Package Corvid
 
 on:
   workflow_call:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    # Keep these paths in sync with the push fallback in deploy/validate_changes.py.
-    paths:
-      - '.cargo/**'
-      - '.gitattributes'
-      - '.gitignore'
-      - '.github/workflows/native.yml'
-      - '.github/workflows/package.yml'
-      - '.github/workflows/release.yml'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'LICENSE'
-      - 'assets/**'
-      - 'crates/**'
-      - 'deploy/**'
-      - 'plugins/**'
-      - 'rust-toolchain.toml'
-      - 'spikes/**'
 
 permissions:
   contents: read

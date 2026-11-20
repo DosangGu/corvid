@@ -1,0 +1,29 @@
+name: Checks / Basics
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-basics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  basics:
+    name: PR basics
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Include the first parent of GitHub's test merge commit.
+          fetch-depth: 2
+      - name: Check changed lines for whitespace errors
+        run: git diff --check HEAD^1 HEAD --
+      - run: python3 deploy/release.py validate
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - run: cargo fmt --all -- --check

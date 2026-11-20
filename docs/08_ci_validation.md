@@ -1,20 +1,37 @@
 # Continuous integration coverage
 
-**Corvid Checks** always reports lightweight PR validation. **Corvid Native
-Checks** runs separate Runtime and Desktop jobs for Linux and Windows x64 and
-ARM64 and for Apple Silicon macOS. It skips documentation-only PRs.
+## Pull requests
 
-**Package Corvid** runs installer integration separately for PRs touching
-`Cargo.lock` or package inputs and for relevant pushes to `main`. The tag-only
-**Publish Corvid Release** workflow calls it to build the assets it publishes.
-See the [workflow trigger table](05_release_distribution.md#build-and-publish).
+Each check uses a GitHub Actions workflow trigger. Every PR runs **Checks /
+Basics** for whitespace, Rust formatting, and workspace version consistency.
+Component workflows start when their source, shared dependencies, or build
+inputs match the paths in their YAML. A documentation-only PR runs Basics.
 
-The workflows use GitHub's `ubuntu-latest`, `windows-latest`, and
-`macos-latest` labels for the default image on each platform. Linux and Windows
-ARM64 run on `ubuntu-26.04-arm` and `windows-11-arm`. The same runner labels
-apply to native tests and release packaging.
+| Workflow | Scope on a matching PR |
+| --- | --- |
+| **Checks / Core and daemon** | Linux Clippy and tests for core, wire protocol, daemon, and updater crates. |
+| **Checks / TUI** | Linux client and companion tests, TUI crate tests, and a real TUI process exchanging IPC messages with a scripted peer in a PTY. |
+| **Checks / Desktop** | Linux Desktop unit tests and scripted IPC tests for inventory, render state, and attach negotiation. |
+| **Checks / Agent Deck** | Linux Agent Deck, Deck core, and presentation tests. |
+| **Checks / Packaging** | Shared icons, manifest and packaging fixtures, and installer shell syntax. |
 
-## Checks on source pull requests
+Workspace manifest, lockfile, and Rust toolchain changes run the component
+workflows. GitHub does not create component workflow runs for PRs outside their
+path filters. Only the always-running Basics workflow is suitable as a required
+status check for every PR.
+
+## Release qualification
+
+Update `deploy/release-notes.md` in the version preparation PR to `main` to
+trigger **Checks / Release**. The same workflow can be dispatched manually to
+validate packaging or runtime changes. It builds and tests release packages
+for Linux and Windows x64 and ARM64 and for Apple Silicon macOS, and verifies
+Cargo source packages on Linux, Windows, and macOS.
+
+The workflows use `ubuntu-latest`, `windows-latest`, and `macos-latest` for the
+default images. Linux and Windows ARM64 use `ubuntu-26.04-arm` and
+`windows-11-arm`. Release publication builds the assets from the tag with
+the same targets. See [build and publish](05_release_distribution.md#build-and-publish).
 
 | Platform | Automated behavior |
 | --- | --- |
