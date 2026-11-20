@@ -206,14 +206,28 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                             "click", "--repeat", str(count), "--delay", "15", str(button)],
                            check=True, timeout=10)
 
+        def wait_for_clipboard(marker, description, *, copy=False):
+            deadline = time.monotonic() + 5
+            while True:
+                if copy:
+                    key(window, "ctrl+shift+c")
+                clipboard = subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-o"], capture_output=True, timeout=5,
+                )
+                if clipboard.returncode == 0 and marker in clipboard.stdout.splitlines():
+                    return
+                assert time.monotonic() < deadline, (
+                    f"{description}: clipboard tail {clipboard.stdout[-500:]!r}"
+                )
+                time.sleep(0.05)
+
         history_ready = root / "history-ready"
         type_command(f"seq -f 'scroll-row-%03g' 1 240; printf ready > {shlex.quote(str(history_ready))}")
         wait_for_marker(history_ready, "ready")
         wheel(4, 30)
         key(window, "Home")
         key(window, "ctrl+shift+c")
-        copied = subprocess.check_output(["xclip", "-selection", "clipboard", "-o"], timeout=10)
-        assert b"scroll-row-001" in copied.splitlines(), "wheel did not open shell history"
+        wait_for_clipboard(b"scroll-row-001", "wheel did not open shell history")
         if preview := os.environ.get("CORVID_SCROLL_PREVIEW_DIR"):
             subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "scroll-history.png")],
                            check=True, timeout=10)
@@ -234,13 +248,13 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             "for row in range(1, 301): print(f'\\033[32magent-{row:03}\\033[0m')\n"
             f"Path({str(program_ready)!r}).write_text('ready')\n"
             f"Path({str(program_input)!r}).write_text(input())\n", encoding="utf-8")
-        type_command(f"python3 {shlex.quote(str(program))}")
+        type_command(f"python3 -u {shlex.quote(str(program))}")
         wait_for_marker(program_ready, "ready")
+        wait_for_clipboard(b"agent-300", "foreground program did not render its final row", copy=True)
         wheel(4, 30)
         key(window, "Home")
         key(window, "ctrl+shift+c")
-        copied = subprocess.check_output(["xclip", "-selection", "clipboard", "-o"], timeout=10)
-        assert b"agent-001" in copied.splitlines(), "foreground program scrollback is unreachable"
+        wait_for_clipboard(b"agent-001", "foreground program scrollback is unreachable")
         if preview:
             subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "agent-history.png")],
                            check=True, timeout=10)
