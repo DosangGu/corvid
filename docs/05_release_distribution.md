@@ -236,50 +236,38 @@ and release manifest generation. It validates runtime version, source revision,
 size, and checksum before including a payload. It rejects dynamic Linux daemon
 binaries and binaries exceeding the existing 32 MiB provisioning limit.
 
-| Changes or trigger | Corvid Checks | Corvid Native Checks | Package Corvid | Publish Corvid Release |
-| --- | --- | --- | --- | --- |
-| Documentation-only PR | Lightweight validation | — | — | — |
-| Ordinary source PR | Validation and native checks | Native builds, tests, and lints on five targets | — | — |
-| PR touching `Cargo.lock`, packaging, installers, updater implementation, or packaged assets | Validation and package integration | Called by Package Corvid | Build and verify installable packages on all five targets | — |
-| Push to `main` | Lightweight validation | — | Package integration when a packaging input changes | — |
-| Manual **Run workflow** on **Package Corvid** | — | — | Package integration and release assets | — |
-| Push of a `v*` tag | — | — | Package integration and release assets, called by the publisher | Publish validated release assets |
+| Change or trigger | Workflow and result |
+| --- | --- |
+| Any PR | **Checks / Basics** validates formatting, whitespace, and workspace version consistency. |
+| PR changes component or packaging inputs | Matching workflows run the [component or packaging checks](08_ci_validation.md#pull-requests). |
+| PR to `main` updates `deploy/release-notes.md` | **Checks / Release** builds the five release targets and runs live runtime and installer tests. |
+| Manual **Run workflow** on **Checks / Release** | The same release qualification runs for the selected ref. |
+| Push of a `v*` tag | **Publish Corvid Release** builds and publishes the assets for the tagged revision. |
 
-**Corvid Checks** validates the version, shared icons, formatting, and whitespace.
-It compares the checked-out PR merge commit with its first parent to select the
-integration checks. PRs limited to `AGENTS.md`, `README.md`, Markdown under
-`docs/`, or JPEG, PNG, and SVG under `docs/images/` use lightweight validation.
-Other PRs call **Corvid Native Checks** directly or through **Package Corvid**,
-depending on which files changed. The `Corvid checks` job reports the result
-of validation and the selected integration.
-
-**Package Corvid** uses GitHub path filters for pushes to `main`. The filter
-also covers ordinary workspace sources, manifests, and schemas.
-On `main`, **Corvid Checks** compares the previous and pushed tips and calls
-**Package Corvid** as a fallback for unavailable comparisons, large diffs with
-packaging inputs, and changes that could be moves out of a packaging path.
-
-Package runs call **Corvid Native Checks** to produce the TUI and Desktop
-binaries for that run. Desktop packages then bundle all five runtime artifacts.
+Release qualification and publication share **Package Corvid**, which calls
+the native build workflow. Desktop packages bundle all five runtime artifacts.
 The native workflow caches Cargo dependencies and build outputs separately for
 Runtime and Desktop on each runner and target. Commits with the same lockfile,
 toolchain, and CI build configuration can share the cache.
-The Cargo source package jobs build the extracted crates and check
-`corvid --version` on Linux, Windows, and macOS.
-Integration tests cover installation with a live daemon, Desktop terminal input
-and reattachment under Xvfb, and native installers.
 
-**Publish Corvid Release** calls **Package Corvid** for the tagged revision,
-then creates a draft, uploads and checks the asset inventory, and publishes the
-release. Only the publication job receives repository write permission.
-Re-running publication may repair an unpublished draft and refuses to overwrite
-an already published release.
+The version preparation PR runs live daemon, PTY, SSH, Desktop, and native
+installer checks. The Cargo source package jobs build the extracted crates and
+check `corvid --version` on Linux, Windows, and macOS.
+
+Publication builds the actual release binaries and installers from the tag
+and validates their version, source revision, checksums, and asset inventory.
+The publication job creates a draft, uploads and verifies the asset inventory,
+and publishes the release. Only the publication job receives repository write
+permission. Re-running publication may repair an unpublished draft and refuses
+to overwrite an already published release.
 
 ### Publish TUI source packages to crates.io
 
 When preparing a release, update the workspace version and the exact version
 requirements for the local dependencies in `Cargo.toml`. Regenerate
-`Cargo.lock` with `cargo update --workspace` before committing and tagging.
+`Cargo.lock` with `cargo update --workspace` and update
+`deploy/release-notes.md` in the same PR. Review the release qualification
+results before tagging the merged release.
 
 The published set consists of `corvid-tui` and its internal dependencies,
 marked by `publish = ["crates-io"]` in their manifests. Cargo packages these
