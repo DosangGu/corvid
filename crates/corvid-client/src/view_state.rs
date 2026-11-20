@@ -27,8 +27,9 @@ const BACKUP: &str = "view.json.bak";
 const MAX_BYTES: u64 = 64 * 1024;
 const MAX_TARGETS: usize = 64;
 const SAVE_DELAY: Duration = Duration::from_millis(250);
+// A writer can hold this lock across multiple durable file replacements.
 #[cfg(windows)]
-const WINDOWS_SAVE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const WINDOWS_SAVE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod tests;
