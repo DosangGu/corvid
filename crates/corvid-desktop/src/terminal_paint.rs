@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, FontStyle, FontWeight, PathBuilder, Pixels, Point, SharedString, TextRun,
-    UnderlineStyle, Window, fill, font, point, px, rgb, size,
+    App, Bounds, FontStyle, FontWeight, PaintQuad, PathBuilder, Pixels, Point, SharedString,
+    TextAlign, TextRun, UnderlineStyle, Window, font, point, px, rgb, rgb_to_hsla, size,
 };
 use vt100::{Cell, Color, Screen};
 
@@ -32,7 +32,6 @@ impl Metrics {
             "M".into(),
             font_size,
             &[text_run(1, Style::default(), family)],
-            None,
         );
         Self {
             column: line.width.max(px(1.)),
@@ -208,10 +207,10 @@ impl Frame {
             for span in &self.spans {
                 let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
                 if span.style.bg != BACKGROUND {
-                    window.paint_quad(fill(
-                        graphic::snap(cell, window.scale_factor()),
-                        rgb(span.style.bg),
-                    ));
+                    window.paint_quad(
+                        PaintQuad::new(graphic::snap(cell, window.scale_factor()))
+                            .background(rgb(span.style.bg)),
+                    );
                 }
             }
         });
@@ -220,13 +219,13 @@ impl Frame {
                 let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
                 if graphic::paint(&span.text, cell, rgb(span.style.fg), window) {
                     if span.style.underline {
-                        window.paint_quad(fill(
-                            Bounds::new(
+                        window.paint_quad(
+                            PaintQuad::new(Bounds::new(
                                 cell.origin + point(px(0.), metrics.row - px(2.)),
                                 size(cell.size.width, px(1.)),
-                            ),
-                            rgb(span.style.fg),
-                        ));
+                            ))
+                            .background(rgb(span.style.fg)),
+                        );
                     }
                 } else {
                     paint_text(
@@ -245,13 +244,13 @@ impl Frame {
         {
             let cell = metrics.cell(bounds.origin, row, col, 1);
             if marked.is_empty() {
-                window.paint_quad(fill(
-                    Bounds {
+                window.paint_quad(
+                    PaintQuad::new(Bounds {
                         origin: cell.origin,
                         size: size(px(2.), metrics.row),
-                    },
-                    rgb(0x8ae3c4),
-                ));
+                    })
+                    .background(rgb(0x8ae3c4)),
+                );
             } else {
                 let style = Style {
                     fg: 0x8ae3c4,
@@ -263,16 +262,15 @@ impl Frame {
                     marked.to_owned().into(),
                     metrics.font_size,
                     &[text_run(marked.len(), style, family)],
-                    None,
                 );
-                window.paint_quad(fill(
-                    Bounds {
+                window.paint_quad(
+                    PaintQuad::new(Bounds {
                         origin: cell.origin,
                         size: size(marked.width, metrics.row),
-                    },
-                    rgb(style.bg),
-                ));
-                let _ = marked.paint(cell.origin, metrics.row, window, cx);
+                    })
+                    .background(rgb(style.bg)),
+                );
+                let _ = marked.paint(cell.origin, metrics.row, TextAlign::Left, None, window, cx);
             }
         }
     }
@@ -326,33 +324,34 @@ fn paint_text(
     let run = text_run(text.len(), style, family);
     let line = window
         .text_system()
-        .shape_line(text.into(), font_size, &[run], None);
+        .shape_line(text.into(), font_size, &[run]);
     let baseline = cell.origin
         + point(
             px(0.),
             (cell.size.height - line.ascent - line.descent) / 2. + line.ascent,
         );
-    for run in &line.runs {
-        for glyph in &run.glyphs {
-            let position = baseline + point(glyph.position.x, px(0.));
+    for fragment in &line.paint_fragments {
+        for glyph in fragment.glyphs.iter() {
+            let position = baseline + glyph.position;
             if glyph.is_emoji {
-                let _ = window.paint_emoji(position, run.font_id, glyph.id, font_size);
+                let _ =
+                    window.paint_emoji(position, fragment.font_id, glyph.id, fragment.font_size);
             } else {
                 let _ = window.paint_glyph(
                     position,
-                    run.font_id,
+                    fragment.font_id,
                     glyph.id,
-                    font_size,
-                    rgb(style.fg).into(),
+                    fragment.font_size,
+                    rgb_to_hsla(rgb(style.fg)),
                 );
             }
         }
     }
     if style.underline {
         let first_x = line
-            .runs
+            .paint_fragments
             .iter()
-            .flat_map(|run| &run.glyphs)
+            .flat_map(|fragment| fragment.glyphs.iter())
             .next()
             .map_or(px(0.), |glyph| glyph.position.x);
         window.paint_underline(
@@ -360,7 +359,7 @@ fn paint_text(
             line.width,
             &UnderlineStyle {
                 thickness: px(1.),
-                color: Some(rgb(style.fg).into()),
+                color: Some(rgb_to_hsla(rgb(style.fg))),
                 wavy: false,
             },
         );
@@ -378,7 +377,7 @@ fn text_run(len: usize, style: Style, family: &SharedString) -> TextRun {
     TextRun {
         len,
         font,
-        color: rgb(style.fg).into(),
+        color: rgb_to_hsla(rgb(style.fg)),
         background_color: None,
         underline: style.underline.then_some(UnderlineStyle {
             thickness: px(1.),
@@ -386,6 +385,7 @@ fn text_run(len: usize, style: Style, family: &SharedString) -> TextRun {
             wavy: false,
         }),
         strikethrough: None,
+        letter_spacing: None,
     }
 }
 

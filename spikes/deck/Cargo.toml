@@ -31,7 +31,7 @@ uuid = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 corvid-companion = { workspace = true, optional = true }
-gpui = { workspace = true, features = ["windows-manifest"], optional = true }
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"], optional = true }
 hidapi = { workspace = true, optional = true }
 image = { workspace = true, features = ["bmp", "jpeg"], optional = true }
 resvg = { workspace = true, features = ["system-fonts", "text"], optional = true }
@@ -42,7 +42,7 @@ embed-resource.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 corvid-companion = { workspace = true, optional = true }
-gpui = { workspace = true, optional = true, features = ["font-kit"] }
+gpui = { version = "=0.2.2", default-features = false, optional = true, features = ["font-kit"] }
 hidapi = { workspace = true, optional = true }
 image = { workspace = true, features = ["bmp", "jpeg"], optional = true }
 resvg = { workspace = true, features = ["system-fonts", "text"], optional = true }

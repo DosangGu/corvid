@@ -51,7 +51,6 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
     use clap::Parser;
     use desktop_windows::DesktopWindows;
-    use gpui::Application;
 
     #[derive(Parser)]
     #[command(about = "Attach to a Corvid multiplexer daemon")]
@@ -82,7 +81,9 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     app_icon::identify()?;
     #[cfg(target_os = "linux")]
     anyhow::ensure!(
-        gpui::guess_compositor() == "X11",
+        gpui::GraphicalEnvironment::detect()
+            .x11_display
+            .is_some_and(|display| !display.is_empty()),
         "Corvid Desktop requires an X11 or XWayland display"
     );
 
@@ -114,7 +115,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let windows = DesktopWindows::new(agent_deck)?;
     let app_windows = windows.clone();
 
-    let application = Application::new();
+    #[cfg(target_os = "linux")]
+    let application = gpui_platform::linux(gpui::WindowingModes::X11);
+    #[cfg(not(target_os = "linux"))]
+    let application = gpui_platform::application();
     #[cfg(target_os = "macos")]
     {
         let reopened = windows.clone();

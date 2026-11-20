@@ -1,6 +1,6 @@
 use super::*;
 use corvid_protocol::wire::AgentBadge;
-use gpui::{Corner, MouseButton, anchored, deferred, px};
+use gpui::{Anchor, MouseButton, anchored, deferred, px};
 
 #[cfg(windows)]
 use super::window_controls::{self, window_drag_region};
@@ -40,7 +40,7 @@ impl WorkspaceView {
         self.menu_open = true;
         self.menu_create = create;
         self.menu_index = 0;
-        window.focus(&self.setup_focus);
+        window.focus(&self.setup_focus, cx);
         cx.notify();
     }
 
@@ -157,7 +157,7 @@ impl WorkspaceView {
             MenuAction::DisconnectOthers => self.disconnect_others(window, cx),
             MenuAction::Detach => {
                 self.lifetime.stop();
-                window.focus(&self.setup_focus);
+                window.focus(&self.setup_focus, cx);
             }
             MenuAction::ClosePane | MenuAction::CloseTab | MenuAction::CloseWorkspace => {
                 if let Some(selected) = &self.selected {
@@ -232,9 +232,9 @@ impl WorkspaceView {
                 .when(self.switcher_open, |trigger| {
                     let position = div().absolute().top_full().mt(ui_px(4.));
                     let (position, anchor) = if switcher_on_right {
-                        (position.right_0(), Corner::TopRight)
+                        (position.right_0(), Anchor::TopRight)
                     } else {
-                        (position.left_0(), Corner::TopLeft)
+                        (position.left_0(), Anchor::TopLeft)
                     };
                     // Keep the picker above the backdrop while laying it out with the trigger.
                     trigger.child(
