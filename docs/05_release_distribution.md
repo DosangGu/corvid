@@ -282,8 +282,19 @@ marked by `publish = ["crates-io"]` in their manifests. Cargo packages these
 crates in dependency order. Verify the set locally with
 `python deploy/crates_io.py verify`.
 
-For the first publication, check out the release tag on Linux, authenticate
-with `cargo login`, and run `python deploy/crates_io.py publish`. Configure
+For the first publication through GitHub Actions, store a token with the
+`publish-new` scope as `CARGO_REGISTRY_TOKEN` in the `crates.io` environment.
+Push a tag such as `crates-io-v0.3.6` on a commit containing the
+**Publish Corvid to crates.io** workflow. The job checks out the existing `v0.3.6`
+release and verifies a Cargo installation after uploading the crates. If
+crates.io reaches its new-crate publishing limit, the job waits until the
+registry's retry time and resumes with the remaining crates. To resume after
+another failure, rerun the job.
+
+For a local first publication, check out the release tag on Linux,
+authenticate with `cargo login`, and run `python deploy/crates_io.py publish`.
+
+After the first publication, configure
 [Trusted Publishing](https://crates.io/docs/trusted-publishing) on each published
 crate for `DosangGu/corvid`, workflow `release.yml`, and environment
 `crates-io`. Set the GitHub repository variable `PUBLISH_CRATES_IO` to `true`
