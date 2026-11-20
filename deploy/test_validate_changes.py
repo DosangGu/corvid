@@ -112,6 +112,19 @@ class ValidateChangesTests(unittest.TestCase):
         self.commit()
         self.assertEqual(self.check_pr(), "none")
 
+    def test_dependabot_config_pr_stays_lightweight(self):
+        self.git("switch", "--quiet", "-c", "topic")
+        self.write(".github/dependabot.yml", "version: 2\n")
+        self.commit()
+        self.assertEqual(self.check_pr(), "none")
+
+    def test_dependabot_config_with_workspace_manifest_runs_native_checks(self):
+        self.git("switch", "--quiet", "-c", "topic")
+        self.write(".github/dependabot.yml", "version: 2\n")
+        self.write("Cargo.toml", "[workspace]\n")
+        self.commit()
+        self.assertEqual(self.check_pr(), "native")
+
     def test_ordinary_source_pr_runs_native_checks(self):
         self.git("switch", "--quiet", "-c", "topic")
         self.write("crates/example/src/lib.rs", "pub fn changed() {}\n")

@@ -83,7 +83,7 @@ def changed_paths(diff):
         yield old_mode, new_mode, path
 
 
-def is_packaging_input(path):
+def is_build_input(path):
     return path in PACKAGE_FILES or path.startswith(PACKAGE_DIRECTORIES)
 
 
@@ -95,19 +95,11 @@ def is_pr_packaging_input(path):
     )
 
 
-def is_documentation(path):
-    return (
-        path in {"AGENTS.md", "README.md"}
-        or (path.startswith("docs/") and path.endswith(".md"))
-        or (path.startswith("docs/images/") and path.endswith((".jpg", ".jpeg", ".png", ".svg")))
-    )
-
-
 def push_fallback(changes):
     # GitHub's path filter may truncate the file list or see only a rename's new
     # name. Keep the fallback scoped to the same inputs as the path filter.
     package_inputs = [
-        (old, new) for old, new, path in changes if is_packaging_input(path)
+        (old, new) for old, new, path in changes if is_build_input(path)
     ]
     if not package_inputs:
         return False
@@ -116,7 +108,7 @@ def push_fallback(changes):
     return (
         any(new == "000000" for _, new in package_inputs)
         and any(
-            old == "000000" and not is_packaging_input(path) for old, _, path in changes
+            old == "000000" and not is_build_input(path) for old, _, path in changes
         )
     )
 
@@ -145,7 +137,7 @@ def validate_changes(event, ref, before):
         paths = [path for _, _, path in changes]
         if any(map(is_pr_packaging_input, paths)):
             return "package"
-        if any(not is_documentation(path) for path in paths):
+        if any(map(is_build_input, paths)):
             return "native"
     if main_push and push_fallback(changes):
         return "package"

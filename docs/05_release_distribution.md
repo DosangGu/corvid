@@ -238,7 +238,7 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 
 | Changes or trigger | Corvid Checks | Corvid Native Checks | Package Corvid | Publish Corvid Release |
 | --- | --- | --- | --- | --- |
-| Documentation-only PR | Lightweight validation | — | — | — |
+| PR limited to documentation or Dependabot configuration | Lightweight validation | — | — | — |
 | Ordinary source PR | Validation and native checks | Native builds, tests, and lints on five targets | — | — |
 | PR touching `Cargo.lock`, packaging, installers, updater implementation, or packaged assets | Validation and package integration | Called by Package Corvid | Build and verify installable packages on all five targets | — |
 | Push to `main` | Lightweight validation | — | Package integration when a packaging input changes | — |
@@ -247,11 +247,13 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 
 **Corvid Checks** validates the version, shared icons, formatting, and whitespace.
 It compares the checked-out PR merge commit with its first parent to select the
-integration checks. PRs limited to `AGENTS.md`, `README.md`, Markdown under
-`docs/`, or JPEG, PNG, and SVG under `docs/images/` use lightweight validation.
-Other PRs call **Corvid Native Checks** directly or through **Package Corvid**,
-depending on which files changed. The `Corvid checks` job reports the result
-of validation and the selected integration.
+integration checks. PRs trigger integration when their changes match the
+input paths in `deploy/validate_changes.py`. Changes to workspace sources,
+manifests, and the Rust toolchain pin trigger **Corvid Native Checks**.
+Changes to packaging inputs such as the lockfile and installers trigger
+**Package Corvid**, which includes native checks. Documentation and Dependabot
+configuration use lightweight validation. The `Corvid checks` job reports
+the result of validation and the selected integration.
 
 **Package Corvid** uses GitHub path filters for pushes to `main`. The filter
 also covers ordinary workspace sources, manifests, and schemas.
