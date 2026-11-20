@@ -2189,9 +2189,20 @@ async fn verify_tab_move(
         workspace_id: destination.to_owned(),
         ..old.clone()
     };
-    let Body::TabMoved(moved) = client.move_tab(&old.tab_id, destination, &mut output).await else {
-        panic!("missing tab relocation");
-    };
+    // Client removal is published before its terminal worker retires the old view.
+    let moved = timeout(WAIT, async {
+        loop {
+            match client.move_tab(&old.tab_id, destination, &mut output).await {
+                Body::TabMoved(moved) => break moved,
+                Body::Error(error) if error.code == "InputBusy" => {
+                    sleep(Duration::from_millis(10)).await;
+                }
+                reply => panic!("unexpected hidden tab relocation response: {reply:?}"),
+            }
+        }
+    })
+    .await
+    .expect("previous client's terminal view remained busy");
     assert_eq!(moved.location.as_ref(), Some(&expected));
     while watch.state().snapshot().sequence() < moved.commit_sequence {
         watch.next_change().await.unwrap();
