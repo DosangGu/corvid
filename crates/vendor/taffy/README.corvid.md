@@ -14,3 +14,7 @@ GPUI 0.2.2 pins Taffy 0.9.0. The manifest in this copy requires
 appeared in Taffy 0.9.2. Cargo uses this copy for Corvid workspace builds.
 Remove the copy and the workspace patch when GPUI selects a compatible Taffy
 release with a patched `grid` or without the `grid` dependency.
+
+Desktop and Agent Deck binaries built from the Corvid workspace use this
+copy. Standalone crates.io builds of the Agent Deck UI resolve the published
+GPUI dependency graph. The `corvid-tui` crate uses Agent Deck's headless library.
