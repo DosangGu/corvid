@@ -47,6 +47,9 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["process"] }
 vt100.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
+nix = { workspace = true, features = ["term"] }
+
 [build-dependencies]
 embed-resource.workspace = true
 

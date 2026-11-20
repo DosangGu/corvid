@@ -1,7 +1,9 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
-use std::io::{Read, Write};
-use std::sync::mpsc;
+use std::fs::File;
+use std::io::{self, ErrorKind, Read, Write};
+use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -9,8 +11,10 @@ use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Attached, RenderHeader, RouteToken, TerminalExited};
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, RenderFrame, accept_hello};
-use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
+use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
+use nix::pty::{Winsize, openpty};
 use tokio::net::UnixStream;
+use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
@@ -25,54 +29,58 @@ async fn tui_renders_and_routes_input_through_a_scripted_daemon() -> Result<()> 
     let instance = runtime.lock_instance()?;
     let listener = instance.bind(SocketRole::Client).await?;
 
-    let pty = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
-    let mut input = pty.master.take_writer()?;
-    let mut output = pty.master.try_clone_reader()?;
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_corvid"));
-    command.arg("--runtime-dir");
-    command.arg(runtime.path());
-    command.arg("attach");
-    command.env("CORVID_AGENT_MONITOR", "0");
-    command.env("CORVID_VIEW_STATE_DIR", fixture.path().join("views"));
-    let mut child = Tui(pty.slave.spawn_command(command)?);
-    drop(pty.slave);
+    let (mut child, mut terminal) = spawn_tui(runtime.path(), &fixture.path().join("views"))?;
 
     timeout(WAIT, async {
         let stream = listener.accept().await?.context("rejected TUI peer")?;
-        serve(stream, &mut input).await?;
-        loop {
-            if let Some(status) = child.0.try_wait()? {
-                ensure!(status.exit_code() == 7, "unexpected TUI status: {status}");
-                return Ok::<_, anyhow::Error>(());
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
+        serve(stream, &mut terminal).await?;
+        let status = child.wait().await?;
+        ensure!(status.code() == Some(7), "unexpected TUI status: {status}");
+        Ok(())
     })
     .await
-    .context("waiting for scripted TUI attachment")??;
-
-    let (send, receive) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        // Linux PTY masters return EIO when the last slave descriptor closes.
-        let _ = output.by_ref().take(4096).read_to_end(&mut bytes);
-        let _ = send.send(bytes);
-    });
-    let bytes = receive.recv_timeout(WAIT).context("reading TUI output")?;
-    ensure!(
-        bytes.windows(OUTPUT.len()).any(|window| window == OUTPUT),
-        "scripted output was missing from the TTY: {:?}",
-        String::from_utf8_lossy(&bytes)
-    );
-    Ok(())
+    .context("waiting for scripted TUI attachment")?
 }
 
-async fn serve(stream: UnixStream, input: &mut dyn Write) -> Result<()> {
+fn spawn_tui(runtime: &Path, views: &Path) -> Result<(Child, File)> {
+    let size = Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let pty = openpty(&size, None).context("opening scripted TUI PTY")?;
+    fcntl(&pty.master, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
+    fcntl(&pty.slave, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
+    let flags = OFlag::from_bits_retain(fcntl(&pty.master, FcntlArg::F_GETFL)?);
+    fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_corvid"));
+    command
+        .arg("--runtime-dir")
+        .arg(runtime)
+        .arg("attach")
+        .env("CORVID_AGENT_MONITOR", "0")
+        .env("CORVID_VIEW_STATE_DIR", views)
+        .stdin(Stdio::from(pty.slave.try_clone()?))
+        .stdout(Stdio::from(pty.slave.try_clone()?))
+        .stderr(Stdio::from(pty.slave))
+        .kill_on_drop(true);
+    // Detach from the test runner's controlling terminal. The child uses the
+    // PTY through stdio. Only call async-signal-safe operations after fork.
+    unsafe {
+        command.pre_exec(|| {
+            if nix::libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn().context("starting scripted TUI")?;
+    Ok((child, File::from(pty.master)))
+}
+
+async fn serve(stream: UnixStream, terminal: &mut File) -> Result<()> {
     let (read, write) = stream.into_split();
     let mut writer = FrameWriter::start(write, FrameRole::TuiOutput).await?;
     let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
@@ -134,8 +142,8 @@ async fn serve(stream: UnixStream, input: &mut dyn Write) -> Result<()> {
         session.validate_request(&ack)?,
         Body::FrameApplied(applied) if applied.frame_id == 1 && applied.render_generation == 1
     ));
-    input.write_all(b"x")?;
-    input.flush()?;
+    expect_rendered_output(terminal).await?;
+    terminal.write_all(b"x").context("writing TUI input")?;
     let request = reader.next_envelope().await?.context("missing input")?;
     ensure!(matches!(
         session.validate_request(&request)?,
@@ -156,13 +164,26 @@ async fn serve(stream: UnixStream, input: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-struct Tui(Box<dyn Child + Send + Sync>);
-
-impl Drop for Tui {
-    fn drop(&mut self) {
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+async fn expect_rendered_output(terminal: &mut File) -> Result<()> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 1024];
+    while bytes.len() < 4096 {
+        match terminal.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                bytes.extend_from_slice(&buffer[..count]);
+                if bytes.windows(OUTPUT.len()).any(|window| window == OUTPUT) {
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error).context("reading TUI output"),
         }
     }
+    bail!(
+        "scripted output was missing from the TTY: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
 }
