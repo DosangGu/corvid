@@ -6,6 +6,9 @@ on:
       package:
         type: boolean
         default: false
+      qualify:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -65,20 +68,25 @@ jobs:
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
       - name: Runtime tests
+        if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
       - name: Unix PTY qualification
+        if: inputs.qualify
         timeout-minutes: 10
         run: |
           cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-terminal-spike
           python3 spikes/terminal/tests/interactive.py target/${{ matrix.runtime }}/release/corvid-terminal-spike
       - name: Linux interactive TTY and shell lifecycle
+        if: inputs.qualify
         timeout-minutes: 10
         run: python3 crates/corvid-tui/tests/interactive.py target/${{ matrix.runtime }}/release/corvid
       - name: Retained Unix agent monitoring
+        if: inputs.qualify
         timeout-minutes: 10
         run: |
           python3 crates/corvid-tui/tests/agent_handoff.py target/${{ matrix.runtime }}/release/corvid
       - name: Prepare isolated Linux SSH lifecycle fixture
+        if: inputs.qualify
         run: |
           sudo mkdir -p /run/sshd
           sudo loginctl enable-linger "$USER"
@@ -86,6 +94,7 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
       - name: Linux SSH disconnect and reconnect
+        if: inputs.qualify
         timeout-minutes: 10
         run: python3 crates/corvid-tui/tests/ssh_lifecycle.py target/${{ matrix.runtime }}/release/corvid
       - name: Runtime manifest
@@ -95,7 +104,7 @@ jobs:
         if: inputs.package
         run: python deploy/package.py package --product tui --target ${{ matrix.runtime }} --runtime target/runtime --build target/${{ matrix.runtime }}/release --output target/dist
       - name: Validate installation and daemon lifecycle
-        if: inputs.package
+        if: inputs.package && inputs.qualify
         run: python deploy/test_install.py --assets target/dist --binary target/${{ matrix.runtime }}/release/corvid
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.package
@@ -141,13 +150,17 @@ jobs:
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
+        if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
       - name: Workspace lints
+        if: inputs.qualify
         run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
       - name: Linux Desktop title synchronization over SSH
+        if: inputs.qualify
         timeout-minutes: 10
         run: python3 deploy/test_title_ssh.py --binary target/${{ matrix.desktop }}/release/corvid --target ${{ matrix.desktop }} --release
       - name: Linux Desktop UI interactions
+        if: inputs.qualify
         timeout-minutes: 10
         env:
           CORVID_AGENT_DECK_SCREENSHOT: target/agent-deck-ready.png
@@ -158,14 +171,17 @@ jobs:
           CORVID_SCROLL_PREVIEW_DIR: target
         run: xvfb-run -a python3 deploy/test_desktop.py --build target/${{ matrix.desktop }}/release
       - name: Connected managed SSH updates
+        if: inputs.qualify
         timeout-minutes: 10
         run: xvfb-run -a python3 deploy/test_remote_update.py --build target/${{ matrix.desktop }}/release --target ${{ matrix.desktop }} --screenshot target/remote-update-prompt.png
       - name: Linux Agent Deck card focus
+        if: inputs.qualify
         timeout-minutes: 5
         run: |
           xvfb-run -a python3 deploy/test_deck_focus.py --build target/${{ matrix.desktop }}/release \
             --history-screenshot target/agent-deck-run-history.png --tooltip-screenshot target/agent-deck-tooltip.png
       - name: Linux Agent Deck multi-host grid
+        if: inputs.qualify
         timeout-minutes: 5
         env:
           CORVID_MULTI_HOST_GRID_SCREENSHOT: ${{ github.workspace }}/target/agent-deck-multi-host.png
@@ -174,11 +190,13 @@ jobs:
           trap 'rm -rf -- "$runtime"' EXIT
           XDG_RUNTIME_DIR="$runtime" xvfb-run -a cargo test --locked --release --target ${{ matrix.desktop }} -p corvid-agent-deck --bin corvid-agent-deck grid_routes_clicks_to_local_and_two_ssh_scopes -- --ignored --nocapture
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.qualify
         with:
           name: remote-update-preview-${{ matrix.desktop }}
           path: target/remote-update-prompt.png
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.qualify
         with:
           name: agent-deck-preview-${{ matrix.desktop }}
           path: |
@@ -189,6 +207,7 @@ jobs:
             target/agent-deck-tooltip.png
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.qualify
         with:
           name: workspace-directory-preview-${{ matrix.desktop }}
           path: |
@@ -239,6 +258,7 @@ jobs:
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
       - name: Runtime tests
+        if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
       - name: Runtime manifest
         if: inputs.package
@@ -247,7 +267,7 @@ jobs:
         if: inputs.package
         run: python deploy/package.py package --product tui --target ${{ matrix.runtime }} --runtime target/runtime --build target/${{ matrix.runtime }}/release --output target/dist
       - name: Validate installation and daemon lifecycle
-        if: inputs.package
+        if: inputs.package && inputs.qualify
         run: python deploy/test_install.py --assets target/dist --binary target/${{ matrix.runtime }}/release/corvid.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.package
@@ -278,8 +298,10 @@ jobs:
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
+        if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
       - name: Workspace lints
+        if: inputs.qualify
         run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
       - name: Stage binaries for Desktop integration
         if: inputs.package
@@ -330,16 +352,20 @@ jobs:
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
       - name: Runtime tests
+        if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
       - name: Unix PTY qualification
+        if: inputs.qualify
         timeout-minutes: 10
         run: |
           cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-terminal-spike
           python3 spikes/terminal/tests/interactive.py target/${{ matrix.runtime }}/release/corvid-terminal-spike
       - name: macOS interactive TTY lifecycle
+        if: inputs.qualify
         timeout-minutes: 10
         run: python3 crates/corvid-tui/tests/interactive.py --tty-only target/${{ matrix.runtime }}/release/corvid
       - name: Retained Unix agent monitoring
+        if: inputs.qualify
         timeout-minutes: 10
         run: |
           if ! command -v protoc >/dev/null; then
@@ -353,7 +379,7 @@ jobs:
         if: inputs.package
         run: python deploy/package.py package --product tui --target ${{ matrix.runtime }} --runtime target/runtime --build target/${{ matrix.runtime }}/release --output target/dist
       - name: Validate installation and daemon lifecycle
-        if: inputs.package
+        if: inputs.package && inputs.qualify
         run: python deploy/test_install.py --assets target/dist --binary target/${{ matrix.runtime }}/release/corvid
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.package
@@ -388,8 +414,10 @@ jobs:
       - name: Build Desktop and plugins
         run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update --features corvid-deck/stream-deck
       - name: Workspace tests
+        if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace --features corvid-deck/stream-deck
       - name: Workspace lints
+        if: inputs.qualify
         run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets --features corvid-deck/stream-deck -- -D warnings
       - name: Stage binaries for Desktop integration
         if: inputs.package
