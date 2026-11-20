@@ -43,7 +43,7 @@ pub async fn shared_scope(preferred: Scope) -> Result<Scope> {
         loop {
             match directory.lock_storage() {
                 Ok(lock) => break Ok(lock),
-                Err(error) if lock_busy(&error) => sleep(Duration::from_millis(25)).await,
+                Err(error) if retry_lock(&error) => sleep(Duration::from_millis(25)).await,
                 Err(error) => break Err(error),
             }
         }
@@ -93,7 +93,13 @@ impl Owner {
     }
 }
 
-fn lock_busy(error: &anyhow::Error) -> bool {
+fn retry_lock(error: &anyhow::Error) -> bool {
+    #[cfg(target_os = "macos")]
+    if error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) {
+        // Concurrent first launches can race while creating the lock file.
+        return true;
+    }
+
     #[cfg(not(windows))]
     return error.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::EWOULDBLOCK);
 
