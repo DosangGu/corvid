@@ -17,9 +17,10 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
-    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameReader,
-    FrameWriter, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
-    RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session, decode_envelope,
+    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameError,
+    FrameReader, FrameWriter, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole,
+    ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
+    decode_envelope,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::signal::unix::{SignalKind, signal};
@@ -705,7 +706,10 @@ impl Interactive {
                     .await
                     .context("daemon closed during layout setup")??;
                 match frame {
-                    Frame::Render(render) => self.render(tty, render).await?,
+                    Frame::Render(render) => {
+                        let applied = self.render(tty, render).await?;
+                        self.send(Body::FrameApplied(applied)).await?;
+                    }
                     Frame::Structured(payload) => {
                         let envelope = self.scoped_envelope(&payload)?;
                         if envelope.request_id.as_deref() == Some(&request_id) {
@@ -769,13 +773,60 @@ impl Interactive {
 
     async fn receive(&mut self, tty: &Tty, frame: Frame) -> Result<Option<u32>> {
         match frame {
-            Frame::Render(render) => self.render(tty, render).await?,
+            Frame::Render(render) => {
+                let applied = self.render(tty, render).await?;
+                if let Err(error) = self.send(Body::FrameApplied(applied)).await {
+                    if matches!(
+                        error.downcast_ref::<FrameError>(),
+                        Some(FrameError::Io(io)) if matches!(
+                            io.kind(),
+                            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+                                | ErrorKind::ConnectionAborted | ErrorKind::NotConnected
+                        )
+                    ) && let Some(status) = self.read_final_status().await?
+                    {
+                        return Ok(Some(status));
+                    }
+                    return Err(error).context("acknowledging the terminal frame");
+                }
+            }
             Frame::Structured(payload) => {
                 let envelope = self.scoped_envelope(&payload)?;
                 return self.event(tty, envelope).await;
             }
         }
         Ok(None)
+    }
+
+    async fn read_final_status(&mut self) -> Result<Option<u32>> {
+        // The daemon can queue the final event and close its end of the stream
+        // before a render acknowledgement reaches it.
+        timeout(COMMAND_TIMEOUT, async {
+            while let Some(frame) = self.incoming.frames.recv().await {
+                if let Frame::Structured(payload) = frame?
+                    && let Some(status) = self.final_status(&self.scoped_envelope(&payload)?)?
+                {
+                    return Ok(Some(status));
+                }
+            }
+            Ok(None)
+        })
+        .await
+        .context("waiting for the daemon's final terminal status")?
+    }
+
+    fn final_status(&self, envelope: &Envelope) -> Result<Option<u32>> {
+        match &envelope.body {
+            Some(Body::TerminalExited(exited)) => {
+                ensure!(
+                    exited.terminal_id == self.route.terminal_id,
+                    "unexpected terminal exit"
+                );
+                Ok(Some(exited.exit_code))
+            }
+            Some(Body::Detach(_)) => Ok(Some(0)),
+            _ => Ok(None),
+        }
     }
 
     fn scoped_envelope(&self, payload: &[u8]) -> Result<Envelope> {
@@ -805,13 +856,6 @@ impl Interactive {
                     timeout(COMMAND_TIMEOUT, tty.write_all(bytes)).await??;
                 }
             }
-            Some(Body::TerminalExited(exited)) => {
-                ensure!(
-                    exited.terminal_id == self.route.terminal_id,
-                    "unexpected terminal exit"
-                );
-                return Ok(Some(exited.exit_code));
-            }
             Some(Body::Error(error)) if error.code == "InputBusy" => {
                 if self.pending_resize.as_ref().is_some_and(|resize| {
                     envelope.request_id.as_deref() == Some(resize.request_id.as_str())
@@ -835,14 +879,16 @@ impl Interactive {
                 timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
             }
             Some(Body::Error(error)) => return Err(ProtocolFault::from_wire(&error).into()),
-            Some(Body::Detach(_)) => return Ok(Some(0)),
+            Some(Body::TerminalExited(_) | Body::Detach(_)) => {
+                return self.final_status(&envelope);
+            }
             Some(Body::WorkspaceClientsDisconnected(_)) => {}
             _ => bail!("unsupported daemon event"),
         }
         Ok(None)
     }
 
-    async fn render(&mut self, tty: &Tty, render: RenderFrame) -> Result<()> {
+    async fn render(&mut self, tty: &Tty, render: RenderFrame) -> Result<FrameApplied> {
         let header = render.header;
         ensure!(
             header.host_id == self.session.host_id
@@ -873,12 +919,10 @@ impl Interactive {
             self.restoring = false;
         }
         self.applied = Some((header.render_generation, header.frame_id));
-        self.send(Body::FrameApplied(FrameApplied {
+        Ok(FrameApplied {
             render_generation: header.render_generation,
             frame_id: header.frame_id,
-        }))
-        .await
-        .map(|_| ())
+        })
     }
 
     fn view_changed(&mut self, tty: &Tty, view: ViewChanged) -> Result<()> {

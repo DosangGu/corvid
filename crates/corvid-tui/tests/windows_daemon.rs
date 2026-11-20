@@ -9,7 +9,7 @@ use std::process::{Child as Process, Command, Stdio};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::windows::DaemonPipe;
 use corvid_protocol::wire::snapshot_entity::Body;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -70,7 +70,9 @@ async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shel
     first.send(b"$restoreValue=('RESTORE_' + 'ALIVE'); [Console]::WriteLine($restoreValue)\r")?;
     first.wait_for("RESTORE_ALIVE")?;
     first.send(b"\x1dd")?;
-    first.expect_exit(0)?;
+    first
+        .expect_exit(0)
+        .context("detaching the saved-view writer")?;
     let store = corvid_client::view_state::ViewStore::new(runtime.join("client-views/tui"));
     let saved = store.last().context("TUI did not save its view")?;
     ensure!(
@@ -87,7 +89,9 @@ async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shel
     reopened.send(b"[Console]::WriteLine(('CHECK_' + $restoreValue))\r")?;
     reopened.wait_for("CHECK_RESTORE_ALIVE")?;
     reopened.send(b"\x1dd")?;
-    reopened.expect_exit(0)?;
+    reopened
+        .expect_exit(0)
+        .context("detaching after saved-view reopen")?;
     Ok(())
 }
 
@@ -237,13 +241,17 @@ async fn ordinary_attach_resumes_the_terminal_and_updates_its_size() -> Result<(
     let id = terminal_id(&runtime).await?;
 
     let mut successor = Tui::open_sized(&runtime, ["attach"].map(OsString::from), 72, 22)?;
-    writer.expect_exit(0)?;
+    writer
+        .expect_exit(0)
+        .context("retiring the original writer")?;
     successor.wait_for("STATE_PRESERVED")?;
     assert_eq!(terminal_id(&runtime).await?, id);
     successor.send(b"'RESUMED_'+$kept+'_'+[Console]::WindowWidth\r")?;
     successor.wait_for("RESUMED_PRESERVED_72")?;
     successor.send(b"exit\r")?;
-    successor.expect_exit(0)?;
+    successor
+        .expect_exit(0)
+        .context("exiting the resumed shell")?;
     Ok(())
 }
 
@@ -1028,7 +1036,9 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     first.send(b"[Console]::WriteLine(('HISTORY_' + 'START')); 1..240 | ForEach-Object { [Console]::WriteLine(('HISTORY_' + $_)) }\r")?;
     first.wait_for("HISTORY_240")?;
     first.send(b"\x1dd")?;
-    first.expect_exit(0)?;
+    first
+        .expect_exit(0)
+        .context("detaching the retained shell")?;
     ensure!(
         terminal_id(&runtime).await? == original,
         "detach removed the live terminal"
@@ -1097,7 +1107,9 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     let mut third = Tui::open(&runtime, shell)?;
     third.wait_for("PS ")?;
     third.send(b"\x1dS")?;
-    third.expect_exit(0)?;
+    third
+        .expect_exit(0)
+        .context("stopping the daemon from the TUI")?;
     let snapshot = corvid_client::snapshot(&runtime).await?;
     ensure!(
         !snapshot
@@ -1309,6 +1321,7 @@ struct Tui {
     input: Box<dyn Write + Send>,
     output: Option<Receiver<Vec<u8>>>,
     screen: vt100::Parser,
+    output_tail: Vec<u8>,
 }
 
 impl Tui {
@@ -1366,6 +1379,7 @@ impl Tui {
             master: pair.master,
             input,
             output: Some(output),
+            output_tail: Vec::new(),
             screen: vt100::Parser::new(
                 NonZeroU16::new(rows).unwrap(),
                 NonZeroU16::new(cols).unwrap(),
@@ -1412,9 +1426,13 @@ impl Tui {
         Ok(())
     }
 
-    fn read(&self, deadline: Instant) -> Result<Vec<u8>> {
+    fn read(&mut self, deadline: Instant) -> Result<Vec<u8>> {
         let time = deadline.saturating_duration_since(Instant::now());
-        Ok(self.output.as_ref().unwrap().recv_timeout(time)?)
+        let output = self.output.as_ref().unwrap().recv_timeout(time)?;
+        self.output_tail.extend_from_slice(&output);
+        let excess = self.output_tail.len().saturating_sub(4096);
+        self.output_tail.drain(..excess);
+        Ok(output)
     }
 
     fn wait_for(&mut self, marker: &str) -> Result<()> {
@@ -1448,10 +1466,15 @@ impl Tui {
         let deadline = Instant::now() + WAIT;
         loop {
             if let Some(status) = self.child.try_wait()? {
-                ensure!(
-                    status.exit_code() == expected,
-                    "unexpected TUI exit status {status}"
-                );
+                if status.exit_code() != expected {
+                    // ConPTY can deliver the child's final diagnostic after its process exits.
+                    let drain = Instant::now() + Duration::from_millis(200);
+                    while Instant::now() < drain && self.read(drain).is_ok() {}
+                    bail!(
+                        "unexpected TUI exit status {status}, expected {expected}; console tail: {:?}",
+                        String::from_utf8_lossy(&self.output_tail)
+                    );
+                }
                 return Ok(());
             }
             ensure!(Instant::now() < deadline, "TUI did not exit");
