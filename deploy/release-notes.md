@@ -1,11 +1,9 @@
-Corvid v0.3.5 improves SSH session recovery, preserves running sessions during updates, and makes Desktop terminals easier to read and navigate.
+Corvid v0.3.6 preserves existing macOS Dock items across managed Desktop updates and restores Windows title bar gestures.
 
-- SSH clients restore input to attached terminals after reconnecting and stop automatic retries after a prolonged outage. When an old terminal cannot be restored, Corvid can resume a verified saved agent conversation or offer recovery choices before opening a shell. [#189](https://github.com/DosangGu/corvid/pull/189) · [#191](https://github.com/DosangGu/corvid/pull/191) · [#197](https://github.com/DosangGu/corvid/pull/197)
-- Updates retire obsolete packages when their processes release them. A retained Claude Code terminal can restart Claude after a daemon upgrade. [#184](https://github.com/DosangGu/corvid/pull/184) · [#186](https://github.com/DosangGu/corvid/pull/186)
-- Windows Desktop integrates window controls into the tab bar. Desktop anchors the host picker to its button, underlines terminal links on hover, and improves text contrast in the dark terminal theme. [#183](https://github.com/DosangGu/corvid/pull/183) · [#185](https://github.com/DosangGu/corvid/pull/185) · [#190](https://github.com/DosangGu/corvid/pull/190) · [#194](https://github.com/DosangGu/corvid/pull/194) · [#196](https://github.com/DosangGu/corvid/pull/196)
-- macOS Desktop updates Finder-installed app bundles in place and keeps their existing Dock items working. [#199](https://github.com/DosangGu/corvid/pull/199)
-- Agent Deck shows session titles in tooltips that fit narrow windows. [#192](https://github.com/DosangGu/corvid/pull/192)
+- macOS script installations keep the same app bundle across updates. The first update migrates the existing bundle to a permanent location so Finder bookmarks and pinned Dock items keep working. Running sessions continue through daemon handoff. [#203](https://github.com/DosangGu/corvid/pull/203)
+- Windows Desktop restores title bar dragging, double-click to maximize or restore, and native caption handling around the tabs. [#202](https://github.com/DosangGu/corvid/pull/202)
+- Corvid now builds and verifies the TUI and its dependencies as Cargo source packages on Linux, Windows, and macOS. This release is available through GitHub Releases. [#200](https://github.com/DosangGu/corvid/pull/200)
 
 To update, open **Settings → About & updates** in Desktop or run `corvid update` for a script installation.
 
-[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.3.5/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.3.4...v0.3.5)
+[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.3.6/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.3.5...v0.3.6)
