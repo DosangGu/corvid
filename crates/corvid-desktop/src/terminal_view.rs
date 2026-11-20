@@ -41,6 +41,7 @@ pub struct TerminalView {
     history: Option<History>,
     history_request: Option<Task<()>>,
     pending_wheel_back: usize,
+    pending_wheel_copy: bool,
     history_epoch: Option<u64>,
     gesture: WheelGesture,
     _updates: Task<()>,
@@ -226,6 +227,7 @@ impl TerminalView {
             history: None,
             history_request: None,
             pending_wheel_back: 0,
+            pending_wheel_copy: false,
             history_epoch: None,
             gesture: WheelGesture::default(),
             _updates: updates,
@@ -402,6 +404,7 @@ impl TerminalView {
     fn open_history(&mut self, mode: HistoryOpen, back: isize, cx: &mut Context<Self>) {
         let route = self.session.wheel_target(&self.pane);
         let wheel = mode == HistoryOpen::Wheel;
+        self.pending_wheel_copy = false;
         let shell_only =
             wheel && route.is_some_and(|(_, owner)| owner == WheelTarget::LegacyScrollback);
         self.history_epoch = route.map(|route| route.0);
@@ -435,6 +438,7 @@ impl TerminalView {
                     view.clear_history();
                 } else if wheel {
                     let back = std::mem::take(&mut view.pending_wheel_back);
+                    let copy = std::mem::take(&mut view.pending_wheel_copy);
                     if route == current
                         && let Some(history) = History::from_wheel(result, back, height, shell_only)
                     {
@@ -443,6 +447,9 @@ impl TerminalView {
                         view.history = Some(history);
                     } else {
                         view.history_epoch = None;
+                    }
+                    if copy && route == current {
+                        view.copy_visible(cx);
                     }
                 } else if let Some(history) = &mut view.history {
                     history.loaded(result, height);
@@ -457,6 +464,7 @@ impl TerminalView {
         self.history = None;
         self.history_request = None;
         self.pending_wheel_back = 0;
+        self.pending_wheel_copy = false;
         self.history_epoch = None;
         self.marked.clear();
     }
@@ -472,6 +480,7 @@ impl TerminalView {
             self.history_epoch = None;
             self.history_request = None;
             self.pending_wheel_back = 0;
+            self.pending_wheel_copy = false;
         }
     }
 
@@ -551,6 +560,22 @@ impl TerminalView {
         cx.stop_propagation();
     }
 
+    fn copy_visible(&self, cx: &mut Context<Self>) {
+        let contents = self.selection.as_ref().map(Selection::text).or_else(|| {
+            if let Some(history) = &self.history {
+                let (bounds, metrics) = self.surface.get()?;
+                history
+                    .screen(metrics.grid(bounds))
+                    .map(|(screen, _)| screen.contents())
+            } else {
+                self.session.screen(&self.pane, Screen::contents)
+            }
+        });
+        if let Some(text) = contents {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
     fn history_key(&mut self, key: &Keystroke, cx: &mut Context<Self>) -> bool {
         let height = self.visible_rows();
         if key.key == "escape" {
@@ -570,15 +595,7 @@ impl TerminalView {
             key.modifiers.shift || command,
         ) {
             ("c", true, true) => {
-                let contents = self.selection.as_ref().map(Selection::text).or_else(|| {
-                    let (bounds, metrics) = self.surface.get()?;
-                    history
-                        .screen(metrics.grid(bounds))
-                        .map(|(screen, _)| screen.contents())
-                });
-                if let Some(text) = contents {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
+                self.copy_visible(cx);
                 return true;
             }
             ("f", true, true) => {
@@ -606,14 +623,27 @@ impl TerminalView {
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.cancel_link();
-        self.cancel_pending_wheel();
-        if !self.marked.is_empty() {
-            return;
-        }
         let key = &event.keystroke;
         let modifiers = key.modifiers;
         let edit_shortcut = modifiers == gpui::Modifiers::control_shift()
             || (cfg!(target_os = "macos") && modifiers == gpui::Modifiers::command());
+        if self.pending_wheel_back > 0 && self.marked.is_empty() {
+            // The history reply can arrive after the next two keyboard events.
+            if key.key == "home" && !modifiers.modified() {
+                self.pending_wheel_back = isize::MAX as usize;
+                cx.stop_propagation();
+                return;
+            }
+            if key.key == "c" && edit_shortcut {
+                self.pending_wheel_copy = true;
+                cx.stop_propagation();
+                return;
+            }
+        }
+        self.cancel_pending_wheel();
+        if !self.marked.is_empty() {
+            return;
+        }
         if self.history.is_some() {
             if self.history_key(key, cx) {
                 cx.stop_propagation();
@@ -635,14 +665,7 @@ impl TerminalView {
             self.paste(cx);
             cx.notify();
         } else if edit_shortcut && key.key == "c" {
-            let contents = self
-                .selection
-                .as_ref()
-                .map(Selection::text)
-                .or_else(|| self.session.screen(&self.pane, Screen::contents));
-            if let Some(contents) = contents {
-                cx.write_to_clipboard(ClipboardItem::new_string(contents));
-            }
+            self.copy_visible(cx);
         } else if key.key == "escape" && !modifiers.modified() && self.selection.take().is_some() {
             cx.notify();
         } else {
