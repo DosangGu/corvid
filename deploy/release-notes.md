@@ -1,9 +1,10 @@
-Corvid v0.3.6 preserves existing macOS Dock items across managed Desktop updates and restores Windows title bar gestures.
+Corvid v0.3.7 fixes Desktop restarts after updates, Agent Deck reuse across hosts, and TUI scrollback interactions.
 
-- macOS script installations keep the same app bundle across updates. The first update migrates the existing bundle to a permanent location so Finder bookmarks and pinned Dock items keep working. Running sessions continue through daemon handoff. [#203](https://github.com/DosangGu/corvid/pull/203)
-- Windows Desktop restores title bar dragging, double-click to maximize or restore, and native caption handling around the tabs. [#202](https://github.com/DosangGu/corvid/pull/202)
-- Corvid now builds and verifies the TUI and its dependencies as Cargo source packages on Linux, Windows, and macOS. This release is available through GitHub Releases. [#200](https://github.com/DosangGu/corvid/pull/200)
+- Desktop restarts after applying an update even if the window that started the update has closed. [#233](https://github.com/DosangGu/corvid/pull/233)
+- Desktop reuses a single Agent Deck across host selections. On Unix, updates close duplicate Deck windows from older versions. [#229](https://github.com/DosangGu/corvid/pull/229) [#232](https://github.com/DosangGu/corvid/pull/232)
+- The TUI handles history navigation and copy commands during wheel-driven scrollback loading. It also reads the final terminal status when a render acknowledgement overlaps shutdown. [#227](https://github.com/DosangGu/corvid/pull/227) [#228](https://github.com/DosangGu/corvid/pull/228)
+- Windows retries transient file-sharing errors and allows more time for concurrent view-state writes to complete. [#223](https://github.com/DosangGu/corvid/pull/223) [#225](https://github.com/DosangGu/corvid/pull/225)
 
 To update, open **Settings → About & updates** in Desktop or run `corvid update` for a script installation.
 
-[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.3.6/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.3.5...v0.3.6)
+[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.3.7/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.3.6...v0.3.7)
