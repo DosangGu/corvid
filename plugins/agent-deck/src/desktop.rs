@@ -213,26 +213,7 @@ impl Settings {
 
     #[cfg(not(windows))]
     pub async fn refresh_running(&self, executable: &Path) -> Result<()> {
-        let mut failures = Vec::new();
-        for scope in corvid_companion::monitor::discover(&self.state)? {
-            if let Err(error) = crate::unix_lifecycle::ensure_current(
-                executable,
-                &scope.state,
-                &scope.address,
-                &scope.config,
-                false,
-            )
-            .await
-            {
-                failures.push(format!("{error:#}"));
-            }
-        }
-        ensure!(
-            failures.is_empty(),
-            "Could not update running Agent Decks: {}",
-            failures.join("; ")
-        );
-        Ok(())
+        crate::unix_lifecycle::refresh_profile(executable, &self.state, None).await
     }
 
     pub fn refresh_in_background(&self) -> Result<()> {

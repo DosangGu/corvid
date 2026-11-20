@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 from package import MACOS, RUNTIME_TARGETS, WINDOWS_TARGETS, digest
 import monitor_fixture
@@ -82,11 +83,11 @@ print(window![kCGWindowNumber as String] as! Int)
                                timeout=10, check=False)
             reader, epoch = monitor_fixture.ready(binaries / "corvid", directory / "state", environment)
         monitor_fixture.assert_same(reader, epoch, environment)
-        check_deck(deck, directory, environment, log)
+        check_deck(binaries / "corvid", deck, directory, environment, log)
         monitor_fixture.assert_same(reader, epoch, environment)
 
 
-def check_deck(binary, directory, environment, log):
+def check_deck(cli, binary, directory, environment, log):
     source = directory / "panel.swift"
     source.write_text('''import AppKit
 import CoreGraphics
@@ -109,13 +110,9 @@ for window in windows where (window[kCGWindowOwnerPID as String] as? Int) == pid
     run("swiftc", source, "-o", query)
     arguments = [binary, "--state-dir", directory / "state"]
     with running([*arguments, "--background"], environment, log) as deck:
-        deadline = time.monotonic() + 10
-        while not any(Path(environment["CORVID_RUNTIME_DIR"]).glob("d-*/companion.sock")):
-            if deck.poll() is not None:
-                log.seek(0)
-                raise AssertionError(log.read())
-            assert time.monotonic() < deadline, "Agent Deck did not start its listener"
-            time.sleep(0.1)
+        sockets = Path(environment["CORVID_RUNTIME_DIR"])
+        wait_for_deck(deck, sockets, log)
+        check_duplicate_deck(cli, binary, deck, directory / "state", sockets, environment, log)
 
         assert not run(query, deck.pid).strip(), "Background Deck showed a panel"
         # The second invocation sends the same activation request as Desktop.
@@ -130,6 +127,39 @@ for window in windows where (window[kCGWindowOwnerPID as String] as? Int) == pid
 
     with running(arguments, environment, log) as deck:
         check_panel_placement(query, deck.pid)
+
+
+def wait_for_deck(process, sockets, log, previous=()):
+    deadline = time.monotonic() + 10
+    while True:
+        ready = set(sockets.glob("d-*/companion.sock")).difference(previous)
+        if ready:
+            assert len(ready) == 1, ready
+            return ready.pop()
+        if process.poll() is not None:
+            log.seek(0)
+            raise AssertionError(log.read())
+        assert time.monotonic() < deadline, "Agent Deck did not start its listener"
+        time.sleep(0.1)
+
+
+def check_duplicate_deck(cli, binary, owner, profile, sockets, environment, log):
+    host = uuid.uuid4()
+    second = profile / "slot-board" / host.hex
+    subprocess.run([cli, "companion", "--state-dir", second, "init", "--host-id", str(host)],
+                   env=environment, check=True, timeout=10)
+    existing = set(sockets.glob("d-*/companion.sock"))
+    # Simulate a Deck left running for another host by a pre-shared-Deck release.
+    with running([binary, "--state-dir", second, "--managed-start", "--background"],
+                 environment, log) as duplicate:
+        duplicate_socket = wait_for_deck(duplicate, sockets, log, existing)
+        subprocess.run([binary, "--state-dir", second, "--refresh-running"],
+                       env=environment, check=True, timeout=30)
+        assert duplicate.wait(timeout=15) == 0
+        assert not duplicate_socket.exists(), "Duplicate Deck was restarted"
+        assert owner.poll() is None, "The shared Deck should be reused"
+        assert set(sockets.glob("d-*/companion.sock")) == existing
+    print("PASS macOS: refreshing a profile retired its duplicate Agent Deck")
 
 
 def check_panel_placement(query, pid):

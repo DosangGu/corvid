@@ -53,8 +53,9 @@ carries bounded Protobuf activation and Desktop focus requests. Host and
 controller identity and the connection generation are checked. The OS
 supplies the registering Desktop peer's process ID. Closing or switching
 Desktop retires its focus registration. Other hosts use their exact Desktop
-focus endpoints. If an older installation already has several Deck windows
-open, quit those instances once to use the shared launch path.
+focus endpoints. On Linux and macOS, update and Desktop startup keep one
+running Deck per profile and retire the other Decks from older installations.
+On Windows, quit any extra instances once to use the shared launch path.
 
 On Windows, starting an updated Desktop checks the running Decks in its saved
 controller scopes, including hidden tray instances. It replaces an older Deck

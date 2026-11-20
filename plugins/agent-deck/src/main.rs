@@ -76,6 +76,16 @@ fn main() -> Result<()> {
             std::future::pending(),
         ));
     }
+    #[cfg(not(windows))]
+    if options.refresh_running {
+        let profile =
+            corvid_agent_deck::scope::profile_root(&scope.state, scope.config.host_id).to_owned();
+        return runtime.block_on(corvid_agent_deck::unix_lifecycle::refresh_profile(
+            &std::env::current_exe()?,
+            &profile,
+            Some(scope),
+        ));
+    }
     if !options.managed_start {
         scope = runtime.block_on(corvid_agent_deck::scope::shared_scope(scope))?;
     }
@@ -84,11 +94,9 @@ fn main() -> Result<()> {
         address,
         config,
     } = scope;
+    #[cfg(windows)]
     if options.refresh_running {
-        #[cfg(windows)]
         use corvid_agent_deck::lifecycle::ensure_current;
-        #[cfg(not(windows))]
-        use corvid_agent_deck::unix_lifecycle::ensure_current;
         runtime.block_on(ensure_current(
             &std::env::current_exe()?,
             &state,
