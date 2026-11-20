@@ -13,9 +13,8 @@ TUI sessions that should not start background monitoring, such as isolated PTY
 fixtures. This does not stop an already-running monitor.
 
 The desktop GUI and TUI share daemon workspaces, tabs, panes, and writer
-leases. A Stream Deck integration daemon is planned for the desktop
-distribution. See [planned desktop convergence](#planned-desktop-convergence)
-for the remaining parity and hardware work.
+leases. See [planned desktop convergence](#planned-desktop-convergence) for
+the remaining parity work.
 
 - [Linux Desktop quick start](#linux-desktop-quick-start)
 - [Windows quick start](#windows-quick-start)
@@ -378,9 +377,9 @@ The adapter reports process state and exit status. Configure
 [Windows provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage)
 for activity, requests, and response notifications.
 
-Use `corvid-deck.exe` for the standalone companion deck and WezTerm pairing.
-Open a working TUI with `ssh -tt work-host corvid`, press Ctrl-] then r, and
-use **Pair WezTerm…** in the standalone deck to register that terminal.
+To pair a WezTerm terminal, open a working TUI with `ssh -tt work-host corvid`,
+press Ctrl-] then r, and use **Pair WezTerm…** in Corvid Agent Deck to register
+that terminal.
 
 ### Windows state and pipe settings
 
@@ -402,9 +401,8 @@ For published packages and update behavior, use the
 command produces versioned Desktop and TUI archives with installation metadata.
 
 Windows source builds require the pinned MSVC Rust toolchain and the Windows
-SDK for the GUI. Cargo builds the Protobuf schema using `protox`. Set
-`$env:GPUI_FXC_PATH` to the full path of the SDK's `fxc.exe` if GPUI
-cannot find it.
+SDK for the GUI. GPUI CE compiles the Direct3D shaders during native Windows
+builds. Cargo builds the Protobuf schema using `protox`.
 
 Set `$env:CORVID_MACOS_RUNTIME` to a macOS runtime artifact directory from the same
 revision. Supply the other architecture's Linux and Windows runtimes via
@@ -428,8 +426,8 @@ rustup target add x86_64-unknown-linux-musl
 The packager writes versioned `corvid-desktop-VERSION-x86_64-pc-windows-msvc.zip`
 and `corvid-tui-VERSION-x86_64-pc-windows-msvc.zip` archives under
 `target/windows-dist`, or the corresponding `CARGO_TARGET_DIR`. The Desktop
-archive contains `corvid.exe`, `corvid-desktop.exe`, `corvid-deck.exe`, the
-license, launchers, package metadata, and `Set-CorvidStartup.ps1`. Corvid Agent Deck
+archive contains `corvid.exe`, `corvid-desktop.exe`, the license, launchers,
+package metadata, and `Set-CorvidStartup.ps1`. Corvid Agent Deck
 is under `plugins/agent-deck/`; `-WithoutAgentDeck` is available for local
 packaging through `Package-Corvid.ps1`.
 
@@ -475,12 +473,10 @@ layout and agent observations through a separate control connection.
 flowchart LR
     subgraph Windows
         Desktop["corvid-desktop.exe"]
-        Deck["corvid-deck.exe"]
         Board["corvid-agent-deck.exe"]
         CLI["corvid.exe companion CLI"]
         Companion["corvid.exe companion run"]
         WezTerm["WezTerm pane"]
-        Deck -->|"private named pipe"| Companion
         Board -->|"private named pipe"| Companion
         CLI -->|"private named pipe"| Companion
         Companion -->|"verified pane selection"| WezTerm
@@ -508,7 +504,6 @@ flowchart LR
 | SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection uses `corvid control --stdio` directly or through the remote Corvid launcher. | [corvid-client](../crates/corvid-client/src/lib.rs) |
 | Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
 | Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and opens agent panes requested by Corvid Agent Deck. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
-| Deck | Shows agent slot buttons and requests focus for a paired WezTerm target. | [corvid-deck](../spikes/deck/src/main.rs) |
 | Corvid Agent Deck | Displays slots and queue, independently watches attention, and owns Windows tray/toasts/settings. Its pairing dialog lists verified local panes. | [corvid-agent-deck](../plugins/agent-deck/src/main.rs) |
 | Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../deploy/windows/) |
 | Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
@@ -623,14 +618,6 @@ the cause or resolution of the original Claude Code SSH freeze in
 
 ![Synthetic native rendering probe](images/desktop-terminal/rendering-probe.png)
 
-The future desktop distribution will include a Stream Deck integration daemon
-that uses companion slots and focus captures, with no authority to own PTYs or
-answer provider requests. The current standalone USB adapter is the prototype
-for this integration. Bundling, startup/shutdown ownership, last-window behavior,
-and login startup remain planned work; the current package does not include
-`corvid-streamdeck`. Physical-device qualification and acceptance case A33 are
-also pending. See the [integration plan](00_project_design.md#114-bundled-stream-deck-integration-daemon--planned).
-
 ## Windows diagnostics
 
 Run `corvid.exe companion doctor` to check system OpenSSH, private state, the
@@ -681,9 +668,7 @@ The window uses the workspace GPUI version and connects directly to the private
 Protobuf endpoint. Linux uses the same X11 or XWayland and Vulkan requirements
 as Corvid Desktop.
 
-The USB adapter can read that same presentation endpoint without Agent Deck.
-Its existing TUI pairing/focus contract is unchanged; routing USB clicks to a
-Desktop window without Agent Deck is still follow-up work. To stop a monitor,
+To stop a monitor,
 use `corvid companion --state-dir STATE --pipe-instance INSTANCE stop` on Windows
 or `--socket-dir SOCKET` on Unix. This leaves the execution daemon and agents running.
 After upgrading from a UI-owned companion, stop the old companion process once
@@ -710,56 +695,10 @@ notifications without a tray; closing its window exits. Details and limits are
 in [Agent Deck](06_agent_deck.md).
 
 On disconnection the board keeps the last snapshot visible and disables its
-actions. Reconnection loads a fresh snapshot. Standalone mode requires another
-terminal choice. A gesture uses the slot and terminal revisions that were visible when
-it began. A stale action is rejected and can be retried as a new click after
+actions. Reconnection loads a fresh snapshot. When focusing a paired TUI,
+select the target again. A gesture uses the slot and terminal revisions visible
+when it began. A stale action is rejected and can be retried as a new click after
 reviewing the refreshed board.
-
-### Live Stream Deck
-
-The standalone Windows GPUI deck uses the
-running companion's private presentation pipe.
-It displays assigned Claude Code and Codex slots, activity, pending requests,
-unseen alerts, and whether the companion and host are available. The 5 × 3
-layout shows 14 slots per page. The lower-right key advances the page, and the
-side panel shows unassigned runs separately. Use Corvid Agent Deck to edit slots
-and manage overflow.
-
-Run the deck from the repository root to use the same first-run flow during
-development. The default pipe instance is `main`.
-
-```powershell
-cargo run --locked -p corvid-deck
-```
-
-Use **Pair WezTerm…** to pair the working TUI directly in the deck. Choose a
-previously paired **Target terminal** if needed. Click a slot key or use its
-keyboard shortcut to select that agent in the existing TUI. The result panel
-reports remote selection and the separate local window activation result.
-Answer questions and approve requests in that terminal. A new connection or
-changed registration requires a fresh target selection. Pass
-`-- --state-dir DIR --pipe-instance NAME` to isolate another companion
-configuration. Use `-- --connect-only --pipe-instance NAME` to attach the
-deck to an independently managed pipe, or `-- --demo` for the isolated
-virtual button simulator.
-
-The USB adapter uses the same live key model and focus captures without a GPUI
-window. It uses [Elgato's USB HID protocol](https://docs.elgato.com/streamdeck/hid/stream-deck-classic/)
-for the Stream Deck 2019, MK.2, MK.2 Scissor Keys, and 15-Key Module. The 2017
-Stream Deck Original uses a separate legacy report format. Quit Elgato's
-Stream Deck app before attaching a supported 15-key unit.
-Get the exact client ID from `corvid companion slots`, then pass it as the
-target. With no target the adapter displays live slots and accepts page
-navigation. Use `--list` to enumerate devices, `--serial SERIAL` to select
-one when several are connected, or `--demo` for local test keys.
-
-```powershell
-cargo run --locked -p corvid-deck --no-default-features --features stream-deck --bin corvid-streamdeck -- --target CLIENT_ID
-```
-
-The USB adapter reconnects to the same serial after USB loss. Its tests cover
-HID report bytes, synthetic key transitions, stale captures, and 72 × 72 LCD rendering.
-Physical image upload, button orientation, and reconnect remain to be qualified.
 
 ## Pair and Focus
 
@@ -1041,5 +980,5 @@ Apple Silicon runtime, workspace, installer, and app/DMG CI runs on
 See [macOS support](07_macos.md) for commands and default paths. Manual
 qualification should record the OS build, CPU architecture, terminal emulator,
 and SSH version, and exercise the terminal compatibility suite (A19). Native
-permission prompts, login/reboot behavior, multiple displays, non-Latin IME
-interaction, and physical USB Deck hardware remain separate manual checks.
+permission prompts, login/reboot behavior, multiple displays, and non-Latin
+IME interaction remain separate manual checks.

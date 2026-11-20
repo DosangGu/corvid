@@ -17,7 +17,7 @@ import package
 ROOT = Path(__file__).resolve().parent.parent
 SIZES = [16, 20, 24, 32, 48, 64, 128, 256]
 BINARIES = [
-    "corvid", "corvid-desktop", "corvid-deck", "corvid-agent-deck",
+    "corvid", "corvid-desktop", "corvid-agent-deck",
     "corvid-launch", "corvid-desktop-launch", "corvid-agent-deck-launch",
 ]
 

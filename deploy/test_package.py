@@ -36,7 +36,7 @@ class PackageTests(unittest.TestCase):
             self.runtimes[target] = directory
         self.build = self.root / "build"
         self.build.mkdir()
-        for name in ("corvid-desktop", "corvid-agent-deck", "corvid-deck", "corvid-launch",
+        for name in ("corvid-desktop", "corvid-agent-deck", "corvid-launch",
                      "corvid-desktop-launch", "corvid-agent-deck-launch"):
             for suffix in ("", ".exe"):
                 (self.build / (name + suffix)).write_bytes(b"synthetic executable")

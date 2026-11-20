@@ -148,7 +148,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
         if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
@@ -296,7 +296,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
         if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
@@ -313,8 +313,7 @@ jobs:
             'corvid-agent-deck.exe',
             'corvid-launch.exe',
             'corvid-desktop-launch.exe',
-            'corvid-agent-deck-launch.exe',
-            'corvid-deck.exe'
+            'corvid-agent-deck-launch.exe'
           )
           foreach ($binary in $binaries) {
             Copy-Item -LiteralPath "target/${{ matrix.desktop }}/release/$binary" -Destination target/desktop-binaries
@@ -412,19 +411,19 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-deck -p corvid-agent-deck -p corvid-update --features corvid-deck/stream-deck
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
         if: inputs.qualify
-        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace --features corvid-deck/stream-deck
+        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
       - name: Workspace lints
         if: inputs.qualify
-        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets --features corvid-deck/stream-deck -- -D warnings
+        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: bash
         run: |
           mkdir -p target/desktop-binaries
-          cp target/${{ matrix.desktop }}/release/{corvid-desktop,corvid-agent-deck,corvid-deck,corvid-streamdeck} target/desktop-binaries/
+          cp target/${{ matrix.desktop }}/release/{corvid-desktop,corvid-agent-deck} target/desktop-binaries/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: inputs.package
         with:

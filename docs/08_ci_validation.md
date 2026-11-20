@@ -119,6 +119,5 @@ Their native Rust tests and macOS window smoke test are narrower evidence.
 WSL installation/reconnection still requires the explicitly ignored isolated-WSL
 fixture. Real reboot and last-login tests need dedicated machines/accounts.
 IME composition, accessibility permissions, notifications, multiple displays,
-hardware GPU behavior, and physical Stream Deck USB input require separate
-device qualification. Synthetic Unicode input does not validate an OS input
-method editor.
+and hardware GPU behavior require separate device qualification. Synthetic
+Unicode input does not validate an OS input method editor.

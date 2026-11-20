@@ -15,8 +15,8 @@ additional agents queue and can move into view as their priority changes. See [A
 | Bundled remote daemon | Linux x64/ARM64, Windows x64/ARM64, macOS Apple Silicon |
 
 Linux and Windows ARM64 assets are available from builds of this revision and
-future releases. Older releases do not contain these assets. Physical ARM64 GPU,
-interactive ConPTY, and Stream Deck qualification remains separate from CI.
+future releases. Older releases do not contain these assets. Physical ARM64 GPU rendering
+and interactive ConPTY behavior require separate qualification.
 
 ## Install a release
 

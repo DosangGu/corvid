@@ -41,8 +41,6 @@ Losing an attached TUI, its working SSH connection, or a local controller must n
 stop remote work **while that daemon and the execution host remain alive**.
 
 See §7.7 for the shared behavior contract.
-The desktop distribution will later include a Stream Deck integration daemon;
-its packaging and lifecycle integration are planned work (§11.4).
 
 The primary experience is:
 
@@ -69,7 +67,7 @@ agents through the TUI or GUI; those actions are outside the external focus oper
 | Automatic terminal selection | WezTerm, initially on local Windows, with explicit registration | Phase 3 qualification required; manual activation remains available |
 | Additional attached clients | One writer per pane; clients can edit different panes independently | Opening an occupied pane transfers its input ownership |
 | Desktop | `corvid-desktop` on Windows, Linux (X11 or XWayland), and macOS Apple Silicon, with daemon sessions, tabs, split panes, and a built-in Agents window | Opens a local terminal by default. Remote writers use `corvid terminal-relay` over SSH. A separate control watch supplies layout and observed agent state |
-| Deck | `corvid-deck` on Windows and macOS Apple Silicon, with an experimental USB adapter | Shows agent slots and requests exact focus through the companion. A bundled Stream Deck integration daemon is planned |
+| Agent Deck | `corvid-agent-deck` on Windows, Linux, and macOS Apple Silicon | Displays agent activity and requests exact focus through Desktop or the companion |
 | Multiple hosts | Host-qualified IDs and caches from the start | Validate one host first; cross-host operation is later |
 | Native Windows daemon and TUI | Windows x64/ARM64 local sessions and Desktop SSH connections | ConPTY and per-user named pipes. See [Windows local use](02_daemon_foundation.md#run-locally-on-windows) and [Desktop SSH setup](04_companion.md#windows-quick-start) |
 | WSL connections | Windows Desktop to an installed Linux distribution's default user | `wsl.exe` stdio carries terminal and control relays. Linux owns PTYs and metadata. Setup and planned replacement share the remote connection implementation |
@@ -105,7 +103,6 @@ disproves it. It does not mean a feature is built or compatibility is establishe
 | External actions | Read, subscribe, explicit pairing, exact focus, attention acknowledgment | No keystrokes, approvals, spawning, or writer transfer |
 | Recovery | Planned daemon replacement retains terminal hosts; unplanned failure restores layout/metadata | Automatic recovery after PTY-owner loss remains deferred |
 | Controller slots | Bound to AgentRunId with revisions | Names, pane numbers, and PID reuse cannot redirect clicks |
-| Desktop hardware integration | Bundle a Stream Deck integration daemon with the desktop app in a later phase | Reuse companion state and actions; packaging and process lifecycle remain to be implemented |
 
 The former workspace-name socket design is replaced, not retained as an equal option.
 Workspace names become labels. Per-workspace daemons would require another host-wide
@@ -138,7 +135,6 @@ outer-terminal input latency, or controller synchronization concerns.
 | D. Control interface | Handshake, validation, DTOs, queries, snapshots, watches, navigation | Process execution or keystroke injection |
 | E. Presentation | TUI/GUI workspace views and desktop cards derived from state; user gestures mapped to shared operations | Independent workspace semantics or authoritative PTY/agent state |
 | Local companion | Host connections/caches, synchronization, terminal registrations, slots/pins | Remote authority or a second agent reducer |
-| Stream Deck integration daemon (planned) | Device connection, key images, and button gestures through the companion | PTY ownership, agent state authority, answers, or approvals |
 
 ### 3.2 Mutation and ordering
 
@@ -1419,17 +1415,6 @@ assignments. It subscribes to the already-running companion service; closing eit
 window does not end daemon-owned work. See [Agent Deck](06_agent_deck.md) for the
 implemented lifetime, Linux limitations, and notification validation boundary.
 
-The standalone Windows GPUI deck and direct USB prototype use the same device-independent
-slot projection, focus capture, and presentation worker through the private
-pipe. A capture holds the displayed run, slot revision,
-control generation, and selected binding revision from press through release.
-Page or target changes invalidate a capture locally, and the companion validates
-the request against its authoritative snapshot. Key activation requests focus.
-The GPUI deck view can initialize or reuse a companion and pair a verified
-WezTerm pane. A successful pairing selects only its newly registered target.
-Alert acknowledgment and slot editing remain explicit actions in the slot
-board and CLI. See [Live Stream Deck](04_companion.md#live-stream-deck).
-
 ### 11.2 Deterministic slot policy
 
 A current daemon publishes an immutable creation sequence on each agent record.
@@ -1479,22 +1464,6 @@ reinterpreted as `(B, 9)`. If A moved panes but its slot/binding did not change,
 resolves A's new location. Page switching increments displayed binding revisions and
 cancels held gestures. The desktop reconnects with a fresh presentation snapshot
 and requires a new terminal choice before accepting actions.
-
-### 11.4 Bundled Stream Deck integration daemon — planned
-
-The desktop app will include a background daemon for physical Stream Deck
-integration. It handles device discovery, connection loss/reconnect, key images,
-and button gestures using the companion's existing slot and exact-focus contract.
-The GUI deck and physical keys must show the same slot identities and reject the
-same stale captures. The companion owns controller state; the execution daemon
-owns terminals and agent observations. Hardware integration grants no additional
-input, spawning, or approval authority.
-
-The current `corvid-streamdeck` executable is an experimental standalone USB
-adapter. Bundling it as a desktop-managed integration daemon is not implemented.
-Process placement, startup/shutdown ownership, behavior when the last window
-closes, and login startup are still to be specified. Bundling does not require
-the hardware loop to run on the GUI thread or inside the terminal daemon.
 
 ## 12. Connection lifecycle and persistence
 
@@ -1753,8 +1722,7 @@ Qualify macOS when its separately gated execution work is scheduled.
   drag/move and vertical tab-bar UX; automatic keymap profiles/remapping; native Windows
   and macOS execution; opt-in conversation resume; scrollback persistence/search. Consider
   a PTY supervisor only if daemon-crash survival is actually required.
-  Converge TUI/GUI workspace operations and session lifetimes (§7.7), and include
-  the Stream Deck integration daemon in the desktop distribution (§11.4).
+  Converge TUI/GUI workspace operations and session lifetimes (§7.7).
   Desktop and Agent Deck distribution includes [Windows Setup](05_release_distribution.md#windows-setup).
 - **Exit:** Extension-specific tests plus regression of existing contracts. Input transfers
   must fence stale input/paste, multi-host clicks need
@@ -1804,7 +1772,6 @@ negative assertions (including no unexpected process/window/input creation).
 | A30 | Split/coalesced stream reads; bad preamble/kind/role; zero, overflowing, oversized, or truncated lengths; inconsistent render header; excessive nesting/collections | Exact framing survives arbitrary read boundaries; limits apply before allocation/mutation; invalid frames emit no partial ANSI; only offending connection fails and unrelated work continues | P1 |
 | A31 | Regenerate schema on a clean pinned toolchain and round-trip uint64 above 2^53 and arbitrary bytes | Reproducible generated contract. IDs, revisions, and bytes round-trip exactly. Packaged binaries need no compiler | P1 build |
 | A32 | Run equivalent tab/pane create, select, split, resize, close, detach, and reattach actions through TUI and GUI | Equivalent domain transitions, focus, terminal identity, and lifecycle outcomes. Unsupported capabilities are explicit | Later |
-| A33 | Use the bundled Stream Deck daemon alongside the GUI; disconnect/reconnect hardware or the companion and change a slot during a press | Shared slot identities and exact focus; stale gestures are rejected without replay; hardware loss leaves terminal sessions running. Packaging, process lifecycle, and physical-device evidence remain open | Later |
 
 ## 16. Risks, remaining questions, and next work
 
