@@ -177,9 +177,9 @@ pub(super) async fn legacy_desktop(
     if process.image != package.join("corvid-desktop.exe") {
         return Ok(());
     }
-    let mut args = process.args.chunks_exact(2);
-    if !args.remainder().is_empty()
-        || !args.all(|pair| {
+    let (args, remainder) = process.args.as_chunks::<2>();
+    if !remainder.is_empty()
+        || !args.iter().all(|pair| {
             matches!(
                 pair[0].to_str(),
                 Some("--state-dir" | "--pipe-instance" | "--ssh-alias" | "--wsl-distribution")

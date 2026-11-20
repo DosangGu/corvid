@@ -132,7 +132,7 @@ unrecognized files are reported and preserved.
 
 ## Install with Cargo
 
-For releases published to crates.io, use Rust 1.93 or newer and a native
+For releases published to crates.io, use Rust 1.100 or newer and a native
 linker. Install `tic` on Linux and macOS (the `ncurses-bin` package on Debian
 and Ubuntu). On Windows, use the MSVC Rust toolchain and the Windows SDK.
 

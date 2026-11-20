@@ -90,11 +90,14 @@ async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() 
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
+    // The Cargo profile directory holds the binary even when the test
+    // executable is nested under Cargo's build directory.
     let built = std::env::current_exe()?
-        .parent()
-        .and_then(Path::parent)
-        .context("test build directory")?
-        .join("corvid-agent-deck");
+        .ancestors()
+        .skip(1)
+        .map(|directory| directory.join("corvid-agent-deck"))
+        .find(|candidate| candidate.is_file())
+        .context("built corvid-agent-deck binary")?;
     let mut deck = Command::new(&built)
         .arg("--state-dir")
         .arg(&state)

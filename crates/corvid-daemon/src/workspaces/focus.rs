@@ -59,12 +59,12 @@ pub(crate) enum FocusRecovery {
     Lost,
 }
 
-impl From<ProtocolFault> for FocusRejected {
+impl From<ProtocolFault> for Box<FocusRejected> {
     fn from(fault: ProtocolFault) -> Self {
-        Self {
+        Box::new(FocusRejected {
             fault,
             recovery: FocusRecovery::Unchanged,
-        }
+        })
     }
 }
 
@@ -85,7 +85,7 @@ impl Workspaces {
         &self,
         old: &Active,
         dispatch: &FocusDispatch,
-    ) -> Result<Focused, FocusRejected> {
+    ) -> Result<Focused, Box<FocusRejected>> {
         self.focus_target(old, &dispatch.target).await
     }
 
@@ -94,7 +94,7 @@ impl Workspaces {
         old: &Active,
         run: Uuid,
         location: Location,
-    ) -> Result<Focused, FocusRejected> {
+    ) -> Result<Focused, Box<FocusRejected>> {
         let target = FocusTarget {
             client: old.route.client_id,
             run,
@@ -108,7 +108,7 @@ impl Workspaces {
         &self,
         old: &Active,
         target: &FocusTarget,
-    ) -> Result<Focused, FocusRejected> {
+    ) -> Result<Focused, Box<FocusRejected>> {
         let (destination, reserved) = match self.prepare_focus(old, target).await? {
             Prepared::Current(reply) => {
                 return Ok(Focused {
@@ -160,7 +160,7 @@ impl Workspaces {
         target: &FocusTarget,
         destination: FocusDestination,
         reserved: ReservedSwitch,
-    ) -> Result<Focused, FocusRejected> {
+    ) -> Result<Focused, Box<FocusRejected>> {
         let next = open_pane(
             reserved.terminal,
             reserved.location,
@@ -178,7 +178,7 @@ impl Workspaces {
             } else {
                 FocusRecovery::Unchanged
             };
-            return Err(FocusRejected { fault, recovery });
+            return Err(Box::new(FocusRejected { fault, recovery }));
         }
 
         let committed = async {
@@ -195,7 +195,7 @@ impl Workspaces {
             Err(fault) => {
                 drop(next);
                 let recovery = self.restore_source(old).await;
-                Err(FocusRejected { fault, recovery })
+                Err(Box::new(FocusRejected { fault, recovery }))
             }
         }
     }

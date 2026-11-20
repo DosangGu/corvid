@@ -47,6 +47,14 @@ def copy_tracked_sources(root, destination, paths):
             shutil.copy2(source, target)
 
 
+def cargo_messages(source, env, *args):
+    result = subprocess.run(
+        ["cargo", *args, "--locked", "--message-format=json-render-diagnostics"],
+        cwd=source, env=env, check=True, text=True, stdout=subprocess.PIPE,
+    )
+    return [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+
+
 def build(source, reference_compiler=None):
     target = source / "target"
     env = os.environ | {"PROTOC": str(source / "missing-protoc"), "CARGO_TARGET_DIR": str(target)}
@@ -54,35 +62,41 @@ def build(source, reference_compiler=None):
     env.pop(REFERENCE_PROTOC, None)
     if reference_compiler is not None:
         env[REFERENCE_PROTOC] = str(reference_compiler)
-    subprocess.run(["cargo", "build", "--locked", "-p", "corvid-tui"], cwd=source, env=env, check=True)
-    result = subprocess.run(
-        [
-            "cargo", "test", "--locked", "-p", "corvid-protocol", "--test", "framing",
-            "--no-run", "--message-format=json",
-        ],
-        cwd=source, env=env, check=True, text=True, stdout=subprocess.PIPE,
+    build_messages = cargo_messages(source, env, "build", "-p", "corvid-tui")
+    test_messages = cargo_messages(
+        source, env, "test", "-p", "corvid-protocol", "--test", "framing", "--no-run",
     )
-    artifacts = map(json.loads, result.stdout.splitlines())
     fixture, = [
-        Path(artifact["executable"]) for artifact in artifacts
+        Path(artifact["executable"]) for artifact in test_messages
         if artifact["reason"] == "compiler-artifact"
         and artifact["target"]["kind"] == ["test"]
         and artifact["target"]["name"] == "framing"
         and artifact.get("executable")
     ]
-    return fixture
+    return fixture, generated(build_messages + test_messages, source)
 
 
-def generated(source):
+def generated(messages, source):
+    protocol_manifest = str(source / "crates/corvid-protocol/Cargo.toml")
+    protocol_id, = {
+        message["package_id"]
+        for message in messages
+        if message["reason"] == "compiler-artifact" and message["manifest_path"] == protocol_manifest
+    }
+    out_dirs = {
+        Path(message["out_dir"])
+        for message in messages
+        if message["reason"] == "build-script-executed" and message["package_id"] == protocol_id
+    }
+    if not out_dirs:
+        raise RuntimeError("Cargo did not report a corvid-protocol output directory")
+
     output = {}
     for name in RUST_OUTPUTS:
-        files = list(source.glob(f"target/debug/build/corvid-protocol-*/out/{name}"))
-        if not files:
-            raise RuntimeError(f"Missing generated {name}")
-        contents = files[0].read_bytes()
-        if any(file.read_bytes() != contents for file in files[1:]):
+        variants = {(directory / name).read_bytes() for directory in out_dirs}
+        if len(variants) != 1:
             raise RuntimeError(f"Rust build variants disagree on generated {name}")
-        output[name] = contents
+        output[name], = variants
     return output
 
 
@@ -103,10 +117,8 @@ def verify(root, archive):
         first, second = directory / "first", directory / "second"
         for source in (first, second):
             copy_tracked_sources(root, source, paths)
-        fixture = build(first)
-        build(second, compiler)
-
-        first_output, second_output = generated(first), generated(second)
+        fixture, first_output = build(first)
+        _, second_output = build(second, compiler)
         for name, contents in first_output.items():
             if contents != second_output[name]:
                 raise RuntimeError(f"protox and reference protoc builds disagree on generated {name}")

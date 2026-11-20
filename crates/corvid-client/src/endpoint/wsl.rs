@@ -115,14 +115,12 @@ fn wsl_command() -> Result<Command> {
 fn parse_distributions(bytes: &[u8]) -> Result<Vec<WslDistribution>> {
     let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.contains(&0) {
         let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
+        let (pairs, remainder) = bytes.as_chunks::<2>();
         ensure!(
-            bytes.len().is_multiple_of(2),
+            remainder.is_empty(),
             "invalid WSL distribution list encoding"
         );
-        let units: Vec<_> = bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
+        let units: Vec<_> = pairs.iter().copied().map(u16::from_le_bytes).collect();
         String::from_utf16(&units).context("invalid WSL distribution list encoding")?
     } else {
         std::str::from_utf8(bytes)?
