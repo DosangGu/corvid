@@ -1183,10 +1183,13 @@ mod restore_tests {
             let (client, daemon) = UnixStream::pair()?;
             let (read, write) = client.into_split();
             let (daemon_read, daemon_write) = daemon.into_split();
-            let writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
+            let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
             let mut daemon_writer = FrameWriter::start(daemon_write, FrameRole::TuiOutput).await?;
             let daemon_reader = FrameReader::start(daemon_read, FrameRole::StructuredOnly).await?;
             let reader = FrameReader::start(read, FrameRole::TuiOutput).await?;
+            // Close the outbound half explicitly so the acknowledgement is
+            // guaranteed to fail even if the peer's close has not propagated.
+            writer.shutdown().await?;
             let session = Session {
                 role: PeerRole::Tui,
                 protocol_minor: corvid_protocol::PROTOCOL_MINOR,
