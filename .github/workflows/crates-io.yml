@@ -40,10 +40,29 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 install -y ncurses-bin
           rustup toolchain install --no-self-update
       - name: Publish Corvid crates
+        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: GITHUB_REF="refs/tags/$RELEASE_TAG" python3 deploy/crates_io.py publish
+        run: |
+          log=$(mktemp)
+          trap 'rm -f "$log"' EXIT
+          until GITHUB_REF="refs/tags/$RELEASE_TAG" python3 deploy/crates_io.py publish 2>&1 | tee "$log"; do
+            retry_at=$(
+              sed -nE 's/.*status 429 Too Many Requests.*try again after (.* GMT).*/\1/p' "$log" |
+                tail -n 1
+            )
+            if [[ -z "$retry_at" ]]; then
+              exit 1
+            fi
+
+            retry_epoch=$(date -u -d "$retry_at" +%s)
+            delay=$((retry_epoch - $(date -u +%s) + 15))
+            echo "crates.io asked to retry after $retry_at."
+            if (( delay > 0 )); then
+              sleep "$delay"
+            fi
+          done
       - name: Verify the registry installation
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
