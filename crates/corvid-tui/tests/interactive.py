@@ -2,6 +2,7 @@
 
 import argparse
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -126,7 +127,17 @@ class OuterTerminal:
         os.write(self.master, data)
 
     def wait(self, code):
-        assert self.process.wait(timeout=5) == code, self.output[-500:]
+        deadline = time.monotonic() + 5
+        # A child may still be writing a redraw or its TTY restoration sequence.
+        # Keep reading the PTY until it exits so an unread buffer cannot trap it.
+        while (status := self.process.poll()) is None:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, ("outer TTY process did not exit", self.output[-500:])
+            if select.select([self.master], [], [], min(remaining, 0.05))[0]:
+                self.output.extend(os.read(self.master, 8192))
+                if len(self.output) > 1024 * 1024:
+                    del self.output[:-500]
+        assert status == code, (status, self.output[-500:])
         restored = terminal_attributes(self.slave)
         assert restored == self.original, ("outer TTY was not restored", self.original, restored)
 
@@ -626,18 +637,34 @@ def verify_shell_with_agents(binary, directory, terminfo, providers):
 def verify_resume(binary, directory):
     root = directory / "resume"
     root.mkdir()
-    command = [binary, "--runtime-dir", root / "run"]
+    runtime = root / "run"
+    views = root / "views"
+    env = os.environ | {"CORVID_VIEW_STATE_DIR": str(views)}
+    command = [binary, "--runtime-dir", runtime]
     daemon = subprocess.Popen([*command, "daemon", "--state-dir", root / "state"])
     try:
         wait_for_daemon(command, daemon)
-        with OuterTerminal([*command, "attach", "--new", "--", "/bin/sh", "-c", "echo RESUME_READY; exec /bin/sh"]) as first:
+        with OuterTerminal(
+            [*command, "attach", "--new", "--", "/bin/sh", "-c", "echo RESUME_READY; exec /bin/sh"],
+            env=env,
+        ) as first:
             first.expect(b"RESUME_READY")
             first.send(b'kept=preserved; printf "FIRST_%s\\n" "$kept"\n')
             first.expect(b"FIRST_preserved")
+
+            # The remembered selection is saved by a debounced background writer.
+            saved = views / "tui" / "view.json"
+            deadline = time.monotonic() + 5
+            while not saved.exists():
+                assert first.process.poll() is None, "original writer exited before saving its view"
+                assert time.monotonic() < deadline, "original writer did not save its view"
+                time.sleep(0.025)
+            assert json.loads(saved.read_text())["views"][0]["target"]["runtime"] == str(runtime)
+
             # The normal attach command requires neither Observe nor a takeover flag.
-            with OuterTerminal([*command, "attach"], cols=60, rows=20) as second:
-                first.wait(0)
+            with OuterTerminal([*command, "attach"], cols=60, rows=20, env=env) as second:
                 second.expect(b"FIRST_preserved")
+                first.wait(0)
                 second.send(b'printf "RESUMED_%s\\n" "$kept"; stty size\n')
                 second.expect(rb"RESUMED_preserved[\s\S]*19 60")
                 second.send(b"exit\n")
