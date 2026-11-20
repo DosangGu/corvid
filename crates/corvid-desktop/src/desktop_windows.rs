@@ -190,8 +190,35 @@ impl DesktopWindows {
         }
     }
 
-    pub fn set_applying(&self, value: bool) {
-        self.0.applying.set(value);
+    pub fn apply_update(
+        &self,
+        apply: impl FnOnce() -> Result<corvid_update::Installed> + Send + 'static,
+        applied: impl FnOnce(Result<corvid_update::Installed>, &mut App) + 'static,
+        restart_failed: impl FnOnce(anyhow::Error, &mut App) + 'static,
+        cx: &mut App,
+    ) {
+        if self.0.applying.replace(true) {
+            applied(
+                Err(anyhow::anyhow!("Another Desktop update is being applied")),
+                cx,
+            );
+            return;
+        }
+
+        let windows = self.clone();
+        let install = cx.background_executor().spawn(async move { apply() });
+        cx.spawn(async move |cx| {
+            let result = install.await;
+            windows.0.applying.set(false);
+            let replacement = result.as_ref().ok().cloned();
+            let _ = cx.update(move |cx| {
+                applied(result, cx);
+                if let Some(installed) = replacement {
+                    windows.restart(Rc::new(installed), restart_failed, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn watch_installed_version(&self, cx: &mut App) {
@@ -674,5 +701,66 @@ async fn serve_deck_scope(scope: Scope, requests: mpsc::Sender<(ControlEndpoint,
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    use gpui::Application;
+
+    use super::*;
+
+    #[test]
+    fn applied_update_restarts_after_the_initiating_view_is_gone() -> Result<()> {
+        let package = tempfile::tempdir()?;
+        std::fs::write(package.path().join("package.json"), "{}")?;
+        let desktop = package.path().join("corvid-desktop");
+        std::fs::write(&desktop, "#!/bin/sh\n: > \"${0%/*}/restarted\"\n")?;
+        std::fs::set_permissions(&desktop, std::fs::Permissions::from_mode(0o700))?;
+        let cli = package.path().join("corvid");
+        let windows =
+            DesktopWindows::new(agent_deck::Settings::from(package.path().join("state")))?;
+        let timed_out = Rc::new(Cell::new(false));
+        let expired = timed_out.clone();
+
+        Application::headless().run(move |cx| {
+            let owner = cx.new(|_| ());
+            let view = owner.downgrade();
+            windows.apply_update(
+                move || {
+                    Ok(corvid_update::Installed {
+                        executable: cli,
+                        message: String::new(),
+                    })
+                },
+                move |result, _| {
+                    assert!(view.upgrade().is_none());
+                    assert!(result.is_ok());
+                },
+                |error, _| panic!("restart failed: {error:#}"),
+                cx,
+            );
+            drop(owner);
+
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_secs(10))
+                    .await;
+                expired.set(true);
+                let _ = cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+
+        assert!(!timed_out.get(), "Desktop did not quit after restarting");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !package.path().join("restarted").exists() {
+            assert!(Instant::now() < deadline, "replacement Desktop did not run");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
     }
 }

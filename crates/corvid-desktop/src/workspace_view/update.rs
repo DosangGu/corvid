@@ -56,48 +56,47 @@ impl WorkspaceView {
         if self.update.phase != Phase::Ready {
             return;
         }
-        if let Some(prepared) = self.update.prepared.clone() {
-            let windows = self.windows.clone();
-            windows.set_applying(true);
-            self.update.phase = Phase::Installing;
-            self.update.error = None;
-            let apply = cx
-                .background_executor()
-                .spawn(async move { prepared.apply() });
-            cx.spawn(async move |view, cx| {
-                let result = apply.await;
-                windows.set_applying(false);
-                let _ = view.update(cx, |view, cx| {
-                    view.update.installed(result);
-                    view.release_update = None;
-                    view.launch_updated_desktop(cx);
-                    cx.notify();
-                });
-            })
-            .detach();
-            cx.notify();
-            return;
-        }
-        self.launch_updated_desktop(cx);
-    }
-
-    fn launch_updated_desktop(&self, cx: &mut Context<Self>) {
-        let Some(installed) = &self.update.installed else {
-            return;
-        };
         let owner = cx.entity().downgrade();
-        self.windows.restart(
-            Rc::clone(installed),
-            move |error, cx| {
-                let _ = owner.update(cx, |view, cx| {
+        let restart_failed = move |error: anyhow::Error, cx: &mut App| {
+            let detail = format!("{error:#}");
+            if owner
+                .update(cx, |view, cx| {
                     view.update.error = Some(Failure {
                         summary: "Could not restart Desktop. Try again or reopen Corvid.",
-                        detail: format!("{error:#}"),
+                        detail: detail.clone(),
                     });
                     cx.notify();
-                });
-            },
-            cx,
-        );
+                })
+                .is_err()
+            {
+                eprintln!("Could not restart Desktop: {detail}");
+            }
+        };
+        if let Some(prepared) = self.update.prepared.clone() {
+            self.update.phase = Phase::Installing;
+            self.update.error = None;
+            let owner = cx.entity().downgrade();
+            self.windows.apply_update(
+                move || prepared.apply(),
+                move |result, cx| {
+                    if let Err(error) = &result
+                        && owner.upgrade().is_none()
+                    {
+                        eprintln!("Could not apply the Desktop update: {error:#}");
+                    }
+                    let _ = owner.update(cx, |view, cx| {
+                        view.update.installed(result);
+                        view.release_update = None;
+                        cx.notify();
+                    });
+                },
+                restart_failed,
+                cx,
+            );
+            cx.notify();
+        } else if let Some(installed) = &self.update.installed {
+            self.windows
+                .restart(Rc::clone(installed), restart_failed, cx);
+        }
     }
 }
