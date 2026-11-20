@@ -80,7 +80,8 @@ async fn open(
     shown: mpsc::Receiver<()>,
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
-    let scope = settings.scope(&endpoint, host)?;
+    let scope = crate::scope::shared_scope(settings.scope(&endpoint, host)?).await?;
+    let register = scope.config.host_id == host;
     let config = &scope.config;
     #[cfg(windows)]
     let client = {
@@ -93,7 +94,7 @@ async fn open(
         )
         .await?
         .context("Agent Deck was not started")?;
-        client.activate(true).await?;
+        client.activate(register).await?;
         client
     };
     #[cfg(not(windows))]
@@ -107,7 +108,7 @@ async fn open(
         )
         .await?
         .context("Agent Deck was not started")?;
-        client.activate(true).await?;
+        client.activate(register).await?;
         client
     };
     forward_focus(client, shown, focus).await

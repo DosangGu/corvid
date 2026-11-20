@@ -95,12 +95,41 @@ async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() 
         .and_then(Path::parent)
         .context("test build directory")?
         .join("corvid-agent-deck");
-    let mut deck = Command::new(built)
+    let mut deck = Command::new(&built)
         .arg("--state-dir")
         .arg(&state)
         .kill_on_drop(true)
         .spawn()?;
     let window = window_id(&mut deck).await?;
+    let ssh_scope = state
+        .join("slot-board")
+        .join(Uuid::from_u128(2).simple().to_string());
+    let reopened = timeout(
+        COMMAND_TIMEOUT,
+        Command::new(&built)
+            .arg("--state-dir")
+            .arg(ssh_scope)
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .context("opening Agents from the SSH host did not reuse the running Deck")??;
+    ensure!(reopened.success(), "reopening the shared Deck failed");
+    ensure!(
+        deck.try_wait()?.is_none(),
+        "the original Deck exited during relaunch"
+    );
+    let visible = Command::new("xdotool")
+        .args(["search", "--onlyvisible", "--name", "^Corvid Agent Deck$"])
+        .output()
+        .await?;
+    assert_eq!(
+        String::from_utf8(visible.stdout)?
+            .lines()
+            .collect::<Vec<_>>(),
+        [window.as_str()]
+    );
+
     // A Deck opened from Desktop still uses the shared endpoint for its own
     // host, even when a legacy registration is present.
     let mut legacy = DeckClient::connect(Uuid::from_u128(1), local.controller, true).await?;

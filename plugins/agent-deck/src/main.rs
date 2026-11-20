@@ -13,7 +13,7 @@ mod ui_signal;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use corvid_companion::monitor;
+use corvid_companion::monitor::{self, Scope};
 use corvid_presentation::ipc::DesktopClient;
 use std::path::PathBuf;
 
@@ -50,32 +50,40 @@ fn main() -> Result<()> {
         corvid_protocol::paths::StateRole::AgentDeck,
         options.state_dir,
     )?;
-    let scope = monitor::discover(&root)?
+    let mut scope = monitor::discover(&root)?
         .into_iter()
         .next()
         .context("No monitored hosts yet. Connect a host in Corvid Desktop or TUI first.")?;
-    let state = scope.state;
-    let config = scope.config;
     #[cfg(windows)]
-    let address = options.pipe_instance.unwrap_or(scope.address);
+    if let Some(address) = options.pipe_instance {
+        scope.address = address;
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let address = options.socket_dir.unwrap_or(scope.address);
+    if let Some(address) = options.socket_dir {
+        scope.address = address;
+    }
     #[cfg(target_os = "macos")]
-    let address = if let Some(name) = options.socket_name {
-        corvid_protocol::paths::macos_named_socket(name.as_ref())?.prepare()?
-    } else {
-        address
-    };
+    if let Some(name) = options.socket_name {
+        scope.address = corvid_protocol::paths::macos_named_socket(name.as_ref())?.prepare()?;
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     if options.companion_service {
         return runtime.block_on(corvid_companion::run(
-            &address,
-            &state,
+            &scope.address,
+            &scope.state,
             std::future::pending(),
         ));
     }
+    if !options.managed_start {
+        scope = runtime.block_on(corvid_agent_deck::scope::shared_scope(scope))?;
+    }
+    let Scope {
+        state,
+        address,
+        config,
+    } = scope;
     if options.refresh_running {
         #[cfg(windows)]
         use corvid_agent_deck::lifecycle::ensure_current;
@@ -100,7 +108,9 @@ fn main() -> Result<()> {
             false,
         ))?
     {
-        runtime.block_on(client.activate(false))?;
+        if !options.background {
+            runtime.block_on(client.activate(false))?;
+        }
         return Ok(());
     }
     #[cfg(not(windows))]

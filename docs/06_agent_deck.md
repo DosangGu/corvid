@@ -38,16 +38,23 @@ in Desktop. Build source installations with
 `cargo build --locked -p corvid-agent-deck`; Desktop finds the binary beside itself
 or in `plugins/agent-deck/` in an installed package. Direct launches discover
 existing monitored hosts in the default companion state directory. Use
-`--state-dir` to choose a particular host scope; its saved presentation address
-is reused unless overridden by `--pipe-instance` or `--socket-dir`.
+`--state-dir` to open another Desktop profile. Passing a host scope from
+that profile routes to the same Deck. Its saved presentation address is used
+by default.
 
-Each companion controller has one Deck instance. Reopening activates it. A private
-named pipe on Windows or private Unix socket on Linux carries bounded Protobuf
-activation and Desktop focus requests. Host/controller identity and the connection
-generation are checked. The OS supplies the registering Desktop peer's process ID.
-Closing or switching Desktop retires its focus registration without ending Deck.
-A reopened Desktop can register again. Each Deck currently watches one configured
-host; a unified multi-host window is future work.
+A Desktop profile shares one Agent Deck across its workspace windows and
+configured hosts. Opening Agents from another host reactivates that Deck. The
+profile saves the companion identity used for the Deck's private activation
+endpoint and preferences. Each host keeps its own monitor and slots. The
+Deck watches and displays alerts from all recognized local and remote hosts.
+
+The private named pipe on Windows or private Unix socket on Linux and macOS
+carries bounded Protobuf activation and Desktop focus requests. Host and
+controller identity and the connection generation are checked. The OS
+supplies the registering Desktop peer's process ID. Closing or switching
+Desktop retires its focus registration. Other hosts use their exact Desktop
+focus endpoints. If an older installation already has several Deck windows
+open, quit those instances once to use the shared launch path.
 
 On Windows, starting an updated Desktop checks the running Decks in its saved
 controller scopes, including hidden tray instances. It replaces an older Deck

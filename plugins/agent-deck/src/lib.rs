@@ -4,6 +4,7 @@ pub mod desktop;
 pub mod launch;
 #[cfg(windows)]
 pub mod lifecycle;
+pub mod scope;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod unix_lifecycle;
 

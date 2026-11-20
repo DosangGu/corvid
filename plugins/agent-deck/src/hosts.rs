@@ -16,17 +16,7 @@ pub struct Profile {
     pub label: String,
 }
 
-pub fn root(state: &Path, current: Uuid) -> &Path {
-    state
-        .parent()
-        .filter(|parent| parent.ends_with("slot-board"))
-        .filter(|_| {
-            state.file_name().and_then(|part| part.to_str())
-                == Some(current.simple().to_string().as_str())
-        })
-        .and_then(Path::parent)
-        .unwrap_or(state)
-}
+pub use corvid_agent_deck::scope::profile_root as root;
 
 pub fn discover(state: &Path, current: Uuid) -> Result<BTreeMap<Uuid, Profile>> {
     let main = Config::read_if_present(state)?.context("Agent Deck configuration is missing")?;
