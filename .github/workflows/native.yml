@@ -1,15 +1,6 @@
 name: Corvid Native Checks
 
 on:
-  pull_request:
-    paths-ignore:
-      - AGENTS.md
-      - README.md
-      - 'docs/**/*.md'
-      - 'docs/images/**/*.jpg'
-      - 'docs/images/**/*.jpeg'
-      - 'docs/images/**/*.png'
-      - 'docs/images/**/*.svg'
   workflow_call:
     inputs:
       package:
@@ -63,16 +54,14 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.runtime }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
+        with: &runtime-cache
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target/release
             target/${{ matrix.runtime }}/release
-          key: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: |
-            rust-${{ matrix.runner }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            rust-${{ matrix.runner }}-${{ matrix.runtime }}-v1-
+          key: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
       - name: Runtime tests
@@ -138,16 +127,14 @@ jobs:
           chmod 700 "$HOME/.corvid-tests"
           echo "TMPDIR=$HOME/.corvid-tests" >> "$GITHUB_ENV"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
+        with: &desktop-cache
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target/release
             target/${{ matrix.desktop }}/release
-          key: desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: |
-            desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-
+          key: desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
@@ -248,16 +235,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.runtime }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/release
-            target/${{ matrix.runtime }}/release
-          key: rust-${{ runner.os }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: |
-            rust-${{ runner.os }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            rust-${{ runner.os }}-${{ matrix.runtime }}-v1-
+        with: *runtime-cache
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
       - name: Runtime tests
@@ -293,16 +271,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/release
-            target/${{ matrix.desktop }}/release
-          key: desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: |
-            desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            desktop-${{ runner.os }}-${{ matrix.desktop }}-v1-
+        with: *desktop-cache
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
@@ -357,16 +326,7 @@ jobs:
       - name: macOS build environment
         run: bash deploy/macos/prepare-build.sh
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/release
-            target/${{ matrix.runtime }}/release
-          key: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: |
-            rust-${{ matrix.runner }}-${{ matrix.runtime }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            rust-${{ matrix.runner }}-${{ matrix.runtime }}-v1-
+        with: *runtime-cache
       - name: Build runtime and launchers
         run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
       - name: Runtime tests
@@ -421,16 +381,7 @@ jobs:
       - name: macOS build environment
         run: bash deploy/macos/prepare-build.sh
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/release
-            target/${{ matrix.desktop }}/release
-          key: desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: |
-            desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            desktop-${{ matrix.runner }}-${{ matrix.desktop }}-v1-
+        with: *desktop-cache
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}

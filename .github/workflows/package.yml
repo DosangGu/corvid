@@ -3,42 +3,6 @@ name: Package Corvid
 on:
   workflow_call:
   workflow_dispatch:
-  pull_request:
-    # Verify installers early when their inputs or update paths change.
-    paths:
-      - '.cargo/**'
-      - '.gitattributes'
-      - '.github/workflows/native.yml'
-      - '.github/workflows/package.yml'
-      - '.github/workflows/release.yml'
-      - 'Cargo.lock'
-      - 'LICENSE'
-      - 'assets/**'
-      - 'crates/corvid-client/src/endpoint/bootstrap*'
-      - 'crates/corvid-client/src/endpoint/install_windows.ps1'
-      - 'crates/corvid-client/src/upgrade.rs'
-      - 'crates/corvid-daemon/src/upgrade.rs'
-      - 'crates/corvid-desktop/src/workspace_view/update.rs'
-      - 'crates/corvid-desktop/src/workspace_view/update/state.rs'
-      - 'crates/corvid-protocol/src/upgrade.rs'
-      - 'crates/corvid-tui/src/update.rs'
-      - 'crates/corvid-update/**'
-      - 'deploy/cargo-desktop'
-      - 'deploy/install.ps1'
-      - 'deploy/install.sh'
-      - 'deploy/linux/**'
-      - 'deploy/macos/**'
-      - 'deploy/systemd/**'
-      - 'deploy/windows/**'
-      - 'deploy/*package*.py'
-      - 'deploy/release.py'
-      - 'deploy/release-notes.md'
-      - 'deploy/test_icons.py'
-      - 'deploy/test_install.py'
-      - 'deploy/test_macos.py'
-      - 'deploy/test_macos_dock_update.py'
-      - 'deploy/macos_dock_fixture.swift'
-      - 'deploy/test_native.py'
   push:
     branches: [main]
     # Keep these paths in sync with the push fallback in deploy/validate_changes.py.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the event diff and detect main pushes that need a packaging fallback."""
+"""Validate the event diff and select PR integration or main-push fallback packaging."""
 
 import os
 import re
@@ -20,6 +20,44 @@ PACKAGE_FILES = {
     "rust-toolchain.toml",
 }
 PACKAGE_DIRECTORIES = (".cargo/", "assets/", "crates/", "deploy/", "plugins/", "spikes/")
+
+PR_PACKAGE_FILES = {
+    ".gitattributes",
+    ".github/workflows/checks.yml",
+    ".github/workflows/native.yml",
+    ".github/workflows/package.yml",
+    ".github/workflows/release.yml",
+    "Cargo.lock",
+    "LICENSE",
+    "crates/corvid-client/src/endpoint/install_windows.ps1",
+    "crates/corvid-client/src/upgrade.rs",
+    "crates/corvid-daemon/src/upgrade.rs",
+    "crates/corvid-desktop/src/workspace_view/update.rs",
+    "crates/corvid-desktop/src/workspace_view/update/state.rs",
+    "crates/corvid-protocol/src/upgrade.rs",
+    "crates/corvid-tui/src/update.rs",
+    "deploy/install.ps1",
+    "deploy/install.sh",
+    "deploy/macos_dock_fixture.swift",
+    "deploy/release-notes.md",
+    "deploy/release.py",
+    "deploy/test_icons.py",
+    "deploy/test_install.py",
+    "deploy/test_macos.py",
+    "deploy/test_macos_dock_update.py",
+    "deploy/test_native.py",
+}
+PR_PACKAGE_PREFIXES = (
+    ".cargo/",
+    "assets/",
+    "crates/corvid-client/src/endpoint/bootstrap",
+    "crates/corvid-update/",
+    "deploy/cargo-desktop/",
+    "deploy/linux/",
+    "deploy/macos/",
+    "deploy/systemd/",
+    "deploy/windows/",
+)
 
 
 def comparison_base(event, ref, before):
@@ -49,9 +87,25 @@ def is_packaging_input(path):
     return path in PACKAGE_FILES or path.startswith(PACKAGE_DIRECTORIES)
 
 
+def is_pr_packaging_input(path):
+    return (
+        path in PR_PACKAGE_FILES
+        or path.startswith(PR_PACKAGE_PREFIXES)
+        or re.fullmatch(r"deploy/[^/]*package[^/]*\.py", path) is not None
+    )
+
+
+def is_documentation(path):
+    return (
+        path in {"AGENTS.md", "README.md"}
+        or (path.startswith("docs/") and path.endswith(".md"))
+        or (path.startswith("docs/images/") and path.endswith((".jpg", ".jpeg", ".png", ".svg")))
+    )
+
+
 def push_fallback(changes):
-    # The native filter may truncate the file list or see only a rename's new
-    # name. Keep the fallback scoped to the same inputs as the native filter.
+    # GitHub's path filter may truncate the file list or see only a rename's new
+    # name. Keep the fallback scoped to the same inputs as the path filter.
     package_inputs = [
         (old, new) for old, new, path in changes if is_packaging_input(path)
     ]
@@ -68,32 +122,42 @@ def push_fallback(changes):
 
 
 def validate_changes(event, ref, before):
-    """Return whether the Checks workflow should run fallback packaging."""
+    """Return the integration job to run after validation."""
+    pull_request = event == "pull_request"
     main_push = event == "push" and ref == "refs/heads/main"
+    fallback = "package" if pull_request or main_push else "none"
     try:
         base = comparison_base(event, ref, before)
         if base is None:
             print("No comparison for this event.")
-            return main_push
+            return fallback
         # Treat moves as deletions and additions so both paths are considered.
         diff = subprocess.check_output(
             ["git", "diff", "--raw", "--no-renames", "-z", base, "HEAD", "--"]
         )
     except subprocess.CalledProcessError:
         print("Could not compare the event commits.")
-        return main_push
+        return fallback
 
     subprocess.run(["git", "diff", "--check", base, "HEAD", "--"], check=True)
-    return main_push and push_fallback(list(changed_paths(diff)))
+    changes = list(changed_paths(diff))
+    if pull_request:
+        paths = [path for _, _, path in changes]
+        if any(map(is_pr_packaging_input, paths)):
+            return "package"
+        if any(not is_documentation(path) for path in paths):
+            return "native"
+    if main_push and push_fallback(changes):
+        return "package"
+    return "none"
 
 
 if __name__ == "__main__":
-    fallback = validate_changes(
+    integration = validate_changes(
         os.environ["GITHUB_EVENT_NAME"],
         os.environ["GITHUB_REF"],
         os.environ.get("PUSH_BEFORE", ""),
     )
-    value = "true" if fallback else "false"
-    print(f"Run fallback packaging: {value}")
+    print(f"Integration to run: {integration}")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        print(f"package_fallback={value}", file=output)
+        print(f"integration={integration}", file=output)
