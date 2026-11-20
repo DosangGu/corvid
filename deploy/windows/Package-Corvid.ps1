@@ -55,7 +55,7 @@ try {
     if (!$LinuxDaemonDirectory -or !$LinuxArm64DaemonDirectory -or !$WindowsDaemonDirectory -or !$WindowsArm64DaemonDirectory) {
         throw 'Supply revision-matched Linux and Windows daemon directories for both x64 and ARM64. Only native runtimes can be built here.'
     }
-    $packages = @('-p', 'corvid-desktop', '-p', 'corvid-deck', '-p', 'corvid-update')
+    $packages = @('-p', 'corvid-desktop', '-p', 'corvid-update')
     if (!$WithoutAgentDeck) { $packages += @('-p', 'corvid-agent-deck') }
     cargo build --locked --release --target $target @packages
     if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed' }

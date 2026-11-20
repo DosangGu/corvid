@@ -134,12 +134,12 @@ async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_da
         );
         drop(ui);
         scope.ensure_running(executable).await?;
-        let mut hardware = PresentationClient::connect(&scope.address).await?;
+        let mut observer = PresentationClient::connect(&scope.address).await?;
         ensure!(
-            hardware.session().server_epoch == companion_epoch,
+            observer.session().server_epoch == companion_epoch,
             "monitor restarted with the display"
         );
-        let slots = hardware.slots(Some(&scope.config)).await?;
+        let slots = observer.slots(Some(&scope.config)).await?;
         ensure!(
             slots.controller_id == controller.to_string(),
             "controller changed"
@@ -149,7 +149,7 @@ async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_da
         scope.configure(&absent)?;
         timeout(Duration::from_secs(10), async {
             loop {
-                if hardware.slots(Some(&scope.config)).await?.connection
+                if observer.slots(Some(&scope.config)).await?.connection
                     != CompanionConnection::Ready as i32
                 {
                     break Ok::<_, anyhow::Error>(());
@@ -161,7 +161,7 @@ async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_da
         scope.configure(&endpoint)?;
         timeout(Duration::from_secs(10), async {
             loop {
-                if hardware.slots(Some(&scope.config)).await?.connection
+                if observer.slots(Some(&scope.config)).await?.connection
                     == CompanionConnection::Ready as i32
                 {
                     break Ok::<_, anyhow::Error>(());

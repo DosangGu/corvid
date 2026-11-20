@@ -22,7 +22,6 @@ Agent Deck renders its floating grid and management views with GPUI, sharing the
 workspace UI framework with Desktop. Background workers notify the foreground
 executor through a coalesced channel so hidden windows can reopen or quit.
 Linux uses X11 or XWayland with Vulkan.
-The physical Stream Deck/GPUI prototype in `spikes/deck` remains separate.
 
 On 2026-11-12, Linux Xvfb checks verified the Settings → Agents page, opening and
 reactivating the same Agents window from Settings and the toolbar, access to
@@ -91,14 +90,6 @@ subscribes to it. Quitting Deck does not kill that shared companion or any
 daemon, terminal, or agent. Existing Board
 state paths under `slot-board/` are deliberately retained, preserving controller
 identity, slots, and pins across the rename.
-
-The `corvid-streamdeck` USB adapter discovers the same monitor scopes without
-opening Agent Deck. Its `--state-dir` selects a host just like the UI; an explicit
-`--pipe-instance` or `--socket-dir` remains supported. Status display needs no
-Deck UI. Pressing an agent key asks running Corvid Desktop to focus the exact
-pane for the monitored host. Desktop can switch hosts to reach the pane.
-Opening the Agent Deck window is unnecessary. Use `--target CLIENT_ID` to direct the
-keys to an explicitly paired TUI instead.
 
 | Windows action | Result |
 | --- | --- |
@@ -440,10 +431,10 @@ configured by Desktop or companion setup. Newly connected hosts appear automatic
 including their existing agents. The overview checks the expected host identity before using a snapshot
 and marks previously seen observations as cached when a host goes offline.
 **Show host Deck** opens that host's running Deck for slot management. A card
-in the combined grid requests the exact run from Desktop through the same
-private, controller-scoped endpoint used by the physical Stream Deck. If the
-pane is already open in a Desktop window, that window is activated. Otherwise
-Desktop opens the pane, connecting to the registered host if needed. Switching
+in the combined grid requests the exact run from Desktop through its private,
+controller-scoped focus endpoint. If the pane is already open in a Desktop
+window, that window is activated. Otherwise Desktop opens the pane and
+connects to the registered host if needed. Switching
 hosts releases the previous pane's writer and keeps its connection ready for
 reuse on daemons that support parking. The current host also uses it for queued runs and the
 notification history's Desktop action. If that endpoint is absent or rejects

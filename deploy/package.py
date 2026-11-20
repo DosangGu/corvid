@@ -117,7 +117,6 @@ def package(args):
                 copy(args.build / "corvid-desktop-launch.exe", stage / "corvid-desktop-launch.exe", True)
                 if not args.without_agent_deck:
                     copy(args.build / "corvid-agent-deck-launch.exe", stage / "corvid-agent-deck-launch.exe", True)
-                copy(args.build / "corvid-deck.exe", stage / "corvid-deck.exe", True)
                 copy(ROOT / "deploy/windows/Set-CorvidStartup.ps1", stage / "Set-CorvidStartup.ps1")
             for target, directory in [
                 (LINUX, args.linux_runtime), (LINUX_ARM64, args.linux_arm64_runtime),
@@ -137,7 +136,7 @@ def package(args):
         })
         if macos and args.product == "desktop":
             import macos_package
-            macos_package.app_bundle(stage, args.build, version)
+            macos_package.app_bundle(stage, version)
         files = sorted(path for path in stage.rglob("*") if path.is_file())
         (stage / "files.sha256").write_text("".join(f"{digest(path)}  {path.relative_to(stage).as_posix()}\n" for path in files), encoding="utf-8", newline="\n")
         archive = args.output / f"corvid-{args.product}-{version}-{args.target}.{extension}"

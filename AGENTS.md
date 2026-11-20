@@ -9,8 +9,8 @@ and daemon services, `corvid-client` for IPC and TTY,
 `corvid-core` for domain types, `corvid-companion` for controller state,
 `corvid-presentation` for shared presentation clients,
 `corvid-protocol` for Protobuf and local transport, and `spikes/terminal/` for terminal
-qualification. The Desktop app is in `crates/corvid-desktop/`, Deck in
-`spikes/deck/`, and the separately launched Corvid Agent Deck in `plugins/agent-deck/`.
+qualification. The Desktop app is in `crates/corvid-desktop/`, and the
+separately launched Corvid Agent Deck is in `plugins/agent-deck/`.
 The root `Cargo.toml` defines the workspace package version and direct dependency
 versions. Workspace members inherit those entries and share the root `Cargo.lock`.
 

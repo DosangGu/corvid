@@ -111,29 +111,6 @@ impl Snapshot {
             })
     }
 
-    pub fn focus_desktop(&self, slot: &PresentedSlot) -> Option<FocusSlot> {
-        self.live_key(slot.run.as_ref()?)?;
-        Some(FocusSlot {
-            control_generation: self.generation()?.to_string(),
-            slot: Some(slot_token(slot)),
-            binding: None,
-        })
-    }
-
-    pub fn desktop_target(&self, capture: &FocusSlot) -> Option<(Uuid, PresentedRunKey)> {
-        let token = capture.slot.as_ref()?;
-        let slot = self
-            .data
-            .slots
-            .iter()
-            .find(|slot| slot.slot_id == token.slot_id)?;
-        if self.focus_desktop(slot).as_ref() != Some(capture) {
-            return None;
-        }
-        let run = token.run.as_ref()?;
-        Some((self.desktop_run_target(run)?, run.clone()))
-    }
-
     pub fn desktop_run_target(&self, run: &PresentedRunKey) -> Option<Uuid> {
         self.generation()?;
         self.check_key(run)?;
@@ -283,23 +260,6 @@ pub(crate) mod tests {
             ..Default::default()
         };
         Snapshot::new(Uuid::new_v4(), &session, 0, data).unwrap()
-    }
-
-    #[test]
-    fn desktop_focus_revalidates_slot_revision_and_daemon_epoch() {
-        let mut snapshot = ready_snapshot();
-        let controller = Uuid::new_v4();
-        snapshot.data.controller_id = controller.to_string();
-        snapshot.data.bindings.clear();
-        let captured = snapshot.focus_desktop(&snapshot.data.slots[0]).unwrap();
-        let key = captured.slot.as_ref().unwrap().run.clone().unwrap();
-        assert_eq!(snapshot.desktop_target(&captured), Some((controller, key)));
-
-        snapshot.data.slots[0].revision += 1;
-        assert!(snapshot.desktop_target(&captured).is_none());
-        let reassigned = snapshot.focus_desktop(&snapshot.data.slots[0]).unwrap();
-        snapshot.data.remote_epoch = Some(Uuid::new_v4().to_string());
-        assert!(snapshot.desktop_target(&reassigned).is_none());
     }
 
     #[test]

@@ -51,7 +51,7 @@ def sign(path):
     run("codesign", "--force", "--sign", "-", "--timestamp=none", path)
 
 
-def app_bundle(stage, build, version):
+def app_bundle(stage, version):
     if sys.platform != "darwin":
         raise ValueError("Build the macOS app on macOS")
     app = stage / "Corvid.app"
@@ -74,10 +74,6 @@ def app_bundle(stage, build, version):
         copy(app / "Contents/Resources/corvid.icns", helper / "Contents/Resources/corvid.icns")
         sign(helper)
         shutil.rmtree(stage / "plugins")
-    for name in ["corvid-deck", "corvid-streamdeck"]:
-        if (build / name).is_file():
-            copy(build / name, binaries / name, True)
-            sign(binaries / name)
     shutil.rmtree(stage / "icons")
     sign(app)
     run("codesign", "--verify", "--deep", "--strict", app)

@@ -356,8 +356,8 @@ even from an emulated PowerShell process. Updates preserve the installed package
 architecture; `install.ps1 -Target` supports that choice explicitly.
 
 This support applies to builds from this revision and future releases. It does not
-add assets to already published releases. Physical ARM64 GPU rendering, interactive
-Windows ConPTY behavior, and Stream Deck hardware still need device qualification.
+add assets to already published releases. Physical ARM64 GPU rendering and interactive Windows ConPTY behavior still
+need device qualification.
 
 ## Validation boundary
 

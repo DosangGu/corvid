@@ -2,16 +2,15 @@
 
 Corvid targets macOS 15 or later on Apple Silicon (`aarch64-apple-darwin`).
 Intel Macs and universal binaries are not release targets. The daemon, TUI,
-Desktop, companion, Agent Deck, terminal qualification spike, and experimental
-Deck/USB binaries build on this target.
+Desktop, companion, Agent Deck, and terminal qualification spike build on this
+target.
 
 ## Install
 
 Download `corvid-desktop-VERSION-aarch64-apple-darwin.dmg`, open it, and drag
 **Corvid.app** to Applications. Desktop includes the native `corvid` runtime,
 the nested **Corvid Agent Deck.app**, and Linux, Windows, and macOS SSH runtimes.
-Launch Desktop and open **Agents** to launch Agent Deck. The experimental
-`corvid-deck` and `corvid-streamdeck` commands are in `Corvid.app/Contents/MacOS`.
+Launch Desktop and open **Agents** to launch Agent Deck.
 
 These initial packages are **not Developer ID signed or notarized**. Mach-O
 binaries and app bundles use ad-hoc signatures for Apple Silicon integrity.
@@ -83,8 +82,6 @@ LaunchAgent. Notification permission is controlled in System Settings.
 Click actions are scoped to notices held by the live process and go through the
 existing run/binding fences. Notifications from an exited instance cannot select
 a different run. Login startup recomputes the boot-scoped socket directory.
-The experimental Deck uses explicit Corvid terminal pairing on macOS; automatic
-WezTerm window discovery remains Windows-only. USB support uses hidapi/IOKit.
 
 ## Build and validate
 
@@ -109,8 +106,8 @@ mkdir -p "$HOME/.corvid-tests"
 chmod 700 "$HOME/.corvid-tests"
 export TMPDIR="$HOME/.corvid-tests"
 cargo build --locked --workspace
-cargo test --locked --workspace --features corvid-deck/stream-deck
-cargo clippy --locked --workspace --all-targets --features corvid-deck/stream-deck -- -D warnings
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 git diff --check
 ```
@@ -133,9 +130,8 @@ CI uses the default Xcode on the `macos-latest` Apple Silicon image for runtime
 and workspace tests, installer version switching and corruption rejection,
 nested code signatures, and the packaged Desktop and Agent Deck windows. The
 DMG check verifies that Agent Deck was built with a macOS 26 or later SDK and
-targets macOS 15.0. Testing on older macOS versions, physical USB devices,
-OS permission prompts, multiple monitors, and non-Latin IME interaction
-requires separate qualification.
+targets macOS 15.0. Testing on older macOS versions, OS permission prompts,
+multiple monitors, and non-Latin IME interaction requires separate qualification.
 
 ## Interactive validation
 
@@ -152,16 +148,16 @@ nested Agent Deck application in a floating window. Compact
 and expanded views rendered, pin/unpin controls worked, and the expanded window
 stayed inside the display's visible area after resizing near its bottom edge.
 Hiding the window and reopening it from Desktop preserved the running controller.
-Physical USB devices, notification permission prompts, multiple displays, and
-non-Latin IME composition were not exercised by this session.
+Notification permission prompts, multiple displays, and non-Latin IME
+composition were not exercised by this session.
 
 ![Agent Deck compact view on macOS](images/macos/agent-deck.png)
 
 ![Agent Deck expanded view on macOS](images/macos/agent-deck-expanded.png)
 
 After integrating the terminal font and artwork changes from #64, local workspace
-tests and lints passed with the Stream Deck feature enabled. Native tests verified
-the Menlo default, selecting and reloading an installed font, restoring the
+tests and lints passed. Native tests verified the Menlo default, selecting
+and reloading an installed font, restoring the
 default, and recovering from an unavailable font. GUI checks exercised Monaco
 selection, private preference storage and restoration across an app restart,
 joined solid blocks, Braille dots, and Unicode output. Captures in this session
