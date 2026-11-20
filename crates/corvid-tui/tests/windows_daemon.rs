@@ -1045,7 +1045,9 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     );
     tokio::time::timeout(WAIT, assert_history_after_detach(&runtime)).await??;
 
-    let mut second = Tui::open(&runtime, [])?;
+    // Grow from a smaller screen so the old status bar cannot occupy the
+    // destination row while the new frame is still in flight.
+    let mut second = Tui::open_sized(&runtime, [], 80, 24)?;
     second.wait_for("PS ")?;
     second.send(b"[Console]::WriteLine(('CORVID_' + $env:CORVID_TEST_VALUE))\r")?;
     second.wait_for("CORVID_retained")?;
@@ -1074,6 +1076,9 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     })
     .await
     .context("Windows daemon did not apply the TUI resize")??;
+    // The client fences input until it consumes the view change. The resized
+    // status bar proves this TUI also rendered the new route at the new size.
+    second.wait_for_resized_status_bar(92, 26)?;
     second.send(b"[Console]::WriteLine(('CORVID_' + [Console]::WindowWidth + 'x' + [Console]::WindowHeight))\r")?;
     second.wait_for("CORVID_92x25")?;
 
@@ -1447,6 +1452,27 @@ impl Tui {
             self.screen.process(&output);
         }
         Ok(())
+    }
+
+    fn wait_for_resized_status_bar(&mut self, cols: u16, rows: u16) -> Result<()> {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let screen = self.screen.screen();
+            if screen
+                .rows(0, cols)
+                .nth(usize::from(rows - 1))
+                .is_some_and(|line| line.starts_with("CORVID") && line.ends_with("Ctrl-] commands"))
+            {
+                return Ok(());
+            }
+            let bytes = self.read(deadline).with_context(|| {
+                format!(
+                    "waiting for the TUI status bar on row {rows} at width {cols}; screen: {:?}",
+                    self.screen.screen().contents()
+                )
+            })?;
+            self.screen.process(&bytes);
+        }
     }
 
     // A daemon snapshot can change before the TUI retires its old input route.
