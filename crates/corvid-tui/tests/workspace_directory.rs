@@ -11,8 +11,8 @@ use corvid_protocol::wire::InputChunk;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    Attach, AttachRole, BrowseDirectories, CreateView, FrameApplied, LaunchCommand, RouteToken,
-    SplitAxis, ViewSelection, Viewport, WorkspaceCreation,
+    Attach, AttachRole, BrowseDirectories, CreateView, FrameApplied, LaunchCommand,
+    PersistenceState, RouteToken, SplitAxis, ViewSelection, Viewport, WorkspaceCreation,
 };
 use corvid_protocol::{
     CREATE_VIEW_CAPABILITY, Frame, WORKSPACE_DIRECTORY_CAPABILITY, decode_envelope,
@@ -96,19 +96,19 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     assert_fresh_directory(&mut link, &route, &other).await?;
     drop(link);
 
-    let second_id = &second.workspace_id;
+    // Wait for the daemon to publish the selection without opening state.json
+    // while Windows is replacing it. Reopening the exact workspace below verifies it.
     timeout(WAIT, async {
         loop {
-            if std::fs::read_to_string(state.join("state.json"))
-                .is_ok_and(|metadata| metadata.contains(second_id))
-            {
-                break;
+            match endpoint.status().await?.persistence() {
+                PersistenceState::Saved => return Ok(()),
+                PersistenceState::Pending => sleep(Duration::from_millis(25)).await,
+                state => bail!("workspace metadata persistence is {state:?}"),
             }
-            sleep(Duration::from_millis(25)).await;
         }
     })
     .await
-    .context("waiting for the workspace metadata to be saved")?;
+    .context("waiting for the workspace metadata to be saved")??;
     daemon.kill().await?;
     let _daemon = start(&runtime, &state, &endpoint)
         .await
