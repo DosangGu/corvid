@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -16,6 +17,23 @@ import monitor_fixture
 
 def run(*arguments):
     return subprocess.check_output([str(arg) for arg in arguments], text=True, timeout=60)
+
+
+def attach_dmg(dmg, mount):
+    arguments = ["hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", mount, dmg]
+    for attempt in range(3):
+        result = subprocess.run(arguments, text=True, capture_output=True, timeout=60)
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr, flush=True)
+        if result.returncode == 0:
+            return
+        transient = "hdiutil: attach failed - Resource temporarily unavailable"
+        if attempt == 2 or transient not in result.stderr.splitlines():
+            result.check_returncode()
+        delay = 5 * (attempt + 1)
+        print(f"Retrying DMG attach in {delay}s (attempt {attempt + 2}/3)",
+              file=sys.stderr, flush=True)
+        time.sleep(delay)
 
 
 @contextmanager
@@ -136,7 +154,7 @@ def check(assets):
     with tempfile.TemporaryDirectory(prefix=".cv-mac-", dir=Path.home()) as directory:
         directory = Path(directory)
         mount = directory / "volume"
-        run("hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", mount, dmg)
+        attach_dmg(dmg, mount)
         try:
             app = mount / "Corvid.app"
             assert (mount / "Applications").is_symlink()
