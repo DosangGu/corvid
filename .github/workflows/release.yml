@@ -14,8 +14,6 @@ concurrency:
 jobs:
   package:
     uses: ./.github/workflows/package.yml
-    with:
-      qualify: false
 
   publish:
     needs: package
