@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 pub(super) struct Running {
@@ -29,7 +29,7 @@ impl Running {
 }
 
 pub(super) fn snapshot(packages: &[PathBuf], runtime: &Path) -> Result<Vec<Running>> {
-    let mut system = System::new();
+    let mut system = System::new().context("could not initialize local process enumeration")?;
     let images = ProcessRefreshKind::nothing().with_exe(UpdateKind::Always);
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, images);
     ensure!(
