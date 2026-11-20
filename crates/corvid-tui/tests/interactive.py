@@ -127,7 +127,17 @@ class OuterTerminal:
         os.write(self.master, data)
 
     def wait(self, code):
-        assert self.process.wait(timeout=5) == code, self.output[-500:]
+        deadline = time.monotonic() + 5
+        # A child may still be writing a redraw or its TTY restoration sequence.
+        # Keep reading the PTY until it exits so an unread buffer cannot trap it.
+        while (status := self.process.poll()) is None:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, ("outer TTY process did not exit", self.output[-500:])
+            if select.select([self.master], [], [], min(remaining, 0.05))[0]:
+                self.output.extend(os.read(self.master, 8192))
+                if len(self.output) > 1024 * 1024:
+                    del self.output[:-500]
+        assert status == code, (status, self.output[-500:])
         restored = terminal_attributes(self.slave)
         assert restored == self.original, ("outer TTY was not restored", self.original, restored)
 
