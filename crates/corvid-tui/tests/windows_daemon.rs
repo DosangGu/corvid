@@ -1035,7 +1035,9 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     );
     tokio::time::timeout(WAIT, assert_history_after_detach(&runtime)).await??;
 
-    let mut second = Tui::open(&runtime, [])?;
+    // Grow from a smaller screen so the old status bar cannot occupy the
+    // destination row while the new frame is still in flight.
+    let mut second = Tui::open_sized(&runtime, [], 80, 24)?;
     second.wait_for("PS ")?;
     second.send(b"[Console]::WriteLine(('CORVID_' + $env:CORVID_TEST_VALUE))\r")?;
     second.wait_for("CORVID_retained")?;
