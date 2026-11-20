@@ -133,7 +133,7 @@ def package(args):
             "schema_version": 1, "version": version, "source_revision": revision,
             "product": args.product, "target": args.target,
             "update_protocol": 1,
-            **({"macos_bundle_update": True} if macos and args.product == "desktop" else {}),
+            **({"macos_bundle_update": True, "macos_managed_bundle": True} if macos and args.product == "desktop" else {}),
         })
         if macos and args.product == "desktop":
             import macos_package

@@ -55,6 +55,8 @@ impl Installation {
 
     pub fn detect() -> Result<Option<Self>> {
         let executable = env::current_exe()?;
+        #[cfg(target_os = "macos")]
+        let executable = executable.canonicalize()?;
         let layout = layout::for_executable(&executable)?;
         if !layout.package_metadata().try_exists()? {
             return Ok(None);
@@ -116,13 +118,21 @@ impl Installation {
         }
 
         let managed = versioned.filter(|versioned| versioned.receipt().is_file());
-        let bin_dir = if let Some(versioned) = &managed {
-            let receipt: Receipt = serde_json::from_slice(&fs::read(versioned.receipt())?)?;
+        let root = managed.map(|versioned| versioned.root.to_owned());
+        #[cfg(target_os = "macos")]
+        let root = root.or_else(|| {
+            (package.product == Product::Desktop && directory.ends_with("Contents/MacOS"))
+                .then(|| directory.ancestors().nth(2))
+                .flatten()
+                .and_then(crate::macos::managed_root)
+        });
+        let bin_dir = if let Some(root) = &root {
+            let receipt: Receipt = serde_json::from_slice(&fs::read(root.join("install.json"))?)?;
             ensure!(
                 receipt.schema_version == 1 && receipt.product == package.product,
                 "installation receipt mismatch"
             );
-            let bin = fs::read_to_string(versioned.root.join("bin-dir"))?;
+            let bin = fs::read_to_string(root.join("bin-dir"))?;
             let bin = PathBuf::from(bin.trim_end_matches(['\r', '\n']));
             ensure!(
                 bin.is_absolute(),
@@ -134,7 +144,7 @@ impl Installation {
         };
         Ok(Self {
             package,
-            root: managed.map(|versioned| versioned.root.to_owned()),
+            root,
             bin_dir,
             windows_setup: false,
         })
@@ -541,7 +551,8 @@ mod tests {
     #[test]
     fn finds_bundle_resources_and_preserves_managed_installation_root() {
         let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
+        let root = temporary.path().canonicalize().unwrap();
+        let root = root.as_path();
         let contents = root.join("versions/0.2.0/Corvid.app/Contents");
         fs::create_dir_all(contents.join("MacOS")).unwrap();
         fs::create_dir_all(contents.join("Resources")).unwrap();
@@ -568,6 +579,27 @@ mod tests {
             assert_eq!(installation.root.as_deref(), Some(root));
             assert_eq!(installation.bin_dir, Some(root.join("bin")));
             assert_eq!(installation.package.product, Product::Desktop);
+        }
+
+        let public = root.join("Corvid.app");
+        fs::create_dir_all(public.join("Contents/Resources")).unwrap();
+        fs::create_dir_all(public.join("Contents/MacOS")).unwrap();
+        fs::copy(
+            contents.join("Resources/package.json"),
+            public.join("Contents/Resources/package.json"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&public, root.join("macos-app")).unwrap();
+        let daemon = contents.join("MacOS/corvid");
+        fs::write(&daemon, b"daemon").unwrap();
+        for binary in ["corvid", "corvid-desktop"] {
+            let executable = public.join("Contents/MacOS").join(binary);
+            let installation = Installation::at(&executable).unwrap();
+            assert_eq!(installation.root.as_deref(), Some(root));
+            assert_eq!(
+                layout::local_daemon_executable(&executable).unwrap(),
+                daemon
+            );
         }
     }
 

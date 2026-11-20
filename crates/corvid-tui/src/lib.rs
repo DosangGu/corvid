@@ -76,6 +76,14 @@ enum Command {
         #[arg(long)]
         caller: i32,
     },
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    PublishMacosDesktop {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        app: PathBuf,
+    },
     /// Check for or install a GitHub release.
     Update(update::Options),
     /// Run or use the local controller companion.
@@ -306,6 +314,10 @@ pub fn run() -> ExitCode {
         #[cfg(target_os = "macos")]
         Some(Command::ReplaceMacosBundle { caller }) => {
             corvid_update::macos::replace_from_installer(caller)
+        }
+        #[cfg(target_os = "macos")]
+        Some(Command::PublishMacosDesktop { root, app }) => {
+            corvid_update::macos::publish_managed(&root, &app)
         }
         Some(Command::Update(options)) => update::run(options),
         Some(Command::Companion(companion)) => execute(async move {

@@ -44,6 +44,9 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         return Ok(code);
     }
 
+    #[cfg(target_os = "macos")]
+    corvid_update::macos::use_registered_desktop()?;
+
     use std::path::PathBuf;
 
     use clap::Parser;
