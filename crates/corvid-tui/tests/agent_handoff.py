@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 from interactive import OuterTerminal, stop, wait_for_daemon
 
@@ -20,6 +21,45 @@ from interactive import OuterTerminal, stop, wait_for_daemon
 def fields(output):
     return dict(item.split("=", 1) for item in output.split() if "=" in item)
 
+
+def poll_attention(control, expected, seconds):
+    deadline = time.monotonic() + seconds
+    while True:
+        attention = control("attention")
+        if any(expected.items() <= fields(line).items() for line in attention.splitlines()):
+            return True, attention
+        if time.monotonic() >= deadline:
+            return False, attention
+        time.sleep(0.05)
+
+
+def wait_for_attention(control, **expected):
+    found, attention = poll_attention(control, expected, 5)
+    if not found:
+        collector = control("collector-status")
+        raise AssertionError(
+            f"missing retained attention {expected!r}; attention={attention!r}; "
+            f"collector={collector!r}"
+        )
+
+
+def observe_question(terminal, pid, control, run):
+    counters = ("accepted_submissions", "rejected_submissions")
+    before = fields(control("collector-status"))
+    expected = {"run_id": run, "request_kind": "Question"}
+    for _ in range(3):
+        terminal.output.clear()
+        terminal.send(b"question\n")
+        terminal.expect(b"OBSERVED-question-PID=" + pid)
+        found, _ = poll_attention(control, expected, 0.25)
+        if found:
+            return
+        after = fields(control("collector-status"))
+        if any(counter not in after or before.get(counter) != after[counter] for counter in counters):
+            break
+        # The provider helper exits successfully even when its bounded delivery fails.
+        # Retry only this unchanged fixture event, and only if no submission was recorded.
+    wait_for_attention(control, **expected)
 
 def prepare(command, runtime, schema):
     def transcode(operation, payload):
@@ -126,9 +166,7 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
                 old_run = next(line.split()[0] for line in original.splitlines() if f"provider={provider.title()} process=Running" in line)
                 owner_pid = fields(next(line for line in original.splitlines() if line.startswith(old_run + " ")))["pid"]
                 # Leave a question pending at replacement; it must remain historical.
-                terminal.send(b"question\n")
-                terminal.expect(b"OBSERVED-question-PID=" + pid)
-                assert "request_kind=Question" in control("attention")
+                observe_question(terminal, pid, control, old_run)
                 for generation in range(2):
                     before = prepare(command, runtime, repository / "crates/corvid-protocol/proto/corvid.proto")
                     assert daemon.wait(timeout=5) == 0
@@ -184,13 +222,10 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
                     terminal.send(b"wrong-epoch\n")
                     terminal.expect(b"OBSERVED-wrong-epoch-PID=" + pid)
                     assert not control("attention"), "foreign observer epoch accepted"
-                    terminal.output.clear()
-                    terminal.send(b"question\n")
-                    terminal.expect(b"OBSERVED-question-PID=" + pid)
-                    assert f"run_id={run} " in control("attention") and "request_kind=Question" in control("attention")
+                    observe_question(terminal, pid, control, run)
                     terminal.send(b"respond\n")
                     terminal.expect(b"OBSERVED-respond-PID=" + pid)
-                    assert "reason=Response" in control("attention")
+                    wait_for_attention(control, run_id=run, reason="Response")
                     assert "collection=Healthy" in control("agents")
                     old_run = run
                 terminal.send(b"exit\n")
