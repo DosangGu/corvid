@@ -944,11 +944,12 @@ impl Worker {
                             self.revoke();
                         }
                     }
-                    Some(KeyCommand::DisconnectOthers) => {
-                        if lease.events.try_send(Event::DisconnectOthers).is_err() {
-                            self.revoke();
-                        }
+                    Some(KeyCommand::DisconnectOthers)
+                        if lease.events.try_send(Event::DisconnectOthers).is_err() =>
+                    {
+                        self.revoke();
                     }
+                    Some(KeyCommand::DisconnectOthers) => {}
                 }
             }
             Action::PasteBegin {
