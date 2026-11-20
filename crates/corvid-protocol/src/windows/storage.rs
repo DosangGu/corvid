@@ -28,6 +28,7 @@ use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 use super::security::{PrivateDescriptor, checked, current_user, verify_private};
 
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const STATE_OPEN_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub struct StateDirectory {
     path: PathBuf,
@@ -159,7 +160,7 @@ impl StateDirectory {
 
     pub fn read_private_file(&self, name: &str, max_bytes: u64) -> Result<Option<Vec<u8>>> {
         let path = self.file_path(name)?;
-        let Some(file) = self.open_existing(&path, GENERIC_READ)? else {
+        let Some(file) = self.open_existing(name, &path, GENERIC_READ)? else {
             return Ok(None);
         };
         ensure!(
@@ -178,7 +179,7 @@ impl StateDirectory {
 
     pub fn replace_private_file(&self, name: &str, bytes: &[u8]) -> Result<()> {
         let destination = self.file_path(name)?;
-        drop(self.open_existing(&destination, FILE_READ_ATTRIBUTES | READ_CONTROL)?);
+        drop(self.open_existing(name, &destination, FILE_READ_ATTRIBUTES | READ_CONTROL)?);
         let temporary = self.path.join(format!(".corvid-{}.tmp", Uuid::new_v4()));
         let descriptor = PrivateDescriptor::new(&self.user, false)?;
         let mut file = open_file(
@@ -211,11 +212,24 @@ impl StateDirectory {
         result
     }
 
-    fn open_existing(&self, path: &Path, access: u32) -> Result<Option<File>> {
-        let file = match open_file(path, access, FILE_SHARE_READ, OPEN_EXISTING, None) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).context("opening private Windows state file"),
+    fn open_existing(&self, name: &str, path: &Path, access: u32) -> Result<Option<File>> {
+        let started = Instant::now();
+        let file = loop {
+            match open_file(path, access, FILE_SHARE_READ, OPEN_EXISTING, None) {
+                Ok(file) => break file,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    let remaining = STATE_OPEN_TIMEOUT.saturating_sub(started.elapsed());
+                    // Atomic replacement can briefly hold a conflicting handle.
+                    if error.raw_os_error() != Some(ERROR_SHARING_VIOLATION as i32)
+                        || remaining.is_zero()
+                    {
+                        return Err(error)
+                            .with_context(|| format!("opening private Windows state file {name}"));
+                    }
+                    thread::sleep(remaining.min(LOCK_RETRY_INTERVAL));
+                }
+            }
         };
         self.check_file(&file)?;
         Ok(Some(file))
