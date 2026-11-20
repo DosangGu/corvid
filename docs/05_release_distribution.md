@@ -239,27 +239,31 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 | Changes or trigger | Corvid Checks | Corvid Native Checks | Package Corvid | Publish Corvid Release |
 | --- | --- | --- | --- | --- |
 | Documentation-only PR | Lightweight validation | — | — | — |
-| Ordinary source PR | Lightweight validation | Native builds, tests, and lints on five targets | — | — |
-| PR touching `Cargo.lock`, packaging, installers, updater implementation, or packaged assets | Lightweight validation | Native builds, tests, and lints | Build and verify installable packages on all five targets | — |
+| Ordinary source PR | Validation and native checks | Native builds, tests, and lints on five targets | — | — |
+| PR touching `Cargo.lock`, packaging, installers, updater implementation, or packaged assets | Validation and package integration | Called by Package Corvid | Build and verify installable packages on all five targets | — |
 | Push to `main` | Lightweight validation | — | Package integration when a packaging input changes | — |
 | Manual **Run workflow** on **Package Corvid** | — | — | Package integration and release assets | — |
 | Push of a `v*` tag | — | — | Package integration and release assets, called by the publisher | Publish validated release assets |
 
 **Corvid Checks** validates the version, shared icons, formatting, and whitespace.
-It compares the checked-out PR merge commit with its first parent. **Corvid
-Native Checks** uses path filters to skip PRs limited to `AGENTS.md`, `README.md`,
-Markdown under `docs/`, or JPEG, PNG, and SVG under `docs/images/`. It defines
-separate Runtime and Desktop jobs for Linux, Windows, and macOS, with build and
-test steps specific to each platform.
+It compares the checked-out PR merge commit with its first parent to select the
+integration checks. PRs limited to `AGENTS.md`, `README.md`, Markdown under
+`docs/`, or JPEG, PNG, and SVG under `docs/images/` use lightweight validation.
+Other PRs call **Corvid Native Checks** directly or through **Package Corvid**,
+depending on which files changed. The `Corvid checks` job reports the result
+of validation and the selected integration.
 
-**Package Corvid** uses GitHub path filters for PRs and pushes to `main`. The
-`main` filter also covers ordinary workspace sources, manifests, and schemas.
+**Package Corvid** uses GitHub path filters for pushes to `main`. The filter
+also covers ordinary workspace sources, manifests, and schemas.
 On `main`, **Corvid Checks** compares the previous and pushed tips and calls
 **Package Corvid** as a fallback for unavailable comparisons, large diffs with
 packaging inputs, and changes that could be moves out of a packaging path.
 
 Package runs call **Corvid Native Checks** to produce the TUI and Desktop
 binaries for that run. Desktop packages then bundle all five runtime artifacts.
+The native workflow caches Cargo dependencies and build outputs separately for
+Runtime and Desktop on each runner and target. Commits with the same lockfile,
+toolchain, and CI build configuration can share the cache.
 The Cargo source package jobs build the extracted crates and check
 `corvid --version` on Linux, Windows, and macOS.
 Integration tests cover installation with a live daemon, Desktop terminal input

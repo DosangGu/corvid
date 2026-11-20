@@ -17,7 +17,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     outputs:
-      package_fallback: ${{ steps.changes.outputs.package_fallback }}
+      integration: ${{ steps.changes.outputs.integration }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,32 +37,37 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: cargo fmt --all -- --check
 
-  package-fallback:
-    # Cover main pushes that the package workflow's path filter may miss.
+  native:
     needs: validate
-    if: needs.validate.outputs.package_fallback == 'true'
+    if: needs.validate.outputs.integration == 'native'
+    uses: ./.github/workflows/native.yml
+
+  package:
+    needs: validate
+    if: needs.validate.outputs.integration == 'package'
     uses: ./.github/workflows/package.yml
 
   checks:
     name: Corvid checks
-    needs: [validate, package-fallback]
+    needs: [validate, native, package]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check validation and package fallback
+      - name: Check validation and integration
         env:
           VALIDATE_RESULT: ${{ needs.validate.result }}
-          PACKAGE_FALLBACK: ${{ needs.validate.outputs.package_fallback }}
-          PACKAGE_RESULT: ${{ needs.package-fallback.result }}
+          INTEGRATION: ${{ needs.validate.outputs.integration }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
         run: |
           if [[ "$VALIDATE_RESULT" != success ]]; then
             echo "::error::Validation finished with $VALIDATE_RESULT"
             exit 1
           fi
-          case "$PACKAGE_FALLBACK:$PACKAGE_RESULT" in
-            true:success|false:skipped) ;;
+          case "$INTEGRATION:$NATIVE_RESULT:$PACKAGE_RESULT" in
+            none:skipped:skipped|native:success:skipped|package:skipped:success) ;;
             *)
-              echo "::error::Unexpected package fallback result: $PACKAGE_FALLBACK/$PACKAGE_RESULT"
+              echo "::error::Integration '$INTEGRATION' finished with native=$NATIVE_RESULT, package=$PACKAGE_RESULT"
               exit 1
               ;;
           esac

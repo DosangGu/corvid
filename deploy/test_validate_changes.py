@@ -29,11 +29,13 @@ def workflow_patterns(block):
 
 
 class WorkflowsTests(unittest.TestCase):
-    def test_cargo_lock_triggers_pr_packaging(self):
-        text = (WORKFLOWS / "package.yml").read_text(encoding="utf-8")
-        pull_request = text.split("  pull_request:\n", 1)[1].split("  push:\n", 1)[0]
-        paths = pull_request.split("    paths:\n", 1)[1]
-        self.assertIn("Cargo.lock", workflow_patterns(paths))
+    def test_checks_owns_pr_trigger_for_native_and_package(self):
+        for filename in ("native.yml", "package.yml"):
+            with self.subTest(filename=filename):
+                text = (WORKFLOWS / filename).read_text(encoding="utf-8")
+                self.assertNotIn("\n  pull_request:", text)
+                checks = (WORKFLOWS / "checks.yml").read_text(encoding="utf-8")
+                self.assertIn(f"uses: ./.github/workflows/{filename}", checks)
 
     def test_push_fallback_uses_the_workflow_paths(self):
         push = (WORKFLOWS / "package.yml").read_text(encoding="utf-8").split("  push:\n", 1)[1]
@@ -42,22 +44,6 @@ class WorkflowsTests(unittest.TestCase):
             workflow_patterns(block),
             PACKAGE_FILES | {f"{path}**" for path in PACKAGE_DIRECTORIES},
         )
-
-
-    def test_native_workflow_skips_documentation_only_prs(self):
-        documentation_paths = {
-            "AGENTS.md",
-            "README.md",
-            "docs/**/*.md",
-            "docs/images/**/*.jpg",
-            "docs/images/**/*.jpeg",
-            "docs/images/**/*.png",
-            "docs/images/**/*.svg",
-        }
-        text = (WORKFLOWS / "native.yml").read_text(encoding="utf-8")
-        pull_request = text.split("  pull_request:\n", 1)[1].split("  workflow_call:\n", 1)[0]
-        paths = pull_request.split("    paths-ignore:\n", 1)[1]
-        self.assertSetEqual(workflow_patterns(paths), documentation_paths)
 
     def test_packaging_uses_the_same_targets_as_the_native_builds(self):
         text = (WORKFLOWS / "native.yml").read_text(encoding="utf-8")
@@ -98,6 +84,11 @@ class ValidateChangesTests(unittest.TestCase):
     def check_push(self):
         return validate_changes("push", "refs/heads/main", self.base)
 
+    def check_pr(self):
+        self.git("switch", "--quiet", "main")
+        self.git("merge", "--quiet", "--no-ff", "topic")
+        return validate_changes("pull_request", "refs/pull/1/merge", "")
+
     def test_pr_whitespace_check_uses_the_checked_out_merge_base_tree(self):
         self.git("switch", "--quiet", "-c", "topic")
         self.write("docs/guide with spaces.md", "# Guide\n")
@@ -105,55 +96,81 @@ class ValidateChangesTests(unittest.TestCase):
         self.git("switch", "--quiet", "main")
         self.write("Cargo.lock", "# Trailing space on base branch \n")
         self.commit()
-        self.git("merge", "--quiet", "--no-ff", "topic")
-        self.assertFalse(validate_changes("pull_request", "refs/pull/1/merge", ""))
+        self.assertEqual(self.check_pr(), "none")
 
     def test_pr_whitespace_check_covers_committed_changes(self):
         self.git("switch", "--quiet", "-c", "topic")
         self.write("README.md", "# Trailing space in PR \n")
         self.commit()
-        self.git("switch", "--quiet", "main")
-        self.git("merge", "--quiet", "--no-ff", "topic")
         with self.assertRaises(subprocess.CalledProcessError):
-            validate_changes("pull_request", "refs/pull/1/merge", "")
+            self.check_pr()
+
+    def test_pr_with_only_docs_and_images_stays_lightweight(self):
+        self.git("switch", "--quiet", "-c", "topic")
+        self.write("README.md", "# Documentation update\n")
+        self.write("docs/images/desktop.svg", "<svg></svg>\n")
+        self.commit()
+        self.assertEqual(self.check_pr(), "none")
+
+    def test_ordinary_source_pr_runs_native_checks(self):
+        self.git("switch", "--quiet", "-c", "topic")
+        self.write("crates/example/src/lib.rs", "pub fn changed() {}\n")
+        self.write("deploy/example/package.py", "# Unrelated nested script\n")
+        self.commit()
+        self.assertEqual(self.check_pr(), "native")
+
+    def test_pr_with_cargo_lock_runs_packaging(self):
+        self.git("switch", "--quiet", "-c", "topic")
+        self.write("crates/example/src/lib.rs", "pub fn changed() {}\n")
+        self.write("Cargo.lock", "# Dependencies changed\n")
+        self.commit()
+        self.assertEqual(self.check_pr(), "package")
+
+    def test_pr_removing_a_packaging_input_runs_packaging(self):
+        self.write("deploy/test_package.py", "# Packaging fixture\n")
+        self.commit()
+        self.git("switch", "--quiet", "-c", "topic")
+        self.git("mv", "deploy/test_package.py", "packaging-notes.md")
+        self.commit()
+        self.assertEqual(self.check_pr(), "package")
 
     def test_docs_only_push(self):
         self.write("README.md", "# Documentation update\n")
         self.commit()
-        self.assertFalse(self.check_push())
+        self.assertEqual(self.check_push(), "none")
 
     def test_ordinary_packaging_input_push_uses_the_package_workflow(self):
         self.write("Cargo.lock", "# Dependencies changed\n")
         self.commit()
-        self.assertFalse(self.check_push())
+        self.assertEqual(self.check_push(), "none")
 
     def test_move_from_source_to_docs_checks_the_deleted_path(self):
         Path("docs").mkdir()
         self.git("mv", "crates/example/src/lib.rs", "docs/example.md")
         self.commit()
-        self.assertTrue(self.check_push())
+        self.assertEqual(self.check_push(), "package")
 
     def test_large_push_falls_back_to_package_integration(self):
         for index in range(PATH_FILTER_LIMIT):
             self.write(f"docs/{index:03}.md", "# Guide\n")
         self.write("docs/unknown.py", "# Unrelated to packaging\n")
         self.commit()
-        self.assertFalse(self.check_push())
+        self.assertEqual(self.check_push(), "none")
         self.write("crates/example/src/lib.rs", "pub fn changed() {}\n")
         self.commit()
-        self.assertTrue(self.check_push())
+        self.assertEqual(self.check_push(), "package")
 
     def test_push_without_a_reliable_diff_runs_package_integration(self):
-        self.assertTrue(validate_changes("push", "refs/heads/main", "0" * 40))
+        self.assertEqual(validate_changes("push", "refs/heads/main", "0" * 40), "package")
 
-    def test_pr_without_a_merge_commit_does_not_run_fallback_packaging(self):
-        self.assertFalse(validate_changes("pull_request", "refs/pull/1/merge", ""))
+    def test_pr_without_a_merge_commit_requires_the_full_pipeline(self):
+        self.assertEqual(validate_changes("pull_request", "refs/pull/1/merge", ""), "package")
 
     def test_empty_push_diff_stays_lightweight(self):
-        self.assertFalse(self.check_push())
+        self.assertEqual(self.check_push(), "none")
 
     def test_missing_push_commit_requires_the_full_pipeline(self):
-        self.assertTrue(validate_changes("push", "refs/heads/main", "a" * 40))
+        self.assertEqual(validate_changes("push", "refs/heads/main", "a" * 40), "package")
 
     def test_whitespace_check_covers_committed_changes(self):
         self.write("README.md", "# Trailing space \n")
