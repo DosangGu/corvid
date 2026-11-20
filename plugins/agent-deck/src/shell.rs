@@ -14,7 +14,7 @@ pub(crate) fn prepare() {
 }
 
 pub(crate) fn options(window: &Window, cx: &App) -> WindowOptions {
-    let mut options = WindowOptions {
+    WindowOptions {
         app_id: Some("corvid-agent-deck".into()),
         titlebar: Some(TitlebarOptions {
             title: Some("Corvid Agent Deck".into()),
@@ -28,14 +28,13 @@ pub(crate) fn options(window: &Window, cx: &App) -> WindowOptions {
         focus: false,
         show: cfg!(target_os = "linux"),
         window_min_size: Some(size(px(204.), px(140.))),
+        #[cfg(target_os = "macos")]
+        kind: gpui::WindowKind::PopUp,
+        #[cfg(target_os = "macos")]
+        macos_window_background: gpui::MacosWindowBackground::Transparent,
+        is_movable: !cfg!(target_os = "macos"),
+        is_resizable: !cfg!(target_os = "macos"),
+        is_minimizable: !cfg!(target_os = "macos"),
         ..Default::default()
-    };
-    if cfg!(target_os = "macos") {
-        options.kind = gpui::WindowKind::PopUp;
-        options.window_background = gpui::WindowBackgroundAppearance::Transparent;
-        options.is_movable = false;
-        options.is_resizable = false;
-        options.is_minimizable = false;
     }
-    options
 }

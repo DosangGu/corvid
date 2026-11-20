@@ -10,7 +10,7 @@ publish = ["crates-io"]
 
 [features]
 default = ["ui"]
-ui = ["dep:gpui", "dep:x11rb", "dep:image", "dep:windows", "dep:raw-window-handle"]
+ui = ["dep:gpui", "dep:gpui_platform", "dep:x11rb", "dep:image", "dep:windows", "dep:raw-window-handle"]
 
 [[bin]]
 name = "corvid-agent-deck"
@@ -38,11 +38,13 @@ nix.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 image = { workspace = true, optional = true, features = ["png"] }
-gpui = { workspace = true, optional = true, features = ["x11"] }
+gpui = { workspace = true, optional = true }
+gpui_platform = { workspace = true, optional = true, features = ["x11"] }
 x11rb = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 gpui = { workspace = true, optional = true, features = ["windows-manifest"] }
+gpui_platform = { workspace = true, optional = true }
 raw-window-handle = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading"] }
 windows = { workspace = true, optional = true, features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_WinRT"] }
@@ -68,5 +70,6 @@ workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile.workspace = true
-gpui = { workspace = true, optional = true, features = ["font-kit"] }
+gpui = { workspace = true, optional = true }
+gpui_platform = { workspace = true, optional = true, features = ["font-kit"] }
 raw-window-handle = { workspace = true, optional = true }

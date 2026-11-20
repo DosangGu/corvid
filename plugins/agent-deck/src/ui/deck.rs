@@ -753,8 +753,20 @@ impl Colors {
                 };
                 face.border_2().bg(linear_gradient(
                     180.,
-                    linear_color_stop(gpui::Rgba { a: top, ..color }, 0.),
-                    linear_color_stop(gpui::Rgba { a: bottom, ..color }, 1.),
+                    linear_color_stop(
+                        gpui::Rgba {
+                            alpha: top,
+                            ..color
+                        },
+                        0.,
+                    ),
+                    linear_color_stop(
+                        gpui::Rgba {
+                            alpha: bottom,
+                            ..color
+                        },
+                        1.,
+                    ),
                 ))
             })
             .when_some(run, |face, run| {

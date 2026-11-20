@@ -1,4 +1,4 @@
-use gpui::{Bounds, Pixels, Point, Rgba, Window, fill, point, size};
+use gpui::{Bounds, PaintQuad, Pixels, Point, Rgba, Window, point, size};
 
 pub(super) fn paint(text: &str, cell: Bounds<Pixels>, color: Rgba, window: &mut Window) -> bool {
     let mut chars = text.chars();
@@ -20,7 +20,9 @@ pub(super) fn paint(text: &str, cell: Bounds<Pixels>, color: Rgba, window: &mut 
                     cell.origin + point(cell.size.width * left, cell.size.height * top),
                     cell.origin + point(cell.size.width * right, cell.size.height * bottom),
                 );
-                window.paint_quad(fill(snap(bounds, window.scale_factor()), color));
+                window.paint_quad(
+                    PaintQuad::new(snap(bounds, window.scale_factor())).background(color),
+                );
             };
             if !block_regions(ch, &mut paint) {
                 return false;
@@ -91,7 +93,7 @@ fn paint_braille(mask: u8, cell: Bounds<Pixels>, color: Rgba, window: &mut Windo
     let diameter = radius * 2.;
     for center in braille_dots(mask, cell) {
         let dot = Bounds::new(center - offset, size(diameter, diameter));
-        window.paint_quad(fill(dot, color).corner_radii(radius));
+        window.paint_quad(PaintQuad::new(dot).background(color).corner_radii(radius));
     }
 }
 

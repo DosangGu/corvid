@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use gpui::{Application, Render, WindowOptions};
+use gpui::{Render, WindowOptions};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN, WM_KEYUP};
@@ -49,10 +49,10 @@ fn metadata_bursts_yield_to_win32_keys_and_frames() {
     let view_updates = Rc::clone(&updates);
     let view_keys = Rc::clone(&keys);
     let view_keys_during_burst = Rc::clone(&keys_during_burst);
-    Application::new().run(move |cx| {
+    gpui_platform::application().run(move |cx| {
         cx.open_window(WindowOptions::default(), move |window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             let hwnd = hwnd(window);
             let (sender, changes) = watch::channel(0);
             let initial = sender.clone();
@@ -98,7 +98,7 @@ fn metadata_bursts_yield_to_win32_keys_and_frames() {
         .unwrap();
         cx.spawn(async |cx| {
             cx.background_executor().timer(Duration::from_secs(5)).await;
-            let _ = cx.update(|cx| cx.quit());
+            cx.update(|cx| cx.quit());
         })
         .detach();
     });
@@ -113,7 +113,7 @@ fn other_window_handles_keys_while_a_session_takes_five_seconds_to_stop() {
     let observed = Rc::new(Cell::new(None));
     let observed_at_end = Rc::clone(&observed);
 
-    Application::new().run(move |cx| {
+    gpui_platform::application().run(move |cx| {
         let closing = cx
             .open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| Probe {
@@ -125,7 +125,7 @@ fn other_window_handles_keys_while_a_session_takes_five_seconds_to_stop() {
 
         cx.open_window(WindowOptions::default(), move |window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             let hwnd = hwnd(window);
             let probe_keys = Rc::clone(&keys);
             window.on_next_frame(move |_, cx| {
@@ -146,7 +146,7 @@ fn other_window_handles_keys_while_a_session_takes_five_seconds_to_stop() {
                     observed.set(Some((keys.get(), pending, stopped_without_parking)));
                     let _ = release.send(());
                     crate::desktop_windows::wait_for_shutdown(vec![shutdown]).await;
-                    let _ = cx.update(|cx| cx.quit());
+                    cx.update(|cx| cx.quit());
                 })
                 .detach();
             });

@@ -234,8 +234,8 @@ impl TerminalView {
         }
     }
 
-    pub fn focus(&self, window: &mut Window) {
-        window.focus(&self.focus);
+    pub fn focus_handle(&self) -> &FocusHandle {
+        &self.focus
     }
 
     fn start_selection(
@@ -246,7 +246,7 @@ impl TerminalView {
     ) {
         self.cancel_link();
         self.cancel_pending_wheel();
-        self.focus(window);
+        window.focus(&self.focus, cx);
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
@@ -386,7 +386,7 @@ impl TerminalView {
         }
     }
 
-    fn paste(&self, cx: &mut Context<Self>) {
+    fn paste_clipboard(&self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -662,7 +662,7 @@ impl TerminalView {
             self.open_history(HistoryOpen::Browse, self.visible_rows() as isize, cx);
         } else if edit_shortcut && key.key == "v" {
             self.selection = None;
-            self.paste(cx);
+            self.paste_clipboard(cx);
             cx.notify();
         } else if edit_shortcut && key.key == "c" {
             self.copy_visible(cx);
@@ -1019,7 +1019,7 @@ mod tests {
         use std::rc::Rc;
         use std::time::Duration;
 
-        use gpui::{Application, Entity, WindowOptions};
+        use gpui::{Entity, WindowOptions};
 
         struct Probe {
             _terminal: Entity<TerminalView>,
@@ -1036,7 +1036,7 @@ mod tests {
         let observed = updates.clone();
         let at_next_frame = Rc::new(Cell::new(None));
         let sampled = at_next_frame.clone();
-        Application::new().run(move |cx| {
+        gpui_platform::application().run(move |cx| {
             cx.open_window(WindowOptions::default(), move |window, cx| {
                 let (session, changes) = Session::screen_change_fixture();
                 let terminal = cx.new(|cx| TerminalView::new(session, "probe".into(), window, cx));
@@ -1080,7 +1080,7 @@ mod tests {
 
             cx.spawn(async |cx| {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
-                let _ = cx.update(|cx| cx.quit());
+                cx.update(|cx| cx.quit());
             })
             .detach();
         });

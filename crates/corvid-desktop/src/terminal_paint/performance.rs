@@ -3,8 +3,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AppContext, Application, Context, Render, TitlebarOptions, WindowBounds, WindowOptions, canvas,
-    div, prelude::*,
+    AppContext, Context, Render, TitlebarOptions, WindowBounds, WindowOptions, canvas, div,
+    prelude::*,
 };
 
 use super::*;
@@ -74,8 +74,8 @@ impl Render for Probe {
 fn native_agent_redraw() {
     let samples = Rc::new(RefCell::new(Vec::new()));
     let result = Rc::clone(&samples);
-    Application::new().run(move |cx| {
-        cx.on_window_closed(|cx| {
+    gpui_platform::application().run(move |cx| {
+        cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }

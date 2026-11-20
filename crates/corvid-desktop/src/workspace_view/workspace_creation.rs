@@ -415,7 +415,7 @@ impl WorkspaceView {
             return_to_picker,
             format!("Workspace {}", count + 1),
         ));
-        window.focus(&self.setup_focus);
+        window.focus(&self.setup_focus, cx);
         self.prepare_folder_host(window, cx);
     }
 
@@ -427,7 +427,7 @@ impl WorkspaceView {
         if draft.return_to_picker {
             self.creation = None;
             self.switcher_open = true;
-            window.focus(&self.setup_focus);
+            window.focus(&self.setup_focus, cx);
             cx.notify();
         } else {
             self.dismiss_overlay(window, cx);
@@ -770,7 +770,7 @@ impl WorkspaceView {
         div()
             .flex()
             .flex_col()
-            .flex_shrink()
+            .flex_shrink(1.)
             .min_h_0()
             .gap(ui_px(4.))
             .child(self.creation_field(Field::Folder, "Folder path", &draft.folder, cx))
@@ -793,7 +793,7 @@ impl WorkspaceView {
                                 move |view, _, window, cx| {
                                     let draft = view.creation.as_mut().expect("workspace editor");
                                     draft.browse_folder(parent.clone(), Some(child.clone()));
-                                    window.focus(&view.setup_focus);
+                                    window.focus(&view.setup_focus, cx);
                                     cx.notify();
                                 },
                             )),
@@ -832,7 +832,7 @@ impl WorkspaceView {
                                 draft.listing = None;
                                 draft.status = None;
                                 draft.propose_name(None);
-                                window.focus(&view.setup_focus);
+                                window.focus(&view.setup_focus, cx);
                                 cx.notify();
                             }
                         }),
@@ -852,7 +852,7 @@ impl WorkspaceView {
                             .id("workspace-folders")
                             .flex()
                             .flex_col()
-                            .flex_shrink()
+                            .flex_shrink(1.)
                             .min_h_0()
                             .max_h(ui_px(320.))
                             .overflow_y_scroll()
@@ -967,7 +967,7 @@ impl WorkspaceView {
                             let draft = view.creation.as_mut().expect("workspace editor");
                             if draft.creating.is_none() && draft.text().marked.is_none() {
                                 draft.field = field;
-                                window.focus(&view.setup_focus);
+                                window.focus(&view.setup_focus, cx);
                                 cx.notify();
                             }
                         }),
@@ -1004,7 +1004,7 @@ fn folder_button(
         .on_click(cx.listener(move |view, _, window, cx| {
             let draft = view.creation.as_mut().expect("workspace editor");
             draft.browse_folder(path.clone(), None);
-            window.focus(&view.setup_focus);
+            window.focus(&view.setup_focus, cx);
             cx.notify();
         }))
 }
