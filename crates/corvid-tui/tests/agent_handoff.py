@@ -13,12 +13,31 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 from interactive import OuterTerminal, stop, wait_for_daemon
 
 
 def fields(output):
     return dict(item.split("=", 1) for item in output.split() if "=" in item)
+
+
+def wait_for_attention(control, **expected):
+    deadline = time.monotonic() + 5
+    while True:
+        attention = control("attention")
+        if any(expected.items() <= fields(line).items() for line in attention.splitlines()):
+            return
+        if time.monotonic() >= deadline:
+            try:
+                collector = control("collector-status")
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                collector = str(error)
+            raise AssertionError(
+                f"missing retained attention {expected!r}; attention={attention!r}; "
+                f"collector={collector!r}"
+            )
+        time.sleep(0.05)
 
 
 def prepare(command, runtime, schema):
@@ -128,7 +147,7 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
                 # Leave a question pending at replacement; it must remain historical.
                 terminal.send(b"question\n")
                 terminal.expect(b"OBSERVED-question-PID=" + pid)
-                assert "request_kind=Question" in control("attention")
+                wait_for_attention(control, run_id=old_run, request_kind="Question")
                 for generation in range(2):
                     before = prepare(command, runtime, repository / "crates/corvid-protocol/proto/corvid.proto")
                     assert daemon.wait(timeout=5) == 0
@@ -187,10 +206,10 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
                     terminal.output.clear()
                     terminal.send(b"question\n")
                     terminal.expect(b"OBSERVED-question-PID=" + pid)
-                    assert f"run_id={run} " in control("attention") and "request_kind=Question" in control("attention")
+                    wait_for_attention(control, run_id=run, request_kind="Question")
                     terminal.send(b"respond\n")
                     terminal.expect(b"OBSERVED-respond-PID=" + pid)
-                    assert "reason=Response" in control("attention")
+                    wait_for_attention(control, run_id=run, reason="Response")
                     assert "collection=Healthy" in control("agents")
                     old_run = run
                 terminal.send(b"exit\n")
