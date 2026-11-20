@@ -775,27 +775,33 @@ impl Interactive {
         match frame {
             Frame::Render(render) => {
                 let applied = self.render(tty, render).await?;
-                if let Err(error) = self.send(Body::FrameApplied(applied)).await {
-                    if matches!(
-                        error.downcast_ref::<FrameError>(),
-                        Some(FrameError::Io(io)) if matches!(
-                            io.kind(),
-                            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
-                                | ErrorKind::ConnectionAborted | ErrorKind::NotConnected
-                        )
-                    ) && let Some(status) = self.read_final_status().await?
-                    {
-                        return Ok(Some(status));
-                    }
-                    return Err(error).context("acknowledging the terminal frame");
-                }
+                self.acknowledge_frame(applied).await
             }
             Frame::Structured(payload) => {
                 let envelope = self.scoped_envelope(&payload)?;
-                return self.event(tty, envelope).await;
+                self.event(tty, envelope).await
             }
         }
-        Ok(None)
+    }
+
+    async fn acknowledge_frame(&mut self, applied: FrameApplied) -> Result<Option<u32>> {
+        let Err(error) = self.send(Body::FrameApplied(applied)).await else {
+            return Ok(None);
+        };
+
+        if let Some(FrameError::Io(io)) = error.downcast_ref()
+            && matches!(
+                io.kind(),
+                ErrorKind::BrokenPipe
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::NotConnected
+            )
+            && let Some(status) = self.read_final_status().await?
+        {
+            return Ok(Some(status));
+        }
+        Err(error).context("acknowledging the terminal frame")
     }
 
     async fn read_final_status(&mut self) -> Result<Option<u32>> {
@@ -1165,6 +1171,76 @@ fn wire_viewport(viewport: Viewport) -> WireViewport {
 #[cfg(test)]
 mod restore_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_closed_frame_acknowledgement_can_read_the_queued_terminal_exit() -> Result<()> {
+        use corvid_protocol::FrameRole;
+        use corvid_protocol::wire::TerminalExited;
+        use tokio::net::UnixStream;
+
+        for exit_code in [Some(7), None] {
+            let (client, daemon) = UnixStream::pair()?;
+            let (read, write) = client.into_split();
+            let (daemon_read, daemon_write) = daemon.into_split();
+            let writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
+            let mut daemon_writer = FrameWriter::start(daemon_write, FrameRole::TuiOutput).await?;
+            let daemon_reader = FrameReader::start(daemon_read, FrameRole::StructuredOnly).await?;
+            let reader = FrameReader::start(read, FrameRole::TuiOutput).await?;
+            let session = Session {
+                role: PeerRole::Tui,
+                protocol_minor: corvid_protocol::PROTOCOL_MINOR,
+                host_id: Uuid::new_v4().to_string(),
+                server_epoch: Uuid::new_v4().to_string(),
+                controller_id: None,
+                capabilities: Vec::new(),
+                provider_profiles: Vec::new(),
+                daemon_version: None,
+            };
+            let route = RouteToken {
+                terminal_id: Uuid::new_v4().to_string(),
+                ..Default::default()
+            };
+            if let Some(exit_code) = exit_code {
+                daemon_writer
+                    .envelope(&session.envelope(
+                        None,
+                        Body::TerminalExited(TerminalExited {
+                            terminal_id: route.terminal_id.clone(),
+                            exit_code,
+                            signal: None,
+                        }),
+                    ))
+                    .await?;
+            }
+            drop(daemon_writer);
+            drop(daemon_reader);
+
+            let mut client = Interactive::new(
+                Connection {
+                    session,
+                    reader,
+                    writer,
+                },
+                Viewport::new(80, 24)?,
+                route,
+                Duration::ZERO,
+                None,
+            );
+            let result = client
+                .acknowledge_frame(FrameApplied {
+                    render_generation: 1,
+                    frame_id: 1,
+                })
+                .await;
+            if exit_code.is_some() {
+                assert_eq!(result?, exit_code);
+            } else {
+                assert!(result.is_err(), "an unexpected closure must still fail");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn explicit_selection_launch_and_layout_commands_override_saved_views() {
