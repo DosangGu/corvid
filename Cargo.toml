@@ -15,6 +15,7 @@ members = [
     "spikes/deck",
     "spikes/terminal",
 ]
+exclude = ["crates/vendor/taffy"]
 default-members = [
     "crates/corvid-tui",
     "crates/corvid-client",
@@ -104,3 +105,7 @@ debug = 0
 
 [profile.dev.package.gpui]
 debug = 0
+
+[patch.crates-io]
+# GPUI pins Taffy 0.9.0. This copy resolves grid to a version patched for CVE-2026-42199.
+taffy = { path = "crates/vendor/taffy" }
