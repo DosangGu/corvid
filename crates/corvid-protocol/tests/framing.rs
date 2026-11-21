@@ -272,11 +272,19 @@ mod compio_framing {
         encode_key(99, WireType::Varint, &mut opaque);
         encode_varint(42, &mut opaque);
 
+        let large_render = || {
+            let mut frame = render();
+            frame.ansi.extend([b'x'; 4096]);
+            frame.header.ansi_bytes = frame.ansi.len() as u32;
+            frame
+        };
+
         let mut from_tokio = Vec::new();
         tokio.block_on(async {
             let mut writer = FrameWriter::start(&mut from_tokio, FrameRole::TuiOutput).await?;
             writer.opaque_envelope(&opaque).await?;
-            writer.render(&render()).await
+            writer.render(&large_render()).await?;
+            writer.opaque_envelope(&opaque).await
         })?;
         compio.block_on(async {
             let mut reader =
@@ -285,7 +293,14 @@ mod compio_framing {
                 reader.next_frame().await?,
                 Some(Frame::Structured(opaque.clone()))
             );
-            assert_eq!(reader.next_frame().await?, Some(Frame::Render(render())));
+            assert_eq!(
+                reader.next_frame().await?,
+                Some(Frame::Render(large_render()))
+            );
+            assert_eq!(
+                reader.next_frame().await?,
+                Some(Frame::Structured(opaque.clone()))
+            );
             assert_eq!(reader.next_frame().await?, None);
             Ok::<_, FrameError>(())
         })?;
@@ -295,14 +310,22 @@ mod compio_framing {
             let mut writer =
                 CompioFrameWriter::start(&mut from_compio, FrameRole::TuiOutput).await?;
             writer.opaque_envelope(opaque.clone()).await?;
-            writer.render(render()).await
+            writer.render(large_render()).await?;
+            writer.opaque_envelope(opaque.clone()).await
         })?;
         assert_eq!(from_compio, from_tokio);
         tokio.block_on(async {
             let mut reader =
                 FrameReader::start(from_compio.as_slice(), FrameRole::TuiOutput).await?;
+            assert_eq!(
+                reader.next_frame().await?,
+                Some(Frame::Structured(opaque.clone()))
+            );
+            assert_eq!(
+                reader.next_frame().await?,
+                Some(Frame::Render(large_render()))
+            );
             assert_eq!(reader.next_frame().await?, Some(Frame::Structured(opaque)));
-            assert_eq!(reader.next_frame().await?, Some(Frame::Render(render())));
             assert_eq!(reader.next_frame().await?, None);
             Ok(())
         })
