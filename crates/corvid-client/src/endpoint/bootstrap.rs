@@ -4,14 +4,8 @@ use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use corvid_protocol::ProtocolFault;
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::time::timeout;
 use uuid::Uuid;
 
-#[cfg(not(feature = "compio-endpoints"))]
-use super::drain_diagnostic;
 use super::{RemoteHost, relay_failure};
 
 const MACOS_SCRIPT: &str = include_str!("bootstrap_macos.sh");
@@ -195,10 +189,9 @@ impl RemoteHost {
         Ok(())
     }
 
-    #[cfg(feature = "compio-endpoints")]
     async fn bootstrap(&self, command: &str, payload: Option<(&[u8], &[u8])>) -> Result<Vec<u8>> {
         let output = super::native::command_output(
-            self.remote_command(command)?.into_std(),
+            self.remote_command(command)?,
             payload,
             MAX_RESPONSE + 1,
             BOOTSTRAP_TIMEOUT,
@@ -213,48 +206,6 @@ impl RemoteHost {
             "daemon setup response is too large"
         );
         Ok(output.stdout)
-    }
-
-    #[cfg(not(feature = "compio-endpoints"))]
-    async fn bootstrap(&self, command: &str, payload: Option<(&[u8], &[u8])>) -> Result<Vec<u8>> {
-        let mut child = self
-            .remote_command(command)?
-            .spawn()
-            .context("starting Corvid daemon setup")?;
-        let stdout = child.stdout.take().context("setup stdout is unavailable")?;
-        let stderr = child.stderr.take().context("setup stderr is unavailable")?;
-        let mut stdin = child.stdin.take().context("setup stdin is unavailable")?;
-
-        let send = async move {
-            if let Some((header, binary)) = payload {
-                stdin.write_all(header).await?;
-                stdin.write_all(binary).await?;
-            }
-            Ok::<_, std::io::Error>(())
-        };
-        let mut output = Vec::new();
-        let mut bounded = stdout.take((MAX_RESPONSE + 1) as u64);
-        let (status, received, diagnostic, sent) = timeout(BOOTSTRAP_TIMEOUT, async {
-            corvid_async::join!(
-                child.wait(),
-                bounded.read_to_end(&mut output),
-                drain_diagnostic(stderr),
-                send
-            )
-        })
-        .await
-        .context("daemon setup timed out")?;
-        let status = status?;
-        if !status.success() {
-            return Err(bootstrap_failure(status.code(), &diagnostic).into());
-        }
-        received?;
-        sent?;
-        ensure!(
-            output.len() <= MAX_RESPONSE,
-            "daemon setup response is too large"
-        );
-        Ok(output)
     }
 }
 

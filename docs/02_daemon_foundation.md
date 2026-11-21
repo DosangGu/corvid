@@ -466,22 +466,19 @@ dimensions. UTF-16 input tests cover surrogate pairs and control characters.
 cargo test --locked -p corvid-tui --test windows_daemon
 ```
 
-## Compio daemon and experimental client paths
+## Compio daemon and client
 
 The daemon uses Compio for its control, TUI, collector, and upgrade listeners and
-their connection tasks. Existing clients use the same CRV1 wire protocol.
-The optional `compio-probe` feature also enables the Compio ping, stdio
-relays, observer hooks, and Unix shell-agent registration. Retained terminal
-hosts, the daemon coordinator, timers, shutdown signals, workspace actors,
-persistence, and PTY workers also use Compio. The optional
-`compio-tui` feature runs attach framing, timers, signals, and view persistence on
-Compio, using descriptor readiness on Unix and console input events on Windows.
-Enable `compio-endpoints` in Desktop, companion, or Agent Deck to use Compio
-for local control, snapshot watches, and embedded terminal connections. Each
-process shares a single IPC driver thread and uses bounded queues to deliver
-frames to its existing application tasks. The same feature runs SSH and WSL
-relay and setup streams on that driver. The subprocess helper owns child
-termination and reaping, including when setup is cancelled. The companion
+their connection tasks. Existing clients use the same CRV1 wire protocol. The
+retained terminal hosts, daemon coordinator, timers, shutdown signals, workspace
+actors, persistence, and PTY workers also use Compio.
+
+The CLI uses Compio for attach framing, terminal input readiness, stdio relays,
+observer hooks, and shell-agent registration. Local control, snapshot watches,
+embedded terminal connections, SSH, and WSL use the client's shared Compio IPC
+driver with bounded frame queues. The subprocess helper owns child termination
+and reaping, including when setup is cancelled.
+The companion
 presentation server and its clients also use Compio for private CRV1 connections.
 With the feature enabled, the companion CLI starts its service and shutdown
 signals on Compio, and snapshot watches run their heartbeats and backpressure

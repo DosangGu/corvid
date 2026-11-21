@@ -721,20 +721,28 @@ async fn windows_shell_hooks_publish_only_bound_provider_observations() -> Resul
         );
         assert_eq!(run.collection, AgentCollection::Healthy as i32);
         let host = corvid_client::host(&runtime).await?;
-        let unbound = corvid_client::submit_hook(
-            &runtime,
-            &host.host_id,
-            &host.server_epoch,
-            CollectHook {
-                launch_association: run.terminal_id.clone(),
-                provider: run.provider,
-                event: HookEvent::DeliveryGap as i32,
-                ..Default::default()
-            },
-            tokio::time::Instant::now() + WAIT,
-        )
-        .await
-        .unwrap_err();
+        let hook_runtime = runtime.clone();
+        let provider = run.provider;
+        let terminal = run.terminal_id.clone();
+        let unbound = std::thread::spawn(move || {
+            compio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(corvid_client::submit_hook(
+                    &hook_runtime,
+                    &host.host_id,
+                    &host.server_epoch,
+                    CollectHook {
+                        launch_association: terminal,
+                        provider,
+                        event: HookEvent::DeliveryGap as i32,
+                        ..Default::default()
+                    },
+                    std::time::Instant::now() + WAIT,
+                ))
+                .unwrap_err()
+        })
+        .join()
+        .unwrap();
         assert_eq!(
             unbound
                 .downcast_ref::<corvid_protocol::ProtocolFault>()

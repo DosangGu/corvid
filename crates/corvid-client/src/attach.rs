@@ -4,13 +4,10 @@ use std::future::pending;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::time::Duration;
-#[cfg(feature = "compio-tui")]
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
-#[cfg(feature = "compio-tui")]
 use compio::runtime::{JoinHandle, spawn};
-#[cfg(feature = "compio-tui")]
 use compio::time::{sleep_until, timeout};
 use corvid_async::mpsc;
 use corvid_core::Viewport;
@@ -28,25 +25,13 @@ use corvid_protocol::{
     MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
     RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session, decode_envelope,
 };
-#[cfg(feature = "compio-tui")]
 use corvid_protocol::{CompioFrameReader as FrameReader, CompioFrameWriter as FrameWriter};
-#[cfg(not(feature = "compio-tui"))]
-use corvid_protocol::{FrameReader, FrameWriter};
-#[cfg(all(unix, not(feature = "compio-tui")))]
-use tokio::signal::unix::{SignalKind, signal};
-#[cfg(not(feature = "compio-tui"))]
-use tokio::task::{JoinHandle, spawn};
-#[cfg(not(feature = "compio-tui"))]
-use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until, timeout};
 use uuid::Uuid;
 
-#[cfg(feature = "compio-tui")]
 use crate::compio_connection::{
     LocalConnection as Connection, LocalStream as LocalRead, LocalStream as LocalWrite,
 };
 use crate::connection::SocketRole;
-#[cfg(not(feature = "compio-tui"))]
-use crate::connection::{LocalConnection as Connection, LocalRead, LocalWrite};
 use crate::keys::{Decoder, Input};
 use crate::tty::Tty;
 use crate::view_state::{self, Recorder, Target};
@@ -106,17 +91,13 @@ pub fn check_tty() -> Result<()> {
 }
 
 pub async fn attach(runtime: &Path, options: AttachOptions) -> Result<u32> {
-    #[cfg(feature = "compio-tui")]
-    return run_compio({
+    run_compio({
         let runtime = runtime.to_owned();
         move || async move { attach_terminal(&runtime, options).await }
     })
-    .await;
-    #[cfg(not(feature = "compio-tui"))]
-    attach_terminal(runtime, options).await
+    .await
 }
 
-#[cfg(feature = "compio-tui")]
 async fn run_compio<T, F, Run>(run: Run) -> Result<T>
 where
     T: Send + 'static,
@@ -311,7 +292,6 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
     }
 }
 
-#[cfg(feature = "compio-tui")]
 fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
     Ok(async {
         #[cfg(unix)]
@@ -330,31 +310,7 @@ fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
     })
 }
 
-#[cfg(not(feature = "compio-tui"))]
-fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
-    #[cfg(unix)]
-    let (mut terminate, mut hangup, mut interrupt) = (
-        signal(SignalKind::terminate())?,
-        signal(SignalKind::hangup())?,
-        signal(SignalKind::interrupt())?,
-    );
-    #[cfg(windows)]
-    let mut interrupt = tokio::signal::windows::ctrl_break()?;
-    Ok(async move {
-        #[cfg(unix)]
-        corvid_async::select! {
-            _ = terminate.recv() => {},
-            _ = hangup.recv() => {},
-            _ = interrupt.recv() => {},
-        }
-        #[cfg(windows)]
-        interrupt.recv().await;
-        Ok(())
-    })
-}
-
 async fn connect(runtime: &Path, required: Vec<String>) -> Result<Connection> {
-    #[cfg(feature = "compio-tui")]
     {
         let stream = crate::compio_connection::open(runtime, SocketRole::Client)
             .await
@@ -365,11 +321,6 @@ async fn connect(runtime: &Path, required: Vec<String>) -> Result<Connection> {
         )
         .await
         .context("daemon handshake timed out")?
-    }
-    #[cfg(not(feature = "compio-tui"))]
-    {
-        let stream = crate::connection::open(runtime, SocketRole::Client).await?;
-        Connection::establish(stream, PeerRole::Tui, required).await
     }
 }
 
@@ -657,13 +608,6 @@ impl Incoming {
     }
 }
 
-#[cfg(not(feature = "compio-tui"))]
-impl Drop for Incoming {
-    fn drop(&mut self) {
-        self._task.abort();
-    }
-}
-
 struct Interactive {
     saved_view: Option<(Recorder, Target)>,
     session: Session,
@@ -837,19 +781,11 @@ impl Interactive {
 
     async fn run(&mut self, tty: &Tty) -> Result<u32> {
         let mut buffer = [0; INPUT_CHUNK];
-        #[cfg(feature = "compio-tui")]
         let mut next_resize = Instant::now();
-        #[cfg(not(feature = "compio-tui"))]
-        let mut resize_tick = {
-            let mut tick = interval(RESIZE_INTERVAL);
-            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            tick
-        };
         loop {
             let input_deadline = self.keys.deadline();
             let pairing_deadline = self.pairing.as_ref().map(|pairing| pairing.deadline);
             let resized = async {
-                #[cfg(feature = "compio-tui")]
                 {
                     sleep_until(next_resize).await;
                     let now = Instant::now();
@@ -857,8 +793,6 @@ impl Interactive {
                         % RESIZE_INTERVAL.as_nanos();
                     next_resize = now + RESIZE_INTERVAL - Duration::from_nanos(offset as u64);
                 }
-                #[cfg(not(feature = "compio-tui"))]
-                resize_tick.tick().await;
             };
             corvid_async::select! {
                 item = self.incoming.frames.recv() => {
@@ -1296,12 +1230,9 @@ mod restore_tests {
     use super::*;
 
     #[cfg(unix)]
-    #[tokio::test]
+    #[compio::test]
     async fn a_closed_frame_acknowledgement_can_read_the_queued_terminal_exit() -> Result<()> {
-        #[cfg(feature = "compio-tui")]
         return run_compio(acknowledgement_after_peer_close).await;
-        #[cfg(not(feature = "compio-tui"))]
-        acknowledgement_after_peer_close().await
     }
 
     #[cfg(unix)]
@@ -1309,10 +1240,7 @@ mod restore_tests {
         use corvid_protocol::FrameRole;
         use corvid_protocol::wire::TerminalExited;
 
-        #[cfg(feature = "compio-tui")]
-        assert!(tokio::runtime::Handle::try_current().is_err());
         for exit_code in [Some(7), None] {
-            #[cfg(feature = "compio-tui")]
             let (client, daemon) = {
                 let (client, daemon) = std::os::unix::net::UnixStream::pair()?;
                 (
@@ -1320,8 +1248,6 @@ mod restore_tests {
                     compio::net::UnixStream::from_std(daemon)?,
                 )
             };
-            #[cfg(not(feature = "compio-tui"))]
-            let (client, daemon) = tokio::net::UnixStream::pair()?;
             let (read, write) = client.into_split();
             let (daemon_read, daemon_write) = daemon.into_split();
             let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;

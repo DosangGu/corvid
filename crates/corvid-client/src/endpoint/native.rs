@@ -19,6 +19,13 @@ use crate::connection::SocketRole;
 pub(super) type ReadQueue = mpsc::Receiver<Result<Frame, FrameError>>;
 pub(crate) struct WriteQueue(mpsc::Sender<WriteRequest>);
 
+#[cfg(test)]
+impl WriteQueue {
+    pub(crate) fn test_sink() -> Self {
+        Self(mpsc::channel(1).0)
+    }
+}
+
 struct WriteRequest {
     message: Envelope,
     complete: oneshot::Sender<Result<(), FrameError>>,
@@ -265,7 +272,8 @@ async fn serve(request: ConnectRequest) {
                 let socket = match peer {
                     PeerRole::Control => SocketRole::Control,
                     PeerRole::Tui => SocketRole::Client,
-                    _ => unreachable!("local endpoints only support control and TUI"),
+                    PeerRole::Upgrade => SocketRole::Upgrade,
+                    _ => unreachable!("unexpected role for a local endpoint"),
                 };
                 let stream = compio_connection::open(&path, socket)
                     .await

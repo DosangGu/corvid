@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, ensure};
 use corvid_protocol::PeerRole;
-use tokio::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+use std::process::Command;
 
 use super::{DaemonInstallation, HostPlatform, bootstrap};
 
@@ -63,9 +65,8 @@ impl WslDistribution {
         Ok(command)
     }
 
-    #[cfg(feature = "compio-endpoints")]
     pub async fn list() -> Result<Vec<Self>> {
-        let mut command = wsl_command()?.into_std();
+        let mut command = wsl_command()?;
         command.args(["--list", "--quiet"]);
         let output = super::native::command_output(
             command,
@@ -85,37 +86,6 @@ impl WslDistribution {
         );
         parse_distributions(&output.stdout)
     }
-
-    #[cfg(not(feature = "compio-endpoints"))]
-    pub async fn list() -> Result<Vec<Self>> {
-        use tokio::io::AsyncReadExt;
-
-        let mut child = wsl_command()?
-            .args(["--list", "--quiet"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .context("listing WSL distributions")?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .context("WSL stdout is unavailable")?
-            .take(65537);
-        let mut bytes = Vec::new();
-        let (status, read) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            corvid_async::join!(child.wait(), stdout.read_to_end(&mut bytes))
-        })
-        .await
-        .context("listing WSL distributions timed out")?;
-        ensure!(
-            status?.success(),
-            "Could not list WSL distributions. Check that WSL is installed."
-        );
-        read?;
-        ensure!(bytes.len() <= 65536, "WSL distribution list is too large");
-        parse_distributions(&bytes)
-    }
 }
 
 pub(super) fn shell_command(remote: &str) -> String {
@@ -125,9 +95,7 @@ pub(super) fn shell_command(remote: &str) -> String {
 #[cfg(windows)]
 fn wsl_command() -> Result<Command> {
     let mut command = Command::new(super::system_directory()?.join("wsl.exe"));
-    command
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .kill_on_drop(true);
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     Ok(command)
 }
 
@@ -196,7 +164,7 @@ mod tests {
     fn passes_distribution_names_as_single_arguments() {
         let distro = WslDistribution::new("개발 Linux; echo unexpected".into()).unwrap();
         let command = distro.remote_command("printf ready").unwrap();
-        let args: Vec<_> = command.as_std().get_args().collect();
+        let args: Vec<_> = command.get_args().collect();
         assert_eq!(
             args,
             [

@@ -12,43 +12,22 @@ use corvid_protocol::wire::RegisterShellAgent;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{CollectHook, Envelope, HookEvent};
 use corvid_protocol::{PeerRole, ProtocolFault, Session};
-use tokio::time::{Instant, timeout, timeout_at};
 use uuid::Uuid;
 
-use crate::connection::{LocalConnection, SocketRole, open};
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-type Stream = tokio::net::UnixStream;
-#[cfg(windows)]
-type Stream = tokio::net::windows::named_pipe::NamedPipeClient;
+use crate::compio_connection::LocalStream as Stream;
+use crate::connection::SocketRole;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(20);
 const SUBMIT_TIMEOUT: Duration = Duration::from_millis(50);
 
-pub async fn submit_hook(
-    runtime: &Path,
-    host_id: &str,
-    epoch: &str,
-    observation: CollectHook,
-    deadline: Instant,
-) -> Result<()> {
-    let connect_deadline = deadline.min(Instant::now() + CONNECT_TIMEOUT);
-    let stream = timeout_at(connect_deadline, open(runtime, SocketRole::Collector)).await??;
-    timeout_at(
-        deadline,
-        timeout(
-            SUBMIT_TIMEOUT,
-            send_hook(stream, host_id, epoch, observation),
-        ),
-    )
-    .await??
-}
-
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+    use compio::io::util::Splittable;
     use corvid_protocol::wire::{Envelope, HookCollected};
-    use corvid_protocol::{FrameReader, FrameRole, FrameWriter, accept_hello};
+    use corvid_protocol::{
+        CompioFrameReader as FrameReader, CompioFrameWriter as FrameWriter, FrameRole, accept_hello,
+    };
 
     const HOST: &str = "00000000-0000-4000-8000-000000000001";
     const EPOCH: &str = "00000000-0000-4000-8000-000000000002";
@@ -60,9 +39,11 @@ mod tests {
         epoch: &str,
         body: Body,
     ) -> (Result<Body>, Option<Envelope>) {
-        let (client, server) = Stream::pair().unwrap();
+        let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let client = Stream::from_std(client).unwrap();
+        let server = Stream::from_std(server).unwrap();
         let server = async {
-            let (read, write) = server.into_split();
+            let (read, write) = server.split();
             let mut writer = FrameWriter::start(write, corvid_protocol::FrameRole::Collector)
                 .await
                 .unwrap();
@@ -92,7 +73,7 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn old_daemons_keep_strict_epoch_fencing_and_current_hooks_work() {
         let body = || Body::CollectHook(CollectHook::default());
         let (result, request) = collect(&[CAPABILITY], HOST, EPOCH, body()).await;
@@ -105,7 +86,7 @@ mod tests {
         assert!(request.is_none());
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn retained_hooks_send_the_launch_epoch_inside_a_current_envelope() {
         let capabilities = &[CAPABILITY, RETAINED_AGENT_CAPABILITY];
         let body = || Body::CollectHook(CollectHook::default());
@@ -131,24 +112,6 @@ mod tests {
     }
 }
 
-async fn send_hook(
-    stream: Stream,
-    host_id: &str,
-    epoch: &str,
-    observation: CollectHook,
-) -> Result<()> {
-    let capabilities = hook_capabilities(&observation);
-    let body = exchange(
-        stream,
-        host_id,
-        epoch,
-        capabilities,
-        Body::CollectHook(observation),
-    )
-    .await?;
-    check_hook_reply(body)
-}
-
 fn hook_capabilities(observation: &CollectHook) -> Vec<String> {
     let mut capabilities = vec![CAPABILITY.to_owned()];
     match HookEvent::try_from(observation.event) {
@@ -169,28 +132,6 @@ fn check_hook_reply(body: Body) -> Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub async fn register_shell_agent(
-    runtime: &Path,
-    host_id: &str,
-    epoch: &str,
-    registration: RegisterShellAgent,
-) -> Result<Uuid> {
-    let stream = timeout(CONNECT_TIMEOUT, open(runtime, SocketRole::Collector)).await??;
-    let reply = timeout(
-        SUBMIT_TIMEOUT,
-        exchange(
-            stream,
-            host_id,
-            epoch,
-            vec![SHELL_AGENT_CAPABILITY.to_owned()],
-            Body::RegisterShellAgent(registration),
-        ),
-    )
-    .await??;
-    check_shell_reply(reply)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn check_shell_reply(reply: Body) -> Result<Uuid> {
     match reply {
         Body::ShellAgentRegistered(reply) => Ok(Uuid::parse_str(&reply.launch_association)?),
@@ -205,8 +146,13 @@ async fn exchange(
     capabilities: Vec<String>,
     body: Body,
 ) -> Result<Body> {
-    let mut connection =
-        LocalConnection::establish(stream, PeerRole::Collector, capabilities).await?;
+    let mut connection = crate::compio_connection::LocalConnection::establish(
+        stream,
+        PeerRole::Collector,
+        capabilities,
+        None,
+    )
+    .await?;
     let session = &connection.session;
     let request = prepare_request(session, host_id, epoch, body)?;
     connection.writer.envelope(&request).await?;
@@ -257,8 +203,7 @@ fn check_reply(session: &Session, request: &Envelope, reply: Envelope) -> Result
 }
 
 /// Submit an observer event on the current Compio runtime within the hook's deadline.
-#[cfg(feature = "compio")]
-pub async fn compio_submit_hook(
+pub async fn submit_hook(
     runtime: &Path,
     host_id: &str,
     epoch: &str,
@@ -283,8 +228,8 @@ pub async fn compio_submit_hook(
 }
 
 /// Register a shell agent using the current Compio runtime.
-#[cfg(all(feature = "compio", any(target_os = "linux", target_os = "macos")))]
-pub async fn compio_register_shell_agent(
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub async fn register_shell_agent(
     runtime: &Path,
     host_id: &str,
     epoch: &str,
@@ -301,7 +246,6 @@ pub async fn compio_register_shell_agent(
     check_shell_reply(reply)
 }
 
-#[cfg(feature = "compio")]
 async fn compio_exchange(
     runtime: &Path,
     host_id: &str,
@@ -316,23 +260,9 @@ async fn compio_exchange(
         compio_connection::open(runtime, SocketRole::Collector),
     )
     .await??;
-    compio::time::timeout(SUBMIT_TIMEOUT, async {
-        let mut connection = compio_connection::LocalConnection::establish(
-            stream,
-            PeerRole::Collector,
-            capabilities,
-            None,
-        )
-        .await?;
-        let session = &connection.session;
-        let request = prepare_request(session, host_id, epoch, body)?;
-        connection.writer.envelope(&request).await?;
-        let reply = connection
-            .reader
-            .next_envelope()
-            .await?
-            .context("collector closed")?;
-        check_reply(session, &request, reply)
-    })
+    compio::time::timeout(
+        SUBMIT_TIMEOUT,
+        exchange(stream, host_id, epoch, capabilities, body),
+    )
     .await?
 }

@@ -153,17 +153,14 @@ pub(super) fn dispatch(
             let state = state_path(state_dir)?;
             crate::run_compio_daemon(&runtime, &state, autostarted)
         }
-        #[cfg(feature = "compio-probe")]
         Command::Control {
             stdio: false,
             request: Some(ControlRequest::Ping),
         } => crate::compio_ping(runtime),
-        #[cfg(feature = "compio-probe")]
         Command::Control { stdio: true, .. } => {
             let runtime = runtime_path(runtime)?;
             crate::run_compio(corvid_client::compio_relay(&runtime))
         }
-        #[cfg(feature = "compio-probe")]
         Command::TerminalRelay => {
             let runtime = runtime_path(runtime)?;
             crate::run_compio(corvid_client::compio_relay_tui(&runtime))
@@ -241,7 +238,7 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
             return start_attach(runtime, options).await;
         }
         Command::Control { stdio, request } => match (stdio, request) {
-            (true, _) => corvid_client::relay(&runtime).await?,
+            (true, _) => unreachable!("stdio relay dispatched before the CLI executor"),
             (_, Some(ControlRequest::Host)) => {
                 let host = host(&runtime).await?;
                 println!(
@@ -255,7 +252,7 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
             }
             _ => unreachable!("Clap requires a control request or --stdio"),
         },
-        Command::TerminalRelay => corvid_client::relay_tui(&runtime).await?,
+        Command::TerminalRelay => unreachable!("terminal relay dispatched before the CLI executor"),
         Command::Hooks { .. } | Command::Observe { .. } => unreachable!("synchronous hook command"),
     }
     Ok(0)
