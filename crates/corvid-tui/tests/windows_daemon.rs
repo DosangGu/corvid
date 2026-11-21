@@ -45,6 +45,7 @@ async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
     use corvid_protocol::{
         FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello,
     };
+    use tokio::io::AsyncReadExt;
     use tokio::time::timeout;
 
     let fixture = tempfile::tempdir()?;
@@ -58,6 +59,7 @@ async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
         .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
     timeout(WAIT, async {
         let mut writer =
