@@ -113,6 +113,7 @@ case "handoff":
     precondition(application() == nil)
 case "running":
     precondition(waitForApplication(), "Corvid did not launch from the Dock")
+    precondition(applications().count == 1, "Multiple running applications use the installed bundle")
 case "quit":
     quit()
     precondition(application() == nil)

@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from urllib.parse import unquote, urlsplit
 
 from macos_package import build_relaunch_helper, plist, sign
 from package import digest
@@ -199,17 +200,45 @@ def check_running_relaunch(app, directory, dock, alias, entry):
 
 def check_single_dock_tile(app):
     script = """
-on run argv
-    tell application "System Events" to tell process "Dock"
-        set matches to 0
+set dockEntries to {}
+tell application "System Events" to tell process "Dock"
+    if exists list 1 then
         repeat with entry in UI elements of list 1
-            if name of entry is in argv then set matches to matches + 1
+            set itemName to name of entry as text
+            set itemAddress to ""
+            try
+                set itemAddress to value of attribute "AXURL" of entry as text
+            end try
+            set end of dockEntries to itemName & tab & itemAddress
         end repeat
-        return matches
-    end tell
-end run
+    end if
+end tell
+set AppleScript's text item delimiters to linefeed
+return dockEntries as text
 """
-    assert run("/usr/bin/osascript", "-e", script, app.stem, "Corvid") == "1", "Duplicate Corvid Dock item"
+    app = app.resolve()
+    deadline = time.monotonic() + 10
+    previous = []
+    while True:
+        entries = run("/usr/bin/osascript", "-e", script).splitlines()
+        matches = []
+        for entry in entries:
+            name, _, address = entry.partition("\t")
+            url = urlsplit(address)
+            if url.scheme == "file" and url.netloc in ("", "localhost"):
+                matches_app = Path(unquote(url.path)).resolve().is_relative_to(app)
+            else:
+                matches_app = name in (app.stem, "Corvid")
+            if matches_app:
+                matches.append(entry)
+        # The Dock updates independently of the application's startup receipt.
+        # Require the same single item on consecutive observations.
+        if len(matches) == 1 and matches == previous:
+            return
+        previous = matches
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Expected one Dock item for {app}, found {matches!r}; Dock entries: {entries!r}")
+        time.sleep(0.25)
 
 
 def check_relaunch_entries(app, directory, dock, alias, tile):
@@ -217,6 +246,7 @@ def check_relaunch_entries(app, directory, dock, alias, tile):
         check_running_relaunch(app, directory, dock, alias, entry)
         run(dock, "resolve", app, alias, tile)
         check_single_dock_tile(app)
+        print(f"PASS {entry} restored the pinned Desktop with one Dock item")
 
 
 def check_pinned_relaunch(binary):
