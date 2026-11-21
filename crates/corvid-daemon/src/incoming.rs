@@ -1,10 +1,7 @@
-#[cfg(feature = "compio")]
 use compio::runtime::{JoinHandle, spawn};
 use corvid_async::mpsc;
 use corvid_protocol::FrameError;
 use corvid_protocol::wire::Envelope;
-#[cfg(not(feature = "compio"))]
-use tokio::task::{JoinHandle, spawn};
 
 use crate::platform::{FrameReader, ReadHalf};
 
@@ -37,12 +34,5 @@ impl Incoming {
             requests,
             _task: task,
         }
-    }
-}
-
-#[cfg(not(feature = "compio"))]
-impl Drop for Incoming {
-    fn drop(&mut self) {
-        self._task.abort();
     }
 }

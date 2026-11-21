@@ -63,11 +63,10 @@ pub use provider::windows_hooks::observer_settings;
 pub use windows::run;
 #[cfg(windows)]
 pub use windows::run_with_options;
-#[cfg(all(windows, feature = "compio"))]
+#[cfg(windows)]
 use windows::serve_daemon;
 
 /// Run the daemon on the current Compio runtime. The caller owns shutdown signals.
-#[cfg(feature = "compio")]
 pub async fn run_native(
     runtime_path: &std::path::Path,
     state_path: &std::path::Path,
@@ -96,10 +95,7 @@ pub async fn run(
     autostarted: bool,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
-    #[cfg(feature = "compio")]
     return executor::run(runtime_path, state_path, autostarted, shutdown).await;
-    #[cfg(not(feature = "compio"))]
-    serve_daemon(runtime_path, state_path, autostarted, shutdown).await
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -142,8 +138,6 @@ async fn serve_daemon(
     let mut clients = PeerTasks::new();
     let mut collectors = PeerTasks::new();
     let mut agent_clock = crate::executor::time::interval(Duration::from_millis(250));
-    #[cfg(not(feature = "compio"))]
-    agent_clock.set_missed_tick_behavior(crate::executor::time::MissedTickBehavior::Skip);
     let incoming_upgrade = upgrade::listen(upgrade_socket.as_ref(), &identity);
     corvid_async::pin!(incoming_upgrade);
     corvid_async::pin!(shutdown);

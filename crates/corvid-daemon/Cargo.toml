@@ -9,23 +9,22 @@ description = "PTY and session daemon for the Corvid terminal multiplexer"
 publish = ["crates-io"]
 
 [features]
-compio = ["corvid-protocol/compio", "dep:compio", "compio/macros", "dep:futures-util"]
+compio = []
 
 [dependencies]
 corvid-async.workspace = true
-compio = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
+compio = { workspace = true, features = ["macros"] }
+futures-util.workspace = true
 anyhow.workspace = true
 corvid-update.workspace = true
 corvid-core.workspace = true
-corvid-protocol.workspace = true
+corvid-protocol = { workspace = true, features = ["compio"] }
 dunce.workspace = true
 portable-pty.workspace = true
 prost.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 unicode-width.workspace = true
 uuid.workspace = true
 vt100.workspace = true

@@ -13,20 +13,20 @@ name = "corvid"
 path = "src/main.rs"
 
 [features]
-compio-daemon = ["corvid-daemon/compio", "dep:compio", "compio/signal"]
+compio-daemon = []
 compio-tui = ["corvid-client/compio-tui"]
-compio-endpoints = ["corvid-companion/compio-endpoints", "dep:compio", "compio/signal"]
-compio-probe = ["corvid-client/compio", "dep:compio"]
+compio-endpoints = ["corvid-companion/compio-endpoints"]
+compio-probe = ["corvid-client/compio"]
 
 [dependencies]
 corvid-async.workspace = true
-compio = { workspace = true, optional = true }
+compio = { workspace = true, features = ["signal"] }
 anyhow.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
 corvid-daemon.workspace = true
-corvid-protocol.workspace = true
+corvid-protocol = { workspace = true, features = ["tokio"] }
 corvid-update.workspace = true
 corvid-core.workspace = true
 crossterm = { workspace = true, features = ["bracketed-paste", "events", "windows"] }

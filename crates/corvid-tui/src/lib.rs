@@ -359,7 +359,6 @@ fn compio_ping(runtime_dir: Option<PathBuf>) -> Result<u32> {
     Ok(code)
 }
 
-#[cfg(feature = "compio-daemon")]
 fn run_compio_daemon(
     runtime: &std::path::Path,
     state: &std::path::Path,

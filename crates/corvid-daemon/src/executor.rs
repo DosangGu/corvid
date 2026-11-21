@@ -1,7 +1,3 @@
-#[cfg(not(feature = "compio"))]
-pub(crate) type PeerTasks = tokio::task::JoinSet<anyhow::Result<()>>;
-
-#[cfg(feature = "compio")]
 mod native {
     use std::future::Future;
     use std::path::Path;
@@ -88,34 +84,21 @@ mod native {
     }
 }
 
-#[cfg(feature = "compio")]
 pub(crate) use native::{PeerTasks, run};
 
 use anyhow::Result;
 use std::future::Future;
 
-#[cfg(feature = "compio")]
 use compio::runtime::{JoinHandle, spawn as spawn_task, spawn_blocking};
-#[cfg(not(feature = "compio"))]
-use tokio::task::{JoinHandle, spawn as spawn_task, spawn_blocking};
 
-#[cfg(feature = "compio")]
 pub(crate) use compio::time;
-#[cfg(feature = "compio")]
 pub(crate) use std::time::Instant;
-#[cfg(not(feature = "compio"))]
-pub(crate) use tokio::time;
-#[cfg(not(feature = "compio"))]
-pub(crate) use tokio::time::Instant;
 
 pub(crate) struct Task(JoinHandle<()>);
 
 impl Task {
     pub(crate) fn detach(self) {
-        #[cfg(feature = "compio")]
         self.0.detach();
-        #[cfg(not(feature = "compio"))]
-        drop(self.0);
     }
 
     pub(crate) fn is_finished(&self) -> bool {
@@ -127,13 +110,7 @@ impl Task {
     }
 }
 
-#[cfg(feature = "compio")]
 pub(crate) fn spawn(task: impl Future<Output = ()> + 'static) -> Task {
-    Task(spawn_task(task))
-}
-
-#[cfg(not(feature = "compio"))]
-pub(crate) fn spawn(task: impl Future<Output = ()> + Send + 'static) -> Task {
     Task(spawn_task(task))
 }
 
@@ -148,15 +125,9 @@ pub(crate) async fn blocking<T: Send + 'static>(
 }
 
 async fn join_result<T>(task: JoinHandle<T>) -> Result<T> {
-    #[cfg(feature = "compio")]
-    return task
-        .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()));
-    #[cfg(not(feature = "compio"))]
-    Ok(task.await?)
+    task.await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
-#[cfg(all(test, feature = "compio"))]
+#[cfg(test)]
 pub(crate) use compio::runtime::spawn as spawn_test;
-#[cfg(all(test, not(feature = "compio")))]
-pub(crate) use tokio::spawn as spawn_test;

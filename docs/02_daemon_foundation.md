@@ -466,17 +466,14 @@ dimensions. UTF-16 input tests cover surrogate pairs and control characters.
 cargo test --locked -p corvid-tui --test windows_daemon
 ```
 
-## Experimental Compio daemon IPC
+## Compio daemon and experimental client paths
 
-Build the CLI with `cargo build --locked -p corvid-tui --features compio-daemon`
-to run the daemon's control, TUI, collector, and upgrade listeners and their
-connection tasks on Compio. The same CRV1 protocol works with existing clients.
+The daemon uses Compio for its control, TUI, collector, and upgrade listeners and
+their connection tasks. Existing clients use the same CRV1 wire protocol.
 The optional `compio-probe` feature also enables the Compio ping, stdio
 relays, observer hooks, and Unix shell-agent registration. Retained terminal
-hosts and their daemon-side IPC use Compio with `compio-daemon`. The same
-feature runs the daemon coordinator, timers, shutdown signals, workspace actors,
-persistence, and PTY worker tasks on Compio. The coordinator still uses Tokio
-channels. The optional
+hosts, the daemon coordinator, timers, shutdown signals, workspace actors,
+persistence, and PTY workers also use Compio. The optional
 `compio-tui` feature runs attach framing, timers, signals, and view persistence on
 Compio, using descriptor readiness on Unix and console input events on Windows.
 Enable `compio-endpoints` in Desktop, companion, or Agent Deck to use Compio
@@ -495,7 +492,8 @@ refresh, reconnection, and request deadlines.
 
 ### Linux workload qualification
 
-Build the default and experimental CLI from the same revision. The workload
+Build the default and experimental CLI from revision `295c14c`, which offered
+the two daemon backends. The workload
 requires `protoc` and creates four real PTYs and eight private snapshot watches.
 
 ```sh

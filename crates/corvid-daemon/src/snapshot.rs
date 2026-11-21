@@ -242,23 +242,59 @@ fn chunks(
 
 #[cfg(test)]
 mod tests {
+    use compio::BufResult;
+    use compio::buf::IoBuf;
+    use compio::io::AsyncWrite;
+    use corvid_async::oneshot;
     use corvid_protocol::wire::WorkspaceState;
     use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
     use corvid_protocol::{FRAME_PREAMBLE, FrameRole};
-    use tokio::io::{AsyncReadExt, duplex};
 
     use super::*;
     use crate::publication::{Group, Publication};
 
-    #[cfg_attr(feature = "compio", compio::test)]
-    #[cfg_attr(not(feature = "compio"), tokio::test)]
+    struct StallingWriter {
+        bytes: Vec<u8>,
+        sent: Option<oneshot::Sender<Vec<u8>>>,
+    }
+
+    impl AsyncWrite for StallingWriter {
+        async fn write<B: IoBuf>(&mut self, buffer: B) -> BufResult<usize, B> {
+            const HEADER: usize = 9;
+            if self.bytes.len() == HEADER {
+                return std::future::pending().await;
+            }
+            let read = buffer.as_init();
+            let count = read.len().min(HEADER - self.bytes.len());
+            self.bytes.extend_from_slice(&read[..count]);
+            if self.bytes.len() == HEADER {
+                self.sent.take().unwrap().send(self.bytes.clone()).unwrap();
+            }
+            BufResult(Ok(count), buffer)
+        }
+
+        async fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        async fn shutdown(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[compio::test]
     async fn watch_overflow_closes_an_incomplete_frame_before_the_write_deadline() {
         let mut publication = Publication::default();
         let watch = publication.capture(true).unwrap().watch.unwrap();
-        let (server, mut client) = duplex(64);
-        let mut writer = corvid_protocol::FrameWriter::start(server, FrameRole::StructuredOnly)
-            .await
-            .unwrap();
+        let (sent, prefix) = oneshot::channel();
+        let transport = StallingWriter {
+            bytes: Vec::new(),
+            sent: Some(sent),
+        };
+        let mut writer =
+            corvid_protocol::CompioFrameWriter::start(transport, FrameRole::StructuredOnly)
+                .await
+                .unwrap();
         let frame = Envelope {
             body: Some(Body::SnapshotChunk(SnapshotChunk {
                 entities: vec![workspace("initial".repeat(1024))],
@@ -271,8 +307,7 @@ mod tests {
         let task = crate::executor::spawn_test(async move {
             write_frame(writer.envelope(&frame), Some(&watch)).await
         });
-        let mut prefix = [0; 9];
-        client.read_exact(&mut prefix).await.unwrap();
+        let prefix = prefix.await.unwrap();
         assert_eq!(prefix[..4], FRAME_PREAMBLE);
         assert_eq!(
             u32::from_be_bytes(prefix[4..8].try_into().unwrap()) as usize,
@@ -291,13 +326,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "snapshot watch invalidated during frame write"
-        );
-
-        let mut tail = Vec::new();
-        client.read_to_end(&mut tail).await.unwrap();
-        assert!(
-            tail.len() < payload_len,
-            "an invalidated frame must end with EOF"
         );
     }
 

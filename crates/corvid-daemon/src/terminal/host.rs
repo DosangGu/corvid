@@ -5,7 +5,6 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-#[cfg(feature = "compio")]
 use compio::time::{interval, timeout as host_timeout, timeout_at as host_timeout_at};
 use corvid_core::Viewport;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -16,39 +15,19 @@ use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use prost::{Enumeration, Message};
-#[cfg(feature = "compio")]
 use std::time::Instant;
-#[cfg(any(test, not(feature = "compio")))]
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-#[cfg(not(feature = "compio"))]
-use tokio::runtime::Handle;
-#[cfg(not(feature = "compio"))]
-use tokio::time::Instant;
-#[cfg(not(feature = "compio"))]
-use tokio::time::sleep;
-#[cfg(not(feature = "compio"))]
-use tokio::time::{interval, timeout as host_timeout, timeout_at as host_timeout_at};
 use uuid::Uuid;
 use vt100::Screen;
 
 use super::input::{Kind, WriteFailure};
 use super::session::{ReadState, TerminalSession};
 
-#[cfg(feature = "compio")]
 mod native;
-#[cfg(not(feature = "compio"))]
-use self::{read_message as receive_host_message, write_message as send_host_message};
-#[cfg(feature = "compio")]
 use native::{read_message as receive_host_message, write_message as send_host_message};
 
 pub const COMMAND: &str = "terminal-host";
 const TICK: Duration = Duration::from_millis(8);
 const VERSION: u32 = 1;
-
-#[cfg(all(not(feature = "compio"), any(target_os = "linux", target_os = "macos")))]
-type Connection = tokio::net::UnixStream;
-#[cfg(all(not(feature = "compio"), windows))]
-type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
 
 #[derive(Clone, Copy, Debug, Enumeration, PartialEq, Eq)]
 #[repr(i32)]
@@ -151,12 +130,7 @@ impl Response {
 }
 
 pub(super) struct Client {
-    #[cfg(feature = "compio")]
     connection: native::ClientConnection,
-    #[cfg(not(feature = "compio"))]
-    connection: Connection,
-    #[cfg(not(feature = "compio"))]
-    executor: Handle,
     pub(super) pid: Option<u32>,
     #[cfg(windows)]
     pub(super) process_key: Option<crate::native_process::ProcessKey>,
@@ -302,24 +276,9 @@ impl Client {
 
     pub(super) fn connect(root: &Path, id: Uuid, starting: bool) -> Result<Self> {
         let directory = directory(root, id);
-        #[cfg(feature = "compio")]
         let connection = native::ClientConnection::connect(directory.clone(), starting)?;
-        #[cfg(not(feature = "compio"))]
-        let executor = Handle::current();
-        #[cfg(not(feature = "compio"))]
-        let connection = executor.block_on(tokio::time::timeout(COMMAND_TIMEOUT, async {
-            loop {
-                let result = open(&directory).await;
-                if result.is_ok() || !starting {
-                    return result;
-                }
-                sleep(TICK).await;
-            }
-        }))??;
         let mut client = Self {
             connection,
-            #[cfg(not(feature = "compio"))]
-            executor,
             pid: None,
             #[cfg(windows)]
             process_key: None,
@@ -404,15 +363,7 @@ impl Client {
     }
 
     fn call(&mut self, request: Request) -> Result<Response> {
-        #[cfg(feature = "compio")]
         let response = self.connection.call(request)?;
-        #[cfg(not(feature = "compio"))]
-        let response: Response =
-            self.executor
-                .block_on(tokio::time::timeout(COMMAND_TIMEOUT, async {
-                    write_message(&mut self.connection, request).await?;
-                    read_message(&mut self.connection).await
-                }))??;
         self.paste_pending = response.paste_pending;
         Ok(response)
     }
@@ -452,18 +403,6 @@ fn directory(root: &Path, id: Uuid) -> PathBuf {
     root.join(format!("p-{:012x}", id.as_u128() >> 80))
 }
 
-#[cfg(all(not(feature = "compio"), any(target_os = "linux", target_os = "macos")))]
-async fn open(path: &Path) -> Result<Connection> {
-    RuntimeDir::open(path)?
-        .connect(SocketRole::TerminalHost)
-        .await
-}
-
-#[cfg(all(not(feature = "compio"), windows))]
-async fn open(path: &Path) -> Result<Connection> {
-    DaemonPipe::TerminalHost.connect(path).await
-}
-
 pub fn run_helper(mut args: impl Iterator<Item = OsString>) -> Result<()> {
     let path = PathBuf::from(args.next().context("missing terminal host directory")?);
     let id: Uuid = numeric_arg(&mut args)?;
@@ -481,13 +420,7 @@ pub fn run_helper(mut args: impl Iterator<Item = OsString>) -> Result<()> {
     if !cwd.is_empty() {
         command.cwd(cwd);
     }
-    #[cfg(feature = "compio")]
-    return compio::runtime::Runtime::new()?.block_on(serve(&path, id, command, size));
-    #[cfg(not(feature = "compio"))]
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(serve(&path, id, command, size))
+    compio::runtime::Runtime::new()?.block_on(serve(&path, id, command, size))
 }
 
 fn numeric_arg<T: std::str::FromStr>(args: &mut impl Iterator<Item = OsString>) -> Result<T> {
@@ -772,54 +705,31 @@ fn viewport(cols: u32, rows: u32) -> Result<Viewport> {
     Viewport::new(cols.try_into()?, rows.try_into()?).context("invalid terminal host viewport")
 }
 
-#[cfg(any(test, not(feature = "compio")))]
-async fn read_message<M: Message + Default>(reader: &mut (impl AsyncRead + Unpin)) -> Result<M> {
-    let size = reader.read_u32().await? as usize;
-    ensure!(size <= RENDER_LIMIT, "terminal host frame exceeds limit");
-    let mut bytes = vec![0; size];
-    reader.read_exact(&mut bytes).await?;
-    Ok(M::decode(bytes.as_slice())?)
-}
-
-#[cfg(any(test, not(feature = "compio")))]
-async fn write_message(
-    writer: &mut (impl AsyncWrite + Unpin),
-    message: impl Message,
-) -> Result<()> {
-    let bytes = message.encode_to_vec();
-    ensure!(
-        bytes.len() <= RENDER_LIMIT,
-        "terminal host frame exceeds limit"
-    );
-    writer.write_u32(bytes.len().try_into()?).await?;
-    writer.write_all(&bytes).await?;
-    writer.flush().await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[compio::test]
     async fn rejects_oversized_frames_before_reading_the_payload() {
-        let (mut writer, mut reader) = tokio::io::duplex(4);
-        writer.write_u32((RENDER_LIMIT + 1) as u32).await.unwrap();
-        let result = read_message::<Request>(&mut reader).await;
+        let size = ((RENDER_LIMIT + 1) as u32).to_be_bytes();
+        let result = native::read_message::<Request>(&mut size.as_slice()).await;
         assert!(result.unwrap_err().to_string().contains("exceeds limit"));
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn round_trips_the_versioned_terminal_host_request() {
-        let (mut writer, mut reader) = tokio::io::duplex(256);
+        let mut bytes = [0; 256];
+        let mut writer = bytes.as_mut_slice();
         let request = Request {
             operation: Operation::Hello as i32,
             bytes: Uuid::new_v4().as_bytes().to_vec(),
             version: VERSION,
             ..Default::default()
         };
-        write_message(&mut writer, request.clone()).await.unwrap();
-        let decoded: Request = read_message(&mut reader).await.unwrap();
+        native::write_message(&mut writer, request.clone())
+            .await
+            .unwrap();
+        let decoded: Request = native::read_message(&mut bytes.as_slice()).await.unwrap();
         assert_eq!(decoded, request);
     }
 }
