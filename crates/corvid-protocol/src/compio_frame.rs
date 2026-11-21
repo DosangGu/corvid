@@ -1,5 +1,6 @@
 use std::io::ErrorKind;
 
+use ::compio::BufResult;
 use ::compio::buf::{IntoInner, IoBuf, IoBufMut};
 use ::compio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use prost::Message;
@@ -11,10 +12,16 @@ use super::{
 };
 use crate::wire::Envelope;
 
+// Batch small frames while retaining a direct path for the remainder of
+// large payloads.
+const READ_AHEAD: usize = 512;
+
 /// A cancelled or failed frame read leaves the stream unusable.
 pub struct CompioFrameReader<R> {
     reader: R,
     role: FrameRole,
+    buffered: Vec<u8>,
+    offset: usize,
 }
 
 impl<R: AsyncRead> CompioFrameReader<R> {
@@ -22,17 +29,27 @@ impl<R: AsyncRead> CompioFrameReader<R> {
         if read_exact(&mut reader, [0; 4]).await? != FRAME_PREAMBLE {
             return Err(FrameError::ProtocolMismatch);
         }
-        Ok(Self { reader, role })
+        Ok(Self {
+            reader,
+            role,
+            buffered: Vec::with_capacity(READ_AHEAD),
+            offset: 0,
+        })
     }
 
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
-        let ::compio::BufResult(result, prefix) = self.reader.read([0_u8; 5]).await;
-        let count = result?;
-        if count == 0 {
-            return Ok(None);
+        if self.offset == self.buffered.len() {
+            let mut buffer = std::mem::take(&mut self.buffered);
+            buffer.clear();
+            let BufResult(result, buffer) = self.reader.read(buffer).await;
+            self.buffered = buffer;
+            self.offset = 0;
+            if result? == 0 {
+                return Ok(None);
+            }
         }
 
-        ::compio::time::timeout(COMMAND_TIMEOUT, self.complete_frame(prefix, count))
+        ::compio::time::timeout(COMMAND_TIMEOUT, self.complete_frame())
             .await
             .map_err(|_| FrameError::Timeout)?
             .map(Some)
@@ -42,45 +59,45 @@ impl<R: AsyncRead> CompioFrameReader<R> {
         as_envelope(self.next_frame().await?)
     }
 
-    async fn complete_frame(
-        &mut self,
-        mut prefix: [u8; 5],
-        count: usize,
-    ) -> Result<Frame, FrameError> {
-        if count < 4 {
-            prefix = read_exact(&mut self.reader, prefix.slice(count..4))
-                .await?
-                .into_inner();
-        }
-        let [a, b, c, d, kind] = prefix;
-        let length = frame_body_length(self.role, [a, b, c, d])?;
-        let kind = if count == prefix.len() {
-            kind
-        } else {
-            let [kind] = read_exact(&mut self.reader, [0; 1]).await?;
-            kind
-        };
+    async fn complete_frame(&mut self) -> Result<Frame, FrameError> {
+        let prefix = self.take_exact([0; 4]).await?;
+        let length = frame_body_length(self.role, prefix)?;
+        let [kind] = self.take_exact([0; 1]).await?;
         self.role.check(length, kind)?;
         let body_len = length - 1;
         if kind == STRUCTURED {
-            return read_exact(&mut self.reader, vec![0; body_len])
+            return self
+                .take_exact(vec![0; body_len])
                 .await
                 .map(Frame::Structured);
         }
 
         let data_len = body_len.checked_sub(4).ok_or(FrameError::RenderHeader)?;
-        let header_length = read_exact(&mut self.reader, [0; 4]).await?;
+        let header_length = self.take_exact([0; 4]).await?;
         let header_len = render_header_length(header_length, data_len)?;
-        let header = read_exact(&mut self.reader, vec![0; header_len]).await?;
+        let header = self.take_exact(vec![0; header_len]).await?;
         let ansi_len = data_len - header_len;
         let header = decode_render_header(&header, ansi_len)?;
-        let ansi = read_exact(&mut self.reader, vec![0; ansi_len]).await?;
+        let ansi = self.take_exact(vec![0; ansi_len]).await?;
         Ok(Frame::Render(RenderFrame { header, ansi }))
+    }
+
+    async fn take_exact<B: IoBufMut>(&mut self, bytes: B) -> Result<B, FrameError> {
+        let mut buffered = &self.buffered[self.offset..];
+        let BufResult(copied, mut bytes) = buffered.read(bytes).await;
+        let copied = copied?;
+        self.offset += copied;
+        if copied == bytes.buf_capacity() {
+            return Ok(bytes);
+        }
+        read_exact(&mut self.reader, bytes.slice(copied..))
+            .await
+            .map(IntoInner::into_inner)
     }
 }
 
 async fn read_exact<B: IoBufMut>(reader: &mut impl AsyncRead, bytes: B) -> Result<B, FrameError> {
-    let ::compio::BufResult(result, bytes) = reader.read_exact(bytes).await;
+    let BufResult(result, bytes) = reader.read_exact(bytes).await;
     match result {
         Ok(()) => Ok(bytes),
         Err(error) if error.kind() == ErrorKind::UnexpectedEof => Err(FrameError::Truncated),
