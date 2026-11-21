@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use async_process::windows::CommandExt;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
@@ -146,7 +148,7 @@ pub(super) async fn deck(process: &Running, executable: &Path) -> Result<()> {
         return Ok(());
     }
     let binary = corvid_update::layout::agent_deck_executable(executable)?;
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = async_process::Command::new(binary);
     command.arg("--refresh-running");
     for option in [
         "--state-dir",

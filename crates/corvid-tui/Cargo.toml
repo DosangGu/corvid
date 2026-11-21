@@ -20,6 +20,7 @@ compio-probe = ["corvid-client/compio"]
 
 [dependencies]
 corvid-async.workspace = true
+async-process.workspace = true
 compio = { workspace = true, features = ["signal"] }
 anyhow.workspace = true
 clap.workspace = true

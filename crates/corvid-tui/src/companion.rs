@@ -1,7 +1,5 @@
 #[cfg(windows)]
 use std::env;
-#[cfg(windows)]
-use std::future::Future;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -306,18 +304,6 @@ pub(crate) fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn companion_socket(path: Option<PathBuf>) -> Result<PathBuf> {
     corvid_protocol::paths::companion_socket(path)?.prepare()
-}
-
-#[cfg(windows)]
-fn shutdown() -> Result<impl Future<Output = ()>> {
-    let mut interrupt = tokio::signal::windows::ctrl_c()?;
-    let mut break_signal = tokio::signal::windows::ctrl_break()?;
-    Ok(async move {
-        corvid_async::select! {
-            _ = interrupt.recv() => {}
-            _ = break_signal.recv() => {}
-        }
-    })
 }
 
 impl Command {

@@ -6,6 +6,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use async_process::Command;
 use corvid_async::time::{sleep, timeout};
 use corvid_companion::Config;
 use corvid_companion::monitor::{Scope, discover};
@@ -15,7 +16,6 @@ use corvid_protocol::unix::{RuntimeDir, SocketRole, peer_pid};
 use nix::errno::Errno;
 use nix::fcntl::Flock;
 use semver::Version;
-use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::connection::{Client, LIFECYCLE_CAPABILITY};
@@ -200,7 +200,7 @@ async fn ensure_current_or_start(
             if let Some((client, _)) = inspect(&directory, host, controller).await? {
                 return Ok(Some(client));
             }
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_status()? {
                 anyhow::bail!("Corvid Agent Deck exited during startup ({status})");
             }
             sleep(RETRY).await;

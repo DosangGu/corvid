@@ -181,7 +181,7 @@ async fn verify_installed_version(executable: &Path, previous_version: &str) -> 
 
     let output = corvid_async::time::timeout(
         COMMAND_TIMEOUT,
-        tokio::process::Command::new(executable)
+        async_process::Command::new(executable)
             .arg("--version")
             .kill_on_drop(true)
             .output(),

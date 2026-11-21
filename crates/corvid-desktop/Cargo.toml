@@ -30,6 +30,7 @@ harness = false
 
 [target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 corvid-async.workspace = true
+async-process.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 compio = { workspace = true, optional = true }

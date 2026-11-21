@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use anyhow::{Context, Result, ensure};
+use async_process::Command;
 use corvid_async::time::timeout;
 use corvid_protocol::COMMAND_TIMEOUT;
 use semver::Version;
-use tokio::process::Command;
 
 pub(super) struct Peer {
     pid: u32,
