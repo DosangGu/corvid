@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use compio::io::util::Splittable;
+use compio::io::{AsyncRead, AsyncWrite, util::Splittable};
 use compio::time::timeout;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetHost, HostInfo, Ping};
@@ -19,9 +19,11 @@ pub(crate) type LocalStream = compio::net::UnixStream;
 #[cfg(windows)]
 pub(crate) type LocalStream = compio::fs::named_pipe::NamedPipeClient;
 
-pub(crate) struct LocalConnection {
-    pub(crate) reader: CompioFrameReader<LocalStream>,
-    pub(crate) writer: CompioFrameWriter<LocalStream>,
+pub(crate) type LocalConnection = Connection<LocalStream, LocalStream>;
+
+pub(crate) struct Connection<R, W> {
+    pub(crate) reader: CompioFrameReader<R>,
+    pub(crate) writer: CompioFrameWriter<W>,
     pub(crate) session: Session,
 }
 
@@ -45,6 +47,18 @@ impl LocalConnection {
         controller: Option<String>,
     ) -> Result<Self> {
         let (read, write) = stream.split();
+        Self::negotiate(read, write, peer, capabilities, controller).await
+    }
+}
+
+impl<R: AsyncRead, W: AsyncWrite> Connection<R, W> {
+    pub(crate) async fn negotiate(
+        read: R,
+        write: W,
+        peer: PeerRole,
+        capabilities: Vec<String>,
+        controller: Option<String>,
+    ) -> Result<Self> {
         let (input, output) = match peer {
             PeerRole::Collector => (FrameRole::Collector, FrameRole::Collector),
             PeerRole::Tui => (FrameRole::TuiOutput, FrameRole::StructuredOnly),

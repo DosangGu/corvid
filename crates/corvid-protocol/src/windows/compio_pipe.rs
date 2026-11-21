@@ -1,6 +1,10 @@
+use std::fs::OpenOptions;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use compio::driver::{ToSharedFd, op::ConnectNamedPipe};
@@ -10,6 +14,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+    SECURITY_IDENTIFICATION,
 };
 use windows_sys::Win32::System::Pipes::{
     CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
@@ -55,6 +60,26 @@ impl CompioPipeListener {
             }
         }
     }
+}
+
+/// A private synchronous child stream paired with an overlapped parent stream.
+pub async fn child_stdio_pipe(child_reads: bool) -> Result<(AsyncFd<OwnedHandle>, Stdio)> {
+    let user = current_user()?;
+    let instance = uuid::Uuid::new_v4().simple().to_string();
+    let name = pipe_name("corvid-child-stdio", &user, &instance)?;
+    let parent = listen(&name, &user, true)?;
+    let child = OpenOptions::new()
+        .read(child_reads)
+        .write(!child_reads)
+        .security_qos_flags(SECURITY_IDENTIFICATION)
+        .open(&name)
+        .context("opening private child stdio")?;
+    verify_private(child.as_raw_handle(), &user, false)?;
+    compio::runtime::submit(ConnectNamedPipe::new(parent.to_shared_fd()))
+        .await
+        .0
+        .context("connecting private child stdio")?;
+    Ok((parent, Stdio::from(child)))
 }
 
 fn listen(name: &str, user: &str, first: bool) -> Result<AsyncFd<OwnedHandle>> {

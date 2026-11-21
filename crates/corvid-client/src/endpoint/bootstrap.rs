@@ -4,11 +4,15 @@ use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use corvid_protocol::ProtocolFault;
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use super::{RemoteHost, drain_diagnostic, relay_failure};
+#[cfg(not(feature = "compio-endpoints"))]
+use super::drain_diagnostic;
+use super::{RemoteHost, relay_failure};
 
 const MACOS_SCRIPT: &str = include_str!("bootstrap_macos.sh");
 const LINUX_SCRIPT: &str = include_str!("bootstrap.sh");
@@ -191,6 +195,27 @@ impl RemoteHost {
         Ok(())
     }
 
+    #[cfg(feature = "compio-endpoints")]
+    async fn bootstrap(&self, command: &str, payload: Option<(&[u8], &[u8])>) -> Result<Vec<u8>> {
+        let output = super::native::command_output(
+            self.remote_command(command)?.into_std(),
+            payload,
+            MAX_RESPONSE + 1,
+            BOOTSTRAP_TIMEOUT,
+            "daemon setup timed out",
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(bootstrap_failure(output.status.code(), &output.diagnostic).into());
+        }
+        ensure!(
+            output.stdout.len() <= MAX_RESPONSE,
+            "daemon setup response is too large"
+        );
+        Ok(output.stdout)
+    }
+
+    #[cfg(not(feature = "compio-endpoints"))]
     async fn bootstrap(&self, command: &str, payload: Option<(&[u8], &[u8])>) -> Result<Vec<u8>> {
         let mut child = self
             .remote_command(command)?

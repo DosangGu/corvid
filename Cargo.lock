@@ -1435,6 +1435,7 @@ name = "corvid-client"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "async-process",
  "base64",
  "compio",
  "corvid-core",

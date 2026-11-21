@@ -479,7 +479,9 @@ Compio, using descriptor readiness on Unix and console input events on Windows.
 Enable `compio-endpoints` in Desktop, companion, or Agent Deck to use Compio
 for local control, snapshot watches, and embedded terminal connections. Each
 process shares a single IPC driver thread and uses bounded queues to deliver
-frames to its existing application tasks.
+frames to its existing application tasks. The same feature runs SSH and WSL
+relay and setup streams on that driver. The subprocess helper owns child
+termination and reaping, including when setup is cancelled.
 
 ## Verification
 
