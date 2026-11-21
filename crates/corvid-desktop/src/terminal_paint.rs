@@ -24,6 +24,8 @@ pub struct Metrics {
     column: Pixels,
     pub row: Pixels,
     font_size: Pixels,
+    baseline: Pixels,
+    underline_offset: Pixels,
 }
 
 impl Metrics {
@@ -33,10 +35,17 @@ impl Metrics {
             font_size,
             &[text_run(1, Style::default(), family)],
         );
+        Self::from_reference(line.width, line.ascent, line.descent, font_size)
+    }
+
+    fn from_reference(width: Pixels, ascent: Pixels, descent: Pixels, font_size: Pixels) -> Self {
+        let row = (ascent + descent).max(font_size);
         Self {
-            column: line.width.max(px(1.)),
-            row: (line.ascent + line.descent).max(font_size),
+            column: width.max(px(1.)),
+            row,
             font_size,
+            baseline: centered_baseline(row, ascent, descent),
+            underline_offset: descent * 0.618,
         }
     }
 
@@ -228,14 +237,7 @@ impl Frame {
                         );
                     }
                 } else {
-                    paint_text(
-                        span.text,
-                        span.style,
-                        cell,
-                        family,
-                        metrics.font_size,
-                        window,
-                    );
+                    paint_text(span.text, span.style, cell, family, metrics, window);
                 }
             }
         });
@@ -270,7 +272,9 @@ impl Frame {
                     })
                     .background(rgb(style.bg)),
                 );
-                let _ = marked.paint(cell.origin, metrics.row, TextAlign::Left, None, window, cx);
+                let marked_baseline = centered_baseline(metrics.row, marked.ascent, marked.descent);
+                let origin = cell.origin + point(px(0.), metrics.baseline - marked_baseline);
+                let _ = marked.paint(origin, metrics.row, TextAlign::Left, None, window, cx);
             }
         }
     }
@@ -310,12 +314,16 @@ pub fn link_underline(
     });
 }
 
+fn centered_baseline(row: Pixels, ascent: Pixels, descent: Pixels) -> Pixels {
+    (row - ascent - descent) / 2. + ascent
+}
+
 fn paint_text(
     text: String,
     style: Style,
     cell: Bounds<Pixels>,
     family: &SharedString,
-    font_size: Pixels,
+    metrics: Metrics,
     window: &mut Window,
 ) {
     if text.trim().is_empty() {
@@ -324,12 +332,9 @@ fn paint_text(
     let run = text_run(text.len(), style, family);
     let line = window
         .text_system()
-        .shape_line(text.into(), font_size, &[run]);
-    let baseline = cell.origin
-        + point(
-            px(0.),
-            (cell.size.height - line.ascent - line.descent) / 2. + line.ascent,
-        );
+        .shape_line(text.into(), metrics.font_size, &[run]);
+    // Text with different fallback faces still shares the row's baseline.
+    let baseline = cell.origin + point(px(0.), metrics.baseline);
     for fragment in &line.paint_fragments {
         for glyph in fragment.glyphs.iter() {
             let position = baseline + glyph.position;
@@ -355,7 +360,7 @@ fn paint_text(
             .next()
             .map_or(px(0.), |glyph| glyph.position.x);
         window.paint_underline(
-            baseline + point(first_x, line.descent * 0.618),
+            baseline + point(first_x, metrics.underline_offset),
             line.width,
             &UnderlineStyle {
                 thickness: px(1.),
@@ -414,6 +419,15 @@ fn color(color: Color, default: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_the_row_baseline_and_underline_from_the_reference_font() {
+        let metrics = Metrics::from_reference(px(9.), px(12.), px(3.), px(17.));
+
+        assert_eq!(metrics.row, px(17.));
+        assert_eq!(metrics.baseline, px(13.));
+        assert_eq!(metrics.underline_offset, px(3.) * 0.618);
+    }
 
     #[test]
     fn dims_text_against_the_displayed_background_until_intensity_resets() {
