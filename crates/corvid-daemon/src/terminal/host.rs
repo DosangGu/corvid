@@ -219,14 +219,13 @@ fn retire_host_copies(root: &Path) -> Result<()> {
         crate::executor::spawn(async move {
             while !pending.is_empty() {
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                pending
-                    .retain(|path| match std::fs::remove_file(path) {
-                        Ok(()) => false,
-                        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
-                    })
-                    .detach();
+                pending.retain(|path| match std::fs::remove_file(path) {
+                    Ok(()) => false,
+                    Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+                });
             }
-        });
+        })
+        .detach();
     }
     Ok(())
 }
