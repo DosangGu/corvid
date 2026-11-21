@@ -7,13 +7,15 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use async_process::Child;
 use corvid_async::time::{sleep, timeout};
 use corvid_client::{AttachOptions, UpgradeTarget, daemon_missing};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use nix::errno::Errno;
 use nix::fcntl::Flock;
-use tokio::process::{Child, Command};
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use uuid::Uuid;
 
 const TERMINFO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/corvid.terminfo"));
@@ -261,7 +263,7 @@ async fn ensure_daemon_locked(
             child.check_running()?;
         }
         if daemon_ready(runtime.path()).await? {
-            return Ok(child.and_then(StartingDaemon::detach));
+            return Ok(child.map(StartingDaemon::detach));
         }
         if child.is_none()
             && let Some(instance) = try_lock(runtime.lock_instance())?
@@ -340,7 +342,9 @@ impl StartingDaemon {
                 Ok(())
             });
         }
-        let process = command.spawn().context("starting the background daemon")?;
+        let process = async_process::Command::from(command)
+            .spawn()
+            .context("starting the background daemon")?;
         Ok(Self {
             process,
             diagnostics,
@@ -348,13 +352,13 @@ impl StartingDaemon {
         })
     }
 
-    fn detach(mut self) -> Option<u32> {
+    fn detach(mut self) -> u32 {
         self.ready = true;
         self.process.id()
     }
 
     fn check_running(&mut self) -> Result<()> {
-        if let Some(status) = self.process.try_wait()? {
+        if let Some(status) = self.process.try_status()? {
             let mut buffer = [0; 4096];
             let length = self.diagnostics.read_at(&mut buffer, 0)?;
             let diagnostic = String::from_utf8_lossy(&buffer[..length]);
@@ -367,7 +371,7 @@ impl StartingDaemon {
 impl Drop for StartingDaemon {
     fn drop(&mut self) {
         if !self.ready {
-            let _ = self.process.start_kill();
+            let _ = self.process.kill();
         }
     }
 }

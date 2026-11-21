@@ -1,15 +1,17 @@
 //! Windows Deck replacement, including releases predating lifecycle IPC.
+#[cfg(windows)]
+use async_process::windows::CommandExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use async_process::Command;
 use corvid_async::time::{sleep, timeout};
 use corvid_companion::Config;
 use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::windows::StateDirectory;
 use semver::Version;
-use tokio::process::Command;
 
 use crate::connection::Client;
 
@@ -99,7 +101,7 @@ pub async fn ensure_current(
             if let Some((client, _)) = inspect(config).await? {
                 return Ok(Some(client));
             }
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_status()? {
                 anyhow::bail!("Corvid Agent Deck exited during startup ({status})");
             }
             sleep(Duration::from_millis(50)).await;

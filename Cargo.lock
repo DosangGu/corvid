@@ -1418,6 +1418,7 @@ name = "corvid-agent-deck"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "async-process",
  "cc",
  "clap",
  "corvid-agent-deck-core",
@@ -1557,6 +1558,7 @@ name = "corvid-desktop"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "async-process",
  "cc",
  "chrono",
  "clap",
@@ -1649,6 +1651,7 @@ name = "corvid-tui"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "async-process",
  "clap",
  "compio",
  "corvid-agent-deck",

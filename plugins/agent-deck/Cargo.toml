@@ -20,6 +20,7 @@ required-features = ["ui"]
 
 [dependencies]
 corvid-async.workspace = true
+async-process.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 corvid-agent-deck-core.workspace = true

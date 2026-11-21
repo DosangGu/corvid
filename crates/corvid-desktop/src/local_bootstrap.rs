@@ -1,11 +1,13 @@
+#[cfg(windows)]
+use async_process::windows::CommandExt;
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
+use async_process::Command;
 use corvid_async::Mutex;
 use corvid_client::{ControlEndpoint, InteractiveConnection, daemon_missing, runtime_path};
 use corvid_protocol::{ProtocolFault, RESTORE_AGENTS_CAPABILITY, Session};
 use semver::Version;
-use tokio::process::Command;
 
 use crate::daemon_prompt::{Operation, Prompts, needs_upgrade};
 
