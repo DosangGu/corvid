@@ -320,10 +320,7 @@ pub fn run() -> ExitCode {
             corvid_update::macos::publish_managed(&root, &app)
         }
         Some(Command::Update(options)) => update::run(options),
-        Some(Command::Companion(companion)) => execute(async move {
-            companion::execute(companion, daemon_runtime).await?;
-            Ok(0)
-        }),
+        Some(Command::Companion(companion)) => companion::dispatch(companion, daemon_runtime),
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         Some(Command::Linux(command)) => linux::execute(command, daemon_runtime, started),
         #[cfg(any(target_os = "linux", target_os = "macos"))]

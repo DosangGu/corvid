@@ -35,6 +35,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 #[cfg(not(feature = "compio-endpoints"))]
 use tokio::time::sleep;
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -86,6 +87,18 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub type PresentationAddress = Path;
 #[cfg(windows)]
 pub type PresentationAddress = str;
+
+/// Serve the configured companion on the caller's Compio runtime.
+#[cfg(feature = "compio-endpoints")]
+pub async fn run_native(
+    runtime: &PresentationAddress,
+    state: &Path,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
+    let store = Store::open(state)?;
+    let endpoint = store.config().control_endpoint()?;
+    serve_runtime(runtime, store, endpoint, shutdown).await
+}
 
 pub async fn run(
     runtime: &PresentationAddress,
@@ -336,6 +349,8 @@ async fn dispatch(calls: &mpsc::Sender<Call>, body: Body) -> Result<Body, Protoc
     calls
         .try_send(Call { body, reply })
         .map_err(|_| ProtocolFault::new("LimitExceeded", "companion request queue unavailable"))?;
+    #[cfg(feature = "compio-endpoints")]
+    use compio::time::timeout;
     timeout(CALL_TIMEOUT, receive)
         .await
         .ok()
@@ -466,6 +481,8 @@ impl PresentationClient {
             .envelope(Some(Uuid::new_v4().to_string()), body);
         self.session().validate_request(&request)?;
         let expected = request.request_id.clone();
+        #[cfg(feature = "compio-endpoints")]
+        use corvid_client::endpoint_time::timeout;
         let reply = timeout(CALL_TIMEOUT + COMMAND_TIMEOUT, self.0.exchange(request))
             .await
             .context("companion result timed out")??;

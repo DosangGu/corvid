@@ -45,6 +45,9 @@ jobs:
         run: cargo check --locked -p corvid-protocol --no-default-features --features compio --lib
       - name: Compile and test framing and private listeners
         run: cargo test --locked -p corvid-protocol --features compio --test framing --test compio_listeners
+      - name: Exercise a detached Compio companion on Windows
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p corvid-tui --features compio-daemon,compio-endpoints --test monitor compio_companion_serves_while_detached
       - name: Exercise actual Unix CLI and relays
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo test --locked -p corvid-tui --features compio-probe --test routing compio_

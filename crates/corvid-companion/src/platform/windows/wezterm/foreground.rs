@@ -2,6 +2,9 @@ use std::os::windows::io::OwnedHandle;
 use std::time::Duration;
 
 use anyhow::Result;
+#[cfg(feature = "compio-endpoints")]
+use corvid_client::endpoint_time::wait_until;
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::time::sleep;
 use windows_sys::Win32::Foundation::{HWND, LPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -26,6 +29,9 @@ pub(super) async fn activate(pid: u32, process: &OwnedHandle) -> Result<bool> {
         if unsafe { GetForegroundWindow() } as usize == window {
             return Ok(true);
         }
+        #[cfg(feature = "compio-endpoints")]
+        wait_until(std::time::Instant::now() + Duration::from_millis(50)).await?;
+        #[cfg(not(feature = "compio-endpoints"))]
         sleep(Duration::from_millis(50)).await;
     }
     Ok(false)

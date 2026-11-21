@@ -19,6 +19,65 @@ use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
+#[cfg(all(windows, feature = "compio-endpoints"))]
+#[tokio::test]
+async fn compio_companion_serves_while_detached_from_the_console() -> Result<()> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+
+    let fixture = tempfile::tempdir()?;
+    let state = fixture.path().join("monitor");
+    let host = Uuid::new_v4();
+    let endpoint = ControlEndpoint::Local(fixture.path().join("absent"));
+    let controller = corvid_companion::initialize(&state, host, HostEndpoint::from(&endpoint), 8)?;
+    let address = controller.simple().to_string();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_corvid"))
+        .args(["companion", "--state-dir"])
+        .arg(&state)
+        .args(["--pipe-instance", &address, "run"])
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let ready = async {
+        loop {
+            if let Some(client) = PresentationClient::connect_if_present(&address).await? {
+                return Ok::<_, anyhow::Error>(client);
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    };
+    let mut client = tokio::select! {
+        result = timeout(Duration::from_secs(10), ready) => result.context("detached monitor never listened")??,
+        exit = child.wait() => {
+            let mut diagnostics = String::new();
+            child.stderr.take().context("missing child stderr")?.read_to_string(&mut diagnostics).await?;
+            anyhow::bail!("detached monitor exited {}: {}", exit?, diagnostics.trim());
+        }
+    };
+    assert_eq!(client.session().host_id, host.to_string());
+    assert_eq!(
+        client.slots(None).await?.controller_id,
+        controller.to_string()
+    );
+    assert!(matches!(
+        client
+            .request(Body::StopAgentMonitor(StopAgentMonitor {}))
+            .await?,
+        Body::Pong(_)
+    ));
+    assert!(
+        timeout(Duration::from_secs(10), child.wait())
+            .await??
+            .success()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_daemon() -> Result<()>
 {

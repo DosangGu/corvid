@@ -9,7 +9,7 @@ description = "Controller state and host connections for Corvid"
 publish = ["crates-io"]
 
 [features]
-compio-endpoints = ["corvid-client/compio-endpoints", "corvid-protocol/compio", "dep:compio", "dep:futures-util"]
+compio-endpoints = ["corvid-client/compio-endpoints", "corvid-protocol/compio", "dep:compio", "dep:futures-util", "dep:async-process"]
 
 [dependencies]
 compio = { workspace = true, optional = true }
@@ -27,6 +27,8 @@ uuid.workspace = true
 nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
+async-process = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true, features = ["io"] }
 socket2.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security_Authorization",

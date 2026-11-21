@@ -10,9 +10,9 @@ use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::CompanionConnection;
 use corvid_protocol::wire::envelope::Body;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, sleep_until, timeout_at};
 use uuid::Uuid;
 
+use crate::executor::{Instant, interval_at, sleep_until, timeout_at};
 use crate::last_known::LastKnown;
 #[cfg(windows)]
 use crate::platform::{TerminalRecord, TerminalRegistry};
@@ -241,11 +241,9 @@ impl Service {
         watch: &mut SnapshotWatch,
         calls: &mut mpsc::Receiver<Call>,
     ) -> anyhow::Error {
-        let mut refresh = tokio::time::interval(Duration::from_secs(1));
-        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut priority_refresh =
-            tokio::time::interval_at(Instant::now() + PRIORITY_REFRESH, PRIORITY_REFRESH);
-        priority_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let now = Instant::now();
+        let mut refresh = interval_at(now, Duration::from_secs(1));
+        let mut priority_refresh = interval_at(now + PRIORITY_REFRESH, PRIORITY_REFRESH);
         loop {
             tokio::select! {
                 biased;

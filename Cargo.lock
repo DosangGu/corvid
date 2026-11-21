@@ -1484,6 +1484,7 @@ name = "corvid-companion"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "async-process",
  "compio",
  "corvid-client",
  "corvid-protocol",
