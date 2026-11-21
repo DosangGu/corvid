@@ -9,7 +9,7 @@ use corvid_protocol::{
     ProtocolFault,
 };
 
-use crate::{connection::SocketRole, relay::bootstrap_reply};
+use crate::{compio_connection::open, connection::SocketRole, relay::bootstrap_reply};
 
 pub async fn compio_relay(runtime: &Path) -> Result<()> {
     relay(runtime, SocketRole::Control, FrameRole::StructuredOnly).await
@@ -73,18 +73,6 @@ async fn relay(runtime: &Path, socket: SocketRole, output: FrameRole) -> Result<
             timeout(COMMAND_TIMEOUT, &mut download).await.context("relay drain timed out")?
         }
     }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn open(runtime: &Path, role: SocketRole) -> Result<compio::net::UnixStream> {
-    corvid_protocol::unix::RuntimeDir::open(runtime)?
-        .connect_compio(role)
-        .await
-}
-
-#[cfg(windows)]
-async fn open(runtime: &Path, role: SocketRole) -> Result<compio::fs::named_pipe::NamedPipeClient> {
-    role.connect_compio(runtime).await
 }
 
 async fn forward(

@@ -13,12 +13,12 @@ pub use compio_relay::{compio_relay, compio_relay_tui};
     feature = "compio",
     any(target_os = "linux", target_os = "macos", windows)
 ))]
-mod compio_probe;
+mod compio_connection;
 #[cfg(all(
     feature = "compio",
     any(target_os = "linux", target_os = "macos", windows)
 ))]
-pub use compio_probe::compio_ping;
+pub use compio_connection::{compio_host, compio_ping};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod attach;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -47,6 +47,13 @@ pub mod view_state;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use attach::{AttachOptions, attach, check_tty};
+#[cfg(all(feature = "compio", any(target_os = "linux", target_os = "macos")))]
+pub use collector::compio_register_shell_agent;
+#[cfg(all(
+    feature = "compio",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+pub use collector::compio_submit_hook;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use collector::register_shell_agent;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

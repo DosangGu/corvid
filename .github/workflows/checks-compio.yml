@@ -62,3 +62,9 @@ jobs:
         run: |
           cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test windows_daemon compio_
           cargo test --locked -p corvid-tui --features compio-daemon --test windows_daemon takeover_and_disconnect
+      - name: Exercise Unix Compio observers across daemon handoff
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test routing claude_update_restart -- --test-threads=1
+      - name: Exercise Windows Compio observers in ConPTY
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test windows_daemon windows_shell_hooks_publish_only_bound_provider_observations
