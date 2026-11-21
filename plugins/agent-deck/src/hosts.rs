@@ -3,8 +3,8 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::task::JoinHandle;
 use corvid_companion::{Config, HostEndpoint, PresentationAddress};
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 pub const MAX_HOSTS: usize = 8;
@@ -99,9 +99,12 @@ impl Subscriptions {
             keep
         });
         for (&id, profile) in profiles {
-            self.tasks
-                .entry(id)
-                .or_insert_with(|| (profile.clone(), tokio::spawn(start(id, profile.clone()))));
+            self.tasks.entry(id).or_insert_with(|| {
+                (
+                    profile.clone(),
+                    corvid_async::task::spawn(start(id, profile.clone())),
+                )
+            });
         }
     }
 }
@@ -132,7 +135,7 @@ mod tests {
         .configure(&corvid_client::ControlEndpoint::Local(path.join("unused")))
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn subscribes_to_a_host_connected_after_deck_start_without_restarting_existing_readers()
     -> Result<()> {
         #[cfg(not(windows))]
@@ -170,7 +173,7 @@ mod tests {
         subscriptions.refresh(&profiles, start);
         assert_eq!(readers.recv().await, Some(remote));
         subscriptions.refresh(&discover(&scoped, remote)?, start);
-        tokio::task::yield_now().await;
+        corvid_async::task::yield_now().await;
         assert!(readers.try_recv().is_err());
         assert!(discover(&scoped, local).is_err());
         Ok(())

@@ -12,7 +12,7 @@ publish = ["crates-io"]
 anyhow.workspace = true
 corvid-companion.workspace = true
 corvid-presentation.workspace = true
-corvid-protocol = { workspace = true, features = ["tokio"] }
+corvid-protocol = { workspace = true, features = ["compio", "borrowed-io"] }
 serde.workspace = true
 uuid.workspace = true
 

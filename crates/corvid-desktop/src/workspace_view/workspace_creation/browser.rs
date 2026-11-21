@@ -98,7 +98,7 @@ pub(super) fn start(
     let (updates, receive) = mpsc::unbounded_channel();
     let (prompts, prompt_receiver) = mpsc::unbounded_channel();
     std::thread::Builder::new().name("corvid-folder-browser".into()).spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        let runtime = match compio::runtime::Runtime::new() {
             Ok(runtime) => runtime,
             Err(error) => {
                 let _ = updates.send(Update::SetupFailed(error.to_string()));

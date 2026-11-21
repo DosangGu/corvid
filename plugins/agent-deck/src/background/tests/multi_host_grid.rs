@@ -1,12 +1,12 @@
 use std::process::Stdio;
 
+use async_process::{Child, Command};
 use corvid_agent_deck::connection::Client as DeckClient;
 use corvid_agent_deck::desktop::FocusRequest;
+use corvid_async::task::JoinSet;
 use corvid_companion::HostEndpoint;
 use corvid_presentation::desktop_focus::FocusFailure;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, wire::DesktopAgentFocused};
-use tokio::process::{Child, Command};
-use tokio::task::JoinSet;
 
 use super::*;
 
@@ -58,7 +58,7 @@ impl FixtureHost {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 #[ignore = "requires an isolated X11 display and a built corvid-agent-deck binary"]
 async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() -> Result<()> {
     let root = tempfile::tempdir_in(std::env::home_dir().context("home")?)?;
@@ -119,7 +119,7 @@ async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() 
     .context("opening Agents from the SSH host did not reuse the running Deck")??;
     ensure!(reopened.success(), "reopening the shared Deck failed");
     ensure!(
-        deck.try_wait()?.is_none(),
+        deck.try_status()?.is_none(),
         "the original Deck exited during relaunch"
     );
     let visible = Command::new("xdotool")
@@ -178,7 +178,7 @@ async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() 
             .await?;
         ensure!(status.success(), "capturing the multi-host grid");
     }
-    deck.kill().await?;
+    deck.kill()?;
     println!("PASS: Local and two SSH cards sent the exact host, epoch, and agent ID");
     Ok(())
 }
@@ -186,7 +186,7 @@ async fn grid_routes_clicks_to_local_and_two_ssh_scopes_including_a_late_host() 
 async fn window_id(deck: &mut Child) -> Result<String> {
     timeout(Duration::from_secs(10), async {
         loop {
-            ensure!(deck.try_wait()?.is_none(), "Deck stopped during startup");
+            ensure!(deck.try_status()?.is_none(), "Deck stopped during startup");
             let shown = Command::new("xdotool")
                 .args(["search", "--onlyvisible", "--name", "^Corvid Agent Deck$"])
                 .output()

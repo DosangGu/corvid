@@ -208,6 +208,6 @@ pub(super) async fn legacy_desktop(
             args.extend([OsString::from(option), value.to_owned()]);
         }
     }
-    tokio::task::spawn_blocking(move || installed.start_desktop_with_args(args)).await??;
+    corvid_async::task::spawn_blocking(move || installed.start_desktop_with_args(args)).await??;
     Ok(())
 }

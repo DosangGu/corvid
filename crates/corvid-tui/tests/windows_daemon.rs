@@ -24,7 +24,7 @@ const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
 #[cfg(feature = "compio-probe")]
-#[tokio::test]
+#[compio::test]
 async fn compio_control_ping_uses_the_existing_daemon() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -32,27 +32,27 @@ async fn compio_control_ping_uses_the_existing_daemon() -> Result<()> {
     let _daemon = BackgroundDaemon::open(&runtime).await?;
 
     corvid_client::ping(&runtime).await?;
-    tokio::task::spawn_blocking(move || {
+    corvid_async::task::spawn_blocking(move || {
         compio::runtime::Runtime::new()?.block_on(corvid_client::compio_ping(&runtime))
     })
     .await?
 }
 
 #[cfg(feature = "compio-probe")]
-#[tokio::test]
+#[compio::test]
 async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
+    use corvid_async::io::AsyncReadExt;
     use corvid_async::time::timeout;
     use corvid_protocol::wire::{Ping, envelope::Body};
     use corvid_protocol::{
         FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello,
     };
-    use tokio::io::AsyncReadExt;
 
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
     ensure_daemon(&runtime, &fixture.path().join("state")).await?;
     let daemon = BackgroundDaemon::open(&runtime).await?;
-    let mut relay = tokio::process::Command::new(CORVID)
+    let mut relay = async_process::Command::new(CORVID)
         .arg("--runtime-dir")
         .arg(&runtime)
         .args(["control", "--stdio"])
@@ -90,14 +90,14 @@ async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
         assert!(matches!(reply.body, Some(Body::Pong(_))));
 
         drop(daemon);
-        assert!(relay.wait().await?.success());
+        assert!(relay.status().await?.success());
         drop(writer);
         Ok::<_, anyhow::Error>(())
     })
     .await?
 }
 
-#[tokio::test]
+#[compio::test]
 async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shell() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -169,7 +169,7 @@ async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shel
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -249,7 +249,7 @@ async fn wait_for_title(runtime: &Path, tab_name: &str, pane_name: &str) -> Resu
     }).await.with_context(|| format!("waiting for tab {tab_name:?}, pane {pane_name:?}; observed {observed:?}"))?
 }
 
-#[tokio::test]
+#[compio::test]
 async fn command_menu_consumes_input_and_paste_without_resizing_the_terminal() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -291,7 +291,7 @@ async fn command_menu_consumes_input_and_paste_without_resizing_the_terminal() -
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn ordinary_attach_resumes_the_terminal_and_updates_its_size() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -329,7 +329,7 @@ async fn ordinary_attach_resumes_the_terminal_and_updates_its_size() -> Result<(
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn two_windows_clients_write_to_different_tabs_in_the_same_workspace() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -367,7 +367,7 @@ async fn two_windows_clients_write_to_different_tabs_in_the_same_workspace() -> 
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn takeover_and_disconnect_keep_the_shells_and_other_workspaces_running() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -471,7 +471,7 @@ async fn takeover_and_disconnect_keep_the_shells_and_other_workspaces_running() 
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn native_agent_launch_tracks_the_owned_child_through_exit() -> Result<()> {
     use corvid_protocol::wire::{
         AgentCollection, AgentLifecycle, AgentProcessState, AgentProvider, ProviderExecutionMode,
@@ -538,7 +538,7 @@ async fn native_agent_launch_tracks_the_owned_child_through_exit() -> Result<()>
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn detects_agents_started_inside_an_existing_windows_shell() -> Result<()> {
     use corvid_protocol::wire::{AgentCollection, AgentProcessState, AgentProvider};
 
@@ -668,7 +668,7 @@ fn native_hook_provider_fixture() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn windows_shell_hooks_publish_only_bound_provider_observations() -> Result<()> {
     use corvid_protocol::wire::{
         AgentCollection, AgentProcessState, AttentionReason, CollectHook, HookEvent,
@@ -792,12 +792,12 @@ async fn native_agent(
     .context("native agent state was not published")?
 }
 
-#[tokio::test]
+#[compio::test]
 async fn upgrade_preserves_the_windows_shell_and_screen() -> Result<()> {
     verify_windows_shell_handoff(false).await
 }
 
-#[tokio::test]
+#[compio::test]
 async fn desktop_handoff_preserves_the_windows_shell_and_rejects_a_stale_epoch() -> Result<()> {
     verify_windows_shell_handoff(true).await
 }
@@ -838,7 +838,7 @@ async fn verify_windows_shell_handoff(desktop: bool) -> Result<()> {
     wait_for_title(&runtime, "Retained tab", "RETAINED_TITLE").await?;
     let original_terminal = terminal_id(&runtime).await?;
     let handoff = |epoch: &str| {
-        let mut command = tokio::process::Command::new(CORVID);
+        let mut command = async_process::Command::new(CORVID);
         command.arg("--runtime-dir").arg(&runtime);
         if desktop {
             command.args([
@@ -882,7 +882,7 @@ async fn verify_windows_shell_handoff(desktop: bool) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn installed_update_hands_off_a_live_shell_and_collects_the_released_package() -> Result<()> {
     use sha2::{Digest, Sha256};
     use std::fs;
@@ -927,7 +927,7 @@ async fn installed_update_hands_off_a_live_shell_and_collects_the_released_packa
     )?;
     fs::write(root.join("current.txt"), "0.0.0-test")?;
     let runtime = fixture.path().join("run");
-    let status = tokio::process::Command::new(old.join("corvid.exe"))
+    let status = async_process::Command::new(old.join("corvid.exe"))
         .arg("--runtime-dir")
         .arg(&runtime)
         .args(["ensure-daemon", "--state-dir"])
@@ -949,7 +949,7 @@ async fn installed_update_hands_off_a_live_shell_and_collects_the_released_packa
     fs::write(root.join("current.txt"), current)?;
     let applied = corvid_async::time::timeout(
         Duration::from_secs(30),
-        tokio::process::Command::new(&selected)
+        async_process::Command::new(&selected)
             .arg("finish-update")
             .env("CORVID_RUNTIME_DIR", &runtime)
             .kill_on_drop(true)
@@ -991,7 +991,7 @@ async fn installed_update_hands_off_a_live_shell_and_collects_the_released_packa
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn managed_upgrade_replaces_the_windows_image_after_terminal_handoff() -> Result<()> {
     use corvid_protocol::windows::StateDirectory;
 
@@ -1064,7 +1064,7 @@ async fn managed_upgrade_replaces_the_windows_image_after_terminal_handoff() -> 
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -1299,7 +1299,7 @@ async fn wait_for_layout(
     })?
 }
 
-#[tokio::test]
+#[compio::test]
 async fn ensure_daemon_reuses_the_detached_windows_process() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -1338,7 +1338,7 @@ async fn ensure_daemon_reuses_the_detached_windows_process() -> Result<()> {
 }
 
 async fn ensure_daemon(runtime: &Path, state: &Path) -> Result<()> {
-    let status = tokio::process::Command::new(CORVID)
+    let status = async_process::Command::new(CORVID)
         .arg("--runtime-dir")
         .arg(runtime)
         .args(["ensure-daemon", "--state-dir"])

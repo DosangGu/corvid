@@ -5,17 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "Executor-independent synchronization for Corvid"
+description = "Shared async runtime and synchronization for Corvid"
 publish = ["crates-io"]
 
 [dependencies]
 async-channel.workspace = true
 async-io.workspace = true
 async-lock.workspace = true
+compio.workspace = true
+compio-io.workspace = true
 event-listener.workspace = true
 futures-channel.workspace = true
 futures-lite.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, features = ["io"] }
 selectme.workspace = true
 
 [lints]

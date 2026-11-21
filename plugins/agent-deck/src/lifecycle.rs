@@ -43,7 +43,7 @@ pub async fn ensure_current(
     // Serialize startup sweeps and Agents clicks from multiple Desktop windows.
     // This is separate from the Deck's own lifetime lock.
     let lock_path = state.join("agent-deck-update");
-    let (_storage, _lock) = tokio::task::spawn_blocking(move || {
+    let (_storage, _lock) = corvid_async::task::spawn_blocking(move || {
         let storage = StateDirectory::create_all(&lock_path)?;
         let lock = storage.lock_storage_with_timeout(COMMAND_TIMEOUT)?;
         Ok::<_, anyhow::Error>((storage, lock))
@@ -133,7 +133,12 @@ async fn inspect(config: &Config) -> Result<Option<(Client, Process)>> {
         Err(error) => return Err(error),
     };
     let process = Process::from_pipe(&pipe)?;
-    let client = Client::handshake(Box::new(pipe), config.host_id, config.controller_id).await?;
+    let client = Client::handshake(
+        Box::new(corvid_async::io::adapt(pipe)),
+        config.host_id,
+        config.controller_id,
+    )
+    .await?;
     Ok(Some((client, process)))
 }
 

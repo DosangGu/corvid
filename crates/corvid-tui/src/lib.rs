@@ -14,7 +14,6 @@ use std::io::{self, BufRead, Read};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::time::Instant;
 
@@ -133,7 +132,7 @@ async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions)
         return corvid_client::attach(runtime, options).await;
     }
     let endpoint = corvid_client::ControlEndpoint::Local(runtime.to_owned());
-    let monitor = tokio::spawn(async move {
+    let monitor = corvid_async::task::spawn(async move {
         let host = endpoint.host().await?;
         monitor_agent_host(
             &companion::companion_state(None)?,
@@ -262,7 +261,7 @@ pub fn run() -> ExitCode {
             pane,
             inspect,
             retry,
-        }) => execute(async move {
+        }) => execute(move || async move {
             use corvid_protocol::wire::{AgentRestoreMode, PaneRestoreStatus, RestoreWorkspace};
             let runtime = runtime_path(daemon_runtime)?;
             ensure_local_daemon(&runtime).await?;
@@ -302,7 +301,7 @@ pub fn run() -> ExitCode {
             Ok(u32::from(failed))
         }),
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        Some(Command::DesktopHandoff { host, epoch }) => execute(async move {
+        Some(Command::DesktopHandoff { host, epoch }) => execute(move || async move {
             let runtime = runtime_path(daemon_runtime)?;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             linux::desktop_handoff(&runtime, host, epoch).await?;
@@ -310,7 +309,7 @@ pub fn run() -> ExitCode {
             windows::desktop_handoff(&runtime, host, epoch).await?;
             Ok(0)
         }),
-        Some(Command::FinishUpdate { retry }) => execute(retirement::run(retry)),
+        Some(Command::FinishUpdate { retry }) => execute(move || retirement::run(retry)),
         #[cfg(target_os = "macos")]
         Some(Command::ReplaceMacosBundle { caller }) => {
             corvid_update::macos::replace_from_installer(caller)
@@ -324,11 +323,11 @@ pub fn run() -> ExitCode {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         Some(Command::Linux(command)) => linux::execute(command, daemon_runtime, started),
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        None => execute(linux::start(daemon_runtime)),
+        None => execute(move || linux::start(daemon_runtime)),
         #[cfg(windows)]
         Some(Command::Windows(command)) => windows::dispatch(command, daemon_runtime, started),
         #[cfg(windows)]
-        None => execute(windows::start(daemon_runtime)),
+        None => execute(move || windows::start(daemon_runtime)),
     };
     match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
@@ -387,16 +386,22 @@ fn run_compio_daemon(
     })
 }
 
-fn execute(run: impl Future<Output = Result<u32>>) -> Result<u32> {
-    let executor = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
-    let result = executor.block_on(run);
-    // Relay stdin uses blocking reads. A closed daemon must end the CLI even when
-    // the other end of the SSH pipe remains open.
-    executor.shutdown_timeout(Duration::from_millis(50));
-    result
+fn execute<F, R>(start: F) -> Result<u32>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Future<Output = Result<u32>>,
+{
+    #[cfg(windows)]
+    {
+        std::thread::Builder::new()
+            .name("corvid-cli".into())
+            .stack_size(4 * 1024 * 1024)
+            .spawn(move || corvid_async::task::block_on(start())?)?
+            .join()
+            .map_err(|_| anyhow::anyhow!("Corvid CLI worker panicked"))?
+    }
+    #[cfg(not(windows))]
+    corvid_async::task::block_on(start())?
 }
 
 fn read_pairing_code() -> Result<Uuid> {

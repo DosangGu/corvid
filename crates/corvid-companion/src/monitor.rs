@@ -252,12 +252,11 @@ impl Scope {
                 });
             }
         }
-        command
+        let mut child = async_process::Command::from(command)
             .arg("run")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut child = async_process::Command::from(command)
+            .stderr(Stdio::null())
             .spawn()
             .context("starting the agent monitor")?;
         timeout(STARTUP_TIMEOUT, async {

@@ -1,5 +1,6 @@
-#![cfg(feature = "tokio")]
+#![cfg(feature = "borrowed-io")]
 
+use corvid_async::io::AsyncWriteExt;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Attach, Envelope, LaunchCommand, RenderHeader};
 use corvid_protocol::{
@@ -8,7 +9,6 @@ use corvid_protocol::{
 };
 use prost::Message;
 use prost::encoding::{WireType, encode_key, encode_varint};
-use tokio::io::{AsyncWriteExt, duplex};
 
 fn framed(kind: u8, payload: &[u8]) -> Vec<u8> {
     let mut frame = Vec::new();
@@ -38,16 +38,16 @@ fn render() -> RenderFrame {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn fragmented_preamble_and_frames_preserve_wire_boundaries() {
-    let (mut tx, rx) = duplex(16);
+    let (mut tx, rx) = corvid_async::io::fixture_pair().unwrap();
     let payload = hello("hello-1".into(), None, vec![]).encode_to_vec();
     let mut burst = framed(1, &payload);
     burst.extend(framed(1, &payload));
-    let writer = tokio::spawn(async move {
+    let writer = corvid_async::task::spawn(async move {
         for byte in FRAME_PREAMBLE {
             tx.write_all(&[byte]).await.unwrap();
-            tokio::task::yield_now().await;
+            corvid_async::task::yield_now().await;
         }
         for chunk in burst.chunks(3) {
             tx.write_all(chunk).await.unwrap();
@@ -67,7 +67,7 @@ async fn fragmented_preamble_and_frames_preserve_wire_boundaries() {
     writer.await.unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn rejects_bad_preamble_and_frame_lengths_before_reading_payload() {
     assert!(matches!(
         FrameReader::start(&b"CRV2"[..], FrameRole::StructuredOnly).await,
@@ -107,7 +107,7 @@ async fn rejects_bad_preamble_and_frame_lengths_before_reading_payload() {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn validates_render_length_and_does_not_release_partial_ansi() {
     let frame = render();
     let mut bytes = Vec::new();
@@ -149,7 +149,7 @@ async fn validates_render_length_and_does_not_release_partial_ansi() {
     ));
 }
 
-#[tokio::test]
+#[compio::test]
 async fn relays_unknown_fields_without_decode_or_reencode() {
     let request = hello("hello-1".into(), None, vec![]);
     let mut payload = request.encode_to_vec();
@@ -264,9 +264,7 @@ mod compio_framing {
 
     #[test]
     fn exchanges_render_and_opaque_frames_between_runtimes() -> anyhow::Result<()> {
-        let tokio = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
+        let borrowed = compio::runtime::Runtime::new()?;
         let compio = Runtime::new()?;
         let mut opaque = hello("interop".into(), None, vec![]).encode_to_vec();
         encode_key(99, WireType::Varint, &mut opaque);
@@ -279,16 +277,16 @@ mod compio_framing {
             frame
         };
 
-        let mut from_tokio = Vec::new();
-        tokio.block_on(async {
-            let mut writer = FrameWriter::start(&mut from_tokio, FrameRole::TuiOutput).await?;
+        let mut from_borrowed = Vec::new();
+        borrowed.block_on(async {
+            let mut writer = FrameWriter::start(&mut from_borrowed, FrameRole::TuiOutput).await?;
             writer.opaque_envelope(&opaque).await?;
             writer.render(&large_render()).await?;
             writer.opaque_envelope(&opaque).await
         })?;
         compio.block_on(async {
             let mut reader =
-                CompioFrameReader::start(from_tokio.as_slice(), FrameRole::TuiOutput).await?;
+                CompioFrameReader::start(from_borrowed.as_slice(), FrameRole::TuiOutput).await?;
             assert_eq!(
                 reader.next_frame().await?,
                 Some(Frame::Structured(opaque.clone()))
@@ -313,8 +311,8 @@ mod compio_framing {
             writer.render(large_render()).await?;
             writer.opaque_envelope(opaque.clone()).await
         })?;
-        assert_eq!(from_compio, from_tokio);
-        tokio.block_on(async {
+        assert_eq!(from_compio, from_borrowed);
+        borrowed.block_on(async {
             let mut reader =
                 FrameReader::start(from_compio.as_slice(), FrameRole::TuiOutput).await?;
             assert_eq!(

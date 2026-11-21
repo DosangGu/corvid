@@ -1,4 +1,5 @@
 use super::*;
+use async_process::windows::CommandExt;
 use corvid_client::{DaemonInstallation, HostPlatform};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -52,7 +53,7 @@ async fn install_prompt(
 // Run in a disposable WSL profile with a matching daemon bundle beside the test
 // executable. CORVID_RUNTIME_DIR and XDG_STATE_HOME must be forwarded via WSLENV.
 // The fixture owner removes the Linux test installation and stops its daemon.
-#[tokio::test]
+#[compio::test]
 #[ignore = "requires an isolated WSL profile and a matching Linux daemon bundle"]
 async fn wsl_session_installs_and_reconnects_to_the_same_shell() -> Result<()> {
     let runtime = std::env::var("CORVID_RUNTIME_DIR")?;
@@ -133,7 +134,7 @@ async fn verify_live_session(
     let before = endpoint.host().await?;
     let output = timeout(
         Duration::from_secs(20),
-        tokio::process::Command::new(
+        async_process::Command::new(
             PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/wsl.exe"),
         )
         .creation_flags(CREATE_NO_WINDOW)

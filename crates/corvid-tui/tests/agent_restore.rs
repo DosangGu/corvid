@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use async_process::{Child, Command};
 use corvid_async::time::{sleep, timeout};
 use corvid_client::view_state::{ViewStore, tui_target};
 use corvid_client::{ControlEndpoint, InteractiveConnection};
@@ -22,7 +23,6 @@ use corvid_protocol::wire::{
 use corvid_protocol::{Frame, PANE_WRITERS_CAPABILITY, RESTORE_AGENTS_CAPABILITY, decode_envelope};
 use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde_json::{Value, json};
-use tokio::process::{Child, Command};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;
@@ -122,7 +122,7 @@ impl Fixture {
             .spawn()?;
         timeout(WAIT, async {
             while corvid_client::ping(&self.runtime).await.is_err() {
-                ensure!(daemon.try_wait()?.is_none(), "fixture daemon exited");
+                ensure!(daemon.try_status()?.is_none(), "fixture daemon exited");
                 sleep(Duration::from_millis(25)).await;
             }
             Ok::<_, anyhow::Error>(())
@@ -182,7 +182,7 @@ impl Fixture {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_clients()
 -> Result<()> {
     let fixture = Fixture::new()?;
@@ -229,7 +229,8 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
         .map(|agent| agent.agent_run_id.clone())
         .collect();
     let old_epoch = fixture.connection().await?.session().server_epoch.clone();
-    daemon.kill().await?;
+    daemon.kill()?;
+    daemon.status().await?;
 
     let mut stored = fixture.stored()?;
     ensure!(stored["schema_version"] == 5, "layout was not migrated");
@@ -337,7 +338,7 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut daemon = fixture.start().await?;
@@ -371,7 +372,8 @@ async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Re
     })
     .await
     .context("waiting for saved startup conversations")??;
-    daemon.kill().await?;
+    daemon.kill()?;
+    daemon.status().await?;
 
     let _restarted = fixture.start().await?;
     let host = fixture.connection().await?.session().host_id.clone();
@@ -393,7 +395,8 @@ async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Re
             drop(recorder);
         }
         let runtime = fixture.runtime.clone();
-        tokio::task::spawn_blocking(move || StartupTui::open(&runtime, &views, session)).await??;
+        corvid_async::task::spawn_blocking(move || StartupTui::open(&runtime, &views, session))
+            .await??;
         let agents = corvid_client::agents(&fixture.runtime).await?;
         ensure!(
             agents.agents.iter().any(|agent| {

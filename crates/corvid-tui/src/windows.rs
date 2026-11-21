@@ -165,7 +165,7 @@ pub(super) fn dispatch(
             let runtime = runtime_path(runtime)?;
             crate::run_compio(corvid_client::compio_relay_tui(&runtime))
         }
-        other => super::execute(execute(other, runtime)),
+        other => super::execute(move || execute(other, runtime)),
     }
 }
 

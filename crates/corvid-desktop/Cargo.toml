@@ -8,7 +8,6 @@ publish.workspace = true
 
 [features]
 compio-endpoints = [
-    "dep:compio",
     "corvid-agent-deck/compio-endpoints",
     "corvid-companion/compio-endpoints",
     "corvid-tui/compio-daemon",
@@ -33,14 +32,14 @@ corvid-async.workspace = true
 async-process.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
-compio = { workspace = true, optional = true }
+compio.workspace = true
 corvid-agent-deck.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
 corvid-core.workspace = true
 corvid-presentation.workspace = true
-corvid-protocol = { workspace = true, features = ["tokio"] }
+corvid-protocol = { workspace = true, features = ["compio", "borrowed-io"] }
 corvid-tui.workspace = true
 corvid-update.workspace = true
 glob.workspace = true
@@ -50,7 +49,6 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["process", "rt-multi-thread", "sync", "time"] }
 unicode-width.workspace = true
 url.workspace = true
 uuid.workspace = true

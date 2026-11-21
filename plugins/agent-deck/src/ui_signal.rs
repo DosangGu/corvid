@@ -87,7 +87,7 @@ impl UiSignal {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[compio::test]
     async fn lifecycle_requests_wake_a_hidden_ui_and_quit_stays_latched() {
         let signal = UiSignal::default();
         let mut receiver = signal.subscribe();

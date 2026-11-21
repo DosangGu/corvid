@@ -1,4 +1,4 @@
-#![cfg(feature = "tokio")]
+#![cfg(feature = "borrowed-io")]
 #![cfg(all(
     feature = "compio",
     any(target_os = "linux", target_os = "macos", windows)
@@ -6,13 +6,13 @@
 
 use anyhow::{Context, Result};
 use compio::io::{AsyncRead, AsyncWrite};
+use corvid_async::io::{AsyncRead as BorrowedRead, AsyncWrite as BorrowedWrite};
 use corvid_async::oneshot;
 use corvid_protocol::wire::{Ping, Pong, envelope::Body};
 use corvid_protocol::{
     COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter, FrameReader, FrameRole, FrameWriter,
     PeerRole, accept_hello, check_hello_result, hello,
 };
-use tokio::io::{AsyncRead as TokioRead, AsyncWrite as TokioWrite};
 
 async fn server(read: impl AsyncRead, write: impl AsyncWrite) -> Result<()> {
     let role = FrameRole::StructuredOnly;
@@ -30,7 +30,7 @@ async fn server(read: impl AsyncRead, write: impl AsyncWrite) -> Result<()> {
     Ok(())
 }
 
-async fn client(read: impl TokioRead + Unpin, write: impl TokioWrite + Unpin) -> Result<()> {
+async fn client(read: impl BorrowedRead + Unpin, write: impl BorrowedWrite + Unpin) -> Result<()> {
     let role = FrameRole::StructuredOnly;
     let mut writer = FrameWriter::start(write, role).await?;
     let mut reader = FrameReader::start(read, role).await?;
@@ -55,8 +55,8 @@ async fn client(read: impl TokioRead + Unpin, write: impl TokioWrite + Unpin) ->
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
-async fn accepts_tokio_clients_on_a_private_unix_socket() -> Result<()> {
+#[compio::test]
+async fn accepts_borrowed_codec_clients_on_a_private_unix_socket() -> Result<()> {
     use compio::io::util::Splittable;
     use corvid_protocol::unix::{RuntimeDir, SocketRole};
 
@@ -64,7 +64,7 @@ async fn accepts_tokio_clients_on_a_private_unix_socket() -> Result<()> {
     let path = fixture.path().join("runtime");
     let (listening, ready) = oneshot::channel();
     let server_path = path.clone();
-    let runner = tokio::task::spawn_blocking(move || -> Result<()> {
+    let runner = corvid_async::task::spawn_blocking(move || -> Result<()> {
         compio::runtime::Runtime::new()?.block_on(compio::time::timeout(
             COMMAND_TIMEOUT,
             async {
@@ -91,7 +91,8 @@ async fn accepts_tokio_clients_on_a_private_unix_socket() -> Result<()> {
     corvid_async::time::timeout(COMMAND_TIMEOUT, ready).await??;
     let runtime = RuntimeDir::open(&path)?;
     for _ in 0..2 {
-        let (read, write) = runtime.connect(SocketRole::Control).await?.into_split();
+        let (read, write) =
+            corvid_async::io::split_native(runtime.connect(SocketRole::Control).await?);
         corvid_async::time::timeout(COMMAND_TIMEOUT, client(read, write)).await??;
     }
     runner.await??;
@@ -100,15 +101,15 @@ async fn accepts_tokio_clients_on_a_private_unix_socket() -> Result<()> {
 }
 
 #[cfg(windows)]
-#[tokio::test]
-async fn accepts_tokio_clients_on_a_private_named_pipe() -> Result<()> {
+#[compio::test]
+async fn accepts_borrowed_codec_clients_on_a_private_named_pipe() -> Result<()> {
     use corvid_protocol::windows::{DaemonPipe, StateDirectory};
 
     let fixture = tempfile::tempdir()?;
     let path = fixture.path().join("runtime");
     let (listening, ready) = oneshot::channel();
     let server_path = path.clone();
-    let runner = tokio::task::spawn_blocking(move || -> Result<()> {
+    let runner = corvid_async::task::spawn_blocking(move || -> Result<()> {
         compio::runtime::Runtime::new()?.block_on(compio::time::timeout(
             COMMAND_TIMEOUT,
             async {
@@ -127,7 +128,8 @@ async fn accepts_tokio_clients_on_a_private_named_pipe() -> Result<()> {
 
     corvid_async::time::timeout(COMMAND_TIMEOUT, ready).await??;
     for _ in 0..2 {
-        let (read, write) = tokio::io::split(DaemonPipe::Control.connect(&path).await?);
+        let (read, write) =
+            corvid_async::io::split_native(DaemonPipe::Control.connect(&path).await?);
         corvid_async::time::timeout(COMMAND_TIMEOUT, client(read, write)).await??;
     }
     runner.await??;

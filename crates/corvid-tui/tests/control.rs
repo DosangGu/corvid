@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use corvid_async::io::{AsyncReadExt, AsyncWriteExt};
 use corvid_async::time::{sleep, timeout};
 use corvid_protocol::collector::{
     CAPABILITY as COLLECTOR_CAPABILITY, CLAUDE_VERSION, CODEX_VERSION, HOST_ID, LAUNCH_ASSOCIATION,
@@ -25,12 +26,11 @@ use corvid_protocol::{
     CAPABILITY_QUERY, FRAME_PREAMBLE, Frame, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
     PeerRole, check_hello_result, hello,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon};
 
-#[tokio::test]
+#[compio::test]
 async fn relays_daemon_terminal_frames_without_an_outer_tty() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -105,7 +105,7 @@ async fn relays_daemon_terminal_frames_without_an_outer_tty() {
             .unwrap();
         writer.shutdown().await.unwrap();
         drop(writer);
-        assert!(relay.wait().await.unwrap().success());
+        assert!(relay.status().await.unwrap().success());
         let status = corvid_client::status(&runtime).await.unwrap();
         assert!(status.terminal_live);
     })
@@ -126,7 +126,7 @@ async fn local_host(runtime: &Path) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-#[tokio::test]
+#[compio::test]
 async fn daemon_restart_preserves_host_identity_and_changes_epoch() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -147,7 +147,8 @@ async fn daemon_restart_preserves_host_identity_and_changes_epoch() {
     assert!(!duplicate.status.success());
     assert_eq!(first_identity, local_host(&runtime).await);
 
-    first.kill().await.unwrap();
+    first.kill().unwrap();
+    first.status().await.unwrap();
     let mut second = daemon(&runtime, &state).await;
     let second_identity = local_host(&runtime).await;
     assert_eq!(
@@ -158,7 +159,8 @@ async fn daemon_restart_preserves_host_identity_and_changes_epoch() {
         first_identity.lines().nth(1),
         second_identity.lines().nth(1)
     );
-    second.kill().await.unwrap();
+    second.kill().unwrap();
+    second.status().await.unwrap();
 
     fs::write(&identity_file, b"{incomplete").unwrap();
     let result = command(&runtime)
@@ -172,7 +174,7 @@ async fn daemon_restart_preserves_host_identity_and_changes_epoch() {
     assert_eq!(fs::read(identity_file).unwrap(), b"{incomplete");
 }
 
-#[tokio::test]
+#[compio::test]
 async fn relays_real_control_session_over_binary_stdio() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -240,7 +242,7 @@ async fn relays_real_control_session_over_binary_stdio() {
             }))
         );
         assert!(reader.next_envelope().await.unwrap().is_none());
-        assert!(relay.wait().await.unwrap().success());
+        assert!(relay.status().await.unwrap().success());
 
         let output = command(&runtime)
             .args(["control", "capabilities"])
@@ -290,7 +292,7 @@ fn verify_qualified_profiles(profiles: &[corvid_protocol::wire::ProviderProfile]
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn collector_status_separates_rejected_submissions_from_connection_failures() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -312,7 +314,7 @@ async fn collector_status_separates_rejected_submissions_from_connection_failure
             Some(&empty)
         );
         let peer = directory.connect(SocketRole::Collector).await.unwrap();
-        let reader = FrameReader::start(peer, FrameRole::Collector)
+        let reader = FrameReader::start(corvid_async::io::adapt(peer), FrameRole::Collector)
             .await
             .unwrap();
         drop(reader);
@@ -355,7 +357,8 @@ async fn collector_status_separates_rejected_submissions_from_connection_failure
     })
     .await
     .unwrap();
-    first.kill().await.unwrap();
+    first.kill().unwrap();
+    first.status().await.unwrap();
     let _second = daemon(&runtime, &state).await;
     assert_eq!(
         corvid_client::status(&runtime).await.unwrap().collector,
@@ -364,11 +367,8 @@ async fn collector_status_separates_rejected_submissions_from_connection_failure
 }
 
 async fn reject_unowned_hook(directory: &RuntimeDir) {
-    let (read, write) = directory
-        .connect(SocketRole::Collector)
-        .await
-        .unwrap()
-        .into_split();
+    let (read, write) =
+        corvid_async::io::split_native(directory.connect(SocketRole::Collector).await.unwrap());
     let mut writer = FrameWriter::start(write, FrameRole::Collector)
         .await
         .unwrap();
@@ -393,7 +393,7 @@ async fn reject_unowned_hook(directory: &RuntimeDir) {
     assert!(matches!(reply.body, Some(Body::Error(fault)) if fault.code == "Unauthorized"));
 }
 
-#[tokio::test]
+#[compio::test]
 async fn relays_a_complete_watch_setup_and_heartbeat_over_stdio() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -448,13 +448,13 @@ async fn relays_a_complete_watch_setup_and_heartbeat_over_stdio() {
         writer.shutdown().await.unwrap();
         drop(writer);
         assert!(reader.next_envelope().await.unwrap().is_none());
-        assert!(relay.wait().await.unwrap().success());
+        assert!(relay.status().await.unwrap().success());
     })
     .await
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn relay_reports_unavailable_without_creating_runtime_directory() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("missing");
@@ -482,14 +482,14 @@ async fn relay_reports_unavailable_without_creating_runtime_directory() {
         let reply = reader.next_envelope().await.unwrap().unwrap();
         let error = check_hello_result(&greeting, &reply, PeerRole::Control).unwrap_err();
         assert_eq!(error.code, "DaemonUnavailable");
-        assert!(!relay.wait().await.unwrap().success());
+        assert!(!relay.status().await.unwrap().success());
         assert!(!runtime.exists());
     })
     .await
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -498,8 +498,10 @@ async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay()
     let socket = instance.bind(SocketRole::Control).await.unwrap();
     let legacy = async {
         for _ in 0..2 {
-            let mut peer = socket.accept().await.unwrap().unwrap();
+            let peer = socket.accept().await.unwrap().unwrap();
+            let mut peer = corvid_async::io::adapt(peer);
             peer.write_all(b"CRV0").await.unwrap();
+            peer.flush().await.unwrap();
 
             let mut received = Vec::new();
             peer.read_to_end(&mut received).await.unwrap();
@@ -540,14 +542,14 @@ async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay()
         assert_eq!(fault.supported_major_versions, [PROTOCOL_MAJOR]);
         assert!(!fault.retryable);
         assert!(reader.next_envelope().await.unwrap().is_none());
-        assert!(!relay.wait().await.unwrap().success());
+        assert!(!relay.status().await.unwrap().success());
     };
     timeout(WAIT, async { corvid_async::join!(legacy, client) })
         .await
         .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn observers_exit_neutrally_with_missing_daemon_and_bad_or_stalled_input() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("missing");
@@ -585,7 +587,7 @@ async fn observers_exit_neutrally_with_missing_daemon_and_bad_or_stalled_input()
                 write.unwrap();
             }
             let _held_open = (!close_stdin).then_some(stdin);
-            let output = timeout(Duration::from_millis(250), child.wait_with_output())
+            let output = timeout(Duration::from_millis(250), child.output())
                 .await
                 .unwrap()
                 .unwrap();

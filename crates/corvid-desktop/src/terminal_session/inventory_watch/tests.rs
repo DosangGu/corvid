@@ -1,4 +1,5 @@
 use super::*;
+use corvid_async::io::{AsyncRead, AsyncWrite};
 use corvid_protocol::snapshot::WATCH_CAPABILITY;
 use corvid_protocol::wire::{
     Envelope, LayoutNodeState, Ping, SnapshotBegin, SnapshotChunk, SnapshotDelta, SnapshotEnd,
@@ -7,7 +8,6 @@ use corvid_protocol::wire::{
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, accept_hello};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::io::{AsyncRead, AsyncWrite};
 
 enum Update {
     Title(usize, String),
@@ -46,15 +46,12 @@ impl Server {
             connections: Arc::clone(&connections),
         };
         let thread = thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?
-                .block_on(async {
-                    corvid_async::select! {
-                        _ = stopped => Ok(()),
-                        result = serve(&path, model, receive, ready) => result,
-                    }
-                })
+            compio::runtime::Runtime::new()?.block_on(async {
+                corvid_async::select! {
+                    _ = stopped => Ok(()),
+                    result = serve(&path, model, receive, ready) => result,
+                }
+            })
         });
         receive_ready.recv_timeout(Duration::from_secs(5))??;
         Ok(Self {
@@ -153,7 +150,7 @@ async fn serve(
         let stream = listener.accept().await?.context("rejected test peer")?;
         model.connections.fetch_add(1, Ordering::SeqCst);
         // Disconnects and identity rejection are expected fixture operations.
-        let _ = serve_watch(stream, &mut model, &mut updates).await;
+        let _ = serve_watch(corvid_async::io::adapt(stream), &mut model, &mut updates).await;
     }
 }
 
@@ -162,7 +159,7 @@ async fn serve_watch(
     model: &mut Model,
     updates: &mut mpsc::UnboundedReceiver<Update>,
 ) -> Result<()> {
-    let (read, write) = tokio::io::split(stream);
+    let (read, write) = corvid_async::io::split(stream);
     let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
     let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
     let greeting = reader.next_envelope().await?.context("missing hello")?;
@@ -265,7 +262,7 @@ async fn wait_for(shared: &Shared, ready: impl Fn() -> bool) {
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn titles_keep_up_with_bursts_and_reconnect_to_the_latest_snapshot() -> Result<()> {
     let server = Server::start()?;
     let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
@@ -313,7 +310,7 @@ async fn titles_keep_up_with_bursts_and_reconnect_to_the_latest_snapshot() -> Re
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn title_publication_progresses_while_the_render_thread_is_blocked() -> Result<()> {
     let server = Server::start()?;
     let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
@@ -336,7 +333,7 @@ async fn title_publication_progresses_while_the_render_thread_is_blocked() -> Re
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn delayed_title_delivery_does_not_add_a_retry_or_polling_interval() -> Result<()> {
     let server = Server::start()?;
     let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));

@@ -170,7 +170,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
     let pending = windows.start_shutdown();
     if !pending.is_empty() {
-        terminal_session::session_runtime()?.block_on(desktop_windows::wait_for_shutdown(pending));
+        corvid_async::task::block_on(desktop_windows::wait_for_shutdown(pending))?;
     }
     Ok(std::process::ExitCode::SUCCESS)
 }

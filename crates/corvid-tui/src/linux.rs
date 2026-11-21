@@ -244,7 +244,7 @@ pub(super) fn execute(
             let runtime = runtime_path(runtime_dir)?;
             crate::run_compio(corvid_client::compio_relay_tui(&runtime))
         }
-        command => crate::execute(run(command, runtime_dir)),
+        command => crate::execute(move || run(command, runtime_dir)),
     }
 }
 

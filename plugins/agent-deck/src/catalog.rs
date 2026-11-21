@@ -118,22 +118,17 @@ impl Catalog {
         });
         let (requests, incoming) = mpsc::channel(4);
         let (completions, completed) = mpsc::channel(4);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        std::thread::Builder::new()
-            .name("corvid-agent-deck-hosts".into())
-            .spawn(move || {
-                runtime.block_on(run(
-                    (state, current),
-                    profiles,
-                    publish,
-                    incoming,
-                    completions,
-                    ctx,
-                    CurrentDesktop { view, legacy },
-                ));
-            })?;
+        corvid_async::task::worker("corvid-agent-deck-hosts", move |runtime| {
+            runtime.block_on(run(
+                (state, current),
+                profiles,
+                publish,
+                incoming,
+                completions,
+                ctx,
+                CurrentDesktop { view, legacy },
+            ));
+        })?;
         Ok(Self {
             views,
             requests,

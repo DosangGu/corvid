@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::task::JoinSet;
 use corvid_async::time::timeout;
 use corvid_async::{mpsc, oneshot};
 use corvid_client::ControlEndpoint;
@@ -10,7 +11,6 @@ use corvid_companion::monitor::Scope;
 use corvid_protocol::wire::DesktopAgentFocused;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::connection::{self, Client};
@@ -219,16 +219,11 @@ impl Settings {
     pub fn refresh_in_background(&self) -> Result<()> {
         let settings = self.clone();
         let executable = executable()?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        std::thread::Builder::new()
-            .name("corvid-agent-deck-update".into())
-            .spawn(move || {
-                if let Err(error) = runtime.block_on(settings.refresh_running(&executable)) {
-                    eprintln!("{error:#}");
-                }
-            })?;
+        corvid_async::task::worker("corvid-agent-deck-update", move |runtime| {
+            if let Err(error) = runtime.block_on(settings.refresh_running(&executable)) {
+                eprintln!("{error:#}");
+            }
+        })?;
         Ok(())
     }
 

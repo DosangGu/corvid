@@ -31,10 +31,7 @@ pub fn run() -> Result<()> {
             args.iter().any(|arg| arg == "--background"),
         );
     }
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(checks())
+    compio::runtime::Runtime::new()?.block_on(checks())
 }
 
 async fn checks() -> Result<()> {
@@ -328,19 +325,16 @@ fn fixture(state: &Path, background: bool) -> Result<()> {
     let (ready, started_rx) = std::sync::mpsc::sync_channel(1);
     let state_directory = state.to_owned();
     std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = compio::runtime::Runtime::new().unwrap();
         runtime.block_on(async move {
             let (peers, mut incoming) = mpsc::channel(8);
             let (listening, listening_rx) = oneshot::channel();
-            tokio::spawn(connection::listen(config.controller_id, peers, listening));
+            corvid_async::task::spawn(connection::listen(config.controller_id, peers, listening));
             listening_rx.await.unwrap();
             ready.send(()).unwrap();
             while let Some(peer) = incoming.recv().await {
                 let host = config.host_id;
-                tokio::spawn(async move {
+                corvid_async::task::spawn(async move {
                     let result = async {
                         let (mut reader, mut writer) = connection::frames(peer.stream).await?;
                         let hello = reader.next_envelope().await?.context("fixture Hello")?;

@@ -4,10 +4,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use async_process::{Child, Command};
 use corvid_async::time::{sleep, timeout};
 use corvid_companion::{Config, PresentationClient};
 use corvid_protocol::wire::{CompanionConnection, HostInfo};
-use tokio::process::{Child, Command};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -26,7 +26,10 @@ async fn start_daemon(home: &Path, runtime: &Path) -> Result<(Child, HostInfo)> 
     let mut daemon = command(home).arg("daemon").spawn()?;
     let host = timeout(WAIT, async {
         loop {
-            ensure!(daemon.try_wait()?.is_none(), "daemon exited before binding");
+            ensure!(
+                daemon.try_status()?.is_none(),
+                "daemon exited before binding"
+            );
             if let Ok(host) = corvid_client::host(runtime).await {
                 return Ok::<_, anyhow::Error>(host);
             }
@@ -37,7 +40,7 @@ async fn start_daemon(home: &Path, runtime: &Path) -> Result<(Child, HostInfo)> 
     Ok((daemon, host))
 }
 
-#[tokio::test]
+#[compio::test]
 async fn daemon_and_companion_restart_using_existing_default_locations() -> Result<()> {
     let fixture = tempfile::tempdir_in(std::env::home_dir().context("home directory")?)?;
     let home = fixture.path();
@@ -72,7 +75,8 @@ async fn daemon_and_companion_restart_using_existing_default_locations() -> Resu
     let mut host = first;
     for restart in [false, true] {
         if restart {
-            daemon.kill().await?;
+            daemon.kill()?;
+            daemon.status().await?;
             let (child, next) = start_daemon(home, &runtime).await?;
             assert_eq!(host.host_id, next.host_id);
             assert_ne!(host.server_epoch, next.server_epoch);
@@ -84,7 +88,7 @@ async fn daemon_and_companion_restart_using_existing_default_locations() -> Resu
         timeout(WAIT, async {
             loop {
                 ensure!(
-                    companion.try_wait()?.is_none(),
+                    companion.try_status()?.is_none(),
                     "companion exited before connecting"
                 );
                 if let Some(mut client) =
@@ -106,8 +110,9 @@ async fn daemon_and_companion_restart_using_existing_default_locations() -> Resu
         .await??;
         let stopped = timeout(WAIT, command(home).args(["companion", "stop"]).status()).await??;
         assert!(stopped.success());
-        assert!(timeout(WAIT, companion.wait()).await??.success());
+        assert!(timeout(WAIT, companion.status()).await??.success());
     }
-    daemon.kill().await?;
+    daemon.kill()?;
+    daemon.status().await?;
     Ok(())
 }

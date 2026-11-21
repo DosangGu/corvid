@@ -1,13 +1,13 @@
-#![cfg(feature = "tokio")]
+#![cfg(feature = "borrowed-io")]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
+use compio::net::UnixListener;
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use tempfile::TempDir;
-use tokio::net::UnixListener;
 
 fn test_parent() -> TempDir {
     // Keep paths short and avoid a world-writable ancestor.
@@ -23,7 +23,7 @@ fn set_mode(path: &Path, mode: u32) {
 }
 
 #[cfg(target_os = "linux")]
-#[tokio::test]
+#[compio::test]
 async fn terminal_host_sockets_support_long_private_runtime_paths() {
     let parent = test_parent();
     let path = parent.path().join("x".repeat(120));
@@ -55,7 +55,7 @@ fn rejects_symlink_and_writable_runtime_ancestors() {
     assert!(RuntimeDir::open(&actual).is_err());
 }
 
-#[tokio::test]
+#[compio::test]
 async fn authenticates_both_peers_and_holds_exclusive_lock_until_socket_closes() {
     let parent = test_parent();
     let path = path(&parent);
@@ -81,13 +81,13 @@ async fn authenticates_both_peers_and_holds_exclusive_lock_until_socket_closes()
     assert!(runtime.lock_instance().is_ok());
 }
 
-#[tokio::test]
+#[compio::test]
 async fn preserves_live_socket_and_replaces_only_stale_owned_socket() {
     let parent = test_parent();
     let path = path(&parent);
     let runtime = RuntimeDir::create(&path).unwrap();
     let socket_path = path.join("control.sock");
-    let live = UnixListener::bind(&socket_path).unwrap();
+    let live = UnixListener::bind(&socket_path).await.unwrap();
     set_mode(&socket_path, 0o600);
 
     let instance = runtime.lock_instance().unwrap();
@@ -106,7 +106,7 @@ async fn preserves_live_socket_and_replaces_only_stale_owned_socket() {
 }
 
 #[cfg(target_os = "macos")]
-#[tokio::test]
+#[compio::test]
 async fn rejects_overlong_socket_paths_and_authenticates_peer_pid() {
     let parent = test_parent();
     // The directory fits in sun_path on its own. The socket filename makes

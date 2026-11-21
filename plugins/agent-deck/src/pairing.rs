@@ -5,7 +5,6 @@ use corvid_async::oneshot::{self, error::TryRecvError};
 use corvid_companion::{WezTermCandidate, discover_wezterm_panes};
 use corvid_protocol::wire::PairTerminal;
 use std::thread;
-use tokio::runtime::Builder;
 
 #[derive(Default)]
 pub(crate) struct Pairing {
@@ -191,7 +190,7 @@ impl Discovery {
         let worker = thread::Builder::new()
             .name("corvid-wezterm-discovery".to_owned())
             .spawn(move || {
-                match Builder::new_current_thread().enable_all().build() {
+                match compio::runtime::Runtime::new() {
                     Ok(runtime) => runtime.block_on(async move {
                         corvid_async::select! {
                             biased;

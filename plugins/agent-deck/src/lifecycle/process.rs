@@ -6,9 +6,9 @@ use std::ptr::null_mut;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use compio::fs::named_pipe::NamedPipeClient;
 use corvid_async::time::{sleep, timeout};
 use corvid_protocol::COMMAND_TIMEOUT;
-use tokio::net::windows::named_pipe::NamedPipeClient;
 use windows_sys::Win32::Foundation::{HWND, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{

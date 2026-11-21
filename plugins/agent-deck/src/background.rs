@@ -71,33 +71,28 @@ impl Background {
         let (stop, stopped) = oneshot::channel();
         let (started, ready) = std::sync::mpsc::sync_channel(1);
         let bridge = desktop.clone();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let worker = std::thread::Builder::new()
-            .name("corvid-agent-deck-background".into())
-            .spawn(move || {
-                runtime.block_on(async move {
-                    let channels = Channels {
-                        bridge,
-                        completed,
-                        views: views.clone(),
-                        settings: changed,
-                        tests,
-                        ctx: ctx.clone(),
-                        started: started.clone(),
-                        stopped,
-                    };
-                    if let Err(error) = run(state, address, config, channels, native).await {
-                        let _ = started.try_send(Err(error.to_string()));
-                        views.send_modify(|view| {
-                            view.status = error.to_string();
-                            view.capabilities = view.capabilities.stopped();
-                        });
-                        parent::show(&ctx);
-                    }
-                });
-            })?;
+        let worker = corvid_async::task::worker("corvid-agent-deck-background", move |runtime| {
+            runtime.block_on(async move {
+                let channels = Channels {
+                    bridge,
+                    completed,
+                    views: views.clone(),
+                    settings: changed,
+                    tests,
+                    ctx: ctx.clone(),
+                    started: started.clone(),
+                    stopped,
+                };
+                if let Err(error) = run(state, address, config, channels, native).await {
+                    let _ = started.try_send(Err(error.to_string()));
+                    views.send_modify(|view| {
+                        view.status = error.to_string();
+                        view.capabilities = view.capabilities.stopped();
+                    });
+                    parent::show(&ctx);
+                }
+            });
+        })?;
         let result = ready
             .recv_timeout(Duration::from_secs(10))
             .context("Agent Deck background startup timed out")
@@ -204,7 +199,7 @@ async fn run<N: NativeServices>(
     });
     let (peers, mut peer_rx) = mpsc::channel(8);
     let (listening, listening_rx) = oneshot::channel();
-    let mut jobs = tokio::task::JoinSet::new();
+    let mut jobs = corvid_async::task::JoinSet::new();
     jobs.spawn(connection::listen(config.controller_id, peers, listening));
     corvid_async::select! {
         _ = &mut stopped => return Ok(()),
@@ -220,7 +215,7 @@ async fn run<N: NativeServices>(
         snapshots,
     ));
     let epoch = Uuid::new_v4();
-    let mut clients = tokio::task::JoinSet::new();
+    let mut clients = corvid_async::task::JoinSet::new();
     let mut monitor = Monitor {
         storage,
         delivery,

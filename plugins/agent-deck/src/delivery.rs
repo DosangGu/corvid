@@ -74,7 +74,7 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    #[tokio::test]
+    #[compio::test]
     async fn two_decks_attempt_a_remote_notice_once_and_retain_the_claim_on_restart() -> Result<()>
     {
         #[cfg(not(windows))]

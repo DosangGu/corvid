@@ -239,9 +239,9 @@ async fn start_replacement(
     let pid = ensure_daemon_locked(runtime, Some(&target.state_directory), executable)
         .await?
         .context("another daemon started during upgrade")?;
-    let peer = runtime.connect(SocketRole::Control).await?.peer_cred()?;
+    let stream = runtime.connect(SocketRole::Control).await?;
     ensure!(
-        peer.pid().and_then(|pid| u32::try_from(pid).ok()) == Some(pid),
+        corvid_protocol::unix::peer_pid(&stream)? == pid,
         "another daemon took over the runtime during upgrade"
     );
     let host = corvid_client::host(runtime.path()).await?;
@@ -325,10 +325,7 @@ impl StartingDaemon {
             .arg(runtime.path())
             .arg("--autostarted")
             .env("TERMINFO", &terminfo)
-            .current_dir("/")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(diagnostics.try_clone()?));
+            .current_dir("/");
         if let Some(state_directory) = state_directory {
             command.arg("--state-dir").arg(state_directory);
         }
@@ -343,6 +340,9 @@ impl StartingDaemon {
             });
         }
         let process = async_process::Command::from(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(diagnostics.try_clone()?))
             .spawn()
             .context("starting the background daemon")?;
         Ok(Self {

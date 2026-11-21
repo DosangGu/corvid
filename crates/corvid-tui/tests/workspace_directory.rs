@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use async_process::{Child, Command};
 use corvid_async::time::{sleep, timeout};
 use corvid_client::{ControlEndpoint, InteractiveConnection};
 #[cfg(unix)]
@@ -18,11 +19,10 @@ use corvid_protocol::wire::{
 use corvid_protocol::{
     CREATE_VIEW_CAPABILITY, Frame, WORKSPACE_DIRECTORY_CAPABILITY, decode_envelope,
 };
-use tokio::process::{Child, Command};
 
 const WAIT: Duration = Duration::from_secs(18);
 
-#[tokio::test]
+#[compio::test]
 async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_directory()
 -> Result<()> {
     #[cfg(windows)]
@@ -109,7 +109,8 @@ async fn folder_picker_and_fresh_terminals_use_the_execution_hosts_workspace_dir
     })
     .await
     .context("waiting for the workspace metadata to be saved")??;
-    daemon.kill().await?;
+    daemon.kill()?;
+    daemon.status().await?;
     let _daemon = start(&runtime, &state, &endpoint)
         .await
         .context("restarting the daemon")?;
@@ -155,7 +156,7 @@ async fn start(runtime: &Path, state: &Path, endpoint: &ControlEndpoint) -> Resu
     let mut child = command.kill_on_drop(true).spawn()?;
     timeout(WAIT, async {
         loop {
-            ensure!(child.try_wait()?.is_none(), "fixture daemon exited");
+            ensure!(child.try_status()?.is_none(), "fixture daemon exited");
             if endpoint.host().await.is_ok() {
                 return Ok::<_, anyhow::Error>(());
             }

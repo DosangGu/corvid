@@ -9,15 +9,14 @@ description = "Local transport and wire protocol for Corvid"
 publish = ["crates-io"]
 
 [features]
-default = ["tokio"]
-compio = ["dep:compio"]
-tokio = ["dep:tokio"]
+default = ["compio", "borrowed-io"]
+compio = ["dep:compio", "dep:rustix"]
+borrowed-io = ["compio"]
 
 [dependencies]
 corvid-async.workspace = true
 prost.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, optional = true, features = ["io-util", "time"] }
 uuid.workspace = true
 
 [build-dependencies]
@@ -29,13 +28,12 @@ protox.workspace = true
 anyhow.workspace = true
 compio = { workspace = true, optional = true, features = ["fs", "net"] }
 nix = { workspace = true, features = ["fs", "user", "socket"] }
+rustix = { workspace = true, optional = true }
 tempfile.workspace = true
-tokio = { workspace = true, optional = true, features = ["net"] }
 
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
 compio = { workspace = true, optional = true, features = ["fs"] }
-tokio = { workspace = true, optional = true, features = ["net"] }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem",
     "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_System_Threading",
@@ -45,7 +43,6 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 anyhow.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true

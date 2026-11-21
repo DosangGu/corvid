@@ -111,7 +111,7 @@ pub fn needs_upgrade(error: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[compio::test]
     async fn setup_requires_an_affirmative_dialog_response() {
         for decision in [None, Some(false), Some(true)] {
             let (sender, mut receiver) = mpsc::unbounded_channel();

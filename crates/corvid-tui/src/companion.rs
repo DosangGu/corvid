@@ -155,7 +155,7 @@ pub(super) fn dispatch(options: Options, daemon_runtime: Option<PathBuf>) -> Res
     if matches!(options.command, Command::Run) {
         return start_native(options);
     }
-    crate::execute(async move {
+    crate::execute(move || async move {
         execute(options, daemon_runtime).await?;
         Ok(0)
     })

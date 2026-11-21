@@ -2,7 +2,7 @@ use super::*;
 use corvid_protocol::wire::Detach;
 
 #[cfg(target_os = "linux")]
-#[tokio::test]
+#[compio::test]
 #[ignore = "requires the isolated deploy/test_title_ssh.py fixture"]
 async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -> Result<()> {
     let root = PathBuf::from(std::env::var_os("CORVID_SSH_TEST_ROOT").context("SSH fixture root")?);
@@ -122,22 +122,19 @@ impl Daemon {
         let (stop, stopped) = oneshot::channel();
         let daemon_runtime = runtime.clone();
         let thread = thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?
-                .block_on(async {
-                    let shutdown = async {
-                        let _ = stopped.await;
-                    };
-                    #[cfg(windows)]
-                    {
-                        corvid_daemon::run(&daemon_runtime, &state, shutdown).await
-                    }
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    {
-                        corvid_daemon::run(&daemon_runtime, &state, false, shutdown).await
-                    }
-                })
+            compio::runtime::Runtime::new()?.block_on(async {
+                let shutdown = async {
+                    let _ = stopped.await;
+                };
+                #[cfg(windows)]
+                {
+                    corvid_daemon::run(&daemon_runtime, &state, shutdown).await
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    corvid_daemon::run(&daemon_runtime, &state, false, shutdown).await
+                }
+            })
         });
         let daemon = Self {
             stop: Some(stop),
@@ -317,7 +314,7 @@ async fn verify_titles(endpoint: ControlEndpoint) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn parked_transport_releases_its_writer_and_reattaches_with_a_fresh_route() -> Result<()> {
     let (_daemon, endpoint) = Daemon::start().await?;
     let (mut link, attached) = open(&endpoint, None).await?;
@@ -403,14 +400,14 @@ async fn parked_transport_releases_its_writer_and_reattaches_with_a_fresh_route(
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn pty_titles_reach_desktop_and_survive_reattach_without_new_output() -> Result<()> {
     let (_daemon, endpoint) = Daemon::start().await?;
     verify_titles(endpoint).await
 }
 
 #[cfg(target_os = "linux")]
-#[tokio::test]
+#[compio::test]
 #[ignore = "requires a disposable loopback SSH daemon and CORVID_TITLE_TEST_SSH_ALIAS"]
 async fn ssh_pty_titles_reach_desktop_and_survive_reattach() -> Result<()> {
     let alias = SshAlias::new(std::env::var("CORVID_TITLE_TEST_SSH_ALIAS")?)?;

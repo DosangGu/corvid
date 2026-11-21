@@ -19,6 +19,7 @@ path = "src/main.rs"
 required-features = ["ui"]
 
 [dependencies]
+compio.workspace = true
 corvid-async.workspace = true
 async-process.workspace = true
 anyhow.workspace = true
@@ -27,9 +28,8 @@ corvid-agent-deck-core.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
 corvid-presentation.workspace = true
-corvid-protocol = { workspace = true, features = ["tokio"] }
+corvid-protocol = { workspace = true, features = ["compio", "borrowed-io"] }
 corvid-update.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync", "time", "process", "net"] }
 uuid.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

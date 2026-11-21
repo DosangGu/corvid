@@ -6,6 +6,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::time::Duration;
 
+use corvid_async::io::AsyncWriteExt;
 use corvid_async::time::{Instant, sleep, timeout};
 use corvid_client::{ControllerRequest, ControllerScope, controller};
 use corvid_companion::{HostEndpoint, PresentationClient, initialize};
@@ -29,8 +30,9 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
     FrameWriter, PeerRole, ProtocolFault, Session, check_hello_result, decode_envelope, hello,
 };
-use tokio::io::AsyncWriteExt;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+type Socket = corvid_async::io::Native<compio::net::UnixStream>;
+type OwnedReadHalf = corvid_async::io::ReadHalf<Socket>;
+type OwnedWriteHalf = corvid_async::io::WriteHalf<Socket>;
 use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon, wait_for_daemon};
@@ -39,7 +41,7 @@ const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
 #[cfg(feature = "compio-daemon")]
-#[tokio::test]
+#[compio::test]
 async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::Result<()> {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
     let runtime = fixture.path().join("run");
@@ -47,13 +49,13 @@ async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::
     let mut first = daemon(&runtime, &state).await;
     let before = corvid_client::host(&runtime).await?;
 
-    let pid = i32::try_from(first.id().unwrap())?;
+    let pid = i32::try_from(first.id())?;
     // The PID belongs to this test's live daemon child.
     let signalled = unsafe { nix::libc::kill(pid, nix::libc::SIGTERM) };
     if signalled == -1 {
         return Err(std::io::Error::last_os_error().into());
     }
-    assert!(timeout(WAIT, first.wait()).await??.success());
+    assert!(timeout(WAIT, first.status()).await??.success());
     assert!(!runtime.join("control.sock").exists());
     assert!(!runtime.join("client.sock").exists());
     assert!(!runtime.join("collector.sock").exists());
@@ -66,14 +68,14 @@ async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::
 }
 
 #[cfg(feature = "compio-probe")]
-#[tokio::test]
+#[compio::test]
 async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
 
     corvid_client::ping(&runtime).await?;
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    corvid_async::task::spawn_blocking(move || -> anyhow::Result<()> {
         let auto = compio::runtime::Runtime::new()?;
         auto.block_on(corvid_client::compio_ping(&runtime))?;
 
@@ -95,7 +97,7 @@ async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "compio-probe")]
-#[tokio::test]
+#[compio::test]
 async fn compio_stdio_relay_exits_when_daemon_closes_first() -> anyhow::Result<()> {
     use std::process::Stdio;
 
@@ -128,15 +130,16 @@ async fn compio_stdio_relay_exits_when_daemon_closes_first() -> anyhow::Result<(
         let reply = reader.next_envelope().await?.unwrap();
         assert!(matches!(reply.body, Some(Body::Pong(_))));
 
-        daemon.kill().await?;
-        assert!(relay.wait().await?.success());
+        daemon.kill()?;
+        daemon.status().await?;
+        assert!(relay.status().await?.success());
         drop(writer);
         Ok::<_, anyhow::Error>(())
     })
     .await?
 }
 
-#[tokio::test]
+#[compio::test]
 async fn automatic_titles_follow_bash_prompts_and_application_updates_on_one_watch() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
@@ -201,7 +204,7 @@ esac
     assert_eq!(tui.route, route);
 }
 
-#[tokio::test]
+#[compio::test]
 async fn tab_names_and_terminal_titles_share_state_without_changing_input_routes() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
@@ -304,7 +307,7 @@ async fn wait_for_names(runtime: &Path, tab_name: &str, pane_name: &str) {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_edits() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
@@ -358,7 +361,7 @@ async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_e
     assert!(!String::from_utf8_lossy(&second_output).contains("FIRST_PANE"));
 }
 
-#[tokio::test]
+#[compio::test]
 async fn takeover_checks_the_terminal_identity_and_refuses_a_pending_paste() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
@@ -418,7 +421,7 @@ async fn takeover_checks_the_terminal_identity_and_refuses_a_pending_paste() {
     assert!(!String::from_utf8_lossy(&output).contains("OWN=STALE"));
 }
 
-#[tokio::test]
+#[compio::test]
 async fn resumes_only_the_previous_writer_of_the_exact_terminal() {
     use corvid_protocol::{PANE_WRITERS_CAPABILITY, WRITER_RESUME_CAPABILITY};
 
@@ -536,7 +539,7 @@ async fn resumes_only_the_previous_writer_of_the_exact_terminal() {
     wait_for_text(&mut new_writer, &mut output, "RESUMED=NEW-WRITER").await;
 }
 
-#[tokio::test]
+#[compio::test]
 async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let home = fixture.path();
@@ -558,7 +561,7 @@ async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
         .unwrap();
     let original = timeout(WAIT, async {
         loop {
-            assert!(daemon.try_wait().unwrap().is_none());
+            assert!(daemon.try_status().unwrap().is_none());
             if let Ok(host) = corvid_client::host(&runtime).await {
                 break host;
             }
@@ -568,7 +571,7 @@ async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     .await
     .unwrap();
     let upgrade = |expected_host: String| {
-        let mut command = tokio::process::Command::new(&staged);
+        let mut command = async_process::Command::new(&staged);
         command
             .env("HOME", home)
             .arg("--runtime-dir")
@@ -596,11 +599,8 @@ async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     {
         // An updater that cannot restore hosted terminals must retain the idle-only contract.
         let directory = RuntimeDir::open(&runtime).unwrap();
-        let (read, write) = directory
-            .connect(SocketRole::Upgrade)
-            .await
-            .unwrap()
-            .into_split();
+        let (read, write) =
+            corvid_async::io::split_native(directory.connect(SocketRole::Upgrade).await.unwrap());
         let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly)
             .await
             .unwrap();
@@ -680,10 +680,10 @@ async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     drop(client);
     let directory = RuntimeDir::open(&runtime).unwrap();
     let peer = directory.connect(SocketRole::Control).await.unwrap();
-    let pid = peer.peer_cred().unwrap().pid().unwrap();
+    let pid = corvid_protocol::unix::peer_pid(&peer).unwrap();
     let updated = corvid_client::host(&runtime).await.unwrap();
     assert!(
-        tokio::process::Command::new("/bin/kill")
+        async_process::Command::new("/bin/kill")
             .args(["-TERM", &pid.to_string()])
             .status()
             .await
@@ -697,7 +697,7 @@ async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     })
     .await
     .unwrap();
-    assert!(daemon.wait().await.unwrap().success());
+    assert!(daemon.status().await.unwrap().success());
     assert_eq!(updated.host_id, original.host_id);
     assert_ne!(updated.server_epoch, original.server_epoch);
     assert!(!staged.exists());
@@ -739,11 +739,8 @@ impl Tui {
 
     async fn try_attach_target(runtime: &Path, mut attach: Attach) -> Result<Self, ProtocolFault> {
         let directory = RuntimeDir::open(runtime).unwrap();
-        let (read, write) = directory
-            .connect(SocketRole::Client)
-            .await
-            .unwrap()
-            .into_split();
+        let (read, write) =
+            corvid_async::io::split_native(directory.connect(SocketRole::Client).await.unwrap());
         let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly)
             .await
             .unwrap();
@@ -883,7 +880,7 @@ impl Tui {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn retired_observer_role_is_rejected_without_disturbing_the_writer() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = fixture.path().join("run");
@@ -923,7 +920,7 @@ async fn control(runtime: &Path, request: &str) -> String {
     String::from_utf8(result.stdout).unwrap()
 }
 
-#[tokio::test]
+#[compio::test]
 async fn daemon_owns_split_panes_previews_and_exact_reattach() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1020,10 +1017,11 @@ async fn daemon_owns_split_panes_previews_and_exact_reattach() {
     })
     .await
     .unwrap();
-    daemon.kill().await.unwrap();
+    daemon.kill().unwrap();
+    daemon.status().await.unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn closes_views_and_preserves_other_writers() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1122,10 +1120,11 @@ async fn closes_views_and_preserves_other_writers() {
         assert_eq!(workspaces, [other.selection.workspace_id.as_str()]);
         assert_eq!(terminals, [other.route.terminal_id.as_str()]);
     }).await.unwrap();
-    daemon.kill().await.unwrap();
+    daemon.kill().unwrap();
+    daemon.status().await.unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1168,7 +1167,8 @@ async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
         assert!(!stored.contains("OLD-TERMINAL"));
         assert!(!stored.contains(&tui.route.terminal_id));
         assert!(state.join("state.json.bak").is_file());
-        first.kill().await.unwrap();
+        first.kill().unwrap();
+        first.status().await.unwrap();
 
         let _second = daemon(&runtime, &state).await;
         assert_eq!(before, control(&runtime, "workspaces").await);
@@ -1192,7 +1192,7 @@ async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn layout_recovery_preserves_evidence_and_future_schema() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1201,7 +1201,8 @@ async fn layout_recovery_preserves_evidence_and_future_schema() {
     let backup = state.join("state.json.bak");
     let mut first = daemon(&runtime, &state).await;
     let original = control(&runtime, "workspaces").await;
-    first.kill().await.unwrap();
+    first.kill().unwrap();
+    first.status().await.unwrap();
 
     let mut current: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&primary).unwrap()).unwrap();
@@ -1220,7 +1221,8 @@ async fn layout_recovery_preserves_evidence_and_future_schema() {
         assert_eq!(updated["schema_version"], 5);
         assert_eq!(updated["history"], serde_json::json!([]));
         assert_eq!(std::fs::read(&backup).unwrap(), bytes);
-        migrated.kill().await.unwrap();
+        migrated.kill().unwrap();
+        migrated.status().await.unwrap();
     }
 
     std::fs::copy(&primary, &backup).unwrap();
@@ -1237,7 +1239,8 @@ async fn layout_recovery_preserves_evidence_and_future_schema() {
         std::fs::read(state.join("state.json.corrupt")).unwrap(),
         b"{damaged"
     );
-    recovered.kill().await.unwrap();
+    recovered.kill().unwrap();
+    recovered.status().await.unwrap();
 
     std::fs::write(&primary, b"{bad").unwrap();
     std::fs::write(&backup, b"{bad-backup").unwrap();
@@ -1247,7 +1250,8 @@ async fn layout_recovery_preserves_evidence_and_future_schema() {
         control(&runtime, "status").await,
         "terminal_live=false\npersistence=saved\nlayout_recovery=fresh\n"
     );
-    fresh.kill().await.unwrap();
+    fresh.kill().unwrap();
+    fresh.status().await.unwrap();
 
     let newer = br#"{"schema_version":99,"layout":{"future":true}}"#;
     std::fs::write(&primary, newer).unwrap();
@@ -1280,7 +1284,7 @@ fn echo_fixture(label: &str) -> LaunchCommand {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1437,12 +1441,12 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn claude_update_restart_resynchronizes_the_deck_in_the_same_pty() {
     verify_claude_update_restart(false).await;
 }
 
-#[tokio::test]
+#[compio::test]
 async fn claude_update_restart_resynchronizes_after_a_legacy_handoff() {
     verify_claude_update_restart(true).await;
 }
@@ -1518,7 +1522,7 @@ async fn verify_claude_update_restart(legacy_handoff: bool) {
                 corvid_client::prepare_upgrade(&RuntimeDir::open(&runtime).unwrap())
                     .await
                     .unwrap();
-                assert!(daemon.wait().await.unwrap().success());
+                assert!(daemon.status().await.unwrap().success());
                 let handoff = runtime.join("handoff.json");
                 let mut payload: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(&handoff).unwrap()).unwrap();
@@ -1604,7 +1608,7 @@ async fn verify_claude_update_restart(legacy_handoff: bool) {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn silent_foreground_and_exec_changes_cannot_retarget_a_managed_run() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1730,7 +1734,7 @@ async fn start_companion(
     directory: &Path,
     host_id: &str,
     slots: u32,
-) -> (tokio::process::Child, PresentationClient) {
+) -> (async_process::Child, PresentationClient) {
     let state = directory.join("companion");
     let socket = directory.join("presentation");
     initialize(
@@ -1757,7 +1761,7 @@ async fn start_companion(
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn companion_hosts_reports_configured_identity_when_daemon_identity_differs() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1847,11 +1851,8 @@ struct ControlWire {
 impl ControlWire {
     async fn connect(runtime: &Path, capability: &str) -> Self {
         let directory = RuntimeDir::open(runtime).unwrap();
-        let (read, write) = directory
-            .connect(SocketRole::Control)
-            .await
-            .unwrap()
-            .into_split();
+        let (read, write) =
+            corvid_async::io::split_native(directory.connect(SocketRole::Control).await.unwrap());
         let mut writer = FrameWriter::start(write, FrameRole::StructuredOnly)
             .await
             .unwrap();
@@ -1928,7 +1929,7 @@ async fn focus(
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -1964,7 +1965,7 @@ async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn registered_focus_fences_input_and_changes_only_the_named_client() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2353,7 +2354,7 @@ fn assert_moved_entities(
             && client.view_revision == Some(unchanged.view_revision))));
 }
 
-#[tokio::test]
+#[compio::test]
 async fn pairing_code_is_single_use_and_rpc_replay_preserves_the_first_revision() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2476,7 +2477,7 @@ async fn pairing_code_is_single_use_and_rpc_replay_preserves_the_first_revision(
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2616,13 +2617,12 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
 }
 
 #[cfg(all(feature = "compio-daemon", feature = "compio-endpoints"))]
-#[tokio::test]
+#[compio::test]
 async fn compio_snapshot_watch_does_not_require_a_tokio_executor() -> anyhow::Result<()> {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     std::thread::spawn(move || -> anyhow::Result<()> {
-        assert!(tokio::runtime::Handle::try_current().is_err());
         compio::runtime::Runtime::new()?.block_on(async {
             let endpoint = corvid_client::ControlEndpoint::Local(runtime.clone());
             let host = endpoint.host().await?;
@@ -2642,7 +2642,7 @@ async fn compio_snapshot_watch_does_not_require_a_tokio_executor() -> anyhow::Re
     .unwrap()
 }
 
-#[tokio::test]
+#[compio::test]
 async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2669,7 +2669,8 @@ async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
             watch.next_change().await.unwrap();
         }
 
-        original.kill().await.unwrap();
+        original.kill().unwrap();
+        original.status().await.unwrap();
         assert!(watch.next_change().await.is_err());
         assert!(!watch.is_ready());
         assert!(watch.state().snapshot().entities().any(|entry| matches!(&entry.body,
@@ -2684,7 +2685,7 @@ async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
     }).await.unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn separate_workspace_writers_and_tab_transitions_preserve_exact_routes() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2835,7 +2836,7 @@ async fn wait_for_text(tui: &mut Tui, output: &mut Vec<u8>, needle: &str) {
     }
 }
 
-#[tokio::test]
+#[compio::test]
 async fn incomplete_and_oversized_pastes_cannot_write_across_resize() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2890,7 +2891,7 @@ async fn incomplete_and_oversized_pastes_cannot_write_across_resize() {
     }).await.unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn accepted_paste_blocks_resize_until_its_full_batch_is_written() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2923,7 +2924,7 @@ async fn accepted_paste_blocks_resize_until_its_full_batch_is_written() {
     }).await.unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn stalled_partial_paste_reports_failure_and_fences_the_writer() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2954,7 +2955,7 @@ async fn stalled_partial_paste_reports_failure_and_fences_the_writer() {
     .unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn resize_fences_previous_route_before_any_pty_write() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -2997,7 +2998,7 @@ async fn resize_fences_previous_route_before_any_pty_write() {
     }).await.unwrap();
 }
 
-#[tokio::test]
+#[compio::test]
 async fn malformed_and_stalled_frames_leave_the_existing_pty_usable() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
@@ -3026,6 +3027,7 @@ async fn malformed_and_stalled_frames_leave_the_existing_pty_usable() {
             check_hello_result(&greeting, &reply, PeerRole::Control).unwrap();
         }
         write.write_all(&[0, 0]).await.unwrap();
+        write.flush().await.unwrap();
         let started = Instant::now();
         owner
             .input(owner.route.clone(), 1, b"while-stalled\n")
@@ -3058,7 +3060,7 @@ async fn connect_raw(
     role: SocketRole,
 ) -> (FrameReader<OwnedReadHalf>, OwnedWriteHalf) {
     let runtime = RuntimeDir::open(runtime).unwrap();
-    let (read, write) = runtime.connect(role).await.unwrap().into_split();
+    let (read, write) = corvid_async::io::split_native(runtime.connect(role).await.unwrap());
     let frame_role = if role == SocketRole::Client {
         FrameRole::TuiOutput
     } else {
@@ -3088,7 +3090,7 @@ async fn reject_invalid_frames(runtime: &Path, role: SocketRole) {
     for bytes in attempts {
         let (mut reader, mut write) = connect_raw(runtime, role).await;
         write.write_all(&bytes).await.unwrap();
-        write.shutdown().await.unwrap();
+        write.close().await.unwrap();
         assert!(reader.next_frame().await.unwrap().is_none());
     }
 }
@@ -3110,14 +3112,14 @@ async fn reject_required_capability(runtime: &Path) {
     assert!(reader.next_frame().await.unwrap().is_none());
 }
 
-#[tokio::test]
+#[compio::test]
 async fn stalled_render_and_snapshot_consumers_release_their_connections() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let layout = PressureLayout::seed(&state);
     let daemon = daemon(&runtime, &state).await;
-    let daemon_pid = daemon.id().unwrap();
+    let daemon_pid = daemon.id();
 
     timeout(Duration::from_secs(20), async {
         let mut independent = layout.open_views(&runtime).await;

@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, ensure};
+use corvid_async::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+use corvid_async::task::JoinSet;
 use corvid_async::time::timeout;
 use corvid_async::{mpsc, oneshot};
 use corvid_protocol::wire::envelope::Body;
@@ -8,8 +10,6 @@ use corvid_protocol::{
     check_hello_result, hello,
 };
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-use tokio::task::JoinSet;
 use uuid::Uuid;
 
 const CAPABILITY: &str = "desktop_focus.v1";
@@ -21,8 +21,8 @@ const PIPE_PREFIX: &str = "corvid-desktop-focus-v1";
 const ROUTED_PREFIX: &str = "corvid-desktop-route-v1";
 const MAX_PEERS: usize = 4;
 
-trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+trait Duplex: AsyncRead + AsyncWrite + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Unpin> Duplex for T {}
 type Stream = Box<dyn Duplex>;
 
 pub struct FocusRequest {
@@ -59,7 +59,7 @@ async fn frames(
     FrameReader<ReadHalf<Stream>>,
     FrameWriter<WriteHalf<Stream>>,
 )> {
-    let (read, write) = tokio::io::split(stream);
+    let (read, write) = corvid_async::io::split(stream);
     let writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
     let reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
     Ok((reader, writer))
@@ -201,7 +201,7 @@ async fn connect(controller: Uuid, routed: bool) -> Result<(Stream, Option<u32>)
     // On a click, Deck can pass its foreground permission to the private
     // endpoint's actual owner. The Desktop UI reports any refusal to activate.
     unsafe { AllowSetForegroundWindow(pid) };
-    Ok((Box::new(pipe), Some(pid)))
+    Ok((Box::new(corvid_async::io::adapt(pipe)), Some(pid)))
 }
 
 #[cfg(not(windows))]
@@ -216,7 +216,7 @@ async fn connect(controller: Uuid, routed: bool) -> Result<(Stream, Option<u32>)
         .connect(SocketRole::Presentation)
         .await?;
     let pid = peer_pid(&stream).ok();
-    Ok((Box::new(stream), pid))
+    Ok((Box::new(corvid_async::io::adapt(stream)), pid))
 }
 
 #[cfg(not(windows))]
@@ -236,7 +236,7 @@ pub async fn serve_routed(
 ) -> Result<()> {
     // The private connection is scoped to the controller. Desktop verifies the
     // daemon epoch in each run against the actual daemon before navigation.
-    serve_scope(host, controller, controller, true, focus).await
+    serve_scope(host, controller, controller, true, focus, None).await
 }
 
 /// This listener is owned by an already attached Desktop session.
@@ -246,7 +246,18 @@ pub async fn serve(
     epoch: Uuid,
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
-    serve_scope(host, controller, epoch, false, focus).await
+    serve_scope(host, controller, epoch, false, focus, None).await
+}
+
+/// Run an attached Desktop listener and signal once it can accept connections.
+pub async fn serve_with_readiness(
+    host: Uuid,
+    controller: Uuid,
+    epoch: Uuid,
+    focus: mpsc::Sender<FocusRequest>,
+    listening: oneshot::Sender<()>,
+) -> Result<()> {
+    serve_scope(host, controller, epoch, false, focus, Some(listening)).await
 }
 
 async fn serve_scope(
@@ -255,6 +266,7 @@ async fn serve_scope(
     epoch: Uuid,
     routed: bool,
     focus: mpsc::Sender<FocusRequest>,
+    listening: Option<oneshot::Sender<()>>,
 ) -> Result<()> {
     #[cfg(windows)]
     let mut listener = corvid_protocol::windows::PipeListener::bind_scoped(
@@ -269,6 +281,9 @@ async fn serve_scope(
     let instance = directory.lock_instance()?;
     #[cfg(not(windows))]
     let listener = instance.bind(SocketRole::Presentation).await?;
+    if let Some(listening) = listening {
+        let _ = listening.send(());
+    }
     let mut peers = JoinSet::new();
     loop {
         corvid_async::select! {
@@ -283,7 +298,7 @@ async fn serve_scope(
                 peers.spawn(async move {
                     let wait = if routed { ROUTED_TIMEOUT } else { COMMAND_TIMEOUT };
                     let _ = timeout(wait, exchange(
-                        Box::new(stream), host, controller, epoch, routed, focus,
+                        Box::new(corvid_async::io::adapt(stream)), host, controller, epoch, routed, focus,
                     )).await;
                 });
             }
@@ -372,7 +387,7 @@ async fn exchange(
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[compio::test]
     async fn routed_focus_carries_the_requested_daemon_epoch_to_desktop() -> Result<()> {
         let host = Uuid::new_v4();
         let controller = Uuid::new_v4();
@@ -381,9 +396,9 @@ mod tests {
             remote_epoch: Uuid::new_v4().to_string(),
             agent_run_id: Uuid::new_v4().to_string(),
         };
-        let (client, server) = tokio::io::duplex(16384);
+        let (client, server) = corvid_async::io::fixture_pair().unwrap();
         let (send, mut received) = mpsc::channel(1);
-        let listen = tokio::spawn(exchange(
+        let listen = corvid_async::task::spawn(exchange(
             Box::new(server),
             host,
             controller,
@@ -414,7 +429,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn focus_routes_only_the_exact_host_epoch_and_run() -> Result<()> {
         let host = Uuid::new_v4();
         let controller = Uuid::new_v4();
@@ -424,9 +439,9 @@ mod tests {
             remote_epoch: epoch.to_string(),
             agent_run_id: Uuid::new_v4().to_string(),
         };
-        let (client, server) = tokio::io::duplex(16384);
+        let (client, server) = corvid_async::io::fixture_pair().unwrap();
         let (send, mut received) = mpsc::channel(1);
-        let listen = tokio::spawn(exchange(
+        let listen = corvid_async::task::spawn(exchange(
             Box::new(server),
             host,
             controller,
@@ -447,9 +462,9 @@ mod tests {
         .await??;
         listen.await??;
 
-        let (client, server) = tokio::io::duplex(16384);
+        let (client, server) = corvid_async::io::fixture_pair().unwrap();
         let (send, mut received) = mpsc::channel(1);
-        let listen = tokio::spawn(exchange(
+        let listen = corvid_async::task::spawn(exchange(
             Box::new(server),
             host,
             controller,

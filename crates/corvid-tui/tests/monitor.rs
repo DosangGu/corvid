@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::io::{AsyncRead, AsyncWrite};
 use corvid_async::oneshot;
 use corvid_async::time::{sleep, timeout};
 use corvid_client::ControlEndpoint;
@@ -16,14 +17,14 @@ use corvid_protocol::wire::{
     CompanionConnection, FocusSlot, Pong, PresentationSlots, PresentedSlotToken, StopAgentMonitor,
 };
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, accept_hello};
-use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
 
 #[cfg(all(windows, feature = "compio-endpoints"))]
-#[tokio::test]
+#[compio::test]
 async fn compio_companion_serves_while_detached_from_the_console() -> Result<()> {
+    use async_process::windows::CommandExt;
+    use corvid_async::io::AsyncReadExt;
     use std::process::Stdio;
-    use tokio::io::AsyncReadExt;
     use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
 
     let fixture = tempfile::tempdir()?;
@@ -32,7 +33,7 @@ async fn compio_companion_serves_while_detached_from_the_console() -> Result<()>
     let endpoint = ControlEndpoint::Local(fixture.path().join("absent"));
     let controller = corvid_companion::initialize(&state, host, HostEndpoint::from(&endpoint), 8)?;
     let address = controller.simple().to_string();
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_corvid"))
+    let mut child = async_process::Command::new(env!("CARGO_BIN_EXE_corvid"))
         .args(["companion", "--state-dir"])
         .arg(&state)
         .args(["--pipe-instance", &address, "run"])
@@ -53,7 +54,7 @@ async fn compio_companion_serves_while_detached_from_the_console() -> Result<()>
     };
     let mut client = corvid_async::select! {
         result = timeout(Duration::from_secs(10), ready) => result.context("detached monitor never listened")??,
-        exit = child.wait() => {
+        exit = child.status() => {
             let mut diagnostics = String::new();
             child.stderr.take().context("missing child stderr")?.read_to_string(&mut diagnostics).await?;
             anyhow::bail!("detached monitor exited {}: {}", exit?, diagnostics.trim());
@@ -71,16 +72,24 @@ async fn compio_companion_serves_while_detached_from_the_console() -> Result<()>
         Body::Pong(_)
     ));
     assert!(
-        timeout(Duration::from_secs(10), child.wait())
+        timeout(Duration::from_secs(10), child.status())
             .await??
             .success()
     );
     Ok(())
 }
 
-#[tokio::test]
-async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_daemon() -> Result<()>
-{
+#[test]
+fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_daemon() -> Result<()> {
+    let (result, completed) = std::sync::mpsc::sync_channel(1);
+    let worker = corvid_async::task::worker("corvid-monitor-test", move |executor| {
+        let _ = result.send(executor.block_on(check_monitor_replacement()));
+    })?;
+    worker.join().expect("monitor fixture panicked");
+    completed.recv()?
+}
+
+async fn check_monitor_replacement() -> Result<()> {
     #[cfg(windows)]
     let fixture = tempfile::tempdir()?;
     #[cfg(not(windows))]
@@ -89,15 +98,19 @@ async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_da
     let daemon_runtime = runtime.clone();
     let daemon_state = fixture.path().join("daemon");
     let (stop, stopped) = oneshot::channel();
-    let daemon = tokio::spawn(async move {
-        let shutdown = async {
-            let _ = stopped.await;
-        };
-        #[cfg(windows)]
-        return corvid_daemon::run(&daemon_runtime, &daemon_state, shutdown).await;
-        #[cfg(not(windows))]
-        return corvid_daemon::run(&daemon_runtime, &daemon_state, false, shutdown).await;
-    });
+    let (exit, daemon) = oneshot::channel();
+    let _worker = corvid_async::task::worker("corvid-monitor-test-daemon", move |executor| {
+        let result = executor.block_on(async {
+            let shutdown = async {
+                let _ = stopped.await;
+            };
+            #[cfg(windows)]
+            return corvid_daemon::run(&daemon_runtime, &daemon_state, shutdown).await;
+            #[cfg(not(windows))]
+            return corvid_daemon::run(&daemon_runtime, &daemon_state, false, shutdown).await;
+        });
+        let _ = exit.send(result);
+    })?;
     let host = timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(host) = corvid_client::host(&runtime).await {
@@ -145,17 +158,24 @@ async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_da
     let legacy_epoch = Uuid::new_v4().to_string();
     let executable = Path::new(env!("CARGO_BIN_EXE_corvid"));
     let result = async {
-        let (legacy, first, second) = corvid_async::join!(
+        let (listening, ready) = oneshot::channel();
+        let (legacy, replacement) = corvid_async::join!(
             timeout(
                 Duration::from_secs(10),
-                legacy_monitor(&scope, &legacy_epoch, saved)
+                legacy_monitor(&scope, &legacy_epoch, saved, listening)
             ),
-            scope.ensure_running(executable),
-            scope.ensure_running(executable)
+            async {
+                ready.await.context("legacy monitor did not listen")?;
+                let (first, second) = corvid_async::join!(
+                    scope.ensure_running(executable),
+                    scope.ensure_running(executable)
+                );
+                first?;
+                second
+            }
         );
-        first?;
-        second?;
         legacy??;
+        replacement?;
         let mut ui = PresentationClient::connect(&scope.address).await?;
         let companion_epoch = ui.session().server_epoch.clone();
         assert_ne!(companion_epoch, legacy_epoch);
@@ -248,11 +268,22 @@ async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_da
     result
 }
 
-async fn legacy_monitor(scope: &Scope, epoch: &str, store: Store) -> Result<()> {
+async fn legacy_monitor(
+    scope: &Scope,
+    epoch: &str,
+    store: Store,
+    listening: oneshot::Sender<()>,
+) -> Result<()> {
     #[cfg(windows)]
     {
         let mut listener = corvid_protocol::windows::PipeListener::bind(&scope.address)?;
-        serve_legacy(listener.accept().await?, &scope.config, epoch).await?;
+        let _ = listening.send(());
+        serve_legacy(
+            corvid_async::io::adapt(listener.accept().await?),
+            &scope.config,
+            epoch,
+        )
+        .await?;
     }
     #[cfg(not(windows))]
     {
@@ -261,8 +292,9 @@ async fn legacy_monitor(scope: &Scope, epoch: &str, store: Store) -> Result<()> 
         let runtime = RuntimeDir::create_all(&scope.address)?;
         let instance = runtime.lock_instance()?;
         let listener = instance.bind(SocketRole::Presentation).await?;
+        let _ = listening.send(());
         serve_legacy(
-            listener.accept().await?.context("legacy monitor peer")?,
+            corvid_async::io::adapt(listener.accept().await?.context("legacy monitor peer")?),
             &scope.config,
             epoch,
         )
@@ -279,7 +311,7 @@ async fn serve_legacy(
     config: &Config,
     epoch: &str,
 ) -> Result<()> {
-    let (input, output) = tokio::io::split(stream);
+    let (input, output) = corvid_async::io::split(stream);
     let role = FrameRole::StructuredOnly;
     let mut writer = FrameWriter::start(output, role).await?;
     let mut reader = FrameReader::start(input, role).await?;

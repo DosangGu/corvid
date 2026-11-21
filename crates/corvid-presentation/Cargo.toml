@@ -9,15 +9,14 @@ description = "Shared presentation logic for Corvid clients"
 publish = ["crates-io"]
 
 [features]
-compio-endpoints = ["dep:compio", "corvid-companion/compio-endpoints"]
+compio-endpoints = ["corvid-companion/compio-endpoints"]
 
 [dependencies]
 corvid-async.workspace = true
-compio = { workspace = true, optional = true }
+compio.workspace = true
 anyhow.workspace = true
 corvid-companion.workspace = true
-corvid-protocol = { workspace = true, features = ["tokio"] }
-tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
+corvid-protocol = { workspace = true, features = ["compio", "borrowed-io"] }
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]

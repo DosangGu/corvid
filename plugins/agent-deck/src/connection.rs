@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+use corvid_async::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use corvid_async::time::timeout;
 use corvid_async::{mpsc, oneshot};
 use corvid_protocol::wire::envelope::Body;
@@ -7,13 +8,12 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PeerRole, Session, check_hello_result,
     hello,
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use uuid::Uuid;
 
 pub const CAPABILITY: &str = "agent_deck.v1";
 pub const LIFECYCLE_CAPABILITY: &str = "agent_deck.lifecycle.v1";
-pub trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+pub trait Duplex: AsyncRead + AsyncWrite + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Unpin> Duplex for T {}
 pub type Stream = Box<dyn Duplex>;
 pub type Reader = FrameReader<ReadHalf<Stream>>;
 pub type Writer = FrameWriter<WriteHalf<Stream>>;
@@ -32,7 +32,7 @@ pub struct Client {
 }
 
 pub async fn frames(stream: Stream) -> Result<(Reader, Writer)> {
-    let (read, write) = tokio::io::split(stream);
+    let (read, write) = corvid_async::io::split(stream);
     let writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
     let reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
     Ok((reader, writer))
@@ -148,23 +148,22 @@ impl Client {
 
 #[cfg(windows)]
 async fn connect(controller: Uuid) -> Result<Stream> {
-    Ok(Box::new(
-        corvid_protocol::windows::open_scoped(
-            corvid_protocol::paths::AGENT_DECK_PIPE_PREFIX,
-            &corvid_protocol::paths::controller_pipe_instance(controller),
-        )
-        .await?,
-    ))
+    let pipe = corvid_protocol::windows::open_scoped(
+        corvid_protocol::paths::AGENT_DECK_PIPE_PREFIX,
+        &corvid_protocol::paths::controller_pipe_instance(controller),
+    )
+    .await?;
+    Ok(Box::new(corvid_async::io::adapt(pipe)))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn connect(controller: Uuid) -> Result<Stream> {
     use corvid_protocol::unix::{RuntimeDir, SocketRole};
-    Ok(Box::new(
+    let stream =
         RuntimeDir::open(&corvid_protocol::paths::agent_deck_socket(controller)?.prepare()?)?
             .connect(SocketRole::Presentation)
-            .await?,
-    ))
+            .await?;
+    Ok(Box::new(corvid_async::io::adapt(stream)))
 }
 
 pub async fn listen(
@@ -211,13 +210,9 @@ pub async fn listen(
             continue;
         };
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let pid = stream
-            .peer_cred()?
-            .pid()
-            .and_then(|pid| u32::try_from(pid).ok())
-            .unwrap_or(0);
+        let pid = corvid_protocol::unix::peer_pid(&stream)?;
         let _ = peers.try_send(Peer {
-            stream: Box::new(stream),
+            stream: Box::new(corvid_async::io::adapt(stream)),
             pid,
         });
     }
