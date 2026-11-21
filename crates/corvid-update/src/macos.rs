@@ -224,32 +224,40 @@ pub(crate) fn versioned_runtime(executable: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The installer keeps both a version store and a stable, Dock-facing GUI bundle.
+fn registered_app(executable: &Path) -> Option<PathBuf> {
+    let versioned = executable.ancestors().nth(3)?;
+    let versions = versioned.parent()?.parent()?;
+    if versions.file_name()? != "versions" {
+        return None;
+    }
+    let root = versions.parent()?;
+    let app = fs::read_link(root.join(APP_LINK)).ok()?;
+    if managed_root(&app).as_deref() != Some(root)
+        || fs::read(app.join(METADATA)).ok()? != fs::read(versioned.join(METADATA)).ok()?
+    {
+        return None;
+    }
+    Some(app)
+}
+
+pub fn relaunch_helper(desktop: &Path) -> Option<PathBuf> {
+    let desktop = desktop.canonicalize().ok()?;
+    if !desktop.ends_with(DESKTOP) {
+        return None;
+    }
+    let bundle = desktop.ancestors().nth(3)?;
+    let app = registered_app(&desktop).unwrap_or_else(|| bundle.to_owned());
+    let helper = app.join("Contents/Helpers/corvid-relaunch");
+    helper.is_file().then_some(helper)
+}
+
 /// Older Desktop builds and saved launch paths may still open a versioned GUI.
 pub fn use_registered_desktop() -> Result<()> {
     let executable = env::current_exe()?.canonicalize()?;
-    let Some(versions) = executable
-        .ancestors()
-        .nth(5)
-        .filter(|dir| dir.file_name() == Some(OsStr::new("versions")))
-    else {
+    let Some(app) = registered_app(&executable) else {
         return Ok(());
     };
-    let Some(root) = versions.parent() else {
-        return Ok(());
-    };
-    let Ok(app) = fs::read_link(root.join(APP_LINK)) else {
-        return Ok(());
-    };
-    let Some(versioned) = executable.ancestors().nth(3) else {
-        return Ok(());
-    };
-    let same_release = fs::read(app.join(METADATA))
-        .ok()
-        .zip(fs::read(versioned.join(METADATA)).ok())
-        .is_some_and(|(public, package)| public == package);
-    if managed_root(&app).as_deref() != Some(root) || !same_release {
-        return Ok(());
-    }
     let error = Command::new(app.join(DESKTOP))
         .args(env::args_os().skip(1))
         .exec();

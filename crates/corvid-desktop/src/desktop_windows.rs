@@ -315,7 +315,15 @@ impl DesktopWindows {
                                 .starts_with("corvid-desktop-ready-")),
                         "invalid Desktop startup acknowledgment directory"
                     );
-                    std::fs::File::create_new(path.join("ready"))?;
+                    if let Err(error) = std::fs::File::create_new(path.join("ready")) {
+                        // A slow macOS launch can finish after the relaunch helper
+                        // reports its timeout and disposes of the receipt directory.
+                        if !cfg!(target_os = "macos")
+                            || error.kind() != std::io::ErrorKind::NotFound
+                        {
+                            return Err(error.into());
+                        }
+                    }
                 }
                 Ok(())
             });
