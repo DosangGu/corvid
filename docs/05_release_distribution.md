@@ -175,9 +175,12 @@ Repeated clicks cannot start concurrent checks or installations.
 
 Once prepared, the update offers **Restart to apply** and **Later**. Later closes
 Settings and keeps the prepared update available in the current app session.
-**Restart to apply** runs the verified installer. New Desktop versions acknowledge
-startup after restoring their windows. A startup failure lets the previous
-Desktop reclaim its windows and reconnect. Managed Desktops also follow an
+**Restart to apply** runs the verified installer. On macOS a background helper accepts the
+window IDs, waits for the old Desktop to exit, then asks Launch Services to open
+the installed app bundle. It checks that the new Desktop restored its windows
+and reports a launch or restore failure. On Linux and Windows, the previous
+Desktop waits for the replacement to restore its windows and reclaims them if
+startup fails. Managed Desktops also follow an
 external installation change. Existing Agent Deck instances refresh in their
 original scopes, including Decks hidden in the tray.
 Stopped Decks remain stopped. See [Deck lifetime](06_agent_deck.md#launch-and-lifetime).
