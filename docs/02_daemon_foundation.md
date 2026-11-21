@@ -484,7 +484,8 @@ for local control, snapshot watches, and embedded terminal connections. Each
 process shares a single IPC driver thread and uses bounded queues to deliver
 frames to its existing application tasks. The same feature runs SSH and WSL
 relay and setup streams on that driver. The subprocess helper owns child
-termination and reaping, including when setup is cancelled.
+termination and reaping, including when setup is cancelled. The companion
+presentation server and its clients also use Compio for private CRV1 connections.
 
 ## Verification
 

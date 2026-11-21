@@ -9,9 +9,11 @@ description = "Controller state and host connections for Corvid"
 publish = ["crates-io"]
 
 [features]
-compio-endpoints = ["corvid-client/compio-endpoints"]
+compio-endpoints = ["corvid-client/compio-endpoints", "corvid-protocol/compio", "dep:compio", "dep:futures-util"]
 
 [dependencies]
+compio = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 anyhow.workspace = true
 corvid-client.workspace = true
 corvid-protocol.workspace = true

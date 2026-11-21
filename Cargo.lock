@@ -1484,8 +1484,10 @@ name = "corvid-companion"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "compio",
  "corvid-client",
  "corvid-protocol",
+ "futures-util",
  "nix 0.31.3",
  "semver",
  "serde",

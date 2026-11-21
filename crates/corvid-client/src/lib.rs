@@ -61,6 +61,8 @@ pub use collector::submit_hook;
 pub use control::{ControllerRequest, ControllerScope};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use control::{agents, clients, controller, host, ping, status, workspaces};
+#[cfg(feature = "compio-endpoints")]
+pub use endpoint::CompioPresentation;
 #[cfg(windows)]
 pub use endpoint::check_system_openssh;
 pub use endpoint::{

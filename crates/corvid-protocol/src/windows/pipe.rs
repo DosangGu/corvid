@@ -15,7 +15,6 @@ use windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
 
 use super::security::{PrivateDescriptor, current_user, verify_private};
 
-#[cfg(feature = "tokio")]
 const COMPANION_PREFIX: &str = "corvid-v1";
 
 #[cfg(feature = "tokio")]
@@ -110,6 +109,12 @@ pub async fn open_scoped(prefix: &str, instance: &str) -> Result<NamedPipeClient
     };
     verify_private(pipe.as_raw_handle(), &user, false)?;
     Ok(pipe)
+}
+
+/// Connect to the private companion presentation pipe using Compio.
+#[cfg(feature = "compio")]
+pub async fn open_compio_pipe(instance: &str) -> Result<compio::fs::named_pipe::NamedPipeClient> {
+    open_compio(COMPANION_PREFIX, instance).await
 }
 
 #[cfg(feature = "compio")]

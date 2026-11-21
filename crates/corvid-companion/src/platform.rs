@@ -7,9 +7,7 @@ pub(crate) use corvid_protocol::unix::RuntimeDir as StateDirectory;
 pub(crate) type StateLock = nix::fcntl::Flock<std::fs::File>;
 
 #[cfg(windows)]
-pub(crate) use windows::{
-    PipeListener, StateDirectory, TerminalRecord, TerminalRegistry, WezTermPane, open_pipe,
-};
+pub(crate) use windows::{StateDirectory, TerminalRecord, TerminalRegistry, WezTermPane};
 #[cfg(windows)]
 pub(crate) type StateLock = std::fs::File;
 

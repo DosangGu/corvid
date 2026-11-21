@@ -21,7 +21,7 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_UNLIMITED_INSTANCES,
 };
 
-use super::{PrivateDescriptor, current_user, pipe_name, verify_private};
+use super::{COMPANION_PREFIX, PrivateDescriptor, current_user, pipe_name, verify_private};
 
 pub struct CompioPipeListener {
     name: String,
@@ -30,6 +30,11 @@ pub struct CompioPipeListener {
 }
 
 impl CompioPipeListener {
+    /// Bind a private companion presentation pipe.
+    pub fn bind(instance: &str) -> Result<Self> {
+        Self::bind_scoped(COMPANION_PREFIX, instance)
+    }
+
     pub fn bind_scoped(prefix: &str, instance: &str) -> Result<Self> {
         let user = current_user()?;
         let name = pipe_name(prefix, &user, instance)?;

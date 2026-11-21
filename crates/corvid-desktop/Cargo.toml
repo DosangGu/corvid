@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-compio-endpoints = ["corvid-client/compio-endpoints"]
+compio-endpoints = ["corvid-companion/compio-endpoints"]
 
 [[bin]]
 name = "corvid-desktop"
