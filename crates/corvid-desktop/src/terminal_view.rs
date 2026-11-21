@@ -6,10 +6,10 @@ use std::{
 };
 
 use gpui::{
-    Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
-    HitboxBehavior, IntoElement, KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, Task, UTF16Selection, Window,
-    canvas, div, prelude::*, rgb,
+    App, Bounds, ClipboardItem, Context, FocusHandle, HitboxBehavior, InputHandler, IntoElement,
+    KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, ScrollWheelEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div,
+    prelude::*, rgb,
 };
 use tokio::sync::oneshot;
 use vt100::Screen;
@@ -747,7 +747,14 @@ impl Render for TerminalView {
                     None
                 };
                 let active = focus.is_focused(window) && window.is_window_active();
-                window.handle_input(&focus, ElementInputHandler::new(bounds, view), cx);
+                window.handle_input(
+                    &focus,
+                    TerminalInput {
+                        view: view.downgrade(),
+                        element_bounds: bounds,
+                    },
+                    cx,
+                );
                 frame.paint(
                     bounds,
                     metrics,
@@ -821,13 +828,20 @@ pub fn preview(session: Session, pane: String) -> impl IntoElement {
     .size_full()
 }
 
-impl EntityInputHandler for TerminalView {
+// X11 can retain the platform input handler while closing its window asynchronously.
+// The terminal view belongs to the workspace and can be released before that cleanup finishes.
+struct TerminalInput {
+    view: WeakEntity<TerminalView>,
+    element_bounds: Bounds<Pixels>,
+}
+
+impl InputHandler for TerminalInput {
     fn text_for_range(
         &mut self,
         _: Range<usize>,
         _: &mut Option<Range<usize>>,
         _: &mut Window,
-        _: &mut Context<Self>,
+        _: &mut App,
     ) -> Option<String> {
         None
     }
@@ -836,22 +850,27 @@ impl EntityInputHandler for TerminalView {
         &mut self,
         _: bool,
         _: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut App,
     ) -> Option<UTF16Selection> {
-        let end = self.marked.encode_utf16().count();
+        let view = self.view.upgrade()?;
+        let end = view.read(cx).marked.encode_utf16().count();
         Some(UTF16Selection {
             range: end..end,
             reversed: false,
         })
     }
 
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        (!self.marked.is_empty()).then(|| 0..self.marked.encode_utf16().count())
+    fn marked_text_range(&mut self, _: &mut Window, cx: &mut App) -> Option<Range<usize>> {
+        let view = self.view.upgrade()?;
+        let marked = &view.read(cx).marked;
+        (!marked.is_empty()).then(|| 0..marked.encode_utf16().count())
     }
 
-    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.marked.clear();
-        cx.notify();
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut App) {
+        let _ = self.view.update(cx, |view, cx| {
+            view.marked.clear();
+            cx.notify();
+        });
     }
 
     fn replace_text_in_range(
@@ -859,24 +878,23 @@ impl EntityInputHandler for TerminalView {
         _: Option<Range<usize>>,
         text: &str,
         _: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) {
-        self.cancel_pending_wheel();
-        if self.wheel_browse() {
-            self.clear_history();
-        }
-        self.marked.clear();
-        self.selection = None;
-        if let Some(history) = &mut self.history {
-            history.edit_query(Some(text));
+        let _ = self.view.update(cx, |view, cx| {
+            view.cancel_pending_wheel();
+            if view.wheel_browse() {
+                view.clear_history();
+            }
+            view.marked.clear();
+            view.selection = None;
+            if let Some(history) = &mut view.history {
+                history.edit_query(Some(text));
+            } else if !text.is_empty() {
+                view.session
+                    .send(&view.pane, text.as_bytes().to_vec(), text.len() > 8192);
+            }
             cx.notify();
-            return;
-        }
-        if !text.is_empty() {
-            self.session
-                .send(&self.pane, text.as_bytes().to_vec(), text.len() > 8192);
-        }
-        cx.notify();
+        });
     }
 
     fn replace_and_mark_text_in_range(
@@ -885,32 +903,35 @@ impl EntityInputHandler for TerminalView {
         text: &str,
         _: Option<Range<usize>>,
         _: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) {
-        self.cancel_pending_wheel();
-        if self.wheel_browse() {
-            self.clear_history();
-        }
-        self.marked = text
-            .chars()
-            .filter(|ch| !ch.is_control())
-            .take(256)
-            .collect();
-        cx.notify();
+        let _ = self.view.update(cx, |view, cx| {
+            view.cancel_pending_wheel();
+            if view.wheel_browse() {
+                view.clear_history();
+            }
+            view.marked = text
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(256)
+                .collect();
+            cx.notify();
+        });
     }
 
     fn bounds_for_range(
         &mut self,
         _: Range<usize>,
-        _: Bounds<Pixels>,
         _: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
-        let (bounds, metrics) = self.surface.get()?;
-        let (row, col) = if self.history.is_some() {
+        let view = self.view.upgrade()?;
+        let view = view.read(cx);
+        let (bounds, metrics) = view.surface.get()?;
+        let (row, col) = if view.history.is_some() {
             (0, 0)
         } else {
-            self.session.screen(&self.pane, Screen::cursor_position)?
+            view.session.screen(&view.pane, Screen::cursor_position)?
         };
         Some(metrics.cell(bounds.origin, row, col, 1))
     }
@@ -919,11 +940,20 @@ impl EntityInputHandler for TerminalView {
         &mut self,
         _: Point<Pixels>,
         _: &mut Window,
-        _: &mut Context<Self>,
+        _: &mut App,
     ) -> Option<usize> {
         None
     }
+
+    fn element_bounds(&mut self, _: &mut Window, _: &mut App) -> Option<Bounds<Pixels>> {
+        self.view.upgrade().map(|_| self.element_bounds)
+    }
+
+    fn accepts_text_input(&mut self, _: &mut Window, _: &mut App) -> bool {
+        self.view.upgrade().is_some()
+    }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
