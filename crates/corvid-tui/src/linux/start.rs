@@ -239,9 +239,9 @@ async fn start_replacement(
     let pid = ensure_daemon_locked(runtime, Some(&target.state_directory), executable)
         .await?
         .context("another daemon started during upgrade")?;
-    let peer = runtime.connect(SocketRole::Control).await?.peer_cred()?;
+    let stream = runtime.connect(SocketRole::Control).await?;
     ensure!(
-        peer.pid().and_then(|pid| u32::try_from(pid).ok()) == Some(pid),
+        corvid_protocol::unix::peer_pid(&stream)? == pid,
         "another daemon took over the runtime during upgrade"
     );
     let host = corvid_client::host(runtime.path()).await?;

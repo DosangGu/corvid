@@ -14,7 +14,7 @@ fn compares_release_precedence_without_downgrading() {
 // a local SSH command shim. It records upgrade dispatch instead of replacing
 // the daemon; daemon handoff itself is covered by the runtime lifecycle tests.
 #[cfg(target_os = "linux")]
-#[tokio::test]
+#[compio::test]
 #[ignore = "run with deploy/test_remote_update.py"]
 async fn connected_managed_installations_offer_updates() -> Result<()> {
     use corvid_async::mpsc;

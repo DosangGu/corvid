@@ -192,11 +192,10 @@ fn shutdown_tracks_preparing_sessions_and_retains_ownership_until_cleanup() {
 
     release.send(()).unwrap();
     cleaned.recv_timeout(Duration::from_secs(5)).unwrap();
-    crate::terminal_session::session_runtime()
-        .unwrap()
-        .block_on(crate::desktop_windows::wait_for_shutdown(vec![
-            shutdown, duplicate,
-        ]));
+    corvid_async::task::block_on(crate::desktop_windows::wait_for_shutdown(vec![
+        shutdown, duplicate,
+    ]))
+    .unwrap();
     lifetime.resume();
     assert!(lifetime.available());
 }
@@ -380,12 +379,9 @@ impl WorkspaceView {
         if self.wsl_scan.is_some() {
             return;
         }
-        let scan = cx.background_executor().spawn(async {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?
-                .block_on(WslDistribution::list())
-        });
+        let scan = cx
+            .background_executor()
+            .spawn(async { compio::runtime::Runtime::new()?.block_on(WslDistribution::list()) });
         self.wsl_scan = Some(cx.spawn(async move |view, cx| {
             let distributions = scan.await;
             let _ = view.update(cx, |view, cx| {

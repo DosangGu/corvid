@@ -1,15 +1,15 @@
 use super::*;
+use corvid_async::io::{AsyncRead, AsyncWrite};
 use corvid_protocol::wire::{
     AgentProvider, AttentionReason, CompanionConnection, PresentationSlots, PresentedAttention,
     PresentedRun, PresentedRunKey, PresentedSlot,
 };
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, accept_hello};
-use tokio::io::{AsyncRead, AsyncWrite};
 
 #[cfg(target_os = "linux")]
 mod multi_host_grid;
 
-#[tokio::test]
+#[compio::test]
 async fn late_host_imports_existing_work_and_attention_then_continues_polling() -> Result<()> {
     #[cfg(not(windows))]
     let temporary = tempfile::tempdir_in(std::env::home_dir().context("home")?)?;
@@ -35,7 +35,7 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
         temporary.path().join("unused"),
     ))?;
     let (updates, mut received) = mpsc::channel(8);
-    let mut jobs = tokio::task::JoinSet::new();
+    let mut jobs = corvid_async::task::JoinSet::new();
     jobs.spawn(poll_hosts(state.clone(), absent, current, updates));
     let catalog = crate::catalog::Catalog::start(
         state.clone(),
@@ -173,7 +173,7 @@ async fn serve(
         .await?;
     #[cfg(windows)]
     let mut listener = corvid_protocol::windows::PipeListener::bind(&address)?;
-    let mut peers = tokio::task::JoinSet::new();
+    let mut peers = corvid_async::task::JoinSet::new();
     loop {
         #[cfg(windows)]
         let stream = listener.accept().await?;
@@ -184,7 +184,7 @@ async fn serve(
         let key = key.clone();
         let feed = feed.clone();
         peers.spawn(async move {
-            let result = peer(stream, controller, key, feed).await;
+            let result = peer(corvid_async::io::adapt(stream), controller, key, feed).await;
             if let Err(error) = &result {
                 eprintln!("fixture peer: {error:#}");
             }
@@ -199,7 +199,7 @@ async fn peer(
     key: PresentedRunKey,
     feed: watch::Receiver<Vec<PresentedAttention>>,
 ) -> Result<()> {
-    let (input, output) = tokio::io::split(stream);
+    let (input, output) = corvid_async::io::split(stream);
     let mut writer = FrameWriter::start(output, FrameRole::StructuredOnly).await?;
     let mut reader = FrameReader::start(input, FrameRole::StructuredOnly).await?;
     let hello = reader.next_envelope().await?.context("hello")?;
@@ -322,7 +322,7 @@ fn native_start_failure_leaves_an_operating_monitor_without_hidden_mode() -> Res
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn rejected_requests_keep_the_previous_login_setting_and_route_activation() -> Result<()> {
     let (callbacks, received) = std::sync::mpsc::sync_channel(1);
     let (login, attempted) = std::sync::mpsc::channel();
@@ -389,7 +389,7 @@ async fn rejected_requests_keep_the_previous_login_setting_and_route_activation(
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 async fn notification_clicks_route_to_exact_hosts_and_record_failure_without_opening_deck()
 -> Result<()> {
     let (callbacks, native) = std::sync::mpsc::sync_channel(1);
@@ -410,7 +410,7 @@ async fn notification_clicks_route_to_exact_hosts_and_record_failure_without_ope
     corvid_companion::initialize(&remote_state, remote_host, current.endpoint.clone(), 8)?;
     let remote = Config::read_if_present(&remote_state)?.context("remote fixture config")?;
     let common_run = Uuid::new_v4();
-    let mut jobs = tokio::task::JoinSet::new();
+    let mut jobs = corvid_async::task::JoinSet::new();
     let mut targets = Vec::new();
     for config in [current, remote] {
         let mut notice = test_notice(config.host_id, true);
@@ -425,7 +425,7 @@ async fn notification_clicks_route_to_exact_hosts_and_record_failure_without_ope
         ));
         targets.push((notice, receive));
     }
-    tokio::task::yield_now().await;
+    corvid_async::task::yield_now().await;
 
     for (notice, requests) in targets.iter_mut().rev() {
         callbacks.event(Event::Activate(notice.clone()))?;

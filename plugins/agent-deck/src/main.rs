@@ -66,9 +66,7 @@ fn main() -> Result<()> {
     if let Some(name) = options.socket_name {
         scope.address = corvid_protocol::paths::macos_named_socket(name.as_ref())?.prepare()?;
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    let runtime = compio::runtime::Runtime::new()?;
     if options.companion_service {
         return runtime.block_on(corvid_companion::run(
             &scope.address,

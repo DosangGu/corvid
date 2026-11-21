@@ -1,7 +1,9 @@
 //! Synchronization shared by Corvid's async workers and blocking PTY threads.
 
+pub mod io;
 pub mod mpsc;
 pub mod oneshot;
+pub mod task;
 pub mod time;
 pub mod watch;
 

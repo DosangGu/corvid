@@ -1,25 +1,21 @@
-#[cfg(any(feature = "tokio", feature = "compio"))]
+#[cfg(feature = "compio")]
 mod pipe;
 pub mod security;
 mod storage;
 
-#[cfg(any(feature = "tokio", feature = "compio"))]
+#[cfg(feature = "compio")]
 use std::path::Path;
 
-#[cfg(any(feature = "tokio", feature = "compio"))]
+#[cfg(feature = "compio")]
 use anyhow::Result;
-#[cfg(feature = "tokio")]
-use corvid_async::time::timeout;
-#[cfg(feature = "tokio")]
-use tokio::net::windows::named_pipe::NamedPipeClient;
 
-#[cfg(any(feature = "tokio", feature = "compio"))]
+#[cfg(feature = "compio")]
 use crate::COMMAND_TIMEOUT;
 
 #[cfg(feature = "compio")]
-pub use pipe::{CompioPipeListener, child_stdio_pipe, open_compio_pipe};
-#[cfg(feature = "tokio")]
-pub use pipe::{PipeListener, open_pipe, open_scoped};
+pub use pipe::{CompioPipeListener, child_stdio_pipe, open_compio_pipe, open_scoped};
+#[cfg(feature = "compio")]
+pub use pipe::{CompioPipeListener as PipeListener, open_compio_pipe as open_pipe};
 pub use storage::{StateDirectory, check_component, require_local_acl_volume};
 
 #[derive(Clone, Copy)]
@@ -32,7 +28,7 @@ pub enum DaemonPipe {
 }
 
 impl DaemonPipe {
-    #[cfg(any(feature = "tokio", feature = "compio"))]
+    #[cfg(feature = "compio")]
     fn prefix(self) -> &'static str {
         match self {
             Self::Client => "corvid-daemon-v1-client",
@@ -43,9 +39,14 @@ impl DaemonPipe {
         }
     }
 
-    #[cfg(feature = "tokio")]
-    pub fn bind(self, runtime: &StateDirectory) -> Result<PipeListener> {
-        PipeListener::bind_scoped(self.prefix(), &runtime.file_id()?)
+    #[cfg(feature = "compio")]
+    pub fn bind(self, runtime: &StateDirectory) -> Result<CompioPipeListener> {
+        self.bind_compio(runtime)
+    }
+
+    #[cfg(feature = "compio")]
+    pub async fn connect(self, path: &Path) -> Result<compio::fs::named_pipe::NamedPipeClient> {
+        self.connect_compio(path).await
     }
 
     #[cfg(feature = "compio")]
@@ -60,13 +61,6 @@ impl DaemonPipe {
     ) -> Result<compio::fs::named_pipe::NamedPipeClient> {
         let runtime = StateDirectory::open(path)?;
         let instance = runtime.file_id()?;
-        compio::time::timeout(COMMAND_TIMEOUT, pipe::open_compio(self.prefix(), &instance)).await?
-    }
-
-    #[cfg(feature = "tokio")]
-    pub async fn connect(self, path: &Path) -> Result<NamedPipeClient> {
-        let runtime = StateDirectory::open(path)?;
-        let instance = runtime.file_id()?;
-        timeout(COMMAND_TIMEOUT, pipe::open_scoped(self.prefix(), &instance)).await?
+        compio::time::timeout(COMMAND_TIMEOUT, pipe::open_scoped(self.prefix(), &instance)).await?
     }
 }

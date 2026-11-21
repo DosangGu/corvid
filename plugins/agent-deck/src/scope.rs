@@ -150,9 +150,6 @@ mod tests {
     }
 
     fn run_selection(scope: Scope) -> Result<Scope> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(shared_scope(scope))
+        compio::runtime::Runtime::new()?.block_on(shared_scope(scope))
     }
 }

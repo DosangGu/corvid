@@ -215,11 +215,16 @@ mod tests {
         link: &DesktopLink,
         scope: &Scope,
         desktop: bool,
-    ) -> (Reader, Writer, Session, tokio::task::JoinHandle<Result<()>>) {
-        let (client, server) = tokio::io::duplex(8192);
+    ) -> (
+        Reader,
+        Writer,
+        Session,
+        corvid_async::task::JoinHandle<Result<()>>,
+    ) {
+        let (client, server) = corvid_async::io::fixture_pair().unwrap();
         let server_link = link.clone();
         let server_scope = scope.clone();
-        let task = tokio::spawn(async move {
+        let task = corvid_async::task::spawn(async move {
             server_link
                 .serve(
                     Peer {
@@ -267,7 +272,7 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn retirement_requires_the_exact_controller_and_acknowledges_before_quitting() {
         timeout(COMMAND_TIMEOUT, async {
             let link = DesktopLink::default();
@@ -304,7 +309,7 @@ mod tests {
         .unwrap();
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn activation_keeps_the_registered_desktop_and_focus_keeps_exact_run() {
         timeout(COMMAND_TIMEOUT, async {
             let link = DesktopLink::default();
@@ -347,7 +352,7 @@ mod tests {
         .unwrap();
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn old_disconnect_cannot_unregister_the_reopened_desktop() {
         timeout(COMMAND_TIMEOUT, async {
             let link = DesktopLink::default();

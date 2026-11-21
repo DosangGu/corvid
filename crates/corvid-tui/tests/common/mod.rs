@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use async_process::{Child, Command};
 use corvid_async::time::{sleep, timeout};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
-use tokio::process::{Child, Command};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_corvid");
 pub const WAIT: Duration = Duration::from_secs(8);
@@ -28,7 +28,7 @@ pub async fn wait_for_daemon(mut daemon: Child, runtime: &Path) -> Child {
     timeout(WAIT, async {
         loop {
             assert!(
-                daemon.try_wait().unwrap().is_none(),
+                daemon.try_status().unwrap().is_none(),
                 "daemon exited during startup"
             );
             if let Ok(directory) = RuntimeDir::open(runtime)

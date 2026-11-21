@@ -372,7 +372,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn new(destination: &Destination, runtime: &tokio::runtime::Runtime) -> Self {
+    fn new(destination: &Destination, runtime: &corvid_async::task::SharedWorker) -> Self {
         let mut state = Snapshot {
             ui: Arc::new(Ui {
                 restore_supported: false,
@@ -512,16 +512,11 @@ pub struct Session {
 }
 
 // The reader and SSH relay tasks must outlive any one attached session.
-pub(crate) fn session_runtime() -> Result<&'static tokio::runtime::Runtime> {
-    static RUNTIME: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
+pub(crate) fn session_runtime() -> Result<&'static corvid_async::task::SharedWorker> {
+    static RUNTIME: std::sync::OnceLock<std::io::Result<corvid_async::task::SharedWorker>> =
         std::sync::OnceLock::new();
     RUNTIME
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-        })
+        .get_or_init(|| corvid_async::task::SharedWorker::new("corvid-desktop-shared"))
         .as_ref()
         .map_err(|error| anyhow::anyhow!("Could not start Desktop connection runtime: {error}"))
 }
@@ -543,7 +538,7 @@ enum ParkedCommand {
 pub struct ParkedConnections(Arc<std::sync::OnceLock<mpsc::Sender<ParkedCommand>>>);
 
 impl ParkedConnections {
-    fn start(&self, runtime: &tokio::runtime::Runtime) {
+    fn start(&self, runtime: &corvid_async::task::SharedWorker) {
         self.0.get_or_init(|| {
             let (sender, mut incoming) = mpsc::channel(8);
             runtime.spawn(async move {
@@ -745,106 +740,102 @@ impl Session {
         let (stop, mut stopped) = oneshot::channel();
         let state = Arc::clone(&shared);
         let ssh = matches!(destination, Destination::Ssh(_));
-        let thread = thread::Builder::new()
-            .name("corvid-desktop-client".into())
-            .spawn(move || {
-                let target = if matches!(target, AttachTarget::Default) {
-                    store
-                        .for_target(&destination.saved_target())
-                        .map(AttachTarget::Restore)
-                        .unwrap_or(target)
-                } else {
-                    target
-                };
-                let restoring = matches!(target, AttachTarget::Restore(_));
-                let requests = Requests {
-                    monitor: settings,
-                    recorder: match store.recorder() {
-                        Ok(recorder) => Some(recorder),
-                        Err(error) => {
-                            eprintln!("corvid: could not save Desktop views: {error:#}");
-                            None
-                        }
-                    },
-                    actions: incoming,
-                    sizes,
-                    activation,
-                    prompts: Prompts(prompt_sender),
-                    host: None,
-                    terminal: None,
-                    writer_resume_token: None,
-                    closing,
-                    parked,
-                    attached: None,
-                    wake_monitor: explicit && ssh,
-                };
-                let result = runtime.block_on(async {
-                    let mut agent_deck = agent_deck::Job::default();
-                    let result = {
-                        let client = run_reconnecting(
-                            destination,
-                            state_dir,
-                            target,
-                            explicit,
-                            requests,
-                            &state,
-                            &mut agent_deck,
-                        );
-                        corvid_async::pin!(client);
-                        corvid_async::select! {
-                            result = &mut client => result,
-                            park = &mut stopped => {
-                                let _ = close.send(park.unwrap_or(false));
-                                if timeout(DETACH_TIMEOUT, &mut client).await.is_err() {
-                                    eprintln!("Timed out waiting for Desktop detach");
-                                }
-                                Ok("Detached from Corvid.".into())
+        let thread = corvid_async::task::worker("corvid-desktop-client", move |runtime| {
+            let target = if matches!(target, AttachTarget::Default) {
+                store
+                    .for_target(&destination.saved_target())
+                    .map(AttachTarget::Restore)
+                    .unwrap_or(target)
+            } else {
+                target
+            };
+            let restoring = matches!(target, AttachTarget::Restore(_));
+            let requests = Requests {
+                monitor: settings,
+                recorder: match store.recorder() {
+                    Ok(recorder) => Some(recorder),
+                    Err(error) => {
+                        eprintln!("corvid: could not save Desktop views: {error:#}");
+                        None
+                    }
+                },
+                actions: incoming,
+                sizes,
+                activation,
+                prompts: Prompts(prompt_sender),
+                host: None,
+                terminal: None,
+                writer_resume_token: None,
+                closing,
+                parked,
+                attached: None,
+                wake_monitor: explicit && ssh,
+            };
+            let result = runtime.block_on(async {
+                let mut agent_deck = agent_deck::Job::default();
+                let result = {
+                    let client = run_reconnecting(
+                        destination,
+                        state_dir,
+                        target,
+                        explicit,
+                        requests,
+                        &state,
+                        &mut agent_deck,
+                    );
+                    corvid_async::pin!(client);
+                    corvid_async::select! {
+                        result = &mut client => result,
+                        park = &mut stopped => {
+                            let _ = close.send(park.unwrap_or(false));
+                            if timeout(DETACH_TIMEOUT, &mut client).await.is_err() {
+                                eprintln!("Timed out waiting for Desktop detach");
                             }
+                            Ok("Detached from Corvid.".into())
                         }
-                    };
-                    agent_deck.close().await;
-                    result
-                });
-                state.update_ui(move |ui| {
-                    ui.ssh_offline = ssh
-                        && result.as_ref().is_err_and(|error| {
-                            SshRetry::is_transient(error)
-                                || error.downcast_ref::<ProtocolFault>().is_some_and(|fault| {
-                                    matches!(
-                                        fault.code.as_str(),
-                                        "AuthenticationRequired"
-                                            | "HostKeyRequired"
-                                            | "HostMismatch"
-                                    )
-                                })
-                        });
-                    ui.restore_unavailable = restoring
-                        && result
-                            .as_ref()
-                            .err()
-                            .and_then(|error| error.downcast_ref::<ProtocolFault>())
-                            .is_some_and(|fault| {
+                    }
+                };
+                agent_deck.close().await;
+                result
+            });
+            state.update_ui(move |ui| {
+                ui.ssh_offline = ssh
+                    && result.as_ref().is_err_and(|error| {
+                        SshRetry::is_transient(error)
+                            || error.downcast_ref::<ProtocolFault>().is_some_and(|fault| {
                                 matches!(
                                     fault.code.as_str(),
-                                    "NoTerminal"
-                                        | "TargetGone"
-                                        | "SavedWorkspaceGone"
-                                        | "WorkspaceBusy"
+                                    "AuthenticationRequired" | "HostKeyRequired" | "HostMismatch"
                                 )
-                            });
-                    ui.connected = false;
-                    ui.inventory_ready = false;
-                    ui.inventory_offline = false;
-                    ui.changing = false;
-                    ui.message = match result {
-                        Ok(message) => message,
-                        Err(error) if ui.ssh_offline => error
-                            .downcast_ref::<ProtocolFault>()
-                            .map_or_else(|| format!("{error:#}"), |fault| fault.message.clone()),
-                        Err(error) => format!("{error:#}"),
-                    };
-                });
-            })?;
+                            })
+                    });
+                ui.restore_unavailable = restoring
+                    && result
+                        .as_ref()
+                        .err()
+                        .and_then(|error| error.downcast_ref::<ProtocolFault>())
+                        .is_some_and(|fault| {
+                            matches!(
+                                fault.code.as_str(),
+                                "NoTerminal"
+                                    | "TargetGone"
+                                    | "SavedWorkspaceGone"
+                                    | "WorkspaceBusy"
+                            )
+                        });
+                ui.connected = false;
+                ui.inventory_ready = false;
+                ui.inventory_offline = false;
+                ui.changing = false;
+                ui.message = match result {
+                    Ok(message) => message,
+                    Err(error) if ui.ssh_offline => error
+                        .downcast_ref::<ProtocolFault>()
+                        .map_or_else(|| format!("{error:#}"), |fault| fault.message.clone()),
+                    Err(error) => format!("{error:#}"),
+                };
+            });
+        })?;
         Ok((
             Self {
                 shared,
@@ -1776,7 +1767,7 @@ async fn run(
     let monitor_host = Uuid::parse_str(&host)?;
     let wake_monitor = std::mem::take(wake_monitor);
     let (focus_scope, focus_controller) = oneshot::channel();
-    let mut monitor_tasks = tokio::task::JoinSet::new();
+    let mut monitor_tasks = corvid_async::task::JoinSet::new();
     monitor_tasks.spawn(async move {
         let scope = monitor_settings.scope(&monitor_endpoint, monitor_host)?;
         scope.configure(&monitor_endpoint)?;
@@ -1792,7 +1783,7 @@ async fn run(
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
     let focus_epoch = Uuid::parse_str(&epoch)?;
     let focus_requests = deck_requests.clone();
-    let mut focus_service = tokio::task::JoinSet::new();
+    let mut focus_service = corvid_async::task::JoinSet::new();
     focus_service.spawn(async move {
         if let Ok(controller) = focus_controller.await {
             // Another window may already own the host's private listener.

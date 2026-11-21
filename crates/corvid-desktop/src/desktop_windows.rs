@@ -114,14 +114,9 @@ impl DesktopWindows {
     pub fn listen_for_deck(&self, cx: &mut App) -> Result<()> {
         let (requests, mut incoming) = mpsc::channel(8);
         let state = self.0.settings.state.clone();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        std::thread::Builder::new()
-            .name("corvid-desktop-focus".into())
-            .spawn(move || {
-                runtime.block_on(listen_for_deck(state, requests));
-            })?;
+        corvid_async::task::worker("corvid-desktop-focus", move |runtime| {
+            runtime.block_on(listen_for_deck(state, requests));
+        })?;
         let windows = self.clone();
         cx.spawn(async move |cx| {
             while let Some((endpoint, request)) = incoming.recv().await {
@@ -651,10 +646,12 @@ async fn listen_for_deck(
                     continue;
                 }
                 let listener = match listeners.remove(&controller) {
-                    Some(listener) if !tokio::task::JoinHandle::<()>::is_finished(&listener) => {
+                    Some(listener)
+                        if !corvid_async::task::JoinHandle::<()>::is_finished(&listener) =>
+                    {
                         listener
                     }
-                    _ => tokio::spawn(serve_deck_scope(scope, requests.clone())),
+                    _ => corvid_async::task::spawn(serve_deck_scope(scope, requests.clone())),
                 };
                 current.insert(controller, listener);
             }

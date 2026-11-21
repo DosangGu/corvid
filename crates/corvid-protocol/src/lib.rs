@@ -26,7 +26,7 @@ pub use frame::{
     CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameRole, RENDER_LIMIT, RenderFrame,
     decode_envelope,
 };
-#[cfg(feature = "tokio")]
+#[cfg(feature = "borrowed-io")]
 pub use frame::{FrameReader, FrameWriter};
 pub use session::{
     CAPABILITY_QUERY, COMMAND_TIMEOUT, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault,

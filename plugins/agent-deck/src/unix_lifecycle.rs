@@ -288,6 +288,7 @@ async fn inspect(
     // Capture the OS process reference before the authenticated peer answers.
     // A later process reusing its PID must never receive an exit request.
     let peer = platform::Peer::new(peer_pid(&stream)?);
-    let client = Client::handshake(Box::new(stream), host, controller).await?;
+    let client =
+        Client::handshake(Box::new(corvid_async::io::adapt(stream)), host, controller).await?;
     Ok(Some((client, peer)))
 }

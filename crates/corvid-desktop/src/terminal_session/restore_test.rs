@@ -31,10 +31,7 @@ fn desktop_startup_attempts_recovery_and_leaves_failed_panes_empty() -> Result<(
 // Run the backend in a subprocess so environment overrides never affect other tests.
 fn isolated_fixture(test: &str, run: impl AsyncFnOnce(&Path) -> Result<()>) -> Result<()> {
     if let Some(root) = std::env::var_os("CORVID_DESKTOP_RESTORE_FIXTURE") {
-        return tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(run(Path::new(&root)));
+        return compio::runtime::Runtime::new()?.block_on(run(Path::new(&root)));
     }
     let fixture = tempfile::Builder::new()
         .prefix("corvid-desktop-view-test-")
@@ -66,7 +63,7 @@ async fn with_daemon(root: &Path, run: impl AsyncFnOnce(&Path) -> Result<()>) ->
     let state = root.join("daemon");
     let (stop, stopped) = oneshot::channel();
     let server_runtime = runtime.clone();
-    let server = tokio::spawn(async move {
+    let server = corvid_async::task::spawn(async move {
         let shutdown = async {
             let _ = stopped.await;
         };
@@ -189,7 +186,7 @@ async fn verify_recovery_offers(root: &Path) -> Result<()> {
             AttachTarget::Pane(selection.clone(), true),
         )?;
         ensure!(wait_view(&shell.session, |_| true).await?.selected == Some(selection));
-        tokio::task::spawn_blocking(move || drop(shell)).await?;
+        corvid_async::task::spawn_blocking(move || drop(shell)).await?;
         Ok(())
     })
     .await
@@ -220,7 +217,7 @@ async fn verify_attach_without_agent_restore(runtime: &Path, state: &Path) -> Re
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             let stream = listener.accept().await?.context("rejected fixture peer")?;
 
-            let (read, write) = tokio::io::split(stream);
+            let (read, write) = corvid_async::io::split_native(stream);
             let mut writer = FrameWriter::start(write, FrameRole::TuiOutput).await?;
             let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
             let hello = reader
@@ -308,7 +305,7 @@ impl Drop for AttachedSession {
 }
 
 #[cfg(windows)]
-#[tokio::test]
+#[compio::test]
 #[ignore = "requires an isolated Linux SSH daemon and CORVID_DESKTOP_TEST_SSH_ALIAS"]
 async fn ssh_split_preview_and_input_survive_reattach() -> Result<()> {
     let alias = SshAlias::new(std::env::var("CORVID_DESKTOP_TEST_SSH_ALIAS")?)?;
@@ -369,7 +366,7 @@ async fn ssh_split_preview_and_input_survive_reattach() -> Result<()> {
         false
     ));
     wait_screen(&first.session, &pane.pane_id, "SSH_SPLIT_ready").await?;
-    tokio::task::spawn_blocking(move || drop(first)).await?;
+    corvid_async::task::spawn_blocking(move || drop(first)).await?;
 
     let resumed = start()?;
     let restored = wait_view(&resumed.session, |_| true).await?;
@@ -381,7 +378,7 @@ async fn ssh_split_preview_and_input_survive_reattach() -> Result<()> {
         false
     ));
     wait_screen(&resumed.session, &pane.pane_id, "SSH_RESUMED_ready").await?;
-    tokio::task::spawn_blocking(move || drop(resumed)).await?;
+    corvid_async::task::spawn_blocking(move || drop(resumed)).await?;
     Ok(())
 }
 
@@ -511,7 +508,7 @@ async fn verify_restore(runtime: &Path, state: &Path) -> Result<()> {
     );
     // The test daemon shares this executor. Let it process the detach while
     // the Desktop shutdown waits for the acknowledgement on its own thread.
-    tokio::task::spawn_blocking(move || drop(first)).await?;
+    corvid_async::task::spawn_blocking(move || drop(first)).await?;
     ensure!(
         corvid_client::clients(runtime).await?.clients.is_empty(),
         "Desktop finished detaching before the daemon released its writer"

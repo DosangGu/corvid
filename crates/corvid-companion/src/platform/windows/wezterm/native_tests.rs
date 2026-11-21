@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::{env, fs};
 
+use async_process::Child;
 use corvid_async::time::sleep;
-use tokio::process::Child;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 
 use super::*;
@@ -16,7 +16,7 @@ struct FixtureGui {
 
 impl FixtureGui {
     async fn start(executable: &Path, ready: &Path) -> Result<Self> {
-        let mut process = tokio::process::Command::new(executable)
+        let mut process = async_process::Command::new(executable)
             .args([
                 "--skip-config",
                 "start",
@@ -32,10 +32,13 @@ impl FixtureGui {
             .kill_on_drop(true)
             .spawn()
             .context("launching the fixture WezTerm GUI")?;
-        let pid = process.id().context("missing fixture GUI PID")?;
+        let pid = process.id();
         let socket = timeout(Duration::from_secs(15), async {
             loop {
-                ensure!(process.try_wait()?.is_none(), "fixture WezTerm GUI exited");
+                ensure!(
+                    process.try_status()?.is_none(),
+                    "fixture WezTerm GUI exited"
+                );
                 match fs::read_to_string(ready) {
                     Ok(socket) => return Ok::<_, anyhow::Error>(PathBuf::from(socket)),
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -156,7 +159,7 @@ fn fixture_pane_child() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[compio::test]
 #[ignore = "requires native Windows and an interactive WezTerm desktop"]
 async fn native_wezterm_activation_keeps_exact_gui_and_pane() -> Result<()> {
     let executable =
@@ -259,7 +262,8 @@ async fn native_wezterm_activation_keeps_exact_gui_and_pane() -> Result<()> {
     assert!(find_pane(&first.gui.panes().await?, moved.pane_id).is_err());
     assert_eq!(moved_pane.activate().await, LocalActivation::Unavailable);
 
-    timeout(Duration::from_secs(5), first.process.kill()).await??;
+    first.process.kill()?;
+    timeout(Duration::from_secs(5), first.process.status()).await??;
     let replacement = FixtureGui::start(&executable, &temporary.path().join("replacement")).await?;
     assert_eq!(replacement.initial_pane().await?.pane_id, initial.pane_id);
     assert!(replacement.gui.identity != saved.gui);

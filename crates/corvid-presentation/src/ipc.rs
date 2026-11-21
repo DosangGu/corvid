@@ -3,10 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-#[cfg(feature = "compio-endpoints")]
 use compio::time::{sleep, sleep_until, timeout};
-#[cfg(not(feature = "compio-endpoints"))]
-use corvid_async::time::{MissedTickBehavior, interval, sleep, timeout};
 use corvid_async::{mpsc, oneshot, watch};
 use corvid_companion::{PresentationAddress, PresentationClient};
 use corvid_protocol::ProtocolFault;
@@ -100,12 +97,7 @@ impl DesktopClient {
         thread::Builder::new()
             .name("corvid-presentation".to_owned())
             .spawn(move || {
-                #[cfg(feature = "compio-endpoints")]
                 let runtime = compio::runtime::Runtime::new();
-                #[cfg(not(feature = "compio-endpoints"))]
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build();
                 match runtime {
                     Ok(runtime) => {
                         if started.send(Ok(())).is_ok() {
@@ -159,26 +151,14 @@ impl Worker {
 
     async fn follow(&mut self, mut client: PresentationClient) -> Result<()> {
         let link = Uuid::new_v4();
-        #[cfg(not(feature = "compio-endpoints"))]
-        let mut ticker = {
-            let mut ticker = interval(REFRESH);
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            ticker
-        };
         self.refresh(&mut client, link).await?;
-        #[cfg(not(feature = "compio-endpoints"))]
-        ticker.tick().await;
-        #[cfg(feature = "compio-endpoints")]
         let mut refresh_at = Instant::now() + REFRESH;
         loop {
             let periodic = async {
-                #[cfg(feature = "compio-endpoints")]
                 {
                     sleep_until(refresh_at).await;
                     refresh_at = Instant::now() + REFRESH;
                 }
-                #[cfg(not(feature = "compio-endpoints"))]
-                ticker.tick().await;
             };
             let completion = corvid_async::select! {
                 command = self.commands.recv() => {

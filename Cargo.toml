@@ -50,7 +50,8 @@ async-process = "=2.5.0"
 base64 = "=0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6", features = ["derive"] }
-compio = { version = "=0.19.2", default-features = false, features = ["runtime", "time", "io-uring", "polling"] }
+compio-io = { version = "=0.10.1", features = ["compat"] }
+compio = { version = "=0.19.2", default-features = false, features = ["runtime", "time", "macros", "io-uring", "polling"] }
 corvid-async = { path = "crates/corvid-async", version = "=0.4.2" }
 corvid-client = { path = "crates/corvid-client", version = "=0.4.2" }
 corvid-companion = { path = "crates/corvid-companion", version = "=0.4.2" }
@@ -92,7 +93,6 @@ socket2 = "=0.6.5"
 tar = { version = "=0.4.46", default-features = false }
 tempfile = "3.27"
 thiserror = "2.0"
-tokio = "=1.54.1"
 unicode-width = "0.2"
 url = "=2.5.8"
 uuid = { version = "1.29", features = ["v4", "serde"] }

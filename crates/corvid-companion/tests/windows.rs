@@ -11,7 +11,7 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationSlots, Ping};
 use uuid::Uuid;
 
-#[tokio::test]
+#[compio::test]
 async fn serves_current_user_clients_and_refuses_a_second_pipe_owner() {
     let directory = tempfile::tempdir().unwrap();
     let instance = Uuid::new_v4().simple().to_string();
@@ -33,7 +33,7 @@ async fn serves_current_user_clients_and_refuses_a_second_pipe_owner() {
     ));
     let (stop, shutdown) = oneshot::channel();
 
-    let mut companion = tokio::spawn({
+    let mut companion = corvid_async::task::spawn({
         let instance = instance.clone();
         let state = state.clone();
         async move {

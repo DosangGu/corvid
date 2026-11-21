@@ -290,7 +290,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[compio::test]
     #[ignore = "creates a temporary tray icon, notification and shortcuts"]
     async fn native_notification_reaches_windows_history() -> Result<()> {
         use corvid_agent_deck_core::native::{NativeServices, Status};

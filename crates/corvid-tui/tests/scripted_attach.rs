@@ -2,11 +2,14 @@
 
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use async_process::{Child, Command};
+use compio::net::UnixStream;
 use corvid_async::time::{sleep, timeout};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
@@ -14,14 +17,12 @@ use corvid_protocol::wire::{Attached, RenderHeader, RouteToken, TerminalExited};
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, RenderFrame, accept_hello};
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::pty::{Winsize, openpty};
-use tokio::net::UnixStream;
-use tokio::process::{Child, Command};
 use uuid::Uuid;
 
 const WAIT: Duration = Duration::from_secs(10);
 const OUTPUT: &[u8] = b"scripted terminal output";
 
-#[tokio::test]
+#[compio::test]
 async fn tui_renders_and_routes_input_through_a_scripted_daemon() -> Result<()> {
     let home = std::env::home_dir().context("fixture needs a private home directory")?;
     let fixture = tempfile::tempdir_in(home)?;
@@ -34,7 +35,7 @@ async fn tui_renders_and_routes_input_through_a_scripted_daemon() -> Result<()> 
     timeout(WAIT, async {
         let stream = listener.accept().await?.context("rejected TUI peer")?;
         serve(stream, &mut terminal).await?;
-        let status = child.wait().await?;
+        let status = child.status().await?;
         ensure!(status.code() == Some(7), "unexpected TUI status: {status}");
         Ok(())
     })
@@ -55,7 +56,7 @@ fn spawn_tui(runtime: &Path, views: &Path) -> Result<(Child, File)> {
     let flags = OFlag::from_bits_retain(fcntl(&pty.master, FcntlArg::F_GETFL)?);
     fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_corvid"));
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_corvid"));
     command
         .arg("--runtime-dir")
         .arg(runtime)
@@ -64,8 +65,7 @@ fn spawn_tui(runtime: &Path, views: &Path) -> Result<(Child, File)> {
         .env("CORVID_VIEW_STATE_DIR", views)
         .stdin(Stdio::from(pty.slave.try_clone()?))
         .stdout(Stdio::from(pty.slave.try_clone()?))
-        .stderr(Stdio::from(pty.slave))
-        .kill_on_drop(true);
+        .stderr(Stdio::from(pty.slave));
     // Detach from the test runner's controlling terminal. The child uses the
     // PTY through stdio. Only call async-signal-safe operations after fork.
     unsafe {
@@ -76,12 +76,15 @@ fn spawn_tui(runtime: &Path, views: &Path) -> Result<(Child, File)> {
             Ok(())
         });
     }
-    let child = command.spawn().context("starting scripted TUI")?;
+    let child = Command::from(command)
+        .kill_on_drop(true)
+        .spawn()
+        .context("starting scripted TUI")?;
     Ok((child, File::from(pty.master)))
 }
 
 async fn serve(stream: UnixStream, terminal: &mut File) -> Result<()> {
-    let (read, write) = stream.into_split();
+    let (read, write) = corvid_async::io::split_native(stream);
     let mut writer = FrameWriter::start(write, FrameRole::TuiOutput).await?;
     let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
     let hello = reader.next_envelope().await?.context("missing Hello")?;
