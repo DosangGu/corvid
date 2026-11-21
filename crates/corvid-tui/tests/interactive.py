@@ -218,6 +218,19 @@ def verify(command, directory):
     ticks_at_detach = len(progress.read_text().splitlines())
     time.sleep(0.3)
     assert len(progress.read_text().splitlines()) > ticks_at_detach
+    with OuterTerminal([*command, "attach"]) as interrupted:
+        resumed = interrupted.expect(rb"PID=(\d+) TICK=\d+ SIZE=\d+x\d+")
+        assert int(resumed[1]) == pid
+        interrupted.process.send_signal(signal.SIGTERM)
+        interrupted.wait(0)
+
+    deadline = time.monotonic() + 5
+    while b"clients=0" not in subprocess.check_output(
+        [*command, "control", "snapshot"], timeout=3
+    ):
+        assert time.monotonic() < deadline, "terminated TUI still owns a client route"
+        time.sleep(0.02)
+
     with OuterTerminal([*command, "attach"], cols=319, rows=80) as second:
         retained = second.expect(rb"PID=(\d+) TICK=(\d+) SIZE=\d+x\d+")
         assert int(retained[1]) == pid

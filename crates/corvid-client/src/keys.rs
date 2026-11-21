@@ -2,6 +2,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail, ensure};
 use corvid_core::{KEY_LEADER, MAX_PASTE_BYTES, PASTE_CAPTURE_TIMEOUT, PASTE_END, PASTE_START};
+#[cfg(feature = "compio-tui")]
+use std::time::Instant;
+#[cfg(not(feature = "compio-tui"))]
 use tokio::time::Instant;
 
 const ESC: u8 = 0x1b;
