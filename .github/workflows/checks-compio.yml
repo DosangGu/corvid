@@ -62,6 +62,7 @@ jobs:
         run: |
           cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test windows_daemon compio_
           cargo test --locked -p corvid-tui --features compio-daemon --test windows_daemon takeover_and_disconnect
+          cargo test --locked -p corvid-tui --features compio-daemon --test windows_daemon upgrade_preserves_the_windows_shell
       - name: Exercise Unix Compio observers across daemon handoff
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test routing claude_update_restart -- --test-threads=1

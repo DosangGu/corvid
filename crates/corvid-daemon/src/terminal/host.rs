@@ -5,6 +5,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+#[cfg(feature = "compio")]
+use compio::time::{interval, timeout as host_timeout, timeout_at as host_timeout_at};
 use corvid_core::Viewport;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
@@ -14,22 +16,38 @@ use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use prost::{Enumeration, Message};
+#[cfg(feature = "compio")]
+use std::time::Instant;
+#[cfg(any(test, not(feature = "compio")))]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(not(feature = "compio"))]
 use tokio::runtime::Handle;
-use tokio::time::{Instant, sleep, timeout};
+#[cfg(not(feature = "compio"))]
+use tokio::time::Instant;
+#[cfg(not(feature = "compio"))]
+use tokio::time::sleep;
+#[cfg(not(feature = "compio"))]
+use tokio::time::{interval, timeout as host_timeout, timeout_at as host_timeout_at};
 use uuid::Uuid;
 use vt100::Screen;
 
 use super::input::{Kind, WriteFailure};
 use super::session::{ReadState, TerminalSession};
 
+#[cfg(feature = "compio")]
+mod native;
+#[cfg(not(feature = "compio"))]
+use self::{read_message as receive_host_message, write_message as send_host_message};
+#[cfg(feature = "compio")]
+use native::{read_message as receive_host_message, write_message as send_host_message};
+
 pub const COMMAND: &str = "terminal-host";
 const TICK: Duration = Duration::from_millis(8);
 const VERSION: u32 = 1;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(not(feature = "compio"), any(target_os = "linux", target_os = "macos")))]
 type Connection = tokio::net::UnixStream;
-#[cfg(windows)]
+#[cfg(all(not(feature = "compio"), windows))]
 type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
 
 #[derive(Clone, Copy, Debug, Enumeration, PartialEq, Eq)]
@@ -133,7 +151,11 @@ impl Response {
 }
 
 pub(super) struct Client {
+    #[cfg(feature = "compio")]
+    connection: native::ClientConnection,
+    #[cfg(not(feature = "compio"))]
     connection: Connection,
+    #[cfg(not(feature = "compio"))]
     executor: Handle,
     pub(super) pid: Option<u32>,
     #[cfg(windows)]
@@ -279,8 +301,12 @@ impl Client {
 
     pub(super) fn connect(root: &Path, id: Uuid, starting: bool) -> Result<Self> {
         let directory = directory(root, id);
+        #[cfg(feature = "compio")]
+        let connection = native::ClientConnection::connect(directory.clone(), starting)?;
+        #[cfg(not(feature = "compio"))]
         let executor = Handle::current();
-        let connection = executor.block_on(timeout(COMMAND_TIMEOUT, async {
+        #[cfg(not(feature = "compio"))]
+        let connection = executor.block_on(tokio::time::timeout(COMMAND_TIMEOUT, async {
             loop {
                 let result = open(&directory).await;
                 if result.is_ok() || !starting {
@@ -291,6 +317,7 @@ impl Client {
         }))??;
         let mut client = Self {
             connection,
+            #[cfg(not(feature = "compio"))]
             executor,
             pid: None,
             #[cfg(windows)]
@@ -376,10 +403,15 @@ impl Client {
     }
 
     fn call(&mut self, request: Request) -> Result<Response> {
-        let response: Response = self.executor.block_on(timeout(COMMAND_TIMEOUT, async {
-            write_message(&mut self.connection, request).await?;
-            read_message(&mut self.connection).await
-        }))??;
+        #[cfg(feature = "compio")]
+        let response = self.connection.call(request)?;
+        #[cfg(not(feature = "compio"))]
+        let response: Response =
+            self.executor
+                .block_on(tokio::time::timeout(COMMAND_TIMEOUT, async {
+                    write_message(&mut self.connection, request).await?;
+                    read_message(&mut self.connection).await
+                }))??;
         self.paste_pending = response.paste_pending;
         Ok(response)
     }
@@ -419,14 +451,14 @@ fn directory(root: &Path, id: Uuid) -> PathBuf {
     root.join(format!("p-{:012x}", id.as_u128() >> 80))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(not(feature = "compio"), any(target_os = "linux", target_os = "macos")))]
 async fn open(path: &Path) -> Result<Connection> {
     RuntimeDir::open(path)?
         .connect(SocketRole::TerminalHost)
         .await
 }
 
-#[cfg(windows)]
+#[cfg(all(not(feature = "compio"), windows))]
 async fn open(path: &Path) -> Result<Connection> {
     DaemonPipe::TerminalHost.connect(path).await
 }
@@ -448,6 +480,9 @@ pub fn run_helper(mut args: impl Iterator<Item = OsString>) -> Result<()> {
     if !cwd.is_empty() {
         command.cwd(cwd);
     }
+    #[cfg(feature = "compio")]
+    return compio::runtime::Runtime::new()?.block_on(serve(&path, id, command, size));
+    #[cfg(not(feature = "compio"))]
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -464,7 +499,7 @@ fn numeric_arg<T: std::str::FromStr>(args: &mut impl Iterator<Item = OsString>) 
 async fn serve(path: &Path, id: Uuid, command: CommandBuilder, size: Viewport) -> Result<()> {
     let runtime = RuntimeDir::create(path)?;
     let instance = runtime.lock_instance()?;
-    let listener = instance.bind(SocketRole::TerminalHost).await?;
+    let listener = crate::platform::bind(&instance, SocketRole::TerminalHost).await?;
     let mut host = Host::new(id, command, size)?;
     loop {
         let stream = host
@@ -490,7 +525,7 @@ async fn serve(path: &Path, id: Uuid, command: CommandBuilder, size: Viewport) -
 async fn serve(path: &Path, id: Uuid, command: CommandBuilder, size: Viewport) -> Result<()> {
     let runtime = StateDirectory::create_all(path)?;
     let _instance = runtime.lock_instance()?;
-    let mut listener = DaemonPipe::TerminalHost.bind(&runtime)?;
+    let listener = crate::platform::Listener::bind(&runtime, DaemonPipe::TerminalHost)?;
     let mut host = Host::new(id, command, size)?;
     loop {
         let stream = host.wait(listener.accept()).await?;
@@ -530,7 +565,7 @@ impl Host {
     }
 
     async fn wait<S>(&mut self, accept: impl Future<Output = Result<S>>) -> Result<S> {
-        let mut interval = tokio::time::interval(TICK);
+        let mut interval = interval(TICK);
         let deadline = if self.retain {
             None
         } else {
@@ -538,7 +573,7 @@ impl Host {
         };
         let accept = async {
             match deadline {
-                Some(deadline) => tokio::time::timeout_at(deadline, accept).await?,
+                Some(deadline) => host_timeout_at(deadline, accept).await?,
                 None => accept.await,
             }
         };
@@ -554,8 +589,9 @@ impl Host {
         }
     }
 
-    async fn attached(&mut self, mut stream: impl AsyncRead + AsyncWrite + Unpin) -> Result<bool> {
-        let greeting: Request = timeout(COMMAND_TIMEOUT, read_message(&mut stream)).await??;
+    async fn attached(&mut self, mut stream: crate::platform::Stream) -> Result<bool> {
+        let greeting: Request =
+            host_timeout(COMMAND_TIMEOUT, receive_host_message(&mut stream)).await??;
         if !(greeting.operation == Operation::Hello as i32
             && greeting.version == VERSION
             && greeting.bytes == self.id.as_bytes())
@@ -565,7 +601,7 @@ impl Host {
                 version: VERSION,
                 ..Default::default()
             };
-            timeout(COMMAND_TIMEOUT, write_message(&mut stream, rejection)).await??;
+            host_timeout(COMMAND_TIMEOUT, send_host_message(&mut stream, rejection)).await??;
             bail!("terminal host identity or version mismatch");
         }
         self.previous = None;
@@ -581,11 +617,11 @@ impl Host {
             response.pid = Some(process.pid);
             response.process_created = Some(process.created);
         }
-        timeout(COMMAND_TIMEOUT, write_message(&mut stream, response)).await??;
-        let mut interval = tokio::time::interval(TICK);
+        host_timeout(COMMAND_TIMEOUT, send_host_message(&mut stream, response)).await??;
+        let mut interval = interval(TICK);
         loop {
             let request = {
-                let read = read_message(&mut stream);
+                let read = receive_host_message(&mut stream);
                 tokio::pin!(read);
                 loop {
                     tokio::select! {
@@ -597,7 +633,7 @@ impl Host {
             let Ok(request) = request else { break };
             let response = self.handle(request);
             if !matches!(
-                timeout(COMMAND_TIMEOUT, write_message(&mut stream, response)).await,
+                host_timeout(COMMAND_TIMEOUT, send_host_message(&mut stream, response)).await,
                 Ok(Ok(()))
             ) {
                 break;
@@ -735,6 +771,7 @@ fn viewport(cols: u32, rows: u32) -> Result<Viewport> {
     Viewport::new(cols.try_into()?, rows.try_into()?).context("invalid terminal host viewport")
 }
 
+#[cfg(any(test, not(feature = "compio")))]
 async fn read_message<M: Message + Default>(reader: &mut (impl AsyncRead + Unpin)) -> Result<M> {
     let size = reader.read_u32().await? as usize;
     ensure!(size <= RENDER_LIMIT, "terminal host frame exceeds limit");
@@ -743,6 +780,7 @@ async fn read_message<M: Message + Default>(reader: &mut (impl AsyncRead + Unpin
     Ok(M::decode(bytes.as_slice())?)
 }
 
+#[cfg(any(test, not(feature = "compio")))]
 async fn write_message(
     writer: &mut (impl AsyncWrite + Unpin),
     message: impl Message,
