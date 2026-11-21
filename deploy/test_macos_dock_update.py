@@ -170,7 +170,7 @@ def check_managed_update(previous, archive, directory, dock, live_dock):
             launch_dock_tile(dock, app, tile_bookmark, tile)
     finally:
         if tile:
-            run(dock, "remove", app, bookmark)
+            run(dock, "remove", app, tile_bookmark, tile)
     print("PASS legacy managed Desktop bookmark survives its in-place CLI update")
 
 
@@ -269,7 +269,7 @@ def check_pinned_relaunch(binary):
             launch_dock_tile(dock, app, alias, tile)
             check_relaunch_entries(app, directory, dock, alias, tile)
         finally:
-            run(dock, "remove", app, alias)
+            run(dock, "remove", app, alias, tile)
 
 
 def check_protected_bundle(app, archive, directory):
@@ -300,12 +300,17 @@ def check_protected_bundle(app, archive, directory):
 def check(dmg, archive):
     # Pin an isolated copy in the disposable macOS runner's real Dock.
     assert os.environ.get("GITHUB_ACTIONS") == "true"
-    with tempfile.TemporaryDirectory(prefix=".cv-dock-", dir=Path.home()) as temp:
+    with (
+        tempfile.TemporaryDirectory(prefix=".cv-dock-", dir=Path.home()) as temp,
+        tempfile.TemporaryDirectory(prefix="Corvid Dock Fixture ", dir="/Applications") as installed,
+    ):
         directory = Path(temp).resolve()
         mount = directory / "volume"
         release = release_fixture(archive, directory)
-        app = Path("/Applications") / f"Corvid Dock Fixture {uuid.uuid4().hex[:10]}.app"
-        protected = app.with_name(f"{app.stem} protected.app")
+        # Match the installed basename and the bundle's display name while
+        # keeping the test independent of any real installation.
+        app = Path(installed) / "Corvid.app"
+        protected = app.with_name("Protected Corvid.app")
         dock = directory / "dock-test"
         alias = directory / "Corvid bookmark"
         run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
@@ -318,6 +323,7 @@ def check(dmg, archive):
             run("ditto", mount / "Corvid.app", protected)
         finally:
             run("hdiutil", "detach", mount)
+        tile = None
         try:
             old = run(app / CLI, "--version")
             original_inode = app.stat().st_ino
@@ -333,7 +339,8 @@ def check(dmg, archive):
             print(f"PASS {old} -> corvid {new}; opened the original Dock tile {tile}")
             check_protected_bundle(protected, archive, directory)
         finally:
-            run(dock, "remove", app, alias)
+            if tile:
+                run(dock, "remove", app, alias, tile)
             if app.is_dir():
                 shutil.rmtree(app)
             if protected.is_dir():
@@ -355,6 +362,8 @@ if __name__ == "__main__":
     archive = args.archive.resolve()
     live_dock = os.environ.get("GITHUB_ACTIONS") == "true"
     with hide_recent_dock_apps() if live_dock else nullcontext():
+        if args.previous_dmg:
+            check(args.previous_dmg.resolve(), archive)
         if args.previous_archive:
             test_home = Path.home() if live_dock else None
             with tempfile.TemporaryDirectory(prefix=".cv-managed-", dir=test_home) as directory:
@@ -362,5 +371,3 @@ if __name__ == "__main__":
                 dock = directory / "dock-test"
                 run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
                 check_managed_update(args.previous_archive.resolve(), archive, directory, dock, live_dock)
-        if args.previous_dmg:
-            check(args.previous_dmg.resolve(), archive)
