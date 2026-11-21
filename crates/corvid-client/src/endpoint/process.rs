@@ -92,7 +92,7 @@ pub(super) async fn output(
         }
         Ok::<_, std::io::Error>(())
     };
-    let (status, received, diagnostic, sent) = tokio::join!(
+    let (status, received, diagnostic, sent) = corvid_async::join!(
         child.status(),
         read_bounded(stdout, limit),
         drain_diagnostic(stderr),

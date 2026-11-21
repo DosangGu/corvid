@@ -104,7 +104,7 @@ impl WslDistribution {
             .take(65537);
         let mut bytes = Vec::new();
         let (status, read) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            tokio::join!(child.wait(), stdout.read_to_end(&mut bytes))
+            corvid_async::join!(child.wait(), stdout.read_to_end(&mut bytes))
         })
         .await
         .context("listing WSL distributions timed out")?;

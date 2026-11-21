@@ -110,7 +110,7 @@ impl DesktopClient {
                     Ok(runtime) => {
                         if started.send(Ok(())).is_ok() {
                             runtime.block_on(async {
-                                tokio::select! {
+                                corvid_async::select! {
                                     _ = worker.run(&address) => {}
                                     _ = stop => {}
                                 }
@@ -180,7 +180,7 @@ impl Worker {
                 #[cfg(not(feature = "compio-endpoints"))]
                 ticker.tick().await;
             };
-            let completion = tokio::select! {
+            let completion = corvid_async::select! {
                 command = self.commands.recv() => {
                     let Some(command) = command else { return Ok(()) };
                     if !self.display.borrow().accepts(&command) || *self.page.borrow() != command.page {

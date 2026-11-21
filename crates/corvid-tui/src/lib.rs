@@ -374,14 +374,14 @@ fn run_compio_daemon(
         let mut daemon = std::pin::pin!(daemon);
         let signal = async {
             #[cfg(unix)]
-            tokio::select! {
+            corvid_async::select! {
                 result = compio::signal::unix::signal(nix::libc::SIGTERM) => result,
                 result = compio::signal::ctrl_c() => result,
             }
             #[cfg(windows)]
             compio::signal::ctrl_c().await
         };
-        tokio::select! {
+        corvid_async::select! {
             biased;
             result = signal => {
                 result?;

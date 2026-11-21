@@ -271,10 +271,10 @@ async fn serve_scope(
     let listener = instance.bind(SocketRole::Presentation).await?;
     let mut peers = JoinSet::new();
     loop {
-        tokio::select! {
+        corvid_async::select! {
             _ = focus.closed() => return Ok(()),
-            _ = peers.join_next(), if !peers.is_empty() => {}
-            connected = listener.accept(), if peers.len() < MAX_PEERS => {
+            _ = peers.join_next() if !peers.is_empty() => {}
+            connected = listener.accept() if peers.len() < MAX_PEERS => {
                 #[cfg(windows)]
                 let stream = connected?;
                 #[cfg(not(windows))]
@@ -349,7 +349,7 @@ async fn exchange(
     );
     let (result, completed) = oneshot::channel();
     let outcome = match focus.try_send(FocusRequest { run, result }) {
-        Ok(()) => tokio::select! {
+        Ok(()) => corvid_async::select! {
             result = completed => result.context("Desktop focus result unavailable")?,
             next = reader.next_envelope() => {
                 ensure!(next?.is_none(), "unexpected second Desktop focus request");
@@ -404,8 +404,10 @@ mod tests {
                 .into()))
                 .unwrap();
         };
-        let (result, _) =
-            timeout(COMMAND_TIMEOUT, async { tokio::join!(request, confirm) }).await?;
+        let (result, _) = timeout(COMMAND_TIMEOUT, async {
+            corvid_async::join!(request, confirm)
+        })
+        .await?;
         let fault = result.unwrap_err().downcast::<ProtocolFault>()?;
         assert_eq!(fault.code, "EpochMismatch");
         listen.await??;
@@ -440,7 +442,7 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         };
         timeout(COMMAND_TIMEOUT, async {
-            tokio::try_join!(request, confirm)
+            corvid_async::try_join!(request, confirm)
         })
         .await??;
         listen.await??;

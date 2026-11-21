@@ -1296,7 +1296,7 @@ async fn ensure_daemon_reuses_the_detached_windows_process() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
     let state = fixture.path().join("state");
-    let (first, second) = tokio::join!(
+    let (first, second) = corvid_async::join!(
         ensure_daemon(&runtime, &state),
         ensure_daemon(&runtime, &state),
     );

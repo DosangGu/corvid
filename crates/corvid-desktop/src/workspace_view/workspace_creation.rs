@@ -474,7 +474,7 @@ impl WorkspaceView {
         draft.queries = Some(queries);
         draft.browser = Some(cx.spawn_in(window, async move |view, cx| {
             loop {
-                tokio::select! {
+                corvid_async::select! {
                     update = updates.recv() => {
                         let Some(update) = update else { break };
                         if view.update_in(cx, |view, window, cx| {

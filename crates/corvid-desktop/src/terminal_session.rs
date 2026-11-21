@@ -790,8 +790,8 @@ impl Session {
                             &state,
                             &mut agent_deck,
                         );
-                        tokio::pin!(client);
-                        tokio::select! {
+                        corvid_async::pin!(client);
+                        corvid_async::select! {
                             result = &mut client => result,
                             park = &mut stopped => {
                                 let _ = close.send(park.unwrap_or(false));
@@ -1188,9 +1188,9 @@ async fn run_reconnecting(
                 shared,
                 agent_deck,
             );
-            tokio::pin!(attempt);
+            corvid_async::pin!(attempt);
             if let Some(retry) = &retry {
-                tokio::select! {
+                corvid_async::select! {
                     biased;
                     result = &mut attempt => result,
                     _ = &mut ready => attempt.await,
@@ -1841,9 +1841,9 @@ async fn run(
     let mut inventory = InventoryWatch::start(endpoint.clone(), host, epoch, Arc::clone(shared))?;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let keep_connection = loop {
-        tokio::select! {
+        corvid_async::select! {
             close = &mut *closing => break close.unwrap_or(false),
-            Some(result) = monitor_tasks.join_next(), if !monitor_tasks.is_empty() => {
+            Some(result) = monitor_tasks.join_next() if !monitor_tasks.is_empty() => {
                 if let Err(error) = result.unwrap_or_else(|error| Err(error.into())) {
                     shared.update_ui(move |ui| ui.message = format!("Agent monitor unavailable: {error:#}"));
                 }
@@ -1858,7 +1858,7 @@ async fn run(
                 None => break false,
             },
             Some(request) = deck_focus.recv() => client.focus_from_deck(request).await?,
-            result = client.agent_deck.tasks.join_next(), if !client.agent_deck.tasks.is_empty() => {
+            result = client.agent_deck.tasks.join_next() if !client.agent_deck.tasks.is_empty() => {
                 match result {
                     Some(Ok(Err(error))) => shared.update_ui(move |ui| ui.message = format!("{error:#}")),
                     Some(Err(_)) => shared.update_ui(|ui| ui.message = "Corvid Agent Deck stopped unexpectedly.".into()),

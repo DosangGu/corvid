@@ -86,7 +86,7 @@ mod tests {
             }
             request
         };
-        tokio::join!(
+        corvid_async::join!(
             exchange(client, host, epoch, vec![CAPABILITY.to_owned()], body),
             server
         )

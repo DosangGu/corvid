@@ -596,7 +596,7 @@ impl WorkspaceView {
         }));
         self.events = Some(cx.spawn_in(window, async move |view, cx| {
             loop {
-                tokio::select! {
+                corvid_async::select! {
                     Some(activation) = activations.recv() => {
                         let _ = view.update_in(cx, |view, window, cx| {
                             if activation.reply.is_closed() {

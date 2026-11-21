@@ -123,7 +123,7 @@ pub(super) fn start(
                     ).await,
                 }
             };
-            let result = tokio::select! {
+            let result = corvid_async::select! {
                 _ = updates.closed() => return,
                 result = setup => result,
             };
@@ -166,7 +166,7 @@ async fn browse(
         // Let a burst of edits settle before sending the latest prefix.
         tokio::time::sleep(Duration::from_millis(150)).await;
         let (revision, query) = pending.borrow_and_update().clone();
-        let result = tokio::select! {
+        let result = corvid_async::select! {
             _ = updates.closed() => return,
             result = list(&endpoint, &host, &mut link, query) => result,
         };

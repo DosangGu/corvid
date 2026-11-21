@@ -97,7 +97,7 @@ impl WorkspaceView {
                 if !ui.changing {
                     break Some(Err(ui.message));
                 }
-                tokio::select! {
+                corvid_async::select! {
                     _ = result.closed() => break None,
                     change = changes.changed() => {
                         if change.is_err() {

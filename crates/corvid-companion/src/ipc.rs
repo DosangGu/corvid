@@ -176,7 +176,7 @@ async fn serve_runtime(
     let incoming = accept(&mut listener, sender, &host, &epoch);
     #[cfg(feature = "compio-endpoints")]
     let incoming = native::accept(&listener, sender, &host, &epoch);
-    let result = tokio::select! {
+    let result = corvid_async::select! {
         result = incoming => result,
         result = service.run(calls) => result,
         _ = shutdown => Ok(()),
@@ -221,7 +221,7 @@ async fn accept(
 ) -> Result<()> {
     let mut peers = JoinSet::new();
     loop {
-        tokio::select! {
+        corvid_async::select! {
             result = listener.next_peer() => match result {
                 Ok(Some(stream)) if peers.len() < MAX_PEERS => {
                     peers.spawn(serve(stream, calls.clone(), host.to_owned(), epoch.to_owned()));
@@ -229,7 +229,7 @@ async fn accept(
                 Ok(_) => {}
                 Err(_) => sleep(Duration::from_millis(25)).await,
             },
-            result = peers.join_next(), if !peers.is_empty() => {
+            result = peers.join_next() if !peers.is_empty() => {
                 if matches!(result, Some(Ok(Ok(true)))) {
                     return Ok(());
                 }

@@ -8,7 +8,7 @@ pub async fn timeout<F: std::future::Future>(
     future: F,
 ) -> anyhow::Result<F::Output> {
     let deadline = std::time::Instant::now() + duration;
-    tokio::select! {
+    corvid_async::select! {
         biased;
         result = future => Ok(result),
         timer = wait_until(deadline) => {

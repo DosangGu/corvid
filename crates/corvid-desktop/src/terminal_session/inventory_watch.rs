@@ -22,7 +22,7 @@ impl InventoryWatch {
         let (stop, stopped) = oneshot::channel();
         let (finished, receive_finished) = oneshot::channel();
         let thread = inventory_runtime::start("corvid-desktop-inventory", move || async move {
-            tokio::select! {
+            corvid_async::select! {
                 _ = stopped => {}
                 _ = monitor(endpoint, host, epoch, &shared) => {}
             }

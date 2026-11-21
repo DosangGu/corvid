@@ -38,10 +38,10 @@ async fn connected_managed_installations_offer_updates() -> Result<()> {
                 &prompts,
                 |_| {},
             );
-            tokio::pin!(connection);
+            corvid_async::pin!(connection);
             let mut messages = Vec::new();
             loop {
-                tokio::select! {
+                corvid_async::select! {
                     result = &mut connection => return (result, messages),
                     Some(prompt) = receiver.recv() => {
                         messages.push((prompt.action, prompt.message));

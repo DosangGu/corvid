@@ -116,7 +116,7 @@ impl DesktopLink {
         let (requests, mut incoming) = mpsc::channel(1);
         let mut registered = false;
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 request = reader.next_envelope() => {
                     let Some(request) = request? else {
                         break;
@@ -171,7 +171,7 @@ impl DesktopLink {
                         _ => anyhow::bail!("unsupported plugin message"),
                     }
                 }
-                request = incoming.recv(), if registered && pending.is_none() => {
+                request = incoming.recv() if registered && pending.is_none() => {
                     let Some((id, run)) = request else {
                         break;
                     };

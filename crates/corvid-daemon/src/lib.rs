@@ -145,8 +145,8 @@ async fn serve_daemon(
     #[cfg(not(feature = "compio"))]
     agent_clock.set_missed_tick_behavior(crate::executor::time::MissedTickBehavior::Skip);
     let incoming_upgrade = upgrade::listen(upgrade_socket.as_ref(), &identity);
-    tokio::pin!(incoming_upgrade);
-    tokio::pin!(shutdown);
+    corvid_async::pin!(incoming_upgrade);
+    corvid_async::pin!(shutdown);
 
     // Keep each accept alive across unrelated events. Dropping a completion
     // operation can discard the peer it has already accepted.
@@ -155,11 +155,11 @@ async fn serve_daemon(
     let mut incoming_collector = std::pin::pin!(collector_socket.accept());
 
     loop {
-        tokio::select! {
+        corvid_async::select! {
             () = &mut shutdown => break,
-            _ = controls.join_next(), if !controls.is_empty() => {}
-            _ = clients.join_next(), if !clients.is_empty() => {}
-            _ = collectors.join_next(), if !collectors.is_empty() => {}
+            _ = controls.join_next() if !controls.is_empty() => {}
+            _ = clients.join_next() if !clients.is_empty() => {}
+            _ = collectors.join_next() if !collectors.is_empty() => {}
             request = &mut incoming_upgrade => {
                 let preserve = request.preserve_terminals;
                 let prepare = async {

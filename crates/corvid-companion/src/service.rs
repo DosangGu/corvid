@@ -154,9 +154,9 @@ impl Service {
                 None => std::future::pending().await,
             }
         };
-        tokio::pin!(delay);
+        corvid_async::pin!(delay);
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 _ = &mut delay => return true,
                 call = calls.recv() => {
                     let Some(call) = call else { return false };
@@ -217,12 +217,12 @@ impl Service {
         let connection = endpoint.watch(&controller, &host, move || {
             let _ = syncing.send(());
         });
-        tokio::pin!(connection);
+        corvid_async::pin!(connection);
         let mut waiting = true;
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 result = &mut connection => return result,
-                started = &mut started, if waiting => {
+                started = &mut started if waiting => {
                     waiting = false;
                     if started.is_ok() {
                         self.connection = CompanionConnection::Syncing;
@@ -245,7 +245,7 @@ impl Service {
         let mut refresh = interval_at(now, Duration::from_secs(1));
         let mut priority_refresh = interval_at(now + PRIORITY_REFRESH, PRIORITY_REFRESH);
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 biased;
                 _ = refresh.tick() => {
                     match self.store.monitor_endpoint() {
@@ -256,7 +256,7 @@ impl Service {
                         _ => {}
                     }
                 }
-                _ = sleep_until(self.save_status_at.unwrap_or_else(Instant::now)), if self.save_status_at.is_some() => {
+                _ = sleep_until(self.save_status_at.unwrap_or_else(Instant::now)) if self.save_status_at.is_some() => {
                     if let Err(error) = self.flush_status() {
                         return store_fault(error).into();
                     }

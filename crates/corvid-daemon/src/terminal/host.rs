@@ -578,9 +578,9 @@ impl Host {
                 None => accept.await,
             }
         };
-        tokio::pin!(accept);
+        corvid_async::pin!(accept);
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 result = &mut accept => return result,
                 _ = interval.tick() => {
                     self.advance()?;
@@ -623,9 +623,9 @@ impl Host {
         loop {
             let request = {
                 let read = receive_host_message(&mut stream);
-                tokio::pin!(read);
+                corvid_async::pin!(read);
                 loop {
-                    tokio::select! {
+                    corvid_async::select! {
                         result = &mut read => break result,
                         _ = interval.tick() => self.advance()?,
                     }

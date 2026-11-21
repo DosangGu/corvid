@@ -275,7 +275,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             let mut terminate = signal(SignalKind::terminate())?;
             let mut interrupt = signal(SignalKind::interrupt())?;
             corvid_daemon::run(&runtime, &state, autostarted, async move {
-                tokio::select! {
+                corvid_async::select! {
                     _ = terminate.recv() => {}
                     _ = interrupt.recv() => {}
                 }

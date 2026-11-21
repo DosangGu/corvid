@@ -223,7 +223,7 @@ async fn click_card(
                 .args(["mousemove", "--window", window, &x, "85", "click", "1"])
                 .status().await?;
             ensure!(status.success(), "clicking the Deck card");
-            tokio::select! {
+            corvid_async::select! {
                 request = expected.requests.recv() => {
                     let request = request.context("Desktop focus request stream closed")?;
                     assert_eq!(request.run, expected.run);

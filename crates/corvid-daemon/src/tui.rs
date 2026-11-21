@@ -309,7 +309,7 @@ struct ClientEvents {
 impl TuiConnection<'_> {
     async fn run(mut self, incoming: &mut Incoming) -> Result<ParkedTerminal> {
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 biased;
                 _ = &mut self.client_events.disconnected => {
                     self.active.events.close();

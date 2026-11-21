@@ -206,7 +206,7 @@ async fn run<N: NativeServices>(
     let (listening, listening_rx) = oneshot::channel();
     let mut jobs = tokio::task::JoinSet::new();
     jobs.spawn(connection::listen(config.controller_id, peers, listening));
-    tokio::select! {
+    corvid_async::select! {
         _ = &mut stopped => return Ok(()),
         result = listening_rx => result.context("Agent Deck instance already exists or its private endpoint is unavailable")?,
         result = jobs.join_next() => { anyhow::bail!("Agent Deck endpoint unavailable: {result:?}"); }
@@ -239,12 +239,14 @@ async fn run<N: NativeServices>(
     let mut issues_open = true;
     let mut events_open = true;
     let startup_deadline = sleep(Duration::from_secs(5));
-    tokio::pin!(startup_deadline);
+    corvid_async::pin!(startup_deadline);
     loop {
-        tokio::select! {
+        let startup_pending = monitor.capabilities != monitor.capabilities.startup_timed_out();
+        let notifications_ready = monitor.capabilities.notifications != Availability::Starting;
+        corvid_async::select! {
             // Finish any settings transaction before shutting down the adapter.
             _ = &mut stopped => return Ok(()),
-            _ = &mut startup_deadline, if monitor.capabilities != monitor.capabilities.startup_timed_out() => {
+            _ = &mut startup_deadline if startup_pending => {
                 // A backend that never completes initialization cannot leave
                 // its window hidden. A late readiness update can still recover.
                 monitor.set_capabilities(monitor.capabilities.startup_timed_out());
@@ -264,11 +266,11 @@ async fn run<N: NativeServices>(
                     clients.spawn(async move { bridge.serve(peer, scope).await });
                 }
             }
-            _ = clients.join_next(), if !clients.is_empty() => {}
+            _ = clients.join_next() if !clients.is_empty() => {}
             result = jobs.join_next() => {
                 anyhow::bail!("Agent Deck background service stopped: {result:?}");
             }
-            result = snapshot_rx.recv(), if monitor.capabilities.notifications != Availability::Starting => {
+            result = snapshot_rx.recv() if notifications_ready => {
                 monitor.snapshot(result.context("notification poller stopped")?).await?;
             }
             result = settings.changed() => {
@@ -281,7 +283,7 @@ async fn run<N: NativeServices>(
                 let activation = monitor.capabilities.activation.ready();
                 monitor.notify(test_notice(config.host_id, activation)).await;
             }
-            result = capability_rx.changed(), if capabilities_open => {
+            result = capability_rx.changed() if capabilities_open => {
                 capabilities_open = result.is_ok();
                 let next = if capabilities_open {
                     *capability_rx.borrow_and_update()
@@ -297,13 +299,13 @@ async fn run<N: NativeServices>(
                     }
                 }
             }
-            result = issue_rx.changed(), if issues_open => {
+            result = issue_rx.changed() if issues_open => {
                 issues_open = result.is_ok();
                 if issues_open && let Some(issue) = issue_rx.borrow_and_update().clone() {
                     monitor.error(issue.to_string());
                 }
             }
-            event = event_rx.recv(), if events_open => {
+            event = event_rx.recv() if events_open => {
                 match event {
                     Some(event) => monitor.event(event, &state, config.host_id).await,
                     None => events_open = false,

@@ -19,7 +19,7 @@ pub(super) async fn open(instance: &str, state: &Path, alias: Option<String>) ->
         return corvid_agent_deck::launch::open(instance, state, alias.as_deref()).await;
     };
     command.args(["--pipe-instance", instance]);
-    tokio::select! {
+    corvid_async::select! {
         result = show(command) => result,
         _ = super::shutdown()? => Ok(()),
     }

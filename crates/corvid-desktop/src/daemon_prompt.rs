@@ -116,7 +116,7 @@ mod tests {
         for decision in [None, Some(false), Some(true)] {
             let (sender, mut receiver) = mpsc::unbounded_channel();
             let prompts = Prompts(sender);
-            let (result, ()) = tokio::join!(
+            let (result, ()) = corvid_async::join!(
                 prompts.confirm(
                     Operation::Install,
                     "work-host",

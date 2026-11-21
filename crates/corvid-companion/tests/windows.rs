@@ -45,7 +45,7 @@ async fn serves_current_user_clients_and_refuses_a_second_pipe_owner() {
     });
     let mut first = timeout(Duration::from_secs(5), async {
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 result = &mut companion => panic!("companion exited during setup: {result:?}"),
                 result = PresentationClient::connect(&instance) => {
                     if let Ok(client) = result {

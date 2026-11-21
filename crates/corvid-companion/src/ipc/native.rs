@@ -39,7 +39,7 @@ pub(super) async fn run(
                 });
             let _ = send_result.send(result);
         })?;
-    tokio::select! {
+    corvid_async::select! {
         result = &mut worker => result?,
         () = shutdown => {
             drop(stop);
@@ -77,7 +77,7 @@ pub(super) async fn accept(
     let mut peers = FuturesUnordered::new();
     let mut incoming = std::pin::pin!(next_peer(listener));
     loop {
-        tokio::select! {
+        corvid_async::select! {
             result = &mut incoming => {
                 incoming.set(next_peer(listener));
                 match result {
@@ -88,7 +88,7 @@ pub(super) async fn accept(
                     Err(_) => sleep(Duration::from_millis(25)).await,
                 }
             }
-            result = peers.next(), if !peers.is_empty() => {
+            result = peers.next() if !peers.is_empty() => {
                 if matches!(result, Some(Ok(Ok(true)))) {
                     return Ok(());
                 }

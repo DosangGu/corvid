@@ -66,7 +66,7 @@ async fn relay(runtime: &Path, socket: SocketRole, output: FrameRole) -> Result<
     let download = forward(&mut from_daemon, &mut outgoing);
     let mut upload = std::pin::pin!(upload);
     let mut download = std::pin::pin!(download);
-    tokio::select! {
+    corvid_async::select! {
         result = &mut download => result,
         result = &mut upload => {
             result?;
