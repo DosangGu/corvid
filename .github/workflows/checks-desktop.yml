@@ -10,6 +10,7 @@ on:
       - 'rust-toolchain.toml'
       - 'LICENSE'
       - 'assets/icons/**'
+      - 'assets/fonts/**'
       - 'crates/corvid-core/**'
       - 'crates/corvid-protocol/**'
       - 'crates/corvid-daemon/**'
@@ -74,3 +75,5 @@ jobs:
           --skip terminal_session::inventory_watch::terminal_tests
           --skip terminal_session::restore_test::desktop_relaunch_restores_the_same_terminal
           --skip terminal_session::restore_test::desktop_startup_attempts_recovery_and_leaves_failed_panes_empty
+      - name: Desktop symbol fallback
+        run: cargo test --locked -p corvid-desktop --test desktop_symbols

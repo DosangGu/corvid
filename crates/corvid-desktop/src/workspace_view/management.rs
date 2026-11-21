@@ -181,6 +181,7 @@ impl WorkspaceView {
         };
         div()
             .id("management")
+            .font(crate::desktop_font::with_symbols(".SystemUIFont"))
             .track_focus(&self.management_focus)
             .capture_key_down(cx.listener(Self::management_key_down))
             .flex()

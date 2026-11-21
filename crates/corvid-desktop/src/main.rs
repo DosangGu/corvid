@@ -7,6 +7,7 @@ mod appearance;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod daemon_prompt;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod desktop_font;
 mod desktop_windows;
 #[cfg(target_os = "linux")]
 mod linux_prompt;
@@ -119,6 +120,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let application = gpui_platform::linux(gpui::WindowingModes::X11);
     #[cfg(not(target_os = "linux"))]
     let application = gpui_platform::application();
+    desktop_font::register(&application.text_system())?;
     #[cfg(target_os = "macos")]
     {
         let reopened = windows.clone();
