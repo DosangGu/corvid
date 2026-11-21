@@ -87,3 +87,5 @@ jobs:
       - name: Exercise Compio local control endpoints on Windows
         if: runner.os == 'Windows'
         run: cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test windows_daemon tui_reopens_its_last_workspace
+      - name: Exercise Compio child-process I/O and cleanup
+        run: cargo test --locked -p corvid-client --features compio-endpoints --lib native_process_transfers

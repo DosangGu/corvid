@@ -63,6 +63,30 @@ impl WslDistribution {
         Ok(command)
     }
 
+    #[cfg(feature = "compio-endpoints")]
+    pub async fn list() -> Result<Vec<Self>> {
+        let mut command = wsl_command()?.into_std();
+        command.args(["--list", "--quiet"]);
+        let output = super::native::command_output(
+            command,
+            None,
+            65537,
+            std::time::Duration::from_secs(15),
+            "listing WSL distributions timed out",
+        )
+        .await?;
+        ensure!(
+            output.status.success(),
+            "Could not list WSL distributions. Check that WSL is installed."
+        );
+        ensure!(
+            output.stdout.len() <= 65536,
+            "WSL distribution list is too large"
+        );
+        parse_distributions(&output.stdout)
+    }
+
+    #[cfg(not(feature = "compio-endpoints"))]
     pub async fn list() -> Result<Vec<Self>> {
         use tokio::io::AsyncReadExt;
 

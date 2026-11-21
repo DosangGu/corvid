@@ -3,16 +3,25 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+#[cfg(not(feature = "compio-endpoints"))]
+use anyhow::Context;
+use anyhow::{Result, bail, ensure};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, Frame, PeerRole, ProtocolFault, Session};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tokio::process::{Child, ChildStderr, Command};
+#[cfg(not(feature = "compio-endpoints"))]
+use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(not(feature = "compio-endpoints"))]
+use tokio::process::Child;
+#[cfg(not(feature = "compio-endpoints"))]
+use tokio::process::ChildStderr;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+#[cfg(not(feature = "compio-endpoints"))]
 use crate::connection::Connection;
 #[cfg(all(
     not(feature = "compio-endpoints"),
@@ -23,6 +32,8 @@ use crate::connection::open;
 mod bootstrap;
 #[cfg(feature = "compio-endpoints")]
 mod native;
+#[cfg(feature = "compio-endpoints")]
+mod process;
 pub(crate) mod wire;
 use wire::{Reader, Wire, Writer};
 mod wsl;
@@ -179,11 +190,7 @@ impl SshAlias {
     }
 
     pub async fn interactive(&self, capabilities: Vec<String>) -> Result<InteractiveConnection> {
-        let (read, write, mut relay) = RelayProcess::start(self.command(PeerRole::Tui)?)?;
-        let wire = relay
-            .negotiate(read, write, PeerRole::Tui, capabilities, None)
-            .await?;
-        Ok(InteractiveConnection::new(wire.into(), Some(relay)))
+        InteractiveConnection::relay(self.command(PeerRole::Tui)?, capabilities).await
     }
 }
 
@@ -242,15 +249,9 @@ async fn local_wire(
     controller: Option<String>,
 ) -> Result<Wire<Input, Output>> {
     #[cfg(feature = "compio-endpoints")]
-    {
-        let (session, reader, writer) =
-            native::connect(path, peer, capabilities, controller).await?;
-        Ok(Wire {
-            session,
-            reader: Reader::Compio(reader),
-            writer: Writer::Compio(writer),
-        })
-    }
+    return native::connect(path, peer, capabilities, controller)
+        .await
+        .map(native_wire);
     #[cfg(not(feature = "compio-endpoints"))]
     {
         use crate::connection::SocketRole;
@@ -277,27 +278,50 @@ async fn local_wire(
     }
 }
 
+#[cfg(feature = "compio-endpoints")]
+fn native_wire(
+    (session, reader, writer): (Session, native::ReadQueue, native::WriteQueue),
+) -> Wire<Input, Output> {
+    Wire {
+        session,
+        reader: Reader::Compio(reader),
+        writer: Writer::Compio(writer),
+    }
+}
+
 pub(crate) struct ControlConnection {
     pub(crate) wire: Wire<Input, Output>,
+    #[cfg(not(feature = "compio-endpoints"))]
     _relay: Option<RelayProcess>,
 }
 
 impl ControlConnection {
     async fn relay(command: Command, capability: &str, controller: &str) -> Result<Self> {
-        let (read, write, mut relay) = RelayProcess::start(command)?;
-        let wire = relay
-            .negotiate(
-                read,
-                write,
+        let capabilities = vec![capability.to_owned()];
+        let controller = Some(controller.to_owned());
+        #[cfg(feature = "compio-endpoints")]
+        {
+            let wire = native::relay(
+                command.into_std(),
                 PeerRole::Control,
-                vec![capability.to_owned()],
-                Some(controller.to_owned()),
+                capabilities,
+                controller,
             )
-            .await?;
-        Ok(Self {
-            wire: wire.into(),
-            _relay: Some(relay),
-        })
+            .await
+            .map(native_wire)?;
+            Ok(Self { wire })
+        }
+        #[cfg(not(feature = "compio-endpoints"))]
+        {
+            let (read, write, mut relay) = RelayProcess::start(command)?;
+            let wire = relay
+                .negotiate(read, write, PeerRole::Control, capabilities, controller)
+                .await?;
+            Ok(Self {
+                wire: wire.into(),
+                _relay: Some(relay),
+            })
+        }
     }
 }
 
@@ -305,16 +329,38 @@ pub struct InteractiveConnection {
     session: Session,
     writer: Writer<Output>,
     incoming: InteractiveReader,
+    #[cfg(not(feature = "compio-endpoints"))]
     _relay: Option<RelayProcess>,
 }
 
 impl InteractiveConnection {
-    fn new(wire: Wire<Input, Output>, relay: Option<RelayProcess>) -> Self {
+    fn new(wire: Wire<Input, Output>) -> Self {
         Self {
             session: wire.session,
             writer: wire.writer,
             incoming: InteractiveReader::start(wire.reader),
-            _relay: relay,
+            #[cfg(not(feature = "compio-endpoints"))]
+            _relay: None,
+        }
+    }
+
+    async fn relay(command: Command, capabilities: Vec<String>) -> Result<Self> {
+        #[cfg(feature = "compio-endpoints")]
+        {
+            let wire = native::relay(command.into_std(), PeerRole::Tui, capabilities, None)
+                .await
+                .map(native_wire)?;
+            Ok(Self::new(wire))
+        }
+        #[cfg(not(feature = "compio-endpoints"))]
+        {
+            let (read, write, mut relay) = RelayProcess::start(command)?;
+            let wire = relay
+                .negotiate(read, write, PeerRole::Tui, capabilities, None)
+                .await?;
+            let mut connection = Self::new(wire.into());
+            connection._relay = Some(relay);
+            Ok(connection)
         }
     }
 
@@ -429,16 +475,12 @@ impl ControlEndpoint {
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Local(path) => {
                 let wire = local_wire(path, PeerRole::Tui, capabilities, None).await?;
-                Ok(InteractiveConnection::new(wire, None))
+                Ok(InteractiveConnection::new(wire))
             }
             Self::Ssh(alias) => alias.interactive(capabilities).await,
             Self::Wsl(distribution) => {
-                let (read, write, mut relay) =
-                    RelayProcess::start(distribution.command(PeerRole::Tui)?)?;
-                let wire = relay
-                    .negotiate(read, write, PeerRole::Tui, capabilities, None)
-                    .await?;
-                Ok(InteractiveConnection::new(wire.into(), Some(relay)))
+                InteractiveConnection::relay(distribution.command(PeerRole::Tui)?, capabilities)
+                    .await
             }
         }
     }
@@ -459,7 +501,11 @@ impl ControlEndpoint {
                     Some(controller),
                 )
                 .await?;
-                Ok(ControlConnection { wire, _relay: None })
+                Ok(ControlConnection {
+                    wire,
+                    #[cfg(not(feature = "compio-endpoints"))]
+                    _relay: None,
+                })
             }
             Self::Ssh(alias) => alias.connect_control(capability, &controller).await,
             Self::Wsl(distribution) => {
@@ -470,11 +516,13 @@ impl ControlEndpoint {
     }
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 struct RelayProcess {
     child: Child,
     diagnostic: JoinHandle<Vec<u8>>,
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 impl RelayProcess {
     fn start(mut command: Command) -> Result<(Input, Output, Self)> {
         let mut child = command.spawn().context("starting Corvid relay")?;
@@ -522,12 +570,14 @@ impl RelayProcess {
     }
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 impl Drop for RelayProcess {
     fn drop(&mut self) {
         self.diagnostic.abort();
     }
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 async fn drain_diagnostic(mut stderr: ChildStderr) -> Vec<u8> {
     let mut tail = Vec::with_capacity(MAX_DIAGNOSTIC);
     let mut buffer = [0; 1024];

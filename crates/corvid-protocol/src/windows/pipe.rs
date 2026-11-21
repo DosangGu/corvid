@@ -66,7 +66,7 @@ impl PipeListener {
 mod compio_pipe;
 
 #[cfg(feature = "compio")]
-pub use compio_pipe::CompioPipeListener;
+pub use compio_pipe::{CompioPipeListener, child_stdio_pipe};
 
 #[cfg(feature = "tokio")]
 fn listen(name: &str, user: &str, first: bool) -> Result<NamedPipeServer> {
