@@ -417,15 +417,19 @@ async fn notification_clicks_route_to_exact_hosts_and_record_failure_without_ope
         notice.summary = false;
         notice.key.run = common_run;
         let (send, receive) = mpsc::channel(1);
-        jobs.spawn(desktop_focus::serve(
+        let (listening, ready) = oneshot::channel();
+        jobs.spawn(desktop_focus::serve_with_readiness(
             config.host_id,
             config.controller_id,
             notice.key.epoch,
             send,
+            listening,
         ));
+        timeout(COMMAND_TIMEOUT, ready)
+            .await
+            .context("waiting for the Desktop focus listener")??;
         targets.push((notice, receive));
     }
-    corvid_async::task::yield_now().await;
 
     for (notice, requests) in targets.iter_mut().rev() {
         callbacks.event(Event::Activate(notice.clone()))?;

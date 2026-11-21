@@ -236,7 +236,7 @@ pub async fn serve_routed(
 ) -> Result<()> {
     // The private connection is scoped to the controller. Desktop verifies the
     // daemon epoch in each run against the actual daemon before navigation.
-    serve_scope(host, controller, controller, true, focus).await
+    serve_scope(host, controller, controller, true, focus, None).await
 }
 
 /// This listener is owned by an already attached Desktop session.
@@ -246,7 +246,18 @@ pub async fn serve(
     epoch: Uuid,
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
-    serve_scope(host, controller, epoch, false, focus).await
+    serve_scope(host, controller, epoch, false, focus, None).await
+}
+
+/// Run an attached Desktop listener and signal once it can accept connections.
+pub async fn serve_with_readiness(
+    host: Uuid,
+    controller: Uuid,
+    epoch: Uuid,
+    focus: mpsc::Sender<FocusRequest>,
+    listening: oneshot::Sender<()>,
+) -> Result<()> {
+    serve_scope(host, controller, epoch, false, focus, Some(listening)).await
 }
 
 async fn serve_scope(
@@ -255,6 +266,7 @@ async fn serve_scope(
     epoch: Uuid,
     routed: bool,
     focus: mpsc::Sender<FocusRequest>,
+    listening: Option<oneshot::Sender<()>>,
 ) -> Result<()> {
     #[cfg(windows)]
     let mut listener = corvid_protocol::windows::PipeListener::bind_scoped(
@@ -269,6 +281,9 @@ async fn serve_scope(
     let instance = directory.lock_instance()?;
     #[cfg(not(windows))]
     let listener = instance.bind(SocketRole::Presentation).await?;
+    if let Some(listening) = listening {
+        let _ = listening.send(());
+    }
     let mut peers = JoinSet::new();
     loop {
         corvid_async::select! {
