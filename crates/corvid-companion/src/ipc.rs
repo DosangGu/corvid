@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::{mpsc, oneshot};
 use corvid_client::ControlEndpoint;
 #[cfg(all(
     not(feature = "compio-endpoints"),
@@ -30,7 +31,6 @@ use tokio::net::UnixStream as ClientStream;
 use tokio::net::windows::named_pipe::NamedPipeClient as ClientStream;
 #[cfg(all(windows, not(feature = "compio-endpoints")))]
 use tokio::net::windows::named_pipe::NamedPipeServer;
-use tokio::sync::{mpsc, oneshot};
 #[cfg(not(feature = "compio-endpoints"))]
 use tokio::task::JoinSet;
 #[cfg(not(feature = "compio-endpoints"))]
@@ -165,7 +165,7 @@ async fn serve_runtime(
     };
     #[cfg(all(windows, feature = "compio-endpoints"))]
     let listener =
-        tokio::sync::Mutex::new(corvid_protocol::windows::CompioPipeListener::bind(runtime)?);
+        corvid_async::Mutex::new(corvid_protocol::windows::CompioPipeListener::bind(runtime)?);
     #[cfg(all(windows, not(feature = "compio-endpoints")))]
     let listener = PipeListener::bind(runtime)?;
     #[cfg(not(feature = "compio-endpoints"))]

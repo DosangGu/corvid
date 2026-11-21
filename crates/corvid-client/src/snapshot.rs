@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 #[cfg(feature = "compio-endpoints")]
 use compio::runtime::JoinHandle;
+use corvid_async::{mpsc, watch};
 use corvid_protocol::snapshot::{
     SNAPSHOT_CAPABILITY, SnapshotAssembler, SynchronizedSnapshot, WATCH_CAPABILITY,
 };
@@ -13,7 +14,6 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, GetSnapshot, Ping, SnapshotWatch as WatchRequest};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, watch};
 #[cfg(not(feature = "compio-endpoints"))]
 use tokio::task::JoinHandle;
 use uuid::Uuid;

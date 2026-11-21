@@ -1,10 +1,10 @@
 use std::ops::Range;
 
+use corvid_async::{mpsc, watch};
 use corvid_protocol::wire::{
     BrowseDirectories, DirectoryEntry, DirectoryListing, WorkspaceCreation,
 };
 use gpui::{ElementInputHandler, Keystroke, MouseButton, ScrollHandle, UTF16Selection, canvas};
-use tokio::sync::{mpsc, watch};
 
 use super::switcher::machine_label;
 use super::*;

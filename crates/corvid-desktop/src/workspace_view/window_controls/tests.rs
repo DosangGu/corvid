@@ -63,7 +63,7 @@ fn caption_gestures_reach_windows_with_a_focusable_workspace() {
                     unsafe { SetWindowSubclass(hwnd as HWND, Some(watch_move), 1, 0) },
                     0
                 );
-                let (send, receive) = tokio::sync::oneshot::channel();
+                let (send, receive) = corvid_async::oneshot::channel();
                 std::thread::spawn(move || {
                     let _ = send.send(check_caption(hwnd as HWND, scale));
                 });

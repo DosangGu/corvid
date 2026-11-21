@@ -6,13 +6,13 @@
 
 use anyhow::{Context, Result};
 use compio::io::{AsyncRead, AsyncWrite};
+use corvid_async::oneshot;
 use corvid_protocol::wire::{Ping, Pong, envelope::Body};
 use corvid_protocol::{
     COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter, FrameReader, FrameRole, FrameWriter,
     PeerRole, accept_hello, check_hello_result, hello,
 };
 use tokio::io::{AsyncRead as TokioRead, AsyncWrite as TokioWrite};
-use tokio::sync::oneshot;
 
 async fn server(read: impl AsyncRead, write: impl AsyncWrite) -> Result<()> {
     let role = FrameRole::StructuredOnly;

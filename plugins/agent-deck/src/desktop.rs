@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::{mpsc, oneshot};
 use corvid_client::ControlEndpoint;
 #[cfg(windows)]
 use corvid_companion::Config;
@@ -8,7 +9,6 @@ use corvid_companion::monitor::Scope;
 use corvid_protocol::wire::DesktopAgentFocused;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use uuid::Uuid;

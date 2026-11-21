@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::watch;
+use corvid_async::watch;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Presentation {

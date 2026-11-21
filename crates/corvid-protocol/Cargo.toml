@@ -42,6 +42,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+corvid-async.workspace = true
 anyhow.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }

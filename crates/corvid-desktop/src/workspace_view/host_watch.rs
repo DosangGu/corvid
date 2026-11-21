@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use corvid_async::{oneshot, watch};
 use corvid_client::{ControlEndpoint, SshRetry, daemon_missing, runtime_path};
-use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 use uuid::Uuid;
 

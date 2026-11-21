@@ -3,15 +3,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::executor::time::timeout;
+use corvid_async::Semaphore;
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::{BrowseDirectories, DirectoryEntry, DirectoryListing};
-use tokio::sync::Semaphore;
 
 const MAX_PATH: usize = 4096;
 const MAX_ENTRIES: usize = 128;
 const MAX_SCAN: usize = 8192;
 const MAX_RESULT_BYTES: usize = 48 * 1024;
-static QUERIES: Semaphore = Semaphore::const_new(4);
+static QUERIES: Semaphore = Semaphore::new(4);
 
 pub(crate) async fn browse(query: BrowseDirectories) -> Result<DirectoryListing, ProtocolFault> {
     perform(move || listing(query)).await
@@ -25,9 +25,9 @@ pub(crate) async fn resolve(input: String) -> Result<Vec<u8>, ProtocolFault> {
 async fn perform<T: Send + 'static>(
     action: impl FnOnce() -> Result<T, ProtocolFault> + Send + 'static,
 ) -> Result<T, ProtocolFault> {
-    let permit = QUERIES
-        .try_acquire()
-        .map_err(|_| ProtocolFault::new("DirectoryBusy", "Folder lookups are busy. Try again."))?;
+    let permit = QUERIES.try_acquire().ok_or_else(|| {
+        ProtocolFault::new("DirectoryBusy", "Folder lookups are busy. Try again.")
+    })?;
     timeout(
         Duration::from_secs(2),
         crate::executor::blocking(move || {

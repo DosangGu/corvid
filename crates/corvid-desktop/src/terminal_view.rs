@@ -5,13 +5,13 @@ use std::{
     time::Instant,
 };
 
+use corvid_async::oneshot;
 use gpui::{
     App, Bounds, ClipboardItem, Context, FocusHandle, HitboxBehavior, InputHandler, IntoElement,
     KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, ScrollWheelEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div,
     prelude::*, rgb,
 };
-use tokio::sync::oneshot;
 use vt100::Screen;
 
 use crate::appearance::{Appearance, ui_px};

@@ -8,9 +8,9 @@ mod native {
 
     use anyhow::Result;
     use compio::runtime::{JoinHandle, Runtime, spawn};
+    use corvid_async::oneshot;
     use futures_util::FutureExt;
     use futures_util::stream::{FuturesUnordered, StreamExt};
-    use tokio::sync::oneshot;
 
     pub(crate) struct PeerTasks(FuturesUnordered<JoinHandle<Result<()>>>);
 

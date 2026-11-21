@@ -1,0 +1,19 @@
+[package]
+name = "corvid-async"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Executor-independent synchronization for Corvid"
+publish = ["crates-io"]
+
+[dependencies]
+async-channel.workspace = true
+async-lock.workspace = true
+event-listener.workspace = true
+futures-channel.workspace = true
+futures-lite.workspace = true
+
+[lints]
+workspace = true

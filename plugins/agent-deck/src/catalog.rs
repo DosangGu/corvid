@@ -8,6 +8,7 @@ use crate::parent::DesktopLink;
 use crate::ui_signal::UiSignal;
 use anyhow::Result;
 use corvid_agent_deck::connection::Client;
+use corvid_async::{mpsc, watch};
 use corvid_companion::{
     MAX_TRACKED, PRESENTATION_PAGE_SIZE, PresentationAddress, PresentationClient, RunKey,
 };
@@ -20,7 +21,6 @@ use corvid_protocol::wire::{
     CompanionConnection, GetPresentationSlots, PresentationSlots, PresentedRun, PresentedRunKey,
     RunAvailability,
 };
-use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 pub(crate) const HOST_PREVIEW_LIMIT: usize = 64;

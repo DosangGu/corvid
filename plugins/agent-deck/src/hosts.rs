@@ -148,7 +148,7 @@ mod tests {
         corvid_companion::initialize(&root, local, endpoint("first"), 8)?;
         configure(&root)?;
         let mut subscriptions = Subscriptions::default();
-        let (started, mut readers) = tokio::sync::mpsc::unbounded_channel();
+        let (started, mut readers) = corvid_async::mpsc::unbounded_channel();
         let start = |id, _| {
             let started = started.clone();
             async move {

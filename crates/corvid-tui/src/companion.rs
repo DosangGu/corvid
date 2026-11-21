@@ -190,7 +190,7 @@ async fn run_native(options: Options) -> Result<u32> {
     #[cfg(windows)]
     let address = options.pipe_instance;
     let state = companion_state(options.state_dir)?;
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let (stop, stopped) = corvid_async::oneshot::channel::<()>();
     let mut companion =
         std::pin::pin!(corvid_companion::run_native(&address, &state, async move {
             let _ = stopped.await;

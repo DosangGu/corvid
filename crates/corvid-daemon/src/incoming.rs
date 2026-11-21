@@ -1,8 +1,8 @@
 #[cfg(feature = "compio")]
 use compio::runtime::{JoinHandle, spawn};
+use corvid_async::mpsc;
 use corvid_protocol::FrameError;
 use corvid_protocol::wire::Envelope;
-use tokio::sync::mpsc;
 #[cfg(not(feature = "compio"))]
 use tokio::task::{JoinHandle, spawn};
 

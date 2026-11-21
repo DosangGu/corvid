@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::watch;
 use corvid_core::layout::Location;
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::snapshot::SynchronizedSnapshot;
@@ -12,7 +13,6 @@ use corvid_protocol::wire::ViewSelection;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as Entity;
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::{SshAlias, WslDistribution};

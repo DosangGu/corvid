@@ -36,8 +36,8 @@ use crate::terminal_session::{
     AttachTarget, Connection, Destination, Inventory, Job, ParkedConnections, Session, Ui,
 };
 use crate::terminal_view::{TerminalView, preview};
+use corvid_async::{oneshot, watch};
 use corvid_client::view_state::ViewStore;
-use tokio::sync::{oneshot, watch};
 
 const BACKGROUND: u32 = 0x101318;
 const PANEL: u32 = 0x191c23;

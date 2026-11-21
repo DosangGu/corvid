@@ -7,9 +7,9 @@ use anyhow::{Context, Result, ensure};
 use compio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::runtime::{Runtime, spawn};
 use compio::time::{sleep, timeout};
+use corvid_async::mpsc;
 use corvid_protocol::{COMMAND_TIMEOUT, RENDER_LIMIT};
 use prost::Message;
-use tokio::sync::mpsc;
 
 use super::{Request, Response, TICK};
 
@@ -43,7 +43,7 @@ impl ClientConnection {
         let (calls, incoming) = mpsc::channel(1);
         let (ready, opened) = blocking::sync_channel(1);
         driver
-            .blocking_send(Open {
+            .send_blocking(Open {
                 directory,
                 starting,
                 calls: incoming,
@@ -57,7 +57,7 @@ impl ClientConnection {
     pub(super) fn call(&mut self, request: Request) -> Result<Response> {
         let (reply, response) = blocking::sync_channel(1);
         self.calls
-            .blocking_send((request, reply))
+            .send_blocking((request, reply))
             .context("terminal host connection closed")?;
         response.recv().context("terminal host connection closed")?
     }

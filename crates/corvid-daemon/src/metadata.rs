@@ -5,12 +5,12 @@ use uuid::Uuid;
 
 use crate::executor::{self, Task};
 use anyhow::{Result, bail, ensure};
+use corvid_async::watch;
 use corvid_core::agent::AgentSessionKey;
 use corvid_core::layout::Layout;
 use corvid_core::layout::{CwdObservation, Location};
 use corvid_protocol::wire::HistoricalRun;
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
 
 use crate::history::{History, RunRecord};
 use crate::platform::{StateDirectory, StateLock};

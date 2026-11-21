@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use tokio::sync::oneshot;
+use corvid_async::oneshot;
 use tokio::time::timeout;
 use uuid::Uuid;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -487,11 +487,11 @@ mod tests {
 
     #[test]
     fn quit_bypasses_a_full_or_disconnected_background_queue() {
-        let (events, receiver) = tokio::sync::mpsc::channel(1);
+        let (events, receiver) = corvid_async::mpsc::channel(1);
         let mut callbacks = Callbacks {
             events,
-            issues: tokio::sync::watch::channel(None).0,
-            capabilities: tokio::sync::watch::channel(Default::default()).0,
+            issues: corvid_async::watch::channel(None).0,
+            capabilities: corvid_async::watch::channel(Default::default()).0,
             signal: crate::ui_signal::UiSignal::default(),
         };
         callbacks.event(Event::OpenNotifications).unwrap();

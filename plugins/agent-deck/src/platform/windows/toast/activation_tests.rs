@@ -121,11 +121,11 @@ fn check_routes(callbacks: Callbacks) -> Result<()> {
 #[test]
 fn each_toast_callback_keeps_its_original_notice() -> Result<()> {
     let _apartment = Apartment::new()?;
-    let (events, mut received) = tokio::sync::mpsc::channel(3);
+    let (events, mut received) = corvid_async::mpsc::channel(3);
     let callbacks = Callbacks {
         events,
-        issues: tokio::sync::watch::channel(None).0,
-        capabilities: tokio::sync::watch::channel(Default::default()).0,
+        issues: corvid_async::watch::channel(None).0,
+        capabilities: corvid_async::watch::channel(Default::default()).0,
         signal: UiSignal::default(),
     };
     let first = notice(Uuid::new_v4(), false);

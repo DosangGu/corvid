@@ -12,6 +12,7 @@ publish = ["crates-io"]
 compio-endpoints = ["corvid-client/compio-endpoints", "corvid-protocol/compio", "dep:compio", "dep:futures-util", "dep:async-process"]
 
 [dependencies]
+corvid-async.workspace = true
 compio = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 anyhow.workspace = true

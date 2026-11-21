@@ -1421,6 +1421,7 @@ dependencies = [
  "cc",
  "clap",
  "corvid-agent-deck-core",
+ "corvid-async",
  "corvid-client",
  "corvid-companion",
  "corvid-presentation",
@@ -1459,6 +1460,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "corvid-async"
+version = "0.4.2"
+dependencies = [
+ "async-channel",
+ "async-lock",
+ "event-listener",
+ "futures-channel",
+ "futures-lite",
+]
+
+[[package]]
 name = "corvid-client"
 version = "0.4.2"
 dependencies = [
@@ -1466,6 +1478,7 @@ dependencies = [
  "async-process",
  "base64",
  "compio",
+ "corvid-async",
  "corvid-core",
  "corvid-protocol",
  "crossterm",
@@ -1486,6 +1499,7 @@ dependencies = [
  "anyhow",
  "async-process",
  "compio",
+ "corvid-async",
  "corvid-client",
  "corvid-protocol",
  "futures-util",
@@ -1515,6 +1529,7 @@ version = "0.4.2"
 dependencies = [
  "anyhow",
  "compio",
+ "corvid-async",
  "corvid-core",
  "corvid-protocol",
  "corvid-update",
@@ -1545,6 +1560,7 @@ dependencies = [
  "clap",
  "compio",
  "corvid-agent-deck",
+ "corvid-async",
  "corvid-client",
  "corvid-companion",
  "corvid-core",
@@ -1586,6 +1602,7 @@ version = "0.4.2"
 dependencies = [
  "anyhow",
  "compio",
+ "corvid-async",
  "corvid-companion",
  "corvid-protocol",
  "tokio",
@@ -1599,6 +1616,7 @@ version = "0.4.2"
 dependencies = [
  "anyhow",
  "compio",
+ "corvid-async",
  "nix 0.31.3",
  "prost",
  "prost-build",
@@ -1632,6 +1650,7 @@ dependencies = [
  "clap",
  "compio",
  "corvid-agent-deck",
+ "corvid-async",
  "corvid-client",
  "corvid-companion",
  "corvid-core",

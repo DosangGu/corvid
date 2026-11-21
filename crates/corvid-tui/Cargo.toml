@@ -19,6 +19,7 @@ compio-endpoints = ["corvid-companion/compio-endpoints", "dep:compio", "compio/s
 compio-probe = ["corvid-client/compio", "dep:compio"]
 
 [dependencies]
+corvid-async.workspace = true
 compio = { workspace = true, optional = true }
 anyhow.workspace = true
 clap.workspace = true
