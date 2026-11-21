@@ -19,7 +19,7 @@ use corvid_protocol::wire::{
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, accept_hello};
 use uuid::Uuid;
 
-#[cfg(all(windows, feature = "compio-endpoints"))]
+#[cfg(windows)]
 #[compio::test]
 async fn compio_companion_serves_while_detached_from_the_console() -> Result<()> {
     use async_process::windows::CommandExt;

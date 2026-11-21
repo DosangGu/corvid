@@ -8,11 +8,6 @@ repository.workspace = true
 description = "Client for the Corvid terminal multiplexer daemon"
 publish = ["crates-io"]
 
-[features]
-compio = []
-compio-tui = []
-compio-endpoints = []
-
 [dependencies]
 corvid-async.workspace = true
 async-process.workspace = true
@@ -46,4 +41,3 @@ workspace = true
 
 [[example]]
 name = "compio-ping"
-required-features = ["compio"]

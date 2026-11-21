@@ -12,12 +12,6 @@ publish = ["crates-io"]
 name = "corvid"
 path = "src/main.rs"
 
-[features]
-compio-daemon = []
-compio-tui = ["corvid-client/compio-tui"]
-compio-endpoints = ["corvid-companion/compio-endpoints"]
-compio-probe = ["corvid-client/compio"]
-
 [dependencies]
 corvid-async.workspace = true
 async-process.workspace = true

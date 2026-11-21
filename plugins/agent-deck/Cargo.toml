@@ -9,7 +9,6 @@ description = "Agent activity and focus controls for Corvid"
 publish = ["crates-io"]
 
 [features]
-compio-endpoints = ["corvid-companion/compio-endpoints", "corvid-presentation/compio-endpoints"]
 default = ["ui"]
 ui = ["dep:gpui", "dep:gpui_platform", "dep:x11rb", "dep:image", "dep:windows", "dep:raw-window-handle"]
 

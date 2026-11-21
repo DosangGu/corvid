@@ -466,7 +466,7 @@ dimensions. UTF-16 input tests cover surrogate pairs and control characters.
 cargo test --locked -p corvid-tui --test windows_daemon
 ```
 
-## Compio daemon and client
+## Compio runtime
 
 The daemon uses Compio for its control, TUI, collector, and upgrade listeners and
 their connection tasks. Existing clients use the same CRV1 wire protocol. The
@@ -478,14 +478,14 @@ observer hooks, and shell-agent registration. Local control, snapshot watches,
 embedded terminal connections, SSH, and WSL use the client's shared Compio IPC
 driver with bounded frame queues. The subprocess helper owns child termination
 and reaping, including when setup is cancelled.
-The companion
-presentation server and its clients also use Compio for private CRV1 connections.
-The companion CLI starts its service and shutdown signals on Compio, and
-snapshot watches run their heartbeats and backpressure deadlines on the shared
-Compio endpoint driver. The optional application feature runs Desktop's
-workspace lookup and inventory workers on Compio, including their reconnect
-deadlines. Agent Deck runs its slot presentation client on Compio, including
-refresh, reconnection, and request deadlines.
+The companion presentation server and its clients use Compio for private CRV1
+connections. Desktop uses Compio for terminal sessions, workspace lookup,
+inventory reconnects, and focus requests. Agent Deck uses Compio for its
+background worker, presentation clients, and refresh and reconnect deadlines.
+These paths are enabled in standard builds on Linux, macOS, and Windows.
+
+The Compio IPC workflow checks the native workspace dependency graph on all
+three platforms and rejects Tokio in normal, build, and test dependencies.
 
 ### Linux workload qualification
 
