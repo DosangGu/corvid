@@ -1,21 +1,30 @@
-use std::io::{self, ErrorKind};
+use std::io;
+#[cfg(feature = "tokio")]
+use std::io::ErrorKind;
 
 use prost::Message;
 use thiserror::Error;
+#[cfg(feature = "tokio")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(feature = "tokio")]
 use tokio::time::timeout;
 
 use crate::preflight;
+#[cfg(any(feature = "tokio", feature = "compio"))]
 use crate::session::{COMMAND_TIMEOUT, valid_id};
 use crate::wire::{Envelope, RenderHeader};
 
 pub const FRAME_PREAMBLE: [u8; 4] = *b"CRV1";
 pub const CONTROL_LIMIT: usize = 256 * 1024;
+#[cfg(any(feature = "tokio", feature = "compio"))]
 const COLLECTOR_LIMIT: usize = 8 * 1024;
 pub const RENDER_LIMIT: usize = 4 * 1024 * 1024;
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 const STRUCTURED: u8 = 1;
+#[cfg(any(feature = "tokio", feature = "compio"))]
 const RENDER: u8 = 2;
+#[cfg(any(feature = "tokio", feature = "compio"))]
 const RENDER_HEADER_LIMIT: usize = 16 * 1024;
 
 #[cfg(feature = "compio")]
@@ -29,6 +38,7 @@ pub enum FrameRole {
     TuiOutput,
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 impl FrameRole {
     fn limit(self) -> usize {
         match self {
@@ -110,11 +120,13 @@ pub fn decode_envelope(payload: &[u8]) -> Result<Envelope, FrameError> {
 }
 
 /// A cancelled or failed frame read leaves the stream unusable.
+#[cfg(feature = "tokio")]
 pub struct FrameReader<R> {
     reader: R,
     role: FrameRole,
 }
 
+#[cfg(feature = "tokio")]
 impl<R: AsyncRead + Unpin> FrameReader<R> {
     pub async fn start(mut reader: R, role: FrameRole) -> Result<Self, FrameError> {
         let mut preamble = [0; 4];
@@ -161,6 +173,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 }
 
+#[cfg(feature = "tokio")]
 async fn read_render(
     reader: &mut (impl AsyncRead + Unpin),
     body_len: usize,
@@ -179,6 +192,7 @@ async fn read_render(
     Ok(RenderFrame { header, ansi })
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn frame_body_length(role: FrameRole, bytes: [u8; 4]) -> Result<usize, FrameError> {
     let length = u32::from_be_bytes(bytes) as usize;
     if length == 0 {
@@ -190,6 +204,7 @@ fn frame_body_length(role: FrameRole, bytes: [u8; 4]) -> Result<usize, FrameErro
     Ok(length)
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn render_header_length(bytes: [u8; 4], data_len: usize) -> Result<usize, FrameError> {
     let length = u32::from_be_bytes(bytes) as usize;
     if length == 0 || length > RENDER_HEADER_LIMIT || length > data_len {
@@ -198,6 +213,7 @@ fn render_header_length(bytes: [u8; 4], data_len: usize) -> Result<usize, FrameE
     Ok(length)
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn decode_render_header(bytes: &[u8], ansi_len: usize) -> Result<RenderHeader, FrameError> {
     preflight::render_header(bytes)?;
     let header = RenderHeader::decode(bytes)?;
@@ -205,6 +221,7 @@ fn decode_render_header(bytes: &[u8], ansi_len: usize) -> Result<RenderHeader, F
     Ok(header)
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn as_envelope(frame: Option<Frame>) -> Result<Option<Envelope>, FrameError> {
     match frame {
         Some(Frame::Structured(payload)) => decode_envelope(&payload).map(Some),
@@ -213,6 +230,7 @@ fn as_envelope(frame: Option<Frame>) -> Result<Option<Envelope>, FrameError> {
     }
 }
 
+#[cfg(feature = "tokio")]
 async fn read_exact(
     reader: &mut (impl AsyncRead + Unpin),
     bytes: &mut [u8],
@@ -224,6 +242,7 @@ async fn read_exact(
     }
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn check_render_header(header: &RenderHeader, ansi_len: usize) -> Result<(), FrameError> {
     if header.ansi_bytes as usize != ansi_len
         || !valid_id(&header.host_id)
@@ -246,11 +265,13 @@ fn check_render_header(header: &RenderHeader, ansi_len: usize) -> Result<(), Fra
 }
 
 /// A cancelled or failed frame write leaves the stream unusable.
+#[cfg(feature = "tokio")]
 pub struct FrameWriter<W> {
     writer: W,
     role: FrameRole,
 }
 
+#[cfg(feature = "tokio")]
 impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     pub async fn start(mut writer: W, role: FrameRole) -> Result<Self, FrameError> {
         writer.write_all(&FRAME_PREAMBLE).await?;
@@ -303,10 +324,12 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     }
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn frame_length(payload: usize, overhead: usize) -> Result<usize, FrameError> {
     payload.checked_add(overhead).ok_or(FrameError::TooLarge)
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn frame_prefix(role: FrameRole, length: usize, kind: u8) -> Result<[u8; 5], FrameError> {
     role.check(length, kind)?;
     let length = u32::try_from(length).map_err(|_| FrameError::TooLarge)?;

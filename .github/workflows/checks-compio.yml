@@ -40,6 +40,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
+      - name: Compile the protocol library with only the Compio backend
+        run: cargo check --locked -p corvid-protocol --no-default-features --features compio --lib
       - name: Compile and test framing and private listeners
         run: cargo test --locked -p corvid-protocol --features compio --test framing --test compio_listeners
       - name: Exercise actual Unix CLI and relays
