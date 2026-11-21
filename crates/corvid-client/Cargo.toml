@@ -10,7 +10,7 @@ publish = ["crates-io"]
 
 [features]
 compio = ["corvid-protocol/compio", "dep:compio"]
-compio-tui = ["compio"]
+compio-tui = ["compio-endpoints", "compio/signal"]
 compio-endpoints = ["compio", "dep:async-process"]
 
 [dependencies]

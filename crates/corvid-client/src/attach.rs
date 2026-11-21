@@ -4,10 +4,14 @@ use std::future::pending;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::time::Duration;
+#[cfg(feature = "compio-tui")]
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 #[cfg(feature = "compio-tui")]
 use compio::runtime::{JoinHandle, spawn};
+#[cfg(feature = "compio-tui")]
+use compio::time::{sleep_until, timeout};
 use corvid_core::Viewport;
 use corvid_protocol::controller::{PAIR_CAPABILITY, PAIRING_SECONDS};
 use corvid_protocol::wire::envelope::Body;
@@ -27,11 +31,12 @@ use corvid_protocol::{
 use corvid_protocol::{CompioFrameReader as FrameReader, CompioFrameWriter as FrameWriter};
 #[cfg(not(feature = "compio-tui"))]
 use corvid_protocol::{FrameReader, FrameWriter};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(unix, not(feature = "compio-tui")))]
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 #[cfg(not(feature = "compio-tui"))]
 use tokio::task::{JoinHandle, spawn};
+#[cfg(not(feature = "compio-tui"))]
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until, timeout};
 use uuid::Uuid;
 
@@ -48,6 +53,7 @@ use crate::view_state::{self, Recorder, Target};
 use crate::{AttachRecovery, ControlEndpoint};
 
 const INPUT_CHUNK: usize = 8192;
+const RESIZE_INTERVAL: Duration = Duration::from_millis(50);
 const LEGACY_MAX_COLS: u16 = 300;
 const LEGACY_MAX_ROWS: u16 = 120;
 
@@ -118,16 +124,24 @@ where
     Run: FnOnce() -> F + Send + 'static,
 {
     let (_stop_on_drop, stopped) = tokio::sync::oneshot::channel::<()>();
-    tokio::task::spawn_blocking(move || {
-        compio::runtime::Runtime::new()?.block_on(async move {
-            // A cancelled caller releases the socket and restores terminal mode.
-            tokio::select! {
-                result = run() => result,
-                _ = stopped => bail!("Compio TUI was cancelled"),
-            }
-        })
-    })
-    .await?
+    let (finished, result) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("corvid-tui".into())
+        .spawn(move || {
+            let outcome = compio::runtime::Runtime::new()
+                .map_err(anyhow::Error::from)
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        // A cancelled caller releases the socket and restores terminal mode.
+                        tokio::select! {
+                            result = run() => result,
+                            _ = stopped => bail!("Compio TUI was cancelled"),
+                        }
+                    })
+                });
+            let _ = finished.send(outcome);
+        })?;
+    result.await.context("Compio TUI worker stopped")?
 }
 
 async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u32> {
@@ -280,7 +294,45 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
             &selection,
         );
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let shutdown = attach_shutdown()?;
+    tokio::select! {
+        // Register signals before entering raw mode. A signal can interrupt a
+        // partial write, so drop the connection to fence the route on EOF.
+        biased;
+        result = shutdown => result.map(|()| 0),
+        result = async {
+            let tty = Tty::enter()?;
+            timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
+            let mut client = Interactive::new(connection, viewport, route, escape_delay, notification);
+            client.saved_view = recorder.map(|recorder| (recorder, saved_target));
+            client.configure_layout(&tty, claims, move_tab).await?;
+            client.run(&tty).await
+        } => result,
+    }
+}
+
+#[cfg(feature = "compio-tui")]
+fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
+    Ok(async {
+        #[cfg(unix)]
+        {
+            use compio::signal::unix::signal;
+            use nix::libc::{SIGHUP, SIGTERM};
+            tokio::select! {
+                result = signal(SIGTERM) => result?,
+                result = signal(SIGHUP) => result?,
+                result = compio::signal::ctrl_c() => result?,
+            }
+        }
+        #[cfg(windows)]
+        compio::signal::windows::ctrl_break().await?;
+        Ok(())
+    })
+}
+
+#[cfg(not(feature = "compio-tui"))]
+fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
+    #[cfg(unix)]
     let (mut terminate, mut hangup, mut interrupt) = (
         signal(SignalKind::terminate())?,
         signal(SignalKind::hangup())?,
@@ -288,29 +340,17 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
     );
     #[cfg(windows)]
     let mut interrupt = tokio::signal::windows::ctrl_break()?;
-
-    let tty = Tty::enter()?;
-    timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
-    let mut client = Interactive::new(connection, viewport, route, escape_delay, notification);
-    client.saved_view = recorder.map(|recorder| (recorder, saved_target));
-    tokio::select! {
-        result = async {
-            client.configure_layout(&tty, claims, move_tab).await?;
-            client.run(&tty).await
-        } => result,
-        // A signal can interrupt a partially written frame. Drop the stream so
-        // the daemon fences the route on EOF.
-        _ = async {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            tokio::select! {
-                _ = terminate.recv() => {},
-                _ = hangup.recv() => {},
-                _ = interrupt.recv() => {},
-            }
-            #[cfg(windows)]
-            interrupt.recv().await;
-        } => Ok(0),
-    }
+    Ok(async move {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = terminate.recv() => {},
+            _ = hangup.recv() => {},
+            _ = interrupt.recv() => {},
+        }
+        #[cfg(windows)]
+        interrupt.recv().await;
+        Ok(())
+    })
 }
 
 async fn connect(runtime: &Path, required: Vec<String>) -> Result<Connection> {
@@ -797,11 +837,29 @@ impl Interactive {
 
     async fn run(&mut self, tty: &Tty) -> Result<u32> {
         let mut buffer = [0; INPUT_CHUNK];
-        let mut resize_tick = interval(Duration::from_millis(50));
-        resize_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        #[cfg(feature = "compio-tui")]
+        let mut next_resize = Instant::now();
+        #[cfg(not(feature = "compio-tui"))]
+        let mut resize_tick = {
+            let mut tick = interval(RESIZE_INTERVAL);
+            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            tick
+        };
         loop {
             let input_deadline = self.keys.deadline();
             let pairing_deadline = self.pairing.as_ref().map(|pairing| pairing.deadline);
+            let resized = async {
+                #[cfg(feature = "compio-tui")]
+                {
+                    sleep_until(next_resize).await;
+                    let now = Instant::now();
+                    let offset = now.saturating_duration_since(next_resize).as_nanos()
+                        % RESIZE_INTERVAL.as_nanos();
+                    next_resize = now + RESIZE_INTERVAL - Duration::from_nanos(offset as u64);
+                }
+                #[cfg(not(feature = "compio-tui"))]
+                resize_tick.tick().await;
+            };
             tokio::select! {
                 item = self.incoming.frames.recv() => {
                     let frame = item.context("daemon closed the attached connection")??;
@@ -826,7 +884,7 @@ impl Interactive {
                     let events = self.keys.feed(&buffer[..count], self.pending_resize.is_none())?;
                     self.forward(events).await?;
                 }
-                _ = resize_tick.tick() => self.resize().await?,
+                _ = resized => self.resize().await?,
                 _ = wait_until(pairing_deadline) => self.dismiss_pairing(tty).await?,
                 _ = wait_until(input_deadline) => {
                     let events = self.keys.expire()?;
@@ -1251,6 +1309,8 @@ mod restore_tests {
         use corvid_protocol::FrameRole;
         use corvid_protocol::wire::TerminalExited;
 
+        #[cfg(feature = "compio-tui")]
+        assert!(tokio::runtime::Handle::try_current().is_err());
         for exit_code in [Some(7), None] {
             #[cfg(feature = "compio-tui")]
             let (client, daemon) = {
