@@ -1482,10 +1482,12 @@ name = "corvid-daemon"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "compio",
  "corvid-core",
  "corvid-protocol",
  "corvid-update",
  "dunce",
+ "futures-util",
  "nix 0.31.3",
  "portable-pty",
  "prost",

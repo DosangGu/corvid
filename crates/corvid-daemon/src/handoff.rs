@@ -26,7 +26,7 @@ pub(crate) async fn prepare(
     identity: &Identity,
     workspaces: &Workspaces,
     mut metadata: MetadataView,
-    clients: &mut tokio::task::JoinSet<anyhow::Result<()>>,
+    clients: &mut crate::executor::PeerTasks,
     preserve_terminals: bool,
 ) -> Result<()> {
     while clients.try_join_next().is_some() {}

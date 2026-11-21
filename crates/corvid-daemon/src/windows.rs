@@ -6,11 +6,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::windows::{DaemonPipe, StateDirectory};
-use tokio::task::JoinSet;
 
 use crate::collector;
 use crate::collector::HookEnvironment;
+use crate::executor::PeerTasks;
 use crate::identity::Identity;
+use crate::platform::Listener;
 use crate::workspaces::Workspaces;
 use crate::{
     MAX_CONTROL_CONNECTIONS, MAX_TUI_CONNECTIONS, control, handoff, metadata, tui, upgrade,
@@ -30,14 +31,26 @@ pub async fn run_with_options(
     autostarted: bool,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
+    #[cfg(feature = "compio")]
+    return crate::executor::run(runtime_path, state_path, autostarted, shutdown).await;
+    #[cfg(not(feature = "compio"))]
+    serve_daemon(runtime_path, state_path, autostarted, shutdown).await
+}
+
+pub(crate) async fn serve_daemon(
+    runtime_path: &Path,
+    state_path: &Path,
+    autostarted: bool,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
     let runtime = StateDirectory::create_all(runtime_path)?;
     let _instance = runtime.lock_instance()?;
     let state = StateDirectory::create_all(state_path)?;
     let lock = state.lock_storage()?;
     let identity = Arc::new(Identity::load(&state)?);
-    let mut control_pipe = DaemonPipe::Control.bind(&runtime)?;
-    let mut client_pipe = DaemonPipe::Client.bind(&runtime)?;
-    let mut collector_pipe = DaemonPipe::Collector.bind(&runtime)?;
+    let control_pipe = Listener::bind(&runtime, DaemonPipe::Control)?;
+    let client_pipe = Listener::bind(&runtime, DaemonPipe::Client)?;
+    let collector_pipe = Listener::bind(&runtime, DaemonPipe::Collector)?;
     let (metadata, updates, saver) = metadata::start(state, lock)?;
     let workspaces = Workspaces::new(
         updates,
@@ -56,18 +69,23 @@ pub async fn run_with_options(
         handoff::recover(runtime_path, &identity, &workspaces).await?;
     }
     let upgrade_pipe = if autostarted {
-        Some(tokio::sync::Mutex::new(DaemonPipe::Upgrade.bind(&runtime)?))
+        Some(Listener::bind(&runtime, DaemonPipe::Upgrade)?)
     } else {
         None
     };
     let incoming_upgrade = upgrade::listen(upgrade_pipe.as_ref(), &identity);
     tokio::pin!(incoming_upgrade);
-    let mut controls = JoinSet::new();
-    let mut clients = JoinSet::new();
-    let mut collectors = JoinSet::new();
+    let mut controls = PeerTasks::new();
+    let mut clients = PeerTasks::new();
+    let mut collectors = PeerTasks::new();
     let mut agents = tokio::time::interval(Duration::from_secs(1));
     agents.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tokio::pin!(shutdown);
+
+    // Keep each ConnectNamedPipe operation alive across unrelated events.
+    let mut incoming_control = std::pin::pin!(control_pipe.accept());
+    let mut incoming_client = std::pin::pin!(client_pipe.accept());
+    let mut incoming_collector = std::pin::pin!(collector_pipe.accept());
 
     loop {
         tokio::select! {
@@ -87,7 +105,8 @@ pub async fn run_with_options(
                 let _ = handoff::cancel(runtime_path, &identity, &workspaces).await;
                 incoming_upgrade.set(upgrade::listen(upgrade_pipe.as_ref(), &identity));
             }
-            peer = control_pipe.accept() => {
+            peer = &mut incoming_control => {
+                incoming_control.set(control_pipe.accept());
                 let stream = peer?;
                 if controls.len() < MAX_CONTROL_CONNECTIONS {
                     let identity = Arc::clone(&identity);
@@ -98,7 +117,8 @@ pub async fn run_with_options(
                     });
                 }
             }
-            peer = client_pipe.accept() => {
+            peer = &mut incoming_client => {
+                incoming_client.set(client_pipe.accept());
                 let stream = peer?;
                 if clients.len() < MAX_TUI_CONNECTIONS {
                     let identity = Arc::clone(&identity);
@@ -108,7 +128,8 @@ pub async fn run_with_options(
                     });
                 }
             }
-            peer = collector_pipe.accept() => {
+            peer = &mut incoming_collector => {
+                incoming_collector.set(collector_pipe.accept());
                 let stream = peer?;
                 if collectors.len() < 32 {
                     let identity = Arc::clone(&identity);

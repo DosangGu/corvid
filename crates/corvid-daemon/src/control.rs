@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::platform::{ReadHalf, Stream, WriteHalf};
+use crate::platform::{FrameReader, FrameWriter, ReadHalf, Stream, WriteHalf};
 use anyhow::{Context, Result};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
@@ -11,8 +11,8 @@ use corvid_protocol::wire::{
     WorkspaceInfo, WorkspaceList,
 };
 use corvid_protocol::{
-    CAPABILITY_QUERY, COMMAND_TIMEOUT, CONTROL_LIMIT, FrameReader, FrameRole, FrameWriter,
-    PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault, Session, accept_hello_with_profiles,
+    CAPABILITY_QUERY, COMMAND_TIMEOUT, CONTROL_LIMIT, FrameRole, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    PeerRole, ProtocolFault, Session, accept_hello_with_profiles,
 };
 use prost::Message;
 use tokio::time::{Instant, sleep_until, timeout};

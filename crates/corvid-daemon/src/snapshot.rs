@@ -1,16 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::platform::WriteHalf;
+use crate::platform::{FrameWriter, WriteHalf};
 use anyhow::{Result, bail};
 use corvid_protocol::snapshot::{MAX_CHUNK_ENTITIES, MAX_SNAPSHOT_BYTES};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     Envelope, HistoricalRun, SnapshotBegin, SnapshotChunk, SnapshotEnd, SnapshotEntity, WatchReady,
 };
-use corvid_protocol::{COMMAND_TIMEOUT, FrameWriter, ProtocolFault, Session};
+use corvid_protocol::{COMMAND_TIMEOUT, FrameError, ProtocolFault, Session};
 use prost::Message;
-use tokio::io::AsyncWrite;
 use tokio::time::timeout;
 
 use crate::publication::{BODY_BUDGET, Capture, Delta, Watch, resync};
@@ -109,7 +108,7 @@ impl Stream<'_> {
             Some(sent),
             Body::WatchReady(WatchReady {}),
         );
-        write_frame(self.writer, &ready, Some(&watch)).await?;
+        write_frame(self.writer.envelope(&ready), Some(&watch)).await?;
         Ok(Some(LiveWatch {
             watch,
             sequence: sent,
@@ -120,7 +119,7 @@ impl Stream<'_> {
         let mut frame = self.session.envelope(self.request_id.clone(), body);
         frame.subscription_id = self.subscription.clone();
         frame.sequence = Some(sequence);
-        write_frame(self.writer, &frame, watch).await
+        write_frame(self.writer.envelope(&frame), watch).await
     }
 
     async fn failure(&mut self, fault: &ProtocolFault) -> Result<()> {
@@ -129,7 +128,7 @@ impl Stream<'_> {
             Body::Error(fault.clone().into_wire()),
         );
         reply.subscription_id = self.subscription.clone();
-        write_frame(self.writer, &reply, None).await
+        write_frame(self.writer.envelope(&reply), None).await
     }
 }
 
@@ -149,17 +148,16 @@ pub(crate) async fn send_delta(
         Some(delta.sequence),
         Body::SnapshotDelta(delta.body()),
     );
-    write_frame(writer, &frame, Some(watch)).await?;
+    write_frame(writer.envelope(&frame), Some(watch)).await?;
     *sequence = delta.sequence;
     Ok(())
 }
 
-async fn write_frame<W: AsyncWrite + Unpin>(
-    writer: &mut FrameWriter<W>,
-    frame: &Envelope,
+async fn write_frame(
+    operation: impl Future<Output = Result<(), FrameError>>,
     watch: Option<&Watch>,
 ) -> Result<()> {
-    let write = timeout(COMMAND_TIMEOUT, writer.envelope(frame));
+    let write = timeout(COMMAND_TIMEOUT, operation);
     if let Some(watch) = watch {
         watch.check()?;
         tokio::select! {
@@ -257,7 +255,7 @@ mod tests {
         let mut publication = Publication::default();
         let watch = publication.capture(true).unwrap().watch.unwrap();
         let (server, mut client) = duplex(64);
-        let mut writer = FrameWriter::start(server, FrameRole::StructuredOnly)
+        let mut writer = corvid_protocol::FrameWriter::start(server, FrameRole::StructuredOnly)
             .await
             .unwrap();
         let frame = Envelope {
@@ -270,7 +268,7 @@ mod tests {
 
         let payload_len = frame.encoded_len();
         let task =
-            tokio::spawn(async move { write_frame(&mut writer, &frame, Some(&watch)).await });
+            tokio::spawn(async move { write_frame(writer.envelope(&frame), Some(&watch)).await });
         let mut prefix = [0; 9];
         client.read_exact(&mut prefix).await.unwrap();
         assert_eq!(prefix[..4], FRAME_PREAMBLE);

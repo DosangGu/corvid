@@ -466,6 +466,14 @@ dimensions. UTF-16 input tests cover surrogate pairs and control characters.
 cargo test --locked -p corvid-tui --test windows_daemon
 ```
 
+## Experimental Compio daemon IPC
+
+Build the CLI with `cargo build --locked -p corvid-tui --features compio-daemon`
+to run the daemon's control, TUI, collector, and upgrade listeners and their
+connection tasks on Compio. The same CRV1 protocol works with existing clients.
+The optional `compio-probe` feature also enables the Compio ping and stdio
+relays. The workspace actors, persistence, and terminal hosts still use Tokio.
+
 ## Verification
 
 ```sh

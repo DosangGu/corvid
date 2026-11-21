@@ -50,3 +50,15 @@ jobs:
       - name: Exercise actual Windows daemon and Compio client
         if: runner.os == 'Windows'
         run: cargo test --locked -p corvid-tui --features compio-probe --test windows_daemon compio_
+      - name: Exercise Unix daemon IPC on Compio
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: |
+          cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test routing compio_
+          cargo test --locked -p corvid-tui --features compio-daemon --test routing malformed_and_stalled_frames
+          cargo test --locked -p corvid-tui --features compio-daemon --test routing snapshot_client_keeps_last_state
+          cargo test --locked -p corvid-tui --features compio-daemon --test routing crash_restores_layout
+      - name: Exercise Windows daemon IPC and ConPTY on Compio
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test windows_daemon compio_
+          cargo test --locked -p corvid-tui --features compio-daemon --test windows_daemon takeover_and_disconnect
