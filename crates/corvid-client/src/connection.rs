@@ -12,7 +12,10 @@ mod local;
 pub(crate) use corvid_protocol::unix::SocketRole;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use local::{UnixConnection, open};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    not(feature = "compio-tui"),
+    any(target_os = "linux", target_os = "macos")
+))]
 pub(crate) use tokio::net::unix::{OwnedReadHalf as LocalRead, OwnedWriteHalf as LocalWrite};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) type LocalConnection = UnixConnection;
@@ -22,7 +25,9 @@ mod windows;
 #[cfg(windows)]
 pub(crate) use corvid_protocol::windows::DaemonPipe as SocketRole;
 #[cfg(windows)]
-pub(crate) use windows::{LocalConnection, LocalRead, LocalWrite, open};
+pub(crate) use windows::{LocalConnection, open};
+#[cfg(all(windows, not(feature = "compio-tui")))]
+pub(crate) use windows::{LocalRead, LocalWrite};
 
 pub(crate) struct Connection<R, W> {
     pub(crate) session: Session,

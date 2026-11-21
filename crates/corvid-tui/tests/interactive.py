@@ -780,7 +780,8 @@ def run(binary, *, tty_only=False):
     os.environ["TERM"] = "xterm-256color"
     root = Path(__file__).resolve().parents[3]
     profile = root / "crates/corvid-tui/assets/corvid.terminfo"
-    with tempfile.TemporaryDirectory(prefix="corvid-test-", dir=root) as temporary:
+    # The runtime directory must have private, trusted parents.
+    with tempfile.TemporaryDirectory(prefix="corvid-test-", dir=Path.home()) as temporary:
         directory = Path(temporary)
         os.environ["CORVID_VIEW_STATE_DIR"] = str(directory / "views")
         database = directory / "terminfo"
