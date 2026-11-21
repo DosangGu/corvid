@@ -54,6 +54,13 @@ impl PipeListener {
     }
 }
 
+#[cfg(feature = "compio")]
+#[path = "compio_pipe.rs"]
+mod compio_pipe;
+
+#[cfg(feature = "compio")]
+pub use compio_pipe::CompioPipeListener;
+
 fn listen(name: &str, user: &str, first: bool) -> Result<NamedPipeServer> {
     let descriptor = PrivateDescriptor::new(user, false)?;
     let mut attributes = descriptor.attributes();

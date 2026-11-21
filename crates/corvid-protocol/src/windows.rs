@@ -10,6 +10,8 @@ use tokio::time::timeout;
 
 use crate::COMMAND_TIMEOUT;
 
+#[cfg(feature = "compio")]
+pub use pipe::CompioPipeListener;
 pub use pipe::{PipeListener, open_pipe, open_scoped};
 pub use storage::{StateDirectory, check_component, require_local_acl_volume};
 
@@ -35,6 +37,11 @@ impl DaemonPipe {
 
     pub fn bind(self, runtime: &StateDirectory) -> Result<PipeListener> {
         PipeListener::bind_scoped(self.prefix(), &runtime.file_id()?)
+    }
+
+    #[cfg(feature = "compio")]
+    pub fn bind_compio(self, runtime: &StateDirectory) -> Result<CompioPipeListener> {
+        CompioPipeListener::bind_scoped(self.prefix(), &runtime.file_id()?)
     }
 
     #[cfg(feature = "compio")]
