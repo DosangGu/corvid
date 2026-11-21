@@ -86,7 +86,6 @@ impl ClusterInfo {
 
     /// Returns if the cluster is an emoji.
     pub(crate) fn is_emoji(self) -> bool {
-        // TODO: Defer to ICU4X properties (see: https://docs.rs/icu/latest/icu/properties/props/struct.Emoji.html).
         matches!(self.source_char as u32, 0x1F600..=0x1F64F | 0x1F300..=0x1F5FF | 0x1F680..=0x1F6FF | 0x2600..=0x26FF | 0x2700..=0x27BF)
     }
 
@@ -190,7 +189,6 @@ pub(crate) struct LineItemData {
     pub(crate) advance: f32,
 
     // Fields that only apply to text runs (Ignored for boxes)
-    // TODO: factor this out?
     /// True if the run is composed entirely of whitespace.
     pub(crate) is_whitespace: bool,
     /// True if the run ends in whitespace.
@@ -550,7 +548,6 @@ impl<B: Brush> LayoutData<B> {
         }
     }
 
-    // TODO: this method does not handle mixed direction text at all.
     pub(crate) fn calculate_content_widths(&self) -> ContentWidths {
         fn whitespace_advance(cluster: Option<&ClusterData>) -> f32 {
             cluster

@@ -676,7 +676,6 @@ impl SystemFonts {
         for (generic_family, name) in GENERIC_FAMILY_NAMES.iter().copied() {
             let mut pattern = Pattern::new().unwrap();
             pattern.add_string(FC_FAMILY, name);
-            // TODO: do we need FcConfigSetDefaultSubstitute?
 
             config.substitute(&mut pattern, FcMatchPattern);
 
@@ -831,7 +830,6 @@ impl SystemFonts {
                 let index = font.get_int(FC_INDEX, 0).map_or(0, |idx| idx.max(0) as u32);
 
                 let mut font_info = FontInfo::from_source(source_info, index)?;
-                // TODO(valadaptive): does this do anything anymore?
                 font_info.maybe_override_attributes(width, style, weight);
                 Some(font_info)
             })() {

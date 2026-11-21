@@ -19,8 +19,6 @@ use super::{
     Script, scan,
 };
 
-// TODO: Use actual generic families here, where available, when fonts.xml is properly parsed.
-//       system-ui should map to `variant="compact"` in some scripts during fallback resolution.
 const DEFAULT_GENERIC_FAMILIES: &[(GenericFamily, &[&str])] = &[
     (
         GenericFamily::SansSerif,
@@ -98,13 +96,7 @@ impl SystemFonts {
                                 if let Some(name) = child.attribute("name") {
                                     let f = name_map.get_or_insert(name);
                                     let _id = f.id();
-                                    for _child in child.children() {
-                                        // TODO: map using postScriptName when available other­
-                                        //       wise use the file name, and perhaps if necess­
-                                        //       ary (e.g. if it's a collection), do something
-                                        //       smarter, or something dumb that meets expecta­
-                                        //       tions on Android.
-                                    }
+                                    for _child in child.children() {}
                                 } else if let Some(langs) = child
                                     .attribute("lang")
                                     .map(|s| s.split(',').collect::<Vec<&str>>())
@@ -158,9 +150,6 @@ impl SystemFonts {
                                                 }
                                             }
                                         }
-
-                                        // TODO: handle mapping to family names from file names
-                                        //       when postScriptName is unavailable.
                                     }
 
                                     // family-specific fallback families, currently unimplemented
@@ -169,10 +158,6 @@ impl SystemFonts {
                                     // currently thrown away.
                                     {}
                                 }
-                                // TODO: interpret variant="compact" without fallbackFor as a
-                                //       fallback for system-ui, as falling back to a
-                                //       variant="elegant" for system-ui can mess up a layout
-                                //       in some scripts.
                             }
                             _ => {}
                         }

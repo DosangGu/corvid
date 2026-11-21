@@ -551,7 +551,6 @@ mod tests {
 
     fn create_unaligned_layout() -> Layout<Brush> {
         let mut layout_ctx = LayoutContext::new();
-        // TODO: Use a test font
         let mut font_ctx = FontContext::new();
         let text = "Parley exists";
         let mut builder = layout_ctx.ranged_builder(&mut font_ctx, text, 1.0, true);

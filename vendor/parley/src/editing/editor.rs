@@ -114,10 +114,6 @@ where
     // Not all operations on `PlainEditor` need to operate on a
     // clean layout, and not all operations trigger a layout.
     layout_dirty: bool,
-    // TODO: We could avoid redoing the full text layout if only
-    // linebreaking or alignment were changed.
-    // linebreak_dirty: bool,
-    // alignment_dirty: bool,
     alignment: Alignment,
     generation: Generation,
 }
@@ -1121,7 +1117,6 @@ where
     // --- MARK: Internal Helpers ---
     /// Make a cursor at a given byte index.
     fn cursor_at(&self, index: usize) -> Cursor {
-        // TODO: Do we need to be non-dirty?
         // FIXME: `Selection` should make this easier
         if index >= self.buffer.len() {
             Cursor::from_byte_index(&self.layout, self.buffer.len(), Affinity::Upstream)

@@ -246,15 +246,8 @@ fn fill_cluster_in_place(
     for ((_, ch), (info, style_index)) in segment_text.char_indices().zip(item_infos_iter.by_ref())
     {
         force_normalize |= info.force_normalize();
-        // TODO - make emoji detection more complete, as per (except using composite Trie tables as
-        //  much as possible:
-        //  https://github.com/conor-93/parley/blob/4637d826732a1a82bbb3c904c7f47a16a21cceec/parley/src/shape/mod.rs#L221-L269
         is_emoji_or_pictograph |= info.is_emoji_or_pictograph();
         *code_unit_offset_in_string += ch.len_utf8();
-
-        // TODO: Explore ignoring other modifiers in determining `contributes_to_shaping`:
-        //  regional indicators, subdivision flag tag sequences, skin tone modifiers
-        //  See also: https://github.com/google/emoji-segmenter
 
         // Emoji variation selectors guide font selection without requiring a
         // separate glyph in the font's base character map.
@@ -370,7 +363,6 @@ fn shape_item<'a, B: Brush>(
         // Shape the entire segment text including newlines
         // The line breaking algorithm will handle newlines automatically
 
-        // TODO: How do we want to handle errors like this?
         let font_ref =
             harfrust::FontRef::from_index(font.font.blob.as_ref(), font.font.index).unwrap();
 
