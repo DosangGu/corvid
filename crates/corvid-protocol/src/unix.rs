@@ -358,10 +358,37 @@ pub struct Instance<'a> {
 
 impl Instance<'_> {
     pub async fn bind(&self, role: SocketRole) -> Result<BoundSocket<'_>> {
-        let path = self.runtime.path.join(role.name());
         let socket_path = self.runtime.socket_path(role)?;
-        remove_stale(&socket_path, self.runtime.uid).await?;
+        remove_stale(&socket_path, self.runtime.uid, async {
+            timeout(SOCKET_PROBE_TIMEOUT, UnixStream::connect(&socket_path))
+                .await
+                .map_err(|_| ())
+        })
+        .await?;
         let listener = UnixListener::bind(&socket_path).context("binding daemon socket")?;
+        self.protect_listener(role, listener)
+    }
+
+    #[cfg(feature = "compio")]
+    pub async fn bind_compio(&self, role: SocketRole) -> Result<CompioBoundSocket<'_>> {
+        let socket_path = self.runtime.socket_path(role)?;
+        remove_stale(&socket_path, self.runtime.uid, async {
+            compio::time::timeout(
+                SOCKET_PROBE_TIMEOUT,
+                compio::net::UnixStream::connect(&socket_path),
+            )
+            .await
+            .map_err(|_| ())
+        })
+        .await?;
+        let listener = compio::net::UnixListener::bind(&socket_path)
+            .await
+            .context("binding daemon socket")?;
+        self.protect_listener(role, listener)
+    }
+
+    fn protect_listener<L>(&self, role: SocketRole, listener: L) -> Result<BoundSocket<'_, L>> {
+        let path = self.runtime.path.join(role.name());
         let metadata = fs::symlink_metadata(&path).context("reading bound socket identity")?;
         let socket = BoundSocket {
             instance: self,
@@ -376,7 +403,11 @@ impl Instance<'_> {
     }
 }
 
-async fn remove_stale(path: &Path, uid: u32) -> Result<()> {
+async fn remove_stale<S>(
+    path: &Path,
+    uid: u32,
+    connect: impl Future<Output = std::result::Result<io::Result<S>, ()>>,
+) -> Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
@@ -384,8 +415,7 @@ async fn remove_stale(path: &Path, uid: u32) -> Result<()> {
     };
     check_socket(&metadata, uid)?;
 
-    let result = timeout(SOCKET_PROBE_TIMEOUT, UnixStream::connect(path)).await;
-    match result {
+    match connect.await {
         Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => {
             unlink_if_same(path, metadata.dev(), metadata.ino())?;
             Ok(())
@@ -410,9 +440,9 @@ fn unlink_if_same(path: &Path, device: u64, inode: u64) -> io::Result<()> {
     }
 }
 
-pub struct BoundSocket<'a> {
+pub struct BoundSocket<'a, L = UnixListener> {
     instance: &'a Instance<'a>,
-    listener: UnixListener,
+    listener: L,
     path: PathBuf,
     device: u64,
     inode: u64,
@@ -433,7 +463,26 @@ impl BoundSocket<'_> {
     }
 }
 
-impl Drop for BoundSocket<'_> {
+#[cfg(feature = "compio")]
+pub type CompioBoundSocket<'a> = BoundSocket<'a, compio::net::UnixListener>;
+
+#[cfg(feature = "compio")]
+impl CompioBoundSocket<'_> {
+    /// A rejected peer yields `None`. Listener errors remain separate.
+    pub async fn accept(&self) -> Result<Option<compio::net::UnixStream>> {
+        let (stream, _) = self
+            .listener
+            .accept()
+            .await
+            .context("accepting Unix peer")?;
+        if authenticate(&stream, self.instance.runtime.uid).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(stream))
+    }
+}
+
+impl<L> Drop for BoundSocket<'_, L> {
     fn drop(&mut self) {
         let _ = unlink_if_same(&self.path, self.device, self.inode);
     }
