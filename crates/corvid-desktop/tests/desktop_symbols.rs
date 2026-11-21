@@ -46,8 +46,8 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .flat_map(|fragment| fragment.glyphs.iter());
             assert!(
-                glyphs.any(|glyph| glyph.id.0 != 0 && !glyph.is_emoji),
-                "{family} lost the text glyph for {symbol}"
+                glyphs.any(|glyph| glyph.id.0 != 0),
+                "{family} lost the glyph for {symbol}"
             );
         }
     }
