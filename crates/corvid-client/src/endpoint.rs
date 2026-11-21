@@ -378,9 +378,11 @@ enum InteractiveReader {
 
 impl InteractiveReader {
     fn start(reader: Reader<Input>) -> Self {
+        #[cfg(not(feature = "compio-endpoints"))]
+        let Reader::Tokio(mut reader) = reader;
+        #[cfg(feature = "compio-endpoints")]
         let mut reader = match reader {
             Reader::Tokio(reader) => reader,
-            #[cfg(feature = "compio-endpoints")]
             Reader::Compio(queue) => return Self::Compio(queue),
         };
         let (sender, frames) = mpsc::channel(1);
