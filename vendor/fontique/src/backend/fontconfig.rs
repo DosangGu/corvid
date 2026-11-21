@@ -760,6 +760,27 @@ impl SystemFonts {
         let family_name = font.get_string(FC_FAMILY, 0).ok()?;
         self.name_map.get(&family_name).map(FamilyName::id)
     }
+
+    pub(crate) fn fallback_for_text(&self, text: &str, locale: Option<&str>) -> Option<FamilyId> {
+        let config = self.config.as_ref()?;
+        let mut charset = CharSet::new()?;
+        for ch in text.chars() {
+            charset.add(ch);
+        }
+
+        let mut pattern = Pattern::new()?;
+        pattern.add_charset(FC_CHARSET, &charset);
+        if let Some(locale) = locale.and_then(|locale| CString::new(locale).ok()) {
+            let mut languages = LangSet::new()?;
+            languages.add(&locale);
+            pattern.add_langset(FC_LANG, &languages);
+        }
+
+        config.substitute(&mut pattern, FcMatchPattern);
+        let font = config.font_match(&pattern).ok()?;
+        let family_name = font.get_string(FC_FAMILY, 0).ok()?;
+        self.name_map.get(&family_name).map(FamilyName::id)
+    }
 }
 
 impl SystemFonts {

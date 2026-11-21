@@ -21,6 +21,8 @@ on:
       - 'crates/corvid-agent-deck-core/**'
       - 'crates/corvid-presentation/**'
       - 'crates/corvid-desktop/**'
+      - 'vendor/fontique/**'
+      - 'vendor/parley/**'
       - 'crates/corvid-tui/build.rs'
       - 'crates/corvid-tui/Cargo.toml'
       - 'crates/corvid-tui/corvid.terminfo'
@@ -52,7 +54,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
-          sudo apt-get -o Acquire::Retries=3 install -y build-essential libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev ncurses-bin
+          sudo apt-get -o Acquire::Retries=3 install -y build-essential libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev ncurses-bin fonts-dejavu-core fonts-noto-color-emoji
       - name: Prepare private test directory
         run: |
           mkdir -m 700 "$HOME/.corvid-tests"
@@ -75,5 +77,30 @@ jobs:
           --skip terminal_session::inventory_watch::terminal_tests
           --skip terminal_session::restore_test::desktop_relaunch_restores_the_same_terminal
           --skip terminal_session::restore_test::desktop_startup_attempts_recovery_and_leaves_failed_panes_empty
-      - name: Desktop symbol fallback
+      - name: Desktop font fallback and emoji presentation
+        run: cargo test --locked -p corvid-desktop --test desktop_symbols
+
+  native-fonts:
+    name: Desktop fonts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install --no-self-update
+      - name: macOS build environment
+        if: runner.os == 'macOS'
+        run: bash deploy/macos/prepare-build.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target/debug
+          key: checks-desktop-fonts-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/checks-desktop.yml', 'Cargo.lock') }}
+      - name: Desktop font fallback and emoji presentation
         run: cargo test --locked -p corvid-desktop --test desktop_symbols

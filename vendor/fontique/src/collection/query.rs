@@ -119,17 +119,131 @@ impl<'a> Query<'a> {
     /// Return [`QueryStatus::Stop`] to end iterating over the matching
     /// fonts or [`QueryStatus::Continue`] to continue iterating.
     pub fn matches_with(&mut self, mut f: impl FnMut(&QueryFont) -> QueryStatus) {
-        for family in self
-            .state
-            .families
-            .iter_mut()
-            .chain(self.state.fallback_families.iter_mut())
+        Self::match_families(
+            self.collection,
+            self.source_cache,
+            self.attributes,
+            self.state
+                .families
+                .iter_mut()
+                .chain(&mut self.state.fallback_families),
+            &mut f,
+        );
+    }
+
+    /// Tries the requested families, script fallbacks and then the OS fallback
+    /// for the actual cluster. The generic emoji family is an optional last resort.
+    pub fn matches_for_cluster(
+        &mut self,
+        cluster: &str,
+        late_emoji: bool,
+        mut f: impl FnMut(&QueryFont) -> QueryStatus,
+    ) {
+        if Self::match_families(
+            self.collection,
+            self.source_cache,
+            self.attributes,
+            self.state
+                .families
+                .iter_mut()
+                .chain(&mut self.state.fallback_families),
+            &mut f,
+        ) == QueryStatus::Stop
         {
+            return;
+        }
+
+        if let Some(id) = self.text_fallback(cluster) {
+            if Self::match_families(
+                self.collection,
+                self.source_cache,
+                self.attributes,
+                core::iter::once(&mut CachedFamily::new(id)),
+                &mut f,
+            ) == QueryStatus::Stop
+            {
+                return;
+            }
+        }
+
+        if late_emoji {
+            let mut families: smallvec::SmallVec<[_; 4]> = self
+                .collection
+                .generic_families(GenericFamily::Emoji)
+                .map(CachedFamily::new)
+                .collect();
+            Self::match_families(
+                self.collection,
+                self.source_cache,
+                self.attributes,
+                &mut families,
+                &mut f,
+            );
+        }
+    }
+
+    fn text_fallback(&self, cluster: &str) -> Option<FamilyId> {
+        #[cfg(all(
+            feature = "system",
+            any(
+                windows,
+                target_vendor = "apple",
+                target_os = "linux",
+                target_os = "freebsd"
+            )
+        ))]
+        {
+            let system = self.collection.system.as_ref()?;
+            let key = self.fallbacks?;
+            let text = cluster;
+            // Bound the cache independently of the number and length of input clusters.
+            const MAX_ENTRIES: usize = 1024;
+            const MAX_BYTES: usize = 128;
+            if text.is_empty() || text.len() > MAX_BYTES {
+                return None;
+            }
+            let mut cached = system.text_fallbacks.lock().unwrap();
+            let cache_key = (key, alloc::string::String::from(text));
+            if let Some(&font) = cached.get(&cache_key) {
+                return font;
+            }
+            #[allow(unused_mut)]
+            let mut fonts = system.fonts.lock().unwrap();
+            let font = fonts.fallback_for_text(text, key.locale_str());
+            if cached.len() == MAX_ENTRIES {
+                cached.clear();
+            }
+            cached.insert(cache_key, font);
+            font
+        }
+        #[cfg(not(all(
+            feature = "system",
+            any(
+                windows,
+                target_vendor = "apple",
+                target_os = "linux",
+                target_os = "freebsd"
+            )
+        )))]
+        {
+            let _ = cluster;
+            None
+        }
+    }
+
+    fn match_families<'f>(
+        collection: &mut Inner,
+        source_cache: &mut SourceCache,
+        attributes: Attributes,
+        families: impl IntoIterator<Item = &'f mut CachedFamily>,
+        f: &mut impl FnMut(&QueryFont) -> QueryStatus,
+    ) -> QueryStatus {
+        for family in families {
             match &mut family.family {
                 Entry::Error => continue,
                 Entry::Ok(..) => {}
                 status @ Entry::Vacant => {
-                    if let Some(info) = self.collection.family(family.id) {
+                    if let Some(info) = collection.family(family.id) {
                         *status = Entry::Ok(info);
                     } else {
                         *status = Entry::Error;
@@ -143,14 +257,14 @@ impl<'a> Query<'a> {
             let mut best_index = None;
             if let Some(font) = load_font(
                 family_info,
-                self.attributes,
+                attributes,
                 &mut family.best,
                 false,
-                self.source_cache,
+                source_cache,
             ) {
                 best_index = Some(font.family.1);
                 if f(font) == QueryStatus::Stop {
-                    return;
+                    return QueryStatus::Stop;
                 }
             }
             // Don't invoke for the default font if it's the same as the
@@ -160,16 +274,17 @@ impl<'a> Query<'a> {
             }
             if let Some(font) = load_font(
                 family_info,
-                self.attributes,
+                attributes,
                 &mut family.default,
                 true,
-                self.source_cache,
+                source_cache,
             ) {
                 if f(font) == QueryStatus::Stop {
-                    return;
+                    return QueryStatus::Stop;
                 }
             }
         }
+        QueryStatus::Continue
     }
 }
 

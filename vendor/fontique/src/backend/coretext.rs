@@ -65,6 +65,14 @@ impl SystemFonts {
         self.family_map.get(&id).cloned()
     }
 
+    pub(crate) fn fallback_for_text(&self, text: &str, locale: Option<&str>) -> Option<FamilyId> {
+        let font = create_fallback_font_for_text(text, locale, true)?;
+        let family_name = unsafe { font.family_name() };
+        self.name_map
+            .get(&family_name.to_string())
+            .map(|family| family.id())
+    }
+
     pub(crate) fn fallback(&mut self, key: impl Into<FallbackKey>) -> Option<FamilyId> {
         const HANI: Script = Script::from_bytes(*b"Hani");
         const HANT: Script = Script::from_bytes(*b"Hant");

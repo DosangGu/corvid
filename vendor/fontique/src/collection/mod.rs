@@ -650,6 +650,16 @@ struct System {
     fonts: Arc<Mutex<SystemFonts>>,
     family_names: Arc<FamilyNameMap>,
     generic_families: Arc<GenericFamilyMap>,
+    #[cfg(all(
+        feature = "system",
+        any(
+            windows,
+            target_vendor = "apple",
+            target_os = "linux",
+            target_os = "freebsd"
+        )
+    ))]
+    text_fallbacks: Arc<Mutex<HashMap<(FallbackKey, String), Option<FamilyId>>>>,
 }
 
 impl System {
@@ -664,6 +674,16 @@ impl System {
             fonts,
             family_names,
             generic_families,
+            #[cfg(all(
+                feature = "system",
+                any(
+                    windows,
+                    target_vendor = "apple",
+                    target_os = "linux",
+                    target_os = "freebsd"
+                )
+            ))]
+            text_fallbacks: Arc::new(Mutex::new(HashMap::default())),
         }
     }
 }

@@ -34,6 +34,7 @@ fn assert_sorted() {
     }
 }
 
+#[allow(deprecated)] // Keep the 0.11.1 script sample table until the backport is removed.
 pub const SCRIPT_SAMPLES: &[(Script, &str)] = &[
     (Script::from_str_unchecked("Adlm"), "𞤀𞤁𞤂𞤃𞤄𞤅𞤆𞤇𞤈𞤉𞤊𞤋𞤌𞤍𞤎𞤏"),
     (Script::from_str_unchecked("Aghb"), "𐔰𐔱𐔲𐔳𐔴𐔵𐔶𐔷𐔸𐔹𐔺𐔻𐔼𐔽𐔾𐔿"),

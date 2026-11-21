@@ -889,6 +889,7 @@ impl BracketStack {
     }
 }
 
+#[allow(deprecated)] // Keep the 0.11.1 bidi class values until the backport is removed.
 const fn mask(t: BidiClass) -> u32 {
     1 << (t.to_icu4c_value() as u32)
 }

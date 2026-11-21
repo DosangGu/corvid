@@ -20,7 +20,10 @@ use crate::lru_cache::LruCache;
 use crate::util::nearly_eq;
 use crate::{FontData, convert};
 use fontique::Language;
-use icu_properties::props::Script;
+use icu_properties::{
+    CodePointSetData,
+    props::{EmojiPresentation, Script},
+};
 
 use fontique::{self, Query, QueryFamily, QueryFont};
 
@@ -253,14 +256,8 @@ fn fill_cluster_in_place(
         //  regional indicators, subdivision flag tag sequences, skin tone modifiers
         //  See also: https://github.com/google/emoji-segmenter
 
-        // If the color emoji has a non-printing variation selector, ignore the variation selector.
-        // Its presentation depends on the platform and font.
-        //
-        // e.g.
-        //  - `U+270C + U+FE0F`: `✌`, force basic presentation
-        //  - `U+270C + U+FE0F`: `✌️`, force emoji presentation
-        //
-        // <https://www.unicode.org/reports/tr37/>
+        // Emoji variation selectors guide font selection without requiring a
+        // separate glyph in the font's base character map.
         let is_emoji_with_non_printing_variation_selector =
             is_emoji_or_pictograph && info.is_variation_selector();
 
@@ -322,14 +319,16 @@ fn shape_item<'a, B: Brush>(
         return; // No clusters
     };
 
+    let cluster_text = &item_text[last_boundary..current_boundary];
     fill_cluster_in_place(
-        &item_text[last_boundary..current_boundary],
+        cluster_text,
         &mut item_infos_iter,
         &mut code_unit_offset_in_string,
         char_cluster,
     );
 
-    let mut current_font = font_selector.select_font(char_cluster, analysis_data_sources);
+    let mut current_font =
+        font_selector.select_font(char_cluster, cluster_text, analysis_data_sources);
 
     // Main segmentation loop (based on swash shape_clusters) - only within current item
     while let Some(font) = current_font.take() {
@@ -342,14 +341,16 @@ fn shape_item<'a, B: Brush>(
             // Build next cluster in-place
             last_boundary = current_boundary;
             current_boundary = next_boundary;
+            let cluster_text = &item_text[last_boundary..current_boundary];
             fill_cluster_in_place(
-                &item_text[last_boundary..current_boundary],
+                cluster_text,
                 &mut item_infos_iter,
                 &mut code_unit_offset_in_string,
                 char_cluster,
             );
 
-            if let Some(next_font) = font_selector.select_font(char_cluster, analysis_data_sources)
+            if let Some(next_font) =
+                font_selector.select_font(char_cluster, cluster_text, analysis_data_sources)
             {
                 if next_font != font {
                     current_font = Some(next_font);
@@ -574,21 +575,22 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
     fn select_font(
         &mut self,
         cluster: &mut CharCluster,
+        cluster_text: &str,
         analysis_data_sources: &AnalysisDataSources,
     ) -> Option<SelectedFont> {
         let style_index = cluster.style_index();
-        let is_emoji = cluster.is_emoji;
-        if style_index != self.style_index || is_emoji || self.fonts_id.is_none() {
+        let prefer_emoji = cluster.is_emoji && prefers_emoji(cluster);
+        if style_index != self.style_index || prefer_emoji || self.fonts_id.is_none() {
             self.style_index = style_index;
             let style = &self.styles[style_index as usize];
 
             let fonts_id = style.font_family.id();
             let fonts = self.rcx.stack(style.font_family).unwrap_or(&[]);
             let fonts = fonts.iter().copied().map(QueryFamily::Id);
-            if is_emoji {
-                use core::iter::once;
+            if prefer_emoji {
                 let emoji_family = QueryFamily::Generic(fontique::GenericFamily::Emoji);
-                self.query.set_families(fonts.chain(once(emoji_family)));
+                self.query
+                    .set_families(core::iter::once(emoji_family).chain(fonts));
                 self.fonts_id = None;
             } else if self.fonts_id != Some(fonts_id) {
                 self.query.set_families(fonts);
@@ -608,56 +610,73 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
             self.features = self.rcx.features(style.font_features).unwrap_or(&[]);
         }
         let mut selected_font = None;
-        self.query.matches_with(|font| {
-            let Some(charmap) = font.charmap() else {
-                return fontique::QueryStatus::Continue;
-            };
+        self.query
+            .matches_for_cluster(cluster_text, cluster.is_emoji && !prefer_emoji, |font| {
+                let Some(charmap) = font.charmap() else {
+                    return fontique::QueryStatus::Continue;
+                };
 
-            let map_status = cluster.map(
-                |ch| {
-                    charmap
-                        .map(ch)
-                        .map(|g| {
-                            // HACK: in reality, we're only computing coverage, so
-                            // we only care about whether the font  has a mapping
-                            // for a particular glyph. Any non-zero value indicates
-                            // the existence of a glyph so we can simplify this
-                            // without a fallible conversion from u32 to u16.
-                            (g != 0) as u16
-                        })
-                        .unwrap_or_default()
-                },
-                analysis_data_sources,
-            );
+                let map_status = cluster.map(
+                    |ch| {
+                        charmap
+                            .map(ch)
+                            .map(|g| {
+                                // HACK: in reality, we're only computing coverage, so
+                                // we only care about whether the font  has a mapping
+                                // for a particular glyph. Any non-zero value indicates
+                                // the existence of a glyph so we can simplify this
+                                // without a fallible conversion from u32 to u16.
+                                (g != 0) as u16
+                            })
+                            .unwrap_or_default()
+                    },
+                    analysis_data_sources,
+                );
 
-            match map_status {
-                Status::Complete => {
-                    selected_font = Some(SelectedFont {
-                        font: font.clone(),
-                        attrs: self.attrs,
-                    });
-                    fontique::QueryStatus::Stop
-                }
-                Status::Keep => {
-                    selected_font = Some(SelectedFont {
-                        font: font.clone(),
-                        attrs: self.attrs,
-                    });
-                    fontique::QueryStatus::Continue
-                }
-                Status::Discard => {
-                    if selected_font.is_none() {
+                match map_status {
+                    Status::Complete => {
                         selected_font = Some(SelectedFont {
                             font: font.clone(),
                             attrs: self.attrs,
                         });
+                        fontique::QueryStatus::Stop
                     }
-                    fontique::QueryStatus::Continue
+                    Status::Keep => {
+                        selected_font = Some(SelectedFont {
+                            font: font.clone(),
+                            attrs: self.attrs,
+                        });
+                        fontique::QueryStatus::Continue
+                    }
+                    Status::Discard => {
+                        if selected_font.is_none() {
+                            selected_font = Some(SelectedFont {
+                                font: font.clone(),
+                                attrs: self.attrs,
+                            });
+                        }
+                        fontique::QueryStatus::Continue
+                    }
                 }
-            }
-        });
+            });
         selected_font
     }
+}
+
+/// UTS #51 variation selectors take precedence over the base presentation.
+fn prefers_emoji(cluster: &CharCluster) -> bool {
+    for character in &cluster.chars {
+        match character.ch {
+            '\u{fe0e}' => return false,
+            '\u{fe0f}' => return true,
+            _ => {}
+        }
+    }
+    let emoji_presentation = CodePointSetData::new::<EmojiPresentation>();
+    cluster
+        .chars
+        .iter()
+        .any(|c| emoji_presentation.contains(c.ch))
 }
 
 struct SelectedFont {
