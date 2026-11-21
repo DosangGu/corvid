@@ -17,7 +17,7 @@ compio = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 anyhow.workspace = true
 corvid-client.workspace = true
-corvid-protocol.workspace = true
+corvid-protocol = { workspace = true, features = ["tokio"] }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

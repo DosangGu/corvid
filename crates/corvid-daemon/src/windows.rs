@@ -31,10 +31,7 @@ pub async fn run_with_options(
     autostarted: bool,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
-    #[cfg(feature = "compio")]
     return crate::executor::run(runtime_path, state_path, autostarted, shutdown).await;
-    #[cfg(not(feature = "compio"))]
-    serve_daemon(runtime_path, state_path, autostarted, shutdown).await
 }
 
 pub(crate) async fn serve_daemon(
@@ -79,8 +76,6 @@ pub(crate) async fn serve_daemon(
     let mut clients = PeerTasks::new();
     let mut collectors = PeerTasks::new();
     let mut agents = crate::executor::time::interval(Duration::from_secs(1));
-    #[cfg(not(feature = "compio"))]
-    agents.set_missed_tick_behavior(crate::executor::time::MissedTickBehavior::Skip);
     corvid_async::pin!(shutdown);
 
     // Keep each ConnectNamedPipe operation alive across unrelated events.

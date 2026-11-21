@@ -26,7 +26,7 @@ corvid-agent-deck-core.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
 corvid-presentation.workspace = true
-corvid-protocol.workspace = true
+corvid-protocol = { workspace = true, features = ["tokio"] }
 corvid-update.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync", "time", "process", "net"] }
 uuid.workspace = true

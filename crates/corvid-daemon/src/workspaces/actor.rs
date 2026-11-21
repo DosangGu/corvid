@@ -44,7 +44,6 @@ impl RegistryActor {
 
     pub(super) fn defer(&self, apply: impl FnOnce(&mut Registry) + Send + 'static) {
         if let Err(mpsc::error::TrySendError::Full(operation)) = self.0.try_send(Box::new(apply)) {
-            #[cfg(feature = "compio")]
             if compio::runtime::Runtime::try_current().is_none() {
                 // Terminal workers run outside the executor. The registry
                 // never waits on a terminal while applying an operation.

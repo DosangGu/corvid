@@ -304,7 +304,7 @@ mod tests {
         (Group::Layout, vec![entity])
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn capturing_and_subscribing_share_the_same_barrier() {
         let mut state = Publication::seed(layout("before".to_owned()));
         let mut capture = state.capture(true).unwrap();
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(created, Some(2));
     }
 
-    #[tokio::test]
+    #[compio::test]
     async fn slow_watches_disconnect_when_their_byte_budget_fills() {
         let mut state = Publication::seed(layout("before".to_owned()));
         let mut slow = state.capture(true).unwrap().watch.unwrap();

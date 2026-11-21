@@ -379,8 +379,7 @@ mod tests {
         }
     }
 
-    #[cfg_attr(feature = "compio", compio::test)]
-    #[cfg_attr(not(feature = "compio"), tokio::test)]
+    #[compio::test]
     async fn registered_fixture_recovers_sessions_and_reports_per_pane_limits() -> anyhow::Result<()>
     {
         let directory = tempfile::tempdir_in(

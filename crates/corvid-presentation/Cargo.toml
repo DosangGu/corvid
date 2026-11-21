@@ -16,7 +16,7 @@ corvid-async.workspace = true
 compio = { workspace = true, optional = true }
 anyhow.workspace = true
 corvid-companion.workspace = true
-corvid-protocol.workspace = true
+corvid-protocol = { workspace = true, features = ["tokio"] }
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 uuid.workspace = true
 
