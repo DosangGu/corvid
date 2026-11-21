@@ -70,10 +70,10 @@ async fn accepts_tokio_clients_on_a_private_unix_socket() -> Result<()> {
             async {
                 let runtime = RuntimeDir::create(&server_path)?;
                 let instance = runtime.lock_instance()?;
+                let collector = instance.bind_compio(SocketRole::Collector).await?;
+                assert!(instance.bind_compio(SocketRole::Collector).await.is_err());
+                drop(collector);
                 let listener = instance.bind_compio(SocketRole::Control).await?;
-                assert!(instance.bind_compio(SocketRole::Control).await.is_err());
-                // Drain the liveness probe from the failed duplicate bind.
-                drop(listener.accept().await?.context("missing liveness probe")?);
                 listening.send(()).ok();
                 for _ in 0..2 {
                     let stream = listener
