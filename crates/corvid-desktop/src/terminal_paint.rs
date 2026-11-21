@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, FontStyle, FontWeight, PaintQuad, PathBuilder, Pixels, Point, SharedString,
-    TextAlign, TextRun, UnderlineStyle, Window, font, point, px, rgb, rgb_to_hsla, size,
+    TextAlign, TextRun, UnderlineStyle, Window, point, px, rgb, rgb_to_hsla, size,
 };
 use vt100::{Cell, Color, Screen};
 
@@ -372,7 +372,7 @@ fn paint_text(
 }
 
 fn text_run(len: usize, style: Style, family: &SharedString) -> TextRun {
-    let mut font = font(family.clone());
+    let mut font = crate::desktop_font::with_symbols(family.clone());
     if style.bold {
         font.weight = FontWeight::BOLD;
     }

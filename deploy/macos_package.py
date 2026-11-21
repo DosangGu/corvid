@@ -64,6 +64,7 @@ def app_bundle(stage, version):
     shutil.move(stage / "daemon", app / "Contents/Resources/daemon")
     icon(app / "Contents/Resources/corvid.icns")
     copy(stage / "LICENSE", app / "Contents/Resources/LICENSE")
+    copy(stage / "STIX-OFL.txt", app / "Contents/Resources/STIX-OFL.txt")
     sign(binaries / "corvid")
     # Remote runtime manifests describe the exact transferred bytes. Do not re-sign them.
     plugin = stage / "plugins/agent-deck/corvid-agent-deck"

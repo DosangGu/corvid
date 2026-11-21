@@ -106,6 +106,7 @@ def package(args):
             copy(args.build / "corvid-launch.exe", stage / "corvid-launch.exe", True)
             copy(ROOT / "assets/icons/corvid.ico", stage / "corvid.ico")
         if args.product == "desktop":
+            copy(ROOT / "assets/fonts/STIX-OFL.txt", stage / "STIX-OFL.txt")
             for icon_extension in ["svg", "png"]:
                 copy(ROOT / f"assets/icons/corvid.{icon_extension}", stage / f"icons/corvid.{icon_extension}")
             if not windows and not macos:

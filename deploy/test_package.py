@@ -72,6 +72,8 @@ class PackageTests(unittest.TestCase):
                     binary = "corvid"
                 self.assertEqual(contents[binary], target.replace("-linux-gnu", "-linux-musl").encode())
                 self.assertEqual(json.loads(contents["package.json"])["target"], target)
+                self.assertEqual(contents["STIX-OFL.txt"],
+                                 (package.ROOT / "assets/fonts/STIX-OFL.txt").read_bytes())
                 for remote in package.RUNTIME_TARGETS:
                     manifest = json.loads(contents[f"daemon/{remote}/manifest.json"])
                     self.assertEqual(manifest["target"], remote)

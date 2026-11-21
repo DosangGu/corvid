@@ -586,6 +586,7 @@ impl Render for WorkspaceView {
         };
         div()
             .id("corvid-workspace")
+            .font(crate::desktop_font::with_symbols(".SystemUIFont"))
             .relative()
             .track_focus(&self.setup_focus)
             .capture_key_down(cx.listener(Self::key_down))
