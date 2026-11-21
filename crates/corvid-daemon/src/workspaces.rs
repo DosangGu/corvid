@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::executor::{Task, blocking};
 use anyhow::Result;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::ProcessLiveness;
@@ -25,7 +26,6 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -174,7 +174,7 @@ pub(crate) struct Registry {
     pane_claims: HashMap<Uuid, Claim>,
     closing: Vec<CloseTarget>,
     slots: HashMap<Uuid, Slot>,
-    retired: Vec<JoinHandle<()>>,
+    retired: Vec<Task>,
     restores: HashMap<Uuid, restore::Attempt>,
 }
 
@@ -205,7 +205,7 @@ struct Claim {
 struct Slot {
     workspace: Uuid,
     terminal: TerminalHandle,
-    task: JoinHandle<()>,
+    task: Task,
     reserved: bool,
     // Keep the last writer's token while this PTY is detached so a lost attach
     // reply can be retried with the same token.
@@ -401,7 +401,7 @@ impl Workspaces {
         let found = if roots.is_empty() {
             Vec::new()
         } else {
-            tokio::task::spawn_blocking(move || crate::native_process::scan(&roots))
+            blocking(move || crate::native_process::scan(&roots))
                 .await
                 .unwrap_or_default()
         };
@@ -441,13 +441,11 @@ impl Workspaces {
             .await
             .ok_or_else(unauthorized)?;
         let provider = hook.provider;
-        let owner = tokio::task::spawn_blocking(move || {
-            crate::native_process::verify_hook(pid, root, provider)
-        })
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(unauthorized)?;
+        let owner = blocking(move || crate::native_process::verify_hook(pid, root, provider))
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(unauthorized)?;
         self.registry
             .request(move |registry| {
                 let location = *registry
@@ -1128,7 +1126,7 @@ impl Workspaces {
             workers.push(slot.task);
         }
         for worker in workers {
-            worker.await?;
+            worker.finish().await?;
         }
         Ok(())
     }
@@ -2002,7 +2000,7 @@ impl CwdPaths {
     }
 
     async fn validate(self) -> Reply<CheckedCwd> {
-        tokio::task::spawn_blocking(move || {
+        blocking(move || {
             let result = self.check();
             CheckedCwd {
                 paths: self,

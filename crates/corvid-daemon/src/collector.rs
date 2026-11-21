@@ -221,7 +221,7 @@ async fn ingest(workspaces: &Workspaces, hook: Hook, pid: u32) -> Result<(), Pro
         .ok_or_else(unauthorized)?;
     let provider = hook.provider;
     let restart_path = restart_path.filter(|_| hook.is_restart_start());
-    let (owner, producer) = tokio::task::spawn_blocking(move || {
+    let (owner, producer) = crate::executor::blocking(move || {
         previous.verify_hook(pid, provider, restart_path.as_deref())
     })
     .await

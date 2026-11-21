@@ -30,7 +30,7 @@ async fn perform<T: Send + 'static>(
         .map_err(|_| ProtocolFault::new("DirectoryBusy", "Folder lookups are busy. Try again."))?;
     timeout(
         Duration::from_secs(2),
-        tokio::task::spawn_blocking(move || {
+        crate::executor::blocking(move || {
             let _permit = permit;
             action()
         }),

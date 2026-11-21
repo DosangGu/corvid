@@ -134,7 +134,7 @@ impl Workspaces {
             .ok_or_else(unauthorized)?;
 
         let sampled_shell = shell.clone();
-        let (owner, previous, restart_path) = tokio::task::spawn_blocking(move || {
+        let (owner, previous, restart_path) = crate::executor::blocking(move || {
             let incarnation = process::verify_shell_launcher(sampled_shell.root, peer)?;
             let executable = Executable::read(&path)?;
             let previous = match sampled_shell.agent {
@@ -206,7 +206,7 @@ impl Workspaces {
             return;
         };
         let sampled_agent = agent.clone();
-        let Some(liveness) = tokio::task::spawn_blocking(move || sampled_agent.stopped())
+        let Some(liveness) = crate::executor::blocking(move || sampled_agent.stopped())
             .await
             .ok()
             .flatten()

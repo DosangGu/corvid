@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::executor::{blocking, spawn};
 use corvid_core::agent::{AgentSessionKey, Provider};
 use corvid_core::layout::Location;
 use corvid_protocol::wire::{
@@ -106,9 +107,10 @@ impl Workspaces {
                                 },
                             );
                             let workspaces = workspaces.clone();
-                            tokio::spawn(async move {
+                            spawn(async move {
                                 workspaces.run_restore(location, terminal, plan).await;
-                            });
+                            })
+                            .detach();
                         }
                         Err(error) => {
                             result = failed(location, error);
@@ -133,7 +135,7 @@ impl Workspaces {
         let launch = plan.launch;
         let directory_exists = {
             let cwd = launch.cwd.clone();
-            tokio::task::spawn_blocking(move || cwd.is_some_and(|cwd| cwd.is_dir()))
+            blocking(move || cwd.is_some_and(|cwd| cwd.is_dir()))
                 .await
                 .unwrap_or(false)
         };
@@ -418,7 +420,7 @@ mod tests {
         assert!(timeout(Duration::from_secs(5), view.wait_saved()).await?);
         drop(updates);
         drop(view);
-        timeout(Duration::from_secs(5), saver).await??;
+        timeout(Duration::from_secs(5), saver.finish()).await??;
 
         let state = open()?;
         let identity = Identity::load(&state)?;
