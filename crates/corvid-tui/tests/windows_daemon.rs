@@ -72,10 +72,16 @@ async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
             vec!["ping.v1".into()],
         );
         writer.envelope(&greeting).await?;
-        let reply = reader
-            .next_envelope()
-            .await?
-            .context("missing HelloResult")?;
+        let Some(reply) = reader.next_envelope().await? else {
+            let mut stderr = String::new();
+            relay
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .await?;
+            bail!("missing HelloResult: {stderr}");
+        };
         let session = check_hello_result(&greeting, &reply, PeerRole::Control)?;
         writer
             .envelope(&session.envelope(Some("relay-ping".into()), Body::Ping(Ping {})))
