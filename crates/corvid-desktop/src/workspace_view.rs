@@ -7,6 +7,7 @@ mod management;
 mod naming;
 mod switcher;
 mod tab_bar;
+mod title;
 mod update;
 #[cfg(windows)]
 mod window_controls;
@@ -227,6 +228,7 @@ pub struct WorkspaceView {
     terminal: Option<Entity<TerminalView>>,
     selected: Option<ViewSelection>,
     tab_bar: tab_bar::TabBar,
+    title_renderer: title::TitleRenderer,
     preferred_tabs: HashMap<String, String>,
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
@@ -305,6 +307,7 @@ impl WorkspaceView {
             terminal: None,
             selected: None,
             tab_bar: tab_bar::TabBar::default(),
+            title_renderer: title::TitleRenderer::default(),
             preferred_tabs: HashMap::new(),
             preferred_panes: HashMap::new(),
             updates: None,

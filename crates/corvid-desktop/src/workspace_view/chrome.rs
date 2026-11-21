@@ -203,8 +203,8 @@ impl WorkspaceView {
             .as_ref()
             .map_or("Local", Destination::label);
         let title = workspace.map_or_else(
-            || format!("{location} ▾"),
-            |workspace| format!("{location} / {} ▾", workspace.label),
+            || location.to_owned(),
+            |workspace| format!("{location} / {}", workspace.label),
         );
         let needs_input = ui
             .filter(|ui| ui.connected && ui.inventory_ready)
@@ -224,11 +224,17 @@ impl WorkspaceView {
                 .relative()
                 .flex_none()
                 .max_w(ui_px(250.))
-                .child(div().overflow_hidden().child(
-                    button("workspaces", title.clone(), self.switcher_open).on_click(
-                        cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
-                    ),
-                ))
+                .child(
+                    self.title_renderer
+                        .button(
+                            button_frame("workspaces", self.switcher_open).max_w(ui_px(250.)),
+                            title.clone(),
+                            Some("▾"),
+                        )
+                        .on_click(
+                            cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
+                        ),
+                )
                 .when(self.switcher_open, |trigger| {
                     let position = div().absolute().top_full().mt(ui_px(4.));
                     let (position, anchor) = if switcher_on_right {
@@ -343,11 +349,6 @@ impl WorkspaceView {
                             .as_ref()
                             .is_some_and(|location| location.tab_id == tab.tab_id)
                 });
-            let title = if attention {
-                format!("{} !", tab.label)
-            } else {
-                tab.label.clone()
-            };
             Some((
                 tab.tab_id.as_str(),
                 div()
@@ -358,14 +359,18 @@ impl WorkspaceView {
                     .rounded_md()
                     .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                     .max_w(ui_px(240.))
-                    .child(div().min_w_0().overflow_hidden().child(
-                        self.tab_bar.button(title, active).on_click(cx.listener(
-                            move |view, _, window, cx| {
+                    .child(
+                        self.title_renderer
+                            .button(
+                                button_frame("select-tab", active).min_w_0().flex_shrink_1(),
+                                tab.label.clone(),
+                                attention.then_some("!"),
+                            )
+                            .on_click(cx.listener(move |view, _, window, cx| {
                                 view.dismiss_overlay(window, cx);
                                 view.open_pane(target.clone(), open, window, cx);
-                            },
-                        )),
-                    ))
+                            })),
+                    )
                     .when(ui.can_close(), |row| {
                         row.child(Self::close_button(
                             "close-tab",

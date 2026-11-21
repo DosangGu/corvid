@@ -3,7 +3,7 @@
 mod desktop_font;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-#[path = "../src/workspace_view/tab_bar/title.rs"]
+#[path = "../src/workspace_view/title.rs"]
 mod tab_title;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -84,7 +84,10 @@ fn main() -> anyhow::Result<()> {
 fn paint_tab_titles(platform_text: std::sync::Arc<dyn PlatformTextSystem>) -> anyhow::Result<()> {
     use gpui::{Context, HeadlessAppContext, IntoElement, Render, Window, div, prelude::*, size};
 
-    struct TabTitles(tab_title::TitleRenderer);
+    struct TabTitles {
+        renderer: tab_title::TitleRenderer,
+        max_width: Pixels,
+    }
 
     impl Render for TabTitles {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -92,32 +95,48 @@ fn paint_tab_titles(platform_text: std::sync::Arc<dyn PlatformTextSystem>) -> an
                 .font(desktop_font::with_symbols(".SystemUIFont"))
                 .flex()
                 .gap(px(2.))
-                .children(["✳️ Claude Code", "🧑🏽‍💻 개발", "Plain tab"].map(|title| {
-                    let button = div()
-                        .id(title)
-                        .flex_none()
-                        .text_size(px(13.))
-                        .whitespace_nowrap();
-                    div()
-                        .max_w(px(90.))
-                        .overflow_hidden()
-                        .child(self.0.button(button, title.to_owned()))
-                }))
+                .children(
+                    [
+                        ("✳️ Claude Code planning the next release", Some("!")),
+                        ("A long plain workspace title", Some("▾")),
+                        ("🧑🏽‍💻 개발", None),
+                    ]
+                    .map(|(title, suffix)| {
+                        let button = div()
+                            .id(title)
+                            .flex_none()
+                            .max_w(self.max_width)
+                            .text_size(px(13.))
+                            .whitespace_nowrap();
+                        self.renderer.button(button, title.to_owned(), suffix)
+                    }),
+                )
         }
     }
 
     let mut app = HeadlessAppContext::new(platform_text);
-    let window = app.open_window(size(px(240.), px(40.)), |_, cx| {
-        cx.new(|_| TabTitles(tab_title::TitleRenderer::default()))
-    })?;
-    // Draw twice to exercise the paint path when the first title exceeds its
-    // tab width and the elements reuse their layout state.
-    for _ in 0..2 {
-        app.update_window(window.into(), |_, window, cx| {
-            window.refresh();
-            let _ = window.draw(cx);
+    let mut scheduled = Vec::new();
+    for max_width in [px(500.), px(90.)] {
+        let window = app.open_window(size(px(1200.), px(40.)), |_, cx| {
+            cx.new(|_| TabTitles {
+                renderer: tab_title::TitleRenderer::default(),
+                max_width,
+            })
         })?;
+        // Draw twice to exercise mixed and plain titles as layout state is reused.
+        for _ in 0..2 {
+            scheduled.push(app.update_window(window.into(), |_, window, cx| {
+                window.simulate_next_frame(cx);
+                window.refresh();
+                let _ = window.draw(cx);
+                window.simulate_next_frame(cx)
+            })?);
+        }
     }
+    assert!(
+        scheduled[2] > scheduled[0] && scheduled[3] > scheduled[1],
+        "overflowing titles should request animation frames: {scheduled:?}"
+    );
     println!("PASS Desktop: painted mixed and plain tab titles");
     Ok(())
 }
