@@ -26,6 +26,7 @@ mod collector;
 mod connection;
 mod control;
 mod endpoint;
+mod endpoint_time;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod keys;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

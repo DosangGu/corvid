@@ -1,13 +1,14 @@
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use compio::io::{AsyncRead, AsyncWrite};
-use compio::runtime::{Runtime, spawn};
+use compio::runtime::{JoinHandle, Runtime, spawn};
 use corvid_protocol::wire::Envelope;
 use corvid_protocol::{COMMAND_TIMEOUT, Frame, FrameError, PeerRole, ProtocolFault, Session};
 use tokio::sync::{mpsc, oneshot};
@@ -59,6 +60,14 @@ struct SetupRequest {
 enum Request {
     Connect(ConnectRequest),
     Setup(SetupRequest),
+    Watch {
+        start: Box<dyn FnOnce() -> JoinHandle<()> + Send>,
+        started: oneshot::Sender<Result<JoinHandle<()>>>,
+    },
+    Wait {
+        deadline: Instant,
+        reached: oneshot::Sender<Result<()>>,
+    },
 }
 
 static DRIVER: OnceLock<io::Result<mpsc::Sender<Request>>> = OnceLock::new();
@@ -138,6 +147,24 @@ pub(super) async fn command_output(
     ready.await.context("Compio IPC driver stopped")?
 }
 
+pub(crate) async fn spawn_watch<P: Future<Output = ()> + 'static>(
+    pump: impl FnOnce() -> P + Send + 'static,
+) -> Result<JoinHandle<()>> {
+    let (started, ready) = oneshot::channel();
+    dispatch(Request::Watch {
+        start: Box::new(move || spawn(pump())),
+        started,
+    })
+    .await?;
+    ready.await.context("Compio IPC driver stopped")?
+}
+
+pub(crate) async fn wait_until(deadline: Instant) -> Result<()> {
+    let (reached, wait) = oneshot::channel();
+    dispatch(Request::Wait { deadline, reached }).await?;
+    wait.await.context("Compio IPC driver stopped")?
+}
+
 async fn dispatch(request: Request) -> Result<()> {
     let driver = DRIVER
         .get_or_init(start_driver)
@@ -147,7 +174,7 @@ async fn dispatch(request: Request) -> Result<()> {
     driver
         .send(request)
         .await
-        .context("Compio IPC driver is unavailable")
+        .map_err(|_| anyhow::anyhow!("Compio IPC driver is unavailable"))
 }
 
 fn start_driver() -> io::Result<mpsc::Sender<Request>> {
@@ -160,6 +187,16 @@ fn start_driver() -> io::Result<mpsc::Sender<Request>> {
                     match request {
                         Request::Connect(request) => spawn(serve(request)).detach(),
                         Request::Setup(request) => spawn(set_up(request)).detach(),
+                        Request::Watch { start, started } => {
+                            if !started.is_closed() {
+                                let _ = started.send(Ok(start()));
+                            }
+                        }
+                        Request::Wait { deadline, reached } => {
+                            if !reached.is_closed() {
+                                spawn(wait(deadline, reached)).detach();
+                            }
+                        }
                     }
                 }
             }),
@@ -175,11 +212,26 @@ fn start_driver() -> io::Result<mpsc::Sender<Request>> {
                         Request::Setup(request) => {
                             let _ = request.output.send(Err(report));
                         }
+                        Request::Watch { started, .. } => {
+                            let _ = started.send(Err(report));
+                        }
+                        Request::Wait { reached, .. } => {
+                            let _ = reached.send(Err(report));
+                        }
                     }
                 }
             }
         })?;
     Ok(send)
+}
+
+async fn wait(deadline: Instant, mut reached: oneshot::Sender<Result<()>>) {
+    tokio::select! {
+        _ = compio::time::sleep_until(deadline) => {
+            let _ = reached.send(Ok(()));
+        }
+        _ = reached.closed() => {}
+    }
 }
 
 async fn set_up(request: SetupRequest) {

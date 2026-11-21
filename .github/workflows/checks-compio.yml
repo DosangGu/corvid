@@ -86,6 +86,7 @@ jobs:
         run: |
           cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test workspace_directory
           cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test routing snapshot_client_keeps_last_state
+          cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test routing compio_snapshot_watch_
       - name: Exercise Compio local control endpoints on Windows
         if: runner.os == 'Windows'
         run: cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test windows_daemon tui_reopens_its_last_workspace

@@ -2615,6 +2615,33 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
     .unwrap();
 }
 
+#[cfg(all(feature = "compio-daemon", feature = "compio-endpoints"))]
+#[tokio::test]
+async fn compio_snapshot_watch_does_not_require_a_tokio_executor() -> anyhow::Result<()> {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let runtime = fixture.path().join("run");
+    let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    std::thread::spawn(move || -> anyhow::Result<()> {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        compio::runtime::Runtime::new()?.block_on(async {
+            let endpoint = corvid_client::ControlEndpoint::Local(runtime.clone());
+            let host = endpoint.host().await?;
+            let mut watch = corvid_client::watch_snapshot(&runtime).await?;
+            assert!(watch.is_ready());
+            assert_eq!(watch.state().session().host_id, host.host_id);
+            assert!(
+                compio::time::timeout(Duration::from_millis(20), watch.next_change())
+                    .await
+                    .is_err()
+            );
+            assert!(watch.is_ready());
+            Ok(())
+        })
+    })
+    .join()
+    .unwrap()
+}
+
 #[tokio::test]
 async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();

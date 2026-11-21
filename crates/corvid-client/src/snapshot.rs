@@ -4,6 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+#[cfg(feature = "compio-endpoints")]
+use compio::runtime::JoinHandle;
 use corvid_protocol::snapshot::{
     SNAPSHOT_CAPABILITY, SnapshotAssembler, SynchronizedSnapshot, WATCH_CAPABILITY,
 };
@@ -12,12 +14,20 @@ use corvid_protocol::wire::{Envelope, GetSnapshot, Ping, SnapshotWatch as WatchR
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep_until, timeout};
 use uuid::Uuid;
 
 use crate::endpoint::wire::Wire;
 use crate::endpoint::{ControlConnection, ControlEndpoint};
+use crate::endpoint_time::timeout;
+
+#[cfg(feature = "compio-endpoints")]
+use compio::time::{sleep_until, timeout as watch_timeout};
+#[cfg(feature = "compio-endpoints")]
+use std::time::Instant;
+#[cfg(not(feature = "compio-endpoints"))]
+use tokio::time::{Instant, sleep_until, timeout as watch_timeout};
 
 #[cfg(test)]
 mod tests;
@@ -97,7 +107,7 @@ async fn watch(
         .to_owned();
     let (sender, incoming) = mpsc::channel(CACHE_QUEUE);
     let (failed, failure) = watch::channel(None);
-    let task = tokio::spawn(async move {
+    let pump = move || async move {
         // Capture the entire connection so its SSH/WSL relay lives with the pump.
         let mut connection = connection;
         let error = pump(&mut connection.wire, &subscription, sender).await;
@@ -110,12 +120,16 @@ async fn watch(
             })
             .unwrap_or_else(offline);
         failed.send_replace(Some(fault));
-    });
+    };
+    #[cfg(feature = "compio-endpoints")]
+    let task = crate::endpoint::native::spawn_watch(pump).await?;
+    #[cfg(not(feature = "compio-endpoints"))]
+    let task = tokio::spawn(pump());
     Ok(SnapshotWatch {
         cache,
         incoming,
         failure,
-        task,
+        task: Some(task),
     })
 }
 
@@ -123,7 +137,7 @@ pub struct SnapshotWatch {
     cache: SynchronizedSnapshot,
     incoming: mpsc::Receiver<Envelope>,
     failure: watch::Receiver<Option<ProtocolFault>>,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl SnapshotWatch {
@@ -132,7 +146,9 @@ impl SnapshotWatch {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.cache.is_valid() && self.failure.borrow().is_none() && !self.task.is_finished()
+        self.cache.is_valid()
+            && self.failure.borrow().is_none()
+            && self.task.as_ref().is_some_and(|task| !task.is_finished())
     }
 
     /// Wait for the next committed change. Cancellation leaves the frame reader intact.
@@ -155,7 +171,7 @@ impl SnapshotWatch {
                 Ok(true) => return Ok(()),
                 Ok(false) => {}
                 Err(fault) => {
-                    self.task.abort();
+                    self.stop();
                     return Err(fault.into());
                 }
             }
@@ -163,9 +179,20 @@ impl SnapshotWatch {
     }
 }
 
+impl SnapshotWatch {
+    fn stop(&mut self) {
+        #[cfg(feature = "compio-endpoints")]
+        drop(self.task.take());
+        #[cfg(not(feature = "compio-endpoints"))]
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
 impl Drop for SnapshotWatch {
     fn drop(&mut self) {
-        self.task.abort();
+        self.stop();
     }
 }
 
@@ -262,7 +289,7 @@ async fn pump(
             // A network burst or a briefly busy consumer must not tear down the
             // subscription. Keep the queue bounded and let the transport apply
             // backpressure; a persistently stalled consumer still has to resync.
-            timeout(COMMAND_TIMEOUT, sender.send(frame))
+            watch_timeout(COMMAND_TIMEOUT, sender.send(frame))
                 .await
                 .map_err(|_| resync())?
                 .map_err(|_| offline())?;
@@ -294,7 +321,7 @@ impl Heartbeat {
                     }
                     let id = Uuid::new_v4().to_string();
                     let request = connection.session.envelope(Some(id.clone()), Body::Ping(Ping {}));
-                    timeout(COMMAND_TIMEOUT, connection.writer.envelope(&request)).await??;
+                    watch_timeout(COMMAND_TIMEOUT, connection.writer.envelope(&request)).await??;
                     self.pending.insert(id);
                     self.next_ping = Instant::now() + PING_INTERVAL;
                 }

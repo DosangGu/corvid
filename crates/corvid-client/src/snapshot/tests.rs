@@ -11,6 +11,26 @@ use corvid_protocol::{
 };
 use tokio::io::{DuplexStream, ReadHalf, WriteHalf, duplex, split};
 
+#[cfg(feature = "compio-endpoints")]
+use compio::{runtime::spawn, time::sleep};
+#[cfg(not(feature = "compio-endpoints"))]
+use tokio::{spawn, time::sleep};
+
+fn run<F: std::future::Future<Output = ()>>(test: F) {
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    #[cfg(feature = "compio-endpoints")]
+    {
+        // The in-memory fixture still uses the Tokio framing codec.
+        let _fixture_context = tokio.enter();
+        compio::runtime::Runtime::new().unwrap().block_on(test);
+    }
+    #[cfg(not(feature = "compio-endpoints"))]
+    tokio.block_on(test);
+}
+
 const SUBSCRIPTION: &str = "title-watch";
 const BURST: u64 = 256;
 
@@ -121,50 +141,55 @@ async fn send_titles(writer: &mut FrameWriter<WriteHalf<DuplexStream>>, count: u
     }
 }
 
-#[tokio::test]
-async fn title_burst_survives_a_briefly_paused_consumer_without_resync() {
-    let (mut connection, mut writer) = connection().await;
-    let mut cache = cache(&connection.session);
-    let (send, mut receive) = mpsc::channel(CACHE_QUEUE);
-    let task = tokio::spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
-    send_titles(&mut writer, BURST).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(
-        !task.is_finished(),
-        "a short title burst disconnected the watch"
-    );
-    assert_eq!(receive.len(), CACHE_QUEUE);
+#[test]
+fn title_burst_survives_a_briefly_paused_consumer_without_resync() {
+    run(async {
+        let (mut connection, mut writer) = connection().await;
+        let mut cache = cache(&connection.session);
+        let (send, mut receive) = mpsc::channel(CACHE_QUEUE);
+        let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
+        send_titles(&mut writer, BURST).await;
+        sleep(Duration::from_millis(100)).await;
+        assert!(
+            !task.is_finished(),
+            "a short title burst disconnected the watch"
+        );
+        assert_eq!(receive.len(), CACHE_QUEUE);
 
-    timeout(Duration::from_secs(2), async {
-        for sequence in 1..=BURST {
-            assert!(cache.apply(receive.recv().await.unwrap()).unwrap());
-            assert_eq!(cache.snapshot().sequence(), sequence);
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        cache.snapshot().entities().next().unwrap(),
-        &workspace("Title 256")
-    );
-    assert!(!task.is_finished());
-    task.abort();
+        watch_timeout(Duration::from_secs(2), async {
+            for sequence in 1..=BURST {
+                assert!(cache.apply(receive.recv().await.unwrap()).unwrap());
+                assert_eq!(cache.snapshot().sequence(), sequence);
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            cache.snapshot().entities().next().unwrap(),
+            &workspace("Title 256")
+        );
+        assert!(!task.is_finished());
+        #[cfg(not(feature = "compio-endpoints"))]
+        task.abort();
+    });
 }
 
-#[tokio::test]
-async fn a_stalled_consumer_is_bounded_and_requires_resync() {
-    let (mut connection, mut writer) = connection().await;
-    let (send, receive) = mpsc::channel(CACHE_QUEUE);
-    let task = tokio::spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
-    send_titles(&mut writer, BURST).await;
-    let error = timeout(COMMAND_TIMEOUT + Duration::from_secs(2), task)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap_err();
-    assert_eq!(
-        error.downcast_ref::<ProtocolFault>().unwrap().code,
-        "ResyncRequired"
-    );
-    assert_eq!(receive.len(), CACHE_QUEUE);
+#[test]
+fn a_stalled_consumer_is_bounded_and_requires_resync() {
+    run(async {
+        let (mut connection, mut writer) = connection().await;
+        let (send, receive) = mpsc::channel(CACHE_QUEUE);
+        let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
+        send_titles(&mut writer, BURST).await;
+        let error = watch_timeout(COMMAND_TIMEOUT + Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<ProtocolFault>().unwrap().code,
+            "ResyncRequired"
+        );
+        assert_eq!(receive.len(), CACHE_QUEUE);
+    });
 }
