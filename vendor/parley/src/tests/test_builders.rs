@@ -16,10 +16,6 @@ use crate::{
     TreeBuilder, WordBreak,
 };
 
-// TODO: `FONT_FAMILY_LIST`, `load_fonts`, and `create_font_context` are
-// duplicated between this crate and `parley_test`. We can't move the builder
-// tests into `parley_test` because they use private APIs, but should eventually
-// figure out some way to reduce the duplication.
 const FONT_FAMILY_LIST: &[FontFamilyName<'_>] = &[
     FontFamilyName::Named(Cow::Borrowed("Roboto")),
     FontFamilyName::Named(Cow::Borrowed("Noto Kufi Arabic")),
@@ -237,8 +233,8 @@ fn create_root_style() -> TextStyle<'static, 'static, ColorBrush> {
         font_width: FontWidth::CONDENSED,
         font_style: FontStyle::Italic,
         font_weight: FontWeight::BOLD,
-        font_variations: FontVariations::empty(), // TODO: Set a non-default value
-        font_features: FontFeatures::empty(),     // TODO: Set a non-default value
+        font_variations: FontVariations::empty(),
+        font_features: FontFeatures::empty(),
         locale: Some("en-US".parse().unwrap()),
         brush: ColorBrush::new(palette::css::GREEN),
         has_underline: true,

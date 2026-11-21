@@ -536,9 +536,6 @@ impl Selection {
             // Trailing whitespace to indicate that the newline character at the
             // end of this line is selected. It's based on the ascent and
             // descent so it doesn't change with the line height.
-            //
-            // TODO: the width of this whitespace should be the width of a space
-            // (U+0020) character.
             let newline_whitespace = if line.break_reason() == BreakReason::Explicit {
                 (metrics.ascent as f64 + metrics.descent as f64) * NEWLINE_WHITESPACE_WIDTH_RATIO
             } else {

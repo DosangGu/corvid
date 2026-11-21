@@ -3,9 +3,6 @@
 
 //! Mapping codepoints to nominal glyph identifiers.
 
-// TODO(dfrg): move this code to read-fonts so it can be shared among other
-// crates.
-
 use read_fonts::{
     FontData, FontRead, FontRef, TableProvider, TopLevelTable,
     tables::cmap::{Cmap, CmapSubtable},

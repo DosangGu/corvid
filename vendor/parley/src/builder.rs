@@ -233,7 +233,6 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
                 .set_last_item_kind(ItemKind::InlineBox);
         }
 
-        // TODO: arrange type better here to factor out the index
         inline_box.index = self.lcx.tree_style_builder.current_text_len();
         self.lcx.inline_boxes.push(inline_box);
     }
