@@ -3,12 +3,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
+#[cfg(feature = "compio-endpoints")]
+use compio::time::{sleep, sleep_until, timeout};
 use corvid_companion::{PresentationAddress, PresentationClient};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationSlots, LocalActivation, PresentedBinding};
-use tokio::runtime::Builder;
 use tokio::sync::{mpsc, oneshot, watch};
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 use uuid::Uuid;
 
@@ -86,7 +88,7 @@ impl DesktopClient {
         let (commands, receive) = mpsc::channel(1);
         let (page, pages) = watch::channel(0);
         let (shutdown, stop) = oneshot::channel();
-        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let (started, startup) = std::sync::mpsc::sync_channel(1);
         let mut worker = Worker {
             display,
             commands: receive,
@@ -98,13 +100,31 @@ impl DesktopClient {
         thread::Builder::new()
             .name("corvid-presentation".to_owned())
             .spawn(move || {
-                runtime.block_on(async {
-                    tokio::select! {
-                        _ = worker.run(&address) => {}
-                        _ = stop => {}
+                #[cfg(feature = "compio-endpoints")]
+                let runtime = compio::runtime::Runtime::new();
+                #[cfg(not(feature = "compio-endpoints"))]
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                match runtime {
+                    Ok(runtime) => {
+                        if started.send(Ok(())).is_ok() {
+                            runtime.block_on(async {
+                                tokio::select! {
+                                    _ = worker.run(&address) => {}
+                                    _ = stop => {}
+                                }
+                            });
+                        }
                     }
-                });
+                    Err(error) => {
+                        let _ = started.send(Err(error));
+                    }
+                }
             })?;
+        startup
+            .recv()
+            .context("starting the presentation client")??;
         Ok(Self {
             display: view,
             commands,
@@ -139,11 +159,27 @@ impl Worker {
 
     async fn follow(&mut self, mut client: PresentationClient) -> Result<()> {
         let link = Uuid::new_v4();
-        let mut ticker = interval(REFRESH);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        #[cfg(not(feature = "compio-endpoints"))]
+        let mut ticker = {
+            let mut ticker = interval(REFRESH);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            ticker
+        };
         self.refresh(&mut client, link).await?;
+        #[cfg(not(feature = "compio-endpoints"))]
         ticker.tick().await;
+        #[cfg(feature = "compio-endpoints")]
+        let mut refresh_at = Instant::now() + REFRESH;
         loop {
+            let periodic = async {
+                #[cfg(feature = "compio-endpoints")]
+                {
+                    sleep_until(refresh_at).await;
+                    refresh_at = Instant::now() + REFRESH;
+                }
+                #[cfg(not(feature = "compio-endpoints"))]
+                ticker.tick().await;
+            };
             let completion = tokio::select! {
                 command = self.commands.recv() => {
                     let Some(command) = command else { return Ok(()) };
@@ -164,7 +200,7 @@ impl Worker {
                     }
                     None
                 }
-                _ = ticker.tick() => None,
+                _ = periodic => None,
             };
             let refreshed = self.refresh(&mut client, link).await;
             if let Some(completion) = completion {

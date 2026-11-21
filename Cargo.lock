@@ -1585,6 +1585,7 @@ name = "corvid-presentation"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "compio",
  "corvid-companion",
  "corvid-protocol",
  "tokio",

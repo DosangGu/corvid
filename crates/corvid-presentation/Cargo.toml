@@ -8,7 +8,11 @@ repository.workspace = true
 description = "Shared presentation logic for Corvid clients"
 publish = ["crates-io"]
 
+[features]
+compio-endpoints = ["dep:compio", "corvid-companion/compio-endpoints"]
+
 [dependencies]
+compio = { workspace = true, optional = true }
 anyhow.workspace = true
 corvid-companion.workspace = true
 corvid-protocol.workspace = true
