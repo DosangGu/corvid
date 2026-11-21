@@ -7,10 +7,10 @@ use corvid_protocol::wire::{
     UnregisterClientBinding,
 };
 use corvid_protocol::{CAPABILITY_QUERY, COMMAND_TIMEOUT, ProtocolFault, Session};
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::endpoint::{ControlConnection, ControlEndpoint};
+use crate::endpoint_time::timeout;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod local;

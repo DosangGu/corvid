@@ -18,7 +18,6 @@ use tokio::process::ChildStderr;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 #[cfg(not(feature = "compio-endpoints"))]
@@ -29,9 +28,11 @@ use crate::connection::Connection;
 ))]
 use crate::connection::open;
 
+use crate::endpoint_time::timeout;
+
 mod bootstrap;
 #[cfg(feature = "compio-endpoints")]
-mod native;
+pub(crate) mod native;
 #[cfg(feature = "compio-endpoints")]
 mod presentation;
 #[cfg(feature = "compio-endpoints")]
