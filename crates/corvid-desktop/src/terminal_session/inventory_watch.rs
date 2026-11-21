@@ -1,4 +1,5 @@
 use super::*;
+use crate::inventory_runtime::{self, sleep, sleep_until, timeout_at};
 
 const RETRY_MIN: Duration = Duration::from_millis(100);
 const RETRY_MAX: Duration = Duration::from_secs(3);
@@ -18,22 +19,15 @@ impl InventoryWatch {
         epoch: String,
         shared: Arc<Shared>,
     ) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
         let (stop, stopped) = oneshot::channel();
         let (finished, receive_finished) = oneshot::channel();
-        let thread = thread::Builder::new()
-            .name("corvid-desktop-inventory".into())
-            .spawn(move || {
-                runtime.block_on(async {
-                    tokio::select! {
-                        _ = stopped => {}
-                        _ = monitor(endpoint, host, epoch, &shared) => {}
-                    }
-                });
-                let _ = finished.send(());
-            })?;
+        let thread = inventory_runtime::start("corvid-desktop-inventory", move || async move {
+            tokio::select! {
+                _ = stopped => {}
+                _ = monitor(endpoint, host, epoch, &shared) => {}
+            }
+            let _ = finished.send(());
+        })?;
         Ok(Self {
             stop: Some(stop),
             thread: Some(thread),
@@ -91,7 +85,7 @@ async fn monitor(endpoint: ControlEndpoint, host: String, epoch: String, shared:
         if ssh {
             let retry = ssh_retry.get_or_insert_with(SshRetry::default);
             if let Some(next) = retry.next_attempt(&error) {
-                tokio::time::sleep_until(next).await;
+                sleep_until(next).await;
                 if Instant::now() < retry.deadline() {
                     continue;
                 }
@@ -108,7 +102,7 @@ async fn monitor(endpoint: ControlEndpoint, host: String, epoch: String, shared:
         if started.elapsed() >= RETRY_MAX {
             retry = RETRY_MIN;
         }
-        tokio::time::sleep(retry).await;
+        sleep(retry).await;
         retry = (retry * 2).min(RETRY_MAX);
     }
 }
@@ -123,7 +117,7 @@ async fn synchronize(
 ) -> Result<()> {
     let connection = endpoint.watch(controller, host, || {});
     let mut watch = match retry {
-        Some(retry) => tokio::time::timeout_at(retry.deadline(), connection).await??,
+        Some(retry) => timeout_at(retry.deadline(), connection).await??,
         None => connection.await?,
     };
     ensure!(

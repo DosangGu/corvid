@@ -7,7 +7,14 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-compio-endpoints = ["corvid-companion/compio-endpoints"]
+compio-endpoints = [
+    "dep:compio",
+    "corvid-agent-deck/compio-endpoints",
+    "corvid-companion/compio-endpoints",
+    "corvid-tui/compio-daemon",
+    "corvid-tui/compio-endpoints",
+    "corvid-tui/compio-probe",
+]
 
 [[bin]]
 name = "corvid-desktop"
@@ -24,6 +31,7 @@ harness = false
 [target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+compio = { workspace = true, optional = true }
 corvid-agent-deck.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
