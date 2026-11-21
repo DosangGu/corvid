@@ -3,7 +3,7 @@ use std::io::{self, ErrorKind};
 use prost::Message;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::time::timeout;
+use tokio::time::sleep;
 
 use crate::preflight;
 use crate::session::{COMMAND_TIMEOUT, valid_id};
@@ -123,15 +123,25 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
+        self.next_frame_with_deadline(|| sleep(COMMAND_TIMEOUT))
+            .await
+    }
+
+    /// The deadline starts after the first frame byte arrives.
+    pub async fn next_frame_with_deadline<F: Future<Output = ()>>(
+        &mut self,
+        deadline: impl FnOnce() -> F,
+    ) -> Result<Option<Frame>, FrameError> {
         let mut length = [0; 4];
         if self.reader.read(&mut length[..1]).await? == 0 {
             return Ok(None);
         }
 
-        let frame = timeout(COMMAND_TIMEOUT, self.complete_frame(length))
-            .await
-            .map_err(|_| FrameError::Timeout)??;
-        Ok(Some(frame))
+        tokio::select! {
+            biased;
+            frame = self.complete_frame(length) => frame.map(Some),
+            _ = deadline() => Err(FrameError::Timeout),
+        }
     }
 
     async fn complete_frame(&mut self, mut length: [u8; 4]) -> Result<Frame, FrameError> {
@@ -160,7 +170,15 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 
     pub async fn next_envelope(&mut self) -> Result<Option<Envelope>, FrameError> {
-        match self.next_frame().await? {
+        self.next_envelope_with_deadline(|| sleep(COMMAND_TIMEOUT))
+            .await
+    }
+
+    pub async fn next_envelope_with_deadline<F: Future<Output = ()>>(
+        &mut self,
+        deadline: impl FnOnce() -> F,
+    ) -> Result<Option<Envelope>, FrameError> {
+        match self.next_frame_with_deadline(deadline).await? {
             Some(Frame::Structured(payload)) => decode_envelope(&payload).map(Some),
             Some(Frame::Render(_)) => Err(FrameError::WrongRole),
             None => Ok(None),

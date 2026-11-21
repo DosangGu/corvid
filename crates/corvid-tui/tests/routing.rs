@@ -38,6 +38,35 @@ use common::{WAIT, command, daemon, start_daemon, wait_for_daemon};
 const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
+#[cfg(feature = "compio-probe")]
+#[tokio::test]
+async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let runtime = fixture.path().join("run");
+    let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
+
+    corvid_client::ping(&runtime).await?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let auto = compio::runtime::Runtime::new()?;
+        auto.block_on(corvid_client::compio_ping(&runtime))?;
+
+        #[cfg(target_os = "linux")]
+        {
+            use compio::driver::{DriverType, ProactorBuilder};
+
+            let mut driver = ProactorBuilder::new();
+            driver.driver_type(DriverType::Poll);
+            let polling = compio::runtime::Runtime::builder()
+                .with_proactor(driver)
+                .build()?;
+            assert_eq!(polling.driver_type(), DriverType::Poll);
+            polling.block_on(corvid_client::compio_ping(&runtime))?;
+        }
+        Ok(())
+    })
+    .await?
+}
+
 #[tokio::test]
 async fn automatic_titles_follow_bash_prompts_and_application_updates_on_one_watch() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
