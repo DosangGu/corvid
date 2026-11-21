@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::executor::time::timeout;
 use crate::executor::{Task, blocking};
 use anyhow::Result;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -26,7 +27,6 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::agents::Agents;

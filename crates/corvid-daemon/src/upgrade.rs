@@ -2,6 +2,7 @@ use std::future::pending;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::executor::time::{sleep, timeout};
 use anyhow::{Context, Result};
 use corvid_protocol::upgrade::encode_state_path;
 use corvid_protocol::wire::DaemonUpgradeReady;
@@ -10,7 +11,6 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, DAEMON_HANDOFF_CAPABILITY, DAEMON_UPGRADE_CAPABILITY, PeerRole, ProtocolFault,
     Session,
 };
-use tokio::time::{sleep, timeout};
 
 use crate::control::handshake;
 use crate::identity::Identity;

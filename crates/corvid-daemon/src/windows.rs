@@ -78,8 +78,9 @@ pub(crate) async fn serve_daemon(
     let mut controls = PeerTasks::new();
     let mut clients = PeerTasks::new();
     let mut collectors = PeerTasks::new();
-    let mut agents = tokio::time::interval(Duration::from_secs(1));
-    agents.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut agents = crate::executor::time::interval(Duration::from_secs(1));
+    #[cfg(not(feature = "compio"))]
+    agents.set_missed_tick_behavior(crate::executor::time::MissedTickBehavior::Skip);
     tokio::pin!(shutdown);
 
     // Keep each ConnectNamedPipe operation alive across unrelated events.
@@ -148,7 +149,7 @@ pub(crate) async fn serve_daemon(
     collectors.shutdown().await;
     workspaces.shutdown().await?;
     drop(workspaces);
-    tokio::time::timeout(COMMAND_TIMEOUT, saver.finish())
+    crate::executor::time::timeout(COMMAND_TIMEOUT, saver.finish())
         .await
         .context("metadata save shutdown timed out")??;
     Ok(())

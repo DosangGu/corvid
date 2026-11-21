@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use crate::executor::time::timeout;
 use corvid_protocol::controller::PAIRING_SECONDS;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
@@ -9,7 +10,6 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, Session};
 use tokio::sync::watch;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::focus::{FocusDispatch, FocusTarget};

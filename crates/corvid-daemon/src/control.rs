@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::executor::Instant;
+use crate::executor::time::{sleep_until, timeout};
 use crate::platform::{FrameReader, FrameWriter, ReadHalf, Stream, WriteHalf};
 use anyhow::{Context, Result};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -15,7 +17,6 @@ use corvid_protocol::{
     PeerRole, ProtocolFault, Session, accept_hello_with_profiles,
 };
 use prost::Message;
-use tokio::time::{Instant, sleep_until, timeout};
 
 use crate::identity::Identity;
 use crate::incoming::Incoming;

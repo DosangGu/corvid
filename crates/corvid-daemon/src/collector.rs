@@ -5,6 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::executor::time::sleep;
+use crate::executor::time::timeout;
 use anyhow::{Context, Result};
 use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY};
 use corvid_protocol::collector::{
@@ -21,9 +24,6 @@ use corvid_protocol::wire::ShellAgentRegistered;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{PeerRole, ProtocolFault};
 use portable_pty::CommandBuilder;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use tokio::time::sleep;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

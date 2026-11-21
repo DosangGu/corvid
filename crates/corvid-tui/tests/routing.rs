@@ -38,6 +38,33 @@ use common::{WAIT, command, daemon, start_daemon, wait_for_daemon};
 const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
+#[cfg(feature = "compio-daemon")]
+#[tokio::test]
+async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::Result<()> {
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let runtime = fixture.path().join("run");
+    let state = fixture.path().join("state");
+    let mut first = daemon(&runtime, &state).await;
+    let before = corvid_client::host(&runtime).await?;
+
+    let pid = i32::try_from(first.id().unwrap())?;
+    // The PID belongs to this test's live daemon child.
+    let signalled = unsafe { nix::libc::kill(pid, nix::libc::SIGTERM) };
+    if signalled == -1 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    assert!(timeout(WAIT, first.wait()).await??.success());
+    assert!(!runtime.join("control.sock").exists());
+    assert!(!runtime.join("client.sock").exists());
+    assert!(!runtime.join("collector.sock").exists());
+
+    let _second = daemon(&runtime, &state).await;
+    let after = corvid_client::host(&runtime).await?;
+    assert_eq!(after.host_id, before.host_id);
+    assert_ne!(after.server_epoch, before.server_epoch);
+    Ok(())
+}
+
 #[cfg(feature = "compio-probe")]
 #[tokio::test]
 async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {

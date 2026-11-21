@@ -38,7 +38,7 @@ pub(crate) async fn prepare(
     clients.shutdown().await;
     let result = async {
         ensure!(
-            tokio::time::timeout(corvid_protocol::COMMAND_TIMEOUT, metadata.wait_saved())
+            crate::executor::time::timeout(corvid_protocol::COMMAND_TIMEOUT, metadata.wait_saved())
                 .await
                 .unwrap_or(false),
             corvid_protocol::ProtocolFault::new(

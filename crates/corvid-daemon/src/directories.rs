@@ -2,10 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::executor::time::timeout;
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::{BrowseDirectories, DirectoryEntry, DirectoryListing};
 use tokio::sync::Semaphore;
-use tokio::time::timeout;
 
 const MAX_PATH: usize = 4096;
 const MAX_ENTRIES: usize = 128;

@@ -145,6 +145,15 @@ pub(super) fn dispatch(
             hooks::observe(provider, neutral_json, false, runtime, started);
             Ok(0)
         }
+        #[cfg(feature = "compio-daemon")]
+        Command::Daemon {
+            state_dir,
+            autostarted,
+        } => {
+            let runtime = runtime_path(runtime)?;
+            let state = state_path(state_dir)?;
+            crate::run_compio_daemon(&runtime, &state, autostarted)
+        }
         #[cfg(feature = "compio-probe")]
         Command::Control {
             stdio: false,
@@ -171,6 +180,9 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
         runtime_path(runtime)?
     };
     match command {
+        #[cfg(feature = "compio-daemon")]
+        Command::Daemon { .. } => unreachable!("Compio daemon dispatched before the CLI executor"),
+        #[cfg(not(feature = "compio-daemon"))]
         Command::Daemon {
             state_dir,
             autostarted,
