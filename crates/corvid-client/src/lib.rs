@@ -1,3 +1,8 @@
+#[cfg(all(feature = "compio", any(target_os = "linux", target_os = "macos")))]
+mod compio_relay;
+#[cfg(all(feature = "compio", any(target_os = "linux", target_os = "macos")))]
+pub use compio_relay::{compio_relay, compio_relay_tui};
+
 #[cfg(all(
     feature = "compio",
     any(target_os = "linux", target_os = "macos", windows)

@@ -98,21 +98,24 @@ async fn bootstrap_fault(
             .next_envelope()
             .await?
             .context("missing relay Hello")?;
-        ensure!(
-            matches!(request.body, Some(Body::Hello(_))),
-            "expected relay Hello"
-        );
-        let reply = Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id: request
-                .request_id
-                .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
-            body: Some(Body::Error(fault.into_wire())),
-            ..Default::default()
-        };
-        outgoing.envelope(&reply).await?;
+        outgoing.envelope(&bootstrap_reply(request, fault)?).await?;
         Ok(())
     })
     .await?
+}
+
+pub(crate) fn bootstrap_reply(request: Envelope, fault: ProtocolFault) -> Result<Envelope> {
+    ensure!(
+        matches!(request.body, Some(Body::Hello(_))),
+        "expected relay Hello"
+    );
+    Ok(Envelope {
+        protocol_major: PROTOCOL_MAJOR,
+        protocol_minor: PROTOCOL_MINOR,
+        request_id: request
+            .request_id
+            .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
+        body: Some(Body::Error(fault.into_wire())),
+        ..Default::default()
+    })
 }

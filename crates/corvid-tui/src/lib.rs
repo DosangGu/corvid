@@ -342,6 +342,26 @@ pub fn run() -> ExitCode {
     }
 }
 
+#[cfg(all(
+    feature = "compio-probe",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+fn run_compio(run: impl Future<Output = Result<()>>) -> Result<u32> {
+    compio::runtime::Runtime::new()?.block_on(run)?;
+    Ok(0)
+}
+
+#[cfg(all(
+    feature = "compio-probe",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+fn compio_ping(runtime_dir: Option<PathBuf>) -> Result<u32> {
+    let runtime = corvid_client::runtime_path(runtime_dir)?;
+    let code = run_compio(corvid_client::compio_ping(&runtime))?;
+    println!("pong");
+    Ok(code)
+}
+
 fn execute(run: impl Future<Output = Result<u32>>) -> Result<u32> {
     let executor = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

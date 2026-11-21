@@ -1,0 +1,50 @@
+name: Checks / Compio IPC
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/checks-compio.yml'
+      - '.cargo/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/corvid-protocol/**'
+      - 'crates/corvid-client/**'
+      - 'crates/corvid-daemon/**'
+      - 'crates/corvid-tui/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-compio-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+
+jobs:
+  ipc:
+    name: Compio IPC (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Compile and test framing and private listeners
+        run: cargo test --locked -p corvid-protocol --features compio --test framing --test compio_listeners
+      - name: Exercise actual Unix CLI and relays
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: cargo test --locked -p corvid-tui --features compio-probe --test routing compio_
+      - name: Exercise actual Windows daemon and Compio client
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p corvid-tui --features compio-probe --test windows_daemon compio_
