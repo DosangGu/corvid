@@ -10,6 +10,7 @@ use corvid_protocol::{CAPABILITY_QUERY, COMMAND_TIMEOUT, ProtocolFault};
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use crate::connection::Connection;
 use crate::endpoint::{ControlConnection, ControlEndpoint};
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -166,13 +167,29 @@ async fn exchange(
     body: Body,
     request_id: String,
 ) -> Result<Body> {
-    let wire = &mut connection.wire;
+    exchange_wire(&mut connection.wire, body, request_id, || {
+        tokio::time::sleep(COMMAND_TIMEOUT)
+    })
+    .await
+}
+
+pub(crate) async fn exchange_wire<R, W, F>(
+    wire: &mut Connection<R, W>,
+    body: Body,
+    request_id: String,
+    frame_deadline: impl FnOnce() -> F,
+) -> Result<Body>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+    F: Future<Output = ()>,
+{
     let session = &wire.session;
     let request = session.envelope(Some(request_id), body);
     wire.writer.envelope(&request).await?;
     let reply = wire
         .reader
-        .next_envelope()
+        .next_envelope_with_deadline(frame_deadline)
         .await?
         .context("daemon closed during command")?;
     session.validate_scope(&reply)?;

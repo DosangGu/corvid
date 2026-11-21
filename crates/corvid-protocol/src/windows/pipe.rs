@@ -95,6 +95,28 @@ pub async fn open_scoped(prefix: &str, instance: &str) -> Result<NamedPipeClient
     Ok(pipe)
 }
 
+#[cfg(feature = "compio")]
+pub(super) async fn open_compio(
+    prefix: &str,
+    instance: &str,
+) -> Result<compio::fs::named_pipe::NamedPipeClient> {
+    let user = current_user()?;
+    let name = pipe_name(prefix, &user, instance)?;
+    let mut options = compio::fs::named_pipe::ClientOptions::new();
+    options.security_qos_flags(SECURITY_IDENTIFICATION);
+    let pipe = loop {
+        match options.open(&name).await {
+            Ok(pipe) => break pipe,
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                compio::time::sleep(Duration::from_millis(2)).await;
+            }
+            Err(error) => return Err(error).context("connecting to private pipe"),
+        }
+    };
+    verify_private(pipe.as_raw_handle(), &user, false)?;
+    Ok(pipe)
+}
+
 fn pipe_name(prefix: &str, user: &str, instance: &str) -> Result<String> {
     ensure!(
         (1..=32).contains(&instance.len())

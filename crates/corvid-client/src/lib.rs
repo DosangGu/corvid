@@ -1,3 +1,13 @@
+#[cfg(all(
+    feature = "compio",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+mod compio_probe;
+#[cfg(all(
+    feature = "compio",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+pub use compio_probe::compio_ping;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod attach;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

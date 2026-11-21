@@ -23,6 +23,21 @@ const WAIT: Duration = Duration::from_secs(12);
 const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
+#[cfg(feature = "compio-probe")]
+#[tokio::test]
+async fn compio_control_ping_uses_the_existing_daemon() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+
+    corvid_client::ping(&runtime).await?;
+    tokio::task::spawn_blocking(move || {
+        compio::runtime::Runtime::new()?.block_on(corvid_client::compio_ping(&runtime))
+    })
+    .await?
+}
+
 #[tokio::test]
 async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shell() -> Result<()> {
     let fixture = tempfile::tempdir()?;

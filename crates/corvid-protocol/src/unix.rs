@@ -201,9 +201,7 @@ impl RuntimeDir {
     }
 
     pub async fn connect(&self, role: SocketRole) -> Result<UnixStream> {
-        let path = self.socket_path(role)?;
-        let metadata = fs::symlink_metadata(&path).context("opening daemon socket")?;
-        check_socket(&metadata, self.uid)?;
+        let path = self.checked_socket_path(role)?;
 
         let stream = timeout(SOCKET_PROBE_TIMEOUT, UnixStream::connect(&path))
             .await
@@ -211,6 +209,27 @@ impl RuntimeDir {
             .context("connecting to daemon socket")?;
         authenticate(&stream, self.uid)?;
         Ok(stream)
+    }
+
+    #[cfg(feature = "compio")]
+    pub async fn connect_compio(&self, role: SocketRole) -> Result<compio::net::UnixStream> {
+        let path = self.checked_socket_path(role)?;
+        let stream = compio::time::timeout(
+            SOCKET_PROBE_TIMEOUT,
+            compio::net::UnixStream::connect(&path),
+        )
+        .await
+        .context("connecting to daemon socket timed out")?
+        .context("connecting to daemon socket")?;
+        authenticate(&stream, self.uid)?;
+        Ok(stream)
+    }
+
+    fn checked_socket_path(&self, role: SocketRole) -> Result<PathBuf> {
+        let path = self.socket_path(role)?;
+        let metadata = fs::symlink_metadata(&path).context("opening daemon socket")?;
+        check_socket(&metadata, self.uid)?;
+        Ok(path)
     }
 
     fn socket_path(&self, role: SocketRole) -> Result<PathBuf> {
@@ -318,11 +337,17 @@ fn check_socket(metadata: &Metadata, uid: u32) -> Result<()> {
     Ok(())
 }
 
-fn authenticate(stream: &UnixStream, uid: u32) -> Result<()> {
-    let peer = stream
-        .peer_cred()
-        .context("reading Unix peer credentials")?;
-    ensure!(peer.uid() == uid, "unauthorized Unix peer UID");
+fn authenticate(stream: &impl AsFd, uid: u32) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    let peer_uid = nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
+        .context("reading Unix peer credentials")?
+        .uid();
+    #[cfg(target_os = "macos")]
+    let peer_uid = nix::unistd::getpeereid(stream)
+        .context("reading Unix peer credentials")?
+        .0
+        .as_raw();
+    ensure!(peer_uid == uid, "unauthorized Unix peer UID");
     Ok(())
 }
 

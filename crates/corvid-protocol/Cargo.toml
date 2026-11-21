@@ -8,10 +8,13 @@ repository.workspace = true
 description = "Local transport and wire protocol for Corvid"
 publish = ["crates-io"]
 
+[features]
+compio = ["dep:compio"]
+
 [dependencies]
 prost.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "time"] }
 uuid.workspace = true
 
 [build-dependencies]
@@ -21,12 +24,14 @@ protox.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 anyhow.workspace = true
-nix = { workspace = true, features = ["fs", "user"] }
+compio = { workspace = true, optional = true, features = ["net"] }
+nix = { workspace = true, features = ["fs", "user", "socket"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net"] }
 
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
+compio = { workspace = true, optional = true, features = ["fs"] }
 tokio = { workspace = true, features = ["net"] }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem",

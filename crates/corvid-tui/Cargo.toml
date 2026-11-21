@@ -12,7 +12,11 @@ publish = ["crates-io"]
 name = "corvid"
 path = "src/main.rs"
 
+[features]
+compio-probe = ["corvid-client/compio", "dep:compio"]
+
 [dependencies]
+compio = { workspace = true, optional = true }
 anyhow.workspace = true
 clap.workspace = true
 corvid-client.workspace = true

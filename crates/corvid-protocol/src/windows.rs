@@ -37,6 +37,16 @@ impl DaemonPipe {
         PipeListener::bind_scoped(self.prefix(), &runtime.file_id()?)
     }
 
+    #[cfg(feature = "compio")]
+    pub async fn connect_compio(
+        self,
+        path: &Path,
+    ) -> Result<compio::fs::named_pipe::NamedPipeClient> {
+        let runtime = StateDirectory::open(path)?;
+        let instance = runtime.file_id()?;
+        compio::time::timeout(COMMAND_TIMEOUT, pipe::open_compio(self.prefix(), &instance)).await?
+    }
+
     pub async fn connect(self, path: &Path) -> Result<NamedPipeClient> {
         let runtime = StateDirectory::open(path)?;
         let instance = runtime.file_id()?;

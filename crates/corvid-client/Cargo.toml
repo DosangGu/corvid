@@ -8,7 +8,13 @@ repository.workspace = true
 description = "Client for the Corvid terminal multiplexer daemon"
 publish = ["crates-io"]
 
+[features]
+compio = ["corvid-protocol/compio", "dep:compio", "dep:compio-io", "dep:tokio-util"]
+
 [dependencies]
+compio = { workspace = true, optional = true }
+compio-io = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 anyhow.workspace = true
 base64.workspace = true
 corvid-core.workspace = true
@@ -35,3 +41,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[[example]]
+name = "compio-ping"
+required-features = ["compio"]
