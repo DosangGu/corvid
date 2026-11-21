@@ -66,6 +66,17 @@ pub use windows::run_with_options;
 #[cfg(all(windows, feature = "compio"))]
 use windows::serve_daemon;
 
+/// Run the daemon on the current Compio runtime. The caller owns shutdown signals.
+#[cfg(feature = "compio")]
+pub async fn run_native(
+    runtime_path: &std::path::Path,
+    state_path: &std::path::Path,
+    autostarted: bool,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> anyhow::Result<()> {
+    serve_daemon(runtime_path, state_path, autostarted, shutdown).await
+}
+
 /// Read an existing daemon identity without creating state.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn stored_host_id(state_path: &std::path::Path) -> anyhow::Result<Option<uuid::Uuid>> {
@@ -130,8 +141,9 @@ async fn serve_daemon(
     let mut controls = PeerTasks::new();
     let mut clients = PeerTasks::new();
     let mut collectors = PeerTasks::new();
-    let mut agent_clock = tokio::time::interval(Duration::from_millis(250));
-    agent_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut agent_clock = crate::executor::time::interval(Duration::from_millis(250));
+    #[cfg(not(feature = "compio"))]
+    agent_clock.set_missed_tick_behavior(crate::executor::time::MissedTickBehavior::Skip);
     let incoming_upgrade = upgrade::listen(upgrade_socket.as_ref(), &identity);
     tokio::pin!(incoming_upgrade);
     tokio::pin!(shutdown);
@@ -170,7 +182,7 @@ async fn serve_daemon(
                     }
                     Ok(Some(_)) => workspaces.collector.admission_refused(),
                     Ok(None) => {}
-                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+                    Err(_) => crate::executor::time::sleep(Duration::from_millis(25)).await,
                 }
             },
             peer = &mut incoming_control => {
@@ -183,7 +195,7 @@ async fn serve_daemon(
                         controls.spawn(async move { control::serve(stream, &identity, &metadata, &workspaces).await });
                     }
                     Ok(_) => {}
-                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+                    Err(_) => crate::executor::time::sleep(Duration::from_millis(25)).await,
                 }
             },
             peer = &mut incoming_client => {
@@ -195,7 +207,7 @@ async fn serve_daemon(
                         clients.spawn(async move { tui::serve(stream, &identity, &workspaces).await });
                     }
                     Ok(_) => {}
-                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+                    Err(_) => crate::executor::time::sleep(Duration::from_millis(25)).await,
                 }
             }
         }
@@ -205,7 +217,7 @@ async fn serve_daemon(
     collectors.shutdown().await;
     workspaces.shutdown().await?;
     drop(workspaces);
-    tokio::time::timeout(COMMAND_TIMEOUT, saver.finish())
+    crate::executor::time::timeout(COMMAND_TIMEOUT, saver.finish())
         .await
         .context("metadata save shutdown timed out")??;
     Ok(())

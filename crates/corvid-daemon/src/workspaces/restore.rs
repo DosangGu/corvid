@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::executor::Instant;
+use crate::executor::time::sleep;
 use crate::executor::{blocking, spawn};
 use corvid_core::agent::{AgentSessionKey, Provider};
 use corvid_core::layout::Location;
 use corvid_protocol::wire::{
     AgentRestoreMode, PaneRestoreResult, PaneRestoreStatus, RestoreWorkspace, WorkspaceRestored,
 };
-use tokio::time::{Instant, sleep};
 use uuid::Uuid;
 
 use super::{Launch, ProtocolFault, Registry, Reply, Workspaces};
@@ -353,8 +354,8 @@ mod tests {
     use std::ffi::OsStr;
     use std::sync::Arc;
 
+    use crate::executor::time::timeout;
     use corvid_core::layout::{CwdObservation, CwdSource};
-    use tokio::time::timeout;
 
     use super::*;
     use crate::collector::HookEnvironment;
@@ -378,7 +379,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "compio", compio::test)]
+    #[cfg_attr(not(feature = "compio"), tokio::test)]
     async fn registered_fixture_recovers_sessions_and_reports_per_pane_limits() -> anyhow::Result<()>
     {
         let directory = tempfile::tempdir_in(

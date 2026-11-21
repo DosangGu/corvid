@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::executor::time::timeout;
 use crate::platform::{self, FrameWriter, Stream, WriteHalf, decode_os_string};
 use anyhow::Result;
 use corvid_core::agent::Provider;
@@ -22,7 +23,6 @@ use corvid_protocol::{
     TERMINAL_HISTORY_CAPABILITY, WRITER_RESUME_CAPABILITY,
 };
 use tokio::sync::{Semaphore, SemaphorePermit, mpsc, oneshot};
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::control::handshake;

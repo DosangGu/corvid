@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::executor::time::timeout;
 use crate::platform::{FrameWriter, WriteHalf};
 use anyhow::{Result, bail};
 use corvid_protocol::snapshot::{MAX_CHUNK_ENTITIES, MAX_SNAPSHOT_BYTES};
@@ -10,7 +11,6 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{COMMAND_TIMEOUT, FrameError, ProtocolFault, Session};
 use prost::Message;
-use tokio::time::timeout;
 
 use crate::publication::{BODY_BUDGET, Capture, Delta, Watch, resync};
 use crate::workspaces::Workspaces;
@@ -250,7 +250,8 @@ mod tests {
     use super::*;
     use crate::publication::{Group, Publication};
 
-    #[tokio::test]
+    #[cfg_attr(feature = "compio", compio::test)]
+    #[cfg_attr(not(feature = "compio"), tokio::test)]
     async fn watch_overflow_closes_an_incomplete_frame_before_the_write_deadline() {
         let mut publication = Publication::default();
         let watch = publication.capture(true).unwrap().watch.unwrap();
@@ -267,8 +268,9 @@ mod tests {
         };
 
         let payload_len = frame.encoded_len();
-        let task =
-            tokio::spawn(async move { write_frame(writer.envelope(&frame), Some(&watch)).await });
+        let task = crate::executor::spawn_test(async move {
+            write_frame(writer.envelope(&frame), Some(&watch)).await
+        });
         let mut prefix = [0; 9];
         client.read_exact(&mut prefix).await.unwrap();
         assert_eq!(prefix[..4], FRAME_PREAMBLE);

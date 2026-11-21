@@ -362,6 +362,41 @@ fn compio_ping(runtime_dir: Option<PathBuf>) -> Result<u32> {
     Ok(code)
 }
 
+#[cfg(feature = "compio-daemon")]
+fn run_compio_daemon(
+    runtime: &std::path::Path,
+    state: &std::path::Path,
+    autostarted: bool,
+) -> Result<u32> {
+    let executor = compio::runtime::Runtime::new()?;
+    executor.block_on(async {
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let daemon = corvid_daemon::run_native(runtime, state, autostarted, async move {
+            let _ = stopped.await;
+        });
+        let mut daemon = std::pin::pin!(daemon);
+        let signal = async {
+            #[cfg(unix)]
+            tokio::select! {
+                result = compio::signal::unix::signal(nix::libc::SIGTERM) => result,
+                result = compio::signal::ctrl_c() => result,
+            }
+            #[cfg(windows)]
+            compio::signal::ctrl_c().await
+        };
+        tokio::select! {
+            biased;
+            result = signal => {
+                result?;
+                drop(stop);
+                daemon.await?;
+            }
+            result = &mut daemon => result?,
+        }
+        Ok(0)
+    })
+}
+
 fn execute(run: impl Future<Output = Result<u32>>) -> Result<u32> {
     let executor = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

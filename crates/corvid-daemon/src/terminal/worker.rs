@@ -378,7 +378,7 @@ impl TerminalHandle {
     }
 
     pub(crate) async fn resume(&self, route: InputRoute) -> Reply<()> {
-        tokio::time::timeout(COMMAND_TIMEOUT, self.commands.send(Command::Resume(route)))
+        crate::executor::time::timeout(COMMAND_TIMEOUT, self.commands.send(Command::Resume(route)))
             .await
             .map_err(|_| overloaded())?
             .map_err(|_| terminal_fault())
@@ -390,7 +390,7 @@ impl TerminalHandle {
         request_id: Option<String>,
         action: Action,
     ) -> Reply<()> {
-        tokio::time::timeout(
+        crate::executor::time::timeout(
             COMMAND_TIMEOUT,
             self.commands.send(Command::Action {
                 client,
@@ -409,7 +409,7 @@ fn overloaded() -> ProtocolFault {
 }
 
 async fn timeout_reply<T>(reply: oneshot::Receiver<Reply<T>>) -> Reply<T> {
-    tokio::time::timeout(COMMAND_TIMEOUT, reply)
+    crate::executor::time::timeout(COMMAND_TIMEOUT, reply)
         .await
         .map_err(|_| ProtocolFault::new("Timeout", "terminal transition timed out"))?
         .map_err(|_| terminal_fault())?

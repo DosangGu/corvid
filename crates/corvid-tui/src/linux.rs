@@ -19,6 +19,7 @@ use corvid_protocol::wire::{
     InputRequestKind, InputRequestStatus, LayoutRecovery, PersistenceState, ProviderCapabilityKind,
     ProviderCorrelation, ProviderExecutionMode, ProviderQualification, TuiInputMode,
 };
+#[cfg(not(feature = "compio-daemon"))]
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
 
@@ -225,6 +226,15 @@ pub(super) fn execute(
             println!("{settings:#}");
             0
         }),
+        #[cfg(feature = "compio-daemon")]
+        Command::Daemon {
+            state_dir,
+            autostarted,
+        } => {
+            let runtime = runtime_path(runtime_dir)?;
+            let state = state_path(state_dir)?;
+            crate::run_compio_daemon(&runtime, &state, autostarted)
+        }
         #[cfg(feature = "compio-probe")]
         Command::Control {
             stdio: false,
@@ -254,6 +264,9 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
         Command::Hooks { .. } | Command::Observe { .. } => {
             unreachable!("handled before daemon runtime")
         }
+        #[cfg(feature = "compio-daemon")]
+        Command::Daemon { .. } => unreachable!("Compio daemon dispatched before the CLI executor"),
+        #[cfg(not(feature = "compio-daemon"))]
         Command::Daemon {
             state_dir,
             autostarted,

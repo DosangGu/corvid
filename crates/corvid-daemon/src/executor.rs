@@ -59,25 +59,30 @@ mod native {
         let state_path = state_path.to_owned();
         let (stop, stopped) = oneshot::channel::<()>();
 
-        // Keep the completion driver and all its connection tasks on one
-        // thread. The caller's Tokio runtime still drives the workspace,
-        // persistence, and terminal-host tasks during migration.
-        let mut worker = tokio::task::spawn_blocking(move || {
-            let executor = Runtime::new()?;
-            executor.block_on(crate::serve_daemon(
-                &runtime_path,
-                &state_path,
-                autostarted,
-                async move {
-                    let _ = stopped.await;
-                },
-            ))
-        });
+        let (send_result, result) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("corvid-daemon".into())
+            .spawn(move || {
+                let result = Runtime::new()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|executor| {
+                        executor.block_on(crate::run_native(
+                            &runtime_path,
+                            &state_path,
+                            autostarted,
+                            async move {
+                                let _ = stopped.await;
+                            },
+                        ))
+                    });
+                let _ = send_result.send(result);
+            })?;
+        let mut result = result;
         tokio::select! {
-            result = &mut worker => result?,
+            result = &mut result => result?,
             () = shutdown => {
                 drop(stop);
-                worker.await?
+                result.await?
             }
         }
     }
@@ -86,68 +91,72 @@ mod native {
 #[cfg(feature = "compio")]
 pub(crate) use native::{PeerTasks, run};
 
+use anyhow::Result;
 use std::future::Future;
 
-use anyhow::Result;
+#[cfg(feature = "compio")]
+use compio::runtime::{JoinHandle, spawn as spawn_task, spawn_blocking};
+#[cfg(not(feature = "compio"))]
+use tokio::task::{JoinHandle, spawn as spawn_task, spawn_blocking};
 
-pub(crate) enum Task {
-    Tokio(tokio::task::JoinHandle<()>),
-    #[cfg(feature = "compio")]
-    Compio(compio::runtime::JoinHandle<()>),
-}
+#[cfg(feature = "compio")]
+pub(crate) use compio::time;
+#[cfg(feature = "compio")]
+pub(crate) use std::time::Instant;
+#[cfg(not(feature = "compio"))]
+pub(crate) use tokio::time;
+#[cfg(not(feature = "compio"))]
+pub(crate) use tokio::time::Instant;
+
+pub(crate) struct Task(JoinHandle<()>);
 
 impl Task {
     pub(crate) fn detach(self) {
-        match self {
-            Self::Tokio(task) => drop(task),
-            #[cfg(feature = "compio")]
-            Self::Compio(task) => task.detach(),
-        }
+        #[cfg(feature = "compio")]
+        self.0.detach();
+        #[cfg(not(feature = "compio"))]
+        drop(self.0);
     }
 
     pub(crate) fn is_finished(&self) -> bool {
-        match self {
-            Self::Tokio(task) => task.is_finished(),
-            #[cfg(feature = "compio")]
-            Self::Compio(task) => task.is_finished(),
-        }
+        self.0.is_finished()
     }
 
     pub(crate) async fn finish(self) -> Result<()> {
-        match self {
-            Self::Tokio(task) => Ok(task.await?),
-            #[cfg(feature = "compio")]
-            Self::Compio(task) => task
-                .await
-                .map_err(|error| anyhow::anyhow!(error.to_string())),
-        }
+        join_result(self.0).await
     }
 }
 
+#[cfg(feature = "compio")]
+pub(crate) fn spawn(task: impl Future<Output = ()> + 'static) -> Task {
+    Task(spawn_task(task))
+}
+
+#[cfg(not(feature = "compio"))]
 pub(crate) fn spawn(task: impl Future<Output = ()> + Send + 'static) -> Task {
-    #[cfg(feature = "compio")]
-    if let Some(runtime) = compio::runtime::Runtime::try_current() {
-        return Task::Compio(runtime.spawn(task));
-    }
-    Task::Tokio(tokio::spawn(task))
+    Task(spawn_task(task))
 }
 
 pub(crate) fn spawn_worker(work: impl FnOnce() + Send + 'static) -> Task {
-    #[cfg(feature = "compio")]
-    if let Some(runtime) = compio::runtime::Runtime::try_current() {
-        return Task::Compio(runtime.spawn_blocking(work));
-    }
-    Task::Tokio(tokio::task::spawn_blocking(work))
+    Task(spawn_blocking(work))
 }
 
 pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T> {
-    #[cfg(feature = "compio")]
-    if compio::runtime::Runtime::try_current().is_some() {
-        return compio::runtime::spawn_blocking(work)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()));
-    }
-    Ok(tokio::task::spawn_blocking(work).await?)
+    join_result(spawn_blocking(work)).await
 }
+
+async fn join_result<T>(task: JoinHandle<T>) -> Result<T> {
+    #[cfg(feature = "compio")]
+    return task
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()));
+    #[cfg(not(feature = "compio"))]
+    Ok(task.await?)
+}
+
+#[cfg(all(test, feature = "compio"))]
+pub(crate) use compio::runtime::spawn as spawn_test;
+#[cfg(all(test, not(feature = "compio")))]
+pub(crate) use tokio::spawn as spawn_test;

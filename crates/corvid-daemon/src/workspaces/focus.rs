@@ -382,13 +382,13 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use crate::executor::time::timeout;
     use corvid_core::agent::{ProcessLiveness, Provider, Source};
     use corvid_core::layout::Layout;
     use corvid_core::{KEY_LEADER, Viewport};
     use corvid_protocol::COMMAND_TIMEOUT;
     use corvid_protocol::wire::TuiInputMode;
     use tokio::sync::mpsc;
-    use tokio::time::timeout;
 
     use super::*;
     use crate::agents::ManagedLaunch;
@@ -460,7 +460,7 @@ mod tests {
         let registry = workspaces.registry.downgrade();
         let location = target.location;
         let terminal = target.route.terminal_id;
-        let managed = tokio::task::spawn_blocking(move || {
+        let managed = crate::executor::blocking(move || {
             let managed = ManagedLaunch::reserve(
                 &registry,
                 location,
@@ -487,7 +487,8 @@ mod tests {
         (run, managed)
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "compio", compio::test)]
+    #[cfg_attr(not(feature = "compio"), tokio::test)]
     async fn attaching_by_run_opens_its_exact_pane_and_respects_the_existing_writer() {
         let workspaces = workspaces();
         let (target, _mailbox) = attach(&workspaces, Some("Agent")).await;
@@ -540,7 +541,8 @@ mod tests {
         assert_eq!(active.route.terminal_id, terminal);
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "compio", compio::test)]
+    #[cfg_attr(not(feature = "compio"), tokio::test)]
     async fn revoking_binding_after_fence_restores_source_with_a_new_input_token() {
         let workspaces = workspaces();
         let (target, _target_mailbox) = attach(&workspaces, None).await;

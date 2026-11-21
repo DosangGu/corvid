@@ -282,7 +282,7 @@ async fn write_loop(
     saved: watch::Sender<Saved>,
 ) {
     while updates.changed().await.is_ok() {
-        tokio::time::sleep(DEBOUNCE).await;
+        crate::executor::time::sleep(DEBOUNCE).await;
         let stored = updates.borrow_and_update().clone();
         let snapshot = stored.clone();
         let result = executor::blocking(move || {
