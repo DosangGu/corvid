@@ -158,12 +158,29 @@ enum Command {
 pub(super) fn dispatch(options: Options, daemon_runtime: Option<PathBuf>) -> Result<u32> {
     #[cfg(feature = "compio-endpoints")]
     if matches!(options.command, Command::Run) {
-        return compio::runtime::Runtime::new()?.block_on(run_native(options));
+        return start_native(options);
     }
     crate::execute(async move {
         execute(options, daemon_runtime).await?;
         Ok(0)
     })
+}
+
+#[cfg(feature = "compio-endpoints")]
+fn start_native(options: Options) -> Result<u32> {
+    #[cfg(windows)]
+    {
+        // The Windows executable's main stack is small. The unoptimized
+        // companion futures need room for nested protocol and timer polling.
+        std::thread::Builder::new()
+            .name("corvid-companion".into())
+            .stack_size(4 * 1024 * 1024)
+            .spawn(move || compio::runtime::Runtime::new()?.block_on(run_native(options)))?
+            .join()
+            .map_err(|_| anyhow::anyhow!("Compio companion worker panicked"))?
+    }
+    #[cfg(not(windows))]
+    compio::runtime::Runtime::new()?.block_on(run_native(options))
 }
 
 #[cfg(feature = "compio-endpoints")]
