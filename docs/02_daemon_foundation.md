@@ -490,7 +490,8 @@ With the feature enabled, the companion CLI starts its service and shutdown
 signals on Compio, and snapshot watches run their heartbeats and backpressure
 deadlines on the shared Compio endpoint driver. The same feature runs Desktop's
 workspace lookup and inventory workers on Compio, including their reconnect
-deadlines.
+deadlines. Agent Deck runs its slot presentation client on Compio, including
+refresh, reconnection, and request deadlines.
 
 ## Verification
 
