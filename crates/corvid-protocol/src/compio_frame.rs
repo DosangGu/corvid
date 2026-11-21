@@ -1,6 +1,6 @@
 use std::io::ErrorKind;
 
-use ::compio::buf::IoBufMut;
+use ::compio::buf::{IntoInner, IoBuf, IoBufMut};
 use ::compio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use prost::Message;
 
@@ -26,12 +26,13 @@ impl<R: AsyncRead> CompioFrameReader<R> {
     }
 
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
-        let ::compio::BufResult(result, [first]) = self.reader.read([0_u8]).await;
-        if result? == 0 {
+        let ::compio::BufResult(result, prefix) = self.reader.read([0_u8; 5]).await;
+        let count = result?;
+        if count == 0 {
             return Ok(None);
         }
 
-        ::compio::time::timeout(COMMAND_TIMEOUT, self.complete_frame(first))
+        ::compio::time::timeout(COMMAND_TIMEOUT, self.complete_frame(prefix, count))
             .await
             .map_err(|_| FrameError::Timeout)?
             .map(Some)
@@ -41,10 +42,24 @@ impl<R: AsyncRead> CompioFrameReader<R> {
         as_envelope(self.next_frame().await?)
     }
 
-    async fn complete_frame(&mut self, first: u8) -> Result<Frame, FrameError> {
-        let [b, c, d] = read_exact(&mut self.reader, [0; 3]).await?;
-        let length = frame_body_length(self.role, [first, b, c, d])?;
-        let [kind] = read_exact(&mut self.reader, [0; 1]).await?;
+    async fn complete_frame(
+        &mut self,
+        mut prefix: [u8; 5],
+        count: usize,
+    ) -> Result<Frame, FrameError> {
+        if count < 4 {
+            prefix = read_exact(&mut self.reader, prefix.slice(count..4))
+                .await?
+                .into_inner();
+        }
+        let [a, b, c, d, kind] = prefix;
+        let length = frame_body_length(self.role, [a, b, c, d])?;
+        let kind = if count == prefix.len() {
+            kind
+        } else {
+            let [kind] = read_exact(&mut self.reader, [0; 1]).await?;
+            kind
+        };
         self.role.check(length, kind)?;
         let body_len = length - 1;
         if kind == STRUCTURED {
@@ -96,8 +111,19 @@ impl<W: AsyncWrite> CompioFrameWriter<W> {
     pub async fn opaque_envelope(&mut self, payload: Vec<u8>) -> Result<(), FrameError> {
         let length = frame_length(payload.len(), 1)?;
         let prefix = frame_prefix(self.role, length, STRUCTURED)?;
-        self.writer.write_all(prefix).await.0?;
-        self.writer.write_all(payload).await.0?;
+        // Coalesce small control frames into a single submission. Preserve
+        // ownership of larger payloads without allocating a second buffer.
+        const INLINE_PAYLOAD: usize = 256;
+        if payload.len() <= INLINE_PAYLOAD {
+            let mut bytes = [0_u8; 5 + INLINE_PAYLOAD];
+            let end = prefix.len() + payload.len();
+            bytes[..prefix.len()].copy_from_slice(&prefix);
+            bytes[prefix.len()..end].copy_from_slice(&payload);
+            self.writer.write_all(bytes.slice(..end)).await.0?;
+        } else {
+            self.writer.write_all(prefix).await.0?;
+            self.writer.write_all(payload).await.0?;
+        }
         self.writer.flush().await?;
         Ok(())
     }
