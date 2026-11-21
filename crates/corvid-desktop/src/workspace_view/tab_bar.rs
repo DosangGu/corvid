@@ -5,7 +5,7 @@ use gpui::{Bounds, Div, Pixels, ScrollHandle, Stateful, div, point, prelude::*, 
 
 #[cfg(windows)]
 use super::window_controls::window_drag_region;
-use super::{MUTED, PANEL, TEXT, button_frame, ui_px};
+use super::{MUTED, PANEL, TEXT, ui_px};
 #[cfg(target_os = "macos")]
 use crate::macos::window_drag_region;
 
@@ -53,15 +53,9 @@ pub(super) struct TabBar {
     arrows: Rc<Cell<Arrows>>,
     selection: Option<String>,
     follow_selection: Rc<Cell<bool>>,
-    title_renderer: title::TitleRenderer,
 }
 
 impl TabBar {
-    pub(super) fn button(&self, title: String, active: bool) -> Stateful<Div> {
-        self.title_renderer
-            .button(button_frame("select-tab", active), title)
-    }
-
     pub(super) fn select(&mut self, tab: Option<&str>) {
         if self.selection.as_deref() != tab {
             self.selection = tab.map(str::to_owned);
@@ -298,4 +292,3 @@ mod tests {
         assert!(bar.follow_selection.get());
     }
 }
-mod title;
