@@ -359,7 +359,7 @@ impl WorkspaceView {
                     .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                     .max_w(ui_px(240.))
                     .child(div().min_w_0().overflow_hidden().child(
-                        button("select-tab", title, active).on_click(cx.listener(
+                        self.tab_bar.button(title, active).on_click(cx.listener(
                             move |view, _, window, cx| {
                                 view.dismiss_overlay(window, cx);
                                 view.open_pane(target.clone(), open, window, cx);
