@@ -249,3 +249,124 @@ fn merged_submessage_fragments_share_the_collection_limit() {
         Err(FrameError::CollectionLimit)
     ));
 }
+
+#[cfg(all(
+    feature = "compio",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+mod compio_framing {
+    use compio::runtime::Runtime;
+    use corvid_protocol::{CompioFrameReader, CompioFrameWriter};
+
+    use super::*;
+
+    #[test]
+    fn exchanges_render_and_opaque_frames_between_runtimes() -> anyhow::Result<()> {
+        let tokio = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let compio = Runtime::new()?;
+        let mut opaque = hello("interop".into(), None, vec![]).encode_to_vec();
+        encode_key(99, WireType::Varint, &mut opaque);
+        encode_varint(42, &mut opaque);
+
+        let mut from_tokio = Vec::new();
+        tokio.block_on(async {
+            let mut writer = FrameWriter::start(&mut from_tokio, FrameRole::TuiOutput).await?;
+            writer.opaque_envelope(&opaque).await?;
+            writer.render(&render()).await
+        })?;
+        compio.block_on(async {
+            let mut reader =
+                CompioFrameReader::start(from_tokio.as_slice(), FrameRole::TuiOutput).await?;
+            assert_eq!(
+                reader.next_frame().await?,
+                Some(Frame::Structured(opaque.clone()))
+            );
+            assert_eq!(reader.next_frame().await?, Some(Frame::Render(render())));
+            assert_eq!(reader.next_frame().await?, None);
+            Ok::<_, FrameError>(())
+        })?;
+
+        let mut from_compio = Vec::new();
+        compio.block_on(async {
+            let mut writer =
+                CompioFrameWriter::start(&mut from_compio, FrameRole::TuiOutput).await?;
+            writer.opaque_envelope(opaque.clone()).await?;
+            writer.render(render()).await
+        })?;
+        assert_eq!(from_compio, from_tokio);
+        tokio.block_on(async {
+            let mut reader =
+                FrameReader::start(from_compio.as_slice(), FrameRole::TuiOutput).await?;
+            assert_eq!(reader.next_frame().await?, Some(Frame::Structured(opaque)));
+            assert_eq!(reader.next_frame().await?, Some(Frame::Render(render())));
+            assert_eq!(reader.next_frame().await?, None);
+            Ok(())
+        })
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn starts_the_deadline_at_the_first_frame_byte() -> anyhow::Result<()> {
+        use compio::io::AsyncWriteExt;
+        use compio::net::UnixStream;
+        use compio::time::{sleep, timeout};
+        use corvid_protocol::COMMAND_TIMEOUT;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use std::time::{Duration, Instant};
+
+        let (send, receive) = std::os::unix::net::UnixStream::pair()?;
+        Runtime::new()?.block_on(async move {
+            let mut send = UnixStream::from_std(send)?;
+            let receive = UnixStream::from_std(receive)?;
+            send.write_all(FRAME_PREAMBLE).await.0?;
+            let mut reader = CompioFrameReader::start(receive, FrameRole::StructuredOnly).await?;
+
+            let first_byte = Rc::new(Cell::new(None));
+            let sent = Rc::clone(&first_byte);
+            let write = compio::runtime::spawn(async move {
+                sleep(COMMAND_TIMEOUT + Duration::from_millis(100)).await;
+                sent.set(Some(Instant::now()));
+                send.write_all([0_u8]).await.0.unwrap();
+                sleep(COMMAND_TIMEOUT + Duration::from_secs(1)).await;
+            });
+
+            let result = timeout(
+                COMMAND_TIMEOUT * 2 + Duration::from_secs(2),
+                reader.next_frame(),
+            )
+            .await?;
+            assert!(matches!(result, Err(FrameError::Timeout)));
+            assert!(first_byte.get().unwrap().elapsed() >= COMMAND_TIMEOUT);
+            drop(reader);
+            drop(write);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn rejects_bad_lengths_before_allocating_or_reading_the_body() -> anyhow::Result<()> {
+        Runtime::new()?.block_on(async {
+            let mut oversized = FRAME_PREAMBLE.to_vec();
+            oversized.extend_from_slice(&((CONTROL_LIMIT + 1) as u32).to_be_bytes());
+            let mut reader =
+                CompioFrameReader::start(oversized.as_slice(), FrameRole::StructuredOnly).await?;
+            assert!(matches!(
+                reader.next_frame().await,
+                Err(FrameError::TooLarge)
+            ));
+
+            let mut truncated = FRAME_PREAMBLE.to_vec();
+            truncated.extend_from_slice(&[0, 0, 0, 3, 1, 0]);
+            let mut reader =
+                CompioFrameReader::start(truncated.as_slice(), FrameRole::StructuredOnly).await?;
+            assert!(matches!(
+                reader.next_frame().await,
+                Err(FrameError::Truncated)
+            ));
+            Ok(())
+        })
+    }
+}

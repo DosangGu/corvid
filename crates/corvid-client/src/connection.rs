@@ -38,20 +38,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Connection<R, W> {
         capabilities: Vec<String>,
         controller: Option<String>,
     ) -> Result<Self> {
-        Self::negotiate_with_deadline(read, write, role, capabilities, controller, || {
-            tokio::time::sleep(corvid_protocol::COMMAND_TIMEOUT)
-        })
-        .await
-    }
-
-    pub(crate) async fn negotiate_with_deadline<F: Future<Output = ()>>(
-        read: R,
-        write: W,
-        role: PeerRole,
-        capabilities: Vec<String>,
-        controller: Option<String>,
-        frame_deadline: impl FnOnce() -> F,
-    ) -> Result<Self> {
         let (input, output) = match role {
             PeerRole::Control | PeerRole::Presentation | PeerRole::Upgrade => {
                 (FrameRole::StructuredOnly, FrameRole::StructuredOnly)
@@ -64,7 +50,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Connection<R, W> {
         let greeting = hello(Uuid::new_v4().to_string(), controller, capabilities);
         writer.envelope(&greeting).await?;
         let reply = reader
-            .next_envelope_with_deadline(frame_deadline)
+            .next_envelope()
             .await?
             .context("daemon closed during Hello")?;
         let session = check_hello_result(&greeting, &reply, role)?;
