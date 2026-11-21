@@ -1,11 +1,14 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{Bounds, Div, Pixels, ScrollHandle, Stateful, div, point, prelude::*, px, rgb};
+use gpui::{
+    Bounds, Div, PaintQuad, PathBuilder, Pixels, ScrollHandle, SharedString, Stateful, Window,
+    canvas, div, point, prelude::*, px, rgb, size,
+};
 
 #[cfg(windows)]
 use super::window_controls::window_drag_region;
-use super::{MUTED, PANEL, TEXT, ui_px};
+use super::{MUTED, PANEL, TEXT, button_frame, ui_px};
 #[cfg(target_os = "macos")]
 use crate::macos::window_drag_region;
 
@@ -45,6 +48,105 @@ impl Arrows {
 enum Direction {
     Left,
     Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TitleIcon {
+    Idle,
+    BusyLeft,
+    BusyRight,
+}
+
+impl TitleIcon {
+    fn split(title: &str, automatic: bool) -> Option<(Self, &str)> {
+        if !automatic {
+            return None;
+        }
+        let (prefix, label) = title.split_once(' ')?;
+        let icon = match prefix {
+            "✳" | "✳\u{fe0f}" => Self::Idle,
+            "◐" => Self::BusyLeft,
+            "◑" => Self::BusyRight,
+            _ => return None,
+        };
+        (!label.is_empty()).then_some((icon, label))
+    }
+
+    fn paint(self, bounds: Bounds<Pixels>, window: &mut Window) {
+        let center = bounds.center();
+        let width = bounds.size.width;
+        if self == Self::Idle {
+            window.paint_quad(
+                PaintQuad::new(bounds)
+                    .background(rgb(0x297b36))
+                    .corner_radii(width * 0.23),
+            );
+            let spoke = width * 0.31;
+            let diagonal = spoke * std::f32::consts::FRAC_1_SQRT_2;
+            let mut star = PathBuilder::stroke(width * 0.11);
+            for offset in [
+                point(spoke, px(0.)),
+                point(px(0.), spoke),
+                point(diagonal, diagonal),
+                point(diagonal, -diagonal),
+            ] {
+                star.move_to(center - offset);
+                star.line_to(center + offset);
+            }
+            if let Ok(path) = star.build() {
+                window.paint_path(path, rgb(0xffffff));
+            }
+            return;
+        }
+
+        let color = window.text_style().color;
+        let radius = width * 0.39;
+        let circle = Bounds::new(
+            center - point(radius, radius),
+            size(radius * 2., radius * 2.),
+        );
+        window.paint_quad(
+            PaintQuad::new(circle)
+                .corner_radii(radius)
+                .border_widths(width * 0.08)
+                .border_color(color),
+        );
+        let mut half = PathBuilder::fill();
+        half.move_to(center - point(px(0.), radius));
+        half.arc_to(
+            point(radius, radius),
+            px(0.),
+            false,
+            self == Self::BusyRight,
+            center + point(px(0.), radius),
+        );
+        half.close();
+        if let Ok(path) = half.build() {
+            window.paint_path(path, color);
+        }
+    }
+}
+
+pub(super) fn tab_button(title: String, automatic: bool, active: bool) -> Stateful<Div> {
+    let button = button_frame("select-tab", active);
+    let Some((icon, label)) = TitleIcon::split(&title, automatic) else {
+        return button.child(title);
+    };
+    let label = SharedString::from(label.to_owned());
+    button
+        .aria_label(title)
+        .flex()
+        .items_center()
+        .gap(ui_px(4.))
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, (), window, _| icon.paint(bounds, window),
+            )
+            .size(ui_px(13.))
+            .flex_none(),
+        )
+        .child(label)
 }
 
 #[derive(Default)]
@@ -222,14 +324,35 @@ fn set_scroll_x(scroll: &ScrollHandle, offset: Pixels) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gpui::size;
-
     use super::*;
 
     fn bounds(left: f32, width: f32) -> Bounds<Pixels> {
         Bounds {
             origin: point(px(left), px(0.)),
             size: size(px(width), px(24.)),
+        }
+    }
+
+    #[test]
+    fn separates_automatic_title_markers_from_the_label() {
+        for (title, icon) in [
+            ("✳ Claude Code", TitleIcon::Idle),
+            ("✳\u{fe0f} Claude Code", TitleIcon::Idle),
+            ("◐ Claude Code", TitleIcon::BusyLeft),
+            ("◑ Claude Code", TitleIcon::BusyRight),
+        ] {
+            assert_eq!(TitleIcon::split(title, true), Some((icon, "Claude Code")));
+            assert_eq!(TitleIcon::split(title, false), None);
+        }
+        for title in [
+            "✳\u{fe0e} Text presentation",
+            "✳",
+            "✳ ",
+            "Claude ✳",
+            "◐◑ Shell",
+            "한글 제목",
+        ] {
+            assert_eq!(TitleIcon::split(title, true), None);
         }
     }
 

@@ -359,12 +359,12 @@ impl WorkspaceView {
                     .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                     .max_w(ui_px(240.))
                     .child(div().min_w_0().overflow_hidden().child(
-                        button("select-tab", title, active).on_click(cx.listener(
-                            move |view, _, window, cx| {
+                        tab_bar::tab_button(title, tab.manual_name.is_none(), active).on_click(
+                            cx.listener(move |view, _, window, cx| {
                                 view.dismiss_overlay(window, cx);
                                 view.open_pane(target.clone(), open, window, cx);
-                            },
-                        )),
+                            }),
+                        ),
                     ))
                     .when(ui.can_close(), |row| {
                         row.child(Self::close_button(
