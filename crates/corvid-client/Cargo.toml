@@ -10,6 +10,7 @@ publish = ["crates-io"]
 
 [features]
 compio = ["corvid-protocol/compio", "dep:compio"]
+compio-tui = ["compio"]
 
 [dependencies]
 compio = { workspace = true, optional = true }
@@ -30,7 +31,7 @@ nix = { workspace = true, features = ["term"] }
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["events", "windows"] }
 windows-sys = { workspace = true, features = [
-    "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_Threading",
+    "Win32_System_Console", "Win32_System_IO", "Win32_System_SystemInformation", "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 

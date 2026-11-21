@@ -2,7 +2,16 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::os::windows::io::AsRawHandle;
+#[cfg(not(feature = "compio-tui"))]
 use std::time::Duration;
+#[cfg(feature = "compio-tui")]
+use std::{
+    future::poll_fn,
+    os::windows::io::{AsHandle, OwnedHandle},
+    pin::Pin,
+    sync::Arc,
+    task::Poll,
+};
 
 use anyhow::{Context, Result, ensure};
 use corvid_core::Viewport;
@@ -17,6 +26,10 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_MENU;
 pub(crate) struct Tty {
     output_mode: u32,
     input: RefCell<ConsoleInput>,
+    #[cfg(feature = "compio-tui")]
+    input_handle: Arc<OwnedHandle>,
+    #[cfg(feature = "compio-tui")]
+    input_wait: RefCell<Option<compio::runtime::Submit<WaitForConsoleInput>>>,
 }
 
 impl Tty {
@@ -34,6 +47,8 @@ impl Tty {
     }
 
     pub(crate) fn enter() -> Result<Self> {
+        #[cfg(feature = "compio-tui")]
+        let input_handle = Arc::new(io::stdin().as_handle().try_clone_to_owned()?);
         let output = io::stdout().as_raw_handle();
         let mut output_mode = 0;
         // The output handle belongs to this process and the mode pointer is writable.
@@ -47,6 +62,10 @@ impl Tty {
         let tty = Self {
             output_mode,
             input: RefCell::new(ConsoleInput::default()),
+            #[cfg(feature = "compio-tui")]
+            input_handle,
+            #[cfg(feature = "compio-tui")]
+            input_wait: RefCell::new(None),
         };
         enable_raw_mode()?;
         let input = io::stdin().as_raw_handle();
@@ -70,11 +89,30 @@ impl Tty {
         loop {
             match self.try_read(buffer) {
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    #[cfg(feature = "compio-tui")]
+                    self.wait_for_input().await?;
+                    #[cfg(not(feature = "compio-tui"))]
                     tokio::time::sleep(Duration::from_millis(8)).await;
                 }
                 result => return result,
             }
         }
+    }
+
+    #[cfg(feature = "compio-tui")]
+    async fn wait_for_input(&self) -> io::Result<()> {
+        // Keep one console wait registered across unrelated events in the
+        // attach loop. The operation keeps the duplicated handle alive.
+        poll_fn(|context| {
+            let mut pending = self.input_wait.borrow_mut();
+            let operation = pending.get_or_insert_with(|| {
+                compio::runtime::submit(WaitForConsoleInput(Arc::clone(&self.input_handle)))
+            });
+            let compio::BufResult(result, _) = std::task::ready!(Pin::new(operation).poll(context));
+            pending.take();
+            Poll::Ready(result.map(|_| ()))
+        })
+        .await
     }
 
     pub(crate) fn try_read(&self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -119,6 +157,28 @@ impl Tty {
         let mut output = io::stdout().lock();
         output.write_all(bytes)?;
         output.flush()
+    }
+}
+
+#[cfg(feature = "compio-tui")]
+struct WaitForConsoleInput(Arc<OwnedHandle>);
+
+#[cfg(feature = "compio-tui")]
+// SAFETY: The operation owns its wait handle for its whole lifetime. Completion
+// only reports readiness and does not touch memory through the OVERLAPPED.
+unsafe impl compio::driver::OpCode for WaitForConsoleInput {
+    type Control = ();
+
+    fn op_type(&self, _: &Self::Control) -> compio::driver::OpType {
+        compio::driver::OpType::Event(self.0.as_raw_handle() as compio::driver::RawFd)
+    }
+
+    unsafe fn operate(
+        &mut self,
+        _: &mut Self::Control,
+        _: *mut windows_sys::Win32::System::IO::OVERLAPPED,
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(0))
     }
 }
 

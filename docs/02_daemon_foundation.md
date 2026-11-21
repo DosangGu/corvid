@@ -473,7 +473,9 @@ to run the daemon's control, TUI, collector, and upgrade listeners and their
 connection tasks on Compio. The same CRV1 protocol works with existing clients.
 The optional `compio-probe` feature also enables the Compio ping, stdio
 relays, observer hooks, and Unix shell-agent registration. The workspace
-actors, persistence, and terminal hosts still use Tokio.
+actors, persistence, and terminal hosts still use Tokio. The optional
+`compio-tui` feature runs attach framing and terminal input readiness on
+Compio, using descriptor readiness on Unix and console input events on Windows.
 
 ## Verification
 

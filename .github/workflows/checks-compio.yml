@@ -68,3 +68,14 @@ jobs:
       - name: Exercise Windows Compio observers in ConPTY
         if: runner.os == 'Windows'
         run: cargo test --locked -p corvid-tui --features compio-daemon,compio-probe --test windows_daemon windows_shell_hooks_publish_only_bound_provider_observations
+      - name: Exercise Compio TUI in a Unix PTY
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo test --locked -p corvid-tui --features compio-daemon,compio-probe,compio-tui --test scripted_attach
+          python3 crates/corvid-tui/tests/interactive.py target/debug/corvid --tty-only
+      - name: Exercise Compio TUI in ConPTY
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --locked -p corvid-tui --features compio-daemon,compio-probe,compio-tui --test windows_daemon ordinary_attach_resumes
+          cargo test --locked -p corvid-tui --features compio-daemon,compio-probe,compio-tui --test windows_daemon command_menu_consumes_input
