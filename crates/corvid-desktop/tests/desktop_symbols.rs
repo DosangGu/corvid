@@ -3,6 +3,10 @@
 mod desktop_font;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[path = "../src/workspace_view/tab_bar/title.rs"]
+mod tab_title;
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use gpui::{
     Font, ForegroundDependency, GlyphRenderMode, LineLayout, Pixels, PlatformTextSystem,
     RasterStyleRequest, RenderGlyphParams, TextRun, WindowTextSystem, font, px, rgb,
@@ -64,6 +68,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     verify_title_presentation(&shaping, platform.text_system().as_ref())?;
+    paint_tab_titles(platform.text_system())?;
     #[cfg(target_os = "macos")]
     {
         // The installed Zapf Dingbats covers this character. It is absent from
@@ -72,6 +77,42 @@ fn main() -> anyhow::Result<()> {
         assert_ne!(line.paint_fragments[0].glyphs[0].id.0, 0);
     }
     println!("PASS Desktop: regular text and technical symbol fallback");
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn paint_tab_titles(platform_text: std::sync::Arc<dyn PlatformTextSystem>) -> anyhow::Result<()> {
+    use gpui::{Context, HeadlessAppContext, IntoElement, Render, Window, div, prelude::*, size};
+
+    struct TabTitles(tab_title::TitleRenderer);
+
+    impl Render for TabTitles {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .font(desktop_font::with_symbols(".SystemUIFont"))
+                .flex()
+                .gap(px(2.))
+                .children(["✳️ Claude Code", "🧑🏽‍💻 개발", "Plain tab"].map(|title| {
+                    let button = div().id(title).text_size(px(13.)).whitespace_nowrap();
+                    div()
+                        .overflow_hidden()
+                        .child(self.0.button(button, title.to_owned()))
+                }))
+        }
+    }
+
+    let mut app = HeadlessAppContext::new(platform_text);
+    let window = app.open_window(size(px(240.), px(40.)), |_, cx| {
+        cx.new(|_| TabTitles(tab_title::TitleRenderer::default()))
+    })?;
+    // Draw twice to exercise the title's paint path with both new and reused
+    // layout state, including when the last tab is clipped by the viewport.
+    for _ in 0..2 {
+        app.update_window(window.into(), |_, window, cx| {
+            let _ = window.draw(cx);
+        })?;
+    }
+    println!("PASS Desktop: painted mixed and plain tab titles");
     Ok(())
 }
 

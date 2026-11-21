@@ -1382,6 +1382,10 @@ fn button(
     label: impl Into<SharedString>,
     selected: bool,
 ) -> Stateful<Div> {
+    button_frame(id, selected).child(label.into())
+}
+
+fn button_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
     div()
         .id(id.into())
         .flex_none()
@@ -1394,7 +1398,6 @@ fn button(
         .whitespace_nowrap()
         .cursor_pointer()
         .hover(|style| style.text_color(rgb(TEXT)))
-        .child(label.into())
 }
 
 fn alias_byte(byte: u8) -> bool {

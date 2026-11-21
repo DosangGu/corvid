@@ -62,6 +62,7 @@ embed-resource.workspace = true
 
 [target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dev-dependencies]
 corvid-daemon.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
