@@ -67,6 +67,9 @@ acceptance matrix: identity, reconnection, input fencing, and malformed frames. 
 threshold is configured. Distinguish executed checks from planned tests and unverified
 runtime compatibility.
 
+When you find an intermittent CI workflow failure, open an issue to track it. If an
+issue already tracks the failure, add a comment linking to the failed workflow run.
+
 ## Commit & Pull Request Guidelines
 
 Start each independent task in a dedicated branch and Git worktree based on the
