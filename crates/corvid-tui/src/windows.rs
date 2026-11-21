@@ -145,6 +145,11 @@ pub(super) fn dispatch(
             hooks::observe(provider, neutral_json, false, runtime, started);
             Ok(0)
         }
+        #[cfg(feature = "compio-probe")]
+        Command::Control {
+            stdio: false,
+            request: Some(ControlRequest::Ping),
+        } => crate::compio_ping(runtime),
         other => super::execute(execute(other, runtime)),
     }
 }

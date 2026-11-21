@@ -67,6 +67,48 @@ async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
     .await?
 }
 
+#[cfg(feature = "compio-probe")]
+#[tokio::test]
+async fn compio_stdio_relay_exits_when_daemon_closes_first() -> anyhow::Result<()> {
+    use std::process::Stdio;
+
+    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let runtime = fixture.path().join("run");
+    let mut daemon = daemon(&runtime, &fixture.path().join("state")).await;
+    assert_eq!(control(&runtime, "ping").await, "pong\n");
+
+    let mut relay = command(&runtime)
+        .args(["control", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    timeout(WAIT, async {
+        let mut writer =
+            FrameWriter::start(relay.stdin.take().unwrap(), FrameRole::StructuredOnly).await?;
+        let mut reader =
+            FrameReader::start(relay.stdout.take().unwrap(), FrameRole::StructuredOnly).await?;
+        let greeting = hello(
+            "relay-hello".into(),
+            Some("compio-relay-test".into()),
+            vec!["ping.v1".into()],
+        );
+        writer.envelope(&greeting).await?;
+        let response = reader.next_envelope().await?.unwrap();
+        let session = check_hello_result(&greeting, &response, PeerRole::Control)?;
+        writer
+            .envelope(&session.envelope(Some("relay-ping".into()), Body::Ping(Ping {})))
+            .await?;
+        let reply = reader.next_envelope().await?.unwrap();
+        assert!(matches!(reply.body, Some(Body::Pong(_))));
+
+        daemon.kill().await?;
+        assert!(relay.wait().await?.success());
+        drop(writer);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}
+
 #[tokio::test]
 async fn automatic_titles_follow_bash_prompts_and_application_updates_on_one_watch() {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
