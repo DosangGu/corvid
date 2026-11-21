@@ -115,7 +115,7 @@ fn title_burst_survives_a_briefly_paused_consumer_without_resync() {
         let (mut connection, writer) = connection();
         let mut cache = cache(&connection.session);
         let (send, mut receive) = mpsc::channel(CACHE_QUEUE);
-        let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
+        let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, &send).await });
         send_titles(&writer, BURST).await;
         sleep(Duration::from_millis(100)).await;
         assert!(
@@ -145,7 +145,7 @@ fn a_stalled_consumer_is_bounded_and_requires_resync() {
     run(async {
         let (mut connection, writer) = connection();
         let (send, receive) = mpsc::channel(CACHE_QUEUE);
-        let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
+        let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, &send).await });
         send_titles(&writer, BURST).await;
         let error = watch_timeout(COMMAND_TIMEOUT + Duration::from_secs(2), task)
             .await
@@ -158,4 +158,32 @@ fn a_stalled_consumer_is_bounded_and_requires_resync() {
         );
         assert_eq!(receive.len(), CACHE_QUEUE);
     });
+}
+
+#[compio::test]
+async fn a_closed_change_queue_marks_the_watch_offline_before_the_pump_exits() {
+    let (send, incoming) = mpsc::channel(1);
+    let (failed, failure) = watch::channel(None);
+    let mut watch = SnapshotWatch {
+        cache: cache(&session()),
+        incoming,
+        failure,
+        task: Some(spawn(std::future::pending())),
+    };
+
+    assert!(watch.is_ready());
+    drop(send);
+    let error = watch.next_change().await.unwrap_err();
+
+    assert_eq!(
+        error.downcast_ref::<ProtocolFault>().unwrap().code,
+        "Offline"
+    );
+    assert!(!watch.is_ready());
+    assert!(watch.state().is_valid());
+    assert_eq!(
+        watch.state().snapshot().entities().next(),
+        Some(&workspace("Initial"))
+    );
+    drop(failed);
 }
