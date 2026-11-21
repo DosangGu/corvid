@@ -1,34 +1,17 @@
 use super::*;
-use crate::connection::Connection;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as Entity;
 use corvid_protocol::wire::{
     LayoutNodeState, SnapshotBegin, SnapshotChunk, SnapshotDelta, SnapshotEnd, SnapshotEntity,
     TabState, WatchReady, WorkspaceState,
 };
-use corvid_protocol::{
-    FrameReader, FrameRole, FrameWriter, PeerRole, Session, accept_hello, hello,
-};
-use tokio::io::{DuplexStream, ReadHalf, WriteHalf, duplex, split};
+use corvid_protocol::{Frame, FrameError, PeerRole, Session, accept_hello, hello};
+use prost::Message;
 
-#[cfg(feature = "compio-endpoints")]
 use compio::{runtime::spawn, time::sleep};
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::{spawn, time::sleep};
 
 fn run<F: std::future::Future<Output = ()>>(test: F) {
-    let tokio = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    #[cfg(feature = "compio-endpoints")]
-    {
-        // The in-memory fixture still uses the Tokio framing codec.
-        let _fixture_context = tokio.enter();
-        compio::runtime::Runtime::new().unwrap().block_on(test);
-    }
-    #[cfg(not(feature = "compio-endpoints"))]
-    tokio.block_on(test);
+    compio::runtime::Runtime::new().unwrap().block_on(test);
 }
 
 const SUBSCRIPTION: &str = "title-watch";
@@ -99,35 +82,17 @@ fn cache(session: &Session) -> SynchronizedSnapshot {
         .unwrap()
 }
 
-type TestConnection = Wire<ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>;
+fn connection() -> (Wire, mpsc::Sender<Result<Frame, FrameError>>) {
+    use crate::endpoint::native::WriteQueue;
 
-async fn connection() -> (TestConnection, FrameWriter<WriteHalf<DuplexStream>>) {
-    let (client, server) = duplex(256 * 1024);
-    let (read, write) = split(client);
-    let (server_read, server_write) = split(server);
-    let server = FrameWriter::start(server_write, FrameRole::StructuredOnly)
-        .await
-        .unwrap();
-    let writer = FrameWriter::start(write, FrameRole::StructuredOnly)
-        .await
-        .unwrap();
-    let reader = FrameReader::start(read, FrameRole::StructuredOnly)
-        .await
-        .unwrap();
-    // Keep the server's read half alive through its writer half's shared stream.
-    drop(server_read);
+    let (send, receive) = mpsc::channel(BURST as usize);
     (
-        Connection {
-            session: session(),
-            reader,
-            writer,
-        }
-        .into(),
-        server,
+        Wire::from_native((session(), receive, WriteQueue::test_sink())),
+        send,
     )
 }
 
-async fn send_titles(writer: &mut FrameWriter<WriteHalf<DuplexStream>>, count: u64) {
+async fn send_titles(writer: &mpsc::Sender<Result<Frame, FrameError>>, count: u64) {
     for sequence in 1..=count {
         let frame = event(
             &session(),
@@ -137,18 +102,21 @@ async fn send_titles(writer: &mut FrameWriter<WriteHalf<DuplexStream>>, count: u
                 ..Default::default()
             }),
         );
-        writer.envelope(&frame).await.unwrap();
+        writer
+            .send(Ok(Frame::Structured(frame.encode_to_vec())))
+            .await
+            .unwrap();
     }
 }
 
 #[test]
 fn title_burst_survives_a_briefly_paused_consumer_without_resync() {
     run(async {
-        let (mut connection, mut writer) = connection().await;
+        let (mut connection, writer) = connection();
         let mut cache = cache(&connection.session);
         let (send, mut receive) = mpsc::channel(CACHE_QUEUE);
         let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
-        send_titles(&mut writer, BURST).await;
+        send_titles(&writer, BURST).await;
         sleep(Duration::from_millis(100)).await;
         assert!(
             !task.is_finished(),
@@ -169,18 +137,16 @@ fn title_burst_survives_a_briefly_paused_consumer_without_resync() {
             &workspace("Title 256")
         );
         assert!(!task.is_finished());
-        #[cfg(not(feature = "compio-endpoints"))]
-        task.abort();
     });
 }
 
 #[test]
 fn a_stalled_consumer_is_bounded_and_requires_resync() {
     run(async {
-        let (mut connection, mut writer) = connection().await;
+        let (mut connection, writer) = connection();
         let (send, receive) = mpsc::channel(CACHE_QUEUE);
         let task = spawn(async move { pump(&mut connection, SUBSCRIPTION, send).await });
-        send_titles(&mut writer, BURST).await;
+        send_titles(&writer, BURST).await;
         let error = watch_timeout(COMMAND_TIMEOUT + Duration::from_secs(2), task)
             .await
             .unwrap()

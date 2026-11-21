@@ -1485,6 +1485,7 @@ dependencies = [
  "corvid-protocol",
  "crossterm",
  "nix 0.31.3",
+ "prost",
  "serde",
  "serde_json",
  "tar",

@@ -4,7 +4,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-#[cfg(feature = "compio-endpoints")]
 use compio::runtime::JoinHandle;
 use corvid_async::{mpsc, watch};
 use corvid_protocol::snapshot::{
@@ -13,21 +12,14 @@ use corvid_protocol::snapshot::{
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, GetSnapshot, Ping, SnapshotWatch as WatchRequest};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::io::{AsyncRead, AsyncWrite};
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::endpoint::wire::Wire;
 use crate::endpoint::{ControlConnection, ControlEndpoint};
 use crate::endpoint_time::timeout;
 
-#[cfg(feature = "compio-endpoints")]
 use compio::time::{sleep_until, timeout as watch_timeout};
-#[cfg(feature = "compio-endpoints")]
 use std::time::Instant;
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::time::{Instant, sleep_until, timeout as watch_timeout};
 
 #[cfg(test)]
 mod tests;
@@ -121,10 +113,7 @@ async fn watch(
             .unwrap_or_else(offline);
         failed.send_replace(Some(fault));
     };
-    #[cfg(feature = "compio-endpoints")]
     let task = crate::endpoint::native::spawn_watch(pump).await?;
-    #[cfg(not(feature = "compio-endpoints"))]
-    let task = tokio::spawn(pump());
     Ok(SnapshotWatch {
         cache,
         incoming,
@@ -181,12 +170,7 @@ impl SnapshotWatch {
 
 impl SnapshotWatch {
     fn stop(&mut self) {
-        #[cfg(feature = "compio-endpoints")]
         drop(self.task.take());
-        #[cfg(not(feature = "compio-endpoints"))]
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
     }
 }
 
@@ -254,7 +238,7 @@ async fn receive_initial(
 }
 
 async fn pump(
-    connection: &mut Wire<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
+    connection: &mut Wire,
     subscription: &str,
     sender: mpsc::Sender<Envelope>,
 ) -> Result<()> {
@@ -305,10 +289,7 @@ struct Heartbeat {
 }
 
 impl Heartbeat {
-    async fn read(
-        &mut self,
-        connection: &mut Wire<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
-    ) -> Result<Envelope> {
+    async fn read(&mut self, connection: &mut Wire) -> Result<Envelope> {
         let pending_read = connection.reader.next_envelope();
         corvid_async::pin!(pending_read);
         loop {

@@ -74,22 +74,9 @@ fn observe_inner(
     fields.launch_association = launch;
     ensure!(Instant::now() < deadline, "hook deadline elapsed");
 
-    #[cfg(feature = "compio-probe")]
-    return compio::runtime::Runtime::new()?.block_on(corvid_client::compio_submit_hook(
+    compio::runtime::Runtime::new()?.block_on(corvid_client::submit_hook(
         &runtime, &host, &epoch, fields, deadline,
-    ));
-
-    #[cfg(not(feature = "compio-probe"))]
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(corvid_client::submit_hook(
-            &runtime,
-            &host,
-            &epoch,
-            fields,
-            deadline.into(),
-        ))
+    ))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

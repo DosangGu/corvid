@@ -1,38 +1,29 @@
 use corvid_protocol::wire::Envelope;
-use corvid_protocol::{Frame, FrameError, FrameReader, FrameWriter, Session};
-use tokio::io::{AsyncRead, AsyncWrite};
+use corvid_protocol::{Frame, FrameError, Session};
 
-use crate::connection::Connection;
+use super::native::{self, ReadQueue, WriteQueue};
 
-pub(crate) struct Wire<R, W> {
+pub(crate) struct Wire {
     pub(crate) session: Session,
-    pub(crate) reader: Reader<R>,
-    pub(crate) writer: Writer<W>,
+    pub(crate) reader: Reader,
+    pub(crate) writer: Writer,
 }
 
-impl<R, W> From<Connection<R, W>> for Wire<R, W> {
-    fn from(connection: Connection<R, W>) -> Self {
+impl Wire {
+    pub(crate) fn from_native((session, reader, writer): (Session, ReadQueue, WriteQueue)) -> Self {
         Self {
-            session: connection.session,
-            reader: Reader::Tokio(connection.reader),
-            writer: Writer::Tokio(connection.writer),
+            session,
+            reader: Reader(reader),
+            writer: Writer(writer),
         }
     }
 }
 
-pub(crate) enum Reader<R> {
-    Tokio(FrameReader<R>),
-    #[cfg(feature = "compio-endpoints")]
-    Compio(super::native::ReadQueue),
-}
+pub(crate) struct Reader(ReadQueue);
 
-impl<R: AsyncRead + Unpin> Reader<R> {
+impl Reader {
     pub(crate) async fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
-        match self {
-            Self::Tokio(reader) => reader.next_frame().await,
-            #[cfg(feature = "compio-endpoints")]
-            Self::Compio(reader) => reader.recv().await.transpose(),
-        }
+        self.0.recv().await.transpose()
     }
 
     pub(crate) async fn next_envelope(&mut self) -> Result<Option<Envelope>, FrameError> {
@@ -44,18 +35,10 @@ impl<R: AsyncRead + Unpin> Reader<R> {
     }
 }
 
-pub(crate) enum Writer<W> {
-    Tokio(FrameWriter<W>),
-    #[cfg(feature = "compio-endpoints")]
-    Compio(super::native::WriteQueue),
-}
+pub(crate) struct Writer(WriteQueue);
 
-impl<W: AsyncWrite + Unpin> Writer<W> {
+impl Writer {
     pub(crate) async fn envelope(&mut self, message: &Envelope) -> Result<(), FrameError> {
-        match self {
-            Self::Tokio(writer) => writer.envelope(message).await,
-            #[cfg(feature = "compio-endpoints")]
-            Self::Compio(writer) => super::native::send(writer, message.clone()).await,
-        }
+        native::send(&self.0, message.clone()).await
     }
 }

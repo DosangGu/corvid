@@ -296,18 +296,10 @@ impl ViewStore {
         let worker = thread::Builder::new()
             .name("corvid-view-save".into())
             .spawn(move || {
-                #[cfg(feature = "compio-tui")]
                 let runtime = compio::runtime::Runtime::new()?;
-                #[cfg(not(feature = "compio-tui"))]
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_time()
-                    .build()?;
                 runtime.block_on(async {
                     while incoming.changed().await.is_ok() {
-                        #[cfg(feature = "compio-tui")]
                         compio::time::sleep(SAVE_DELAY).await;
-                        #[cfg(not(feature = "compio-tui"))]
-                        tokio::time::sleep(SAVE_DELAY).await;
                         let view = incoming.borrow_and_update().clone();
                         if let Some(view) = view {
                             store.save(&view)?;

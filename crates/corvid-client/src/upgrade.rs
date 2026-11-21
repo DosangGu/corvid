@@ -10,10 +10,10 @@ use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{
     COMMAND_TIMEOUT, DAEMON_HANDOFF_CAPABILITY, DAEMON_UPGRADE_CAPABILITY, PeerRole, ProtocolFault,
 };
-use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::connection::{LocalConnection, SocketRole, open};
+use crate::endpoint::local_wire;
+use crate::endpoint_time::timeout;
 
 pub struct UpgradeTarget {
     pub state_directory: PathBuf,
@@ -55,8 +55,12 @@ async fn request_upgrade(
     expected_host: Option<Uuid>,
     handoff_epoch: Option<Uuid>,
 ) -> Result<UpgradeTarget> {
-    let stream = match open(runtime, SocketRole::Upgrade).await {
-        Ok(stream) => stream,
+    let mut required = vec![DAEMON_UPGRADE_CAPABILITY.into()];
+    if handoff_epoch.is_some() {
+        required.push(DAEMON_HANDOFF_CAPABILITY.into());
+    }
+    let mut connection = match local_wire(runtime, PeerRole::Upgrade, required, None).await {
+        Ok(connection) => connection,
         Err(error)
             if error.downcast_ref::<io::Error>().is_some_and(|error| {
                 matches!(
@@ -72,11 +76,6 @@ async fn request_upgrade(
         }
         Err(error) => return Err(error),
     };
-    let mut required = vec![DAEMON_UPGRADE_CAPABILITY.into()];
-    if handoff_epoch.is_some() {
-        required.push(DAEMON_HANDOFF_CAPABILITY.into());
-    }
-    let mut connection = LocalConnection::establish(stream, PeerRole::Upgrade, required).await?;
     ensure!(
         expected_host.is_none_or(|host| connection.session.host_id == host.to_string()),
         ProtocolFault::new(

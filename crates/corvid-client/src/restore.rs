@@ -11,8 +11,6 @@ use corvid_protocol::{
     ATTACH_RECOVERY_CAPABILITY, Frame, ProtocolFault, RESTORE_AGENTS_CAPABILITY, Session,
     decode_envelope,
 };
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::InteractiveConnection;
@@ -141,13 +139,10 @@ impl InteractiveConnection {
                 }
                 // Polling must never launch again if a completed terminal subsequently exits.
                 request.mode = AgentRestoreMode::Inspect as i32;
-                #[cfg(feature = "compio-endpoints")]
                 crate::endpoint_time::wait_until(
                     std::time::Instant::now() + Duration::from_millis(100),
                 )
                 .await?;
-                #[cfg(not(feature = "compio-endpoints"))]
-                sleep(Duration::from_millis(100)).await;
             }
         })
         .await

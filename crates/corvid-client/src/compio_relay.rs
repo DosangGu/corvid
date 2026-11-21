@@ -4,12 +4,14 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use compio::io::{AsyncRead, AsyncWrite, util::Splittable};
 use compio::time::timeout;
+use corvid_protocol::wire::Envelope;
+use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{
     COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter, Frame, FrameError, FrameRole,
-    ProtocolFault,
+    PROTOCOL_MAJOR, PROTOCOL_MINOR, ProtocolFault,
 };
 
-use crate::{compio_connection::open, connection::SocketRole, relay::bootstrap_reply};
+use crate::{compio_connection::open, connection::SocketRole};
 
 pub async fn compio_relay(runtime: &Path) -> Result<()> {
     relay(runtime, SocketRole::Control, FrameRole::StructuredOnly).await
@@ -130,4 +132,20 @@ impl AsyncWrite for WindowsStdout {
     async fn shutdown(&mut self) -> io::Result<()> {
         self.flush().await
     }
+}
+
+fn bootstrap_reply(request: Envelope, fault: ProtocolFault) -> Result<Envelope> {
+    ensure!(
+        matches!(request.body, Some(Body::Hello(_))),
+        "expected relay Hello"
+    );
+    Ok(Envelope {
+        protocol_major: PROTOCOL_MAJOR,
+        protocol_minor: PROTOCOL_MINOR,
+        request_id: request
+            .request_id
+            .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
+        body: Some(Body::Error(fault.into_wire())),
+        ..Default::default()
+    })
 }

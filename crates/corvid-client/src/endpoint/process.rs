@@ -192,7 +192,7 @@ impl AsyncRead for ReadPipe {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[compio::test]
     async fn native_process_transfers_payload_until_eof_and_reaps_the_child() -> Result<()> {
         #[cfg(unix)]
         let command = {

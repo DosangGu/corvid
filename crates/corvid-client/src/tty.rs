@@ -3,14 +3,11 @@ use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::{Context, Result, ensure};
-#[cfg(feature = "compio-tui")]
 use compio::runtime::fd::PollFd as TtyFd;
 use corvid_core::Viewport;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use nix::libc::{O_NOCTTY, O_NONBLOCK};
 use nix::sys::termios::{FlushArg, tcflush};
-#[cfg(not(feature = "compio-tui"))]
-use tokio::io::{Interest, unix::AsyncFd as TtyFd};
 
 pub(crate) struct Tty {
     input: TtyFd<File>,
@@ -50,12 +47,7 @@ impl Tty {
             .write(true)
             .custom_flags(O_NOCTTY | O_NONBLOCK)
             .open(output_path)?;
-        #[cfg(feature = "compio-tui")]
         let (input, output) = (TtyFd::new(input)?, TtyFd::new(output)?);
-        #[cfg(not(feature = "compio-tui"))]
-        let input = register(input, Interest::READABLE)?;
-        #[cfg(not(feature = "compio-tui"))]
-        let output = register(output, Interest::WRITABLE)?;
         enable_raw_mode()?;
         let tty = Self { input, output };
         tty.discard_input()?;
@@ -67,43 +59,10 @@ impl Tty {
         Ok(())
     }
 
-    #[cfg(not(feature = "compio-tui"))]
-    pub(crate) async fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        loop {
-            let mut guard = self.input.readable().await?;
-            match guard.try_io(|file| file.get_ref().read(buffer)) {
-                Ok(Err(error)) if error.kind() == ErrorKind::Interrupted => {}
-                Ok(result) => return result,
-                Err(_) => {}
-            }
-        }
-    }
-
     pub(crate) fn try_read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.input_file().read(buffer)
     }
 
-    #[cfg(not(feature = "compio-tui"))]
-    pub(crate) async fn write_all(&self, mut bytes: &[u8]) -> io::Result<()> {
-        while !bytes.is_empty() {
-            let mut guard = self.output.writable().await?;
-            match guard.try_io(|file| file.get_ref().write(bytes)) {
-                Ok(Ok(0)) => {
-                    return Err(io::Error::new(
-                        ErrorKind::WriteZero,
-                        "terminal write stopped",
-                    ));
-                }
-                Ok(Ok(written)) => bytes = &bytes[written..],
-                Ok(Err(error)) if error.kind() == ErrorKind::Interrupted => {}
-                Ok(Err(error)) => return Err(error),
-                Err(_) => {}
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "compio-tui")]
     pub(crate) async fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
             match self.try_read(buffer) {
@@ -116,7 +75,6 @@ impl Tty {
         }
     }
 
-    #[cfg(feature = "compio-tui")]
     pub(crate) async fn write_all(&self, mut bytes: &[u8]) -> io::Result<()> {
         while !bytes.is_empty() {
             match self.output_file().write(bytes) {
@@ -138,24 +96,12 @@ impl Tty {
     }
 
     fn input_file(&self) -> &File {
-        #[cfg(feature = "compio-tui")]
-        return &self.input;
-        #[cfg(not(feature = "compio-tui"))]
-        self.input.get_ref()
+        &self.input
     }
 
     fn output_file(&self) -> &File {
-        #[cfg(feature = "compio-tui")]
-        return &self.output;
-        #[cfg(not(feature = "compio-tui"))]
-        self.output.get_ref()
+        &self.output
     }
-}
-
-#[cfg(not(feature = "compio-tui"))]
-fn register(file: File, interest: Interest) -> io::Result<TtyFd<File>> {
-    // The registration owns the File, whose descriptor remains stable and open.
-    unsafe { TtyFd::register_with_interest(file, interest) }.map_err(Into::into)
 }
 
 impl Drop for Tty {

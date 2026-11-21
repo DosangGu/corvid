@@ -232,17 +232,14 @@ pub(super) fn execute(
             let state = state_path(state_dir)?;
             crate::run_compio_daemon(&runtime, &state, autostarted)
         }
-        #[cfg(feature = "compio-probe")]
         Command::Control {
             stdio: false,
             request: Some(ControlRequest::Ping),
         } => crate::compio_ping(runtime_dir),
-        #[cfg(feature = "compio-probe")]
         Command::Control { stdio: true, .. } => {
             let runtime = runtime_path(runtime_dir)?;
             crate::run_compio(corvid_client::compio_relay(&runtime))
         }
-        #[cfg(feature = "compio-probe")]
         Command::TerminalRelay => {
             let runtime = runtime_path(runtime_dir)?;
             crate::run_compio(corvid_client::compio_relay_tui(&runtime))
@@ -340,8 +337,10 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             };
             controller_action(&runtime, &scope, request_id, action).await
         }
-        Command::Control { stdio: true, .. } => corvid_client::relay(&runtime).await.map(|()| 0),
-        Command::TerminalRelay => corvid_client::relay_tui(&runtime).await.map(|()| 0),
+        Command::Control { stdio: true, .. } => {
+            unreachable!("stdio relay dispatched before the CLI executor")
+        }
+        Command::TerminalRelay => unreachable!("terminal relay dispatched before the CLI executor"),
         Command::Control { request, .. } => match request.unwrap_or(ControlRequest::Host) {
             ControlRequest::Host => {
                 let host = corvid_client::host(&runtime).await?;
