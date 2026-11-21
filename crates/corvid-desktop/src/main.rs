@@ -9,6 +9,8 @@ mod daemon_prompt;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod desktop_font;
 mod desktop_windows;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod inventory_runtime;
 #[cfg(target_os = "linux")]
 mod linux_prompt;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]

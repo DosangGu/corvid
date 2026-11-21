@@ -4,9 +4,10 @@ use std::time::Duration;
 use anyhow::Result;
 use corvid_client::{ControlEndpoint, SshRetry, daemon_missing, runtime_path};
 use tokio::sync::{oneshot, watch};
-use tokio::time::{Instant, sleep_until, timeout_at};
+use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::inventory_runtime::{self, sleep, sleep_until, timeout, timeout_at};
 use crate::terminal_session::Inventory;
 
 use super::{Destination, KnownSessions};
@@ -17,29 +18,19 @@ pub(super) fn lookup(
     known: Option<(ControlEndpoint, String)>,
 ) -> Result<oneshot::Receiver<Result<KnownSessions, &'static str>>> {
     let (mut send, receive) = oneshot::channel();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    std::thread::Builder::new()
-        .name("corvid-desktop-host-lookup".into())
-        .spawn(move || {
-            runtime.block_on(async {
-                let lookup = tokio::time::timeout(
-                    Duration::from_secs(30),
-                    read_inventory(destination, known),
-                );
-                tokio::select! {
-                    _ = send.closed() => {}
-                    result = lookup => {
-                        let result = match result {
-                            Ok(result) => result.map_err(|error| lookup_status(&error)),
-                            Err(_) => Err("Lookup timed out"),
-                        };
-                        let _ = send.send(result);
-                    }
-                }
-            });
-        })?;
+    inventory_runtime::start("corvid-desktop-host-lookup", move || async move {
+        let lookup = timeout(Duration::from_secs(30), read_inventory(destination, known));
+        tokio::select! {
+            _ = send.closed() => {}
+            result = lookup => {
+                let result = match result {
+                    Ok(result) => result.map_err(|error| lookup_status(&error)),
+                    Err(_) => Err("Lookup timed out"),
+                };
+                let _ = send.send(result);
+            }
+        }
+    })?;
     Ok(receive)
 }
 
@@ -87,19 +78,12 @@ pub(super) fn start(
     host: String,
 ) -> Result<watch::Receiver<Option<Arc<Inventory>>>> {
     let (send, receive) = watch::channel(None);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    std::thread::Builder::new()
-        .name("corvid-desktop-host-watch".into())
-        .spawn(move || {
-            runtime.block_on(async {
-                tokio::select! {
-                    _ = send.closed() => {}
-                    _ = monitor(&endpoint, &host, &send) => {}
-                }
-            });
-        })?;
+    inventory_runtime::start("corvid-desktop-host-watch", move || async move {
+        tokio::select! {
+            _ = send.closed() => {}
+            _ = monitor(&endpoint, &host, &send) => {}
+        }
+    })?;
     Ok(receive)
 }
 
@@ -142,7 +126,7 @@ async fn monitor(
                 return;
             }
         } else {
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            sleep(Duration::from_secs(3)).await;
         }
     }
 }
