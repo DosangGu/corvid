@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use corvid_async::time::{sleep, timeout};
 use corvid_protocol::collector::{
     CAPABILITY as COLLECTOR_CAPABILITY, CLAUDE_VERSION, CODEX_VERSION, HOST_ID, LAUNCH_ASSOCIATION,
     SERVER_EPOCH,
@@ -25,7 +26,6 @@ use corvid_protocol::{
     PeerRole, check_hello_result, hello,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon};

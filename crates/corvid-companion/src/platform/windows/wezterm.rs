@@ -8,17 +8,12 @@ use std::ptr::{null, null_mut};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-#[cfg(feature = "compio-endpoints")]
 use async_process::{Command, windows::CommandExt};
-#[cfg(feature = "compio-endpoints")]
 use corvid_client::endpoint_time::timeout;
 use corvid_protocol::wire::{LocalActivation, WezTermLocation, WezTermSelection, WezTermTarget};
-#[cfg(feature = "compio-endpoints")]
 use futures_util::io::AsyncReadExt;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, SockAddr, Socket, Type};
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::Networking::WinSock::{
     SIO_AF_UNIX_GETPEERPID, SOCKET_ERROR, WSAGetLastError, WSAIoctl,
@@ -271,10 +266,7 @@ impl Gui {
                 bytes.len() as u64 <= LIST_LIMIT,
                 "WezTerm CLI output exceeds limit"
             );
-            #[cfg(feature = "compio-endpoints")]
             let status = child.status().await?;
-            #[cfg(not(feature = "compio-endpoints"))]
-            let status = child.wait().await?;
             ensure!(status.success(), "WezTerm CLI failed");
             Ok::<_, anyhow::Error>(bytes)
         })

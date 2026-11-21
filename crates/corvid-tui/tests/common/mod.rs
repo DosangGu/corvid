@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use corvid_async::time::{sleep, timeout};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_corvid");
 pub const WAIT: Duration = Duration::from_secs(8);

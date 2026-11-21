@@ -5,8 +5,8 @@ use corvid_agent_deck_core::native::{
     Availability, Capabilities, NativeError, NativeServices, Status,
 };
 use corvid_agent_deck_core::notifications::Notice;
+use corvid_async::time::timeout;
 use tokio::process::Command;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::Callbacks;

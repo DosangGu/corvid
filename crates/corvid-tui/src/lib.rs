@@ -179,7 +179,7 @@ pub async fn upgrade_local_daemon(runtime: &Path) -> Result<()> {
 async fn verify_installed_version(executable: &Path, previous_version: &str) -> Result<()> {
     use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 
-    let output = tokio::time::timeout(
+    let output = corvid_async::time::timeout(
         COMMAND_TIMEOUT,
         tokio::process::Command::new(executable)
             .arg("--version")

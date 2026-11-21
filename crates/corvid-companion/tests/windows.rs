@@ -4,11 +4,11 @@ use std::future::pending;
 use std::time::Duration;
 
 use corvid_async::oneshot;
+use corvid_async::time::{sleep, timeout};
 use corvid_companion::launch::{DesktopStartup, prepare_desktop};
 use corvid_companion::{HostEndpoint, PresentationClient, Store, initialize, run};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationSlots, Ping};
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 #[tokio::test]

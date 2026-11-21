@@ -6,6 +6,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_companion::Config;
 use corvid_companion::monitor::{Scope, discover};
 use corvid_protocol::COMMAND_TIMEOUT;
@@ -15,7 +16,6 @@ use nix::errno::Errno;
 use nix::fcntl::Flock;
 use semver::Version;
 use tokio::process::Command;
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::connection::{Client, LIFECYCLE_CAPABILITY};

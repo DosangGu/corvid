@@ -88,11 +88,11 @@ async fn accepts_tokio_clients_on_a_private_unix_socket() -> Result<()> {
         ))?
     });
 
-    tokio::time::timeout(COMMAND_TIMEOUT, ready).await??;
+    corvid_async::time::timeout(COMMAND_TIMEOUT, ready).await??;
     let runtime = RuntimeDir::open(&path)?;
     for _ in 0..2 {
         let (read, write) = runtime.connect(SocketRole::Control).await?.into_split();
-        tokio::time::timeout(COMMAND_TIMEOUT, client(read, write)).await??;
+        corvid_async::time::timeout(COMMAND_TIMEOUT, client(read, write)).await??;
     }
     runner.await??;
     assert!(!path.join("control.sock").exists());
@@ -125,10 +125,10 @@ async fn accepts_tokio_clients_on_a_private_named_pipe() -> Result<()> {
         ))?
     });
 
-    tokio::time::timeout(COMMAND_TIMEOUT, ready).await??;
+    corvid_async::time::timeout(COMMAND_TIMEOUT, ready).await??;
     for _ in 0..2 {
         let (read, write) = tokio::io::split(DaemonPipe::Control.connect(&path).await?);
-        tokio::time::timeout(COMMAND_TIMEOUT, client(read, write)).await??;
+        corvid_async::time::timeout(COMMAND_TIMEOUT, client(read, write)).await??;
     }
     runner.await??;
     Ok(())

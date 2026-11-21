@@ -82,7 +82,7 @@ async fn with_daemon(root: &Path, run: impl AsyncFnOnce(&Path) -> Result<()>) ->
     let result = async {
         timeout(Duration::from_secs(15), async {
             while corvid_client::ping(&runtime).await.is_err() {
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                corvid_async::time::sleep(Duration::from_millis(25)).await;
             }
         })
         .await
@@ -436,7 +436,7 @@ async fn wait_for_client_release(runtime: &Path) -> Result<()> {
             if corvid_client::clients(runtime).await?.clients.is_empty() {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            corvid_async::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await

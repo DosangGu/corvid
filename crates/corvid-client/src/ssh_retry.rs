@@ -1,8 +1,8 @@
 use std::io;
 use std::time::Duration;
 
+use corvid_async::time::Instant;
 use corvid_protocol::{FrameError, ProtocolFault};
-use tokio::time::Instant;
 use uuid::Uuid;
 
 /// The deadline covers backoff and connection setup for one SSH outage.
@@ -50,7 +50,7 @@ impl SshRetry {
                     | "WriterResumePending"
             );
         }
-        error.is::<tokio::time::error::Elapsed>()
+        error.is::<corvid_async::time::Elapsed>()
             || matches!(
                 error.downcast_ref::<FrameError>(),
                 Some(FrameError::Timeout | FrameError::Truncated)

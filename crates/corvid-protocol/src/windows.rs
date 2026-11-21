@@ -9,9 +9,9 @@ use std::path::Path;
 #[cfg(any(feature = "tokio", feature = "compio"))]
 use anyhow::Result;
 #[cfg(feature = "tokio")]
-use tokio::net::windows::named_pipe::NamedPipeClient;
+use corvid_async::time::timeout;
 #[cfg(feature = "tokio")]
-use tokio::time::timeout;
+use tokio::net::windows::named_pipe::NamedPipeClient;
 
 #[cfg(any(feature = "tokio", feature = "compio"))]
 use crate::COMMAND_TIMEOUT;

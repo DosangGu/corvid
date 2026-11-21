@@ -41,12 +41,12 @@ async fn compio_control_ping_uses_the_existing_daemon() -> Result<()> {
 #[cfg(feature = "compio-probe")]
 #[tokio::test]
 async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
+    use corvid_async::time::timeout;
     use corvid_protocol::wire::{Ping, envelope::Body};
     use corvid_protocol::{
         FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello,
     };
     use tokio::io::AsyncReadExt;
-    use tokio::time::timeout;
 
     let fixture = tempfile::tempdir()?;
     let runtime = fixture.path().join("run");
@@ -124,7 +124,7 @@ async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shel
     first.send(b"\x1d%")?;
     first.wait_without("BEFORE_SPLIT")?;
     // Observe the newly selected pane before sending input through its fresh route.
-    let selected = tokio::time::timeout(WAIT, async {
+    let selected = corvid_async::time::timeout(WAIT, async {
         loop {
             let snapshot = corvid_client::snapshot(&runtime).await?;
             if let Some((view, terminal)) = snapshot.snapshot().entities().find_map(|entity| {
@@ -137,7 +137,7 @@ async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shel
                 });
                 if split { break Ok::<_, anyhow::Error>((view, terminal)); }
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            corvid_async::time::sleep(Duration::from_millis(25)).await;
         }
     }).await??;
     first.wait_for("Windows PowerShell")?;
@@ -231,7 +231,7 @@ async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Resul
 
 async fn wait_for_title(runtime: &Path, tab_name: &str, pane_name: &str) -> Result<()> {
     let mut observed = Vec::new();
-    tokio::time::timeout(WAIT, async {
+    corvid_async::time::timeout(WAIT, async {
         loop {
             let snapshot = corvid_client::snapshot(runtime).await?;
             observed = snapshot.snapshot().entities().filter_map(|entity| {
@@ -244,7 +244,7 @@ async fn wait_for_title(runtime: &Path, tab_name: &str, pane_name: &str) -> Resu
             }) {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            corvid_async::time::sleep(Duration::from_millis(25)).await;
         }
     }).await.with_context(|| format!("waiting for tab {tab_name:?}, pane {pane_name:?}; observed {observed:?}"))?
 }
@@ -276,7 +276,7 @@ async fn command_menu_consumes_input_and_paste_without_resizing_the_terminal() -
     tui.wait_for("CORVID CMD  Main")?;
     tui.send(b"QQQ")?;
     tui.send(b"\x1b[200~$env:CORVID_MENU_LEAK='yes'\r\x1b[201~")?;
-    tokio::time::sleep(Duration::from_millis(2200)).await;
+    corvid_async::time::sleep(Duration::from_millis(2200)).await;
     tui.send(b"?")?;
     tui.wait_for("CORVID COMMANDS")?;
     tui.send(b"\x1b")?;
@@ -764,7 +764,7 @@ async fn native_agent(
     runtime: &Path,
     process: corvid_protocol::wire::AgentProcessState,
 ) -> Result<corvid_protocol::wire::AgentState> {
-    tokio::time::timeout(WAIT, async {
+    corvid_async::time::timeout(WAIT, async {
         loop {
             let snapshot = corvid_client::snapshot(runtime).await?;
             if let Some(agent) =
@@ -785,7 +785,7 @@ async fn native_agent(
             {
                 return Ok(agent);
             }
-            tokio::time::sleep(Duration::from_millis(40)).await;
+            corvid_async::time::sleep(Duration::from_millis(40)).await;
         }
     })
     .await
@@ -947,7 +947,7 @@ async fn installed_update_hands_off_a_live_shell_and_collects_the_released_packa
     let original_terminal = terminal_id(&runtime).await?;
 
     fs::write(root.join("current.txt"), current)?;
-    let applied = tokio::time::timeout(
+    let applied = corvid_async::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::new(&selected)
             .arg("finish-update")
@@ -980,9 +980,9 @@ async fn installed_update_hands_off_a_live_shell_and_collects_the_released_packa
     second.wait_for("SAME_SHELL_True")?;
     second.send(b"exit\r")?;
     second.expect_exit(0)?;
-    tokio::time::timeout(Duration::from_secs(45), async {
+    corvid_async::time::timeout(Duration::from_secs(45), async {
         while old.exists() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            corvid_async::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
@@ -1080,9 +1080,9 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
             .stderr(Stdio::null())
             .spawn()?,
     );
-    tokio::time::timeout(WAIT, async {
+    corvid_async::time::timeout(WAIT, async {
         while corvid_client::ping(&runtime).await.is_err() {
-            tokio::time::sleep(Duration::from_millis(30)).await;
+            corvid_async::time::sleep(Duration::from_millis(30)).await;
         }
     })
     .await
@@ -1125,7 +1125,7 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
         terminal_id(&runtime).await? == original,
         "detach removed the live terminal"
     );
-    tokio::time::timeout(WAIT, assert_history_after_detach(&runtime)).await??;
+    corvid_async::time::timeout(WAIT, assert_history_after_detach(&runtime)).await??;
 
     // Grow from a smaller screen so the old status bar cannot occupy the
     // destination row while the new frame is still in flight.
@@ -1144,7 +1144,7 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
     );
 
     second.resize(92, 26)?;
-    tokio::time::timeout(WAIT, async {
+    corvid_async::time::timeout(WAIT, async {
         loop {
             let snapshot = corvid_client::snapshot(&runtime).await?;
             if snapshot.snapshot().entities().any(|entity| {
@@ -1153,7 +1153,7 @@ async fn retains_the_windows_shell_across_tui_detach() -> Result<()> {
             }) {
                 return Ok::<_, anyhow::Error>(());
             }
-            tokio::time::sleep(Duration::from_millis(40)).await;
+            corvid_async::time::sleep(Duration::from_millis(40)).await;
         }
     })
     .await
@@ -1271,7 +1271,7 @@ async fn wait_for_layout(
     original: &str,
     original_selected: bool,
 ) -> Result<()> {
-    tokio::time::timeout(WAIT, async {
+    corvid_async::time::timeout(WAIT, async {
         loop {
             let snapshot = corvid_client::snapshot(runtime).await?;
             let mut count = 0;
@@ -1288,7 +1288,7 @@ async fn wait_for_layout(
             {
                 return Ok::<_, anyhow::Error>(());
             }
-            tokio::time::sleep(Duration::from_millis(40)).await;
+            corvid_async::time::sleep(Duration::from_millis(40)).await;
         }
     })
     .await

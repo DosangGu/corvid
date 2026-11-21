@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_client::{ControlEndpoint, InteractiveConnection};
 #[cfg(unix)]
 use corvid_protocol::wire::InputChunk;
@@ -18,7 +19,6 @@ use corvid_protocol::{
     CREATE_VIEW_CAPABILITY, Frame, WORKSPACE_DIRECTORY_CAPABILITY, decode_envelope,
 };
 use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
 
 const WAIT: Duration = Duration::from_secs(18);
 

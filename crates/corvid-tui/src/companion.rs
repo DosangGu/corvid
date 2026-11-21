@@ -1,6 +1,6 @@
 #[cfg(windows)]
 use std::env;
-#[cfg(any(windows, not(feature = "compio-endpoints")))]
+#[cfg(windows)]
 use std::future::Future;
 use std::path::PathBuf;
 
@@ -21,8 +21,6 @@ use corvid_protocol::wire::{
 };
 #[cfg(windows)]
 use corvid_protocol::wire::{WezTermLocation, WezTermTarget};
-#[cfg(all(not(feature = "compio-endpoints"), unix))]
-use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
 
 use super::read_pairing_code;
@@ -156,7 +154,6 @@ enum Command {
 }
 
 pub(super) fn dispatch(options: Options, daemon_runtime: Option<PathBuf>) -> Result<u32> {
-    #[cfg(feature = "compio-endpoints")]
     if matches!(options.command, Command::Run) {
         return start_native(options);
     }
@@ -166,7 +163,6 @@ pub(super) fn dispatch(options: Options, daemon_runtime: Option<PathBuf>) -> Res
     })
 }
 
-#[cfg(feature = "compio-endpoints")]
 fn start_native(options: Options) -> Result<u32> {
     #[cfg(windows)]
     {
@@ -183,7 +179,6 @@ fn start_native(options: Options) -> Result<u32> {
     compio::runtime::Runtime::new()?.block_on(run_native(options))
 }
 
-#[cfg(feature = "compio-endpoints")]
 async fn run_native(options: Options) -> Result<u32> {
     #[cfg(unix)]
     let address = companion_socket(options.socket_dir)?;
@@ -207,7 +202,6 @@ async fn run_native(options: Options) -> Result<u32> {
     Ok(0)
 }
 
-#[cfg(feature = "compio-endpoints")]
 async fn native_shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     let other = compio::signal::unix::signal(nix::libc::SIGTERM);
@@ -267,11 +261,6 @@ async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -> Result<()
         ensure!(!failed, "companion doctor found failed checks");
         return Ok(());
     }
-    #[cfg(not(feature = "compio-endpoints"))]
-    if matches!(options.command, Command::Run) {
-        return corvid_companion::run(&address, &companion_state(options.state_dir)?, shutdown()?)
-            .await;
-    }
     let mut client = PresentationClient::connect(&address).await?;
     if matches!(options.command, Command::Reconnect) {
         client.reconnect_monitor().await?;
@@ -317,18 +306,6 @@ pub(crate) fn companion_state(path: Option<PathBuf>) -> Result<PathBuf> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn companion_socket(path: Option<PathBuf>) -> Result<PathBuf> {
     corvid_protocol::paths::companion_socket(path)?.prepare()
-}
-
-#[cfg(all(not(feature = "compio-endpoints"), unix))]
-fn shutdown() -> Result<impl Future<Output = ()>> {
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
-    Ok(async move {
-        corvid_async::select! {
-            _ = interrupt.recv() => {}
-            _ = terminate.recv() => {}
-        }
-    })
 }
 
 #[cfg(windows)]

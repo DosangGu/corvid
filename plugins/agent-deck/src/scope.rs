@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_companion::Config;
 use corvid_companion::monitor::{Scope, saved_address};
 #[cfg(not(windows))]
@@ -9,7 +10,6 @@ use corvid_protocol::unix::RuntimeDir as StateDirectory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory;
 use serde::{Deserialize, Serialize};
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 const OWNER_FILE: &str = "owner.json";

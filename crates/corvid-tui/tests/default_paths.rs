@@ -4,10 +4,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_companion::{Config, PresentationClient};
 use corvid_protocol::wire::{CompanionConnection, HostInfo};
 use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
 
 const WAIT: Duration = Duration::from_secs(10);
 

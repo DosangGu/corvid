@@ -3,10 +3,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::timeout;
 use corvid_client::check_system_openssh;
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::{CompanionConnection, PresentationSlots};
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::platform::{TerminalRegistry, WezTermPane};

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::timeout;
 use corvid_async::{mpsc, oneshot};
 use corvid_client::ControlEndpoint;
 #[cfg(windows)]
@@ -10,7 +11,6 @@ use corvid_protocol::wire::DesktopAgentFocused;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use tokio::task::JoinSet;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::connection::{self, Client};

@@ -7,6 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Attached, RenderHeader, RouteToken, TerminalExited};
@@ -15,7 +16,6 @@ use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::pty::{Winsize, openpty};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 const WAIT: Duration = Duration::from_secs(10);

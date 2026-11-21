@@ -7,13 +7,13 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_client::{AttachOptions, UpgradeTarget, daemon_missing};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use nix::errno::Errno;
 use nix::fcntl::Flock;
 use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 const TERMINFO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/corvid.terminfo"));

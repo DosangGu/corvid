@@ -6,6 +6,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::time::Duration;
 
+use corvid_async::time::{Instant, sleep, timeout};
 use corvid_client::{ControllerRequest, ControllerScope, controller};
 use corvid_companion::{HostEndpoint, PresentationClient, initialize};
 use corvid_protocol::controller::{FOCUS_CAPABILITY, PAIR_CAPABILITY};
@@ -30,7 +31,6 @@ use corvid_protocol::{
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::time::{Instant, sleep, timeout};
 use uuid::Uuid;
 
 use common::{WAIT, command, daemon, start_daemon, wait_for_daemon};

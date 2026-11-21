@@ -9,6 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+#[cfg(feature = "tokio")]
+use corvid_async::time::timeout;
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg, OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
@@ -16,8 +18,6 @@ use nix::unistd::geteuid;
 use tempfile::NamedTempFile;
 #[cfg(feature = "tokio")]
 use tokio::net::{UnixListener, UnixStream};
-#[cfg(feature = "tokio")]
-use tokio::time::timeout;
 
 const DIRECTORY_FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_DIRECTORY)

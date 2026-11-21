@@ -4,12 +4,16 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_client::{ControlEndpoint, DaemonInstallation, HostPlatform, RemoteHost};
 use corvid_protocol::wire::StopAgentMonitor;
 use corvid_protocol::wire::envelope::Body;
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
-use tokio::time::{sleep, timeout};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+use std::process::Command;
 use uuid::Uuid;
 
 use crate::platform::{StateDirectory, StateLock};
@@ -253,7 +257,9 @@ impl Scope {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut child = command.spawn().context("starting the agent monitor")?;
+        let mut child = async_process::Command::from(command)
+            .spawn()
+            .context("starting the agent monitor")?;
         timeout(STARTUP_TIMEOUT, async {
             loop {
                 if let Some(client) = self.connected().await? {
@@ -264,7 +270,7 @@ impl Scope {
                     return Ok::<_, anyhow::Error>(());
                 }
                 // Concurrent starters can lose the store lock before the winner publishes IPC.
-                let _ = child.try_wait()?;
+                let _ = child.try_status()?;
                 sleep(STARTUP_POLL).await;
             }
         })

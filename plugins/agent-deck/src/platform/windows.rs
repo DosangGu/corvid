@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_async::oneshot;
-use tokio::time::timeout;
+use corvid_async::time::timeout;
 use uuid::Uuid;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;

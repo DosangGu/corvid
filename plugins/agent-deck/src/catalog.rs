@@ -171,7 +171,7 @@ async fn run(
     desktop: CurrentDesktop,
 ) {
     let mut subscriptions = Subscriptions::default();
-    let mut refresh = tokio::time::interval(Duration::from_secs(1));
+    let mut refresh = corvid_async::time::interval(Duration::from_secs(1));
     loop {
         corvid_async::select! {
             _ = publish.closed() => break,
@@ -301,7 +301,7 @@ async fn monitor(
         }
         corvid_async::select! {
             _ = publish.closed() => return,
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = corvid_async::time::sleep(Duration::from_secs(1)) => {}
         }
     }
 }
@@ -366,7 +366,7 @@ async fn poll_host(
             }
             previous = Some(slots);
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        corvid_async::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -378,7 +378,7 @@ async fn get_page(
         count: None,
         overflow_page,
     };
-    let body = tokio::time::timeout(
+    let body = corvid_async::time::timeout(
         corvid_protocol::COMMAND_TIMEOUT,
         client.request(Body::GetPresentationSlots(query)),
     )

@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_client::view_state::{ViewStore, tui_target};
 use corvid_client::{ControlEndpoint, InteractiveConnection};
 use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
@@ -22,7 +23,6 @@ use corvid_protocol::{Frame, PANE_WRITERS_CAPABILITY, RESTORE_AGENTS_CAPABILITY,
 use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::RuntimeDir as StateDirectory;

@@ -4,12 +4,12 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_companion::Config;
 use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::windows::StateDirectory;
 use semver::Version;
 use tokio::process::Command;
-use tokio::time::{sleep, timeout};
 
 use crate::connection::Client;
 

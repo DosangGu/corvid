@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::{sleep, timeout};
 use corvid_client::{ControlEndpoint, SshAlias};
 use corvid_protocol::COMMAND_TIMEOUT;
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::{Config, HostEndpoint, PresentationAddress, PresentationClient};

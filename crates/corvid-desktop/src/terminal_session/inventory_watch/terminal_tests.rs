@@ -48,7 +48,7 @@ async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -
     job.join();
     let attempts = std::fs::read(root.join("attempts"))?;
     std::fs::remove_file(root.join("offline"))?;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    corvid_async::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(std::fs::read(root.join("attempts"))?, attempts);
 
     let target = offline
@@ -146,7 +146,7 @@ impl Daemon {
         };
         timeout(Duration::from_secs(10), async {
             while corvid_client::ping(&runtime).await.is_err() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                corvid_async::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await?;

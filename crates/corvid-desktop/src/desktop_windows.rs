@@ -665,7 +665,7 @@ async fn listen_for_deck(
         }
         corvid_async::select! {
             _ = requests.closed() => break,
-            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            _ = corvid_async::time::sleep(std::time::Duration::from_secs(1)) => {}
         }
     }
 }

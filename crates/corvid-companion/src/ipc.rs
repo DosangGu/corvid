@@ -5,11 +5,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use corvid_async::{mpsc, oneshot};
 use corvid_client::ControlEndpoint;
-#[cfg(all(
-    not(feature = "compio-endpoints"),
-    any(target_os = "linux", target_os = "macos")
-))]
-use corvid_protocol::unix::BoundSocket;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
@@ -18,35 +13,11 @@ use corvid_protocol::{
     COMMAND_TIMEOUT, FrameRole, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault, Session,
     accept_hello_with_profiles,
 };
-#[cfg(not(feature = "compio-endpoints"))]
-use corvid_protocol::{FrameReader, FrameWriter, check_hello_result, hello};
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-#[cfg(all(
-    not(feature = "compio-endpoints"),
-    any(target_os = "linux", target_os = "macos")
-))]
-use tokio::net::UnixStream as ClientStream;
-#[cfg(all(windows, not(feature = "compio-endpoints")))]
-use tokio::net::windows::named_pipe::NamedPipeClient as ClientStream;
-#[cfg(all(windows, not(feature = "compio-endpoints")))]
-use tokio::net::windows::named_pipe::NamedPipeServer;
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::task::JoinSet;
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::time::sleep;
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::Store;
 use crate::service::{Call, Service};
-#[cfg(all(windows, not(feature = "compio-endpoints")))]
-use corvid_protocol::windows::PipeListener;
-#[cfg(all(windows, not(feature = "compio-endpoints")))]
-use corvid_protocol::windows::open_pipe;
 
-#[cfg(feature = "compio-endpoints")]
 mod native;
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
@@ -89,7 +60,6 @@ pub type PresentationAddress = Path;
 pub type PresentationAddress = str;
 
 /// Serve the configured companion on the caller's Compio runtime.
-#[cfg(feature = "compio-endpoints")]
 pub async fn run_native(
     runtime: &PresentationAddress,
     state: &Path,
@@ -132,10 +102,7 @@ async fn run_service(
     endpoint: ControlEndpoint,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
-    #[cfg(feature = "compio-endpoints")]
     return native::run(runtime, store, endpoint, shutdown).await;
-    #[cfg(not(feature = "compio-endpoints"))]
-    serve_runtime(runtime, store, endpoint, shutdown).await
 }
 
 async fn serve_runtime(
@@ -154,27 +121,13 @@ async fn serve_runtime(
     let listener = {
         directory = RuntimeDir::create_all(runtime)?;
         instance = directory.lock_instance()?;
-        #[cfg(feature = "compio-endpoints")]
-        {
-            instance.bind_compio(SocketRole::Presentation).await?
-        }
-        #[cfg(not(feature = "compio-endpoints"))]
-        {
-            instance.bind(SocketRole::Presentation).await?
-        }
+        instance.bind_compio(SocketRole::Presentation).await?
     };
-    #[cfg(all(windows, feature = "compio-endpoints"))]
+    #[cfg(windows)]
     let listener =
         corvid_async::Mutex::new(corvid_protocol::windows::CompioPipeListener::bind(runtime)?);
-    #[cfg(all(windows, not(feature = "compio-endpoints")))]
-    let listener = PipeListener::bind(runtime)?;
-    #[cfg(not(feature = "compio-endpoints"))]
-    let mut listener = listener;
     let (sender, calls) = mpsc::channel(MAX_CALLS);
 
-    #[cfg(not(feature = "compio-endpoints"))]
-    let incoming = accept(&mut listener, sender, &host, &epoch);
-    #[cfg(feature = "compio-endpoints")]
     let incoming = native::accept(&listener, sender, &host, &epoch);
     let result = corvid_async::select! {
         result = incoming => result,
@@ -182,120 +135,6 @@ async fn serve_runtime(
         _ = shutdown => Ok(()),
     };
     result.and(service.flush_status())
-}
-
-#[cfg(not(feature = "compio-endpoints"))]
-trait Listener {
-    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
-
-    fn next_peer(&mut self) -> impl Future<Output = Result<Option<Self::Stream>>> + Send;
-}
-
-#[cfg(all(
-    not(feature = "compio-endpoints"),
-    any(target_os = "linux", target_os = "macos")
-))]
-impl Listener for BoundSocket<'_> {
-    type Stream = ClientStream;
-
-    async fn next_peer(&mut self) -> Result<Option<Self::Stream>> {
-        self.accept().await
-    }
-}
-
-#[cfg(all(windows, not(feature = "compio-endpoints")))]
-impl Listener for PipeListener {
-    type Stream = NamedPipeServer;
-
-    async fn next_peer(&mut self) -> Result<Option<Self::Stream>> {
-        self.accept().await.map(Some)
-    }
-}
-
-#[cfg(not(feature = "compio-endpoints"))]
-async fn accept(
-    listener: &mut impl Listener,
-    calls: mpsc::Sender<Call>,
-    host: &str,
-    epoch: &str,
-) -> Result<()> {
-    let mut peers = JoinSet::new();
-    loop {
-        corvid_async::select! {
-            result = listener.next_peer() => match result {
-                Ok(Some(stream)) if peers.len() < MAX_PEERS => {
-                    peers.spawn(serve(stream, calls.clone(), host.to_owned(), epoch.to_owned()));
-                }
-                Ok(_) => {}
-                Err(_) => sleep(Duration::from_millis(25)).await,
-            },
-            result = peers.join_next() if !peers.is_empty() => {
-                if matches!(result, Some(Ok(Ok(true)))) {
-                    return Ok(());
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(feature = "compio-endpoints"))]
-type Reader<S> = FrameReader<ReadHalf<S>>;
-#[cfg(not(feature = "compio-endpoints"))]
-type Writer<S> = FrameWriter<WriteHalf<S>>;
-
-#[cfg(not(feature = "compio-endpoints"))]
-async fn open_frames<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: S,
-) -> Result<(Reader<S>, Writer<S>)> {
-    let (input, output) = tokio::io::split(stream);
-    let writer = FrameWriter::start(output, ROLE).await?;
-    let reader = FrameReader::start(input, ROLE).await?;
-    Ok((reader, writer))
-}
-
-#[cfg(not(feature = "compio-endpoints"))]
-async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: S,
-    calls: mpsc::Sender<Call>,
-    host: String,
-    epoch: String,
-) -> Result<bool> {
-    let mut peer = timeout(COMMAND_TIMEOUT, server_hello(stream, &host, &epoch)).await??;
-    while let Some(mut request) = timeout(IDLE_TIMEOUT, peer.reader.next_envelope()).await?? {
-        let (body, stop) = reply(&peer.session, &calls, &mut request).await;
-        let reply = peer.session.envelope(request.request_id, body);
-        timeout(COMMAND_TIMEOUT, peer.writer.envelope(&reply)).await??;
-        if stop {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-#[cfg(not(feature = "compio-endpoints"))]
-async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: S,
-    host: &str,
-    epoch: &str,
-) -> Result<Peer<S>> {
-    let (mut reader, mut writer) = open_frames(stream).await?;
-    let request = reader
-        .next_envelope()
-        .await?
-        .context("missing presentation Hello")?;
-    let (session, reply) = match negotiate_peer(&request, host, epoch) {
-        Ok(accepted) => accepted,
-        Err(fault) => {
-            writer.envelope(&rejection(request, &fault)).await?;
-            return Err(fault.into());
-        }
-    };
-    writer.envelope(&reply).await?;
-    Ok(Peer {
-        session,
-        reader,
-        writer,
-    })
 }
 
 fn negotiate_peer(
@@ -349,7 +188,6 @@ async fn dispatch(calls: &mpsc::Sender<Call>, body: Body) -> Result<Body, Protoc
     calls
         .try_send(Call { body, reply })
         .map_err(|_| ProtocolFault::new("LimitExceeded", "companion request queue unavailable"))?;
-    #[cfg(feature = "compio-endpoints")]
     use compio::time::timeout;
     timeout(CALL_TIMEOUT, receive)
         .await
@@ -363,28 +201,13 @@ async fn dispatch(calls: &mpsc::Sender<Call>, body: Body) -> Result<Body, Protoc
         })
 }
 
-#[cfg(not(feature = "compio-endpoints"))]
-struct Peer<S> {
-    session: Session,
-    reader: Reader<S>,
-    writer: Writer<S>,
-}
-
-#[cfg(not(feature = "compio-endpoints"))]
-pub struct PresentationClient(Peer<ClientStream>);
-#[cfg(feature = "compio-endpoints")]
 pub struct PresentationClient(corvid_client::CompioPresentation);
 
 impl PresentationClient {
     pub async fn connect(runtime: &PresentationAddress) -> Result<Self> {
-        #[cfg(feature = "compio-endpoints")]
         return corvid_client::CompioPresentation::connect(runtime, PRESENTATION_CAPABILITY)
             .await
             .map(Self);
-        #[cfg(not(feature = "compio-endpoints"))]
-        timeout(COMMAND_TIMEOUT, Self::negotiate(runtime))
-            .await
-            .context("companion Hello timed out")?
     }
 
     pub async fn connect_if_present(runtime: &PresentationAddress) -> Result<Option<Self>> {
@@ -395,33 +218,8 @@ impl PresentationClient {
         }
     }
 
-    #[cfg(not(feature = "compio-endpoints"))]
-    async fn negotiate(runtime: &PresentationAddress) -> Result<Self> {
-        let stream = open_local(runtime).await.context("CompanionUnavailable")?;
-        let (mut reader, mut writer) = open_frames(stream).await?;
-        let request = hello(
-            Uuid::new_v4().to_string(),
-            None,
-            vec![PRESENTATION_CAPABILITY.to_owned()],
-        );
-        writer.envelope(&request).await?;
-        let reply = reader
-            .next_envelope()
-            .await?
-            .context("companion closed during Hello")?;
-        let session = check_hello_result(&request, &reply, PeerRole::Presentation)?;
-        Ok(Self(Peer {
-            session,
-            reader,
-            writer,
-        }))
-    }
-
     pub fn session(&self) -> &Session {
-        #[cfg(feature = "compio-endpoints")]
-        return self.0.session();
-        #[cfg(not(feature = "compio-endpoints"))]
-        &self.0.session
+        self.0.session()
     }
 
     pub async fn reconnect_monitor(&mut self) -> Result<()> {
@@ -481,7 +279,6 @@ impl PresentationClient {
             .envelope(Some(Uuid::new_v4().to_string()), body);
         self.session().validate_request(&request)?;
         let expected = request.request_id.clone();
-        #[cfg(feature = "compio-endpoints")]
         use corvid_client::endpoint_time::timeout;
         let reply = timeout(CALL_TIMEOUT + COMMAND_TIMEOUT, self.0.exchange(request))
             .await
@@ -514,30 +311,4 @@ fn presentation_absent(error: &anyhow::Error) -> bool {
             || (cfg!(any(target_os = "linux", target_os = "macos"))
                 && error.kind() == ErrorKind::ConnectionRefused)
     })
-}
-
-#[cfg(all(
-    not(feature = "compio-endpoints"),
-    any(target_os = "linux", target_os = "macos")
-))]
-async fn open_local(runtime: &PresentationAddress) -> Result<ClientStream> {
-    RuntimeDir::open(runtime)?
-        .connect(SocketRole::Presentation)
-        .await
-}
-
-#[cfg(all(windows, not(feature = "compio-endpoints")))]
-async fn open_local(runtime: &PresentationAddress) -> Result<ClientStream> {
-    open_pipe(runtime).await
-}
-
-#[cfg(not(feature = "compio-endpoints"))]
-impl<S: AsyncRead + AsyncWrite + Unpin> Peer<S> {
-    async fn exchange(&mut self, request: Envelope) -> Result<Envelope> {
-        self.writer.envelope(&request).await?;
-        self.reader
-            .next_envelope()
-            .await?
-            .context("companion closed during command")
-    }
 }

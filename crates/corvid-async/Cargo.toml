@@ -10,6 +10,7 @@ publish = ["crates-io"]
 
 [dependencies]
 async-channel.workspace = true
+async-io.workspace = true
 async-lock.workspace = true
 event-listener.workspace = true
 futures-channel.workspace = true

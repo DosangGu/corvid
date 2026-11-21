@@ -9,27 +9,26 @@ description = "Controller state and host connections for Corvid"
 publish = ["crates-io"]
 
 [features]
-compio-endpoints = ["corvid-client/compio-endpoints", "corvid-protocol/compio", "dep:compio", "dep:futures-util", "dep:async-process"]
+compio-endpoints = []
 
 [dependencies]
 corvid-async.workspace = true
-compio = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
+async-process.workspace = true
+compio.workspace = true
+futures-util.workspace = true
 anyhow.workspace = true
 corvid-client.workspace = true
-corvid-protocol = { workspace = true, features = ["tokio"] }
+corvid-protocol = { workspace = true, features = ["compio"] }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 uuid.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-async-process = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true, features = ["io"] }
+futures-util = { workspace = true, features = ["io"] }
 socket2.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security_Authorization",
@@ -39,6 +38,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "process", "rt"] }
 tempfile.workspace = true
 
 [lints]

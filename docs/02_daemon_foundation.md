@@ -480,9 +480,9 @@ driver with bounded frame queues. The subprocess helper owns child termination
 and reaping, including when setup is cancelled.
 The companion
 presentation server and its clients also use Compio for private CRV1 connections.
-With the feature enabled, the companion CLI starts its service and shutdown
-signals on Compio, and snapshot watches run their heartbeats and backpressure
-deadlines on the shared Compio endpoint driver. The same feature runs Desktop's
+The companion CLI starts its service and shutdown signals on Compio, and
+snapshot watches run their heartbeats and backpressure deadlines on the shared
+Compio endpoint driver. The optional application feature runs Desktop's
 workspace lookup and inventory workers on Compio, including their reconnect
 deadlines. Agent Deck runs its slot presentation client on Compio, including
 refresh, reconnection, and request deadlines.

@@ -7,11 +7,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
+use corvid_async::time::sleep;
 use corvid_client::{AttachOptions, check_tty, daemon_missing, host, ping, runtime_path};
 use corvid_protocol::windows::StateDirectory;
 use corvid_protocol::wire::AgentProvider;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::time::sleep;
 use uuid::Uuid;
 use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
 
@@ -376,7 +376,7 @@ async fn wait_for_upgrade_shutdown(
     directory: &StateDirectory,
     previous: &DaemonProcess,
 ) -> Result<()> {
-    tokio::time::timeout(COMMAND_TIMEOUT, async {
+    corvid_async::time::timeout(COMMAND_TIMEOUT, async {
         loop {
             if previous.exit_code()?.is_none() {
                 sleep(STARTUP_POLL).await;
@@ -403,7 +403,7 @@ fn sharing_violation(error: &anyhow::Error) -> bool {
 }
 
 async fn lock_startup(directory: &StateDirectory) -> Result<std::fs::File> {
-    tokio::time::timeout(COMMAND_TIMEOUT, async {
+    corvid_async::time::timeout(COMMAND_TIMEOUT, async {
         loop {
             match directory.lock_startup() {
                 Ok(lock) => return Ok(lock),
@@ -569,7 +569,7 @@ async fn wait_for_daemon(runtime: &Path, child: &DaemonProcess) -> Result<()> {
                 "Corvid daemon exited during startup ({status}); run corvid daemon in the foreground for details"
             );
         }
-        if let Ok(result) = tokio::time::timeout(
+        if let Ok(result) = corvid_async::time::timeout(
             COMMAND_TIMEOUT.min(STARTUP_POLL * 4),
             daemon_running(runtime),
         )

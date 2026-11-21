@@ -221,7 +221,7 @@ async fn serve_watch(
                         });
                         writer.envelope(&frame(model.sequence, delta, None)).await?;
                     }
-                    Update::Delay(delay) => tokio::time::sleep(delay).await,
+                    Update::Delay(delay) => corvid_async::time::sleep(delay).await,
                     Update::Disconnect => {
                         model.titles[0] = "Changed while offline".into();
                         model.sequence += 1;
@@ -293,7 +293,7 @@ async fn titles_keep_up_with_bursts_and_reconnect_to_the_latest_snapshot() -> Re
     assert_eq!(server.connections.load(Ordering::SeqCst), 2);
     server.send(Update::ChangeEpoch);
     wait_for(&shared, || !shared.snapshot().ui.inventory_ready).await;
-    tokio::time::sleep(Duration::from_millis(350)).await;
+    corvid_async::time::sleep(Duration::from_millis(350)).await;
     assert!(!shared.snapshot().ui.inventory_ready);
     assert_eq!(
         shared.snapshot().ui.inventory.as_ref().unwrap().workspaces[0].tabs[0].label,
@@ -304,7 +304,7 @@ async fn titles_keep_up_with_bursts_and_reconnect_to_the_latest_snapshot() -> Re
     drop(watcher);
     assert!(stopped.elapsed() < Duration::from_secs(1));
     let connections = server.connections.load(Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(350)).await;
+    corvid_async::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(
         server.connections.load(Ordering::SeqCst),
         connections,
