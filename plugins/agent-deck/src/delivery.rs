@@ -96,7 +96,7 @@ mod tests {
             created_ms: 1,
             focus_error: None,
         };
-        let (a, b) = tokio::join!(
+        let (a, b) = corvid_async::join!(
             first.claim(vec![notice.clone()]),
             second.claim(vec![notice.clone()])
         );

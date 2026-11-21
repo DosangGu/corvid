@@ -20,7 +20,7 @@ pub(super) fn lookup(
     let (mut send, receive) = oneshot::channel();
     inventory_runtime::start("corvid-desktop-host-lookup", move || async move {
         let lookup = timeout(Duration::from_secs(30), read_inventory(destination, known));
-        tokio::select! {
+        corvid_async::select! {
             _ = send.closed() => {}
             result = lookup => {
                 let result = match result {
@@ -79,7 +79,7 @@ pub(super) fn start(
 ) -> Result<watch::Receiver<Option<Arc<Inventory>>>> {
     let (send, receive) = watch::channel(None);
     inventory_runtime::start("corvid-desktop-host-watch", move || async move {
-        tokio::select! {
+        corvid_async::select! {
             _ = send.closed() => {}
             _ = monitor(&endpoint, &host, &send) => {}
         }

@@ -71,7 +71,7 @@ async fn authenticates_both_peers_and_holds_exclusive_lock_until_socket_closes()
     );
 
     let client = RuntimeDir::open(&path).unwrap();
-    let (client, peer) = tokio::join!(client.connect(SocketRole::Control), server.accept());
+    let (client, peer) = corvid_async::join!(client.connect(SocketRole::Control), server.accept());
     assert!(client.is_ok());
     assert!(peer.unwrap().is_some());
 

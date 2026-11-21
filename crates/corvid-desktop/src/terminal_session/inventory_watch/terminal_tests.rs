@@ -245,7 +245,7 @@ async fn wait_title(
             if title(shared, pane).as_deref() == Some(expected) {
                 return Ok(());
             }
-            tokio::select! {
+            corvid_async::select! {
                 changed = changes.changed() => {
                     changed?;
                 }

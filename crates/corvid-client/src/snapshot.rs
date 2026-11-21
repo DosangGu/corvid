@@ -160,7 +160,7 @@ impl SnapshotWatch {
             if !self.cache.is_valid() {
                 return Err(resync().into());
             }
-            let frame = tokio::select! {
+            let frame = corvid_async::select! {
                 biased;
                 _ = self.failure.changed() => {
                     return Err(self.failure.borrow().clone().unwrap_or_else(offline).into());
@@ -310,9 +310,9 @@ impl Heartbeat {
         connection: &mut Wire<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
     ) -> Result<Envelope> {
         let pending_read = connection.reader.next_envelope();
-        tokio::pin!(pending_read);
+        corvid_async::pin!(pending_read);
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 _ = sleep_until(self.idle) => return Err(offline().into()),
                 frame = &mut pending_read => return frame?.ok_or_else(|| offline().into()),
                 _ = sleep_until(self.next_ping) => {

@@ -179,7 +179,7 @@ impl Control<'_> {
         let mut incoming = Incoming::start(reader);
         let mut idle = Instant::now() + IDLE_TIMEOUT;
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 _ = sleep_until(idle) => return Ok(()),
                 request = incoming.requests.recv() => {
                     let Some(request) = request else { return Ok(()) };

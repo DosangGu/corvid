@@ -235,7 +235,7 @@ impl RemoteHost {
         let mut output = Vec::new();
         let mut bounded = stdout.take((MAX_RESPONSE + 1) as u64);
         let (status, received, diagnostic, sent) = timeout(BOOTSTRAP_TIMEOUT, async {
-            tokio::join!(
+            corvid_async::join!(
                 child.wait(),
                 bounded.read_to_end(&mut output),
                 drain_diagnostic(stderr),

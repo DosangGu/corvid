@@ -173,7 +173,7 @@ async fn run(
     let mut subscriptions = Subscriptions::default();
     let mut refresh = tokio::time::interval(Duration::from_secs(1));
     loop {
-        tokio::select! {
+        corvid_async::select! {
             _ = publish.closed() => break,
             _ = refresh.tick() => {
                 if let Ok(next) = hosts::discover(&state, current)
@@ -299,7 +299,7 @@ async fn monitor(
         }) {
             ctx.notify();
         }
-        tokio::select! {
+        corvid_async::select! {
             _ = publish.closed() => return,
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
         }

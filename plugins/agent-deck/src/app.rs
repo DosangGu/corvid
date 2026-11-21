@@ -47,7 +47,7 @@ pub(crate) fn run(session: Session, preferences: shell::Window) {
         cx.spawn(async move |cx| {
             loop {
                 let tick = cx.background_executor().timer(Duration::from_secs(1));
-                tokio::select! {
+                corvid_async::select! {
                     result = updates.changed() => if result.is_err() { break },
                     _ = tick => {}
                 }

@@ -542,7 +542,7 @@ async fn incompatible_daemon_framing_is_reported_locally_and_through_the_relay()
         assert!(reader.next_envelope().await.unwrap().is_none());
         assert!(!relay.wait().await.unwrap().success());
     };
-    timeout(WAIT, async { tokio::join!(legacy, client) })
+    timeout(WAIT, async { corvid_async::join!(legacy, client) })
         .await
         .unwrap();
 }

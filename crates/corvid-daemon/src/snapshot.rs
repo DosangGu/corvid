@@ -160,7 +160,7 @@ async fn write_frame(
     let write = timeout(COMMAND_TIMEOUT, operation);
     if let Some(watch) = watch {
         watch.check()?;
-        tokio::select! {
+        corvid_async::select! {
             biased;
             // The writer may have sent a prefix. Close the stream instead of
             // appending a structured error inside an incomplete frame.

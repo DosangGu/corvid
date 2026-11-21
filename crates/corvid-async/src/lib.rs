@@ -5,3 +5,6 @@ pub mod oneshot;
 pub mod watch;
 
 pub use async_lock::{Mutex, Semaphore, SemaphoreGuard};
+
+pub use futures_util::{join, pin_mut as pin, try_join};
+pub use selectme::select;

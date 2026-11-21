@@ -111,7 +111,7 @@ async fn checks() -> Result<()> {
     );
 
     // Concurrent sweeps and an Agents click must reuse the one replacement.
-    let (first, second) = tokio::join!(
+    let (first, second) = corvid_async::join!(
         settings.refresh_running(&current),
         lifecycle::ensure_current(
             &current,

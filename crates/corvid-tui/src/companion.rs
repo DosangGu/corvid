@@ -195,7 +195,7 @@ async fn run_native(options: Options) -> Result<u32> {
         std::pin::pin!(corvid_companion::run_native(&address, &state, async move {
             let _ = stopped.await;
         }));
-    tokio::select! {
+    corvid_async::select! {
         biased;
         result = native_shutdown_signal() => {
             result?;
@@ -222,7 +222,7 @@ async fn native_shutdown_signal() -> std::io::Result<()> {
         }
         compio::signal::windows::ctrl_break()
     };
-    tokio::select! {
+    corvid_async::select! {
         result = compio::signal::ctrl_c() => result,
         result = other => result,
     }
@@ -324,7 +324,7 @@ fn shutdown() -> Result<impl Future<Output = ()>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     Ok(async move {
-        tokio::select! {
+        corvid_async::select! {
             _ = interrupt.recv() => {}
             _ = terminate.recv() => {}
         }
@@ -336,7 +336,7 @@ fn shutdown() -> Result<impl Future<Output = ()>> {
     let mut interrupt = tokio::signal::windows::ctrl_c()?;
     let mut break_signal = tokio::signal::windows::ctrl_break()?;
     Ok(async move {
-        tokio::select! {
+        corvid_async::select! {
             _ = interrupt.recv() => {}
             _ = break_signal.recv() => {}
         }

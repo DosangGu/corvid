@@ -120,7 +120,7 @@ async fn forward_focus(
     focus: mpsc::Sender<FocusRequest>,
 ) -> Result<()> {
     loop {
-        let request = tokio::select! {
+        let request = corvid_async::select! {
             shown = shown.recv() => {
                 if shown.is_none() { return Ok(()); }
                 client.open(false).await?;

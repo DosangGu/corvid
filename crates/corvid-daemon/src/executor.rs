@@ -78,7 +78,7 @@ mod native {
                 let _ = send_result.send(result);
             })?;
         let mut result = result;
-        tokio::select! {
+        corvid_async::select! {
             result = &mut result => result?,
             () = shutdown => {
                 drop(stop);

@@ -193,7 +193,7 @@ impl Discovery {
             .spawn(move || {
                 match Builder::new_current_thread().enable_all().build() {
                     Ok(runtime) => runtime.block_on(async move {
-                        tokio::select! {
+                        corvid_async::select! {
                             biased;
                             _ = send.closed() => {}
                             result = discover_wezterm_panes() => { let _ = send.send(result); }

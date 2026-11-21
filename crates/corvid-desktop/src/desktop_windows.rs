@@ -663,7 +663,7 @@ async fn listen_for_deck(
             }
             listeners = current;
         }
-        tokio::select! {
+        corvid_async::select! {
             _ = requests.closed() => break,
             _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
         }
@@ -673,9 +673,9 @@ async fn listen_for_deck(
 async fn serve_deck_scope(scope: Scope, requests: mpsc::Sender<(ControlEndpoint, FocusRequest)>) {
     let (focus, mut incoming) = mpsc::channel::<FocusRequest>(1);
     let listener = serve_routed(scope.config.host_id, scope.config.controller_id, focus);
-    tokio::pin!(listener);
+    corvid_async::pin!(listener);
     loop {
-        tokio::select! {
+        corvid_async::select! {
             _ = &mut listener => break,
             _ = requests.closed() => break,
             request = incoming.recv() => {

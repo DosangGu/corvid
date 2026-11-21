@@ -226,7 +226,7 @@ fn start_driver() -> io::Result<mpsc::Sender<Request>> {
 }
 
 async fn wait(deadline: Instant, mut reached: oneshot::Sender<Result<()>>) {
-    tokio::select! {
+    corvid_async::select! {
         _ = compio::time::sleep_until(deadline) => {
             let _ = reached.send(Ok(()));
         }
@@ -244,7 +244,7 @@ async fn set_up(request: SetupRequest) {
         mut output,
     } = request;
     let command = compio::time::timeout(timeout, super::process::output(command, payload, limit));
-    let result = tokio::select! {
+    let result = corvid_async::select! {
         result = command => result.context(timeout_context).and_then(|result| result),
         _ = output.closed() => return,
     };
@@ -277,7 +277,7 @@ async fn serve(request: ConnectRequest) {
                 .await
                 .context("daemon handshake timed out")?
             };
-            let connection = tokio::select! {
+            let connection = corvid_async::select! {
                 result = negotiate => result,
                 _ = connected.closed() => return,
             };
@@ -295,7 +295,7 @@ async fn serve(request: ConnectRequest) {
                     .context("CompanionUnavailable")?;
                 LocalConnection::establish(stream, peer, capabilities, controller).await
             });
-            let connection = tokio::select! {
+            let connection = corvid_async::select! {
                 result = negotiate => result.context("companion Hello timed out").and_then(|value| value),
                 _ = connected.closed() => return,
             };
@@ -303,7 +303,7 @@ async fn serve(request: ConnectRequest) {
         }
         Target::Relay(command) => {
             let setup = set_up_relay(command, peer, capabilities, controller);
-            let (connection, _child, _diagnostic) = match tokio::select! {
+            let (connection, _child, _diagnostic) = match corvid_async::select! {
                 result = setup => result,
                 _ = connected.closed() => return,
             } {
@@ -382,7 +382,7 @@ async fn serve_connected<R: AsyncRead, W: AsyncWrite>(
             mut complete,
         }) = writes.recv().await
         {
-            let result = tokio::select! {
+            let result = corvid_async::select! {
                 result = compio::time::timeout(COMMAND_TIMEOUT, writer.envelope(&message)) => {
                     result.unwrap_or(Err(FrameError::Timeout))
                 }
@@ -411,7 +411,7 @@ async fn serve_connected<R: AsyncRead, W: AsyncWrite>(
             }
         }
     };
-    tokio::select! {
+    corvid_async::select! {
         () = upload => {}
         () = download => {}
         () = frames.closed() => {}

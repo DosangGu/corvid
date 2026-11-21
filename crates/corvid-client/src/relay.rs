@@ -61,8 +61,8 @@ async fn relay_role(runtime: &Path, socket: SocketRole, output: FrameRole) -> Re
 
     let upload = forward(&mut incoming, &mut to_daemon);
     let download = forward(&mut from_daemon, &mut outgoing);
-    tokio::pin!(upload, download);
-    tokio::select! {
+    corvid_async::pin!(upload, download);
+    corvid_async::select! {
         result = &mut download => result,
         result = &mut upload => {
             result?;

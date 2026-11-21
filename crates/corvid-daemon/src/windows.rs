@@ -74,14 +74,14 @@ pub(crate) async fn serve_daemon(
         None
     };
     let incoming_upgrade = upgrade::listen(upgrade_pipe.as_ref(), &identity);
-    tokio::pin!(incoming_upgrade);
+    corvid_async::pin!(incoming_upgrade);
     let mut controls = PeerTasks::new();
     let mut clients = PeerTasks::new();
     let mut collectors = PeerTasks::new();
     let mut agents = crate::executor::time::interval(Duration::from_secs(1));
     #[cfg(not(feature = "compio"))]
     agents.set_missed_tick_behavior(crate::executor::time::MissedTickBehavior::Skip);
-    tokio::pin!(shutdown);
+    corvid_async::pin!(shutdown);
 
     // Keep each ConnectNamedPipe operation alive across unrelated events.
     let mut incoming_control = std::pin::pin!(control_pipe.accept());
@@ -89,11 +89,11 @@ pub(crate) async fn serve_daemon(
     let mut incoming_collector = std::pin::pin!(collector_pipe.accept());
 
     loop {
-        tokio::select! {
+        corvid_async::select! {
             () = &mut shutdown => break,
-            _ = controls.join_next(), if !controls.is_empty() => {}
-            _ = clients.join_next(), if !clients.is_empty() => {}
-            _ = collectors.join_next(), if !collectors.is_empty() => {}
+            _ = controls.join_next() if !controls.is_empty() => {}
+            _ = clients.join_next() if !clients.is_empty() => {}
+            _ = collectors.join_next() if !collectors.is_empty() => {}
             _ = agents.tick() => workspaces.tick_native_agents().await,
             request = &mut incoming_upgrade => {
                 let preserve = request.preserve_terminals;

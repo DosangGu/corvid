@@ -269,7 +269,7 @@ impl Watch {
 
     pub(crate) async fn next(&mut self) -> Result<Arc<Delta>, ProtocolFault> {
         self.check()?;
-        tokio::select! {
+        corvid_async::select! {
             biased;
             _ = self.overflow.changed() => Err(resync()),
             queued = self.receiver.recv() => {

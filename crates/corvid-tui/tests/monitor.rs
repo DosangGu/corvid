@@ -51,7 +51,7 @@ async fn compio_companion_serves_while_detached_from_the_console() -> Result<()>
             sleep(Duration::from_millis(25)).await;
         }
     };
-    let mut client = tokio::select! {
+    let mut client = corvid_async::select! {
         result = timeout(Duration::from_secs(10), ready) => result.context("detached monitor never listened")??,
         exit = child.wait() => {
             let mut diagnostics = String::new();
@@ -145,9 +145,11 @@ async fn replaces_legacy_monitor_and_reconciles_saved_runs_without_restarting_da
     let legacy_epoch = Uuid::new_v4().to_string();
     let executable = Path::new(env!("CARGO_BIN_EXE_corvid"));
     let result = async {
-        let (legacy, first, second) = tokio::join!(
-            biased;
-            timeout(Duration::from_secs(10), legacy_monitor(&scope, &legacy_epoch, saved)),
+        let (legacy, first, second) = corvid_async::join!(
+            timeout(
+                Duration::from_secs(10),
+                legacy_monitor(&scope, &legacy_epoch, saved)
+            ),
             scope.ensure_running(executable),
             scope.ensure_running(executable)
         );

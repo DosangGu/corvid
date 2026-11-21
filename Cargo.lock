@@ -1468,6 +1468,8 @@ dependencies = [
  "event-listener",
  "futures-channel",
  "futures-lite",
+ "futures-util",
+ "selectme",
 ]
 
 [[package]]
@@ -6137,6 +6139,21 @@ name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
+
+[[package]]
+name = "selectme"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea811eae92f5e621577b59b130104c1b4b94b308ded1ebe3f41396ae638ed1d3"
+dependencies = [
+ "selectme-macros",
+]
+
+[[package]]
+name = "selectme-macros"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a01b12ac0eec2b19162ccbe16d966bbe2b7373d9b8647c1a910dec5d2984407e"
 
 [[package]]
 name = "semver"

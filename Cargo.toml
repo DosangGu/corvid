@@ -64,7 +64,7 @@ dunce = "=1.0.5"
 event-listener = "=5.4.2"
 futures-channel = "=0.3.34"
 futures-lite = "=2.6.1"
-futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await-macro"] }
 glob = "0.3"
 gpui = { package = "gpui-ce", version = "=0.3.0", default-features = false }
 gpui_platform = { package = "gpui_ce_platform", version = "=0.3.0", default-features = false }
@@ -80,6 +80,7 @@ protox = "=0.10.0"
 qwertty-term-input = "=0.4.0"
 resvg = { version = "=0.49.0", default-features = false }
 raw-window-handle = "=0.6.2"
+selectme = "=0.7.2"
 semver = "=1.0.28"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"

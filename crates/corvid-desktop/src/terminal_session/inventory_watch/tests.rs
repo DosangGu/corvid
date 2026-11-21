@@ -50,7 +50,7 @@ impl Server {
                 .enable_all()
                 .build()?
                 .block_on(async {
-                    tokio::select! {
+                    corvid_async::select! {
                         _ = stopped => Ok(()),
                         result = serve(&path, model, receive, ready) => result,
                     }
@@ -208,9 +208,9 @@ async fn serve_watch(
     loop {
         // Framed reads cannot be cancelled between chunks when an update wins.
         let pending_read = reader.next_envelope();
-        tokio::pin!(pending_read);
+        corvid_async::pin!(pending_read);
         loop {
-            tokio::select! {
+            corvid_async::select! {
                 update = updates.recv() => match update.context("fixture stopped")? {
                     Update::Title(pane, title) => {
                         model.titles[pane] = title;

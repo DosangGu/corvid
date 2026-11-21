@@ -251,7 +251,7 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
         first.session().server_epoch != old_epoch,
         "daemon epoch was reused"
     );
-    let (one, two) = tokio::join!(
+    let (one, two) = corvid_async::join!(
         first.restore_workspace(fixture.request(AgentRestoreMode::Resume)),
         second.restore_workspace(fixture.request(AgentRestoreMode::Resume)),
     );

@@ -133,7 +133,7 @@ where
                 .and_then(|runtime| {
                     runtime.block_on(async move {
                         // A cancelled caller releases the socket and restores terminal mode.
-                        tokio::select! {
+                        corvid_async::select! {
                             result = run() => result,
                             _ = stopped => bail!("Compio TUI was cancelled"),
                         }
@@ -295,7 +295,7 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
         );
     }
     let shutdown = attach_shutdown()?;
-    tokio::select! {
+    corvid_async::select! {
         // Register signals before entering raw mode. A signal can interrupt a
         // partial write, so drop the connection to fence the route on EOF.
         biased;
@@ -318,7 +318,7 @@ fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
         {
             use compio::signal::unix::signal;
             use nix::libc::{SIGHUP, SIGTERM};
-            tokio::select! {
+            corvid_async::select! {
                 result = signal(SIGTERM) => result?,
                 result = signal(SIGHUP) => result?,
                 result = compio::signal::ctrl_c() => result?,
@@ -342,7 +342,7 @@ fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
     let mut interrupt = tokio::signal::windows::ctrl_break()?;
     Ok(async move {
         #[cfg(unix)]
-        tokio::select! {
+        corvid_async::select! {
             _ = terminate.recv() => {},
             _ = hangup.recv() => {},
             _ = interrupt.recv() => {},
@@ -860,7 +860,7 @@ impl Interactive {
                 #[cfg(not(feature = "compio-tui"))]
                 resize_tick.tick().await;
             };
-            tokio::select! {
+            corvid_async::select! {
                 item = self.incoming.frames.recv() => {
                     let frame = item.context("daemon closed the attached connection")??;
                     if let Some(status) = self.receive(tty, frame).await? {
