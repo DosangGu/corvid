@@ -279,6 +279,11 @@ survives splits and restarts. Save an empty name or choose **Use automatic title
 to restore the tab's automatic name. Renaming requires a daemon advertising
 `view_titles.v1`.
 
+Desktop centers the asterisk and half-filled circles at the start of Claude Code's
+automatic tab titles. The green asterisk appears when Claude Code is idle.
+
+![Claude Code tab status markers](images/desktop-terminal/tab-status.png)
+
 The daemon records terminal titles and publishes them through the workspace
 subscription. Desktop receives that subscription on a dedicated thread, so ANSI
 parsing and writer I/O cannot stall title delivery. The bounded client queue
