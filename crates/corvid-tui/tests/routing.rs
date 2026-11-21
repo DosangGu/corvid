@@ -40,7 +40,6 @@ use common::{WAIT, command, daemon, start_daemon, wait_for_daemon};
 const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
-#[cfg(feature = "compio-daemon")]
 #[compio::test]
 async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::Result<()> {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
@@ -67,7 +66,6 @@ async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::
     Ok(())
 }
 
-#[cfg(feature = "compio-probe")]
 #[compio::test]
 async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
@@ -96,7 +94,6 @@ async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
     .await?
 }
 
-#[cfg(feature = "compio-probe")]
 #[compio::test]
 async fn compio_stdio_relay_exits_when_daemon_closes_first() -> anyhow::Result<()> {
     use std::process::Stdio;
@@ -2616,9 +2613,8 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
     .unwrap();
 }
 
-#[cfg(all(feature = "compio-daemon", feature = "compio-endpoints"))]
 #[compio::test]
-async fn compio_snapshot_watch_does_not_require_a_tokio_executor() -> anyhow::Result<()> {
+async fn compio_snapshot_watch_uses_the_shared_endpoint() -> anyhow::Result<()> {
     let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;

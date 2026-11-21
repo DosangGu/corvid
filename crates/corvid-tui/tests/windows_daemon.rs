@@ -23,7 +23,6 @@ const WAIT: Duration = Duration::from_secs(12);
 const ROWS: u16 = 30;
 const COLS: u16 = 100;
 
-#[cfg(feature = "compio-probe")]
 #[compio::test]
 async fn compio_control_ping_uses_the_existing_daemon() -> Result<()> {
     let fixture = tempfile::tempdir()?;
@@ -38,7 +37,6 @@ async fn compio_control_ping_uses_the_existing_daemon() -> Result<()> {
     .await?
 }
 
-#[cfg(feature = "compio-probe")]
 #[compio::test]
 async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
     use corvid_async::io::AsyncReadExt;
