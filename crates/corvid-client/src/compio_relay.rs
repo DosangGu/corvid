@@ -136,7 +136,7 @@ impl AsyncWrite for WindowsStdout {
 
         compio::runtime::spawn_blocking(|| io::stdout().flush())
             .await
-            .map_err(io::Error::other)?
+            .map_err(|error| io::Error::other(error.to_string()))?
     }
 
     async fn shutdown(&mut self) -> io::Result<()> {
