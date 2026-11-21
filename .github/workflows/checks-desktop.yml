@@ -2,6 +2,7 @@ name: Checks / Desktop
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - '.github/workflows/checks-desktop.yml'
       - '.cargo/**'
