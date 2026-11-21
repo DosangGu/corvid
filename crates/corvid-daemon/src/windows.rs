@@ -148,7 +148,7 @@ pub(crate) async fn serve_daemon(
     collectors.shutdown().await;
     workspaces.shutdown().await?;
     drop(workspaces);
-    tokio::time::timeout(COMMAND_TIMEOUT, saver)
+    tokio::time::timeout(COMMAND_TIMEOUT, saver.finish())
         .await
         .context("metadata save shutdown timed out")??;
     Ok(())

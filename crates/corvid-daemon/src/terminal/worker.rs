@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::executor::{self, Task};
 use anyhow::Result;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::Source;
@@ -15,7 +16,6 @@ use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vt100::Screen;
 
@@ -235,15 +235,15 @@ impl TerminalHandle {
         receive.await.map_err(|_| terminal_fault())?
     }
 
-    pub(crate) fn start(scope: LaunchScope) -> (Self, JoinHandle<()>) {
+    pub(crate) fn start(scope: LaunchScope) -> (Self, Task) {
         Self::start_worker(scope, None)
     }
 
     pub(crate) async fn recover(
         scope: LaunchScope,
         saved: RetainedTerminal,
-    ) -> Result<(Self, JoinHandle<()>)> {
-        let (scope, terminal) = tokio::task::spawn_blocking(move || {
+    ) -> Result<(Self, Task)> {
+        let (scope, terminal) = executor::blocking(move || {
             let terminal = Running::recover(saved, &scope)?;
             Ok::<_, anyhow::Error>((scope, terminal))
         })
@@ -251,7 +251,7 @@ impl TerminalHandle {
         Ok(Self::start_worker(scope, Some(terminal)))
     }
 
-    fn start_worker(scope: LaunchScope, terminal: Option<Running>) -> (Self, JoinHandle<()>) {
+    fn start_worker(scope: LaunchScope, terminal: Option<Running>) -> (Self, Task) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let live = Arc::new(AtomicBool::new(terminal.is_some()));
         let viewing = Arc::new(AtomicBool::new(false));
@@ -265,7 +265,7 @@ impl TerminalHandle {
             hidden_viewport: pending_viewport,
             retaining: false,
         };
-        let worker = tokio::task::spawn_blocking(move || worker.run(receiver));
+        let worker = executor::spawn_worker(move || worker.run(receiver));
         (
             Self {
                 commands,

@@ -85,3 +85,69 @@ mod native {
 
 #[cfg(feature = "compio")]
 pub(crate) use native::{PeerTasks, run};
+
+use std::future::Future;
+
+use anyhow::Result;
+
+pub(crate) enum Task {
+    Tokio(tokio::task::JoinHandle<()>),
+    #[cfg(feature = "compio")]
+    Compio(compio::runtime::JoinHandle<()>),
+}
+
+impl Task {
+    pub(crate) fn detach(self) {
+        match self {
+            Self::Tokio(task) => drop(task),
+            #[cfg(feature = "compio")]
+            Self::Compio(task) => task.detach(),
+        }
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        match self {
+            Self::Tokio(task) => task.is_finished(),
+            #[cfg(feature = "compio")]
+            Self::Compio(task) => task.is_finished(),
+        }
+    }
+
+    pub(crate) async fn finish(self) -> Result<()> {
+        match self {
+            Self::Tokio(task) => Ok(task.await?),
+            #[cfg(feature = "compio")]
+            Self::Compio(task) => task
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+        }
+    }
+}
+
+pub(crate) fn spawn(task: impl Future<Output = ()> + Send + 'static) -> Task {
+    #[cfg(feature = "compio")]
+    if let Some(runtime) = compio::runtime::Runtime::try_current() {
+        return Task::Compio(runtime.spawn(task));
+    }
+    Task::Tokio(tokio::spawn(task))
+}
+
+pub(crate) fn spawn_worker(work: impl FnOnce() + Send + 'static) -> Task {
+    #[cfg(feature = "compio")]
+    if let Some(runtime) = compio::runtime::Runtime::try_current() {
+        return Task::Compio(runtime.spawn_blocking(work));
+    }
+    Task::Tokio(tokio::task::spawn_blocking(work))
+}
+
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
+    #[cfg(feature = "compio")]
+    if compio::runtime::Runtime::try_current().is_some() {
+        return compio::runtime::spawn_blocking(work)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()));
+    }
+    Ok(tokio::task::spawn_blocking(work).await?)
+}

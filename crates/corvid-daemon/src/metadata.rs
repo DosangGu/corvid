@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::executor::{self, Task};
 use anyhow::{Result, bail, ensure};
 use corvid_core::agent::AgentSessionKey;
 use corvid_core::layout::Layout;
@@ -10,7 +11,6 @@ use corvid_core::layout::{CwdObservation, Location};
 use corvid_protocol::wire::HistoricalRun;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 use crate::history::{History, RunRecord};
 use crate::platform::{StateDirectory, StateLock};
@@ -244,7 +244,7 @@ impl MetadataUpdates {
 pub(crate) fn start(
     directory: StateDirectory,
     lock: StateLock,
-) -> Result<(MetadataView, MetadataUpdates, JoinHandle<()>)> {
+) -> Result<(MetadataView, MetadataUpdates, Task)> {
     let (stored, bytes, recovery) = load(&directory)?;
     let history = Arc::new(stored.history.wire());
     let mut store = Store {
@@ -262,7 +262,7 @@ pub(crate) fn start(
         stored,
         succeeded: true,
     });
-    let task = tokio::spawn(write_loop(store, snapshots.clone(), results));
+    let task = executor::spawn(write_loop(store, snapshots.clone(), results));
     Ok((
         MetadataView {
             updates: snapshots,
@@ -285,7 +285,7 @@ async fn write_loop(
         tokio::time::sleep(DEBOUNCE).await;
         let stored = updates.borrow_and_update().clone();
         let snapshot = stored.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let result = executor::blocking(move || {
             let result = store.save(&snapshot);
             (store, result)
         })

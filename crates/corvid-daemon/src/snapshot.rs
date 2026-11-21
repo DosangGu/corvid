@@ -71,7 +71,7 @@ impl Stream<'_> {
         watch: Option<Watch>,
         workspaces: &Workspaces,
     ) -> Result<Option<LiveWatch>> {
-        let chunks = tokio::task::spawn_blocking(move || {
+        let chunks = crate::executor::blocking(move || {
             let history = history.as_deref().map(Vec::as_slice).unwrap_or_default();
             chunks(&entities, history)
         })

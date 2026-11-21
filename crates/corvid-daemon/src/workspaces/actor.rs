@@ -1,6 +1,7 @@
 use tokio::sync::{mpsc, oneshot};
 
 use super::Registry;
+use crate::executor;
 
 // Allow terminal workers, interactive clients and control clients to queue a
 // transaction concurrently. The reducer never waits for a terminal or disk.
@@ -16,11 +17,12 @@ pub(crate) struct WeakRegistry(mpsc::WeakSender<Operation>);
 impl RegistryActor {
     pub(super) fn start(mut registry: Registry) -> Self {
         let (send, mut incoming) = mpsc::channel::<Operation>(CAPACITY);
-        tokio::spawn(async move {
+        executor::spawn(async move {
             while let Some(operation) = incoming.recv().await {
                 operation(&mut registry);
             }
-        });
+        })
+        .detach();
         Self(send)
     }
 
@@ -42,10 +44,20 @@ impl RegistryActor {
 
     pub(super) fn defer(&self, apply: impl FnOnce(&mut Registry) + Send + 'static) {
         if let Err(mpsc::error::TrySendError::Full(operation)) = self.0.try_send(Box::new(apply)) {
+            #[cfg(feature = "compio")]
+            if compio::runtime::Runtime::try_current().is_none()
+                && tokio::runtime::Handle::try_current().is_err()
+            {
+                // Terminal workers run outside the executor. The registry
+                // never waits on a terminal while applying an operation.
+                let _ = self.0.blocking_send(operation);
+                return;
+            }
             let send = self.0.clone();
-            tokio::spawn(async move {
+            executor::spawn(async move {
                 let _ = send.send(operation).await;
-            });
+            })
+            .detach();
         }
     }
 }

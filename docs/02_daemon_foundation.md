@@ -473,8 +473,9 @@ to run the daemon's control, TUI, collector, and upgrade listeners and their
 connection tasks on Compio. The same CRV1 protocol works with existing clients.
 The optional `compio-probe` feature also enables the Compio ping, stdio
 relays, observer hooks, and Unix shell-agent registration. Retained terminal
-hosts and their daemon-side IPC use Compio with `compio-daemon`. Workspace
-actors and persistence still use Tokio. The optional
+hosts and their daemon-side IPC use Compio with `compio-daemon`. The same
+feature schedules workspace actors, persistence, and PTY worker tasks on
+Compio. The coordinator still uses Tokio timers and signal integration. The optional
 `compio-tui` feature runs attach framing and terminal input readiness on
 Compio, using descriptor readiness on Unix and console input events on Windows.
 Enable `compio-endpoints` in Desktop, companion, or Agent Deck to use Compio
