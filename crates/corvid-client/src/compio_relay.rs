@@ -4,13 +4,12 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use compio::io::{AsyncRead, AsyncWrite, util::Splittable};
 use compio::time::timeout;
-use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::{
     COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter, Frame, FrameError, FrameRole,
     ProtocolFault,
 };
 
-use crate::relay::bootstrap_reply;
+use crate::{connection::SocketRole, relay::bootstrap_reply};
 
 pub async fn compio_relay(runtime: &Path) -> Result<()> {
     relay(runtime, SocketRole::Control, FrameRole::StructuredOnly).await
@@ -25,7 +24,14 @@ async fn relay(runtime: &Path, socket: SocketRole, output: FrameRole) -> Result<
         !io::stdin().is_terminal() && !io::stdout().is_terminal(),
         "a stdio relay requires a connection without a TTY"
     );
-    let mut outgoing = CompioFrameWriter::start(compio::fs::stdout(), output).await?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let stdout = compio::fs::stdout();
+    #[cfg(windows)]
+    let stdout = WindowsStdout(compio::fs::stdout());
+
+    let mut outgoing = CompioFrameWriter::start(stdout, output)
+        .await
+        .context("writing relay stdout preamble")?;
     let mut incoming = timeout(
         COMMAND_TIMEOUT,
         CompioFrameReader::start(compio::fs::stdin(), FrameRole::StructuredOnly),
@@ -69,8 +75,16 @@ async fn relay(runtime: &Path, socket: SocketRole, output: FrameRole) -> Result<
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn open(runtime: &Path, role: SocketRole) -> Result<compio::net::UnixStream> {
-    RuntimeDir::open(runtime)?.connect_compio(role).await
+    corvid_protocol::unix::RuntimeDir::open(runtime)?
+        .connect_compio(role)
+        .await
+}
+
+#[cfg(windows)]
+async fn open(runtime: &Path, role: SocketRole) -> Result<compio::fs::named_pipe::NamedPipeClient> {
+    role.connect_compio(runtime).await
 }
 
 async fn forward(
@@ -104,4 +118,28 @@ async fn bootstrap_fault(
         Ok(())
     })
     .await?
+}
+
+// Compio uses Rust's buffered stdout when an inherited handle cannot be attached
+// to IOCP. Its Stdout::flush does not flush that buffer.
+#[cfg(windows)]
+struct WindowsStdout(compio::fs::Stdout);
+
+#[cfg(windows)]
+impl AsyncWrite for WindowsStdout {
+    async fn write<B: compio::buf::IoBuf>(&mut self, bytes: B) -> compio::BufResult<usize, B> {
+        self.0.write(bytes).await
+    }
+
+    async fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
+
+        compio::runtime::spawn_blocking(|| io::stdout().flush())
+            .await
+            .map_err(|error| io::Error::other(error.to_string()))?
+    }
+
+    async fn shutdown(&mut self) -> io::Result<()> {
+        self.flush().await
+    }
 }

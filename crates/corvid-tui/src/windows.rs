@@ -150,6 +150,16 @@ pub(super) fn dispatch(
             stdio: false,
             request: Some(ControlRequest::Ping),
         } => crate::compio_ping(runtime),
+        #[cfg(feature = "compio-probe")]
+        Command::Control { stdio: true, .. } => {
+            let runtime = runtime_path(runtime)?;
+            crate::run_compio(corvid_client::compio_relay(&runtime))
+        }
+        #[cfg(feature = "compio-probe")]
+        Command::TerminalRelay => {
+            let runtime = runtime_path(runtime)?;
+            crate::run_compio(corvid_client::compio_relay_tui(&runtime))
+        }
         other => super::execute(execute(other, runtime)),
     }
 }

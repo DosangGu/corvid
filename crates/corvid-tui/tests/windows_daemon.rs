@@ -38,6 +38,65 @@ async fn compio_control_ping_uses_the_existing_daemon() -> Result<()> {
     .await?
 }
 
+#[cfg(feature = "compio-probe")]
+#[tokio::test]
+async fn compio_stdio_relay_exits_when_daemon_closes_first() -> Result<()> {
+    use corvid_protocol::wire::{Ping, envelope::Body};
+    use corvid_protocol::{
+        FrameReader, FrameRole, FrameWriter, PeerRole, check_hello_result, hello,
+    };
+    use tokio::io::AsyncReadExt;
+    use tokio::time::timeout;
+
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let daemon = BackgroundDaemon::open(&runtime).await?;
+    let mut relay = tokio::process::Command::new(CORVID)
+        .arg("--runtime-dir")
+        .arg(&runtime)
+        .args(["control", "--stdio"])
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    timeout(WAIT, async {
+        let mut writer =
+            FrameWriter::start(relay.stdin.take().unwrap(), FrameRole::StructuredOnly).await?;
+        let mut reader =
+            FrameReader::start(relay.stdout.take().unwrap(), FrameRole::StructuredOnly).await?;
+        let greeting = hello(
+            "relay-hello".into(),
+            Some("compio-relay-test".into()),
+            vec!["ping.v1".into()],
+        );
+        writer.envelope(&greeting).await?;
+        let Some(reply) = reader.next_envelope().await? else {
+            let mut stderr = String::new();
+            relay
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .await?;
+            bail!("missing HelloResult: {stderr}");
+        };
+        let session = check_hello_result(&greeting, &reply, PeerRole::Control)?;
+        writer
+            .envelope(&session.envelope(Some("relay-ping".into()), Body::Ping(Ping {})))
+            .await?;
+        let reply = reader.next_envelope().await?.context("missing Pong")?;
+        assert!(matches!(reply.body, Some(Body::Pong(_))));
+
+        drop(daemon);
+        assert!(relay.wait().await?.success());
+        drop(writer);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}
+
 #[tokio::test]
 async fn tui_reopens_its_last_workspace_tab_and_pane_without_restarting_the_shell() -> Result<()> {
     let fixture = tempfile::tempdir()?;
