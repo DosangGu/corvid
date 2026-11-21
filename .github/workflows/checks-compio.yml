@@ -10,6 +10,7 @@ on:
       - 'rust-toolchain.toml'
       - 'crates/corvid-protocol/**'
       - 'crates/corvid-client/**'
+      - 'crates/corvid-companion/**'
       - 'crates/corvid-daemon/**'
       - 'crates/corvid-tui/**'
 
@@ -90,3 +91,5 @@ jobs:
         run: cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test windows_daemon tui_reopens_its_last_workspace
       - name: Exercise Compio child-process I/O and cleanup
         run: cargo test --locked -p corvid-client --features compio-endpoints --lib native_process_transfers
+      - name: Exercise the Compio companion presentation server
+        run: cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test monitor

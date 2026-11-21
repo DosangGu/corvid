@@ -33,6 +33,10 @@ mod bootstrap;
 #[cfg(feature = "compio-endpoints")]
 mod native;
 #[cfg(feature = "compio-endpoints")]
+mod presentation;
+#[cfg(feature = "compio-endpoints")]
+pub use presentation::CompioPresentation;
+#[cfg(feature = "compio-endpoints")]
 mod process;
 pub(crate) mod wire;
 use wire::{Reader, Wire, Writer};

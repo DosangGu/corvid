@@ -4,28 +4,49 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_client::ControlEndpoint;
+#[cfg(all(
+    not(feature = "compio-endpoints"),
+    any(target_os = "linux", target_os = "macos")
+))]
+use corvid_protocol::unix::BoundSocket;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use corvid_protocol::unix::{BoundSocket, RuntimeDir, SocketRole};
+use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, GetPresentationSlots, Pong, PresentationSlots};
 use corvid_protocol::{
-    COMMAND_TIMEOUT, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole,
-    ProtocolFault, Session, accept_hello_with_profiles, check_hello_result, hello,
+    COMMAND_TIMEOUT, FrameRole, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault, Session,
+    accept_hello_with_profiles,
 };
+#[cfg(not(feature = "compio-endpoints"))]
+use corvid_protocol::{FrameReader, FrameWriter, check_hello_result, hello};
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    not(feature = "compio-endpoints"),
+    any(target_os = "linux", target_os = "macos")
+))]
 use tokio::net::UnixStream as ClientStream;
-#[cfg(windows)]
-use tokio::net::windows::named_pipe::{NamedPipeClient as ClientStream, NamedPipeServer};
+#[cfg(all(windows, not(feature = "compio-endpoints")))]
+use tokio::net::windows::named_pipe::NamedPipeClient as ClientStream;
+#[cfg(all(windows, not(feature = "compio-endpoints")))]
+use tokio::net::windows::named_pipe::NamedPipeServer;
 use tokio::sync::{mpsc, oneshot};
+#[cfg(not(feature = "compio-endpoints"))]
 use tokio::task::JoinSet;
-use tokio::time::{sleep, timeout};
+#[cfg(not(feature = "compio-endpoints"))]
+use tokio::time::sleep;
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::Store;
-#[cfg(windows)]
-use crate::platform::{PipeListener, open_pipe};
 use crate::service::{Call, Service};
+#[cfg(all(windows, not(feature = "compio-endpoints")))]
+use corvid_protocol::windows::PipeListener;
+#[cfg(all(windows, not(feature = "compio-endpoints")))]
+use corvid_protocol::windows::open_pipe;
+
+#[cfg(feature = "compio-endpoints")]
+mod native;
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
 pub const PRESENTATION_PAGE_SIZE: u32 = 32;
@@ -98,6 +119,18 @@ async fn run_service(
     endpoint: ControlEndpoint,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
+    #[cfg(feature = "compio-endpoints")]
+    return native::run(runtime, store, endpoint, shutdown).await;
+    #[cfg(not(feature = "compio-endpoints"))]
+    serve_runtime(runtime, store, endpoint, shutdown).await
+}
+
+async fn serve_runtime(
+    runtime: &PresentationAddress,
+    store: Store,
+    endpoint: ControlEndpoint,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
     let host = store.config().host_id.to_string();
     let epoch = Uuid::new_v4().to_string();
     let mut service = Service::new(store, endpoint);
@@ -105,30 +138,50 @@ async fn run_service(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let (directory, instance);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let mut listener = {
+    let listener = {
         directory = RuntimeDir::create_all(runtime)?;
         instance = directory.lock_instance()?;
-        instance.bind(SocketRole::Presentation).await?
+        #[cfg(feature = "compio-endpoints")]
+        {
+            instance.bind_compio(SocketRole::Presentation).await?
+        }
+        #[cfg(not(feature = "compio-endpoints"))]
+        {
+            instance.bind(SocketRole::Presentation).await?
+        }
     };
-    #[cfg(windows)]
-    let mut listener = PipeListener::bind(runtime)?;
+    #[cfg(all(windows, feature = "compio-endpoints"))]
+    let listener =
+        tokio::sync::Mutex::new(corvid_protocol::windows::CompioPipeListener::bind(runtime)?);
+    #[cfg(all(windows, not(feature = "compio-endpoints")))]
+    let listener = PipeListener::bind(runtime)?;
+    #[cfg(not(feature = "compio-endpoints"))]
+    let mut listener = listener;
     let (sender, calls) = mpsc::channel(MAX_CALLS);
 
+    #[cfg(not(feature = "compio-endpoints"))]
+    let incoming = accept(&mut listener, sender, &host, &epoch);
+    #[cfg(feature = "compio-endpoints")]
+    let incoming = native::accept(&listener, sender, &host, &epoch);
     let result = tokio::select! {
-        result = accept(&mut listener, sender, &host, &epoch) => result,
+        result = incoming => result,
         result = service.run(calls) => result,
         _ = shutdown => Ok(()),
     };
     result.and(service.flush_status())
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 trait Listener {
     type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
 
     fn next_peer(&mut self) -> impl Future<Output = Result<Option<Self::Stream>>> + Send;
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    not(feature = "compio-endpoints"),
+    any(target_os = "linux", target_os = "macos")
+))]
 impl Listener for BoundSocket<'_> {
     type Stream = ClientStream;
 
@@ -137,7 +190,7 @@ impl Listener for BoundSocket<'_> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "compio-endpoints")))]
 impl Listener for PipeListener {
     type Stream = NamedPipeServer;
 
@@ -146,6 +199,7 @@ impl Listener for PipeListener {
     }
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 async fn accept(
     listener: &mut impl Listener,
     calls: mpsc::Sender<Call>,
@@ -171,9 +225,12 @@ async fn accept(
     }
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 type Reader<S> = FrameReader<ReadHalf<S>>;
+#[cfg(not(feature = "compio-endpoints"))]
 type Writer<S> = FrameWriter<WriteHalf<S>>;
 
+#[cfg(not(feature = "compio-endpoints"))]
 async fn open_frames<S: AsyncRead + AsyncWrite + Unpin>(
     stream: S,
 ) -> Result<(Reader<S>, Writer<S>)> {
@@ -183,6 +240,7 @@ async fn open_frames<S: AsyncRead + AsyncWrite + Unpin>(
     Ok((reader, writer))
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     stream: S,
     calls: mpsc::Sender<Call>,
@@ -190,17 +248,8 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     epoch: String,
 ) -> Result<bool> {
     let mut peer = timeout(COMMAND_TIMEOUT, server_hello(stream, &host, &epoch)).await??;
-    while let Some(request) = timeout(IDLE_TIMEOUT, peer.reader.next_envelope()).await?? {
-        let stop = matches!(
-            peer.session.validate_request(&request),
-            Ok(Body::StopAgentMonitor(_))
-        );
-        let outcome = match peer.session.validate_request(&request) {
-            Ok(Body::Ping(_) | Body::StopAgentMonitor(_)) => Ok(Body::Pong(Pong {})),
-            Ok(_) => dispatch(&calls, request.body.expect("validated body")).await,
-            Err(fault) => Err(fault),
-        };
-        let body = outcome.unwrap_or_else(|fault| Body::Error(fault.into_wire()));
+    while let Some(mut request) = timeout(IDLE_TIMEOUT, peer.reader.next_envelope()).await?? {
+        let (body, stop) = reply(&peer.session, &calls, &mut request).await;
         let reply = peer.session.envelope(request.request_id, body);
         timeout(COMMAND_TIMEOUT, peer.writer.envelope(&reply)).await??;
         if stop {
@@ -210,6 +259,7 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     Ok(false)
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(
     stream: S,
     host: &str,
@@ -220,27 +270,10 @@ async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(
         .next_envelope()
         .await?
         .context("missing presentation Hello")?;
-    let (session, reply) = match accept_hello_with_profiles(
-        &request,
-        PeerRole::Presentation,
-        host,
-        epoch,
-        CAPABILITIES,
-        &[],
-        Some(env!("CARGO_PKG_VERSION")),
-    ) {
+    let (session, reply) = match negotiate_peer(&request, host, epoch) {
         Ok(accepted) => accepted,
         Err(fault) => {
-            let reply = Envelope {
-                protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
-                request_id: request
-                    .request_id
-                    .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
-                body: Some(Body::Error(fault.clone().into_wire())),
-                ..Default::default()
-            };
-            writer.envelope(&reply).await?;
+            writer.envelope(&rejection(request, &fault)).await?;
             return Err(fault.into());
         }
     };
@@ -250,6 +283,52 @@ async fn server_hello<S: AsyncRead + AsyncWrite + Unpin>(
         reader,
         writer,
     })
+}
+
+fn negotiate_peer(
+    request: &Envelope,
+    host: &str,
+    epoch: &str,
+) -> Result<(Session, Envelope), ProtocolFault> {
+    accept_hello_with_profiles(
+        request,
+        PeerRole::Presentation,
+        host,
+        epoch,
+        CAPABILITIES,
+        &[],
+        Some(env!("CARGO_PKG_VERSION")),
+    )
+}
+
+fn rejection(request: Envelope, fault: &ProtocolFault) -> Envelope {
+    Envelope {
+        protocol_major: PROTOCOL_MAJOR,
+        protocol_minor: PROTOCOL_MINOR,
+        request_id: request
+            .request_id
+            .filter(|id| id.len() <= 256 && !id.chars().any(char::is_control)),
+        body: Some(Body::Error(fault.clone().into_wire())),
+        ..Default::default()
+    }
+}
+
+async fn reply(
+    session: &Session,
+    calls: &mpsc::Sender<Call>,
+    request: &mut Envelope,
+) -> (Body, bool) {
+    match session.validate_request(request) {
+        Ok(Body::StopAgentMonitor(_)) => (Body::Pong(Pong {}), true),
+        Ok(Body::Ping(_)) => (Body::Pong(Pong {}), false),
+        Ok(_) => (
+            dispatch(calls, request.body.take().expect("validated body"))
+                .await
+                .unwrap_or_else(|fault| Body::Error(fault.into_wire())),
+            false,
+        ),
+        Err(fault) => (Body::Error(fault.into_wire()), false),
+    }
 }
 
 async fn dispatch(calls: &mpsc::Sender<Call>, body: Body) -> Result<Body, ProtocolFault> {
@@ -269,16 +348,25 @@ async fn dispatch(calls: &mpsc::Sender<Call>, body: Body) -> Result<Body, Protoc
         })
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 struct Peer<S> {
     session: Session,
     reader: Reader<S>,
     writer: Writer<S>,
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 pub struct PresentationClient(Peer<ClientStream>);
+#[cfg(feature = "compio-endpoints")]
+pub struct PresentationClient(corvid_client::CompioPresentation);
 
 impl PresentationClient {
     pub async fn connect(runtime: &PresentationAddress) -> Result<Self> {
+        #[cfg(feature = "compio-endpoints")]
+        return corvid_client::CompioPresentation::connect(runtime, PRESENTATION_CAPABILITY)
+            .await
+            .map(Self);
+        #[cfg(not(feature = "compio-endpoints"))]
         timeout(COMMAND_TIMEOUT, Self::negotiate(runtime))
             .await
             .context("companion Hello timed out")?
@@ -292,6 +380,7 @@ impl PresentationClient {
         }
     }
 
+    #[cfg(not(feature = "compio-endpoints"))]
     async fn negotiate(runtime: &PresentationAddress) -> Result<Self> {
         let stream = open_local(runtime).await.context("CompanionUnavailable")?;
         let (mut reader, mut writer) = open_frames(stream).await?;
@@ -314,6 +403,9 @@ impl PresentationClient {
     }
 
     pub fn session(&self) -> &Session {
+        #[cfg(feature = "compio-endpoints")]
+        return self.0.session();
+        #[cfg(not(feature = "compio-endpoints"))]
         &self.0.session
     }
 
@@ -369,9 +461,27 @@ impl PresentationClient {
             )
             .into());
         }
-        timeout(CALL_TIMEOUT + COMMAND_TIMEOUT, self.0.exchange(body))
+        let request = self
+            .session()
+            .envelope(Some(Uuid::new_v4().to_string()), body);
+        self.session().validate_request(&request)?;
+        let expected = request.request_id.clone();
+        let reply = timeout(CALL_TIMEOUT + COMMAND_TIMEOUT, self.0.exchange(request))
             .await
-            .context("companion result timed out")?
+            .context("companion result timed out")??;
+        self.session().validate_scope(&reply)?;
+        ensure!(
+            reply.request_id == expected
+                && reply.sequence.is_none()
+                && reply.subscription_id.is_none(),
+            "invalid companion response scope"
+        );
+        match reply.body.ok_or_else(|| {
+            ProtocolFault::new("UnsupportedCapability", "unknown companion response body")
+        })? {
+            Body::Error(fault) => Err(ProtocolFault::from_wire(&fault).into()),
+            body => Ok(body),
+        }
     }
 }
 
@@ -389,42 +499,28 @@ fn presentation_absent(error: &anyhow::Error) -> bool {
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    not(feature = "compio-endpoints"),
+    any(target_os = "linux", target_os = "macos")
+))]
 async fn open_local(runtime: &PresentationAddress) -> Result<ClientStream> {
     RuntimeDir::open(runtime)?
         .connect(SocketRole::Presentation)
         .await
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "compio-endpoints")))]
 async fn open_local(runtime: &PresentationAddress) -> Result<ClientStream> {
     open_pipe(runtime).await
 }
 
+#[cfg(not(feature = "compio-endpoints"))]
 impl<S: AsyncRead + AsyncWrite + Unpin> Peer<S> {
-    async fn exchange(&mut self, body: Body) -> Result<Body> {
-        let request = self
-            .session
-            .envelope(Some(Uuid::new_v4().to_string()), body);
-        self.session.validate_request(&request)?;
+    async fn exchange(&mut self, request: Envelope) -> Result<Envelope> {
         self.writer.envelope(&request).await?;
-        let reply = self
-            .reader
+        self.reader
             .next_envelope()
             .await?
-            .context("companion closed during command")?;
-        self.session.validate_scope(&reply)?;
-        ensure!(
-            reply.request_id == request.request_id
-                && reply.sequence.is_none()
-                && reply.subscription_id.is_none(),
-            "invalid companion response scope"
-        );
-        match reply.body.ok_or_else(|| {
-            ProtocolFault::new("UnsupportedCapability", "unknown companion response body")
-        })? {
-            Body::Error(fault) => Err(ProtocolFault::from_wire(&fault).into()),
-            body => Ok(body),
-        }
+            .context("companion closed during command")
     }
 }

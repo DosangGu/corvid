@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use crate::COMMAND_TIMEOUT;
 
 #[cfg(feature = "compio")]
-pub use pipe::{CompioPipeListener, child_stdio_pipe};
+pub use pipe::{CompioPipeListener, child_stdio_pipe, open_compio_pipe};
 #[cfg(feature = "tokio")]
 pub use pipe::{PipeListener, open_pipe, open_scoped};
 pub use storage::{StateDirectory, check_component, require_local_acl_volume};

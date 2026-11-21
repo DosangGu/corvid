@@ -23,8 +23,19 @@ struct WriteRequest {
     complete: oneshot::Sender<Result<(), FrameError>>,
 }
 
+#[cfg(unix)]
+pub(crate) type PresentationAddress = Path;
+#[cfg(windows)]
+pub(crate) type PresentationAddress = str;
+
+#[cfg(unix)]
+type OwnedPresentationAddress = PathBuf;
+#[cfg(windows)]
+type OwnedPresentationAddress = String;
+
 enum Target {
     Local(PathBuf),
+    Presentation(OwnedPresentationAddress),
     Relay(Command),
 }
 
@@ -63,6 +74,19 @@ pub(super) async fn connect(
         peer,
         capabilities,
         controller,
+    )
+    .await
+}
+
+pub(super) async fn presentation(
+    address: &PresentationAddress,
+    capability: &str,
+) -> Result<(Session, ReadQueue, WriteQueue)> {
+    open(
+        Target::Presentation(address.to_owned()),
+        PeerRole::Presentation,
+        vec![capability.to_owned()],
+        None,
     )
     .await
 }
@@ -203,6 +227,24 @@ async fn serve(request: ConnectRequest) {
             };
             let connection = tokio::select! {
                 result = negotiate => result,
+                _ = connected.closed() => return,
+            };
+            serve_connected(connection, connected).await;
+        }
+        Target::Presentation(address) => {
+            let negotiate = compio::time::timeout(COMMAND_TIMEOUT, async {
+                #[cfg(unix)]
+                let stream = compio_connection::open(&address, SocketRole::Presentation)
+                    .await
+                    .context("CompanionUnavailable")?;
+                #[cfg(windows)]
+                let stream = corvid_protocol::windows::open_compio_pipe(&address)
+                    .await
+                    .context("CompanionUnavailable")?;
+                LocalConnection::establish(stream, peer, capabilities, controller).await
+            });
+            let connection = tokio::select! {
+                result = negotiate => result.context("companion Hello timed out").and_then(|value| value),
                 _ = connected.closed() => return,
             };
             serve_connected(connection, connected).await;
