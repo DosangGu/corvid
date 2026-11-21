@@ -1,4 +1,5 @@
 use super::*;
+use crate::connection::Connection;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as Entity;
 use corvid_protocol::wire::{
@@ -78,7 +79,7 @@ fn cache(session: &Session) -> SynchronizedSnapshot {
         .unwrap()
 }
 
-type TestConnection = Connection<ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>;
+type TestConnection = Wire<ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>;
 
 async fn connection() -> (TestConnection, FrameWriter<WriteHalf<DuplexStream>>) {
     let (client, server) = duplex(256 * 1024);
@@ -100,7 +101,8 @@ async fn connection() -> (TestConnection, FrameWriter<WriteHalf<DuplexStream>>) 
             session: session(),
             reader,
             writer,
-        },
+        }
+        .into(),
         server,
     )
 }

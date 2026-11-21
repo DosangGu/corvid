@@ -3,11 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-use crate::connection::SocketRole;
 use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::{COMMAND_TIMEOUT, Frame, FrameWriter, PeerRole, ProtocolFault, Session};
+use corvid_protocol::{COMMAND_TIMEOUT, Frame, PeerRole, ProtocolFault, Session};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, ChildStderr, Command};
 use tokio::sync::mpsc;
@@ -16,10 +14,17 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::connection::Connection;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(all(
+    not(feature = "compio-endpoints"),
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 use crate::connection::open;
 
 mod bootstrap;
+#[cfg(feature = "compio-endpoints")]
+mod native;
+pub(crate) mod wire;
+use wire::{Reader, Wire, Writer};
 mod wsl;
 pub use bootstrap::{DaemonInstallation, HostPlatform};
 pub use wsl::WslDistribution;
@@ -178,7 +183,7 @@ impl SshAlias {
         let wire = relay
             .negotiate(read, write, PeerRole::Tui, capabilities, None)
             .await?;
-        Ok(InteractiveConnection::new(wire, Some(relay)))
+        Ok(InteractiveConnection::new(wire.into(), Some(relay)))
     }
 }
 
@@ -230,17 +235,50 @@ type Input = Box<dyn AsyncRead + Send + Unpin>;
 type Output = Box<dyn AsyncWrite + Send + Unpin>;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-async fn local_halves(path: &Path, role: SocketRole) -> Result<(Input, Output)> {
-    let stream = open(path, role).await?;
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let (read, write) = stream.into_split();
-    #[cfg(windows)]
-    let (read, write) = tokio::io::split(stream);
-    Ok((Box::new(read), Box::new(write)))
+async fn local_wire(
+    path: &Path,
+    peer: PeerRole,
+    capabilities: Vec<String>,
+    controller: Option<String>,
+) -> Result<Wire<Input, Output>> {
+    #[cfg(feature = "compio-endpoints")]
+    {
+        let (session, reader, writer) =
+            native::connect(path, peer, capabilities, controller).await?;
+        Ok(Wire {
+            session,
+            reader: Reader::Compio(reader),
+            writer: Writer::Compio(writer),
+        })
+    }
+    #[cfg(not(feature = "compio-endpoints"))]
+    {
+        use crate::connection::SocketRole;
+
+        let role = if peer == PeerRole::Control {
+            SocketRole::Control
+        } else {
+            SocketRole::Client
+        };
+        let stream = open(path, role).await?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let (read, write) = stream.into_split();
+        #[cfg(windows)]
+        let (read, write) = tokio::io::split(stream);
+        let read: Input = Box::new(read);
+        let write: Output = Box::new(write);
+        let connection = timeout(
+            COMMAND_TIMEOUT,
+            Connection::negotiate(read, write, peer, capabilities, controller),
+        )
+        .await
+        .context("daemon handshake timed out")??;
+        Ok(connection.into())
+    }
 }
 
 pub(crate) struct ControlConnection {
-    pub(crate) wire: Connection<Input, Output>,
+    pub(crate) wire: Wire<Input, Output>,
     _relay: Option<RelayProcess>,
 }
 
@@ -257,7 +295,7 @@ impl ControlConnection {
             )
             .await?;
         Ok(Self {
-            wire,
+            wire: wire.into(),
             _relay: Some(relay),
         })
     }
@@ -265,40 +303,17 @@ impl ControlConnection {
 
 pub struct InteractiveConnection {
     session: Session,
-    writer: FrameWriter<Output>,
-    incoming: mpsc::Receiver<Result<Frame>>,
-    reader: JoinHandle<()>,
+    writer: Writer<Output>,
+    incoming: InteractiveReader,
     _relay: Option<RelayProcess>,
 }
 
 impl InteractiveConnection {
-    fn new(wire: Connection<Input, Output>, relay: Option<RelayProcess>) -> Self {
-        let Connection {
-            session,
-            mut reader,
-            writer,
-        } = wire;
-        let (sender, incoming) = mpsc::channel(1);
-        let reader = tokio::spawn(async move {
-            loop {
-                let result = match reader.next_frame().await {
-                    Ok(Some(frame)) => Ok(frame),
-                    Ok(None) => return,
-                    Err(error) => {
-                        let _ = sender.send(Err(error.into())).await;
-                        return;
-                    }
-                };
-                if sender.send(result).await.is_err() {
-                    return;
-                }
-            }
-        });
+    fn new(wire: Wire<Input, Output>, relay: Option<RelayProcess>) -> Self {
         Self {
-            session,
-            writer,
-            incoming,
-            reader,
+            session: wire.session,
+            writer: wire.writer,
+            incoming: InteractiveReader::start(wire.reader),
             _relay: relay,
         }
     }
@@ -315,8 +330,8 @@ impl InteractiveConnection {
     }
 
     pub async fn receive(&mut self) -> Result<Frame> {
-        self.incoming.recv().await.unwrap_or_else(|| {
-            Err(ProtocolFault::new("Offline", "daemon closed the interactive connection").into())
+        self.incoming.next().await?.ok_or_else(|| {
+            ProtocolFault::new("Offline", "daemon closed the interactive connection").into()
         })
     }
 
@@ -352,9 +367,59 @@ impl InteractiveConnection {
     }
 }
 
-impl Drop for InteractiveConnection {
+enum InteractiveReader {
+    Tokio {
+        frames: mpsc::Receiver<Result<Frame, corvid_protocol::FrameError>>,
+        task: JoinHandle<()>,
+    },
+    #[cfg(feature = "compio-endpoints")]
+    Compio(native::ReadQueue),
+}
+
+impl InteractiveReader {
+    fn start(reader: Reader<Input>) -> Self {
+        #[cfg(not(feature = "compio-endpoints"))]
+        let Reader::Tokio(mut reader) = reader;
+        #[cfg(feature = "compio-endpoints")]
+        let mut reader = match reader {
+            Reader::Tokio(reader) => reader,
+            Reader::Compio(queue) => return Self::Compio(queue),
+        };
+        let (sender, frames) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            loop {
+                let result = match reader.next_frame().await {
+                    Ok(Some(frame)) => Ok(frame),
+                    Ok(None) => return,
+                    Err(error) => {
+                        let _ = sender.send(Err(error)).await;
+                        return;
+                    }
+                };
+                if sender.send(result).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Self::Tokio { frames, task }
+    }
+
+    async fn next(&mut self) -> Result<Option<Frame>, corvid_protocol::FrameError> {
+        match self {
+            Self::Tokio { frames, .. } => frames.recv().await.transpose(),
+            #[cfg(feature = "compio-endpoints")]
+            Self::Compio(frames) => frames.recv().await.transpose(),
+        }
+    }
+}
+
+impl Drop for InteractiveReader {
     fn drop(&mut self) {
-        self.reader.abort();
+        match self {
+            Self::Tokio { task, .. } => task.abort(),
+            #[cfg(feature = "compio-endpoints")]
+            Self::Compio(_) => {}
+        }
     }
 }
 
@@ -363,13 +428,7 @@ impl ControlEndpoint {
         match self {
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Local(path) => {
-                let (read, write) = local_halves(path, SocketRole::Client).await?;
-                let wire = timeout(
-                    COMMAND_TIMEOUT,
-                    Connection::negotiate(read, write, PeerRole::Tui, capabilities, None),
-                )
-                .await
-                .context("daemon handshake timed out")??;
+                let wire = local_wire(path, PeerRole::Tui, capabilities, None).await?;
                 Ok(InteractiveConnection::new(wire, None))
             }
             Self::Ssh(alias) => alias.interactive(capabilities).await,
@@ -379,7 +438,7 @@ impl ControlEndpoint {
                 let wire = relay
                     .negotiate(read, write, PeerRole::Tui, capabilities, None)
                     .await?;
-                Ok(InteractiveConnection::new(wire, Some(relay)))
+                Ok(InteractiveConnection::new(wire.into(), Some(relay)))
             }
         }
     }
@@ -393,19 +452,13 @@ impl ControlEndpoint {
         match self {
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::Local(path) => {
-                let (read, write) = local_halves(path, SocketRole::Control).await?;
-                let wire = timeout(
-                    COMMAND_TIMEOUT,
-                    Connection::negotiate(
-                        read,
-                        write,
-                        PeerRole::Control,
-                        vec![capability.to_owned()],
-                        Some(controller),
-                    ),
+                let wire = local_wire(
+                    path,
+                    PeerRole::Control,
+                    vec![capability.to_owned()],
+                    Some(controller),
                 )
-                .await
-                .context("daemon handshake timed out")??;
+                .await?;
                 Ok(ControlConnection { wire, _relay: None })
             }
             Self::Ssh(alias) => alias.connect_control(capability, &controller).await,

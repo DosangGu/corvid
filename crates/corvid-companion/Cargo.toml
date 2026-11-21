@@ -8,6 +8,9 @@ repository.workspace = true
 description = "Controller state and host connections for Corvid"
 publish = ["crates-io"]
 
+[features]
+compio-endpoints = ["corvid-client/compio-endpoints"]
+
 [dependencies]
 anyhow.workspace = true
 corvid-client.workspace = true

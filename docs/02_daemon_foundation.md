@@ -476,6 +476,10 @@ relays, observer hooks, and Unix shell-agent registration. The workspace
 actors, persistence, and terminal hosts still use Tokio. The optional
 `compio-tui` feature runs attach framing and terminal input readiness on
 Compio, using descriptor readiness on Unix and console input events on Windows.
+Enable `compio-endpoints` in Desktop, companion, or Agent Deck to use Compio
+for local control, snapshot watches, and embedded terminal connections. Each
+process shares a single IPC driver thread and uses bounded queues to deliver
+frames to its existing application tasks.
 
 ## Verification
 
