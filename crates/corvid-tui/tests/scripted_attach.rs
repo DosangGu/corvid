@@ -62,10 +62,7 @@ fn spawn_tui(runtime: &Path, views: &Path) -> Result<(Child, File)> {
         .arg(runtime)
         .arg("attach")
         .env("CORVID_AGENT_MONITOR", "0")
-        .env("CORVID_VIEW_STATE_DIR", views)
-        .stdin(Stdio::from(pty.slave.try_clone()?))
-        .stdout(Stdio::from(pty.slave.try_clone()?))
-        .stderr(Stdio::from(pty.slave));
+        .env("CORVID_VIEW_STATE_DIR", views);
     // Detach from the test runner's controlling terminal. The child uses the
     // PTY through stdio. Only call async-signal-safe operations after fork.
     unsafe {
@@ -77,6 +74,9 @@ fn spawn_tui(runtime: &Path, views: &Path) -> Result<(Child, File)> {
         });
     }
     let child = Command::from(command)
+        .stdin(Stdio::from(pty.slave.try_clone()?))
+        .stdout(Stdio::from(pty.slave.try_clone()?))
+        .stderr(Stdio::from(pty.slave))
         .kill_on_drop(true)
         .spawn()
         .context("starting scripted TUI")?;

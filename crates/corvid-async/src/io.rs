@@ -20,8 +20,8 @@ pub fn split_native<S: Splittable + 'static>(
     stream: S,
 ) -> (ReadHalf<Native<S>>, WriteHalf<Native<S>>)
 where
-    S::ReadHalf: compio::io::AsyncRead + Unpin + 'static,
-    S::WriteHalf: compio::io::AsyncWrite + Unpin + 'static,
+    S::ReadHalf: compio_io::AsyncRead + Unpin + 'static,
+    S::WriteHalf: compio_io::AsyncWrite + Unpin + 'static,
 {
     split(adapt(stream))
 }

@@ -1625,6 +1625,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "protox",
+ "rustix 1.1.6",
  "tempfile",
  "thiserror 2.0.21",
  "uuid",

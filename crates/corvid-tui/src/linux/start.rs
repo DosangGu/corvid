@@ -325,10 +325,7 @@ impl StartingDaemon {
             .arg(runtime.path())
             .arg("--autostarted")
             .env("TERMINFO", &terminfo)
-            .current_dir("/")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(diagnostics.try_clone()?));
+            .current_dir("/");
         if let Some(state_directory) = state_directory {
             command.arg("--state-dir").arg(state_directory);
         }
@@ -343,6 +340,9 @@ impl StartingDaemon {
             });
         }
         let process = async_process::Command::from(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(diagnostics.try_clone()?))
             .spawn()
             .context("starting the background daemon")?;
         Ok(Self {

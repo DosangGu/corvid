@@ -383,26 +383,34 @@ impl Instance<'_> {
             .map_err(|_| ())
         })
         .await?;
-        let listener = compio::net::UnixListener::bind(&socket_path)
+        // Publish only after setting the socket mode. The staged pathname is
+        // shorter than every public name so it also fits on macOS.
+        let staging = tempfile::Builder::new()
+            .prefix(".")
+            .rand_bytes(4)
+            .tempdir_in(socket_path.parent().context("socket has no parent")?)?;
+        let staged = staging.path().join("s");
+        let listener = compio::net::UnixListener::bind(&staged)
             .await
             .context("binding daemon socket")?;
-        self.protect_listener(role, listener)
-    }
-
-    #[cfg(feature = "compio")]
-    fn protect_listener<L>(&self, role: SocketRole, listener: L) -> Result<SocketListener<'_, L>> {
-        let path = self.runtime.path.join(role.name());
-        let metadata = fs::symlink_metadata(&path).context("reading bound socket identity")?;
-        let socket = SocketListener {
+        fs::set_permissions(&staged, Permissions::from_mode(0o600))
+            .context("protecting daemon socket")?;
+        let metadata = fs::symlink_metadata(&staged).context("reading bound socket identity")?;
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            &staged,
+            rustix::fs::CWD,
+            &socket_path,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .context("publishing daemon socket")?;
+        Ok(SocketListener {
             instance: self,
             listener,
-            path,
+            path: self.runtime.path.join(role.name()),
             device: metadata.dev(),
             inode: metadata.ino(),
-        };
-        fs::set_permissions(&socket.path, Permissions::from_mode(0o600))
-            .context("protecting daemon socket")?;
-        Ok(socket)
+        })
     }
 }
 

@@ -10,7 +10,7 @@ publish = ["crates-io"]
 
 [features]
 default = ["compio", "borrowed-io"]
-compio = ["dep:compio"]
+compio = ["dep:compio", "dep:rustix"]
 borrowed-io = ["compio"]
 
 [dependencies]
@@ -28,6 +28,7 @@ protox.workspace = true
 anyhow.workspace = true
 compio = { workspace = true, optional = true, features = ["fs", "net"] }
 nix = { workspace = true, features = ["fs", "user", "socket"] }
+rustix = { workspace = true, optional = true }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
