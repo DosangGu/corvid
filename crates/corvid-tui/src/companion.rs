@@ -178,19 +178,9 @@ async fn run_native(options: Options) -> Result<u32> {
         std::pin::pin!(corvid_companion::run_native(&address, &state, async move {
             let _ = stopped.await;
         }));
-    let interrupt = async {
-        #[cfg(unix)]
-        let other = compio::signal::unix::signal(nix::libc::SIGTERM);
-        #[cfg(windows)]
-        let other = compio::signal::windows::ctrl_break();
-        tokio::select! {
-            result = compio::signal::ctrl_c() => result,
-            result = other => result,
-        }
-    };
     tokio::select! {
         biased;
-        result = interrupt => {
+        result = native_shutdown_signal() => {
             result?;
             drop(stop);
             companion.await?;
@@ -198,6 +188,27 @@ async fn run_native(options: Options) -> Result<u32> {
         result = &mut companion => result?,
     }
     Ok(0)
+}
+
+#[cfg(feature = "compio-endpoints")]
+async fn native_shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    let other = compio::signal::unix::signal(nix::libc::SIGTERM);
+    #[cfg(windows)]
+    let other = {
+        use windows_sys::Win32::System::Console::GetConsoleCP;
+
+        // Agent monitors started by Desktop have no console. Their private
+        // presentation endpoint owns shutdown instead.
+        if unsafe { GetConsoleCP() } == 0 {
+            return std::future::pending().await;
+        }
+        compio::signal::windows::ctrl_break()
+    };
+    tokio::select! {
+        result = compio::signal::ctrl_c() => result,
+        result = other => result,
+    }
 }
 
 async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -> Result<()> {
