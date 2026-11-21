@@ -58,9 +58,12 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     #[derive(Parser)]
     #[command(about = "Attach to a Corvid multiplexer daemon")]
     struct Options {
-        #[arg(long, hide = true)]
+        #[arg(long, hide = true, group = "update_startup")]
         update_ready_directory: Option<PathBuf>,
-        #[arg(long, hide = true, requires = "update_ready_directory")]
+        #[cfg(target_os = "macos")]
+        #[arg(long, hide = true, group = "update_startup")]
+        window_ready_directory: Option<PathBuf>,
+        #[arg(long, hide = true, requires = "update_startup")]
         restore_window: Vec<uuid::Uuid>,
         #[cfg(windows)]
         #[arg(long, hide = true, default_value = "main")]
@@ -75,6 +78,27 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     }
 
     let options = Options::parse();
+    #[cfg(target_os = "macos")]
+    let ready_directory = {
+        // Published updaters start the replacement executable directly. Become
+        // the background helper before initializing AppKit on that first upgrade.
+        if options.update_ready_directory.is_some()
+            && let Some(helper) = corvid_update::macos::relaunch_helper(&std::env::current_exe()?)
+        {
+            use anyhow::Context;
+            use std::os::unix::process::CommandExt;
+            let error = std::process::Command::new(helper)
+                .args(std::env::args_os().skip(1))
+                .exec();
+            return Err(error).context("starting the macOS relaunch helper");
+        }
+        options
+            .window_ready_directory
+            .or(options.update_ready_directory)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let ready_directory = options.update_ready_directory;
+
     #[cfg(target_os = "macos")]
     // No GPUI or Tokio threads have been started at this point.
     unsafe {
@@ -149,12 +173,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         cx.on_app_quit(move |_| desktop_windows::wait_for_shutdown(quitting.start_shutdown()))
             .detach();
         app_windows.watch_installed_version(cx);
-        app_windows.restore(
-            destination,
-            options.update_ready_directory,
-            options.restore_window,
-            cx,
-        );
+        app_windows.restore(destination, ready_directory, options.restore_window, cx);
         if let Err(error) = app_windows.listen_for_deck(cx) {
             eprintln!("Could not listen for Agent Deck: {error:#}");
         }

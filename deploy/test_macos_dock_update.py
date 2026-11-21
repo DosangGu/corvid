@@ -2,6 +2,7 @@
 """Verify published macOS installs and their original Dock references after an update."""
 
 import argparse
+import fcntl
 from contextlib import contextmanager, nullcontext
 import json
 import os
@@ -13,6 +14,7 @@ import tempfile
 import time
 import uuid
 
+from macos_package import build_relaunch_helper, plist, sign
 from package import digest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,6 +173,75 @@ def check_managed_update(previous, archive, directory, dock, live_dock):
     print("PASS legacy managed Desktop bookmark survives its in-place CLI update")
 
 
+def check_running_relaunch(app, directory, dock, alias, entry):
+    state = directory / f"restored windows {Path(entry).name}"
+    window = str(uuid.uuid4())
+    view = state / "desktop-view"
+    view.mkdir(parents=True, mode=0o700)
+    registry = view / "windows.json"
+    registry.write_text(json.dumps({"schema_version": 1, "windows": [window]}))
+    registry.chmod(0o600)
+    with tempfile.TemporaryDirectory(prefix="corvid-desktop-ready-") as handoff:
+        run(dock, "handoff", app, alias, entry, handoff, "--state-dir", state,
+            "--restore-window", window)
+        run(dock, "running", app, alias)
+        lease = state / "desktop-view" / "windows" / window / "startup.lock"
+        for _ in range(200):
+            if lease.exists():
+                with lease.open("rb") as opened:
+                    try:
+                        fcntl.flock(opened, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return
+            time.sleep(0.05)
+        raise AssertionError(f"The relaunched Desktop did not reclaim window {window}")
+
+
+def check_single_dock_tile(app):
+    script = """
+on run argv
+    tell application "System Events" to tell process "Dock"
+        set matches to 0
+        repeat with entry in UI elements of list 1
+            if name of entry is in argv then set matches to matches + 1
+        end repeat
+        return matches
+    end tell
+end run
+"""
+    assert run("/usr/bin/osascript", "-e", script, app.stem, "Corvid") == "1", "Duplicate Corvid Dock item"
+
+
+def check_relaunch_entries(app, directory, dock, alias, tile):
+    for entry in ("Contents/MacOS/corvid-desktop", "Contents/Helpers/corvid-relaunch"):
+        check_running_relaunch(app, directory, dock, alias, entry)
+        run(dock, "resolve", app, alias, tile)
+        check_single_dock_tile(app)
+
+
+def check_pinned_relaunch(binary):
+    # Only change the Dock on a disposable, logged-in macOS runner.
+    assert os.environ.get("GITHUB_ACTIONS") == "true"
+    with tempfile.TemporaryDirectory(prefix=".cv-relaunch-", dir=Path.home()) as temp:
+        directory = Path(temp).resolve()
+        app = directory / "Corvid Relaunch Fixture.app"
+        gui = app / "Contents/MacOS/corvid-desktop"
+        gui.parent.mkdir(parents=True)
+        shutil.copy2(binary, gui)
+        plist(app, app.stem, gui.name, "org.corvid.test.relaunch", "1.0")
+        build_relaunch_helper(app)
+        sign(app)
+        alias = directory / "bookmark"
+        dock = directory / "dock-test"
+        run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
+        tile = run(dock, "pin", app, alias)
+        try:
+            launch_dock_tile(dock, app, alias, tile)
+            check_relaunch_entries(app, directory, dock, alias, tile)
+        finally:
+            run(dock, "remove", app, alias)
+
+
 def check_protected_bundle(app, archive, directory):
     stage = directory / "protected-update"
     stage.mkdir()
@@ -227,6 +298,7 @@ def check(dmg, archive):
             assert app.stat().st_ino == original_inode, "Dock's original app directory was replaced"
             run("codesign", "--verify", "--deep", "--strict", app)
             launch_dock_tile(dock, app, alias, tile)
+            check_relaunch_entries(app, directory, dock, alias, tile)
             assert f"corvid {new}" != old, "the test needs a newer version than the published DMG"
             print(f"PASS {old} -> corvid {new}; opened the original Dock tile {tile}")
             check_protected_bundle(protected, archive, directory)
@@ -242,9 +314,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--previous-dmg", type=Path)
     parser.add_argument("--previous-archive", type=Path)
-    parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--archive", type=Path)
+    parser.add_argument("--relaunch-binary", type=Path)
     args = parser.parse_args()
-    if not (args.previous_dmg or args.previous_archive):
+    if args.relaunch_binary:
+        check_pinned_relaunch(args.relaunch_binary)
+        raise SystemExit(0)
+    if not args.archive or not (args.previous_dmg or args.previous_archive):
         parser.error("provide --previous-dmg or --previous-archive")
     archive = args.archive.resolve()
     live_dock = os.environ.get("GITHUB_ACTIONS") == "true"

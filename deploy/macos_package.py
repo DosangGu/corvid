@@ -51,6 +51,14 @@ def sign(path):
     run("codesign", "--force", "--sign", "-", "--timestamp=none", path)
 
 
+def build_relaunch_helper(app):
+    relaunch = app / "Contents/Helpers/corvid-relaunch"
+    relaunch.parent.mkdir(parents=True, exist_ok=True)
+    run("xcrun", "swiftc", "-O", "-parse-as-library", "-target", "arm64-apple-macosx15.0",
+        ROOT / "deploy/macos/relaunch.swift", "-o", relaunch)
+    sign(relaunch)
+
+
 def app_bundle(stage, version):
     if sys.platform != "darwin":
         raise ValueError("Build the macOS app on macOS")
@@ -66,6 +74,7 @@ def app_bundle(stage, version):
     copy(stage / "LICENSE", app / "Contents/Resources/LICENSE")
     copy(stage / "STIX-OFL.txt", app / "Contents/Resources/STIX-OFL.txt")
     sign(binaries / "corvid")
+    build_relaunch_helper(app)
     # Remote runtime manifests describe the exact transferred bytes. Do not re-sign them.
     plugin = stage / "plugins/agent-deck/corvid-agent-deck"
     if plugin.exists():

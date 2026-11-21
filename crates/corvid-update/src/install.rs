@@ -480,7 +480,10 @@ impl Installed {
         windows: &[String],
     ) -> Result<()> {
         let layout = layout::for_executable(&self.executable)?;
-        let mut command = download::command(layout.desktop());
+        let desktop = layout.desktop();
+        #[cfg(target_os = "macos")]
+        let desktop = crate::macos::relaunch_helper(&desktop).unwrap_or(desktop);
+        let mut command = download::command(desktop);
         command.args(args);
         let package: serde_json::Value =
             serde_json::from_slice(&fs::read(layout.package_metadata())?)?;

@@ -2,6 +2,7 @@ name: Checks / Desktop
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - '.github/workflows/checks-desktop.yml'
       - '.cargo/**'
@@ -15,6 +16,10 @@ on:
       - 'crates/corvid-protocol/**'
       - 'crates/corvid-daemon/**'
       - 'crates/corvid-update/**'
+      - 'deploy/macos/relaunch.swift'
+      - 'deploy/macos_package.py'
+      - 'deploy/macos_dock_fixture.swift'
+      - 'deploy/test_macos_dock_update.py'
       - 'crates/corvid-client/**'
       - 'crates/corvid-companion/**'
       - 'plugins/agent-deck/**'
@@ -104,3 +109,8 @@ jobs:
           key: checks-desktop-fonts-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/checks-desktop.yml', 'Cargo.lock') }}
       - name: Desktop font fallback and emoji presentation
         run: cargo test --locked -p corvid-desktop --test desktop_symbols
+      - name: Relaunch a pinned macOS Desktop through the installed bundle
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --locked -p corvid-desktop
+          python3 deploy/test_macos_dock_update.py --relaunch-binary target/debug/corvid-desktop
