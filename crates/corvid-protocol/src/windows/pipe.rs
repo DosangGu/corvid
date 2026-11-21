@@ -2,23 +2,30 @@ use std::os::windows::io::AsRawHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+#[cfg(feature = "tokio")]
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
+#[cfg(feature = "tokio")]
 use tokio::time::sleep;
-use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED};
+use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+#[cfg(feature = "tokio")]
+use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED};
 use windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
 
 use super::security::{PrivateDescriptor, current_user, verify_private};
 
+#[cfg(feature = "tokio")]
 const COMPANION_PREFIX: &str = "corvid-v1";
 
+#[cfg(feature = "tokio")]
 pub struct PipeListener {
     name: String,
     user: String,
     waiting: NamedPipeServer,
 }
 
+#[cfg(feature = "tokio")]
 impl PipeListener {
     pub fn bind(instance: &str) -> Result<Self> {
         Self::bind_scoped(COMPANION_PREFIX, instance)
@@ -61,6 +68,7 @@ mod compio_pipe;
 #[cfg(feature = "compio")]
 pub use compio_pipe::CompioPipeListener;
 
+#[cfg(feature = "tokio")]
 fn listen(name: &str, user: &str, first: bool) -> Result<NamedPipeServer> {
     let descriptor = PrivateDescriptor::new(user, false)?;
     let mut attributes = descriptor.attributes();
@@ -78,10 +86,12 @@ fn listen(name: &str, user: &str, first: bool) -> Result<NamedPipeServer> {
     Ok(pipe)
 }
 
+#[cfg(feature = "tokio")]
 pub async fn open_pipe(instance: &str) -> Result<NamedPipeClient> {
     open_scoped(COMPANION_PREFIX, instance).await
 }
 
+#[cfg(feature = "tokio")]
 pub async fn open_scoped(prefix: &str, instance: &str) -> Result<NamedPipeClient> {
     let user = current_user()?;
     let name = pipe_name(prefix, &user, instance)?;
@@ -138,7 +148,7 @@ fn pipe_name(prefix: &str, user: &str, instance: &str) -> Result<String> {
     Ok(name)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

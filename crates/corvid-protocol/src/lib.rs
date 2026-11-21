@@ -23,9 +23,11 @@ pub mod wire {
 }
 
 pub use frame::{
-    CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole, FrameWriter,
-    RENDER_LIMIT, RenderFrame, decode_envelope,
+    CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameRole, RENDER_LIMIT, RenderFrame,
+    decode_envelope,
 };
+#[cfg(feature = "tokio")]
+pub use frame::{FrameReader, FrameWriter};
 pub use session::{
     CAPABILITY_QUERY, COMMAND_TIMEOUT, PROTOCOL_MAJOR, PROTOCOL_MINOR, PeerRole, ProtocolFault,
     Session, accept_hello, accept_hello_with_profiles, check_hello_result, hello,

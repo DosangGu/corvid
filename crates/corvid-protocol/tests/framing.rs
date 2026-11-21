@@ -1,3 +1,5 @@
+#![cfg(feature = "tokio")]
+
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Attach, Envelope, LaunchCommand, RenderHeader};
 use corvid_protocol::{

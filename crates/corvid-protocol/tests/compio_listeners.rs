@@ -1,3 +1,4 @@
+#![cfg(feature = "tokio")]
 #![cfg(all(
     feature = "compio",
     any(target_os = "linux", target_os = "macos", windows)

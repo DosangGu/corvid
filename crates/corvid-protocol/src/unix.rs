@@ -5,6 +5,7 @@ use std::os::fd::AsRawFd;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+#[cfg(any(feature = "tokio", feature = "compio"))]
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -13,13 +14,16 @@ use nix::fcntl::{Flock, FlockArg, OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
 use nix::unistd::geteuid;
 use tempfile::NamedTempFile;
+#[cfg(feature = "tokio")]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(feature = "tokio")]
 use tokio::time::timeout;
 
 const DIRECTORY_FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_DIRECTORY)
     .union(OFlag::O_NOFOLLOW)
     .union(OFlag::O_CLOEXEC);
+#[cfg(any(feature = "tokio", feature = "compio"))]
 const SOCKET_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Best-effort path lookup for local launch/upgrade clients. This PID-only
@@ -52,6 +56,7 @@ pub enum SocketRole {
     TerminalHost,
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 impl SocketRole {
     fn name(self) -> &'static str {
         match self {
@@ -200,6 +205,7 @@ impl RuntimeDir {
             .with_context(|| format!("acquiring {name}"))
     }
 
+    #[cfg(feature = "tokio")]
     pub async fn connect(&self, role: SocketRole) -> Result<UnixStream> {
         let path = self.checked_socket_path(role)?;
 
@@ -225,6 +231,7 @@ impl RuntimeDir {
         Ok(stream)
     }
 
+    #[cfg(any(feature = "tokio", feature = "compio"))]
     fn checked_socket_path(&self, role: SocketRole) -> Result<PathBuf> {
         let path = self.socket_path(role)?;
         let metadata = fs::symlink_metadata(&path).context("opening daemon socket")?;
@@ -232,6 +239,7 @@ impl RuntimeDir {
         Ok(path)
     }
 
+    #[cfg(any(feature = "tokio", feature = "compio"))]
     fn socket_path(&self, role: SocketRole) -> Result<PathBuf> {
         #[cfg(target_os = "linux")]
         if matches!(role, SocketRole::TerminalHost) {
@@ -250,11 +258,13 @@ impl RuntimeDir {
 }
 
 /// Obtain the kernel-authenticated process ID, never a client-provided label.
-pub fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
-    let pid = stream
-        .peer_cred()?
-        .pid()
-        .ok_or_else(|| io::Error::other("peer PID unavailable"))?;
+pub fn peer_pid(stream: &impl AsFd) -> io::Result<u32> {
+    use nix::sys::socket::{getsockopt, sockopt};
+
+    #[cfg(target_os = "linux")]
+    let pid = getsockopt(stream, sockopt::PeerCredentials)?.pid();
+    #[cfg(target_os = "macos")]
+    let pid = getsockopt(stream, sockopt::LocalPeerPid)?;
     u32::try_from(pid)
         .ok()
         .filter(|pid| *pid != 0)
@@ -327,6 +337,7 @@ fn check_parent(metadata: &Metadata, uid: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn check_socket(metadata: &Metadata, uid: u32) -> Result<()> {
     ensure!(
         metadata.file_type().is_socket()
@@ -337,6 +348,7 @@ fn check_socket(metadata: &Metadata, uid: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 fn authenticate(stream: &impl AsFd, uid: u32) -> Result<()> {
     #[cfg(target_os = "linux")]
     let peer_uid = nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
@@ -357,6 +369,7 @@ pub struct Instance<'a> {
 }
 
 impl Instance<'_> {
+    #[cfg(feature = "tokio")]
     pub async fn bind(&self, role: SocketRole) -> Result<BoundSocket<'_>> {
         let socket_path = self.runtime.socket_path(role)?;
         remove_stale(&socket_path, self.runtime.uid, async {
@@ -387,10 +400,11 @@ impl Instance<'_> {
         self.protect_listener(role, listener)
     }
 
-    fn protect_listener<L>(&self, role: SocketRole, listener: L) -> Result<BoundSocket<'_, L>> {
+    #[cfg(any(feature = "tokio", feature = "compio"))]
+    fn protect_listener<L>(&self, role: SocketRole, listener: L) -> Result<SocketListener<'_, L>> {
         let path = self.runtime.path.join(role.name());
         let metadata = fs::symlink_metadata(&path).context("reading bound socket identity")?;
-        let socket = BoundSocket {
+        let socket = SocketListener {
             instance: self,
             listener,
             path,
@@ -403,6 +417,7 @@ impl Instance<'_> {
     }
 }
 
+#[cfg(any(feature = "tokio", feature = "compio"))]
 async fn remove_stale<S>(
     path: &Path,
     uid: u32,
@@ -440,7 +455,7 @@ fn unlink_if_same(path: &Path, device: u64, inode: u64) -> io::Result<()> {
     }
 }
 
-pub struct BoundSocket<'a, L = UnixListener> {
+pub struct SocketListener<'a, L> {
     instance: &'a Instance<'a>,
     listener: L,
     path: PathBuf,
@@ -448,6 +463,10 @@ pub struct BoundSocket<'a, L = UnixListener> {
     inode: u64,
 }
 
+#[cfg(feature = "tokio")]
+pub type BoundSocket<'a> = SocketListener<'a, UnixListener>;
+
+#[cfg(feature = "tokio")]
 impl BoundSocket<'_> {
     /// A rejected peer yields `None`. Listener errors remain separate.
     pub async fn accept(&self) -> Result<Option<UnixStream>> {
@@ -464,7 +483,7 @@ impl BoundSocket<'_> {
 }
 
 #[cfg(feature = "compio")]
-pub type CompioBoundSocket<'a> = BoundSocket<'a, compio::net::UnixListener>;
+pub type CompioBoundSocket<'a> = SocketListener<'a, compio::net::UnixListener>;
 
 #[cfg(feature = "compio")]
 impl CompioBoundSocket<'_> {
@@ -482,7 +501,7 @@ impl CompioBoundSocket<'_> {
     }
 }
 
-impl<L> Drop for BoundSocket<'_, L> {
+impl<L> Drop for SocketListener<'_, L> {
     fn drop(&mut self) {
         let _ = unlink_if_same(&self.path, self.device, self.inode);
     }
