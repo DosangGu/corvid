@@ -1,5 +1,6 @@
 #[cfg(windows)]
 mod doctor;
+mod executor;
 mod ipc;
 mod last_known;
 #[cfg(any(windows, target_os = "macos"))]
@@ -14,6 +15,8 @@ mod store;
 
 #[cfg(windows)]
 pub use doctor::{Check, CheckStatus, diagnose};
+#[cfg(feature = "compio-endpoints")]
+pub use ipc::run_native;
 pub use ipc::{
     PRESENTATION_ATTENTION_CAPABILITY, PRESENTATION_ATTENTION_LIMIT, PRESENTATION_CAPABILITY,
     PRESENTATION_PAGE_SIZE, PresentationAddress, PresentationClient, run, run_for_endpoint,

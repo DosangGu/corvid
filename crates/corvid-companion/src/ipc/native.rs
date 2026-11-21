@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -20,17 +21,24 @@ pub(super) async fn run(
 ) -> Result<()> {
     let runtime = runtime.to_owned();
     let (stop, stopped) = oneshot::channel::<()>();
-    let mut worker = tokio::task::spawn_blocking(move || {
-        let executor = Runtime::new()?;
-        executor.block_on(super::serve_runtime(
-            &runtime,
-            store,
-            endpoint,
-            async move {
-                let _ = stopped.await;
-            },
-        ))
-    });
+    let (send_result, mut worker) = oneshot::channel();
+    thread::Builder::new()
+        .name("corvid-companion".into())
+        .spawn(move || {
+            let result = Runtime::new()
+                .map_err(anyhow::Error::from)
+                .and_then(|executor| {
+                    executor.block_on(super::serve_runtime(
+                        &runtime,
+                        store,
+                        endpoint,
+                        async move {
+                            let _ = stopped.await;
+                        },
+                    ))
+                });
+            let _ = send_result.send(result);
+        })?;
     tokio::select! {
         result = &mut worker => result?,
         () = shutdown => {

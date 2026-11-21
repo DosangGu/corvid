@@ -1,5 +1,6 @@
 #[cfg(windows)]
 use std::env;
+#[cfg(any(windows, not(feature = "compio-endpoints")))]
 use std::future::Future;
 use std::path::PathBuf;
 
@@ -20,7 +21,7 @@ use corvid_protocol::wire::{
 };
 #[cfg(windows)]
 use corvid_protocol::wire::{WezTermLocation, WezTermTarget};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(not(feature = "compio-endpoints"), unix))]
 use tokio::signal::unix::{SignalKind, signal};
 use uuid::Uuid;
 
@@ -154,7 +155,52 @@ enum Command {
     },
 }
 
-pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -> Result<()> {
+pub(super) fn dispatch(options: Options, daemon_runtime: Option<PathBuf>) -> Result<u32> {
+    #[cfg(feature = "compio-endpoints")]
+    if matches!(options.command, Command::Run) {
+        return compio::runtime::Runtime::new()?.block_on(run_native(options));
+    }
+    crate::execute(async move {
+        execute(options, daemon_runtime).await?;
+        Ok(0)
+    })
+}
+
+#[cfg(feature = "compio-endpoints")]
+async fn run_native(options: Options) -> Result<u32> {
+    #[cfg(unix)]
+    let address = companion_socket(options.socket_dir)?;
+    #[cfg(windows)]
+    let address = options.pipe_instance;
+    let state = companion_state(options.state_dir)?;
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let mut companion =
+        std::pin::pin!(corvid_companion::run_native(&address, &state, async move {
+            let _ = stopped.await;
+        }));
+    let interrupt = async {
+        #[cfg(unix)]
+        let other = compio::signal::unix::signal(nix::libc::SIGTERM);
+        #[cfg(windows)]
+        let other = compio::signal::windows::ctrl_break();
+        tokio::select! {
+            result = compio::signal::ctrl_c() => result,
+            result = other => result,
+        }
+    };
+    tokio::select! {
+        biased;
+        result = interrupt => {
+            result?;
+            drop(stop);
+            companion.await?;
+        }
+        result = &mut companion => result?,
+    }
+    Ok(0)
+}
+
+async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -> Result<()> {
     if let Command::Init {
         host_id,
         ssh_alias,
@@ -193,6 +239,7 @@ pub(super) async fn execute(options: Options, daemon_runtime: Option<PathBuf>) -
         ensure!(!failed, "companion doctor found failed checks");
         return Ok(());
     }
+    #[cfg(not(feature = "compio-endpoints"))]
     if matches!(options.command, Command::Run) {
         return corvid_companion::run(&address, &companion_state(options.state_dir)?, shutdown()?)
             .await;
@@ -244,7 +291,7 @@ fn companion_socket(path: Option<PathBuf>) -> Result<PathBuf> {
     corvid_protocol::paths::companion_socket(path)?.prepare()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(not(feature = "compio-endpoints"), unix))]
 fn shutdown() -> Result<impl Future<Output = ()>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;

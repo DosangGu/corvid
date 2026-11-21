@@ -16,7 +16,7 @@ struct FixtureGui {
 
 impl FixtureGui {
     async fn start(executable: &Path, ready: &Path) -> Result<Self> {
-        let mut process = Command::new(executable)
+        let mut process = tokio::process::Command::new(executable)
             .args([
                 "--skip-config",
                 "start",
