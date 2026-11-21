@@ -1,11 +1,11 @@
 use std::time::Instant;
 
+use corvid_async::mpsc::error::TrySendError;
 use corvid_core::InputRoute;
 use corvid_core::layout::Location;
 use corvid_protocol::wire::FocusApplied;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::sync::mpsc::error::TrySendError;
 use uuid::Uuid;
 
 use super::controllers::{Sender, no_client};
@@ -383,12 +383,12 @@ mod tests {
     use std::sync::Arc;
 
     use crate::executor::time::timeout;
+    use corvid_async::mpsc;
     use corvid_core::agent::{ProcessLiveness, Provider, Source};
     use corvid_core::layout::Layout;
     use corvid_core::{KEY_LEADER, Viewport};
     use corvid_protocol::COMMAND_TIMEOUT;
     use corvid_protocol::wire::TuiInputMode;
-    use tokio::sync::mpsc;
 
     use super::*;
     use crate::agents::ManagedLaunch;

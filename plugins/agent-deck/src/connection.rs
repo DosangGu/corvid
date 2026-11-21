@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+use corvid_async::{mpsc, oneshot};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Envelope, OpenAgentDeck};
 use corvid_protocol::{
@@ -6,7 +7,6 @@ use corvid_protocol::{
     hello,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 

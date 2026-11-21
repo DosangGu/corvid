@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::Callbacks;
 
 pub(crate) struct Linux {
-    _capabilities: tokio::sync::watch::Sender<Capabilities>,
+    _capabilities: corvid_async::watch::Sender<Capabilities>,
 }
 
 pub(crate) fn start(callbacks: Callbacks, _: Uuid, _: &Path, _: &Path) -> anyhow::Result<Linux> {

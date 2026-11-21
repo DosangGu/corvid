@@ -298,11 +298,11 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let controller = Uuid::new_v4();
         identify(controller)?;
-        let (events, _received) = tokio::sync::mpsc::channel(4);
+        let (events, _received) = corvid_async::mpsc::channel(4);
         let callbacks = Callbacks {
             events,
-            issues: tokio::sync::watch::channel(None).0,
-            capabilities: tokio::sync::watch::channel(Default::default()).0,
+            issues: corvid_async::watch::channel(None).0,
+            capabilities: corvid_async::watch::channel(Default::default()).0,
             signal: crate::ui_signal::UiSignal::default(),
         };
         let programs = shortcut_path(&FOLDERID_Programs, controller)?;

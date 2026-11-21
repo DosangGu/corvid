@@ -1,4 +1,4 @@
-use tokio::sync::{mpsc, oneshot};
+use corvid_async::{mpsc, oneshot};
 
 use super::Registry;
 use crate::executor;
@@ -48,7 +48,7 @@ impl RegistryActor {
             if compio::runtime::Runtime::try_current().is_none() {
                 // Terminal workers run outside the executor. The registry
                 // never waits on a terminal while applying an operation.
-                let _ = self.0.blocking_send(operation);
+                let _ = self.0.send_blocking(operation);
                 return;
             }
             let send = self.0.clone();
@@ -69,7 +69,7 @@ impl WeakRegistry {
     ) -> Option<T> {
         let send = self.0.upgrade()?;
         let (operation, result) = operation(apply);
-        send.blocking_send(operation).ok()?;
+        send.send_blocking(operation).ok()?;
         result.blocking_recv().ok()
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -1,15 +1,15 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
+use corvid_async::Mutex;
 use corvid_client::{ControlEndpoint, InteractiveConnection, daemon_missing, runtime_path};
 use corvid_protocol::{ProtocolFault, RESTORE_AGENTS_CAPABILITY, Session};
 use semver::Version;
 use tokio::process::Command;
-use tokio::sync::Mutex;
 
 use crate::daemon_prompt::{Operation, Prompts, needs_upgrade};
 
-static LOCAL_CONNECTION: Mutex<()> = Mutex::const_new(());
+static LOCAL_CONNECTION: Mutex<()> = Mutex::new(());
 
 pub async fn connect(
     capabilities: Vec<String>,

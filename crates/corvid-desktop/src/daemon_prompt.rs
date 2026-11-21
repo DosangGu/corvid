@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
+use corvid_async::{mpsc, oneshot};
 use corvid_protocol::ProtocolFault;
 use gpui::{App, PromptButton, PromptLevel, Window};
-use tokio::sync::{mpsc, oneshot};
 
 pub struct Prompt {
     pub title: &'static str,

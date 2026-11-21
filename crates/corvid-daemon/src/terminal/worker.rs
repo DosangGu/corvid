@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::executor::{self, Task};
 use anyhow::Result;
+use corvid_async::{mpsc, oneshot, watch};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::Source;
 use corvid_core::agent::{ProcessLiveness, Provider};
@@ -15,7 +16,6 @@ use corvid_protocol::wire::WheelEncoding;
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 use vt100::Screen;
 
@@ -438,7 +438,7 @@ impl Worker {
                 match commands.try_recv() {
                     Ok(command) => self.handle(command),
                     Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => return,
+                    Err(mpsc::error::TryRecvError::Closed) => return,
                 }
             }
             let mode = self.input_mode();

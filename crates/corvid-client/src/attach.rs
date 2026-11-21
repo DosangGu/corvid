@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use compio::runtime::{JoinHandle, spawn};
 #[cfg(feature = "compio-tui")]
 use compio::time::{sleep_until, timeout};
+use corvid_async::mpsc;
 use corvid_core::Viewport;
 use corvid_protocol::controller::{PAIR_CAPABILITY, PAIRING_SECONDS};
 use corvid_protocol::wire::envelope::Body;
@@ -33,7 +34,6 @@ use corvid_protocol::{CompioFrameReader as FrameReader, CompioFrameWriter as Fra
 use corvid_protocol::{FrameReader, FrameWriter};
 #[cfg(all(unix, not(feature = "compio-tui")))]
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::mpsc;
 #[cfg(not(feature = "compio-tui"))]
 use tokio::task::{JoinHandle, spawn};
 #[cfg(not(feature = "compio-tui"))]
@@ -123,8 +123,8 @@ where
     F: Future<Output = Result<T>>,
     Run: FnOnce() -> F + Send + 'static,
 {
-    let (_stop_on_drop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let (finished, result) = tokio::sync::oneshot::channel();
+    let (_stop_on_drop, stopped) = corvid_async::oneshot::channel::<()>();
+    let (finished, result) = corvid_async::oneshot::channel();
     std::thread::Builder::new()
         .name("corvid-tui".into())
         .spawn(move || {

@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::executor::time::timeout;
 use crate::executor::{Task, blocking};
 use anyhow::Result;
+use corvid_async::{mpsc, oneshot};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::ProcessLiveness;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -26,7 +27,6 @@ use corvid_protocol::wire::{
     TerminalState, TuiInputMode, Viewport as WireViewport, WriterLeaseState,
 };
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::agents::Agents;

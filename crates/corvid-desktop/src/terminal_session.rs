@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use corvid_async::{mpsc, oneshot, watch};
 #[cfg(windows)]
 use corvid_client::WslDistribution;
 use corvid_client::view_state::{Recorder, SavedView, Target as SavedTarget, ViewStore};
@@ -35,7 +36,6 @@ use corvid_protocol::{
     TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, WRITER_RESUME_CAPABILITY,
     decode_envelope,
 };
-use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 use vt100::{Parser, Screen};
@@ -635,7 +635,7 @@ impl ParkedConnections {
     pub fn clear(&self) {
         if let Some(sender) = self.0.get() {
             let (reply, result) = oneshot::channel();
-            if sender.blocking_send(ParkedCommand::Clear(reply)).is_ok() {
+            if sender.send_blocking(ParkedCommand::Clear(reply)).is_ok() {
                 let _ = result.blocking_recv();
             }
         }

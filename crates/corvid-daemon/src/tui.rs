@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use crate::executor::time::timeout;
 use crate::platform::{self, FrameWriter, Stream, WriteHalf, decode_os_string};
 use anyhow::Result;
+use corvid_async::{Semaphore, SemaphoreGuard, mpsc, oneshot};
 use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, Location};
 use corvid_core::{InputRoute, Viewport};
@@ -22,7 +23,6 @@ use corvid_protocol::{
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
     TERMINAL_HISTORY_CAPABILITY, WRITER_RESUME_CAPABILITY,
 };
-use tokio::sync::{Semaphore, SemaphorePermit, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::control::handshake;
@@ -76,8 +76,8 @@ const CAPABILITIES: &[&str] = &[
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
 // Leave room for new interactive clients even if several Desktop windows park.
-static PARKED_TERMINALS: Semaphore = Semaphore::const_new(crate::MAX_TUI_CONNECTIONS / 2);
-type ParkedTerminal = Option<SemaphorePermit<'static>>;
+static PARKED_TERMINALS: Semaphore = Semaphore::new(crate::MAX_TUI_CONNECTIONS / 2);
+type ParkedTerminal = Option<SemaphoreGuard<'static>>;
 
 pub(crate) async fn serve(
     stream: Stream,
@@ -362,7 +362,7 @@ impl TuiConnection<'_> {
                         .iter()
                         .any(|cap| cap == corvid_protocol::PARK_TERMINAL_CAPABILITY)
                     && matches!(body, Body::Detach(_))
-                    && let Ok(permit) = PARKED_TERMINALS.try_acquire()
+                    && let Some(permit) = PARKED_TERMINALS.try_acquire()
                 {
                     self.parked = Some(permit);
                     Body::Pong(Pong {})

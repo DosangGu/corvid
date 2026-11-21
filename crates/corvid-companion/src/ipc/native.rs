@@ -6,10 +6,10 @@ use anyhow::{Context, Result};
 use compio::io::util::Splittable;
 use compio::runtime::{Runtime, spawn};
 use compio::time::{sleep, timeout};
+use corvid_async::{mpsc, oneshot};
 use corvid_client::ControlEndpoint;
 use corvid_protocol::{COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter};
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{mpsc, oneshot};
 
 use super::{Call, IDLE_TIMEOUT, MAX_PEERS, PresentationAddress, ROLE, Store};
 
@@ -51,7 +51,7 @@ pub(super) async fn run(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 type Listener<'a> = corvid_protocol::unix::CompioBoundSocket<'a>;
 #[cfg(windows)]
-type Listener<'a> = tokio::sync::Mutex<corvid_protocol::windows::CompioPipeListener>;
+type Listener<'a> = corvid_async::Mutex<corvid_protocol::windows::CompioPipeListener>;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 type Stream = compio::net::UnixStream;

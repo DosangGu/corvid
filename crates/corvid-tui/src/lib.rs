@@ -367,7 +367,7 @@ fn run_compio_daemon(
 ) -> Result<u32> {
     let executor = compio::runtime::Runtime::new()?;
     executor.block_on(async {
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let (stop, stopped) = corvid_async::oneshot::channel::<()>();
         let daemon = corvid_daemon::run_native(runtime, state, autostarted, async move {
             let _ = stopped.await;
         });

@@ -1,5 +1,5 @@
 use corvid_agent_deck_core::native::{Capabilities, Event, NativeError};
-use tokio::sync::{mpsc, watch};
+use corvid_async::{mpsc, watch};
 
 use crate::ui_signal::UiSignal;
 

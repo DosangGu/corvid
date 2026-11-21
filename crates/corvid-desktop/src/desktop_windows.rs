@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
+use corvid_async::{mpsc, oneshot, watch};
 use corvid_client::ControlEndpoint;
 use corvid_client::view_state::ViewStore;
 use corvid_client::view_state::windows::{WindowRegistry, WindowState};
@@ -11,7 +12,6 @@ use corvid_presentation::desktop_focus::{FocusRequest, serve_routed};
 use gpui::{
     App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions, px, size,
 };
-use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use crate::agent_deck;
@@ -80,7 +80,7 @@ impl WindowStorage {
     fn close(&self, state: WindowState) -> Result<()> {
         let (reply, result) = oneshot::channel();
         self.0
-            .blocking_send(Box::new(move |registry| {
+            .send_blocking(Box::new(move |registry| {
                 let _ = reply.send(registry.close(state));
             }))
             .map_err(|_| anyhow::anyhow!("Desktop window storage stopped"))?;

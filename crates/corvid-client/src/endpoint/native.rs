@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use compio::io::{AsyncRead, AsyncWrite};
 use compio::runtime::{JoinHandle, Runtime, spawn};
+use corvid_async::{mpsc, oneshot};
 use corvid_protocol::wire::Envelope;
 use corvid_protocol::{COMMAND_TIMEOUT, Frame, FrameError, PeerRole, ProtocolFault, Session};
-use tokio::sync::{mpsc, oneshot};
 
 use crate::compio_connection::{self, Connection, LocalConnection};
 use crate::connection::SocketRole;

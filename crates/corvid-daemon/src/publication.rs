@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use corvid_async::{mpsc, watch};
 use corvid_protocol::snapshot::EntityKey;
 use corvid_protocol::wire::snapshot_entity::Body;
 use corvid_protocol::wire::{SnapshotDelta, SnapshotEntity};
 use corvid_protocol::{CONTROL_LIMIT, ProtocolFault};
 use prost::Message;
-use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 pub(crate) const MAX_WATCHES: usize = 8;

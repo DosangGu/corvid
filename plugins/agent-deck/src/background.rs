@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
 use corvid_agent_deck::connection;
+use corvid_async::{mpsc, oneshot, watch};
 use corvid_companion::{
     Config, PRESENTATION_ATTENTION_CAPABILITY, PresentationAddress, PresentationClient,
 };
@@ -14,7 +15,6 @@ use corvid_presentation::{desktop_focus, ipc::Completion};
 use corvid_protocol::COMMAND_TIMEOUT;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationAttention, PresentationAttention};
-use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 

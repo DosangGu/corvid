@@ -1,11 +1,11 @@
 use super::*;
 use crate::ui_signal::UiSignal;
 use anyhow::Result;
+use corvid_async::oneshot::{self, error::TryRecvError};
 use corvid_companion::{WezTermCandidate, discover_wezterm_panes};
 use corvid_protocol::wire::PairTerminal;
 use std::thread;
 use tokio::runtime::Builder;
-use tokio::sync::oneshot::{self, error::TryRecvError};
 
 #[derive(Default)]
 pub(crate) struct Pairing {

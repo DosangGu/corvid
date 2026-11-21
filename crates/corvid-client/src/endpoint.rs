@@ -6,6 +6,7 @@ use std::time::Duration;
 #[cfg(not(feature = "compio-endpoints"))]
 use anyhow::Context;
 use anyhow::{Result, bail, ensure};
+use corvid_async::mpsc;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, Frame, PeerRole, ProtocolFault, Session};
 #[cfg(not(feature = "compio-endpoints"))]
@@ -16,7 +17,6 @@ use tokio::process::Child;
 #[cfg(not(feature = "compio-endpoints"))]
 use tokio::process::ChildStderr;
 use tokio::process::Command;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 

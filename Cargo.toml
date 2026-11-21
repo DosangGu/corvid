@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/corvid-agent-deck-core",
+    "crates/corvid-async",
     "crates/corvid-client",
     "crates/corvid-companion",
     "crates/corvid-core",
@@ -42,11 +43,14 @@ publish = false
 corvid-agent-deck = { path = "plugins/agent-deck", version = "=0.4.2", default-features = false }
 corvid-agent-deck-core = { path = "crates/corvid-agent-deck-core", version = "=0.4.2" }
 anyhow = "1.0"
+async-channel = "=2.5.0"
+async-lock = "=3.5.0"
 async-process = "=2.5.0"
 base64 = "=0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6", features = ["derive"] }
 compio = { version = "=0.19.2", default-features = false, features = ["runtime", "time", "io-uring", "polling"] }
+corvid-async = { path = "crates/corvid-async", version = "=0.4.2" }
 corvid-client = { path = "crates/corvid-client", version = "=0.4.2" }
 corvid-companion = { path = "crates/corvid-companion", version = "=0.4.2" }
 corvid-core = { path = "crates/corvid-core", version = "=0.4.2" }
@@ -57,6 +61,9 @@ corvid-tui = { path = "crates/corvid-tui", version = "=0.4.2" }
 corvid-update = { path = "crates/corvid-update", version = "=0.4.2" }
 crossterm = { version = "=0.29.0", default-features = false }
 dunce = "=1.0.5"
+event-listener = "=5.4.2"
+futures-channel = "=0.3.34"
+futures-lite = "=2.6.1"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 glob = "0.3"
 gpui = { package = "gpui-ce", version = "=0.3.0", default-features = false }

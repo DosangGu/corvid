@@ -5,11 +5,11 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Result;
+use corvid_async::{mpsc, oneshot};
 use corvid_client::{ControlEndpoint, SnapshotWatch, SshRetry};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::CompanionConnection;
 use corvid_protocol::wire::envelope::Body;
-use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::executor::{Instant, interval_at, sleep_until, timeout_at};

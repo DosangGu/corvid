@@ -87,12 +87,12 @@ pub(crate) use unix_listener::bind;
 #[cfg(windows)]
 mod windows_listener {
     use anyhow::Result;
+    use corvid_async::Mutex;
     #[cfg(feature = "compio")]
     use corvid_protocol::windows::CompioPipeListener as Pipe;
     #[cfg(not(feature = "compio"))]
     use corvid_protocol::windows::PipeListener as Pipe;
     use corvid_protocol::windows::{DaemonPipe, StateDirectory};
-    use tokio::sync::Mutex;
 
     pub(crate) struct Listener(Mutex<Pipe>);
 

@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use crate::ui_signal::UiSignal;
 use anyhow::{Context, Result, ensure};
 use corvid_agent_deck::connection::{self, CAPABILITY, LIFECYCLE_CAPABILITY, Peer};
+use corvid_async::mpsc;
 use corvid_presentation::ipc::Completion;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{AgentDeckOpened, FocusDesktopAgent, PresentedRunKey};
 use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, ProtocolFault, accept_hello_with_profiles};
-use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 

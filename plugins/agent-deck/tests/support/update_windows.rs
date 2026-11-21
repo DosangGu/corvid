@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_agent_deck::{connection, desktop::Settings, lifecycle};
+use corvid_async::{mpsc, oneshot};
 use corvid_companion::{Config, HostEndpoint};
 use corvid_protocol::windows::StateDirectory;
 use corvid_protocol::wire::{AgentDeckOpened, envelope::Body};
 use corvid_protocol::{COMMAND_TIMEOUT, PeerRole, accept_hello};
-use tokio::sync::{mpsc, oneshot};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
