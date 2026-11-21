@@ -11,6 +11,7 @@ publish = ["crates-io"]
 [features]
 compio = ["corvid-protocol/compio", "dep:compio"]
 compio-tui = ["compio"]
+compio-endpoints = ["compio"]
 
 [dependencies]
 compio = { workspace = true, optional = true }

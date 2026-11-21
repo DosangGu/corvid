@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until, timeout};
 use uuid::Uuid;
 
-use crate::connection::Connection;
+use crate::endpoint::wire::Wire;
 use crate::endpoint::{ControlConnection, ControlEndpoint};
 
 #[cfg(test)]
@@ -227,7 +227,7 @@ async fn receive_initial(
 }
 
 async fn pump(
-    connection: &mut Connection<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
+    connection: &mut Wire<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
     subscription: &str,
     sender: mpsc::Sender<Envelope>,
 ) -> Result<()> {
@@ -280,7 +280,7 @@ struct Heartbeat {
 impl Heartbeat {
     async fn read(
         &mut self,
-        connection: &mut Connection<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
+        connection: &mut Wire<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
     ) -> Result<Envelope> {
         let pending_read = connection.reader.next_envelope();
         tokio::pin!(pending_read);

@@ -79,3 +79,11 @@ jobs:
         run: |
           cargo test --locked -p corvid-tui --features compio-daemon,compio-probe,compio-tui --test windows_daemon ordinary_attach_resumes
           cargo test --locked -p corvid-tui --features compio-daemon,compio-probe,compio-tui --test windows_daemon command_menu_consumes_input
+      - name: Exercise Compio local control and interactive endpoints on Unix
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: |
+          cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test workspace_directory
+          cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test routing snapshot_client_keeps_last_state
+      - name: Exercise Compio local control endpoints on Windows
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p corvid-tui --features compio-endpoints,compio-daemon --test windows_daemon tui_reopens_its_last_workspace

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [features]
 compio-daemon = ["corvid-daemon/compio"]
 compio-tui = ["corvid-client/compio-tui"]
+compio-endpoints = ["corvid-client/compio-endpoints"]
 compio-probe = ["corvid-client/compio", "dep:compio"]
 
 [dependencies]
