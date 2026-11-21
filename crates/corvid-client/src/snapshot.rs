@@ -102,7 +102,8 @@ async fn watch(
     let pump = move || async move {
         // Capture the entire connection so its SSH/WSL relay lives with the pump.
         let mut connection = connection;
-        let error = pump(&mut connection.wire, &subscription, sender).await;
+        // Keep the queue open until the pump publishes its terminal fault.
+        let error = pump(&mut connection.wire, &subscription, &sender).await;
         let fault = error
             .err()
             .map(|error| {
@@ -151,10 +152,13 @@ impl SnapshotWatch {
             }
             let frame = corvid_async::select! {
                 biased;
-                _ = self.failure.changed() => {
-                    return Err(self.failure.borrow().clone().unwrap_or_else(offline).into());
-                }
-                frame = self.incoming.recv() => frame.ok_or_else(offline)?,
+                _ = self.failure.changed() => None,
+                frame = self.incoming.recv() => frame,
+            };
+            let Some(frame) = frame else {
+                let fault = self.failure.borrow().clone().unwrap_or_else(offline);
+                self.stop();
+                return Err(fault.into());
             };
             match self.cache.apply(frame) {
                 Ok(true) => return Ok(()),
@@ -240,7 +244,7 @@ async fn receive_initial(
 async fn pump(
     connection: &mut Wire,
     subscription: &str,
-    sender: mpsc::Sender<Envelope>,
+    sender: &mpsc::Sender<Envelope>,
 ) -> Result<()> {
     let now = Instant::now();
     let mut heartbeat = Heartbeat {

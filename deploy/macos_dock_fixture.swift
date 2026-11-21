@@ -4,9 +4,12 @@ import Foundation
 let args = CommandLine.arguments
 let app = URL(fileURLWithPath: args[2], isDirectory: true).resolvingSymlinksInPath()
 let bookmark = URL(fileURLWithPath: args[3])
-let identifier = Bundle(url: app)!.bundleIdentifier!
+let bundle = Bundle(url: app)!
+let identifier = bundle.bundleIdentifier!
 let prefs = UserDefaults(suiteName: "com.apple.dock")!
-let label = app.deletingPathExtension().lastPathComponent
+let label = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+    ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+    ?? app.deletingPathExtension().lastPathComponent
 
 func tiles() -> [[String: Any]] {
     prefs.synchronize()
@@ -113,12 +116,15 @@ case "handoff":
     precondition(application() == nil)
 case "running":
     precondition(waitForApplication(), "Corvid did not launch from the Dock")
+    precondition(applications().count == 1, "Multiple running applications use the installed bundle")
 case "quit":
     quit()
     precondition(application() == nil)
 case "remove":
+    let guid = Int(args[4])!
     quit()
-    writeTiles(tiles().filter { data($0)["file-label"] as? String != label })
+    precondition(application() == nil, "The Dock fixture is still running")
+    writeTiles(tiles().filter { ($0["GUID"] as? Int) != guid })
     try reloadDock()
 default:
     fatalError("Unknown Dock fixture operation")

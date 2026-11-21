@@ -1415,7 +1415,7 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corvid-agent-deck"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-process",
@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-agent-deck-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "corvid-companion",
@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-async"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "async-channel",
  "async-io",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-client"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-process",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-companion"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-process",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-daemon"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "compio",
@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-desktop"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-process",
@@ -1598,11 +1598,11 @@ dependencies = [
 
 [[package]]
 name = "corvid-package-desktop"
-version = "0.4.2"
+version = "0.4.3"
 
 [[package]]
 name = "corvid-presentation"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "compio",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-protocol"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "compio",
@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-terminal-spike"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "corvid-core",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-tui"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-process",
@@ -1678,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "corvid-update"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "embed-resource",

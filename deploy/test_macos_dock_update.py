@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from urllib.parse import unquote, urlsplit
 
 from macos_package import build_relaunch_helper, plist, sign
 from package import digest
@@ -169,7 +170,7 @@ def check_managed_update(previous, archive, directory, dock, live_dock):
             launch_dock_tile(dock, app, tile_bookmark, tile)
     finally:
         if tile:
-            run(dock, "remove", app, bookmark)
+            run(dock, "remove", app, tile_bookmark, tile)
     print("PASS legacy managed Desktop bookmark survives its in-place CLI update")
 
 
@@ -199,17 +200,45 @@ def check_running_relaunch(app, directory, dock, alias, entry):
 
 def check_single_dock_tile(app):
     script = """
-on run argv
-    tell application "System Events" to tell process "Dock"
-        set matches to 0
+set dockEntries to {}
+tell application "System Events" to tell process "Dock"
+    if exists list 1 then
         repeat with entry in UI elements of list 1
-            if name of entry is in argv then set matches to matches + 1
+            set itemName to name of entry as text
+            set itemAddress to ""
+            try
+                set itemAddress to value of attribute "AXURL" of entry as text
+            end try
+            set end of dockEntries to itemName & tab & itemAddress
         end repeat
-        return matches
-    end tell
-end run
+    end if
+end tell
+set AppleScript's text item delimiters to linefeed
+return dockEntries as text
 """
-    assert run("/usr/bin/osascript", "-e", script, app.stem, "Corvid") == "1", "Duplicate Corvid Dock item"
+    app = app.resolve()
+    deadline = time.monotonic() + 10
+    previous = []
+    while True:
+        entries = run("/usr/bin/osascript", "-e", script).splitlines()
+        matches = []
+        for entry in entries:
+            name, _, address = entry.partition("\t")
+            url = urlsplit(address)
+            if url.scheme == "file" and url.netloc in ("", "localhost"):
+                matches_app = Path(unquote(url.path)).resolve().is_relative_to(app)
+            else:
+                matches_app = name in (app.stem, "Corvid")
+            if matches_app:
+                matches.append(entry)
+        # The Dock updates independently of the application's startup receipt.
+        # Require the same single item on consecutive observations.
+        if len(matches) == 1 and matches == previous:
+            return
+        previous = matches
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Expected one Dock item for {app}, found {matches!r}; Dock entries: {entries!r}")
+        time.sleep(0.25)
 
 
 def check_relaunch_entries(app, directory, dock, alias, tile):
@@ -217,6 +246,7 @@ def check_relaunch_entries(app, directory, dock, alias, tile):
         check_running_relaunch(app, directory, dock, alias, entry)
         run(dock, "resolve", app, alias, tile)
         check_single_dock_tile(app)
+        print(f"PASS {entry} restored the pinned Desktop with one Dock item")
 
 
 def check_pinned_relaunch(binary):
@@ -239,7 +269,7 @@ def check_pinned_relaunch(binary):
             launch_dock_tile(dock, app, alias, tile)
             check_relaunch_entries(app, directory, dock, alias, tile)
         finally:
-            run(dock, "remove", app, alias)
+            run(dock, "remove", app, alias, tile)
 
 
 def check_protected_bundle(app, archive, directory):
@@ -270,12 +300,17 @@ def check_protected_bundle(app, archive, directory):
 def check(dmg, archive):
     # Pin an isolated copy in the disposable macOS runner's real Dock.
     assert os.environ.get("GITHUB_ACTIONS") == "true"
-    with tempfile.TemporaryDirectory(prefix=".cv-dock-", dir=Path.home()) as temp:
+    with (
+        tempfile.TemporaryDirectory(prefix=".cv-dock-", dir=Path.home()) as temp,
+        tempfile.TemporaryDirectory(prefix="Corvid Dock Fixture ", dir="/Applications") as installed,
+    ):
         directory = Path(temp).resolve()
         mount = directory / "volume"
         release = release_fixture(archive, directory)
-        app = Path("/Applications") / f"Corvid Dock Fixture {uuid.uuid4().hex[:10]}.app"
-        protected = app.with_name(f"{app.stem} protected.app")
+        # Match the installed basename and the bundle's display name while
+        # keeping the test independent of any real installation.
+        app = Path(installed) / "Corvid.app"
+        protected = app.with_name("Protected Corvid.app")
         dock = directory / "dock-test"
         alias = directory / "Corvid bookmark"
         run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
@@ -288,6 +323,7 @@ def check(dmg, archive):
             run("ditto", mount / "Corvid.app", protected)
         finally:
             run("hdiutil", "detach", mount)
+        tile = None
         try:
             old = run(app / CLI, "--version")
             original_inode = app.stat().st_ino
@@ -303,7 +339,8 @@ def check(dmg, archive):
             print(f"PASS {old} -> corvid {new}; opened the original Dock tile {tile}")
             check_protected_bundle(protected, archive, directory)
         finally:
-            run(dock, "remove", app, alias)
+            if tile:
+                run(dock, "remove", app, alias, tile)
             if app.is_dir():
                 shutil.rmtree(app)
             if protected.is_dir():
@@ -325,6 +362,8 @@ if __name__ == "__main__":
     archive = args.archive.resolve()
     live_dock = os.environ.get("GITHUB_ACTIONS") == "true"
     with hide_recent_dock_apps() if live_dock else nullcontext():
+        if args.previous_dmg:
+            check(args.previous_dmg.resolve(), archive)
         if args.previous_archive:
             test_home = Path.home() if live_dock else None
             with tempfile.TemporaryDirectory(prefix=".cv-managed-", dir=test_home) as directory:
@@ -332,5 +371,3 @@ if __name__ == "__main__":
                 dock = directory / "dock-test"
                 run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
                 check_managed_update(args.previous_archive.resolve(), archive, directory, dock, live_dock)
-        if args.previous_dmg:
-            check(args.previous_dmg.resolve(), archive)
