@@ -2,15 +2,14 @@ use anyhow::{Context, Result, bail, ensure};
 use corvid_protocol::controller::{ACK_CAPABILITY, FOCUS_CAPABILITY, PAIR_CAPABILITY};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AcknowledgeAttention, ConnectionStatus, FocusAgentRequest, GetCapabilities,
+    AcknowledgeAttention, ConnectionStatus, Envelope, FocusAgentRequest, GetCapabilities,
     GetConnectionStatus, GetHost, HelloResult, HostInfo, RegisterClientBinding,
     UnregisterClientBinding,
 };
-use corvid_protocol::{CAPABILITY_QUERY, COMMAND_TIMEOUT, ProtocolFault};
+use corvid_protocol::{CAPABILITY_QUERY, COMMAND_TIMEOUT, ProtocolFault, Session};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::connection::Connection;
 use crate::endpoint::{ControlConnection, ControlEndpoint};
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -167,31 +166,19 @@ async fn exchange(
     body: Body,
     request_id: String,
 ) -> Result<Body> {
-    exchange_wire(&mut connection.wire, body, request_id, || {
-        tokio::time::sleep(COMMAND_TIMEOUT)
-    })
-    .await
-}
-
-pub(crate) async fn exchange_wire<R, W, F>(
-    wire: &mut Connection<R, W>,
-    body: Body,
-    request_id: String,
-    frame_deadline: impl FnOnce() -> F,
-) -> Result<Body>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-    F: Future<Output = ()>,
-{
+    let wire = &mut connection.wire;
     let session = &wire.session;
     let request = session.envelope(Some(request_id), body);
     wire.writer.envelope(&request).await?;
     let reply = wire
         .reader
-        .next_envelope_with_deadline(frame_deadline)
+        .next_envelope()
         .await?
         .context("daemon closed during command")?;
+    check_reply(session, &request, reply)
+}
+
+pub(crate) fn check_reply(session: &Session, request: &Envelope, reply: Envelope) -> Result<Body> {
     session.validate_scope(&reply)?;
     ensure!(
         request.request_id == reply.request_id,

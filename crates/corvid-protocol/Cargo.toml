@@ -14,7 +14,7 @@ compio = ["dep:compio"]
 [dependencies]
 prost.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "time"] }
+tokio = { workspace = true, features = ["io-util", "time"] }
 uuid.workspace = true
 
 [build-dependencies]

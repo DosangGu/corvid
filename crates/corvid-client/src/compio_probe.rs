@@ -1,14 +1,16 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
-use compio::time::{sleep, timeout};
-use compio_io::{AsyncRead, AsyncWrite, compat::AsyncStream, util::Splittable};
+use compio::io::{AsyncRead, AsyncWrite, util::Splittable};
+use compio::time::timeout;
 use corvid_protocol::wire::{Ping, envelope::Body};
-use corvid_protocol::{COMMAND_TIMEOUT, PeerRole};
-use tokio_util::compat::FuturesAsyncReadCompatExt;
+use corvid_protocol::{
+    COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter, FrameError, FrameRole, PeerRole,
+    ProtocolFault, check_hello_result, hello,
+};
 use uuid::Uuid;
 
-use crate::{connection::Connection, control::exchange_wire};
+use crate::control::check_reply;
 
 /// Probe a running Corvid daemon. Run this future on a Compio runtime.
 pub async fn compio_ping(path: &Path) -> Result<()> {
@@ -34,30 +36,40 @@ where
     R: AsyncRead + Unpin + 'static,
     W: AsyncWrite + Unpin + 'static,
 {
-    let stream = Box::pin(AsyncStream::new(stream)).compat();
-    let (read, write) = tokio::io::split(stream);
-    let mut wire = timeout(
-        COMMAND_TIMEOUT,
-        Connection::negotiate_with_deadline(
-            read,
-            write,
-            PeerRole::Control,
-            vec!["ping.v1".to_owned()],
+    let (read, write) = stream.split();
+    let (mut reader, mut writer, session) = timeout(COMMAND_TIMEOUT, async {
+        let mut writer = CompioFrameWriter::start(write, FrameRole::StructuredOnly).await?;
+        let mut reader = match CompioFrameReader::start(read, FrameRole::StructuredOnly).await {
+            Ok(reader) => reader,
+            Err(FrameError::ProtocolMismatch) => {
+                return Err(ProtocolFault::unsupported_framing().into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let greeting = hello(
+            Uuid::new_v4().to_string(),
             Some(Uuid::new_v4().to_string()),
-            || sleep(COMMAND_TIMEOUT),
-        ),
-    )
+            vec!["ping.v1".to_owned()],
+        );
+        writer.envelope(&greeting).await?;
+        let reply = reader
+            .next_envelope()
+            .await?
+            .context("daemon closed during Hello")?;
+        let session = check_hello_result(&greeting, &reply, PeerRole::Control)?;
+        Ok::<_, anyhow::Error>((reader, writer, session))
+    })
     .await
     .context("daemon handshake timed out")??;
-    let reply = timeout(
-        COMMAND_TIMEOUT,
-        exchange_wire(
-            &mut wire,
-            Body::Ping(Ping {}),
-            Uuid::new_v4().to_string(),
-            || sleep(COMMAND_TIMEOUT),
-        ),
-    )
+    let reply = timeout(COMMAND_TIMEOUT, async {
+        let request = session.envelope(Some(Uuid::new_v4().to_string()), Body::Ping(Ping {}));
+        writer.envelope(&request).await?;
+        let reply = reader
+            .next_envelope()
+            .await?
+            .context("daemon closed during command")?;
+        check_reply(&session, &request, reply)
+    })
     .await
     .context("control command timed out")??;
     ensure!(

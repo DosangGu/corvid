@@ -3,7 +3,7 @@ use std::io::{self, ErrorKind};
 use prost::Message;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::time::sleep;
+use tokio::time::timeout;
 
 use crate::preflight;
 use crate::session::{COMMAND_TIMEOUT, valid_id};
@@ -17,6 +17,10 @@ pub const RENDER_LIMIT: usize = 4 * 1024 * 1024;
 const STRUCTURED: u8 = 1;
 const RENDER: u8 = 2;
 const RENDER_HEADER_LIMIT: usize = 16 * 1024;
+
+#[cfg(feature = "compio")]
+#[path = "compio_frame.rs"]
+pub(crate) mod compio;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameRole {
@@ -123,37 +127,20 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
-        self.next_frame_with_deadline(|| sleep(COMMAND_TIMEOUT))
-            .await
-    }
-
-    /// The deadline starts after the first frame byte arrives.
-    pub async fn next_frame_with_deadline<F: Future<Output = ()>>(
-        &mut self,
-        deadline: impl FnOnce() -> F,
-    ) -> Result<Option<Frame>, FrameError> {
         let mut length = [0; 4];
         if self.reader.read(&mut length[..1]).await? == 0 {
             return Ok(None);
         }
 
-        tokio::select! {
-            biased;
-            frame = self.complete_frame(length) => frame.map(Some),
-            _ = deadline() => Err(FrameError::Timeout),
-        }
+        let frame = timeout(COMMAND_TIMEOUT, self.complete_frame(length))
+            .await
+            .map_err(|_| FrameError::Timeout)??;
+        Ok(Some(frame))
     }
 
     async fn complete_frame(&mut self, mut length: [u8; 4]) -> Result<Frame, FrameError> {
         read_exact(&mut self.reader, &mut length[1..]).await?;
-        let length = u32::from_be_bytes(length) as usize;
-        if length == 0 {
-            return Err(FrameError::EmptyFrame);
-        }
-        if length > self.role.limit() {
-            return Err(FrameError::TooLarge);
-        }
-
+        let length = frame_body_length(self.role, length)?;
         let mut kind = [0];
         read_exact(&mut self.reader, &mut kind).await?;
         self.role.check(length, kind[0])?;
@@ -170,19 +157,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 
     pub async fn next_envelope(&mut self) -> Result<Option<Envelope>, FrameError> {
-        self.next_envelope_with_deadline(|| sleep(COMMAND_TIMEOUT))
-            .await
-    }
-
-    pub async fn next_envelope_with_deadline<F: Future<Output = ()>>(
-        &mut self,
-        deadline: impl FnOnce() -> F,
-    ) -> Result<Option<Envelope>, FrameError> {
-        match self.next_frame_with_deadline(deadline).await? {
-            Some(Frame::Structured(payload)) => decode_envelope(&payload).map(Some),
-            Some(Frame::Render(_)) => Err(FrameError::WrongRole),
-            None => Ok(None),
-        }
+        as_envelope(self.next_frame().await?)
     }
 }
 
@@ -193,21 +168,49 @@ async fn read_render(
     let data_len = body_len.checked_sub(4).ok_or(FrameError::RenderHeader)?;
     let mut header_len = [0; 4];
     read_exact(reader, &mut header_len).await?;
-    let header_len = u32::from_be_bytes(header_len) as usize;
-    if header_len == 0 || header_len > RENDER_HEADER_LIMIT || header_len > data_len {
-        return Err(FrameError::RenderHeader);
-    }
-
+    let header_len = render_header_length(header_len, data_len)?;
     let mut bytes = vec![0; header_len];
     read_exact(reader, &mut bytes).await?;
-    preflight::render_header(&bytes)?;
-    let header = RenderHeader::decode(bytes.as_slice())?;
 
     let ansi_len = data_len - header_len;
-    check_render_header(&header, ansi_len)?;
+    let header = decode_render_header(&bytes, ansi_len)?;
     let mut ansi = vec![0; ansi_len];
     read_exact(reader, &mut ansi).await?;
     Ok(RenderFrame { header, ansi })
+}
+
+fn frame_body_length(role: FrameRole, bytes: [u8; 4]) -> Result<usize, FrameError> {
+    let length = u32::from_be_bytes(bytes) as usize;
+    if length == 0 {
+        return Err(FrameError::EmptyFrame);
+    }
+    if length > role.limit() {
+        return Err(FrameError::TooLarge);
+    }
+    Ok(length)
+}
+
+fn render_header_length(bytes: [u8; 4], data_len: usize) -> Result<usize, FrameError> {
+    let length = u32::from_be_bytes(bytes) as usize;
+    if length == 0 || length > RENDER_HEADER_LIMIT || length > data_len {
+        return Err(FrameError::RenderHeader);
+    }
+    Ok(length)
+}
+
+fn decode_render_header(bytes: &[u8], ansi_len: usize) -> Result<RenderHeader, FrameError> {
+    preflight::render_header(bytes)?;
+    let header = RenderHeader::decode(bytes)?;
+    check_render_header(&header, ansi_len)?;
+    Ok(header)
+}
+
+fn as_envelope(frame: Option<Frame>) -> Result<Option<Envelope>, FrameError> {
+    match frame {
+        Some(Frame::Structured(payload)) => decode_envelope(&payload).map(Some),
+        Some(Frame::Render(_)) => Err(FrameError::WrongRole),
+        None => Ok(None),
+    }
 }
 
 async fn read_exact(
@@ -293,15 +296,21 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     }
 
     async fn prefix(&mut self, length: usize, kind: u8) -> Result<(), FrameError> {
-        self.role.check(length, kind)?;
-        let length = u32::try_from(length).map_err(|_| FrameError::TooLarge)?;
-        let mut prefix = [kind; 5];
-        prefix[..4].copy_from_slice(&length.to_be_bytes());
-        self.writer.write_all(&prefix).await?;
+        self.writer
+            .write_all(&frame_prefix(self.role, length, kind)?)
+            .await?;
         Ok(())
     }
 }
 
 fn frame_length(payload: usize, overhead: usize) -> Result<usize, FrameError> {
     payload.checked_add(overhead).ok_or(FrameError::TooLarge)
+}
+
+fn frame_prefix(role: FrameRole, length: usize, kind: u8) -> Result<[u8; 5], FrameError> {
+    role.check(length, kind)?;
+    let length = u32::try_from(length).map_err(|_| FrameError::TooLarge)?;
+    let mut prefix = [kind; 5];
+    prefix[..4].copy_from_slice(&length.to_be_bytes());
+    Ok(prefix)
 }

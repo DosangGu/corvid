@@ -1,3 +1,6 @@
+#[cfg(feature = "compio")]
+pub use frame::compio::{CompioFrameReader, CompioFrameWriter};
+
 mod frame;
 #[cfg(target_os = "macos")]
 pub mod macos;
