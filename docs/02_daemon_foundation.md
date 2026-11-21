@@ -493,6 +493,37 @@ workspace lookup and inventory workers on Compio, including their reconnect
 deadlines. Agent Deck runs its slot presentation client on Compio, including
 refresh, reconnection, and request deadlines.
 
+### Linux workload qualification
+
+Build the default and experimental CLI from the same revision. The workload
+requires `protoc` and creates four real PTYs and eight private snapshot watches.
+
+```sh
+cargo build --locked --release -p corvid-tui --bin corvid --target-dir /tmp/corvid-tokio
+cargo build --locked --release -p corvid-tui --bin corvid --target-dir /tmp/corvid-compio \
+  --features compio-daemon,compio-probe,compio-tui
+python3 -B crates/corvid-tui/tests/compio_workload.py \
+  /tmp/corvid-tokio/release/corvid /tmp/corvid-compio/release/corvid
+```
+
+The report gives process CPU time and summed thread context switches for the
+daemon and the four attached clients. It includes p95 Ping round-trip and
+input-to-redraw latency. Both binaries run twice in reversed order. On hardware
+that exposes a readable Linux package energy counter, pass its `energy_uj` path
+as `--energy-counter` to report package joules for each phase.
+
+Two runs per backend on one Linux host with a 12-second idle phase produced
+these ranges. Package energy was unavailable on that host.
+
+| Metric | Tokio | Compio |
+|---|---:|---:|
+| Daemon CPU during idle | 0.13–0.14 s | 0.13–0.14 s |
+| Attached client CPU during idle | 0.03–0.04 s | 0.02 s |
+| Attached client context switches during idle | 3,619–3,625 | 964–967 |
+| Daemon CPU during 20,000 Pings | 0.22 s | 0.18 s |
+| Ping p95 | 17.14–17.32 µs | 16.65–16.72 µs |
+| Input-to-redraw p95 over 128 events | 16.29–16.43 ms | 16.78–16.79 ms |
+
 ## Verification
 
 ```sh
