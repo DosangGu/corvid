@@ -93,8 +93,13 @@ fn paint_tab_titles(platform_text: std::sync::Arc<dyn PlatformTextSystem>) -> an
                 .flex()
                 .gap(px(2.))
                 .children(["✳️ Claude Code", "🧑🏽‍💻 개발", "Plain tab"].map(|title| {
-                    let button = div().id(title).text_size(px(13.)).whitespace_nowrap();
+                    let button = div()
+                        .id(title)
+                        .flex_none()
+                        .text_size(px(13.))
+                        .whitespace_nowrap();
                     div()
+                        .max_w(px(90.))
                         .overflow_hidden()
                         .child(self.0.button(button, title.to_owned()))
                 }))
@@ -105,10 +110,11 @@ fn paint_tab_titles(platform_text: std::sync::Arc<dyn PlatformTextSystem>) -> an
     let window = app.open_window(size(px(240.), px(40.)), |_, cx| {
         cx.new(|_| TabTitles(tab_title::TitleRenderer::default()))
     })?;
-    // Draw twice to exercise the title's paint path with both new and reused
-    // layout state, including when the last tab is clipped by the viewport.
+    // Draw twice to exercise the paint path when the first title exceeds its
+    // tab width and the elements reuse their layout state.
     for _ in 0..2 {
         app.update_window(window.into(), |_, window, cx| {
+            window.refresh();
             let _ = window.draw(cx);
         })?;
     }
