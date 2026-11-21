@@ -4,13 +4,12 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use compio::io::{AsyncRead, AsyncWrite, util::Splittable};
 use compio::time::timeout;
-use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::{
     COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter, Frame, FrameError, FrameRole,
     ProtocolFault,
 };
 
-use crate::relay::bootstrap_reply;
+use crate::{connection::SocketRole, relay::bootstrap_reply};
 
 pub async fn compio_relay(runtime: &Path) -> Result<()> {
     relay(runtime, SocketRole::Control, FrameRole::StructuredOnly).await
@@ -69,8 +68,16 @@ async fn relay(runtime: &Path, socket: SocketRole, output: FrameRole) -> Result<
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn open(runtime: &Path, role: SocketRole) -> Result<compio::net::UnixStream> {
-    RuntimeDir::open(runtime)?.connect_compio(role).await
+    corvid_protocol::unix::RuntimeDir::open(runtime)?
+        .connect_compio(role)
+        .await
+}
+
+#[cfg(windows)]
+async fn open(runtime: &Path, role: SocketRole) -> Result<compio::fs::named_pipe::NamedPipeClient> {
+    role.connect_compio(runtime).await
 }
 
 async fn forward(
