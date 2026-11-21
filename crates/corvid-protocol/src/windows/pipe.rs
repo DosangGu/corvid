@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 #[cfg(feature = "tokio")]
+use corvid_async::time::sleep;
+#[cfg(feature = "tokio")]
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
-#[cfg(feature = "tokio")]
-use tokio::time::sleep;
 use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
 #[cfg(feature = "tokio")]
 use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED};

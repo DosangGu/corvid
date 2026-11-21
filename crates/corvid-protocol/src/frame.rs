@@ -2,12 +2,12 @@ use std::io;
 #[cfg(feature = "tokio")]
 use std::io::ErrorKind;
 
+#[cfg(feature = "tokio")]
+use corvid_async::time::timeout;
 use prost::Message;
 use thiserror::Error;
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-#[cfg(feature = "tokio")]
-use tokio::time::timeout;
 
 use crate::preflight;
 #[cfg(any(feature = "tokio", feature = "compio"))]

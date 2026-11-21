@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::{env, fs};
 
+use corvid_async::time::sleep;
 use tokio::process::Child;
-use tokio::time::sleep;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 
 use super::*;

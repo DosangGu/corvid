@@ -2,6 +2,7 @@
 
 pub mod mpsc;
 pub mod oneshot;
+pub mod time;
 pub mod watch;
 
 pub use async_lock::{Mutex, Semaphore, SemaphoreGuard};

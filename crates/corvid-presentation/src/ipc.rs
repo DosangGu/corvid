@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 #[cfg(feature = "compio-endpoints")]
 use compio::time::{sleep, sleep_until, timeout};
+#[cfg(not(feature = "compio-endpoints"))]
+use corvid_async::time::{MissedTickBehavior, interval, sleep, timeout};
 use corvid_async::{mpsc, oneshot, watch};
 use corvid_companion::{PresentationAddress, PresentationClient};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{GetPresentationSlots, LocalActivation, PresentedBinding};
-#[cfg(not(feature = "compio-endpoints"))]
-use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 use uuid::Uuid;
 
 use crate::model::Snapshot;

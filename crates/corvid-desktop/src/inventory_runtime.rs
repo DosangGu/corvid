@@ -6,20 +6,20 @@ use anyhow::{Context, Result};
 #[cfg(feature = "compio-endpoints")]
 pub(crate) use compio::time::{sleep, timeout};
 #[cfg(not(feature = "compio-endpoints"))]
-pub(crate) use tokio::time::{sleep, sleep_until, timeout, timeout_at};
+pub(crate) use corvid_async::time::{sleep, sleep_until, timeout, timeout_at};
 
 #[cfg(feature = "compio-endpoints")]
-pub(crate) async fn sleep_until(deadline: tokio::time::Instant) {
-    compio::time::sleep_until(deadline.into_std()).await;
+pub(crate) async fn sleep_until(deadline: corvid_async::time::Instant) {
+    compio::time::sleep_until(deadline).await;
 }
 
 #[cfg(feature = "compio-endpoints")]
 pub(crate) async fn timeout_at<F: Future>(
-    deadline: tokio::time::Instant,
+    deadline: corvid_async::time::Instant,
     future: F,
 ) -> Result<F::Output, compio::time::Elapsed> {
     compio::time::timeout(
-        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        deadline.saturating_duration_since(corvid_async::time::Instant::now()),
         future,
     )
     .await

@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use corvid_async::time::Instant;
 use corvid_async::{oneshot, watch};
 use corvid_client::{ControlEndpoint, SshRetry, daemon_missing, runtime_path};
-use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::inventory_runtime::{self, sleep, sleep_until, timeout, timeout_at};

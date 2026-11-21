@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corvid_async::oneshot;
+use corvid_async::time::{sleep, timeout};
 use corvid_client::ControlEndpoint;
 use corvid_companion::monitor::{CAPABILITY, Scope};
 use corvid_companion::{
@@ -16,7 +17,6 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, ProtocolFault, accept_hello};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 #[cfg(all(windows, feature = "compio-endpoints"))]

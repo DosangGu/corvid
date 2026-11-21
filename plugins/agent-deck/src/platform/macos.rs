@@ -5,12 +5,12 @@ use corvid_agent_deck_core::native::{
 };
 use corvid_agent_deck_core::notifications::Notice;
 use corvid_async::oneshot;
+use corvid_async::time::timeout;
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 struct Pending {

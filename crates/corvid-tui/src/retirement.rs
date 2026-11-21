@@ -83,7 +83,7 @@ async fn retry_pending(installation: &Installation, root: &Path, executable: &Pa
     }
     let mut delay = 1;
     loop {
-        tokio::time::sleep(Duration::from_secs(delay)).await;
+        corvid_async::time::sleep(Duration::from_secs(delay)).await;
         if !is_selected(installation, executable)? {
             break;
         }

@@ -218,7 +218,7 @@ async fn wait_for_reconnect(
                     return Ok::<_, anyhow::Error>(());
                 }
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            corvid_async::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await

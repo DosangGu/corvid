@@ -44,6 +44,7 @@ corvid-agent-deck = { path = "plugins/agent-deck", version = "=0.4.2", default-f
 corvid-agent-deck-core = { path = "crates/corvid-agent-deck-core", version = "=0.4.2" }
 anyhow = "1.0"
 async-channel = "=2.5.0"
+async-io = "=2.6.0"
 async-lock = "=3.5.0"
 async-process = "=2.5.0"
 base64 = "=0.23.1"

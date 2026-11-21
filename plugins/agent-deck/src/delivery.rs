@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Result, ensure};
-use tokio::time::{Instant, sleep};
+use corvid_async::time::{Instant, sleep};
 
 use corvid_agent_deck_core::notifications::{Key, Notice};
 

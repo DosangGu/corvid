@@ -15,7 +15,6 @@ mod store;
 
 #[cfg(windows)]
 pub use doctor::{Check, CheckStatus, diagnose};
-#[cfg(feature = "compio-endpoints")]
 pub use ipc::run_native;
 pub use ipc::{
     PRESENTATION_ATTENTION_CAPABILITY, PRESENTATION_ATTENTION_LIMIT, PRESENTATION_CAPABILITY,

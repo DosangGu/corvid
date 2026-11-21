@@ -14,6 +14,7 @@ compio = ["dep:compio"]
 tokio = ["dep:tokio"]
 
 [dependencies]
+corvid-async.workspace = true
 prost.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true, features = ["io-util", "time"] }
@@ -42,7 +43,6 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-corvid-async.workspace = true
 anyhow.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }

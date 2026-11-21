@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use corvid_async::time::{Instant, timeout};
 use corvid_async::{mpsc, oneshot, watch};
 #[cfg(windows)]
 use corvid_client::WslDistribution;
@@ -36,7 +37,6 @@ use corvid_protocol::{
     TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, WRITER_RESUME_CAPABILITY,
     decode_envelope,
 };
-use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 use vt100::{Parser, Screen};
 
@@ -1194,7 +1194,7 @@ async fn run_reconnecting(
                     biased;
                     result = &mut attempt => result,
                     _ = &mut ready => attempt.await,
-                    _ = tokio::time::sleep_until(retry.deadline()) => {
+                    _ = corvid_async::time::sleep_until(retry.deadline()) => {
                         Err(SshRetry::exhausted().into())
                     }
                 }
@@ -1230,11 +1230,12 @@ async fn run_reconnecting(
                 continue;
             }
             let snapshot = match &retry {
-                Some(retry) => {
-                    tokio::time::timeout_at(retry.deadline(), endpoint.view_snapshot(host, epoch))
-                        .await
-                        .map_err(|_| SshRetry::exhausted())??
-                }
+                Some(retry) => corvid_async::time::timeout_at(
+                    retry.deadline(),
+                    endpoint.view_snapshot(host, epoch),
+                )
+                .await
+                .map_err(|_| SshRetry::exhausted())??,
                 None => endpoint.view_snapshot(host, epoch).await?,
             };
             let inventory = Arc::new(Inventory::read(&snapshot));
@@ -1299,10 +1300,10 @@ async fn run_reconnecting(
             let Some(next) = retry.next_attempt(&error) else {
                 return Err(SshRetry::exhausted().into());
             };
-            tokio::time::sleep_until(next).await;
+            corvid_async::time::sleep_until(next).await;
             ensure!(Instant::now() < retry.deadline(), SshRetry::exhausted());
         } else {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            corvid_async::time::sleep(Duration::from_millis(250)).await;
         }
     }
 }
@@ -1804,7 +1805,7 @@ async fn run(
                     focus_requests.clone(),
                 )
                 .await;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                corvid_async::time::sleep(Duration::from_secs(1)).await;
             }
         }
     });
@@ -1839,7 +1840,7 @@ async fn run(
         let _ = attached.send(());
     }
     let mut inventory = InventoryWatch::start(endpoint.clone(), host, epoch, Arc::clone(shared))?;
-    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    let mut tick = corvid_async::time::interval(Duration::from_millis(100));
     let keep_connection = loop {
         corvid_async::select! {
             close = &mut *closing => break close.unwrap_or(false),

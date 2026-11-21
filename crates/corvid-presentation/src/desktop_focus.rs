@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+use corvid_async::time::timeout;
 use corvid_async::{mpsc, oneshot};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{DesktopAgentFocused, FocusDesktopAgent, PresentedRunKey};
@@ -9,7 +10,6 @@ use corvid_protocol::{
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::task::JoinSet;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 const CAPABILITY: &str = "desktop_focus.v1";

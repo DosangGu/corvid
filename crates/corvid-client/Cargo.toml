@@ -24,7 +24,6 @@ corvid-protocol = { workspace = true, features = ["compio"] }
 serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 uuid.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]

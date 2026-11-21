@@ -164,7 +164,7 @@ async fn browse(
 ) {
     while pending.changed().await.is_ok() {
         // Let a burst of edits settle before sending the latest prefix.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        corvid_async::time::sleep(Duration::from_millis(150)).await;
         let (revision, query) = pending.borrow_and_update().clone();
         let result = corvid_async::select! {
             _ = updates.closed() => return,
