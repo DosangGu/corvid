@@ -8,7 +8,12 @@ repository.workspace = true
 description = "PTY and session daemon for the Corvid terminal multiplexer"
 publish = ["crates-io"]
 
+[features]
+compio = ["corvid-protocol/compio", "dep:compio", "dep:futures-util"]
+
 [dependencies]
+compio = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 anyhow.workspace = true
 corvid-update.workspace = true
 corvid-core.workspace = true

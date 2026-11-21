@@ -13,6 +13,7 @@ name = "corvid"
 path = "src/main.rs"
 
 [features]
+compio-daemon = ["corvid-daemon/compio"]
 compio-probe = ["corvid-client/compio", "dep:compio"]
 
 [dependencies]

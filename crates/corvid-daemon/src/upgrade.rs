@@ -3,22 +3,18 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use corvid_protocol::unix::BoundSocket;
 use corvid_protocol::upgrade::encode_state_path;
-#[cfg(windows)]
-use corvid_protocol::windows::PipeListener;
 use corvid_protocol::wire::DaemonUpgradeReady;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{
-    COMMAND_TIMEOUT, DAEMON_HANDOFF_CAPABILITY, DAEMON_UPGRADE_CAPABILITY, FrameWriter, PeerRole,
-    ProtocolFault, Session,
+    COMMAND_TIMEOUT, DAEMON_HANDOFF_CAPABILITY, DAEMON_UPGRADE_CAPABILITY, PeerRole, ProtocolFault,
+    Session,
 };
 use tokio::time::{sleep, timeout};
 
 use crate::control::handshake;
 use crate::identity::Identity;
-use crate::platform::{Stream, WriteHalf};
+use crate::platform::{FrameWriter, Listener, Stream, WriteHalf};
 
 pub(crate) struct Request {
     session: Session,
@@ -28,7 +24,7 @@ pub(crate) struct Request {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) async fn listen(socket: Option<&BoundSocket<'_>>, identity: &Identity) -> Request {
+pub(crate) async fn listen(socket: Option<&Listener<'_>>, identity: &Identity) -> Request {
     let Some(socket) = socket else {
         return pending().await;
     };
@@ -48,15 +44,12 @@ pub(crate) async fn listen(socket: Option<&BoundSocket<'_>>, identity: &Identity
 }
 
 #[cfg(windows)]
-pub(crate) async fn listen(
-    socket: Option<&tokio::sync::Mutex<PipeListener>>,
-    identity: &Identity,
-) -> Request {
+pub(crate) async fn listen(socket: Option<&Listener>, identity: &Identity) -> Request {
     let Some(socket) = socket else {
         return pending().await;
     };
     loop {
-        match socket.lock().await.accept().await {
+        match socket.accept().await {
             Ok(stream) => {
                 if let Ok(Ok(Some(request))) =
                     timeout(COMMAND_TIMEOUT, read(stream, identity)).await

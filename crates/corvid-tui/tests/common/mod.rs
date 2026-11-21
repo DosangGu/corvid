@@ -32,7 +32,7 @@ pub async fn wait_for_daemon(mut daemon: Child, runtime: &Path) -> Child {
                 "daemon exited during startup"
             );
             if let Ok(directory) = RuntimeDir::open(runtime)
-                && directory.connect(SocketRole::Control).await.is_ok()
+                && corvid_client::ping(runtime).await.is_ok()
                 && directory.connect(SocketRole::Client).await.is_ok()
             {
                 break;

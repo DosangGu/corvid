@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::platform::{Stream, WriteHalf, decode_os_string};
+use crate::platform::{self, FrameWriter, Stream, WriteHalf, decode_os_string};
 use anyhow::Result;
 use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, Location};
@@ -16,7 +16,7 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
-    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, FrameWriter,
+    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
     TERMINAL_HISTORY_CAPABILITY, WRITER_RESUME_CAPABILITY,
@@ -734,7 +734,7 @@ impl TuiConnection<'_> {
             header,
             ansi: render.ansi,
         };
-        timeout(COMMAND_TIMEOUT, self.writer.render(&frame)).await??;
+        timeout(COMMAND_TIMEOUT, platform::render(self.writer, frame)).await??;
         Ok(())
     }
 
@@ -789,7 +789,7 @@ impl TuiConnection<'_> {
         };
         timeout(
             COMMAND_TIMEOUT,
-            self.writer.render(&RenderFrame { header, ansi }),
+            platform::render(self.writer, RenderFrame { header, ansi }),
         )
         .await??;
         Ok(())

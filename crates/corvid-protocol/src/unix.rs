@@ -386,10 +386,18 @@ impl Instance<'_> {
     pub async fn bind_compio(&self, role: SocketRole) -> Result<CompioBoundSocket<'_>> {
         let socket_path = self.runtime.socket_path(role)?;
         remove_stale(&socket_path, self.runtime.uid, async {
-            compio::time::timeout(
-                SOCKET_PROBE_TIMEOUT,
-                compio::net::UnixStream::connect(&socket_path),
-            )
+            compio::time::timeout(SOCKET_PROBE_TIMEOUT, async {
+                loop {
+                    // A pending completion-based accept can keep a socket alive
+                    // briefly after its previous daemon exits. Only remove it
+                    // once the kernel confirms it no longer takes connections.
+                    match compio::net::UnixStream::connect(&socket_path).await {
+                        Ok(stream) => drop(stream),
+                        Err(error) => return Err::<(), _>(error),
+                    }
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
             .await
             .map_err(|_| ())
         })

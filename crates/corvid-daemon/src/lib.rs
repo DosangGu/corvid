@@ -4,6 +4,7 @@ mod agents;
 mod collector;
 mod control;
 mod directories;
+mod executor;
 mod handoff;
 mod history;
 mod hook_data;
@@ -36,13 +37,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::executor::PeerTasks;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::{Context, Result};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::COMMAND_TIMEOUT;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use tokio::task::JoinSet;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::collector::HookEnvironment;
@@ -62,6 +63,8 @@ pub use provider::windows_hooks::observer_settings;
 pub use windows::run;
 #[cfg(windows)]
 pub use windows::run_with_options;
+#[cfg(all(windows, feature = "compio"))]
+use windows::serve_daemon;
 
 /// Read an existing daemon identity without creating state.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -82,17 +85,30 @@ pub async fn run(
     autostarted: bool,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
+    #[cfg(feature = "compio")]
+    return executor::run(runtime_path, state_path, autostarted, shutdown).await;
+    #[cfg(not(feature = "compio"))]
+    serve_daemon(runtime_path, state_path, autostarted, shutdown).await
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn serve_daemon(
+    runtime_path: &Path,
+    state_path: &Path,
+    autostarted: bool,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
     let runtime = RuntimeDir::create(runtime_path)?;
     let instance = runtime.lock_instance()?;
     let state = RuntimeDir::create_all(state_path)?;
     let identity = Arc::new(Identity::load(&state)?);
     let lock = state.lock_storage()?;
     let (metadata, updates, saver) = metadata::start(state, lock)?;
-    let control_socket = instance.bind(SocketRole::Control).await?;
-    let client_socket = instance.bind(SocketRole::Client).await?;
-    let collector_socket = instance.bind(SocketRole::Collector).await?;
+    let control_socket = platform::bind(&instance, SocketRole::Control).await?;
+    let client_socket = platform::bind(&instance, SocketRole::Client).await?;
+    let collector_socket = platform::bind(&instance, SocketRole::Collector).await?;
     let upgrade_socket = if autostarted {
-        Some(instance.bind(SocketRole::Upgrade).await?)
+        Some(platform::bind(&instance, SocketRole::Upgrade).await?)
     } else {
         None
     };
@@ -111,14 +127,20 @@ pub async fn run(
     if autostarted {
         handoff::recover(runtime.path(), &identity, &workspaces).await?;
     }
-    let mut controls = JoinSet::new();
-    let mut clients = JoinSet::new();
-    let mut collectors = JoinSet::new();
+    let mut controls = PeerTasks::new();
+    let mut clients = PeerTasks::new();
+    let mut collectors = PeerTasks::new();
     let mut agent_clock = tokio::time::interval(Duration::from_millis(250));
     agent_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let incoming_upgrade = upgrade::listen(upgrade_socket.as_ref(), &identity);
     tokio::pin!(incoming_upgrade);
     tokio::pin!(shutdown);
+
+    // Keep each accept alive across unrelated events. Dropping a completion
+    // operation can discard the peer it has already accepted.
+    let mut incoming_control = std::pin::pin!(control_socket.accept());
+    let mut incoming_client = std::pin::pin!(client_socket.accept());
+    let mut incoming_collector = std::pin::pin!(collector_socket.accept());
 
     loop {
         tokio::select! {
@@ -138,34 +160,43 @@ pub async fn run(
                 incoming_upgrade.set(upgrade::listen(upgrade_socket.as_ref(), &identity));
             }
             _ = agent_clock.tick() => workspaces.tick_agents().await,
-            peer = collector_socket.accept() => match peer {
-                Ok(Some(stream)) if collectors.len() < MAX_COLLECTOR_CONNECTIONS => {
-                    let identity = Arc::clone(&identity);
-                    let workspaces = Arc::clone(&workspaces);
-                    collectors.spawn(async move { collector::serve(stream, &identity, &workspaces).await });
+            peer = &mut incoming_collector => {
+                incoming_collector.set(collector_socket.accept());
+                match peer {
+                    Ok(Some(stream)) if collectors.len() < MAX_COLLECTOR_CONNECTIONS => {
+                        let identity = Arc::clone(&identity);
+                        let workspaces = Arc::clone(&workspaces);
+                        collectors.spawn(async move { collector::serve(stream, &identity, &workspaces).await });
+                    }
+                    Ok(Some(_)) => workspaces.collector.admission_refused(),
+                    Ok(None) => {}
+                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
                 }
-                Ok(Some(_)) => workspaces.collector.admission_refused(),
-                Ok(None) => {}
-                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             },
-            peer = control_socket.accept() => match peer {
-                Ok(Some(stream)) if controls.len() < MAX_CONTROL_CONNECTIONS => {
-                    let identity = Arc::clone(&identity);
-                    let metadata = metadata.clone();
-                    let workspaces = Arc::clone(&workspaces);
-                    controls.spawn(async move { control::serve(stream, &identity, &metadata, &workspaces).await });
+            peer = &mut incoming_control => {
+                incoming_control.set(control_socket.accept());
+                match peer {
+                    Ok(Some(stream)) if controls.len() < MAX_CONTROL_CONNECTIONS => {
+                        let identity = Arc::clone(&identity);
+                        let metadata = metadata.clone();
+                        let workspaces = Arc::clone(&workspaces);
+                        controls.spawn(async move { control::serve(stream, &identity, &metadata, &workspaces).await });
+                    }
+                    Ok(_) => {}
+                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
                 }
-                Ok(_) => {}
-                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             },
-            peer = client_socket.accept() => match peer {
-                Ok(Some(stream)) if clients.len() < MAX_TUI_CONNECTIONS => {
-                    let identity = Arc::clone(&identity);
-                    let workspaces = Arc::clone(&workspaces);
-                    clients.spawn(async move { tui::serve(stream, &identity, &workspaces).await });
+            peer = &mut incoming_client => {
+                incoming_client.set(client_socket.accept());
+                match peer {
+                    Ok(Some(stream)) if clients.len() < MAX_TUI_CONNECTIONS => {
+                        let identity = Arc::clone(&identity);
+                        let workspaces = Arc::clone(&workspaces);
+                        clients.spawn(async move { tui::serve(stream, &identity, &workspaces).await });
+                    }
+                    Ok(_) => {}
+                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
                 }
-                Ok(_) => {}
-                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             }
         }
     }
