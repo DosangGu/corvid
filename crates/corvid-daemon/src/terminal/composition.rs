@@ -17,6 +17,7 @@ pub(super) struct Composition {
     pub(super) split: bool,
     pub(super) tabs: Vec<TabLabel>,
     workspace: Option<WorkspaceLabel>,
+    tab_mode: bool,
 }
 
 pub(super) struct TabLabel {
@@ -25,6 +26,7 @@ pub(super) struct TabLabel {
     number: String,
     title: String,
     active: bool,
+    selected: bool,
 }
 
 struct WorkspaceLabel {
@@ -41,23 +43,40 @@ pub(super) struct HeaderMotion {
 }
 
 impl TabLabel {
-    fn title_width(&self) -> usize {
-        let decoration = self.number.len() + usize::from(self.active) * 2 + 1;
-        usize::from(self.rect.width).saturating_sub(decoration)
+    fn decoration_width(&self) -> usize {
+        self.number.len() + usize::from(self.active) * 2 + 1
     }
 
-    fn paint(&self, ansi: &mut String, motion: &TitleMotion) {
-        let (color, open, close) = if self.active {
-            ("\x1b[0;1;36m", "[", "]")
+    fn title_only(&self) -> bool {
+        self.selected
+            && !self.title.is_empty()
+            && usize::from(self.rect.width) <= self.decoration_width()
+    }
+
+    fn title_width(&self) -> usize {
+        let width = usize::from(self.rect.width);
+        if self.title_only() {
+            return width;
+        }
+        width.saturating_sub(self.decoration_width())
+    }
+
+    fn paint(&self, ansi: &mut String, motion: Option<&TitleMotion>) {
+        let (open, close) = if self.active { ("[", "]") } else { ("", "") };
+        let color = if self.selected {
+            "\x1b[0;1;7m"
+        } else if self.active {
+            "\x1b[0;1;36m"
         } else {
-            ("\x1b[0m", "", "")
+            "\x1b[0m"
         };
-        let title = if self.active {
-            motion.visible().to_owned()
-        } else {
-            window(&self.title, self.title_width(), 0)
-        };
-        let label = if self.title_width() == 0 || self.title.is_empty() {
+        let title = motion.map_or_else(
+            || window(&self.title, self.title_width(), 0),
+            |motion| motion.visible().to_owned(),
+        );
+        let label = if self.title_only() {
+            title
+        } else if self.title_width() == 0 || self.title.is_empty() {
             format!("{open}{}{close}", self.number)
         } else if self.active {
             let padding = self.title_width().saturating_sub(title.width());
@@ -75,7 +94,12 @@ impl TabLabel {
 }
 
 impl Composition {
-    pub(super) fn new(outer: Viewport, layout: &Layout, location: Location) -> Self {
+    pub(super) fn new(
+        outer: Viewport,
+        layout: &Layout,
+        location: Location,
+        selected_tab: Option<Uuid>,
+    ) -> Self {
         let fit = outer.fit_screen();
         let top = u16::from(fit.rows.get() > 2);
         let usable = Rect {
@@ -94,13 +118,14 @@ impl Composition {
         if !split {
             panes = vec![(location.pane, usable)];
         }
-        let (workspace, tabs) = top_row(layout, location, fit.cols.get());
+        let (workspace, tabs) = top_row(layout, location, fit.cols.get(), selected_tab);
         Self {
             outer: fit,
             panes,
             split,
             tabs,
             workspace,
+            tab_mode: selected_tab.is_some(),
         }
     }
 
@@ -126,8 +151,15 @@ impl Composition {
         Viewport::new(rect.width, rect.height).expect("pane has a usable area")
     }
 
+    fn animated_tab(&self) -> Option<&TabLabel> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.selected)
+            .or_else(|| self.tabs.iter().find(|tab| tab.active))
+    }
+
     pub(super) fn update_header(&self, motion: &mut HeaderMotion, now: Instant) -> bool {
-        if self.panes[0].1.y == 0 {
+        if self.panes[0].1.y == 0 && !self.tab_mode {
             return false;
         }
         let workspace = self
@@ -135,16 +167,14 @@ impl Composition {
             .as_ref()
             .map(|name| (name.id, name.title.as_str(), name.width));
         let tab = self
-            .tabs
-            .iter()
-            .find(|tab| tab.active)
+            .animated_tab()
             .map(|tab| (tab.id, tab.title.as_str(), tab.title_width()));
         let workspace_changed = motion.workspace.update(workspace, now);
         motion.tab.update(tab, now) || workspace_changed
     }
 
     fn paint_header(&self, ansi: &mut String, motion: &HeaderMotion) {
-        if self.panes[0].1.y == 0 {
+        if self.panes[0].1.y == 0 && !self.tab_mode {
             return;
         }
         ansi.push_str("\x1b[1;1H\x1b[0m\x1b[2K");
@@ -159,8 +189,12 @@ impl Composition {
         } else {
             0
         };
+        let animated = self.animated_tab().map(|tab| tab.id);
         for tab in &self.tabs {
-            tab.paint(ansi, &motion.tab);
+            tab.paint(ansi, (Some(tab.id) == animated).then_some(&motion.tab));
+        }
+        if self.tab_mode {
+            return;
         }
         let hint = "Ctrl+] commands";
         let start = self.outer.cols.get().saturating_sub(hint.len() as u16);
@@ -192,7 +226,9 @@ impl Composition {
         mut screen: impl FnMut(Uuid) -> Option<std::sync::Arc<Screen>>,
     ) -> String {
         let mut ansi = String::from("\x1b[?6l\x1b[r\x1b[?7l\x1b[?25l\x1b[0m\x1b[2J");
-        self.paint_header(&mut ansi, header);
+        if self.panes[0].1.y != 0 {
+            self.paint_header(&mut ansi, header);
+        }
         let mut input = None;
         for (ordinal, &(id, region)) in self.panes.iter().enumerate() {
             let body = self.body(region);
@@ -239,7 +275,7 @@ impl Composition {
                     } else {
                         '>'
                     };
-                    let show = if !screen.hide_cursor() && selected.is_none() {
+                    let show = if !screen.hide_cursor() && selected.is_none() && !self.tab_mode {
                         'h'
                     } else {
                         'l'
@@ -251,6 +287,9 @@ impl Composition {
                     ));
                 }
             }
+        }
+        if self.panes[0].1.y == 0 && self.tab_mode {
+            self.paint_header(&mut ansi, header);
         }
         ansi.push_str("\x1b[0m\x1b[?7h\x1b[?2004h\x1b[?1000h\x1b[?1006h");
         if let Some(input) = input {
@@ -264,6 +303,7 @@ fn top_row(
     layout: &Layout,
     location: Location,
     width: u16,
+    selected_tab: Option<Uuid>,
 ) -> (Option<WorkspaceLabel>, Vec<TabLabel>) {
     let Some(workspace) = layout
         .workspaces
@@ -272,7 +312,12 @@ fn top_row(
     else {
         return (None, Vec::new());
     };
-    let limit = width - if width >= 48 { 16 } else { 0 };
+    let limit = width
+        - if width >= 48 && selected_tab.is_none() {
+            16
+        } else {
+            0
+        };
     let workspace_label = (width >= 16).then(|| {
         let budget = usize::from(width / 3);
         let host = if width >= 72 {
@@ -315,13 +360,18 @@ fn top_row(
                 number,
                 title,
                 active,
+                selected: Some(tab.id) == selected_tab,
             }
         })
         .collect();
-    let active = tabs.iter().position(|tab| tab.active).unwrap_or(0);
-    let mut first = active;
+    let anchor = tabs
+        .iter()
+        .position(|tab| tab.selected)
+        .or_else(|| tabs.iter().position(|tab| tab.active))
+        .unwrap_or(0);
+    let mut first = anchor;
     let mut remaining =
-        (limit - start).saturating_sub(tabs.get(active).map_or(0, |tab| tab.rect.width));
+        (limit - start).saturating_sub(tabs.get(anchor).map_or(0, |tab| tab.rect.width));
     while first > 0 {
         let required = tabs[first - 1].rect.width + 2;
         if remaining < required {
@@ -449,7 +499,7 @@ mod tests {
         layout.workspaces[0].label = "workspace-review-WEST".into();
         layout.workspaces[0].tabs[0].label = "shared-prefix-한글-TAIL".into();
         layout.add_tab(location.workspace, "Run".into()).unwrap();
-        let view = Composition::new(outer, &layout, location);
+        let view = Composition::new(outer, &layout, location, None);
         let start = Instant::now();
         let mut motion = HeaderMotion::default();
         assert!(view.update_header(&mut motion, start));

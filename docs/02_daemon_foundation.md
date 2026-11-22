@@ -117,8 +117,9 @@ A click in the layout selects the pane or tab under the pointer. A terminal
 application that enables mouse reporting can receive pane-relative clicks.
 Narrow terminals keep the active terminal visible.
 Long workspace names and active tab titles scroll back and forth inside their
-fixed columns, pausing at each end. The selected row in the workspace and tab
-pickers does the same. Tab numbers and click targets stay in place.
+fixed columns, pausing at each end. The highlighted title in tab mode and the
+selected row in the workspace picker do the same. Tab numbers and click targets
+stay in place during animation.
 
 ![TUI with three panes and pane selection](images/workspace-navigation/tui.png)
 
@@ -143,11 +144,18 @@ arrow keys to move, Enter to execute, or Esc to cancel.
 | Keys after Ctrl-] | Action |
 | --- | --- |
 | `w` | Filter and switch workspaces. Return to the last available pane in the selected workspace. |
-| `t` | Filter and select tabs. Press Tab to reach **New tab…** or **Close selected tab…**. |
+| `t` | Browse the top tab bar. Use the arrow keys or `h`/`l` to move the highlight, Enter to focus, `n` to open a new tab, `x` to close the highlighted tab, or Esc to cancel. |
 | `p` | Select a pane on the layout using the arrow keys. Press Enter to focus, `r` to split right, `d` to split down, or `x` to confirm ending the selected pane. |
 | Arrow keys | Focus a neighboring pane directly. |
 | `[` / `]` | Previous or next tab. |
 | `d` | Detach and keep terminals running. |
+
+Tab mode starts with the current tab highlighted. Navigating keeps terminal
+focus on the current pane until you press Enter. Pressing `n` opens a tab and
+focuses its shell. Pressing `x` immediately closes the highlighted tab and all
+of its panes. Both commands return to terminal input when a pane is available.
+
+![TUI tab bar with Tests highlighted while Editor stays focused](images/workspace-navigation/tui-tab-picker.png)
 
 The selectors overlay the layout without resizing the active PTY. Only pane
 writers resize their own terminals. The previous split aliases `%` and `"`
@@ -613,8 +621,8 @@ Retained terminal hosts report their latest title again after daemon replacement
 Press Ctrl-] then `.` to rename the current tab. Enter saves, Escape cancels,
 Ctrl-U clears, and saving an empty name restores automatic naming. The editor
 consumes input and bracketed paste without sending it to the child process.
-Split tabs show the active pane title beside the tab strip. The tab picker
-updates names while open.
+Split tabs show the active pane title beside the tab strip. Tab titles continue
+to update in tab mode.
 Clients negotiate `view_titles.v1`; `RenameView` requires the current view
 revision and writer ownership. A rename preserves the input route and PTY.
 

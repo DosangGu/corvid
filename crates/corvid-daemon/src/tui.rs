@@ -547,26 +547,9 @@ impl TuiConnection<'_> {
                         .await?;
                 }
             }
-            Event::Close(target, reopen_tabs) => {
-                let route = self.active.route;
-                let old_workspace = self.active.location.workspace;
+            Event::Close(target) => {
                 if self.close(target, None, true).await? {
                     return Ok(true);
-                }
-                if reopen_tabs
-                    && self.active.route != route
-                    && self.active.location.workspace == old_workspace
-                {
-                    self.active
-                        .terminal
-                        .action(
-                            self.active.route.client_id,
-                            None,
-                            Action::ReopenTabs {
-                                route: self.active.route,
-                            },
-                        )
-                        .await?;
                 }
             }
             Event::PairController => self.pair(None).await?,
