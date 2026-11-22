@@ -1,21 +1,16 @@
 [package]
-name = "corvid-agent-deck"
+name = "corvid-agent-deck-ui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 repository.workspace = true
 description = "Agent activity and focus controls for Corvid"
-publish = ["crates-io"]
-
-[features]
-default = ["ui"]
-ui = ["dep:gpui", "dep:x11rb", "dep:image", "dep:windows", "dep:raw-window-handle"]
+publish.workspace = true
 
 [[bin]]
 name = "corvid-agent-deck"
 path = "src/main.rs"
-required-features = ["ui"]
 
 [dependencies]
 compio.workspace = true
@@ -23,6 +18,7 @@ corvid-async.workspace = true
 async-process.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+corvid-agent-deck.workspace = true
 corvid-agent-deck-core.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
@@ -32,22 +28,19 @@ corvid-update.workspace = true
 uuid.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-semver.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-nix.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc.workspace = true
-image = { workspace = true, optional = true, features = ["png"] }
-gpui = { workspace = true, optional = true, features = ["x11"] }
-x11rb = { workspace = true, optional = true }
+image = { workspace = true, features = ["png"] }
+gpui = { workspace = true }
+gpui_platform = { workspace = true, features = ["x11"] }
+x11rb = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-gpui = { workspace = true, optional = true, features = ["windows-manifest"] }
-raw-window-handle = { workspace = true, optional = true }
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+raw-window-handle = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading"] }
-windows = { workspace = true, optional = true, features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_WinRT"] }
+windows = { workspace = true, features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_WinRT"] }
 
 [build-dependencies]
 cc.workspace = true
@@ -70,5 +63,6 @@ workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile.workspace = true
-gpui = { workspace = true, optional = true, features = ["font-kit"] }
-raw-window-handle = { workspace = true, optional = true }
+gpui = { workspace = true }
+gpui_platform = { workspace = true, features = ["font-kit"] }
+raw-window-handle = { workspace = true }

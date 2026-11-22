@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/corvid-agent-deck",
     "crates/corvid-agent-deck-core",
     "crates/corvid-async",
     "crates/corvid-client",
@@ -39,7 +40,7 @@ publish = false
 
 [workspace.dependencies]
 # Keep the registry versions of workspace crates in sync with the release version.
-corvid-agent-deck = { path = "plugins/agent-deck", version = "=0.4.3", default-features = false }
+corvid-agent-deck = { path = "crates/corvid-agent-deck", version = "=0.4.3" }
 corvid-agent-deck-core = { path = "crates/corvid-agent-deck-core", version = "=0.4.3" }
 anyhow = "1.0"
 async-channel = "=2.5.0"
@@ -67,11 +68,12 @@ futures-channel = "=0.3.34"
 futures-lite = "=2.6.1"
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await-macro"] }
 glob = "0.3"
-gpui = { version = "=0.2.2", default-features = false }
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4", default-features = false }
 hex = "=0.4.3"
 icu_properties = "=2.4.0"
 image = { version = "0.25", default-features = false }
-libc = "=0.2.189"
+libc = "=0.2.191"
 nix = { version = "0.31.3", default-features = false }
 portable-pty = "=0.9.0"
 prost = "=0.14.4"

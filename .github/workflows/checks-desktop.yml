@@ -22,6 +22,7 @@ on:
       - 'deploy/test_macos_dock_update.py'
       - 'crates/corvid-client/**'
       - 'crates/corvid-companion/**'
+      - 'crates/corvid-agent-deck/**'
       - 'plugins/agent-deck/**'
       - 'crates/corvid-agent-deck-core/**'
       - 'crates/corvid-presentation/**'
@@ -106,7 +107,7 @@ jobs:
             target/debug
           key: checks-desktop-fonts-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/checks-desktop.yml', 'Cargo.lock') }}
       - name: Build Desktop and Agent Deck
-        run: cargo build --locked -p corvid-desktop -p corvid-agent-deck
+        run: cargo build --locked -p corvid-desktop -p corvid-agent-deck-ui
       - name: Desktop font fallback and emoji presentation
         run: cargo test --locked -p corvid-desktop --test desktop_symbols
       - name: Relaunch a pinned macOS Desktop through the installed bundle

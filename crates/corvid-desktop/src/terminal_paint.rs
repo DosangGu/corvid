@@ -213,7 +213,7 @@ impl Frame {
         // ShapedLine::paint creates a scene layer per span. A terminal can have
         // thousands of one-cell spans; inserting each into GPUI's bounds tree
         // is costly on the UI thread. Batch backgrounds and glyphs in separate layers.
-        window.paint_layer(bounds, |window| {
+        window.paint_layer(|window| {
             for span in &self.spans {
                 let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
                 if span.style.bg != BACKGROUND {
@@ -224,7 +224,7 @@ impl Frame {
                 }
             }
         });
-        window.paint_layer(bounds, |window| {
+        window.paint_layer(|window| {
             for span in self.spans {
                 let cell = metrics.cell(bounds.origin, span.row, span.col, span.width);
                 if graphic::paint(&span.text, cell, rgb(span.style.fg), window) {
@@ -276,7 +276,7 @@ impl Frame {
                 ));
                 let marked_baseline = centered_baseline(metrics.row, marked.ascent, marked.descent);
                 let origin = cell.origin + point(px(0.), metrics.baseline - marked_baseline);
-                let _ = marked.paint(origin, metrics.row, window, cx);
+                let _ = marked.paint(origin, metrics.row, gpui::TextAlign::Left, None, window, cx);
             }
         }
     }
@@ -289,7 +289,7 @@ pub fn link_underline(
     columns: u16,
     window: &mut Window,
 ) {
-    window.paint_layer(bounds, |window| {
+    window.paint_layer(|window| {
         for row in range.start.0..=range.end.0 {
             let start = if row == range.start.0 {
                 range.start.1

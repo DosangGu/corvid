@@ -132,7 +132,7 @@ impl WorkspaceView {
     pub(super) fn focus_from_deck(
         &mut self,
         window: &mut Window,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
         reply: FocusReply,
     ) {
         let Some(terminal) = &self.terminal else {
@@ -143,7 +143,8 @@ impl WorkspaceView {
         self.creation = None;
         self.menu_open = false;
         self.switcher_open = false;
-        terminal.read(cx).focus(window);
+        let focus = terminal.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
         activate(window, cx, reply);
     }
 }

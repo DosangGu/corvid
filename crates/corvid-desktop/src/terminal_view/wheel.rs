@@ -37,7 +37,7 @@ impl WheelGesture {
         }
         match phase {
             TouchPhase::Started => self.touching = true,
-            TouchPhase::Ended => self.touching = false,
+            TouchPhase::Ended | TouchPhase::Cancelled => self.touching = false,
             TouchPhase::Moved => {}
         }
         self.last = Some(now);

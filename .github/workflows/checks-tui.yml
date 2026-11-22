@@ -16,6 +16,7 @@ on:
       - 'crates/corvid-update/**'
       - 'crates/corvid-client/**'
       - 'crates/corvid-companion/**'
+      - 'crates/corvid-agent-deck/**'
       - 'crates/corvid-tui/**'
 
 permissions:

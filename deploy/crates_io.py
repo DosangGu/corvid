@@ -17,7 +17,6 @@ def package_arguments(names):
 
 
 def verify(names, version, target):
-    # The TUI depends on Agent Deck's library with its UI feature disabled.
     subprocess.run(
         ["cargo", "package", "--locked", "--registry", "crates-io",
          "--no-default-features", *package_arguments(names)],

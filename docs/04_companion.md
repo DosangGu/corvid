@@ -66,7 +66,7 @@ toolchain. On Debian or Ubuntu, install `build-essential`, `ncurses-bin`, `libxc
 X11 or XWayland session with Fontconfig and a working Vulkan driver.
 
 ```sh
-cargo build --locked -p corvid-agent-deck
+cargo build --locked -p corvid-agent-deck-ui
 cargo run --locked -p corvid-desktop
 ```
 
@@ -87,10 +87,10 @@ generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
 from the Windows Desktop ZIP. Desktop uses the sessions, tabs, split panes,
 and Corvid Agent Deck described in the Windows quick start.
 
-Desktop and Agent Deck use Zed's GPUI 0.2.2. Its HTTP client brings its own
-Tokio dependencies. Corvid's IPC and session tasks run on Compio. The
-workspace pins `libc` to 0.2.189 for `xattr` 0.2.3, a transitive GPUI
-dependency that uses the Linux `ENOATTR` constant. GPUI's Linux font selection
+Desktop and Agent Deck pin GPUI and its platform backends to Zed commit
+`2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4`. Corvid's IPC and session tasks
+run on Compio, and CI checks the full native dependency graph for Tokio.
+GPUI's Linux font selection
 can use a text glyph for an explicit VS16 emoji request. Ordinary emoji use
 the same system fallback as terminal text.
 
@@ -663,7 +663,7 @@ client. Reopening a display reads the same controller and slot state.
 On Linux Agent Deck requires `XDG_RUNTIME_DIR`.
 
 Desktop archives include Agent Deck as a built-in feature. For source builds, run
-`cargo build --locked -p corvid-agent-deck` and place the resulting executable
+`cargo build --locked -p corvid-agent-deck-ui` and place the resulting executable
 under `plugins/agent-deck/` next to the Desktop executable. You can also launch
 Deck directly using its configured `--state-dir` and `--socket-dir` on Linux
 or `--pipe-instance` on Windows. The companion must already be running, started
@@ -841,7 +841,7 @@ The A29 version-skew fixture sent an unknown focus activation result and
 then an unknown run availability. The desktop kept the last valid snapshot
 as a cache and disabled actions. A compatible snapshot restored the link,
 and the user had to select the terminal again before focusing.
-`cargo test --locked -p corvid-agent-deck -p corvid-presentation` checks capture, connection fencing,
+`cargo test --locked -p corvid-agent-deck -p corvid-agent-deck-ui -p corvid-presentation` checks capture, connection fencing,
 and input-frame behavior without a display. The Windows desktop binary
 cross-linked for `x86_64-pc-windows-gnu`. Wine 11.21 ran its four tests and
 rendered the offline window.

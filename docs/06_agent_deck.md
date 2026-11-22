@@ -34,7 +34,7 @@ this pass.
 
 Open **Agents** in the top bar (or **Settings → Agents → Open Agents**)
 in Desktop. Build source installations with
-`cargo build --locked -p corvid-agent-deck`; Desktop finds the binary beside itself
+`cargo build --locked -p corvid-agent-deck-ui`; Desktop finds the binary beside itself
 or in `plugins/agent-deck/` in an installed package. Direct launches discover
 existing monitored hosts in the default companion state directory. Use
 `--state-dir` to open another Desktop profile. Passing a host scope from
@@ -369,15 +369,15 @@ Unavailable or ended targets remain in history without opening a new terminal.
 
 ## Assets and source map
 
-- [`src/desktop.rs`](../plugins/agent-deck/src/desktop.rs): Desktop launch and focus adapter.
-- [`src/connection.rs`](../plugins/agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
+- [`src/desktop.rs`](../crates/corvid-agent-deck/src/desktop.rs): Desktop launch and focus adapter.
+- [`src/connection.rs`](../crates/corvid-agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
 - [`src/background.rs`](../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
 - [Shell](../plugins/agent-deck/src/shell.rs) and [UI](../plugins/agent-deck/src/ui.rs): native window or panel handling, GPUI content, and view controls.
 - [Agent Deck core](../crates/corvid-agent-deck-core/): grid choices, notification policy, gesture capture, action tracking, and the native service contract.
 - [`src/platform.rs`](../plugins/agent-deck/src/platform.rs): OS adapter selection, bounded callback delivery, and capability updates.
 - [`src/ui_signal.rs`](../plugins/agent-deck/src/ui_signal.rs): coalesced worker updates and latched open/quit requests.
 - [`src/platform`](../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
-- [`assets`](../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../assets/icons/); `cargo run -p corvid-agent-deck --example render-icons` regenerates all raster assets.
+- [`assets`](../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../assets/icons/); `cargo run -p corvid-agent-deck-ui --example render-icons` regenerates all raster assets.
 
 The icon extends the existing Corvid bird silhouette. App and tray icons have a
 normal state and a separate attention overlay. See the [icon preview](images/agent-deck/preview.png).
@@ -395,7 +395,7 @@ that Desktop comes to the foreground, including from a minimized window, and
 that typed input reaches the selected agent's terminal.
 
 On an interactive Windows desktop, run
-`cargo test -p corvid-agent-deck --test windows_tray -- --ignored --nocapture`
+`cargo test -p corvid-agent-deck-ui --test windows_tray -- --ignored --nocapture`
 to check tray reopening. The fixture launches a separate Deck and delivers
 the Win32 icon and menu messages. It measures the native window bounds and
 styles before and after reopening the mini, moved and resized expanded, and

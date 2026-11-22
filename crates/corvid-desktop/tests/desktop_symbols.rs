@@ -13,9 +13,9 @@ mod fixture {
 
     use anyhow::{Result, ensure};
     use gpui::{
-        Application, Bounds, Context, Font, IntoElement, LineLayout, Pixels, Render, TextRun,
-        TextStyle, TextSystem, Window, WindowBounds, WindowOptions, WindowTextSystem, div, font,
-        prelude::*, px, rgb, size,
+        Bounds, Context, Font, IntoElement, LineLayout, Pixels, Render, TextRun, TextStyle,
+        TextSystem, Window, WindowBounds, WindowOptions, WindowTextSystem, div, font, prelude::*,
+        px, rgb, size,
     };
 
     use super::{desktop_font, tab_title};
@@ -146,7 +146,7 @@ mod fixture {
     }
 
     pub(super) fn run() -> Result<()> {
-        let application = Application::new();
+        let application = gpui_platform::application();
         desktop_font::register(&application.text_system())?;
         let result = Rc::new(RefCell::new(Ok(())));
         let window_result = result.clone();
@@ -183,7 +183,7 @@ mod fixture {
                     cx.quit();
                     result
                 });
-                *window_result.borrow_mut() = checked.and(painted.flatten());
+                *window_result.borrow_mut() = checked.and(painted);
             })
             .detach();
         });

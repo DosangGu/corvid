@@ -1,4 +1,4 @@
-#![cfg(all(windows, feature = "ui"))]
+#![cfg(windows)]
 
 use std::path::PathBuf;
 use std::process::{Child, Command};

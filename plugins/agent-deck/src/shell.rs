@@ -22,6 +22,7 @@ pub(crate) fn options(window: &Window, cx: &App) -> WindowOptions {
             ..Default::default()
         }),
         window_bounds: Some(WindowBounds::centered(
+            None,
             window::layout_size(window.layout()),
             cx,
         )),

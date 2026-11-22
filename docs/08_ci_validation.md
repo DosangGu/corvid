@@ -91,7 +91,7 @@ For Linux UI tests, install the Desktop build dependencies plus `xvfb`, `xauth`,
 `x11-utils`, `xdotool`, `xclip`, `openbox`, and Mesa Vulkan drivers:
 
 ```sh
-cargo build --locked -p corvid-tui -p corvid-desktop -p corvid-agent-deck
+cargo build --locked -p corvid-tui -p corvid-desktop -p corvid-agent-deck-ui
 xvfb-run -a python3 deploy/test_desktop.py --build target/debug
 # Or validate an extracted release workflow's archive directory:
 xvfb-run -a python3 deploy/test_desktop.py target/dist

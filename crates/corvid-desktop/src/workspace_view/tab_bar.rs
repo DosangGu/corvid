@@ -79,8 +79,8 @@ impl TabBar {
             .when(!TABS_IN_TITLEBAR, |strip| strip.gap(ui_px(3.)))
             .overflow_x_scroll()
             .track_scroll(&self.scroll)
-            .on_scroll_wheel(move |_, _, _| {
-                if scroll.max_offset().width > SCROLL_EPSILON {
+            .on_scroll(move |_, _, _| {
+                if scroll.max_offset().x > SCROLL_EPSILON {
                     follow_selection.set(false);
                 }
             })
@@ -111,7 +111,7 @@ impl TabBar {
                     [left, _, right] => left.size.width + right.size.width,
                     _ => px(0.),
                 };
-                let max = scroll.max_offset().width;
+                let max = scroll.max_offset().x;
                 let offset = scroll.offset().x;
                 let next = Arrows::for_scroll(max, offset, reserved_width);
                 let viewport = scroll.bounds();
@@ -212,7 +212,7 @@ fn reveal_offset(viewport: Bounds<Pixels>, tab: Bounds<Pixels>, offset: Pixels) 
 
 fn set_scroll_x(scroll: &ScrollHandle, offset: Pixels) -> bool {
     let current = scroll.offset();
-    let x = offset.clamp(-scroll.max_offset().width, px(0.));
+    let x = offset.clamp(-scroll.max_offset().x, px(0.));
     if (x - current.x).abs() <= SCROLL_EPSILON {
         return false;
     }

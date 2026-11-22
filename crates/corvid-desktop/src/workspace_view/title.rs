@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use gpui::{
     App, Bounds, ContentMask, Display, Div, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, LineLayout, Pixels, SharedString, Stateful, Style,
-    StyledText, TextRun, TextStyle, Window, div, point, prelude::*, px, rems,
+    InspectorElementId, LayoutId, LineLayout, Pixels, SharedString, Stateful, Style, StyledText,
+    TextRun, TextStyle, Window, div, point, prelude::*, px, rems,
 };
 use icu_properties::{CodePointSetData, props::EmojiPresentation};
 use unicode_segmentation::UnicodeSegmentation;
@@ -87,14 +87,6 @@ fn title_offset(distance: Pixels, speed: Pixels, elapsed: f32) -> Pixels {
         progress * speed
     } else {
         distance - progress * speed
-    }
-}
-
-impl IntoElement for Title {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
     }
 }
 
@@ -212,7 +204,7 @@ impl Element for Title {
                 .any(|run| run.glyphs.iter().any(|glyph| glyph.is_emoji))
                 && !self.label.contains('\n')
             {
-                self.paint_with_centered_emoji(line, bounds, window, cx);
+                self.paint_with_centered_emoji(line, window, cx);
             } else {
                 self.text
                     .paint(id, inspector, bounds, &mut (), &mut (), window, cx);
@@ -222,13 +214,7 @@ impl Element for Title {
 }
 
 impl Title {
-    fn paint_with_centered_emoji(
-        &self,
-        line: &LineLayout,
-        viewport: Bounds<Pixels>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    fn paint_with_centered_emoji(&self, line: &LineLayout, window: &mut Window, cx: &mut App) {
         let layout = self.text.layout();
         let bounds = layout.bounds();
         let line_height = layout.line_height();
@@ -237,7 +223,7 @@ impl Title {
         let text = cx.text_system();
         let color = window.text_style().color;
 
-        window.paint_layer(viewport, |window| {
+        window.paint_layer(|window| {
             for run in &line.runs {
                 for glyph in &run.glyphs {
                     let x = bounds.origin.x + glyph.position.x;

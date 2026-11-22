@@ -84,7 +84,7 @@ or [macOS guide](docs/07_macos.md)
 for build requirements. Build the Agents window and run Desktop from the repository root.
 
 ```sh
-cargo build --locked -p corvid-agent-deck
+cargo build --locked -p corvid-agent-deck-ui
 cargo run --locked -p corvid-desktop
 ```
 

@@ -82,7 +82,7 @@ impl WorkspaceView {
                 if let Err(error) = crate::app_icon::set_window_icons() {
                     eprintln!("Could not set Corvid Settings icon: {error}");
                 }
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 cx.new(|cx| ManagementView::new(settings_owner, window, cx))
             });
             owner.update(cx, |view, cx| {
@@ -201,7 +201,7 @@ impl WorkspaceView {
                         button(label, label, self.management_page == page).on_click(cx.listener(
                             move |view, _, window, cx| {
                                 view.management_page = page;
-                                window.focus(&view.management_focus);
+                                window.focus(&view.management_focus, cx);
                                 cx.notify();
                             },
                         ))

@@ -140,7 +140,9 @@ fn main() -> Result<()> {
     platform::identify(config.controller_id)?;
     #[cfg(target_os = "linux")]
     anyhow::ensure!(
-        gpui::guess_compositor() == "X11",
+        gpui::GraphicalEnvironment::detect()
+            .x11_display
+            .is_some_and(|display| !display.is_empty()),
         "Agent Deck requires an X11 or XWayland display"
     );
     let signal = ui_signal::UiSignal::default();

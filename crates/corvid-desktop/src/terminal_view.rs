@@ -9,8 +9,8 @@ use corvid_async::oneshot;
 use gpui::{
     App, Bounds, ClipboardItem, Context, FocusHandle, HitboxBehavior, InputHandler, IntoElement,
     KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollWheelEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div,
-    prelude::*, rgb,
+    Pixels, Point, ScrollEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div, prelude::*,
+    rgb,
 };
 use vt100::Screen;
 
@@ -234,8 +234,8 @@ impl TerminalView {
         }
     }
 
-    pub fn focus(&self, window: &mut Window) {
-        window.focus(&self.focus);
+    pub fn focus_handle(&self) -> &FocusHandle {
+        &self.focus
     }
 
     fn start_selection(
@@ -246,7 +246,7 @@ impl TerminalView {
     ) {
         self.cancel_link();
         self.cancel_pending_wheel();
-        self.focus(window);
+        window.focus(&self.focus, cx);
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
@@ -500,7 +500,7 @@ impl TerminalView {
         })
     }
 
-    fn scroll_history(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn scroll_history(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
@@ -780,7 +780,7 @@ impl Render for TerminalView {
                     view.clear_link_hover(cx);
                 }
             }))
-            .on_scroll_wheel(cx.listener(Self::scroll_history))
+            .on_scroll(cx.listener(Self::scroll_history))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::release_selection))
             .on_mouse_up_out(
                 MouseButton::Left,
@@ -1039,7 +1039,7 @@ mod tests {
         use std::rc::Rc;
         use std::time::Duration;
 
-        use gpui::{Application, Entity, WindowOptions};
+        use gpui::{Entity, WindowOptions};
 
         struct Probe {
             _terminal: Entity<TerminalView>,
@@ -1056,7 +1056,7 @@ mod tests {
         let observed = updates.clone();
         let at_next_frame = Rc::new(Cell::new(None));
         let sampled = at_next_frame.clone();
-        Application::new().run(move |cx| {
+        gpui_platform::application().run(move |cx| {
             cx.open_window(WindowOptions::default(), move |window, cx| {
                 let (session, changes) = Session::screen_change_fixture();
                 let terminal = cx.new(|cx| TerminalView::new(session, "probe".into(), window, cx));
@@ -1100,7 +1100,7 @@ mod tests {
 
             cx.spawn(async |cx| {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
-                let _ = cx.update(|cx| cx.quit());
+                cx.update(|cx| cx.quit());
             })
             .detach();
         });

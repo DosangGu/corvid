@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use corvid_presentation::ipc::DesktopClient;
-use gpui::{AppContext, Application};
+use gpui::AppContext;
 use uuid::Uuid;
 
 use crate::background::Background;
@@ -19,7 +19,11 @@ pub(crate) struct Session {
 }
 
 pub(crate) fn run(session: Session, preferences: shell::Window) {
-    Application::new().with_assets(DeckAssets).run(move |cx| {
+    #[cfg(target_os = "linux")]
+    let application = gpui_platform::linux(gpui::WindowingModes::X11);
+    #[cfg(not(target_os = "linux"))]
+    let application = gpui_platform::application();
+    application.with_assets(DeckAssets).run(move |cx| {
         shell::prepare();
         #[cfg(target_os = "macos")]
         cx.on_app_quit(|_| {
@@ -46,7 +50,7 @@ pub(crate) fn run(session: Session, preferences: shell::Window) {
                     result = updates.changed() => if result.is_err() { break },
                     _ = tick => {}
                 }
-                let result = cx.update(|cx| {
+                cx.update(|cx| {
                     if session.signal.quitting()
                         || window
                             .update(cx, |view, window, cx| {
@@ -57,13 +61,13 @@ pub(crate) fn run(session: Session, preferences: shell::Window) {
                         cx.quit();
                     }
                 });
-                if result.is_err() || session.signal.quitting() {
+                if session.signal.quitting() {
                     break;
                 }
             }
         })
         .detach();
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }
