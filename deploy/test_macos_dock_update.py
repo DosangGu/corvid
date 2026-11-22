@@ -56,7 +56,7 @@ end run
 """
     for _ in range(20):
         if run("/usr/bin/osascript", "-e", script, app.stem) == "pressed":
-            run(dock, "running", app, alias, tile)
+            run(dock, "running", app, alias)
             return
         time.sleep(0.3)
     raise AssertionError("Could not find Corvid's existing Dock tile")
@@ -183,9 +183,9 @@ def check_running_relaunch(app, directory, dock, alias, entry):
     registry.write_text(json.dumps({"schema_version": 1, "windows": [window]}))
     registry.chmod(0o600)
     with tempfile.TemporaryDirectory(prefix="corvid-desktop-ready-") as handoff:
-        run(dock, "handoff", app, alias, entry, handoff, "--state-dir", state,
-            "--restore-window", window)
-        run(dock, "running", app, alias)
+        previous_pid = run(dock, "handoff", app, alias, entry, handoff, "--state-dir", state,
+                           "--restore-window", window)
+        replacement_pid = run(dock, "running", app, alias, previous_pid)
         lease = state / "desktop-view" / "windows" / window / "startup.lock"
         for _ in range(200):
             if lease.exists():
@@ -193,6 +193,11 @@ def check_running_relaunch(app, directory, dock, alias, entry):
                     try:
                         fcntl.flock(opened, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
+                        current_pid = run(dock, "running", app, alias, previous_pid)
+                        assert current_pid == replacement_pid, (
+                            f"Desktop PID changed from {replacement_pid} to {current_pid} "
+                            f"while restoring window {window}"
+                        )
                         return
             time.sleep(0.05)
         raise AssertionError(f"The relaunched Desktop did not reclaim window {window}")
@@ -267,7 +272,10 @@ def check_pinned_relaunch(binary):
         tile = run(dock, "pin", app, alias)
         try:
             launch_dock_tile(dock, app, alias, tile)
-            check_relaunch_entries(app, directory, dock, alias, tile)
+            for attempt in range(1, 4):
+                print(f"Checking pinned Desktop relaunches ({attempt}/3)", flush=True)
+                iteration = directory / f"relaunch-{attempt}"
+                check_relaunch_entries(app, iteration, dock, alias, tile)
         finally:
             run(dock, "remove", app, alias, tile)
 
