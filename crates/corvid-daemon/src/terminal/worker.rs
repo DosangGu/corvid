@@ -2324,9 +2324,19 @@ impl CompositionCache {
     }
 
     fn previews(&mut self, view: &Composition, scope: &LaunchScope, location: Location) -> bool {
+        let pane_body = |pane| {
+            view.panes
+                .iter()
+                .find(|(id, _)| *id == pane)
+                .map(|(_, rect)| view.body(*rect))
+        };
         let before = self.screens.len();
-        self.screens
-            .retain(|pane, _| view.panes.iter().any(|(id, _)| id == pane));
+        self.screens.retain(|pane, screen| {
+            pane_body(*pane).is_some_and(|body| {
+                let (rows, cols) = screen.size();
+                cols.get() <= body.width && rows.get() <= body.height
+            })
+        });
         let mut changed = before != self.screens.len();
         if !view.split {
             self.pending = None;
@@ -2334,14 +2344,28 @@ impl CompositionCache {
         }
         if let Some((pane, until, mut pending)) = self.pending.take() {
             match pending.try_recv() {
-                Ok(Ok((viewport, bytes))) if view.panes.iter().any(|(id, _)| *id == pane) => {
-                    let screen = parse_screen(viewport, &bytes);
+                Ok(Ok((viewport, bytes))) => {
+                    let Some(body) = pane_body(pane) else {
+                        return changed;
+                    };
+                    // Each cached preview occupies at most its rendered area.
+                    // Reading a wider preview neither resizes nor retains a full copy of that PTY.
+                    let cols = viewport.cols.get().min(body.width);
+                    let rows = viewport.rows.get().min(body.height);
+                    let mut parser = vt100::Parser::new(viewport.rows, viewport.cols, 0);
+                    parser.process(&bytes);
+                    if (cols, rows) != (viewport.cols.get(), viewport.rows.get()) {
+                        let size =
+                            Viewport::new(cols, rows).expect("composition has a usable body");
+                        parser.set_size(size.rows, size.cols);
+                    }
+                    let screen = parser.screen();
                     if self
                         .screens
                         .get(&pane)
                         .is_none_or(|previous| !screen.contents_diff(previous).is_empty())
                     {
-                        self.screens.insert(pane, Arc::new(screen));
+                        self.screens.insert(pane, Arc::new(screen.clone()));
                         changed = true;
                     }
                 }
