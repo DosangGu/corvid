@@ -5,6 +5,7 @@ use gpui::{
     InspectorElementId, IntoElement, LayoutId, LineLayout, Pixels, SharedString, Stateful, Style,
     StyledText, TextRun, TextStyle, Window, div, point, prelude::*, px, rems,
 };
+use icu_properties::{CodePointSetData, props::EmojiPresentation};
 use unicode_segmentation::UnicodeSegmentation;
 
 const PAUSE_SECONDS: f32 = 1.;
@@ -31,7 +32,7 @@ pub(super) fn button(
 // GPUI 0.2.2 removes explicitly selected Linux fonts that lack a Latin 'm',
 // including Noto Color Emoji. Leave those fonts available through system fallback.
 pub(super) fn emoji_presentation_runs(label: &str, style: &TextStyle) -> Option<Vec<TextRun>> {
-    if cfg!(target_os = "linux") || !label.contains('\u{fe0f}') {
+    if cfg!(target_os = "linux") || label.is_ascii() {
         return None;
     }
 
@@ -41,12 +42,19 @@ pub(super) fn emoji_presentation_runs(label: &str, style: &TextStyle) -> Option<
         "Segoe UI Emoji"
     };
 
+    let emoji_defaults = CodePointSetData::new::<EmojiPresentation>();
     let mut runs: Vec<TextRun> = Vec::new();
+    let mut selects_emoji_font = false;
     for grapheme in label.graphemes(true) {
         let mut run = style.to_run(grapheme.len());
-        if grapheme.contains('\u{fe0f}') && !grapheme.contains('\u{fe0e}') {
+        let default_emoji = grapheme
+            .chars()
+            .next()
+            .is_some_and(|ch| emoji_defaults.contains(ch));
+        if !grapheme.contains('\u{fe0e}') && (default_emoji || grapheme.contains('\u{fe0f}')) {
             run.font.family = emoji_family.into();
             run.font.fallbacks = None;
+            selects_emoji_font = true;
         }
 
         if let Some(previous) = runs.last_mut()
@@ -57,7 +65,7 @@ pub(super) fn emoji_presentation_runs(label: &str, style: &TextStyle) -> Option<
             runs.push(run);
         }
     }
-    Some(runs)
+    selects_emoji_font.then_some(runs)
 }
 
 struct Title {

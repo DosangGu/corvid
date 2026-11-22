@@ -122,24 +122,26 @@ mod fixture {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .children([px(500.), px(90.)].map(|max_width| {
-                    div().flex().gap(px(2.)).children(
-                        [
-                            ("✳️ Claude Code planning the next release", Some("!")),
-                            ("A long plain workspace title", Some("▾")),
-                            ("🧑🏽‍💻 개발", None),
-                        ]
-                        .map(|(title, suffix)| {
-                            let button = div()
-                                .id(title)
-                                .flex_none()
-                                .max_w(max_width)
-                                .text_size(px(13.))
-                                .whitespace_nowrap();
-                            tab_title::button(button, title.to_owned(), suffix)
-                        }),
-                    )
-                }))
+                .children(
+                    [("wide", px(500.)), ("narrow", px(90.))].map(|(id, max_width)| {
+                        div().id(id).flex().gap(px(2.)).children(
+                            [
+                                ("✳️ Claude Code planning the next release", Some("!")),
+                                ("A long plain workspace title", Some("▾")),
+                                ("🧑🏽‍💻 개발", None),
+                            ]
+                            .map(|(title, suffix)| {
+                                let button = div()
+                                    .id(title)
+                                    .flex_none()
+                                    .max_w(max_width)
+                                    .text_size(px(13.))
+                                    .whitespace_nowrap();
+                                tab_title::button(button, title.to_owned(), suffix)
+                            }),
+                        )
+                    }),
+                )
         }
     }
 

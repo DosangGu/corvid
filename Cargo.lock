@@ -1594,6 +1594,7 @@ dependencies = [
  "glob",
  "gpui",
  "hex",
+ "icu_properties",
  "image",
  "libc",
  "qwertty-term-input",
