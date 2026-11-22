@@ -46,7 +46,7 @@ def linux(case, build, assets, artifacts):
             args += ["--paste-only"]
         elif case == "deck-window":
             args += ["--deck-only"]
-    subprocess.run(["xvfb-run", "-a", sys.executable, *args], env=env, check=True)
+    subprocess.run(["xvfb-run", "-a", "-s", "-screen 0 1280x1024x24", sys.executable, *args], env=env, check=True)
 
 
 def unique_asset(directory, pattern):
