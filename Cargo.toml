@@ -30,7 +30,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.100"
 license = "Apache-2.0"
@@ -40,8 +40,8 @@ publish = false
 
 [workspace.dependencies]
 # Keep the registry versions of workspace crates in sync with the release version.
-corvid-agent-deck = { path = "crates/corvid-agent-deck", version = "=0.5.0" }
-corvid-agent-deck-core = { path = "crates/corvid-agent-deck-core", version = "=0.5.0" }
+corvid-agent-deck = { path = "crates/corvid-agent-deck", version = "=0.5.1" }
+corvid-agent-deck-core = { path = "crates/corvid-agent-deck-core", version = "=0.5.1" }
 anyhow = "1.0"
 async-channel = "=2.5.0"
 async-io = "=2.6.0"
@@ -52,15 +52,15 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6", features = ["derive"] }
 compio-io = { version = "=0.10.1", features = ["compat"] }
 compio = { version = "=0.19.2", default-features = false, features = ["runtime", "time", "macros", "io-uring", "polling"] }
-corvid-async = { path = "crates/corvid-async", version = "=0.5.0" }
-corvid-client = { path = "crates/corvid-client", version = "=0.5.0" }
-corvid-companion = { path = "crates/corvid-companion", version = "=0.5.0" }
-corvid-core = { path = "crates/corvid-core", version = "=0.5.0" }
-corvid-daemon = { path = "crates/corvid-daemon", version = "=0.5.0" }
-corvid-presentation = { path = "crates/corvid-presentation", version = "=0.5.0" }
-corvid-protocol = { path = "crates/corvid-protocol", version = "=0.5.0", default-features = false }
-corvid-tui = { path = "crates/corvid-tui", version = "=0.5.0" }
-corvid-update = { path = "crates/corvid-update", version = "=0.5.0" }
+corvid-async = { path = "crates/corvid-async", version = "=0.5.1" }
+corvid-client = { path = "crates/corvid-client", version = "=0.5.1" }
+corvid-companion = { path = "crates/corvid-companion", version = "=0.5.1" }
+corvid-core = { path = "crates/corvid-core", version = "=0.5.1" }
+corvid-daemon = { path = "crates/corvid-daemon", version = "=0.5.1" }
+corvid-presentation = { path = "crates/corvid-presentation", version = "=0.5.1" }
+corvid-protocol = { path = "crates/corvid-protocol", version = "=0.5.1", default-features = false }
+corvid-tui = { path = "crates/corvid-tui", version = "=0.5.1" }
+corvid-update = { path = "crates/corvid-update", version = "=0.5.1" }
 crossterm = { version = "=0.29.0", default-features = false }
 dunce = "=1.0.5"
 event-listener = "=5.4.2"
