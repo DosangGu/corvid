@@ -175,7 +175,20 @@ fn top_row(layout: &Layout, location: Location, width: u16) -> (String, Vec<(Uui
         return (String::new(), Vec::new());
     };
     let prefix = if width >= 26 {
-        format!("{}  ", clip(&workspace.label, usize::from(width / 4)))
+        let label = if width >= 72 {
+            if let Some(host) = host_name() {
+                format!(
+                    "{} / {}",
+                    clip(host, usize::from(width / 8)),
+                    workspace.label
+                )
+            } else {
+                workspace.label.clone()
+            }
+        } else {
+            workspace.label.clone()
+        };
+        format!("{}  ", clip(&label, usize::from(width / 3)))
     } else {
         String::new()
     };
@@ -240,6 +253,21 @@ fn top_row(layout: &Layout, location: Location, width: u16) -> (String, Vec<(Uui
     (prefix, tabs)
 }
 
+fn host_name() -> Option<&'static str> {
+    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        #[cfg(unix)]
+        let name = nix::unistd::gethostname()
+            .ok()
+            .map(|name| name.to_string_lossy().into_owned());
+        #[cfg(windows)]
+        let name = std::env::var("COMPUTERNAME").ok();
+        name.map(|name| corvid_core::layout::clean_title(&name))
+            .filter(|name| !name.is_empty())
+    })
+    .as_deref()
+}
+
 fn draw(ansi: &mut String, screen: &Screen, body: Rect) {
     let (rows, cols) = screen.size();
     let width = cols.get().min(body.width);
@@ -275,7 +303,7 @@ fn draw(ansi: &mut String, screen: &Screen, body: Rect) {
 struct Style {
     fg: Color,
     bg: Color,
-    flags: [bool; 6],
+    flags: [bool; 5],
 }
 
 impl From<&Cell> for Style {
@@ -288,7 +316,6 @@ impl From<&Cell> for Style {
                 cell.dim(),
                 cell.italic(),
                 cell.underline(),
-                false,
                 cell.inverse(),
             ],
         }
@@ -300,7 +327,7 @@ impl Style {
         ansi.push_str("\x1b[0");
         for (index, enabled) in self.flags.into_iter().enumerate() {
             if enabled {
-                let _ = write!(ansi, ";{}", index + 1 + usize::from(index >= 4));
+                let _ = write!(ansi, ";{}", if index == 4 { 7 } else { index + 1 });
             }
         }
         for (prefix, color) in [(38, self.fg), (48, self.bg)] {

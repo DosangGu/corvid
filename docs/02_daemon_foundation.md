@@ -105,6 +105,8 @@ A click in the layout selects the pane or tab under the pointer. A terminal
 application that enables mouse reporting can receive pane-relative clicks.
 Narrow terminals keep the active terminal visible.
 
+![TUI with three panes and pane selection](images/workspace-navigation/tui.png)
+
 Use `corvid attach -- program arg` to start an explicit command on the running
 daemon. When starting a daemon directly, install the terminfo entry with
 `tic -x -o "$HOME/.terminfo" crates/corvid-tui/assets/corvid.terminfo` first.

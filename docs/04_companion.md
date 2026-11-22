@@ -276,6 +276,8 @@ selectors use the same keys as the TUI. Press `?` after the leader and search
 for **New workspace**, **Settings**, **Agents**, or window actions. Click a tab
 to return to the pane you last used in it, or click inside a pane to focus it.
 
+![Desktop with three panes and pane selection](images/workspace-navigation/desktop.png)
+
 Use `Ctrl+]` then `p` to select a pane. Press `x` to open its termination
 confirmation. Closing the last pane also closes its tab. To end an entire tab,
 use **Close selected tab…** in the tab list (`Ctrl+]` then `t`) or click the

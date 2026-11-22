@@ -23,6 +23,7 @@ pub(super) enum Overlay {
         index: usize,
         control: u8,
         query: String,
+        selected: Option<Uuid>,
     },
     Panes(Uuid),
     Confirm {
@@ -38,6 +39,15 @@ enum Choice {
     Tab(Uuid, usize),
     Command(u8),
     EndWorkspace,
+}
+
+impl Choice {
+    fn id(self) -> Option<Uuid> {
+        match self {
+            Self::Workspace(id) | Self::Tab(id, _) => Some(id),
+            _ => None,
+        }
+    }
 }
 
 impl Overlay {
@@ -63,6 +73,11 @@ impl Overlay {
             index,
             control: 0,
             query: String::new(),
+            selected: match kind {
+                Kind::Workspaces => Some(location.workspace),
+                Kind::Tabs => Some(location.tab),
+                _ => None,
+            },
         }
     }
 
@@ -140,9 +155,14 @@ impl Overlay {
                 mut index,
                 mut control,
                 mut query,
+                mut selected,
             } => {
                 let items = choices(kind, &query, layout, location, keymap);
-                index = index.min(items.len().saturating_sub(1));
+                index = selected
+                    .and_then(|id| items.iter().position(|(_, choice)| choice.id() == Some(id)))
+                    .unwrap_or_else(|| index.min(items.len().saturating_sub(1)));
+                let original_query = query.clone();
+                let mut moved = false;
                 match bytes {
                     b"\t" | b"\x1b[Z" if matches!(kind, Kind::Tabs) => {
                         let controls = if keymap.close { 3 } else { 2 };
@@ -153,7 +173,9 @@ impl Overlay {
                         return unfocused(KeyCommand::Tab(TabCommand::Create));
                     }
                     b"\r" | b"\n" => {
-                        if let Some((label, choice)) = items.get(index) {
+                        if let Some((label, choice)) = items.get(index)
+                            && (choice.id().is_none() || choice.id() == selected)
+                        {
                             match *choice {
                                 Choice::Workspace(id) => {
                                     return unfocused(KeyCommand::Tab(TabCommand::Workspace(id)));
@@ -176,6 +198,7 @@ impl Overlay {
                                                 index,
                                                 control: 0,
                                                 query,
+                                                selected,
                                             })),
                                         }),
                                         None,
@@ -197,8 +220,14 @@ impl Overlay {
                         }
                     }
                     _ if control > 0 => {}
-                    b"\x1b[A" | b"\x1bOA" => index = index.saturating_sub(1),
-                    b"\x1b[B" | b"\x1bOB" => index = (index + 1).min(items.len().saturating_sub(1)),
+                    b"\x1b[A" | b"\x1bOA" => {
+                        index = index.saturating_sub(1);
+                        moved = true;
+                    }
+                    b"\x1b[B" | b"\x1bOB" => {
+                        index = (index + 1).min(items.len().saturating_sub(1));
+                        moved = true;
+                    }
                     b"\x7f" | b"\x08" => {
                         query.pop();
                         index = 0;
@@ -214,12 +243,20 @@ impl Overlay {
                         }
                     }
                 }
+                if original_query != query {
+                    selected = choices(kind, &query, layout, location, keymap)
+                        .first()
+                        .and_then(|(_, choice)| choice.id());
+                } else if moved {
+                    selected = items.get(index).and_then(|(_, choice)| choice.id());
+                }
                 (
                     Some(Self::List {
                         kind,
                         index,
                         control,
                         query,
+                        selected,
                     }),
                     None,
                 )
@@ -241,6 +278,7 @@ impl Overlay {
                 index,
                 control,
                 query,
+                selected,
             } => {
                 let (title, hints) = match kind {
                     Kind::Workspaces => ("Workspaces", "↑/↓ Choose · Enter Open · Esc Cancel"),
@@ -261,14 +299,15 @@ impl Overlay {
                     );
                 }
                 let items = choices(*kind, query, layout, location, keymap);
+                let index = selected
+                    .and_then(|id| items.iter().position(|(_, choice)| choice.id() == Some(id)))
+                    .unwrap_or(*index);
                 let visible = usize::from(outer.rows.get()).saturating_sub(lines.len() + 1);
                 let start = index
                     .saturating_sub(visible / 2)
                     .min(items.len().saturating_sub(visible));
                 lines.extend(items.into_iter().enumerate().skip(start).take(visible).map(
-                    |(row, (label, _))| {
-                        format!("{} {label}", if row == *index { '>' } else { ' ' })
-                    },
+                    |(row, (label, _))| format!("{} {label}", if row == index { '>' } else { ' ' }),
                 ));
             }
             Self::Panes(_) => lines.push(

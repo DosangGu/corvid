@@ -496,8 +496,9 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             subprocess.run(["xdotool", "type", "--clearmodifiers", "--", "project"], check=True, timeout=10)
             time.sleep(0.5)
             key(window, "Tab")
+            # The directory lookup must finish before submitting the draft.
+            time.sleep(0.5)
             if screenshot := os.environ.get("CORVID_WORKSPACE_SCREENSHOT"):
-                time.sleep(0.5)
                 subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
             key(window, "Return")
             wait_for_terminal(previous=old_terminal)

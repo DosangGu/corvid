@@ -10,7 +10,8 @@ use corvid_client::view_state::windows::{WindowRegistry, WindowState};
 use corvid_companion::monitor::Scope;
 use corvid_presentation::desktop_focus::{FocusRequest, serve_routed};
 use gpui::{
-    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions, px, size,
+    App, AppContext, Bounds, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    px, size,
 };
 use uuid::Uuid;
 
@@ -478,21 +479,26 @@ impl DesktopWindows {
         cx.quit();
     }
 
+    #[cfg(target_os = "macos")]
     pub fn close_active(&self, cx: &mut App) {
-        let Some(active) = cx.active_window() else {
-            return;
-        };
+        if let Some(active) = cx.active_window() {
+            let _ = active.update(cx, |_, window, cx| self.close_window(window, cx));
+        }
+    }
+
+    pub fn close_window(&self, window: &mut Window, cx: &mut App) {
+        let handle = window.window_handle();
         let id = self
             .0
             .entries
             .borrow()
             .iter()
-            .find(|(_, entry)| entry.handle.window_id() == active.window_id())
+            .find(|(_, entry)| entry.handle.window_id() == handle.window_id())
             .map(|(id, _)| *id);
         if let Some(id) = id
             && self.close(id, cx)
         {
-            let _ = active.update(cx, |_, window, _| window.remove_window());
+            window.remove_window();
         }
     }
 

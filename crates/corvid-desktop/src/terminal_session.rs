@@ -282,6 +282,7 @@ pub struct Ui {
     pub restore_results: Vec<corvid_protocol::wire::PaneRestoreResult>,
     pub restore_unavailable: bool,
     pub naming_supported: bool,
+    pub split_target_supported: bool,
     pub host_id: Option<String>,
     pub epoch: Option<String>,
     pub endpoint: Option<ControlEndpoint>,
@@ -382,6 +383,7 @@ impl Shared {
                 restore_results: Vec::new(),
                 restore_unavailable: false,
                 naming_supported: false,
+                split_target_supported: false,
                 host_id: None,
                 epoch: None,
                 endpoint: None,
@@ -1787,6 +1789,11 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == SESSION_CLIENTS_CAPABILITY);
+    let split_target_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|capability| capability == corvid_protocol::WORKSPACE_UI_CAPABILITY);
     let naming_supported = link
         .session()
         .capabilities
@@ -1795,6 +1802,7 @@ async fn run(
     shared.update_ui(move |ui| {
         ui.close_supported = close_supported;
         ui.naming_supported = naming_supported;
+        ui.split_target_supported = split_target_supported;
         ui.session_clients_supported = session_clients_supported;
     });
     let monitor_settings = monitor.clone();

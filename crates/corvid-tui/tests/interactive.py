@@ -91,6 +91,18 @@ def paste_child():
     return 0
 
 
+def mouse_child(output):
+    attributes = termios.tcgetattr(0)
+    try:
+        tty.setraw(0)
+        os.write(1, b"\x1b[?1000h\x1b[?1006hEDITOR-READY")
+        output.write_bytes(read_exact(18))
+        os.write(1, b"\r\nAPP-MOUSE-RECEIVED")
+    finally:
+        os.write(1, b"\x1b[?1000l\x1b[?1006l")
+        termios.tcsetattr(0, termios.TCSANOW, attributes)
+
+
 class OuterTerminal:
     def __init__(self, command, cols=80, rows=24, env=None):
         self.master, self.slave = pty.openpty()
@@ -791,8 +803,7 @@ def verify_shell_agent_notifications(
 
 def verify_workspace_ui(command, directory):
     env = os.environ | {"CORVID_LEGACY_TUI": "0"}
-    marker = directory / "pane-input"
-    marker_arg = shlex.quote(str(marker))
+    mouse_marker = directory / "app-mouse-input"
 
     def send_line(terminal, text):
         # Separate the terminal's input echo from output and wait for the side effect.
@@ -823,15 +834,20 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.send(b"\x1b[<0;4;5M")
         terminal.expect(rb"\x1b\[2;1H\x1b\[0;1;36m" + "● ".encode())
-        send_line(terminal, f'printf %s "$CORVID_TEST_PANE" > {marker_arg}')
-        deadline = time.monotonic() + 5
-        while not marker.exists() or marker.read_text() != "left":
-            assert time.monotonic() < deadline, "click did not focus the left terminal"
-            time.sleep(0.02)
+        send_line(terminal, 'printf "FOCUSED-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"FOCUSED-left")
 
         terminal.output.clear()
         terminal.send(b"\x1d\x1b[C")
         terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        send_line(terminal, shlex.join((sys.executable, __file__, "--mouse-child", str(mouse_marker))))
+        terminal.expect(b"EDITOR-READY")
+        terminal.output.clear()
+        terminal.send(b"\x1b[<0;5;6M")
+        terminal.expect(rb"\x1b\[2;1H\x1b\[0;1;36m" + "● ".encode())
+        terminal.send(b"\x1b[<0;55;6M")
+        terminal.expect(b"APP-MOUSE-RECEIVED")
+        assert mouse_marker.read_bytes() == b"\x1b[<0;5;4M\x1b[<0;5;4m"
         terminal.send(b"\x1dd")
         terminal.wait(0)
 
@@ -846,6 +862,15 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.send(b"\x1d[")
         terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        current_tab = terminal.expect(rb"\x1b\[1;(\d+)H\x1b\[0;1;36m\[1 ").group(1)
+        terminal.send(b"\x1d]")
+        terminal.expect(rb"\[2 ")
+        terminal.output.clear()
+        terminal.send(b"\x1b[<0;" + current_tab + b";1M")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        terminal.resize(20, 6)
+        terminal.expect(rb"\x1b\[1;1H")
+        terminal.resize(100, 30)
         terminal.send(b"\x1dw")
         terminal.expect(b"Workspaces")
         terminal.send(b"\x1dd")
@@ -907,6 +932,8 @@ def run(binary, *, tty_only=False):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--mouse-child"]:
+        sys.exit(mouse_child(Path(sys.argv[2])))
     if sys.argv[1:2] == ["--child"]:
         sys.exit(child(Path(sys.argv[2])))
     if sys.argv[1:2] == ["--paste-child"]:

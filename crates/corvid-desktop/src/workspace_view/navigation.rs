@@ -12,6 +12,7 @@ pub(super) enum Overlay {
         query: String,
         index: usize,
         control: u8,
+        tab_id: Option<String>,
     },
     Panes(ViewSelection),
 }
@@ -26,6 +27,7 @@ enum Command {
     Settings,
     Agents,
     Reconnect,
+    OpenTerminal,
     History(bool),
     Zoom,
 }
@@ -41,6 +43,7 @@ impl Command {
             Self::Settings => "Settings",
             Self::Agents => "Agents",
             Self::Reconnect => "Reconnect",
+            Self::OpenTerminal => "Open terminal",
             Self::History(false) => "Browse terminal history",
             Self::History(true) => "Search terminal history",
             Self::Zoom => "Expand or restore active pane",
@@ -83,6 +86,8 @@ impl WorkspaceView {
         ];
         if self.session.as_ref().is_some_and(|s| s.ui().ssh_offline) {
             items.push(Reconnect);
+        } else if self.terminal.is_none() {
+            items.push(OpenTerminal);
         }
         if self.terminal.is_some() {
             items.extend([
@@ -135,6 +140,7 @@ impl WorkspaceView {
                             query: String::new(),
                             index,
                             control: 0,
+                            tab_id: Some(selected.tab_id),
                         },
                         window,
                         cx,
@@ -168,7 +174,7 @@ impl WorkspaceView {
                 cx,
             ),
             NewWindow => self.new_window(cx),
-            CloseWindow => self.windows.close_active(cx),
+            CloseWindow => self.windows.close_window(window, cx),
             Quit => self.windows.quit(cx),
             Settings => self.open_management(management::Page::Connections, window, cx),
             Agents => {
@@ -177,6 +183,12 @@ impl WorkspaceView {
                 }
             }
             Reconnect => self.reconnect_ssh(window, cx),
+            OpenTerminal => self.switch_to(
+                self.destination.clone().unwrap_or(Destination::Local),
+                AttachTarget::Default,
+                window,
+                cx,
+            ),
             History(search) => {
                 if let Some(terminal) = &self.terminal {
                     terminal.update(cx, |view, cx| view.open_history_command(search, cx));
@@ -268,6 +280,7 @@ impl WorkspaceView {
                 mut query,
                 mut index,
                 mut control,
+                mut tab_id,
             } => {
                 let Some((selected, inventory)) = self.navigation_target() else {
                     self.dismiss_overlay(window, cx);
@@ -282,6 +295,10 @@ impl WorkspaceView {
                     return;
                 };
                 let tabs = matching(workspace.tabs.iter(), &query, |tab| tab.label.as_str());
+                let selected_index = tabs
+                    .iter()
+                    .position(|tab| Some(&tab.tab_id) == tab_id.as_ref());
+                index = selected_index.unwrap_or_else(|| index.min(tabs.len().saturating_sub(1)));
                 match key.key.as_str() {
                     "tab" => control = (control + if key.modifiers.shift { 2 } else { 1 }) % 3,
                     "enter" if control == 1 => {
@@ -290,7 +307,7 @@ impl WorkspaceView {
                         return;
                     }
                     "enter" if control == 2 => {
-                        if let Some(tab) = tabs.get(index) {
+                        if let Some(tab) = selected_index.and_then(|index| tabs.get(index)) {
                             let count = inventory
                                 .terminals
                                 .iter()
@@ -313,8 +330,8 @@ impl WorkspaceView {
                         }
                     }
                     "enter" => {
-                        if let Some((target, open)) = tabs
-                            .get(index)
+                        if let Some((target, open)) = selected_index
+                            .and_then(|index| tabs.get(index))
                             .and_then(|tab| self.choose(workspace, tab, &inventory))
                         {
                             self.dismiss_overlay(window, cx);
@@ -322,13 +339,19 @@ impl WorkspaceView {
                             return;
                         }
                     }
-                    _ if control == 0 => edit_list(key, &mut query, &mut index, tabs.len()),
+                    _ if control == 0 => {
+                        edit_list(key, &mut query, &mut index, tabs.len());
+                        tab_id = matching(workspace.tabs.iter(), &query, |tab| tab.label.as_str())
+                            .get(index)
+                            .map(|tab| tab.tab_id.clone());
+                    }
                     _ => {}
                 }
                 self.navigation = Some(Overlay::Tabs {
                     query,
                     index,
                     control,
+                    tab_id,
                 });
             }
             Overlay::Panes(mut target) => {
@@ -347,11 +370,20 @@ impl WorkspaceView {
                         } as i32;
                         if self.selected.as_ref() == Some(&target) {
                             self.create(Target::SplitAxis(axis));
-                        } else {
+                        } else if self
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.ui().split_target_supported)
+                        {
                             self.create(Target::SplitPane(SplitPane {
                                 pane_id: target.pane_id,
                                 axis,
                             }));
+                        } else {
+                            self.error = Some(
+                                "Focus that pane before splitting on this daemon version.".into(),
+                            );
+                            cx.notify();
                         }
                         return;
                     }
@@ -444,6 +476,7 @@ impl WorkspaceView {
                     query,
                     index,
                     control,
+                    tab_id,
                 } => {
                     let (selected, inventory) = self.navigation_target()?;
                     let workspace = inventory
@@ -469,7 +502,10 @@ impl WorkspaceView {
                     (
                         "Choose tab",
                         query,
-                        *index,
+                        matching(workspace.tabs.iter(), query, |tab| &tab.label)
+                            .iter()
+                            .position(|tab| Some(&tab.tab_id) == tab_id.as_ref())
+                            .unwrap_or(*index),
                         matching(workspace.tabs.iter(), query, |tab| &tab.label)
                             .into_iter()
                             .map(|tab| tab.label.clone())
