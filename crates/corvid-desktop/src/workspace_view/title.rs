@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use gpui::{
     App, Bounds, ContentMask, Display, Div, Element, ElementId, GlobalElementId,
-    InspectorElementId, LayoutId, LineLayout, Pixels, SharedString, Stateful, Style, StyledText,
-    TextRun, TextStyle, Window, div, point, prelude::*, px, rems,
+    InspectorElementId, LayoutId, LineLayout, Pixels, Role, SharedString, Stateful, Style,
+    StyledText, TextRun, TextStyle, Window, div, point, prelude::*, px, rems,
 };
 use icu_properties::{CodePointSetData, props::EmojiPresentation};
 use unicode_segmentation::UnicodeSegmentation;
@@ -17,11 +17,17 @@ pub(super) fn button(
     suffix: Option<&'static str>,
 ) -> Stateful<Div> {
     let label = SharedString::from(label);
+    let accessible_name = suffix.map_or_else(
+        || label.clone(),
+        |suffix| SharedString::from(format!("{label} {suffix}")),
+    );
     // Flex layout keeps the text in the title's clipped viewport.
     button
         .flex()
         .items_center()
         .gap(rems(0.25))
+        .role(Role::Button)
+        .aria_label(accessible_name)
         .child(Title {
             text: StyledText::new(label.clone()),
             label,
