@@ -1250,11 +1250,15 @@ impl Interactive {
 
 fn peer_disconnected(error: &std::io::Error) -> bool {
     #[cfg(windows)]
-    if error.raw_os_error().map(|code| code as u32)
-        == Some(windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED)
     {
-        // std does not map this Windows named-pipe error to ErrorKind::NotConnected.
-        return true;
+        // Compio's IOCP driver reports closed named-pipe writes as zero bytes.
+        // Recovery still requires a final event from the daemon.
+        if error.kind() == ErrorKind::WriteZero
+            || error.raw_os_error().map(|code| code as u32)
+                == Some(windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED)
+        {
+            return true;
+        }
     }
     matches!(
         error.kind(),
