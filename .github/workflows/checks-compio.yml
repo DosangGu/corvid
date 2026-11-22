@@ -91,6 +91,11 @@ jobs:
         run: |
           cargo test --locked -p corvid-tui --test scripted_attach
           python3 crates/corvid-tui/tests/interactive.py target/debug/corvid --tty-only
+      - name: Restore saved agent sessions after a delayed Claude confirmation
+        if: runner.os == 'macOS'
+        env:
+          CORVID_TEST_DELAY_CLAUDE_RESTORE: '1'
+        run: cargo test --locked --release -p corvid-tui --test agent_restore tui_startup_resumes_exact_agent_conversations_after_daemon_loss
       - name: Exercise Compio TUI in ConPTY
         if: runner.os == 'Windows'
         run: |

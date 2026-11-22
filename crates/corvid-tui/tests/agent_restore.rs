@@ -29,6 +29,9 @@ use corvid_protocol::windows::StateDirectory;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_corvid");
 const WAIT: Duration = Duration::from_secs(20);
+// The client can wait 45 seconds for the daemon's restore result before attaching.
+const STARTUP_RESTORE_WAIT: Duration = Duration::from_secs(60);
+const RESTORE_DIAGNOSTIC_WAIT: Duration = Duration::from_secs(2);
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -178,6 +181,28 @@ impl Fixture {
             pane_id: None,
             mode: mode as i32,
         }
+    }
+
+    async fn inspect_restore(&self, location: Location) -> Result<String> {
+        timeout(RESTORE_DIAGNOSTIC_WAIT, async {
+            let mut connection = self.connection().await?;
+            let result = connection
+                .restore_workspace(RestoreWorkspace {
+                    workspace_id: location.workspace.to_string(),
+                    pane_id: Some(location.pane.to_string()),
+                    mode: AgentRestoreMode::Inspect as i32,
+                })
+                .await?;
+            let pane = result.panes.first().context("missing restore pane")?;
+            Ok(format!(
+                "status={:?}, error={:?}, terminal={:?}",
+                pane.status(),
+                pane.error.as_ref().map(|error| &error.code),
+                pane.terminal_id
+            ))
+        })
+        .await
+        .context("inspecting the restore timed out")?
     }
 }
 
@@ -374,6 +399,9 @@ async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Re
     daemon.kill()?;
     daemon.status().await?;
 
+    if std::env::var_os("CORVID_TEST_DELAY_CLAUDE_RESTORE").is_some() {
+        std::fs::write(fixture.root.join("delay-claude-restore"), [])?;
+    }
     let _restarted = fixture.start().await?;
     let host = fixture.connection().await?.session().host_id.clone();
     for (index, (provider, session)) in agents.into_iter().enumerate() {
@@ -394,8 +422,21 @@ async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Re
             drop(recorder);
         }
         let runtime = fixture.runtime.clone();
-        corvid_async::task::spawn_blocking(move || StartupTui::open(&runtime, &views, session))
-            .await??;
+        let result = corvid_async::task::spawn_blocking(move || {
+            StartupTui::start(&runtime, &views, &[])?
+                .wait_for_within(&format!("READY-{session}"), STARTUP_RESTORE_WAIT)
+        })
+        .await?;
+        if let Err(error) = result {
+            let restore = fixture
+                .inspect_restore(location)
+                .await
+                .unwrap_or_else(|error| format!("{error:#}"));
+            return Err(error.context(format!(
+                "startup restore of {session} in pane {}: {restore}",
+                location.pane
+            )));
+        }
         let agents = corvid_client::agents(&fixture.runtime).await?;
         ensure!(
             agents.agents.iter().any(|agent| {
@@ -422,10 +463,6 @@ struct StartupTui {
 }
 
 impl StartupTui {
-    fn open(runtime: &Path, views: &Path, session: &str) -> Result<()> {
-        Self::start(runtime, views, &[])?.wait_for(&format!("READY-{session}"))
-    }
-
     fn start(runtime: &Path, views: &Path, args: &[&str]) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows: 24,
@@ -491,14 +528,20 @@ impl StartupTui {
     }
 
     fn wait_for(&mut self, marker: &str) -> Result<()> {
-        let deadline = std::time::Instant::now() + WAIT;
+        self.wait_for_within(marker, WAIT)
+    }
+
+    fn wait_for_within(&mut self, marker: &str, wait: Duration) -> Result<()> {
+        let start = std::time::Instant::now();
+        let deadline = start + wait;
         while !self.screen.screen().contents().contains(marker) {
             let bytes = self
                 .output
                 .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
                 .with_context(|| {
                     format!(
-                        "waiting for {marker}, screen: {:?}",
+                        "waiting for {marker} after {:?}, screen: {:?}",
+                        start.elapsed(),
                         self.screen.screen().contents()
                     )
                 })?;
