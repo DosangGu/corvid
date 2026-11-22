@@ -13,9 +13,9 @@ mod fixture {
 
     use anyhow::{Result, ensure};
     use gpui::{
-        Bounds, Context, Font, IntoElement, LineLayout, Pixels, Render, TextRun, TextStyle,
-        TextSystem, Window, WindowBounds, WindowOptions, WindowTextSystem, div, font, prelude::*,
-        px, rgb, size,
+        Bounds, Context, Element, Font, IntoElement, LineLayout, Pixels, Render, Role, TextRun,
+        TextStyle, TextSystem, Window, WindowBounds, WindowOptions, WindowTextSystem, div, font,
+        prelude::*, px, rgb, size,
     };
 
     use super::{desktop_font, tab_title};
@@ -113,6 +113,30 @@ mod fixture {
         Ok(())
     }
 
+    fn verify_title_accessibility() -> Result<()> {
+        let label = "Claude Code planning the next release";
+        for (suffix, expected) in [
+            (None, label),
+            (Some("!"), "Claude Code planning the next release !"),
+        ] {
+            let frame = div().id("tab").max_w(px(90.));
+            let button = tab_title::button(frame, label.to_owned(), suffix);
+            ensure!(
+                button.a11y_role() == Some(Role::Button),
+                "The tab has no button role"
+            );
+
+            let mut node = Default::default();
+            button.write_a11y_info(&mut node);
+            ensure!(
+                node.label() == Some(expected),
+                "Unexpected accessible tab name"
+            );
+        }
+        println!("PASS Desktop: full accessible tab names");
+        Ok(())
+    }
+
     struct TabTitles;
 
     impl Render for TabTitles {
@@ -146,6 +170,7 @@ mod fixture {
     }
 
     pub(super) fn run() -> Result<()> {
+        verify_title_accessibility()?;
         let application = gpui_platform::application();
         desktop_font::register(&application.text_system())?;
         let result = Rc::new(RefCell::new(Ok(())));
