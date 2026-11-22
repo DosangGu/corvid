@@ -52,3 +52,21 @@ jobs:
           restore-keys: checks-daemon-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/checks-daemon.yml') }}-
       - run: cargo clippy --locked -p corvid-core -p corvid-protocol -p corvid-daemon -p corvid-update --all-targets -- -D warnings
       - run: cargo test --locked -p corvid-core -p corvid-protocol -p corvid-daemon -p corvid-update
+
+  windows-shell-history:
+    name: PowerShell terminal history (Windows ARM64)
+    runs-on: windows-11-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Repeat the release-mode ConPTY history test
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            cargo test --locked --release -p corvid-daemon --lib wheel_history_stays_live_while_powershell_runs_a_console_program
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

@@ -123,28 +123,44 @@ mod tests {
     ) {
         let until = Instant::now() + Duration::from_secs(15);
         loop {
-            session.read_output().unwrap();
-            assert!(session.flush_input().is_ok());
+            session.read_output().unwrap_or_else(|error| {
+                panic!("reading ConPTY while waiting for {phase}: {error:#}")
+            });
+            assert!(
+                session.flush_input().is_ok(),
+                "writing to ConPTY while waiting for {phase}"
+            );
             if ready(session) {
                 return;
             }
             let exited = session.try_wait().unwrap();
             assert!(
                 exited.is_none() && Instant::now() < until,
-                "waiting for {phase}: exit={exited:?}, process={:?}, shell marker={:?}, screen={:?}",
+                "waiting for {phase}: exit={exited:?}, process={:?}, shell marker={:?}, shell foreground={}, screen={:?}",
                 session.pty.process_key(),
                 session.screen.shell_prompt(),
+                session.history(true).shell_foreground,
                 session.screen.snapshot().contents()
             );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
 
+    fn screen_has_line(session: &TerminalSession, marker: &str) -> bool {
+        session
+            .screen
+            .snapshot()
+            .contents()
+            .lines()
+            .any(|line| line.trim() == marker)
+    }
+
     #[test]
     fn wheel_history_stays_live_while_powershell_runs_a_console_program() {
-        let powershell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let mut command = CommandBuilder::new(powershell);
+        let system_root = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let mut command =
+            CommandBuilder::new(system_root.join("System32/WindowsPowerShell/v1.0/powershell.exe"));
+        command.cwd(&system_root);
         command.args(["-NoLogo", "-NoProfile"]);
         let mut session = TerminalSession::start(command, Viewport::new(80, 24).unwrap()).unwrap();
         wait_for(&mut session, "the initial PowerShell prompt", |session| {
@@ -156,37 +172,53 @@ mod tests {
                 .any(|line| line.trim_start().starts_with("PS ") && line.trim_end().ends_with('>'))
         });
         assert!(
-            session
-                .input
-                .user(b"[Console]::WriteLine(('SHELL_' + 'READY'))\r".to_vec())
+            session.input.user(
+                concat!(
+                    "1..32 | ForEach-Object { [Console]::WriteLine(('HISTORY_' + $_)) }; ",
+                    "[Console]::WriteLine(('SHELL_' + 'READY'))\r"
+                )
+                .as_bytes()
+                .to_vec()
+            )
         );
         wait_for(&mut session, "the PowerShell input probe", |session| {
-            session
-                .screen
-                .snapshot()
-                .contents()
-                .lines()
-                .any(|line| line.trim() == "SHELL_READY")
-                && session.history(true).shell_foreground
+            screen_has_line(session, "SHELL_READY")
         });
+        wait_for(
+            &mut session,
+            "foreground PowerShell before cmd.exe",
+            |session| session.history(true).shell_foreground,
+        );
 
         assert!(
-            session
-                .input
-                .user(b"cmd.exe /d /q /c 'echo CHILD^_READY&set /p answer='\r".to_vec())
+            session.input.user(
+                concat!(
+                    "cmd.exe /d /q /c 'echo CHILD^_READY&set /p answer='; ",
+                    "[Console]::WriteLine(('SHELL_' + 'RETURNED'))\r"
+                )
+                .as_bytes()
+                .to_vec()
+            )
         );
         wait_for(&mut session, "the foreground cmd.exe prompt", |session| {
-            session
-                .screen
-                .snapshot()
-                .contents()
-                .lines()
-                .any(|line| line.trim() == "CHILD_READY")
+            screen_has_line(session, "CHILD_READY")
         });
-        assert!(!session.history(true).shell_foreground);
-        assert!(!session.history(false).lines.is_empty());
+        wait_for(&mut session, "cmd.exe taking the foreground", |session| {
+            !session.history(true).shell_foreground
+        });
+        assert!(session.history(true).lines.is_empty());
+        assert!(
+            session
+                .history(false)
+                .lines
+                .iter()
+                .any(|line| line.trim() == "HISTORY_1")
+        );
         assert!(session.input.user(b"done\r".to_vec()));
 
+        wait_for(&mut session, "the PowerShell return marker", |session| {
+            screen_has_line(session, "SHELL_RETURNED")
+        });
         wait_for(&mut session, "PowerShell after cmd.exe exits", |session| {
             session.history(true).shell_foreground
         });
