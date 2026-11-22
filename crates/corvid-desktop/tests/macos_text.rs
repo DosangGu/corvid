@@ -22,7 +22,9 @@ fn main() -> anyhow::Result<()> {
     let wide = text.advance(terminal, FONT_SIZE, 'W')?.width;
     assert_eq!(narrow, wide);
     verify_preferences(&text)?;
-    println!("PASS macOS: native fonts, Menlo default, saved selection and missing-font fallback");
+    println!(
+        "PASS macOS: native fonts, Menlo default, saved selection, missing-font fallback and clipboard preference"
+    );
     Ok(())
 }
 
@@ -35,6 +37,7 @@ fn verify_preferences(text: &gpui::TextSystem) -> anyhow::Result<()> {
     assert_eq!(fonts.current().as_str(), DEFAULT_FONT);
     assert_eq!(fonts.default_family().as_str(), DEFAULT_FONT);
     assert!(fonts.selected().is_none());
+    assert!(!fonts.allows_clipboard_write());
     let alternate = fonts
         .available()
         .iter()
@@ -42,10 +45,12 @@ fn verify_preferences(text: &gpui::TextSystem) -> anyhow::Result<()> {
         .expect("macOS provides additional monospaced fonts")
         .clone();
 
+    fonts.set_clipboard_write(true)?;
     fonts.select(Some(alternate.clone()))?;
     let mut restored = TerminalFonts::load(state.path(), text);
     assert_eq!(restored.current(), &alternate);
     assert_eq!(restored.selected(), Some(&alternate));
+    assert!(restored.allows_clipboard_write());
     restored.select(None)?;
     assert_eq!(
         TerminalFonts::load(state.path(), text).current().as_str(),
@@ -59,6 +64,7 @@ fn verify_preferences(text: &gpui::TextSystem) -> anyhow::Result<()> {
     let fallback = TerminalFonts::load(state.path(), text);
     assert_eq!(fallback.current().as_str(), DEFAULT_FONT);
     assert!(fallback.selected().is_none());
+    assert!(!fallback.allows_clipboard_write());
     Ok(())
 }
 
