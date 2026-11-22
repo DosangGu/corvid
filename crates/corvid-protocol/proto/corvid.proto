@@ -96,6 +96,7 @@ message Envelope {
     RetireAgentDeck retire_agent_deck = 135;
     AgentDeckRetired agent_deck_retired = 136;
     ReconnectAgentMonitor reconnect_agent_monitor = 137;
+    ClipboardWrite clipboard_write = 138;
     ReadTerminalHistory read_terminal_history = 122;
     TerminalHistory terminal_history = 123;
     DisconnectWorkspaceClients disconnect_workspace_clients = 125;
@@ -1118,6 +1119,12 @@ message RouteToken {
   uint64 view_revision = 3;
   string terminal_id = 4;
   uint64 writer_lease_generation = 5;
+}
+
+// One-shot text copy from the PTY to its interactive writer.
+message ClipboardWrite {
+  RouteToken route_token = 1;
+  string text = 2;
 }
 
 message InputChunk {

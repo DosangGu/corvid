@@ -165,6 +165,7 @@ pub(crate) enum Action {
 
 pub(crate) enum Event {
     RenameTab(InputRoute, String),
+    ClipboardWrite(InputRoute, String),
     Render(Render),
     ViewChanged {
         route: InputRoute,
@@ -1160,8 +1161,9 @@ impl Worker {
         {
             let _ = terminal.resize(viewport);
         }
-        let failure = match terminal.advance() {
-            Ok(failure) => failure,
+        let clipboard_route = self.lease.as_ref().and_then(Lease::clipboard_route);
+        let (failure, clipboard) = match terminal.advance(clipboard_route) {
+            Ok(result) => result,
             Err(_) => {
                 self.fail(terminal_fault(), true);
                 return;
@@ -1192,6 +1194,14 @@ impl Worker {
         if let Some(error) = failure {
             self.write_failed(error);
             return;
+        }
+        if let Some(text) = clipboard
+            && let Some(lease) = &self.lease
+            && let Some(route) = clipboard_route
+            && lease.events.is_empty()
+        {
+            // Keep space for view changes and renders even if the PTY floods copies.
+            let _ = lease.events.try_send(Event::ClipboardWrite(route, text));
         }
         if let Some(lease) = &mut self.lease
             && lease.render(terminal, &self.scope).is_err()
@@ -1282,6 +1292,7 @@ struct Running {
     shell: bool,
     dirty: bool,
     reported_title: String,
+    clipboard_route: Option<InputRoute>,
     exit: Option<ExitStatus>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     process: TerminalProcess,
@@ -1361,6 +1372,7 @@ impl Running {
             shell,
             dirty: true,
             reported_title: String::new(),
+            clipboard_route: None,
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             process,
@@ -1455,6 +1467,7 @@ impl Running {
             shell: saved.shell,
             dirty: true,
             reported_title: String::new(),
+            clipboard_route: None,
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             process,
@@ -1463,11 +1476,18 @@ impl Running {
         })
     }
 
-    fn advance(&mut self) -> Result<Option<WriteFailure>> {
+    fn advance(
+        &mut self,
+        clipboard_route: Option<InputRoute>,
+    ) -> Result<(Option<WriteFailure>, Option<String>)> {
         if self.exit.is_some() {
-            return Ok(None);
+            return Ok((None, None));
         }
-        let tick = self.session.poll()?;
+        let clipboard_reset = self.clipboard_route != clipboard_route;
+        self.clipboard_route = clipboard_route;
+        let tick = self
+            .session
+            .poll(clipboard_route.is_some(), clipboard_reset)?;
         if tick.title != self.reported_title {
             self.reported_title = tick.title;
             let id = self.id;
@@ -1496,7 +1516,7 @@ impl Running {
                 });
             }
         }
-        Ok(tick.failure)
+        Ok((tick.failure, tick.clipboard))
     }
 
     #[cfg(windows)]
@@ -1809,6 +1829,11 @@ impl Lease {
             location,
             status: None,
         }
+    }
+
+    fn clipboard_route(&self) -> Option<InputRoute> {
+        (self.keymap.clipboard_write && self.armed && !self.frozen && !self.switch_pending)
+            .then_some(self.route)
     }
 
     fn input_mode(&self) -> InputMode {

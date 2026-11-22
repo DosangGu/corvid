@@ -603,7 +603,12 @@ resize, and child-query responses. A child's DSR/DA or similar query is answered
 own emulated terminal state, through its PTY write queue. It is not forwarded indiscriminately
 to the outer terminal, whose cursor/grid differs. Only explicitly supported queries get
 responses; unsupported capabilities are not advertised. Child OSC title strings become
-sanitized display data. Clipboard/window-control OSC is disabled by default.
+sanitized display data. A client that negotiates `clipboard_write.v1` can receive
+OSC 52 text writes for its current writer route. The daemon sends a structured
+event through the interactive stream, and the client applies its local clipboard
+setting before writing. Events are transient and tied to the view in which the
+daemon read the request. Each PTY keeps at most the latest request between polls.
+Clipboard read and window-control requests remain disabled.
 
 ### 7.2 Rendering and recovery
 
@@ -728,7 +733,7 @@ These are initial engineering limits, to be measured at phase gates, not benchma
 | PTY unread user-space queue | 1 MiB per PTY; stop reading only that PTY until parsing catches up |
 | PTY writes / terminal replies | Bounded per-terminal queue; prioritize protocol replies at safe batch boundaries; stall/fail that terminal explicitly, never silently discard replies |
 | In-memory scrollback | 5,000 rows and 8 MiB per terminal, whichever first; also a 256 MiB aggregate screen/scrollback budget |
-| Terminal strings / cell text | 4 KiB OSC/control-string payload, 64 UTF-8 bytes of combining text per cell; consume syntax safely, limit retained content |
+| Terminal strings / cell text | 4 KiB OSC/control-string payload, with a separate OSC 52 limit of 64 KiB decoded UTF-8. Up to 64 UTF-8 bytes of combining text per cell. |
 | Rendering | Target at most 30 frames/s/client; one pending dirty-screen marker may replace many refresh requests |
 | Render transmit | 4 MiB frame, 8 MiB queue/client; 5 seconds without progress disconnects client |
 | Domain/collector queue | 4,096 observations or 8 MiB; admission drops observation with gap accounting where possible, never blocks provider |

@@ -16,6 +16,7 @@ corvid-async.workspace = true
 compio = { workspace = true, features = ["macros"] }
 futures-util.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 corvid-update.workspace = true
 corvid-core.workspace = true
 corvid-protocol = { workspace = true, features = ["compio"] }

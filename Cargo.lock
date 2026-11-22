@@ -1330,6 +1330,7 @@ name = "corvid-daemon"
 version = "0.5.1"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "compio",
  "corvid-async",
  "corvid-core",

@@ -21,6 +21,7 @@ pub(super) struct Tick {
     pub(super) output: bool,
     pub(super) exit: Option<ExitStatus>,
     pub(super) failure: Option<WriteFailure>,
+    pub(super) clipboard: Option<String>,
 }
 
 impl Backend {
@@ -42,9 +43,12 @@ impl Backend {
         Ok(Self::Hosted(Client::connect(root, id, false)?))
     }
 
-    pub(super) fn poll(&mut self) -> Result<Tick> {
+    pub(super) fn poll(&mut self, clipboard_enabled: bool, clipboard_reset: bool) -> Result<Tick> {
         match self {
             Self::Local(session) => {
+                session
+                    .screen
+                    .configure_clipboard(clipboard_enabled, clipboard_reset);
                 let (state, output) = session.read_output()?;
                 let exit = if matches!(state, ReadState::BudgetUsed) {
                     None
@@ -64,10 +68,11 @@ impl Backend {
                     output,
                     exit,
                     failure,
+                    clipboard: session.screen.take_clipboard(),
                 })
             }
             Self::Hosted(client) => {
-                let response = client.command(Operation::Poll, Vec::new())?;
+                let response = client.poll(clipboard_enabled, clipboard_reset)?;
                 ensure!(!response.rejected, "terminal host poll failed");
                 let exit = response.status();
                 Ok(Tick {
@@ -75,6 +80,7 @@ impl Backend {
                     output: response.changed,
                     exit,
                     failure: response.write_failure(),
+                    clipboard: response.clipboard,
                 })
             }
         }

@@ -23,8 +23,8 @@ use corvid_protocol::wire::{
     ProviderExecutionMode, ProviderQualification, SnapshotWatch, Viewport,
 };
 use corvid_protocol::{
-    CAPABILITY_QUERY, FRAME_PREAMBLE, Frame, FrameReader, FrameRole, FrameWriter, PROTOCOL_MAJOR,
-    PeerRole, check_hello_result, hello,
+    CAPABILITY_QUERY, CLIPBOARD_WRITE_CAPABILITY, FRAME_PREAMBLE, Frame, FrameReader, FrameRole,
+    FrameWriter, PROTOCOL_MAJOR, PeerRole, check_hello_result, hello,
 };
 use uuid::Uuid;
 
@@ -65,13 +65,13 @@ async fn relays_daemon_terminal_frames_without_an_outer_tty() {
             Some("attach".into()),
             Body::Attach(Attach {
                 viewport: Some(Viewport { rows: 24, cols: 80 }),
-                terminal_capabilities: vec!["legacy_vt.v1".into()],
+                terminal_capabilities: vec!["legacy_vt.v1".into(), CLIPBOARD_WRITE_CAPABILITY.into()],
                 requested_role: AttachRole::Writer as i32,
                 launch: Some(LaunchCommand {
                     argv: vec![
                         b"/bin/sh".to_vec(),
                         b"-c".to_vec(),
-                        b"printf '\\033[?1049h\\033[?1000h\\033[?1006hDAEMON-RELAY-READY\\n'; read answer".to_vec(),
+                        b"printf '\\033[?1049h\\033[?1000h\\033[?1006hDAEMON-RELAY-READY\\n'; read answer; printf '\\033]52;c;aGVsbG8K7ZWc6riA\\007'; read again".to_vec(),
                     ],
                     ..Default::default()
                 }),
@@ -80,7 +80,9 @@ async fn relays_daemon_terminal_frames_without_an_outer_tty() {
         );
         writer.envelope(&request).await.unwrap();
         let reply = reader.next_envelope().await.unwrap().unwrap();
-        assert!(matches!(reply.body, Some(Body::Attached(_))));
+        let Some(Body::Attached(attached)) = reply.body else {
+            panic!("expected attachment");
+        };
         loop {
             let Frame::Render(frame) = reader.next_frame().await.unwrap().unwrap() else {
                 panic!("expected ANSI render")
@@ -98,6 +100,33 @@ async fn relays_daemon_terminal_frames_without_an_outer_tty() {
                 .envelope(&session.envelope(Some("applied".into()), Body::FrameApplied(applied)))
                 .await
                 .unwrap();
+        }
+        writer
+            .envelope(&session.envelope(
+                Some("copy".into()),
+                Body::InputChunk(corvid_protocol::wire::InputChunk {
+                    route_token: attached.route_token.clone(),
+                    input_sequence: 1,
+                    data: b"copy\n".to_vec(),
+                }),
+            ))
+            .await
+            .unwrap();
+        loop {
+            match reader.next_frame().await.unwrap().unwrap() {
+                Frame::Render(frame) => {
+                    assert!(!frame.ansi.windows(4).any(|bytes| bytes == b"\x1b]52"));
+                }
+                Frame::Structured(bytes) => {
+                    let envelope = corvid_protocol::decode_envelope(&bytes).unwrap();
+                    let Some(Body::ClipboardWrite(write)) = envelope.body else {
+                        panic!("expected clipboard write");
+                    };
+                    assert_eq!(write.route_token, attached.route_token);
+                    assert_eq!(write.text, "hello\n한글");
+                    break;
+                }
+            }
         }
         writer
             .envelope(&session.envelope(Some("detach".into()), Body::Detach(Detach {})))

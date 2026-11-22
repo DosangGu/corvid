@@ -1,14 +1,26 @@
 use std::fmt::Write as _;
 
+mod clipboard;
+use clipboard::Clipboard;
+
 #[derive(Default)]
-pub(super) struct Normalizer(vte::Parser);
+pub(super) struct Normalizer {
+    parser: vte::Parser,
+    clipboard: Option<Clipboard>,
+}
 
 impl Normalizer {
     pub(super) fn process(&mut self, mut bytes: &[u8], mut process: impl FnMut(&[u8], bool)) {
-        let mut sgr = Sgr::default();
+        let mut sgr = Sgr {
+            capture_clipboard: self.clipboard.is_some(),
+            ..Default::default()
+        };
         while !bytes.is_empty() {
-            let consumed = self.0.advance_until_terminated(&mut sgr, bytes);
+            let consumed = self.parser.advance_until_terminated(&mut sgr, bytes);
             let (chunk, rest) = bytes.split_at(consumed);
+            if let Some(clipboard) = &mut self.clipboard {
+                clipboard.advance(chunk, std::mem::take(&mut sgr.clipboard_dispatched));
+            }
             if let Some(replacement) = sgr.replacement.take() {
                 // Feed the prefix without the final 'm'. The replacement's ESC
                 // cancels the pending CSI, even when it began in an earlier chunk.
@@ -20,12 +32,26 @@ impl Normalizer {
             bytes = rest;
         }
     }
+
+    pub(super) fn configure_clipboard(&mut self, enabled: bool, reset: bool) {
+        if !enabled {
+            self.clipboard = None;
+        } else if reset || self.clipboard.is_none() {
+            self.clipboard = Some(Clipboard::default());
+        }
+    }
+
+    pub(super) fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.as_mut()?.take()
+    }
 }
 
 #[derive(Default)]
 struct Sgr {
     replacement: Option<String>,
     clear_history: bool,
+    capture_clipboard: bool,
+    clipboard_dispatched: bool,
 }
 
 impl vte::Perform for Sgr {
@@ -68,8 +94,13 @@ impl vte::Perform for Sgr {
         self.replacement = Some(sgr);
     }
 
+    fn osc_dispatch(&mut self, params: &[&[u8]], _: bool) {
+        self.clipboard_dispatched =
+            self.capture_clipboard && params.first() == Some(&b"52".as_slice());
+    }
+
     fn terminated(&self) -> bool {
-        self.replacement.is_some() || self.clear_history
+        self.replacement.is_some() || self.clear_history || self.clipboard_dispatched
     }
 }
 
