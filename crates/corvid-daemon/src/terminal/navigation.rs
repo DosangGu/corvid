@@ -26,11 +26,7 @@ pub(super) enum Overlay {
     },
     Tabs(Uuid),
     Panes(Uuid),
-    Confirm {
-        title: String,
-        target: CloseTarget,
-        return_to: Option<Box<Overlay>>,
-    },
+    ConfirmWorkspace(Uuid),
 }
 
 #[derive(Clone, Copy)]
@@ -87,68 +83,16 @@ impl Overlay {
         keymap: Keymap,
     ) -> (Option<Self>, Option<KeyCommand>) {
         if matches!(bytes, b"\x1b" | b"\x03") {
-            return match self {
-                Self::Confirm { return_to, .. } => (return_to.map(|overlay| *overlay), None),
-                _ => (None, None),
-            };
+            return (None, None);
         }
         let unfocused = |command| (None, Some(command));
         match self {
             Self::Tabs(tab) => tab_keys(bytes, layout, location, keymap, tab),
-            Self::Panes(mut pane) => {
-                match bytes {
-                    b"\r" | b"\n" => return unfocused(KeyCommand::Tab(TabCommand::Pane(pane))),
-                    b"r" | b"d" => {
-                        let axis = if bytes == b"r" {
-                            Axis::Horizontal
-                        } else {
-                            Axis::Vertical
-                        };
-                        return unfocused(KeyCommand::Tab(TabCommand::SplitAt(pane, axis)));
-                    }
-                    b"x" if keymap.close => {
-                        let panes = panes(layout, location, Rect::UNIT);
-                        let index = panes.iter().position(|(id, _)| *id == pane).unwrap_or(0);
-                        return (
-                            Some(Self::Confirm {
-                                title: format!("End pane {} and its terminal?", index + 1),
-                                target: CloseTarget::Pane(Location { pane, ..location }),
-                                return_to: Some(Box::new(Self::Panes(pane))),
-                            }),
-                            None,
-                        );
-                    }
-                    _ => {
-                        if let Some(target) =
-                            direction(bytes).and_then(|dir| neighbor(layout, location, pane, dir))
-                        {
-                            pane = target;
-                        }
-                    }
-                }
-                (Some(Self::Panes(pane)), None)
+            Self::Panes(pane) => pane_keys(bytes, layout, location, keymap, pane),
+            Self::ConfirmWorkspace(workspace) if matches!(bytes, b"\r" | b"\n") => {
+                unfocused(KeyCommand::End(CloseTarget::Workspace(workspace)))
             }
-            Self::Confirm {
-                title,
-                target,
-                return_to,
-            } => {
-                if matches!(bytes, b"\r" | b"\n") {
-                    (
-                        return_to.map(|overlay| *overlay),
-                        Some(KeyCommand::End(target)),
-                    )
-                } else {
-                    (
-                        Some(Self::Confirm {
-                            title,
-                            target,
-                            return_to,
-                        }),
-                        None,
-                    )
-                }
-            }
+            Self::ConfirmWorkspace(_) => (Some(self), None),
             Self::List {
                 kind,
                 mut index,
@@ -173,12 +117,7 @@ impl Overlay {
                                 Choice::Command(key) => return (None, keymap.command(&[key])),
                                 Choice::EndWorkspace => {
                                     return (
-                                        Some(Self::Confirm {
-                                            title: "End the current workspace and its terminals?"
-                                                .into(),
-                                            target: CloseTarget::Workspace(location.workspace),
-                                            return_to: None,
-                                        }),
+                                        Some(Self::ConfirmWorkspace(location.workspace)),
                                         None,
                                     );
                                 }
@@ -264,6 +203,7 @@ impl Overlay {
     pub(super) fn paint(
         &self,
         layout: &Layout,
+        location: Location,
         keymap: Keymap,
         outer: Viewport,
         motion: &TitleMotion,
@@ -310,21 +250,70 @@ impl Overlay {
                 }
                 .into(),
             ),
-            Self::Panes(_) => lines.push(
-                if keymap.close {
-                    "Panes · ←↓↑→ Select · Enter Focus · r Right · d Down · x Close · Esc Cancel"
-                } else {
-                    "Panes · ←↓↑→ Select · Enter Focus · r Right · d Down · Esc Cancel"
-                }
-                .into(),
-            ),
-            Self::Confirm { title, .. } => {
-                lines.push(title.clone());
+            Self::Panes(pane) => {
+                let label = layout
+                    .panes(location.workspace, location.tab)
+                    .iter()
+                    .position(|item| item.pane == *pane)
+                    .map_or_else(|| "Panes".into(), |index| format!("Pane {}", index + 1));
+                let close = if keymap.close { " · x Close" } else { "" };
+                lines.push(format!(
+                    "{label} · ←↓↑→ h/j/k/l · Enter Focus · r Right · d Down{close} · Esc Cancel"
+                ));
+            }
+            Self::ConfirmWorkspace(_) => {
+                lines.push("End the current workspace and its terminals?".into());
                 lines.push("Enter End terminals · Esc Cancel".into());
             }
         }
         paint_lines(outer, &lines)
     }
+}
+
+fn pane_keys(
+    bytes: &[u8],
+    layout: &Layout,
+    location: Location,
+    keymap: Keymap,
+    mut pane: Uuid,
+) -> (Option<Overlay>, Option<KeyCommand>) {
+    if matches!(bytes, b"\r" | b"\n") {
+        return (None, Some(KeyCommand::Tab(TabCommand::Pane(pane))));
+    }
+    let step = |pane, dir| neighbor(layout, location, pane, dir).unwrap_or(pane);
+    if let Some(dir) = direction(bytes) {
+        return (Some(Overlay::Panes(step(pane, dir))), None);
+    }
+    if bytes.iter().all(u8::is_ascii_graphic) {
+        // Several printable keys can arrive in the same input chunk.
+        for key in bytes {
+            match key {
+                b'h' => pane = step(pane, Direction::Left),
+                b'j' => pane = step(pane, Direction::Down),
+                b'k' => pane = step(pane, Direction::Up),
+                b'l' => pane = step(pane, Direction::Right),
+                b'r' | b'd' => {
+                    let axis = if *key == b'r' {
+                        Axis::Horizontal
+                    } else {
+                        Axis::Vertical
+                    };
+                    return (None, Some(KeyCommand::Tab(TabCommand::SplitAt(pane, axis))));
+                }
+                b'x' if keymap.close => {
+                    return (
+                        None,
+                        Some(KeyCommand::End(CloseTarget::Pane(Location {
+                            pane,
+                            ..location
+                        }))),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    (Some(Overlay::Panes(pane)), None)
 }
 
 fn tab_keys(
