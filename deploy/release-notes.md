@@ -1,7 +1,6 @@
-Corvid v0.5.1 simplifies TUI tab and pane navigation and improves Desktop updates on macOS.
+Corvid v0.5.2 aligns Desktop tab and pane navigation with the TUI and adds opt-in clipboard writes to both clients.
 
-- In TUI tab mode (`Ctrl+]`, then `t`), use the arrows or `h` and `l` to highlight a tab in the top bar. Press Enter to focus it, `n` to open a tab, or `x` to close the highlighted tab immediately. [#346](https://github.com/DosangGu/corvid/pull/346)
-- In TUI pane mode (`Ctrl+]`, then `p`), use the arrows or `h`, `j`, `k`, and `l` to move the highlight. Press `r` or `d` to split the highlighted pane and focus the new shell, or `x` to close the highlighted pane immediately. The hint line shows the highlighted pane number even in small terminals. [#347](https://github.com/DosangGu/corvid/pull/347)
-- On macOS, restarting after a Desktop update refreshes the installed app's Launch Services registration and retries a failed launch for up to five seconds. [#348](https://github.com/DosangGu/corvid/pull/348)
+- In Desktop tab mode (`Ctrl+]`, then `t`), use the arrows or `h`/`l` to browse the tab bar, `n` to open a tab, or `x` to close the highlighted tab. In pane mode (`Ctrl+]`, then `p`), use the arrows or `h`/`j`/`k`/`l` to browse, `r`/`d` to split, or `x` to close the highlighted pane. Enter focuses the highlighted target and Esc cancels either mode. [#354](https://github.com/DosangGu/corvid/pull/354)
+- Terminal applications in the focused pane can write UTF-8 text to the clipboard using OSC 52. Enable **Allow terminal apps to copy to the clipboard** in Desktop's terminal settings. In the TUI, set `CORVID_ALLOW_CLIPBOARD_WRITE=1` and allow OSC 52 writes in a compatible outer terminal. Clipboard writes are off by default in both clients. [#351](https://github.com/DosangGu/corvid/pull/351) · [#352](https://github.com/DosangGu/corvid/pull/352)
 
-[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.5.1/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.5.0...v0.5.1)
+[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.5.2/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.5.1...v0.5.2)
