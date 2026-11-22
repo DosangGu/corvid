@@ -195,14 +195,26 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             key(window, "Return")
 
         def new_tab(window):
-            key(window, "ctrl+bracketright", "t", "Tab", "Return")
+            key(window, "ctrl+bracketright", "t", "n")
 
         def split_right(window):
             key(window, "ctrl+bracketright", "p", "r")
 
-        def confirm_pane_close(window):
-            key(window, "ctrl+bracketright", "p", "x")
-            time.sleep(0.3)
+        def prepare_preview(title, text):
+            type_command("printf '\\033]2;%s\\007\\033[2J\\033[H%s\\n' " + shlex.join([title, text]))
+
+        def wait_for_layout(*, tabs, panes):
+            deadline = time.monotonic() + 5
+            while True:
+                layout = subprocess.check_output(
+                    [str(root / "corvid"), "control", "workspaces"], env=environment,
+                    text=True, timeout=5,
+                )
+                if (len(re.findall(r"^  tab ", layout, re.M)) == tabs
+                        and len(re.findall(r"^    pane ", layout, re.M)) == panes):
+                    return
+                assert time.monotonic() < deadline, layout
+                time.sleep(0.05)
 
         retired = wait_for_writer()
         first_probe = wait_for_keyboard(window, retired)
@@ -384,42 +396,67 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                            check=True, timeout=10)
         key(window, "Escape")
         first_terminal = wait_for_terminal()
+        tab_screenshot = os.environ.get("CORVID_TAB_MODE_SCREENSHOT")
+        pane_screenshot = os.environ.get("CORVID_PANE_MODE_SCREENSHOT")
+        if tab_screenshot:
+            prepare_preview("Editor", "Editing scratch.txt")
         new_tab(window)
         second_terminal = wait_for_terminal(previous=first_terminal)
         second_tab_marker = root / "second-tab"
         write_marker(window, second_tab_marker,
                      f"second=preserved; printf %s \"$second\" > {shlex.quote(str(second_tab_marker))}")
+        key(window, "ctrl+bracketright", "t", "h", "Escape")
+        wait_for_terminal(expected=second_terminal)
+        if tab_screenshot:
+            prepare_preview("Tests", "Tests ready")
+        key(window, "ctrl+bracketright", "t", "h")
+        if tab_screenshot:
+            time.sleep(0.3)
+            subprocess.run(["scrot", "--overwrite", "--focused", tab_screenshot], check=True, timeout=10)
+        key(window, "Return")
+        wait_for_terminal(expected=first_terminal)
+        key(window, "ctrl+bracketright", "t", "Right", "Return")
+        wait_for_terminal(expected=second_terminal)
         if args.build:
             new_tab(window)
             added_tab = wait_for_terminal(previous=second_terminal)
+            if pane_screenshot:
+                prepare_preview("Editor", "Editing scratch.txt")
             split_right(window)
-            wait_for_terminal(previous=added_tab)
+            split = wait_for_terminal(previous=added_tab)
+            if pane_screenshot:
+                prepare_preview("Logs", "Watching logs")
+            key(window, "ctrl+bracketright", "p", "h")
+            if pane_screenshot:
+                time.sleep(0.3)
+                subprocess.run(["scrot", "--overwrite", "--focused", pane_screenshot], check=True, timeout=10)
+            key(window, "Escape")
+            wait_for_terminal(expected=split)
+            key(window, "ctrl+bracketright", "p", "Left", "Return")
+            wait_for_terminal(expected=added_tab)
             if preview := os.environ.get("CORVID_PANE_CLOSE_PREVIEW_DIR"):
                 subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-before.png")],
                                check=True, timeout=10)
-            confirm_pane_close(window)
-            key(window, "Return")
+            key(window, "ctrl+bracketright", "p", "l", "x")
+            wait_for_layout(tabs=3, panes=3)
             wait_for_terminal(expected=added_tab)
             if preview:
                 subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-after.png")],
                                check=True, timeout=10)
-            confirm_pane_close(window)
-            key(window, "Return")
-            wait_for_terminal(expected=first_terminal)
-            key(window, "ctrl+bracketright", "bracketright")
+            key(window, "ctrl+bracketright", "t", "h", "Return")
+            wait_for_terminal(expected=second_terminal)
+            key(window, "ctrl+bracketright", "t", "l", "x")
+            wait_for_layout(tabs=2, panes=2)
             wait_for_terminal(expected=second_terminal)
 
-            split_right(window)
+            key(window, "ctrl+bracketright", "p", "d")
             split = wait_for_terminal(previous=second_terminal)
-
-            confirm_pane_close(window)
-            if screenshot := os.environ.get("CORVID_CLOSE_SCREENSHOT"):
-                subprocess.run(["scrot", "--overwrite", "--focused", screenshot],
-                               check=True, timeout=10)
-            key(window, "Escape")
+            key(window, "ctrl+bracketright", "p", "k", "Return")
+            wait_for_terminal(expected=second_terminal)
+            key(window, "ctrl+bracketright", "p", "j", "Return")
             wait_for_terminal(expected=split)
-            confirm_pane_close(window)
-            key(window, "Return")
+            key(window, "ctrl+bracketright", "p", "x")
+            wait_for_layout(tabs=2, panes=2)
             wait_for_terminal(expected=second_terminal)
         key(window, "ctrl+bracketright", "bracketleft")
         wait_for_terminal(expected=first_terminal)

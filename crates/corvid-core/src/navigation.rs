@@ -8,6 +8,22 @@ pub enum Direction {
     Down,
 }
 
+pub const fn tab_mode_hint(can_close: bool) -> &'static str {
+    if can_close {
+        "Tabs · ←/→ h/l · Enter Focus · n New · x Close · Esc Cancel"
+    } else {
+        "Tabs · ←/→ h/l · Enter Focus · n New · Esc Cancel"
+    }
+}
+
+pub const fn pane_mode_hint(can_close: bool) -> &'static str {
+    if can_close {
+        "←↓↑→ h/j/k/l · Enter Focus · r Right · d Down · x Close · Esc Cancel"
+    } else {
+        "←↓↑→ h/j/k/l · Enter Focus · r Right · d Down · Esc Cancel"
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceCommand {
     Workspaces,

@@ -56,10 +56,13 @@ pub(super) struct TabBar {
 }
 
 impl TabBar {
-    pub(super) fn select(&mut self, tab: Option<&str>) {
+    pub(super) fn select(&mut self, tab: Option<&str>, reveal: bool) {
         if self.selection.as_deref() != tab {
             self.selection = tab.map(str::to_owned);
             self.follow_selection.set(tab.is_some());
+        }
+        if reveal {
+            self.follow_selection.set(true);
         }
     }
 
@@ -283,12 +286,15 @@ mod tests {
     #[test]
     fn repeated_selection_preserves_manual_scroll() {
         let mut bar = TabBar::default();
-        bar.select(Some("tab-a"));
+        bar.select(Some("tab-a"), false);
         assert!(bar.follow_selection.get());
         bar.follow_selection.set(false);
-        bar.select(Some("tab-a"));
+        bar.select(Some("tab-a"), false);
         assert!(!bar.follow_selection.get());
-        bar.select(Some("tab-b"));
+        bar.select(Some("tab-a"), true);
+        assert!(bar.follow_selection.get());
+        bar.follow_selection.set(false);
+        bar.select(Some("tab-b"), false);
         assert!(bar.follow_selection.get());
     }
 }

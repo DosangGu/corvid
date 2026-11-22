@@ -48,6 +48,7 @@ const TEXT: u32 = 0xe3e8ee;
 const MUTED: u32 = 0xa4adbc;
 const ACTIVE: u32 = 0x83dec0;
 const ACTIVE_FILL: u32 = 0x20332f;
+const NAVIGATION_HIGHLIGHT: u32 = 0xf3c771;
 const MAX_BACKGROUND_HOSTS: usize = 8;
 
 async fn watch_on_frames<T: Clone + 'static>(
@@ -1185,7 +1186,7 @@ impl WorkspaceView {
                     .flex_col()
                     .border_1()
                     .border_color(rgb(if self.pane_highlight(pane) {
-                        0xf3c771
+                        NAVIGATION_HIGHLIGHT
                     } else if active {
                         ACTIVE
                     } else {
