@@ -5,6 +5,7 @@ mod deck_focus;
 mod host_watch;
 mod management;
 mod naming;
+mod navigation;
 mod switcher;
 mod tab_bar;
 mod title;
@@ -227,6 +228,7 @@ pub struct WorkspaceView {
     lookup_errors: HashMap<Destination, &'static str>,
     terminal: Option<Entity<TerminalView>>,
     selected: Option<ViewSelection>,
+    pending_pane_click: Option<(ViewSelection, (u16, u16), Instant)>,
     tab_bar: tab_bar::TabBar,
     preferred_tabs: HashMap<String, String>,
     preferred_panes: HashMap<String, String>,
@@ -240,6 +242,8 @@ pub struct WorkspaceView {
     management_window: Option<WindowHandle<management::ManagementView>>,
     management_page: management::Page,
     zoom_pane: bool,
+    navigation: Option<navigation::Overlay>,
+    leader: bool,
     menu_open: bool,
     menu_create: bool,
     menu_index: usize,
@@ -305,6 +309,7 @@ impl WorkspaceView {
             lookup_errors: HashMap::new(),
             terminal: None,
             selected: None,
+            pending_pane_click: None,
             tab_bar: tab_bar::TabBar::default(),
             preferred_tabs: HashMap::new(),
             preferred_panes: HashMap::new(),
@@ -318,6 +323,8 @@ impl WorkspaceView {
             management_window: None,
             management_page: management::Page::Connections,
             zoom_pane: false,
+            navigation: None,
+            leader: false,
             menu_open: false,
             menu_create: false,
             menu_index: 0,
@@ -744,9 +751,23 @@ impl WorkspaceView {
             let pane = selected.pane_id.clone();
             self.naming = None;
             let session = self.session.clone().expect("connected session");
+            let click = self
+                .pending_pane_click
+                .take()
+                .and_then(|(target, cell, time)| {
+                    (target == selected && time.elapsed() < Duration::from_secs(2)).then_some(cell)
+                });
             self.selected = Some(selected);
-            self.terminal = Some(cx.new(|cx| TerminalView::new(session, pane, window, cx)));
-            if !self.switcher_open && !self.menu_open && self.creation.is_none() {
+            self.terminal = Some(cx.new(|cx| {
+                let mut view = TerminalView::new(session, pane, window, cx);
+                view.pending_pane_click(click);
+                view
+            }));
+            if !self.switcher_open
+                && !self.menu_open
+                && self.navigation.is_none()
+                && self.creation.is_none()
+            {
                 self.focus_terminal(window, cx);
             }
         }
@@ -767,6 +788,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_pane_click = None;
         if let Some(session) = &self.session
             && session.ui().connected
         {
@@ -956,7 +978,7 @@ impl WorkspaceView {
 
     fn confirm_close(
         &self,
-        title: &'static str,
+        title: &str,
         mut target: CloseView,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1036,20 +1058,10 @@ impl WorkspaceView {
         if appearance::terminal_shortcut(event, window, cx) {
             return;
         }
-        let key = &event.keystroke;
-        let modifiers = key.modifiers;
-        if modifiers == gpui::Modifiers::control_shift() && key.key.eq_ignore_ascii_case("q") {
-            if !event.is_held {
-                self.windows.quit(cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
         if self.naming.is_some() {
             self.naming_key(event, window, cx);
             return;
         }
-        let ui = self.session.as_ref().map(Session::ui);
         if self.switcher_open {
             self.switcher_key(event, window, cx);
             return;
@@ -1058,96 +1070,32 @@ impl WorkspaceView {
             self.menu_key(event, window, cx);
             return;
         }
-        if modifiers != gpui::Modifiers::control() && modifiers != gpui::Modifiers::control_shift()
-        {
-            return;
-        }
-        let name = key.key.to_ascii_lowercase();
-        let shortcut = (modifiers.shift, name.as_str());
-        if event.is_held
-            && matches!(
-                shortcut,
-                (true, "n" | "t" | "d" | "e" | "p" | "r" | "z" | "w") | (_, "tab") | (false, ",")
-            )
-        {
-            cx.stop_propagation();
-            return;
-        }
-        match shortcut {
-            (true, "w") => {
-                if let Some(session) = &self.session {
-                    session.close_active_pane();
-                }
-            }
-            (true, "p") => self.toggle_switcher(window, cx),
-            (true, "n") => self.new_workspace(
-                self.destination.clone().unwrap_or(Destination::Local),
-                window,
-                cx,
-            ),
-            (true, "r") => self.open_naming(window, cx),
-            (false, ",") => self.open_management(management::Page::Connections, window, cx),
-            (true, "z") => {
-                self.zoom_pane = !self.zoom_pane;
-                cx.notify();
-            }
-            _ => {
-                self.workspace_shortcut(shortcut, ui, window, cx);
-                return;
-            }
-        }
-        cx.stop_propagation();
+        self.navigation_key(event, window, cx);
     }
 
-    fn workspace_shortcut(
-        &mut self,
-        shortcut: (bool, &str),
-        ui: Option<Ui>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !ui.as_ref().is_some_and(|ui| ui.can_write() && !ui.changing) {
-            return;
-        }
-        let Some(inventory) = ui.and_then(|ui| ui.inventory) else {
+    fn cycle_tab(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((selected, inventory)) = self.navigation_target() else {
             return;
         };
-        let workspace = self.selected.as_ref().and_then(|selected| {
-            inventory
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.workspace_id == selected.workspace_id)
-        });
-        match shortcut {
-            (true, "t") => self.create(Target::TabLabel(format!(
-                "Shell {}",
-                workspace.map_or(1, |workspace| workspace.tabs.len() + 1)
-            ))),
-            (true, "d") => self.create(Target::SplitAxis(SplitAxis::Horizontal as i32)),
-            (true, "e") => self.create(Target::SplitAxis(SplitAxis::Vertical as i32)),
-            (reverse, "tab") => {
-                let Some(workspace) = workspace else { return };
-                let index = workspace
-                    .tabs
-                    .iter()
-                    .position(|tab| {
-                        self.selected
-                            .as_ref()
-                            .is_some_and(|selected| tab.tab_id == selected.tab_id)
-                    })
-                    .unwrap_or(0);
-                let len = workspace.tabs.len();
-                if len == 0 {
-                    return;
-                }
-                let tab = &workspace.tabs[(index + if reverse { len - 1 } else { 1 }) % len];
-                if let Some((target, open)) = self.choose(workspace, tab, &inventory) {
-                    self.open_pane(target, open, window, cx);
-                }
-            }
-            _ => return,
+        let Some(workspace) = inventory
+            .workspaces
+            .iter()
+            .find(|ws| ws.workspace_id == selected.workspace_id)
+        else {
+            return;
+        };
+        let Some(index) = workspace
+            .tabs
+            .iter()
+            .position(|tab| tab.tab_id == selected.tab_id)
+        else {
+            return;
+        };
+        let len = workspace.tabs.len();
+        let tab = &workspace.tabs[(index + if reverse { len - 1 } else { 1 }) % len];
+        if let Some((target, open)) = self.choose(workspace, tab, &inventory) {
+            self.open_pane(target, open, window, cx);
         }
-        cx.stop_propagation();
     }
 
     fn terminal_placeholder(&self, ui: Option<&Ui>, cx: &mut Context<Self>) -> Div {
@@ -1236,7 +1184,13 @@ impl WorkspaceView {
                 region
                     .flex_col()
                     .border_1()
-                    .border_color(rgb(if active { ACTIVE } else { BORDER }))
+                    .border_color(rgb(if self.pane_highlight(pane) {
+                        0xf3c771
+                    } else if active {
+                        ACTIVE
+                    } else {
+                        BORDER
+                    }))
                     .child(
                         div()
                             .flex_none()
@@ -1276,18 +1230,33 @@ impl WorkspaceView {
                     })
                     .when_some(preview_session.clone(), |region, session| {
                         let target = target.clone();
+                        let surface = Rc::new(std::cell::Cell::new(None));
                         region.child(
                             div()
                                 .id(SharedString::from(format!("preview-{pane}")))
                                 .flex_1()
                                 .min_h_0()
-                                .p(ui_px(2.))
                                 .overflow_hidden()
                                 .cursor_pointer()
-                                .child(preview(session, pane.clone()))
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.select(target.clone(), false, window, cx)
-                                })),
+                                .child(preview(session, pane.clone(), Rc::clone(&surface)))
+                                .on_click(cx.listener(
+                                    move |view, event: &gpui::ClickEvent, window, cx| {
+                                        let cell = if event.modifiers().modified() {
+                                            None
+                                        } else {
+                                            event.mouse_position().zip(surface.get()).map(
+                                                |(point, bounds)| {
+                                                    crate::terminal_view::preview_cell(
+                                                        bounds, point, window, cx,
+                                                    )
+                                                },
+                                            )
+                                        };
+                                        view.select(target.clone(), false, window, cx);
+                                        view.pending_pane_click =
+                                            cell.map(|cell| (target.clone(), cell, Instant::now()));
+                                    },
+                                )),
                         )
                     })
                     .when(!active && preview_session.is_none(), |region| {
@@ -1413,6 +1382,9 @@ fn button(
 fn button_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
     div()
         .id(id.into())
+        .focusable()
+        .tab_index(0)
+        .focus(|style| style.bg(rgb(ACTIVE_FILL)).text_color(rgb(ACTIVE)))
         .flex_none()
         .px(ui_px(10.))
         .py(ui_px(5.))

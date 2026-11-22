@@ -84,7 +84,7 @@ impl History {
                         search.query
                     )
                 } else {
-                    format!("Terminal history{coverage}    Ctrl+Shift+F to find · Esc to live")
+                    format!("Terminal history{coverage}    Ctrl+] ? to find · Esc to live")
                 }
             }
         }

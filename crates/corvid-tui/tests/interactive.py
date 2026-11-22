@@ -100,6 +100,7 @@ class OuterTerminal:
         env = dict(os.environ if env is None else env)
         # Dedicated monitor/SSH fixtures exercise background monitoring and clean it up.
         env.setdefault("CORVID_AGENT_MONITOR", "0")
+        env.setdefault("CORVID_LEGACY_TUI", "1")
         # Crossterm must measure this PTY, not an inherited terminal's dimensions.
         env.pop("COLUMNS", None)
         env.pop("LINES", None)
@@ -788,6 +789,74 @@ def verify_shell_agent_notifications(
         stop(daemon)
 
 
+def verify_workspace_ui(command, directory):
+    env = os.environ | {"CORVID_LEGACY_TUI": "0"}
+    marker = directory / "pane-input"
+    marker_arg = shlex.quote(str(marker))
+
+    def send_line(terminal, text):
+        # Separate the terminal's input echo from output and wait for the side effect.
+        terminal.send(text.encode() + b"\r")
+
+    launch = [*command, "attach", "--new-workspace", "Workspace UI"]
+    with OuterTerminal(launch, cols=100, rows=30, env=env) as terminal:
+        terminal.expect(rb"Ctrl\+\] commands")
+        terminal.send(b"\x1d?")
+        terminal.expect(b"CORVID COMMANDS")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        time.sleep(0.15)
+        terminal.expect(rb"Ctrl\+\] commands")
+        send_line(terminal, "export CORVID_TEST_PANE=left; printf 'left-%s\\n' PANE")
+        terminal.expect(b"left-PANE")
+
+        terminal.send(b"\x1dpr")
+        terminal.expect(b"Pane 2")
+        send_line(terminal, "export CORVID_TEST_PANE=top; printf 'top-%s\\n' PANE")
+        terminal.expect(b"top-PANE")
+        terminal.send(b"\x1dpd")
+        terminal.expect(b"Pane 3")
+        send_line(terminal, "export CORVID_TEST_PANE=bottom; printf 'bottom-%s\\n' PANE")
+        terminal.expect(b"bottom-PANE")
+
+        # Mouse coordinates are relative to the outer screen. This is inside the left pane.
+        terminal.output.clear()
+        terminal.send(b"\x1b[<0;4;5M")
+        terminal.expect(rb"\x1b\[2;1H\x1b\[0;1;36m" + "● ".encode())
+        send_line(terminal, f'printf %s "$CORVID_TEST_PANE" > {marker_arg}')
+        deadline = time.monotonic() + 5
+        while not marker.exists() or marker.read_text() != "left":
+            assert time.monotonic() < deadline, "click did not focus the left terminal"
+            time.sleep(0.02)
+
+        terminal.output.clear()
+        terminal.send(b"\x1d\x1b[C")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        terminal.send(b"\x1dd")
+        terminal.wait(0)
+
+    with OuterTerminal([*command, "attach"], cols=100, rows=30, env=env) as terminal:
+        terminal.expect(b"left-PANE")
+        terminal.expect(b"top-PANE")
+        terminal.expect(b"bottom-PANE")
+        terminal.send(b"\x1dt")
+        terminal.expect(b"New tab")
+        terminal.send(b"\t\r")
+        terminal.expect(rb"\[2 ")
+        terminal.output.clear()
+        terminal.send(b"\x1d[")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        terminal.send(b"\x1dw")
+        terminal.expect(b"Workspaces")
+        terminal.send(b"\x1dd")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        time.sleep(0.15)
+        terminal.expect(rb"Ctrl\+\] commands")
+        terminal.send(b"\x1dd")
+        terminal.wait(0)
+
+
 def run(binary, *, tty_only=False):
     binary = str(Path(binary).resolve())
     os.environ["TERM"] = "xterm-256color"
@@ -813,6 +882,7 @@ def run(binary, *, tty_only=False):
             verify_paste(command)
             verify_tabs(command, directory)
             verify_tab_picker(command, directory)
+            verify_workspace_ui(command, directory)
         finally:
             stop(daemon)
         verify_resume(binary, directory)

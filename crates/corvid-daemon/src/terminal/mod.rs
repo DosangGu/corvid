@@ -1,8 +1,10 @@
 mod backend;
 mod commands;
+mod composition;
 mod host;
 mod input;
 mod keys;
+mod navigation;
 mod paste;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod pty;

@@ -185,9 +185,24 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             type_command(command)
             wait_for_marker(marker, "preserved")
 
-        def key(window, chord):
+        def key(window, *chords):
             subprocess.run(["xdotool", "windowactivate", "--sync", window], check=True, timeout=10)
-            subprocess.run(["xdotool", "key", "--clearmodifiers", chord], check=True, timeout=10)
+            subprocess.run(["xdotool", "key", "--clearmodifiers", *chords], check=True, timeout=10)
+
+        def command(window, query):
+            key(window, "ctrl+bracketright", "question")
+            subprocess.run(["xdotool", "type", "--clearmodifiers", query], check=True, timeout=10)
+            key(window, "Return")
+
+        def new_tab(window):
+            key(window, "ctrl+bracketright", "t", "Tab", "Return")
+
+        def split_right(window):
+            key(window, "ctrl+bracketright", "p", "r")
+
+        def confirm_pane_close(window):
+            key(window, "ctrl+bracketright", "p", "x")
+            time.sleep(0.3)
 
         retired = wait_for_writer()
         first_probe = wait_for_keyboard(window, retired)
@@ -352,7 +367,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         type_command(f"seq -f 'search-item-%03g' 1 75; printf ready > {shlex.quote(str(search_ready))}")
         wait_for_marker(search_ready, "ready")
         # The workspace must let the focused terminal handle its search shortcut.
-        key(window, "ctrl+shift+f")
+        command(window, "Search terminal history")
         subprocess.run(["xdotool", "type", "--clearmodifiers", "search-item-001"], check=True, timeout=10)
         # The history reply and clipboard ownership both arrive asynchronously.
         deadline = time.monotonic() + 5
@@ -369,53 +384,44 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                            check=True, timeout=10)
         key(window, "Escape")
         first_terminal = wait_for_terminal()
-        key(window, "ctrl+shift+t")
+        new_tab(window)
         second_terminal = wait_for_terminal(previous=first_terminal)
         second_tab_marker = root / "second-tab"
         write_marker(window, second_tab_marker,
                      f"second=preserved; printf %s \"$second\" > {shlex.quote(str(second_tab_marker))}")
         if args.build:
-            key(window, "ctrl+shift+t")
+            new_tab(window)
             added_tab = wait_for_terminal(previous=second_terminal)
-            key(window, "ctrl+shift+d")
+            split_right(window)
             wait_for_terminal(previous=added_tab)
             if preview := os.environ.get("CORVID_PANE_CLOSE_PREVIEW_DIR"):
                 subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-before.png")],
                                check=True, timeout=10)
-            key(window, "ctrl+shift+w")
+            confirm_pane_close(window)
+            key(window, "Return")
             wait_for_terminal(expected=added_tab)
             if preview:
                 subprocess.run(["scrot", "--overwrite", "--focused", str(Path(preview) / "pane-close-after.png")],
                                check=True, timeout=10)
-            key(window, "ctrl+shift+w")
+            confirm_pane_close(window)
+            key(window, "Return")
             wait_for_terminal(expected=first_terminal)
-            key(window, "ctrl+Tab")
+            key(window, "ctrl+bracketright", "bracketright")
             wait_for_terminal(expected=second_terminal)
 
-            key(window, "ctrl+shift+d")
+            split_right(window)
             split = wait_for_terminal(previous=second_terminal)
 
-            def confirm_pane_close():
-                subprocess.run(["xdotool", "mousemove", "--window", window, "1055", "20",
-                                "click", "1"], check=True, timeout=10)
-                # The last four items are close pane, close tab, close workspace, and Quit.
-                time.sleep(0.2)
-                subprocess.run(["xdotool", "key", "--repeat", "16", "Down"],
-                               check=True, timeout=10)
-                subprocess.run(["xdotool", "key", "Up", "Up", "Up", "Return"],
-                               check=True, timeout=10)
-                time.sleep(0.3)
-
-            confirm_pane_close()
+            confirm_pane_close(window)
             if screenshot := os.environ.get("CORVID_CLOSE_SCREENSHOT"):
                 subprocess.run(["scrot", "--overwrite", "--focused", screenshot],
                                check=True, timeout=10)
             key(window, "Escape")
             wait_for_terminal(expected=split)
-            confirm_pane_close()
+            confirm_pane_close(window)
             key(window, "Return")
             wait_for_terminal(expected=second_terminal)
-        key(window, "ctrl+shift+Tab")
+        key(window, "ctrl+bracketright", "bracketleft")
         wait_for_terminal(expected=first_terminal)
         selected_marker = root / "selected-tab"
         write_marker(window, selected_marker, f"printf %s \"$kept\" > {shlex.quote(str(selected_marker))}")
@@ -448,11 +454,11 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         wait_for_saved_windows(3)
         key(extra, "alt+F4")
         wait_for_saved_windows(2)
-        key(window, "ctrl+shift+q")
+        command(window, "Quit Corvid Desktop")
         assert desktop.wait(timeout=15) == 0, "Desktop failed while quitting"
         assert previous.poll() is None, "Quitting one Desktop process closed another"
         assert wait_for_writer() == retired
-        key(first_window, "ctrl+shift+q")
+        command(first_window, "Quit Corvid Desktop")
         assert previous.wait(timeout=15) == 0, "The original Desktop failed while quitting"
         monitor_fixture.assert_same(reader, monitor_epoch, environment)
 
@@ -466,7 +472,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         resumed_marker = root / "resumed"
         write_marker(window, resumed_marker, f"printf %s \"$kept\" > {shlex.quote(str(resumed_marker))}")
         assert wait_for_writer() == current
-        key(window, "ctrl+comma")
+        command(window, "Settings")
         wait_for_icon("Corvid Settings")
         key(picker, "alt+F4")
         wait_for_saved_windows(1)
@@ -485,7 +491,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             project = root / "project folder"
             project.mkdir()
             old_terminal = wait_for_terminal()
-            key(window, "ctrl+shift+n")
+            command(window, "New workspace")
             time.sleep(0.8)
             subprocess.run(["xdotool", "type", "--clearmodifiers", "--", "project"], check=True, timeout=10)
             time.sleep(0.5)

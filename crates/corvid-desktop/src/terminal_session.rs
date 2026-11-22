@@ -969,6 +969,30 @@ impl Session {
         }
     }
 
+    pub fn send_pane_click(&self, pane: &str, (row, col): (u16, u16)) -> bool {
+        let snapshot = self.shared.snapshot();
+        let Some(WheelTarget::Mouse(encoding)) = snapshot.wheel_target(pane) else {
+            return false;
+        };
+        let x = u32::from(col) + 1;
+        let y = u32::from(row) + 1;
+        let click = match encoding {
+            WheelEncoding::Sgr => format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m").into_bytes(),
+            WheelEncoding::Legacy if x <= 223 && y <= 223 => {
+                let x = (x + 32) as u8;
+                let y = (y + 32) as u8;
+                vec![27, b'[', b'M', 32, x, y, 27, b'[', b'M', 35, x, y]
+            }
+            WheelEncoding::Utf8 if x <= 2015 && y <= 2015 => {
+                let x = char::from_u32(x + 32).expect("bounded mouse column");
+                let y = char::from_u32(y + 32).expect("bounded mouse row");
+                format!("\x1b[M {x}{y}\x1b[M#{x}{y}").into_bytes()
+            }
+            _ => return false,
+        };
+        self.queue_input(&snapshot, pane, click, false)
+    }
+
     pub fn send(&self, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
         self.queue_input(&self.shared.snapshot(), pane, bytes, paste)
     }
@@ -1007,27 +1031,6 @@ impl Session {
 
     pub fn close(&self, target: CloseView) {
         self.change(Action::Close(target));
-    }
-
-    pub fn close_active_pane(&self) {
-        let target = {
-            let snapshot = self.shared.snapshot();
-            let Some(selected) = snapshot
-                .ui
-                .selected
-                .as_ref()
-                .filter(|_| snapshot.ui.can_close())
-            else {
-                return;
-            };
-            CloseView {
-                workspace_id: selected.workspace_id.clone(),
-                tab_id: Some(selected.tab_id.clone()),
-                pane_id: Some(selected.pane_id.clone()),
-                expected_view_revision: Some(snapshot.revision),
-            }
-        };
-        self.close(target);
     }
 
     pub fn rename_tab(&self, name: String, revision: u64) {

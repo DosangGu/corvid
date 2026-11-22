@@ -72,7 +72,7 @@ cargo run --locked -p corvid-desktop
 
 Desktop opens a local shell through the local daemon. It reuses a running daemon
 or starts its own daemon process from the Desktop executable. It uses the same
-runtime directory as the TUI. Open **Settings → Connections** (Ctrl+,) to select
+runtime directory as the TUI. Open **Settings → Connections** from the command list (`Ctrl+]` then `?`) to select
 an SSH alias
 from `~/.ssh/config` or enter one. Pass `-- --ssh-alias work-host` to the Cargo
 command to open SSH directly. When an alias matches the companion configuration,
@@ -106,13 +106,13 @@ Host work-host
 ```
 
 Open `corvid-desktop.exe` to attach to the local Corvid daemon and open its shell.
-Open **Settings → Connections** (Ctrl+,) to browse **Local Terminal**, SSH hosts,
+Open **Settings → Connections** from the command list (`Ctrl+]` then `?`) to browse **Local Terminal**, SSH hosts,
 and WSL distributions in a separate window. The list shows concrete
 `Host` aliases from `%USERPROFILE%\.ssh\config` and static, unconditional
 `Include` files. Use **Refresh** after editing the config, or enter an alias
 manually.
 
-Open the workspace picker with the host/workspace button or Ctrl+Shift+P. It
+Open the workspace picker with the host/workspace button or `Ctrl+]` then `w`. It
 groups workspaces under Local, configured SSH aliases, and installed WSL
 distributions. Connections already known to Desktop appear alongside configured
 ones. Expand a machine to look up its workspaces through a read-only connection
@@ -222,7 +222,7 @@ Use `exit` in a shell to end that PTY.
 Desktop automatically restores its terminal windows. Each window remembers its last
 successful Local, SSH, or WSL connection and the selected workspace, tab, and pane
 for each connection. **⋯ → New window** opens a workspace picker without changing
-another window's selection. **⋯ → Quit Corvid Desktop** (Ctrl+Shift+Q) exits the current
+another window's selection. **⋯ → Quit Corvid Desktop** also appears in command search and exits the current
 Desktop process and preserves all its terminal windows. Closing an individual window
 removes it from restoration; closing the last terminal window exits and preserves it.
 Settings windows are not restored. No named profile or extra workspace concept is needed.
@@ -271,20 +271,20 @@ Window size, position, and monitor restoration remain deferred to #49.
 
 ![Desktop's New window and Quit menu](images/desktop-window-menu.png)
 
-Ctrl+Shift+N opens workspace creation for the current machine or the machine
-selected in the picker, Ctrl+Shift+T creates a tab, Ctrl+Shift+D splits
-right, and Ctrl+Shift+E splits down. Ctrl+Tab and Ctrl+Shift+Tab cycle tabs in
-the selected workspace.
+Press `Ctrl+]` to start a Desktop command. The workspace, tab and pane
+selectors use the same keys as the TUI. Press `?` after the leader and search
+for **New workspace**, **Settings**, **Agents**, or window actions. Click a tab
+to return to the pane you last used in it, or click inside a pane to focus it.
 
-Ctrl+Shift+W ends the active pane. Closing the last pane in a tab also closes
-that tab. To end all panes in a tab at once, use the tab’s **×** or
-**⋯ → End this tab…**. The pane and tab close controls and menu actions ask for
-confirmation. Enter chooses **End terminals**, and **Cancel** keeps them open.
+Use `Ctrl+]` then `p` to select a pane. Press `x` to open its termination
+confirmation. Closing the last pane also closes its tab. To end an entire tab,
+use **Close selected tab…** in the tab list (`Ctrl+]` then `t`) or click the
+tab's **×**. Use **Detach** to keep terminals and jobs running.
 
 Each pane follows its terminal's OSC 0/2 title in real time and uses `Pane N`
 until the terminal supplies a title. An automatic tab follows its only pane's
 title, or uses `Tab N` for a split tab, where N is the tab's workspace position.
-Ctrl+Shift+R and **⋯ → Rename tab…** set the current tab's name. That name
+`Ctrl+]` then `.` and **⋯ → Rename tab…** set the current tab's name. That name
 survives splits and restarts. Save an empty name or choose **Use automatic title**
 to restore the tab's automatic name. Renaming requires a daemon advertising
 `view_titles.v1`.
@@ -313,9 +313,8 @@ returns focus to the terminal. Type to filter by machine and workspace name.
 Use Up/Down to move, Left/Right to collapse or expand a machine, and Enter to
 activate a row. The list also scrolls with the mouse.
 
-Ctrl+Shift+F searches the focused terminal’s output with its tabs visible.
-Ctrl+Shift+Z expands the selected pane and restores its split layout without
-changing the daemon's layout. Settings opens a reusable separate window with
+Choose **Search terminal history** from the command list to search the focused pane.
+**Expand or restore active pane** toggles the pane locally. Settings opens a reusable separate window with
 Connections, Terminal, Shortcuts, Agents, and About & updates. Closing
 settings keeps the terminal attached; closing the terminal window also closes
 its settings window. View preferences currently last for that window's lifetime.
@@ -587,7 +586,8 @@ scrolling up browses older output even while a program is running. The view
 stays anchored as new output arrives. Typing while browsing with the wheel
 returns to live input and delivers the first keystroke or composed text.
 
-**Shift+Page Up** opens explicit history. **Ctrl+Shift+F** searches rendered
+**Browse terminal history** from the command list opens history.
+**Search terminal history** searches rendered
 rows. Enter and Shift+Enter cycle through matches. The wheel and navigation
 keys move through history. Reaching the bottom, or pressing **End**, returns to
 the live pane. Remaining motion from the same gesture stays with its original

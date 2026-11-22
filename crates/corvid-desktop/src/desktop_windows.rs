@@ -478,7 +478,6 @@ impl DesktopWindows {
         cx.quit();
     }
 
-    #[cfg(target_os = "macos")]
     pub fn close_active(&self, cx: &mut App) {
         let Some(active) = cx.active_window() else {
             return;

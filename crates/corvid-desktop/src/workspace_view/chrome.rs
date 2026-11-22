@@ -36,6 +36,8 @@ impl WorkspaceView {
             self.dismiss_overlay(window, cx);
             return;
         }
+        self.navigation = None;
+        self.leader = false;
         self.switcher_open = false;
         self.menu_open = true;
         self.menu_create = create;
@@ -49,9 +51,9 @@ impl WorkspaceView {
         if self.menu_create {
             return if ui.as_ref().is_some_and(|ui| ui.can_write() && !ui.changing) {
                 vec![
-                    (MenuAction::NewTab, "New tab", "Ctrl+Shift+T"),
-                    (MenuAction::SplitRight, "Split right", "Ctrl+Shift+D"),
-                    (MenuAction::SplitDown, "Split down", "Ctrl+Shift+E"),
+                    (MenuAction::NewTab, "New tab", "Ctrl+] → t"),
+                    (MenuAction::SplitRight, "Split right", "Ctrl+] → p → r"),
+                    (MenuAction::SplitDown, "Split down", "Ctrl+] → p → d"),
                 ]
             } else {
                 Vec::new()
@@ -66,9 +68,9 @@ impl WorkspaceView {
                 } else {
                     "Expand active pane"
                 },
-                "Ctrl+Shift+Z",
+                "",
             ),
-            (MenuAction::Settings, "Settings…", "Ctrl+,"),
+            (MenuAction::Settings, "Settings…", ""),
         ];
         if ui
             .as_ref()
@@ -82,7 +84,7 @@ impl WorkspaceView {
         }
         if let Some(ui) = ui.filter(|ui| ui.connected && !ui.changing) {
             if ui.can_write() && ui.naming_supported && ui.inventory_ready {
-                items.push((MenuAction::Rename, "Rename tab…", "Ctrl+Shift+R"));
+                items.push((MenuAction::Rename, "Rename tab…", "Ctrl+] → ."));
             }
             if ui.can_write() && ui.session_clients_supported {
                 items.push((
@@ -100,7 +102,7 @@ impl WorkspaceView {
                 ]);
             }
         }
-        items.push((MenuAction::Quit, "Quit Corvid Desktop", "Ctrl+Shift+Q"));
+        items.push((MenuAction::Quit, "Quit Corvid Desktop", ""));
         items
     }
 
@@ -315,6 +317,10 @@ impl WorkspaceView {
                     })),
                 )
             })
+            .child(
+                button("commands", "Ctrl+] Commands", self.leader)
+                    .on_click(cx.listener(|view, _, window, cx| view.show_commands(window, cx))),
+            )
             .child(
                 button("workspace-menu", "⋯", self.menu_open && !self.menu_create).on_click(
                     cx.listener(|view, _, window, cx| view.toggle_menu(false, window, cx)),
@@ -639,6 +645,7 @@ impl Render for WorkspaceView {
                 root.child(self.overlay_backdrop(cx))
             })
             .when(self.menu_open, |root| root.child(self.action_menu(cx)))
+            .when_some(self.navigation_panel(), |root, panel| root.child(panel))
             .when(self.naming.is_some(), |root| {
                 root.child(self.naming_panel(cx))
             })

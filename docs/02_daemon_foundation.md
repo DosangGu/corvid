@@ -98,11 +98,12 @@ history of the most recently used workspaces, scoped to the target and verified
 daemon host. Concurrent TUIs merge updates to different workspaces, and failed
 connections leave the saved selection intact.
 
-The bottom status bar shows **CORVID**, the current workspace, and tab numbers
-and names, such as **[1:Shell]** and **2:Tests**. Brackets and highlighting
-identify the active tab. Press Ctrl-] to show command mode and available keys.
-The bar reserves one row on terminals with at least three rows when both
-peers support it.
+The top row shows the workspace and tabs, with the current tab in brackets.
+The active pane takes the remaining space in a single-pane tab. Split tabs
+show pane titles, a marker for the active pane, and read-only terminal previews.
+A click in the layout selects the pane or tab under the pointer. A terminal
+application that enables mouse reporting can receive pane-relative clicks.
+Narrow terminals keep the active terminal visible.
 
 Use `corvid attach -- program arg` to start an explicit command on the running
 daemon. When starting a daemon directly, install the terminfo entry with
@@ -117,26 +118,31 @@ Ctrl-] enters command mode for the next complete key. Ctrl-] twice sends one
 literal Ctrl-]. An unmapped key sends the leader and the key as terminal input.
 The daemon returns an idle leader to the current PTY after two seconds.
 Esc or Ctrl-C cancels a pending leader without sending it to the terminal.
-Ctrl-] then `?` opens a persistent command sheet. It shows only negotiated
-operations and distinguishes detaching from ending terminals. Unmapped keys and
-bracketed paste stay in this sheet; Esc or Ctrl-C closes it, a command key runs
-that command, and Ctrl-] sends one literal leader and closes it. The sheet and
-the brief prefix hints paint over the existing screen without resizing the PTY.
-A signal or connection loss also releases the writer.
-The shell's exit status reaches the attach process on normal completion.
+Ctrl-] then `?` opens a searchable command list. Type to filter, use the
+arrow keys to move, Enter to execute, or Esc to cancel.
+
+| Keys after Ctrl-] | Action |
+| --- | --- |
+| `w` | Filter and switch workspaces. Return to the last available pane in the selected workspace. |
+| `t` | Filter and select tabs. Press Tab to reach **New tab…** or **Close selected tab…**. |
+| `p` | Select a pane on the layout using the arrow keys. Press Enter to focus, `r` to split right, `d` to split down, or `x` to confirm ending the selected pane. |
+| Arrow keys | Focus a neighboring pane directly. |
+| `[` / `]` | Previous or next tab. |
+| `d` | Detach and keep terminals running. |
+
+The selectors overlay the layout without resizing the active PTY. Only pane
+writers resize their own terminals. The previous split aliases `%` and `"`
+also work after the leader. Older peers keep the original TUI with a bottom
+status bar and use `w` for the tab list, `t` to create tabs, and `n`/`p` to
+cycle tabs.
+
+A signal or connection loss also releases the writer. The shell's exit status
+reaches the attach process on normal completion.
 
 Use `corvid attach --new-workspace "Review"` to create a separate workspace and
 `corvid attach --workspace WORKSPACE_ID --new-tab "Tests"` to add a tab when that
-workspace has no writer. `corvid control workspaces` lists the IDs. Attach to
-an exact tab with `--workspace WORKSPACE_ID --tab TAB_ID`. In an attached TUI,
-Ctrl-] then t starts a new shell tab. Ctrl-] then 1–9 switches to the live tab
-with that number. Ctrl-] then w opens the full tab list for the workspace,
-including tabs numbered 10 and above. Type to filter tab names, Backspace to edit
-the query, Up or Down to move, Enter to switch to a live tab, and Esc to return
-to the current tab. Closed tabs are labeled in the list alongside their pane
-counts. Ctrl-] then n or p still cycles through live tabs. Pane writers resize
-their selected pane; hidden panes retain their size until selected. Other
-writers keep their own viewports.
+workspace has no writer. Use `corvid attach --workspace WORKSPACE_ID --tab TAB_ID
+--pane PANE_ID` to reattach to an exact pane.
 
 To choose a default folder when creating a workspace, use
 `corvid attach --new-workspace "Review" --browse-directory`. Use Tab to look up
@@ -145,11 +151,6 @@ and known paths, use `--workspace-directory PATH` instead. The daemon resolves
 paths on its host, including when you run the TUI over SSH. The first
 terminal, new tabs, and splits use this folder. An explicit launch directory
 or a saved pane directory still takes precedence when reopening that pane.
-
-Press Ctrl-] then `%` to split right, `"` to split down, or `o` to cycle
-through live panes in the tab. Use `corvid attach --workspace WORKSPACE_ID
---tab TAB_ID --pane PANE_ID` to reattach to an exact pane. Windows Desktop
-creates and selects these same daemon-owned workspaces, tabs, and panes.
 
 To move a hidden live single-pane tab, attach to a different tab in its
 workspace and explicitly claim the destination for that TUI.
@@ -440,8 +441,8 @@ cargo build --locked -p corvid-tui
 `corvid` starts a detached per-user daemon as needed and attaches to its
 default workspace. The daemon owns the PowerShell ConPTY and applies the same
 writer lease, layout, and render protocol as on Linux. Press Ctrl-] then d to
-detach, and run `corvid` again to reattach. Ctrl-] then t opens a tab, and
-Ctrl-] then % or " splits the current tab.
+detach, and run `corvid` again to reattach. Ctrl-] then t opens the tab list,
+and Ctrl-] then p opens pane controls.
 
 The local client and control pipes are limited to the current Windows user
 and reject remote clients. Runtime coordination files are under

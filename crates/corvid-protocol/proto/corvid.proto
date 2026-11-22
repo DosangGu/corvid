@@ -1170,7 +1170,13 @@ message CreateView {
     SplitAxis split_axis = 4;
     ViewSelection open_pane = 5;
     WorkspaceCreation workspace = 6;
+    SplitPane split_pane = 7;
   }
+}
+
+message SplitPane {
+  string pane_id = 1;
+  SplitAxis axis = 2;
 }
 
 message FocusViewAgent {

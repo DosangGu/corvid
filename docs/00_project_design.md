@@ -689,16 +689,14 @@ under delayed SSH input. Unknown/incomplete sequences remain buffered within bou
 then take the documented literal path; they never become speculative navigation commands.
 Negotiated extended keyboard protocols and automatic remapping are later work.
 
-In command mode, 1–9 selects a live tab by its displayed position and w opens a
-scrolling list of all tabs in the current workspace. While the list is open, the
-daemon consumes keys and pastes locally. Enter resolves the selected tab ID against
-the current workspace before running the ordinary route-fenced switch.
-Typing filters the list without changing tab identities. Ctrl-] then `?` opens
-a persistent capability-aware command sheet; it consumes unmapped keys and paste
-until the user selects a command or cancels with Esc/Ctrl-C. A repeated leader
-sends one literal leader. The initial two-second prefix and its literal fallback
-remain compatible, except Esc/Ctrl-C now cancel it. Menus overlay the existing
-screen and do not change canonical PTY dimensions.
+In command mode, 1–9 selects a live tab by its displayed position.
+The shared workspace commands use `w` for the workspace picker, `t` for
+the tab list, and `p` for spatial pane selection. The arrow keys after the
+leader can also focus a neighboring pane directly. The daemon consumes keys
+and paste while a TUI selector is open and resolves the selected identity
+before running the ordinary route-fenced switch. `Ctrl+]` then `?` opens
+a searchable list of available commands. Repeating the leader sends one
+literal leader. Escape cancels the prefix or active selector.
 
 Every input delivery carries `(ClientId, connection_generation, view_revision,
 TerminalId, writer_lease_generation, input_sequence)`. The coordinator and PTY worker
@@ -747,7 +745,7 @@ controller never backpressures PTY parsing or the global reducer. Engine memory 
 for long sequences/combining text must be verified; unsupported hard bounds fail the
 engine qualification gate rather than being claimed by configuration alone.
 Size the inner PTY before allocating its screen to keep worst-case redraws within the
-frame bound. Reserve the last outer row for the status bar when active. Preserve the
+frame bound. Reserve the first outer row for navigation when workspace composition is negotiated. Preserve the
 available width up to the column budget, then reduce the PTY height to fit the cell budget.
 
 ### 7.6 Minimum compatibility suite

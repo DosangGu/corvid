@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,9 +34,11 @@ use crate::workspaces::WeakRegistry;
 
 use super::backend::Backend;
 use super::commands;
+use super::composition::Composition;
 use super::host::HostConfig;
 use super::input::{Kind, WriteFailure};
 use super::keys::{InputMode, KeyCommand, Keymap, TabCommand};
+use super::navigation::{self, Mouse, Overlay};
 use super::paste::Paste;
 use super::status::{self, TuiViewport};
 use super::tabs::{PickerAction, TabPicker};
@@ -83,6 +86,15 @@ pub(crate) struct RetainedTerminal {
 }
 
 impl LaunchScope {
+    fn content(&self, viewport: TuiViewport, location: Location, keymap: Keymap) -> Viewport {
+        if keymap.workspace_ui {
+            Composition::new(viewport.outer, &self.metadata.layout(), location)
+                .active_size(location)
+        } else {
+            viewport.content()
+        }
+    }
+
     fn tab_picker(&self, location: Location) -> Option<TabPicker> {
         let metadata = self.metadata.clone();
         self.registry
@@ -118,6 +130,13 @@ pub(crate) enum Action {
         route: InputRoute,
         sequence: u64,
         bytes: Vec<u8>,
+    },
+    ReopenTabs {
+        route: InputRoute,
+    },
+    MouseClick {
+        route: InputRoute,
+        mouse: Mouse,
     },
     PasteBegin {
         route: InputRoute,
@@ -166,7 +185,8 @@ pub(crate) enum Event {
     },
     Detached,
     Tab(TabCommand),
-    Close(corvid_core::layout::CloseTarget),
+    Click(Uuid, Mouse),
+    Close(corvid_core::layout::CloseTarget, bool),
     PairController,
     DisconnectOthers,
 }
@@ -697,7 +717,9 @@ impl Worker {
                 "workspace already has a writer",
             ));
         }
-        let content = spec.viewport.content();
+        let content = self
+            .scope
+            .content(spec.viewport, spec.location, spec.keymap);
         let launch = spec
             .launch
             .filter(|launch| !launch.if_empty || self.terminal.is_none());
@@ -788,7 +810,10 @@ impl Worker {
         }
         terminal
             .session
-            .resize_active(spec.viewport.content())
+            .resize_active(
+                self.scope
+                    .content(spec.viewport, spec.location, spec.keymap),
+            )
             .map_err(|_| input_busy())?;
         // Keep the retired connection's event stream alive through the registry commit.
         let previous_events = lease.events.clone();
@@ -872,7 +897,7 @@ impl Worker {
             .filter(|terminal| terminal.exit.is_none())
             .ok_or_else(terminal_fault)?;
         terminal
-            .resize(viewport.content())
+            .resize(self.scope.content(viewport, lease.location, lease.keymap))
             .map_err(|_| terminal_fault())?;
         lease.viewport = viewport;
         terminal.dirty = true;
@@ -905,7 +930,16 @@ impl Worker {
                 bytes,
             } => {
                 lease.check_input(route, sequence, terminal)?;
-                match lease.keys(sequence, bytes, &mut terminal.session)? {
+                let display = lease
+                    .keymap
+                    .workspace_ui
+                    .then(|| self.scope.metadata.display());
+                match lease.keys(
+                    sequence,
+                    bytes,
+                    &mut terminal.session,
+                    display.as_ref().map(|display| display.layout.as_ref()),
+                )? {
                     Some(KeyCommand::BeginRename) => {
                         lease.naming = Some(super::rename::NameEditor::new());
                     }
@@ -932,7 +966,29 @@ impl Worker {
                     Some(KeyCommand::Close(kind)) => {
                         lease.switch_pending = true;
                         let target = kind.target(lease.location);
-                        if lease.events.try_send(Event::Close(target)).is_err() {
+                        if lease.events.try_send(Event::Close(target, false)).is_err() {
+                            self.revoke();
+                        }
+                    }
+                    Some(KeyCommand::Browse(kind)) => {
+                        let display = display.expect("workspace navigation has a layout");
+                        lease.overlay = Some(Overlay::open(kind, &display.layout, lease.location));
+                    }
+                    Some(KeyCommand::End(target)) => {
+                        lease.switch_pending = true;
+                        let reopen_tabs =
+                            matches!(target, corvid_core::layout::CloseTarget::Tab { .. });
+                        if lease
+                            .events
+                            .try_send(Event::Close(target, reopen_tabs))
+                            .is_err()
+                        {
+                            self.revoke();
+                        }
+                    }
+                    Some(KeyCommand::Click(pane, mouse)) => {
+                        lease.switch_pending = true;
+                        if lease.events.try_send(Event::Click(pane, mouse)).is_err() {
                             self.revoke();
                         }
                     }
@@ -950,6 +1006,35 @@ impl Worker {
                         self.revoke();
                     }
                     Some(KeyCommand::DisconnectOthers) => {}
+                }
+            }
+            Action::ReopenTabs { route } => {
+                if route != lease.route || !lease.keymap.workspace_ui {
+                    return Err(stale_route());
+                }
+                let display = self.scope.metadata.display();
+                lease.overlay = Some(Overlay::open(
+                    navigation::Kind::Tabs,
+                    &display.layout,
+                    lease.location,
+                ));
+                lease.navigation_dirty = true;
+            }
+            Action::MouseClick { route, mouse } => {
+                if route != lease.route || !lease.keymap.workspace_ui {
+                    return Err(stale_route());
+                }
+                // Refresh the hosted renderer's input mode after the route has changed.
+                let size = self
+                    .scope
+                    .content(lease.viewport, lease.location, lease.keymap);
+                terminal
+                    .session
+                    .render(None, size, None)
+                    .map_err(|_| terminal_fault())?;
+                let bytes = mouse.encode(terminal.session.rendered_wheel_encoding(), true);
+                if !bytes.is_empty() && !terminal.session.keys(bytes) {
+                    return Err(overloaded());
                 }
             }
             Action::PasteBegin {
@@ -983,6 +1068,7 @@ impl Worker {
                 if let Some(editor) = &mut lease.naming {
                     editor.append(&String::from_utf8_lossy(&bytes));
                 } else if lease.picker.is_none()
+                    && lease.overlay.is_none()
                     && !lease.command_help
                     && !terminal.session.paste(bytes)
                 {
@@ -1014,7 +1100,10 @@ impl Worker {
                 };
                 terminal
                     .session
-                    .resize_active(next_viewport.content())
+                    .resize_active(
+                        self.scope
+                            .content(next_viewport, lease.location, lease.keymap),
+                    )
                     .map_err(|_| terminal_fault())?;
                 lease.viewport = next_viewport;
                 lease.leader = None;
@@ -1100,6 +1189,7 @@ impl Worker {
                 lease.picker = None;
                 lease.command_help = false;
                 lease.naming = None;
+                lease.overlay = None;
             }
         }
         if terminal.exit.is_some()
@@ -1120,7 +1210,7 @@ impl Worker {
             return;
         }
         if let Some(lease) = &mut self.lease
-            && lease.render(terminal, &self.scope.metadata).is_err()
+            && lease.render(terminal, &self.scope).is_err()
         {
             self.revoke();
         }
@@ -1673,6 +1763,9 @@ struct Lease {
     paste: Option<Paste>,
     leader: Option<Instant>,
     picker: Option<TabPicker>,
+    overlay: Option<Overlay>,
+    composition: Option<CompositionCache>,
+    navigation_dirty: bool,
     command_help: bool,
     armed: bool,
     frozen: bool,
@@ -1688,6 +1781,7 @@ enum LastFrame {
     Terminal(Option<Box<Screen>>),
     Picker,
     Commands(bool),
+    Composition,
 }
 
 struct Status {
@@ -1718,6 +1812,9 @@ impl Lease {
             paste: None,
             leader: None,
             picker: None,
+            overlay: None,
+            composition: keymap.workspace_ui.then(CompositionCache::new),
+            navigation_dirty: false,
             command_help: false,
             naming: None,
             armed,
@@ -1733,6 +1830,7 @@ impl Lease {
     fn input_mode(&self) -> InputMode {
         if self.leader.is_some()
             || self.picker.is_some()
+            || self.overlay.is_some()
             || self.command_help
             || self.naming.is_some()
         {
@@ -1757,7 +1855,80 @@ impl Lease {
         sequence: u64,
         mut bytes: Vec<u8>,
         queue: &mut Backend,
+        layout: Option<&Layout>,
     ) -> Reply<Option<KeyCommand>> {
+        if let Some(layout) = layout {
+            self.navigation_dirty |=
+                self.input_mode() == InputMode::Command || bytes == [KEY_LEADER];
+            if let Some(overlay) = self.overlay.take() {
+                self.input_sequence = sequence;
+                let (next, command) = overlay.key(&bytes, layout, self.location, self.keymap);
+                self.overlay = next;
+                return Ok(command);
+            }
+            if let Some(mouse) = Mouse::parse(&bytes) {
+                self.input_sequence = sequence;
+                if self.input_mode() == InputMode::Command {
+                    return Ok(None);
+                }
+                let view = Composition::new(self.viewport.outer, layout, self.location);
+                if mouse.y == 0 && view.panes[0].1.y > 0 {
+                    let tab = mouse
+                        .is_primary()
+                        .then(|| {
+                            view.tabs
+                                .iter()
+                                .find(|(_, rect, _)| rect.contains(mouse.x, mouse.y))
+                        })
+                        .flatten();
+                    return Ok(tab.map(|(id, _, _)| KeyCommand::Tab(TabCommand::Select(*id))));
+                }
+                if let Some((pane, region)) = view
+                    .panes
+                    .iter()
+                    .find(|(_, rect)| rect.contains(mouse.x, mouse.y))
+                {
+                    let relative = mouse.relative(view.body(*region));
+                    if *pane != self.location.pane && mouse.is_primary() {
+                        return Ok(Some(
+                            relative.map_or(KeyCommand::Tab(TabCommand::Pane(*pane)), |mouse| {
+                                KeyCommand::Click(*pane, mouse)
+                            }),
+                        ));
+                    }
+                    if *pane == self.location.pane
+                        && let Some(relative) = relative
+                    {
+                        let bytes = relative.encode(queue.rendered_wheel_encoding(), false);
+                        if !bytes.is_empty() && !queue.keys(bytes) {
+                            return Err(overloaded());
+                        }
+                    }
+                }
+                return Ok(None);
+            }
+            if self
+                .leader
+                .is_some_and(|started| started.elapsed() < LEADER_TIMEOUT)
+            {
+                if bytes == b"?" {
+                    self.leader = None;
+                    self.input_sequence = sequence;
+                    return Ok(Some(KeyCommand::Browse(navigation::Kind::Commands)));
+                }
+                if let Some(direction) = navigation::direction(&bytes) {
+                    self.leader = None;
+                    self.input_sequence = sequence;
+                    return Ok(navigation::neighbor(
+                        layout,
+                        self.location,
+                        self.location.pane,
+                        direction,
+                    )
+                    .map(|pane| KeyCommand::Tab(TabCommand::Pane(pane))));
+                }
+            }
+        }
         if let Some(editor) = &mut self.naming {
             self.input_sequence = sequence;
             return Ok(match editor.key(&bytes) {
@@ -1849,6 +2020,7 @@ impl Lease {
 
     fn flush_leader(&mut self, queue: &mut Backend) -> Reply<()> {
         if self.leader.is_some() {
+            self.navigation_dirty = true;
             if !queue.keys(vec![KEY_LEADER]) {
                 return Err(overloaded());
             }
@@ -1933,12 +2105,12 @@ impl Lease {
         changed
     }
 
-    fn render(&mut self, terminal: &mut Running, metadata: &MetadataUpdates) -> Result<()> {
+    fn render(&mut self, terminal: &mut Running, scope: &LaunchScope) -> Result<()> {
         let now = Instant::now();
         if !self.armed || self.frozen || self.in_flight.is_some() || now < self.next_frame {
             return Ok(());
         }
-        let Some((ansi, painted)) = self.paint(terminal, metadata)? else {
+        let Some((ansi, painted)) = self.paint(terminal, scope)? else {
             return Ok(());
         };
 
@@ -1949,12 +2121,13 @@ impl Lease {
             generation: self.render_generation,
             frame_id,
             base_frame_id: self.previous.as_ref().map(|_| self.frame_id),
-            alternate_screen: if matches!(painted, LastFrame::Terminal(_)) {
+            alternate_screen: if matches!(painted, LastFrame::Terminal(_) | LastFrame::Composition)
+            {
                 terminal.session.rendered_alternate_screen()
             } else {
                 None
             },
-            wheel_encoding: if matches!(painted, LastFrame::Terminal(_)) {
+            wheel_encoding: if matches!(painted, LastFrame::Terminal(_) | LastFrame::Composition) {
                 terminal.session.rendered_wheel_encoding()
             } else {
                 WheelEncoding::Disabled
@@ -1964,7 +2137,10 @@ impl Lease {
         self.events
             .try_send(Event::Render(render))
             .map_err(|_| overloaded())?;
-        if matches!(painted, LastFrame::Terminal(_) | LastFrame::Commands(_)) {
+        if matches!(
+            painted,
+            LastFrame::Terminal(_) | LastFrame::Commands(_) | LastFrame::Composition
+        ) {
             terminal.dirty = false;
         }
         self.previous = Some(painted);
@@ -1978,11 +2154,84 @@ impl Lease {
         Ok(())
     }
 
+    fn paint_composition(
+        &mut self,
+        terminal: &mut Running,
+        scope: &LaunchScope,
+    ) -> Result<Option<(String, LastFrame)>> {
+        let cache = self.composition.as_mut().expect("composition enabled");
+        let display = scope.metadata.display();
+        let view = Composition::new(self.viewport.outer, &display.layout, self.location);
+        let size = view.active_size(self.location);
+        let layout_changed = cache
+            .layout
+            .as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, &display.layout));
+        if cache.size != Some(size) && !terminal.session.paste_pending() && self.paste.is_none() {
+            terminal.resize(size)?;
+            cache.size = Some(size);
+            terminal.dirty = true;
+        }
+        let preview_changed = cache.previews(&view, scope, self.location);
+        if let Some(editor) = &self.naming {
+            self.navigation_dirty |= editor.dirty;
+        }
+        if !terminal.dirty
+            && !layout_changed
+            && !preview_changed
+            && !self.navigation_dirty
+            && self.previous.is_some()
+        {
+            return Ok(None);
+        }
+        if terminal.dirty || cache.active.is_none() {
+            let (ansi, snapshot) = terminal.session.render(None, size, None)?;
+            cache.active =
+                Some(Arc::from(snapshot.unwrap_or_else(|| {
+                    Box::new(parse_screen(size, ansi.as_bytes()))
+                })));
+        }
+        let selected = match &self.overlay {
+            Some(Overlay::Panes(id)) => Some(*id),
+            _ => None,
+        };
+        let mut ansi = view.paint(self.location, selected, &display.titles, |pane| {
+            if pane == self.location.pane {
+                cache.active.clone()
+            } else {
+                cache.screens.get(&pane).cloned()
+            }
+        });
+        if let Some(editor) = &mut self.naming {
+            ansi.push_str(&editor.paint(self.viewport.outer));
+            editor.dirty = false;
+        } else if let Some(overlay) = &self.overlay {
+            ansi.push_str(&overlay.paint(
+                &display.layout,
+                self.location,
+                self.keymap,
+                self.viewport.outer,
+            ));
+        } else if self.leader.is_some() {
+            ansi.push_str(&navigation::paint_lines(
+                self.viewport.outer,
+                &["w Workspaces · t Tabs · p Panes · ? Search · Esc Cancel".into()],
+            ));
+        }
+        cache.layout = Some(display.layout);
+        self.navigation_dirty = false;
+        Ok(Some((ansi, LastFrame::Composition)))
+    }
+
     fn paint(
         &mut self,
         terminal: &mut Running,
-        metadata: &MetadataUpdates,
+        scope: &LaunchScope,
     ) -> Result<Option<(String, LastFrame)>> {
+        if self.composition.is_some() {
+            return self.paint_composition(terminal, scope);
+        }
+        let metadata = &scope.metadata;
         if let Some(editor) = &mut self.naming {
             if !editor.dirty && matches!(self.previous, Some(LastFrame::Naming)) {
                 return Ok(None);
@@ -2047,6 +2296,91 @@ impl Lease {
             .render(previous, self.viewport.outer, footer)?;
         Ok(Some((ansi, LastFrame::Terminal(screen))))
     }
+}
+
+type PreviewReply = oneshot::Receiver<Reply<(Viewport, Vec<u8>)>>;
+
+struct CompositionCache {
+    layout: Option<Arc<Layout>>,
+    size: Option<Viewport>,
+    active: Option<Arc<Screen>>,
+    screens: HashMap<Uuid, Arc<Screen>>,
+    pending: Option<(Uuid, Instant, PreviewReply)>,
+    next_preview: Instant,
+    index: usize,
+}
+
+impl CompositionCache {
+    fn new() -> Self {
+        Self {
+            layout: None,
+            size: None,
+            active: None,
+            screens: HashMap::new(),
+            pending: None,
+            next_preview: Instant::now(),
+            index: 0,
+        }
+    }
+
+    fn previews(&mut self, view: &Composition, scope: &LaunchScope, location: Location) -> bool {
+        let before = self.screens.len();
+        self.screens
+            .retain(|pane, _| view.panes.iter().any(|(id, _)| id == pane));
+        let mut changed = before != self.screens.len();
+        if !view.split {
+            self.pending = None;
+            return changed;
+        }
+        if let Some((pane, until, mut pending)) = self.pending.take() {
+            match pending.try_recv() {
+                Ok(Ok((viewport, bytes))) if view.panes.iter().any(|(id, _)| *id == pane) => {
+                    let screen = parse_screen(viewport, &bytes);
+                    if self
+                        .screens
+                        .get(&pane)
+                        .is_none_or(|previous| !screen.contents_diff(previous).is_empty())
+                    {
+                        self.screens.insert(pane, Arc::new(screen));
+                        changed = true;
+                    }
+                }
+                Err(oneshot::error::TryRecvError::Empty) if Instant::now() < until => {
+                    self.pending = Some((pane, until, pending))
+                }
+                _ => {
+                    changed |= self.screens.remove(&pane).is_some();
+                }
+            }
+        }
+        if self.pending.is_none() && Instant::now() >= self.next_preview {
+            self.next_preview = Instant::now() + Duration::from_millis(125);
+            if let Some(handles) = scope
+                .registry
+                .request(move |registry| registry.preview_handles(location))
+            {
+                let before = self.screens.len();
+                self.screens
+                    .retain(|pane, _| handles.iter().any(|(id, _)| id == pane));
+                changed |= before != self.screens.len();
+                if !handles.is_empty() {
+                    let (pane, handle) = &handles[self.index % handles.len()];
+                    self.index = self.index.wrapping_add(1);
+                    let (send, reply) = oneshot::channel();
+                    if handle.commands.try_send(Command::Preview(send)).is_ok() {
+                        self.pending = Some((*pane, Instant::now() + COMMAND_TIMEOUT, reply));
+                    }
+                }
+            }
+        }
+        changed
+    }
+}
+
+fn parse_screen(size: Viewport, bytes: &[u8]) -> Screen {
+    let mut parser = vt100::Parser::new(size.rows, size.cols, 0);
+    parser.process(bytes);
+    parser.screen().clone()
 }
 
 fn stale_route() -> ProtocolFault {

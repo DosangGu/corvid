@@ -59,6 +59,7 @@ pub const TERMINAL_HISTORY_INTERVAL: std::time::Duration = std::time::Duration::
 pub const TERMINAL_HISTORY_MAX_ROWS: usize = 2048;
 pub const TERMINAL_HISTORY_MAX_BYTES: usize = 192 * 1024;
 pub const MOVE_TAB_CAPABILITY: &str = "move_tab.v1";
+pub const WORKSPACE_UI_CAPABILITY: &str = "workspace_ui.v1";
 pub const STATUS_BAR_CAPABILITY: &str = "status_bar.v1";
 pub const ADAPTIVE_VIEWPORT_CAPABILITY: &str = "adaptive_viewport.v1";
 pub const RESPONSE_NOTIFICATION_CAPABILITY: &str = "response_notification.v1";
