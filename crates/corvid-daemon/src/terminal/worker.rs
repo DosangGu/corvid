@@ -2201,6 +2201,7 @@ impl Lease {
             if picker_changed && let Some(overlay) = picker {
                 ansi.push_str(&overlay.paint(
                     &display.layout,
+                    self.location,
                     self.keymap,
                     self.viewport.outer,
                     &cache.picker_motion,
@@ -2238,6 +2239,7 @@ impl Lease {
         } else if let Some(overlay) = &self.overlay {
             ansi.push_str(&overlay.paint(
                 &display.layout,
+                self.location,
                 self.keymap,
                 self.viewport.outer,
                 &cache.picker_motion,

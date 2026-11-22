@@ -809,6 +809,13 @@ def verify_workspace_ui(command, directory):
         # Separate the terminal's input echo from output and wait for the side effect.
         terminal.send(text.encode() + b"\r")
 
+    def workspace_panes():
+        layout = subprocess.check_output([*command, "control", "workspaces"], text=True, timeout=3)
+        workspace = layout.split(" Workspace UI\n", 1)[1].split("\nworkspace ", 1)[0]
+        return re.findall(r"^    pane ([\da-f-]+)$", workspace, re.M)
+
+    pane_hint = rb"\x1b\[30;1H\x1b\[0;7m\x1b\[2KPane "
+    cursor_visible = rb"\x1b\[\?25h"
     launch = [*command, "attach", "--new-workspace", "Workspace UI"]
     with OuterTerminal(launch, cols=100, rows=30, env=env) as terminal:
         terminal.expect(rb"Ctrl\+\] commands")
@@ -923,6 +930,58 @@ def verify_workspace_ui(command, directory):
         terminal.send(b"\x1b")
         time.sleep(0.15)
         terminal.expect(rb"Ctrl\+\] commands")
+
+        terminal.output.clear()
+        terminal.send(b"\x1dp")
+        terminal.expect(pane_hint + b"2")
+        for key, number in (
+            (b"j", b"3"), (b"k", b"2"), (b"h", b"1"), (b"l", b"2"), (b"\x1b[B", b"3"),
+        ):
+            terminal.output.clear()
+            terminal.send(key)
+            terminal.expect(pane_hint + number)
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        terminal.expect(cursor_visible)
+        send_line(terminal, 'printf "CANCELLED-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"CANCELLED-top")
+
+        terminal.output.clear()
+        terminal.send(b"\x1dpj")
+        terminal.expect(pane_hint + b"3")
+        terminal.output.clear()
+        terminal.send(b"\r")
+        terminal.expect(cursor_visible)
+        send_line(terminal, 'printf "SELECTED-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"SELECTED-bottom")
+        terminal.output.clear()
+        terminal.send(b"\x1d\x1b[A")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+
+        # Resizing can reflow retained output, so check it after the reattach assertions.
+        terminal.output.clear()
+        terminal.resize(20, 6)
+        terminal.expect(rb"\x1b\[1;1H\x1b\[0m\x1b\[2K\x1b\[0;2mWorksp\x1b")
+        terminal.send(b"\x1dpj")
+        terminal.expect(rb"\x1b\[6;1H\x1b\[0;7m\x1b\[2KPane 3")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        terminal.expect(cursor_visible)
+        terminal.output.clear()
+        terminal.resize(100, 30)
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+
+        # Closing the highlighted lower pane leaves input on the upper pane.
+        left_pane, top_pane, _ = workspace_panes()
+        terminal.output.clear()
+        terminal.send(b"\x1dpjx")
+        deadline = time.monotonic() + 5
+        while (remaining := workspace_panes()) != [left_pane, top_pane]:
+            assert time.monotonic() < deadline, remaining
+            time.sleep(0.02)
+        terminal.expect(cursor_visible)
+        send_line(terminal, 'printf "PANE-CLOSED-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"PANE-CLOSED-top")
         terminal.send(b"\x1dtx")
         terminal.wait(0)
 
