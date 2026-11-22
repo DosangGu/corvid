@@ -837,42 +837,6 @@ def verify_workspace_ui(command, directory):
         send_line(terminal, "export CORVID_TEST_PANE=bottom; printf 'bottom-%s\\n' PANE")
         terminal.expect(b"bottom-PANE")
 
-        terminal.output.clear()
-        terminal.send(b"\x1dp")
-        terminal.expect(pane_hint + b"3")
-        for key, number in (
-            (b"k", b"2"), (b"h", b"1"), (b"l", b"2"), (b"j", b"3"), (b"\x1b[A", b"2"),
-        ):
-            terminal.output.clear()
-            terminal.send(key)
-            terminal.expect(pane_hint + number)
-        terminal.output.clear()
-        terminal.send(b"\x1b")
-        terminal.expect(cursor_visible)
-        send_line(terminal, 'printf "CANCELLED-%s\\n" "$CORVID_TEST_PANE"')
-        terminal.expect(b"CANCELLED-bottom")
-
-        terminal.output.clear()
-        terminal.send(b"\x1dpk")
-        terminal.expect(pane_hint + b"2")
-        terminal.output.clear()
-        terminal.send(b"\r")
-        terminal.expect(cursor_visible)
-        send_line(terminal, 'printf "SELECTED-%s\\n" "$CORVID_TEST_PANE"')
-        terminal.expect(b"SELECTED-top")
-
-        terminal.output.clear()
-        terminal.resize(20, 6)
-        terminal.expect(rb"\x1b\[6;1H\x1b\[0m")
-        terminal.send(b"\x1dpj")
-        terminal.expect(rb"\x1b\[6;1H\x1b\[0;7m\x1b\[2KPane 3")
-        terminal.output.clear()
-        terminal.send(b"\x1b")
-        terminal.expect(cursor_visible)
-        terminal.output.clear()
-        terminal.resize(100, 30)
-        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
-
         # Mouse coordinates are relative to the outer screen. This is inside the left pane.
         terminal.output.clear()
         terminal.send(b"\x1b[<0;4;5M")
@@ -966,6 +930,46 @@ def verify_workspace_ui(command, directory):
         terminal.send(b"\x1b")
         time.sleep(0.15)
         terminal.expect(rb"Ctrl\+\] commands")
+
+        terminal.output.clear()
+        terminal.send(b"\x1dp")
+        terminal.expect(pane_hint + b"2")
+        for key, number in (
+            (b"j", b"3"), (b"k", b"2"), (b"h", b"1"), (b"l", b"2"), (b"\x1b[B", b"3"),
+        ):
+            terminal.output.clear()
+            terminal.send(key)
+            terminal.expect(pane_hint + number)
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        terminal.expect(cursor_visible)
+        send_line(terminal, 'printf "CANCELLED-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"CANCELLED-top")
+
+        terminal.output.clear()
+        terminal.send(b"\x1dpj")
+        terminal.expect(pane_hint + b"3")
+        terminal.output.clear()
+        terminal.send(b"\r")
+        terminal.expect(cursor_visible)
+        send_line(terminal, 'printf "SELECTED-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"SELECTED-bottom")
+        terminal.output.clear()
+        terminal.send(b"\x1d\x1b[A")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+
+        # Resizing can reflow retained output, so check it after the reattach assertions.
+        terminal.output.clear()
+        terminal.resize(20, 6)
+        terminal.expect(rb"\x1b\[1;1H\x1b\[0m\x1b\[2K\x1b\[0;2mWorksp\x1b")
+        terminal.send(b"\x1dpj")
+        terminal.expect(rb"\x1b\[6;1H\x1b\[0;7m\x1b\[2KPane 3")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        terminal.expect(cursor_visible)
+        terminal.output.clear()
+        terminal.resize(100, 30)
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
 
         # Closing the highlighted lower pane leaves input on the upper pane.
         left_pane, top_pane, _ = workspace_panes()
