@@ -19,13 +19,12 @@ pub(super) enum Kind {
 
 pub(super) enum Overlay {
     List {
-        kind: Kind,
+        kind: ListKind,
         index: usize,
-        control: u8,
         query: String,
-        editing_query: bool,
         selected: Option<Uuid>,
     },
+    Tabs(Uuid),
     Panes(Uuid),
     Confirm {
         title: String,
@@ -35,9 +34,14 @@ pub(super) enum Overlay {
 }
 
 #[derive(Clone, Copy)]
+pub(super) enum ListKind {
+    Workspaces,
+    Commands,
+}
+
+#[derive(Clone, Copy)]
 enum Choice {
     Workspace(Uuid),
-    Tab(Uuid, usize),
     Command(u8),
     EndWorkspace,
 }
@@ -45,7 +49,7 @@ enum Choice {
 impl Choice {
     fn id(self) -> Option<Uuid> {
         match self {
-            Self::Workspace(id) | Self::Tab(id, _) => Some(id),
+            Self::Workspace(id) => Some(id),
             _ => None,
         }
     }
@@ -53,33 +57,25 @@ impl Choice {
 
 impl Overlay {
     pub(super) fn open(kind: Kind, layout: &Layout, location: Location) -> Self {
-        if matches!(kind, Kind::Panes) {
-            return Self::Panes(location.pane);
-        }
-        let index = match kind {
-            Kind::Workspaces => layout
-                .workspaces
-                .iter()
-                .position(|ws| ws.id == location.workspace),
-            Kind::Tabs => layout
-                .workspaces
-                .iter()
-                .find(|ws| ws.id == location.workspace)
-                .and_then(|ws| ws.tabs.iter().position(|tab| tab.id == location.tab)),
-            _ => None,
-        }
-        .unwrap_or(0);
+        let (kind, index, selected) = match kind {
+            Kind::Tabs => return Self::Tabs(location.tab),
+            Kind::Panes => return Self::Panes(location.pane),
+            Kind::Commands => (ListKind::Commands, 0, None),
+            Kind::Workspaces => (
+                ListKind::Workspaces,
+                layout
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.id == location.workspace)
+                    .unwrap_or(0),
+                Some(location.workspace),
+            ),
+        };
         Self::List {
             kind,
             index,
-            control: 0,
             query: String::new(),
-            editing_query: false,
-            selected: match kind {
-                Kind::Workspaces => Some(location.workspace),
-                Kind::Tabs => Some(location.tab),
-                _ => None,
-            },
+            selected,
         }
     }
 
@@ -98,6 +94,7 @@ impl Overlay {
         }
         let unfocused = |command| (None, Some(command));
         match self {
+            Self::Tabs(tab) => tab_keys(bytes, layout, location, keymap, tab),
             Self::Panes(mut pane) => {
                 match bytes {
                     b"\r" | b"\n" => return unfocused(KeyCommand::Tab(TabCommand::Pane(pane))),
@@ -155,65 +152,23 @@ impl Overlay {
             Self::List {
                 kind,
                 mut index,
-                mut control,
                 mut query,
-                mut editing_query,
                 mut selected,
             } => {
-                let items = choices(kind, &query, layout, location, keymap);
+                let items = choices(kind, &query, layout, keymap);
                 index = selected
                     .and_then(|id| items.iter().position(|(_, choice)| choice.id() == Some(id)))
                     .unwrap_or_else(|| index.min(items.len().saturating_sub(1)));
                 let original_query = query.clone();
                 let mut moved = false;
-                let tab_picker = matches!(kind, Kind::Tabs);
-                let bytes = match (kind, editing_query, bytes) {
-                    (Kind::Tabs, false, b"h") | (Kind::Tabs, _, b"\x1b[D" | b"\x1bOD") => b"\x1b[A",
-                    (Kind::Tabs, false, b"l") | (Kind::Tabs, _, b"\x1b[C" | b"\x1bOC") => b"\x1b[B",
-                    _ => bytes,
-                };
                 match bytes {
-                    b"\t" | b"\x1b[Z" if tab_picker => {
-                        let controls = if keymap.close { 3 } else { 2 };
-                        control =
-                            (control + if bytes == b"\t" { 1 } else { controls - 1 }) % controls;
-                        editing_query = false;
-                    }
-                    b"\r" | b"\n" if control == 1 => {
-                        return unfocused(KeyCommand::Tab(TabCommand::Create));
-                    }
                     b"\r" | b"\n" => {
-                        if let Some((label, choice)) = items.get(index)
+                        if let Some((_, choice)) = items.get(index)
                             && (choice.id().is_none() || choice.id() == selected)
                         {
                             match *choice {
                                 Choice::Workspace(id) => {
                                     return unfocused(KeyCommand::Tab(TabCommand::Workspace(id)));
-                                }
-                                Choice::Tab(id, _) if control == 0 => {
-                                    return unfocused(KeyCommand::Tab(TabCommand::Select(id)));
-                                }
-                                Choice::Tab(id, count) => {
-                                    return (
-                                        Some(Self::Confirm {
-                                            title: format!(
-                                                "End {label:?} and its {count} pane(s)?"
-                                            ),
-                                            target: CloseTarget::Tab {
-                                                workspace: location.workspace,
-                                                tab: id,
-                                            },
-                                            return_to: Some(Box::new(Self::List {
-                                                kind,
-                                                index,
-                                                control: 0,
-                                                query,
-                                                editing_query,
-                                                selected,
-                                            })),
-                                        }),
-                                        None,
-                                    );
                                 }
                                 Choice::Command(key) => return (None, keymap.command(&[key])),
                                 Choice::EndWorkspace => {
@@ -230,8 +185,6 @@ impl Overlay {
                             }
                         }
                     }
-                    _ if control > 0 => {}
-                    b"\x06" if tab_picker => editing_query = !editing_query,
                     b"\x1b[A" | b"\x1bOA" => {
                         index = index.saturating_sub(1);
                         moved = true;
@@ -241,9 +194,7 @@ impl Overlay {
                         moved = true;
                     }
                     b"\x7f" | b"\x08" => {
-                        if query.pop().is_some() {
-                            editing_query = tab_picker;
-                        }
+                        query.pop();
                         index = 0;
                     }
                     _ => {
@@ -253,26 +204,22 @@ impl Overlay {
                             && query.len() + text.len() <= 256
                         {
                             query.push_str(text);
-                            editing_query = tab_picker;
                             index = 0;
                         }
                     }
                 }
                 if original_query != query {
-                    selected = choices(kind, &query, layout, location, keymap)
+                    selected = choices(kind, &query, layout, keymap)
                         .first()
                         .and_then(|(_, choice)| choice.id());
                 } else if moved {
-                    editing_query = false;
                     selected = items.get(index).and_then(|(_, choice)| choice.id());
                 }
                 (
                     Some(Self::List {
                         kind,
                         index,
-                        control,
                         query,
-                        editing_query,
                         selected,
                     }),
                     None,
@@ -284,11 +231,10 @@ impl Overlay {
     pub(super) fn title_target<'a>(
         &self,
         layout: &'a Layout,
-        location: Location,
         outer: Viewport,
     ) -> Option<TitleTarget<'a>> {
         let Self::List {
-            kind,
+            kind: ListKind::Workspaces,
             selected: Some(id),
             query,
             ..
@@ -296,27 +242,15 @@ impl Overlay {
         else {
             return None;
         };
-        // Keep at least one terminal row above the picker, plus its controls.
-        let title = match kind {
-            Kind::Workspaces if outer.rows.get() > 3 => {
-                &layout
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == *id)?
-                    .label
-            }
-            Kind::Tabs if outer.rows.get() > 4 => {
-                &layout
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == location.workspace)?
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.id == *id)?
-                    .label
-            }
-            _ => return None,
-        };
+        // Keep a terminal row above the workspace picker and its controls.
+        if outer.rows.get() <= 3 {
+            return None;
+        }
+        let title = &layout
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == *id)?
+            .label;
         title
             .to_lowercase()
             .contains(&query.to_lowercase())
@@ -330,7 +264,6 @@ impl Overlay {
     pub(super) fn paint(
         &self,
         layout: &Layout,
-        location: Location,
         keymap: Keymap,
         outer: Viewport,
         motion: &TitleMotion,
@@ -340,38 +273,18 @@ impl Overlay {
             Self::List {
                 kind,
                 index,
-                control,
                 query,
-                editing_query,
                 selected,
             } => {
                 let (title, hints) = match kind {
-                    Kind::Workspaces => ("Workspaces", "↑/↓ Choose · Enter Open · Esc Cancel"),
-                    Kind::Tabs if *editing_query => {
-                        ("Tabs", "←↑↓→ · Enter Focus · Tab Actions · Esc Cancel")
+                    ListKind::Workspaces => ("Workspaces", "↑/↓ Choose · Enter Open · Esc Cancel"),
+                    ListKind::Commands => {
+                        ("CORVID COMMANDS", "↑/↓ Choose · Enter Run · Esc Cancel")
                     }
-                    Kind::Tabs => ("Tabs", "←↑↓→ h/l · Enter Focus · Tab Actions · Esc Cancel"),
-                    _ => ("CORVID COMMANDS", "↑/↓ Choose · Enter Run · Esc Cancel"),
                 };
                 lines.push(format!("{title} · {hints}"));
-                let search = match kind {
-                    Kind::Tabs if *editing_query => "Search (typing)",
-                    Kind::Tabs => "Search (Ctrl-F)",
-                    _ => "Search",
-                };
-                lines.push(format!("{search}: {query}"));
-                if matches!(kind, Kind::Tabs) {
-                    lines.push(
-                        match control {
-                            1 => "Tabs · [New tab…] · Close selected tab…",
-                            2 => "Tabs · New tab… · [Close selected tab…]",
-                            _ if keymap.close => "[Tabs] · New tab… · Close selected tab…",
-                            _ => "[Tabs] · New tab…",
-                        }
-                        .into(),
-                    );
-                }
-                let items = choices(*kind, query, layout, location, keymap);
+                lines.push(format!("Search: {query}"));
+                let items = choices(*kind, query, layout, keymap);
                 let index = selected
                     .and_then(|id| items.iter().position(|(_, choice)| choice.id() == Some(id)))
                     .unwrap_or(*index);
@@ -389,6 +302,14 @@ impl Overlay {
                     },
                 ));
             }
+            Self::Tabs(_) => lines.push(
+                if keymap.close {
+                    "Tabs · ←/→ h/l · Enter Focus · n New · x Close · Esc Cancel"
+                } else {
+                    "Tabs · ←/→ h/l · Enter Focus · n New · Esc Cancel"
+                }
+                .into(),
+            ),
             Self::Panes(_) => lines.push(
                 if keymap.close {
                     "Panes · ←↓↑→ Select · Enter Focus · r Right · d Down · x Close · Esc Cancel"
@@ -406,35 +327,74 @@ impl Overlay {
     }
 }
 
-fn choices(
-    kind: Kind,
-    query: &str,
+fn tab_keys(
+    bytes: &[u8],
     layout: &Layout,
     location: Location,
     keymap: Keymap,
-) -> Vec<(String, Choice)> {
+    mut tab: Uuid,
+) -> (Option<Overlay>, Option<KeyCommand>) {
+    if matches!(bytes, b"\r" | b"\n") {
+        return (None, Some(KeyCommand::Tab(TabCommand::Select(tab))));
+    }
+    let keys = match direction(bytes) {
+        Some(Direction::Left | Direction::Up) => b"h",
+        Some(Direction::Right | Direction::Down) => b"l",
+        None if bytes.iter().all(u8::is_ascii_graphic) => bytes,
+        None => return (Some(Overlay::Tabs(tab)), None),
+    };
+    // The client may send consecutive printable keys in one input chunk.
+    for key in keys {
+        match key {
+            b'h' | b'l' => tab = step_tab(layout, location, tab, *key == b'h'),
+            b'n' => return (None, Some(KeyCommand::Tab(TabCommand::Create))),
+            b'x' if keymap.close => {
+                return (
+                    None,
+                    Some(KeyCommand::End(CloseTarget::Tab {
+                        workspace: location.workspace,
+                        tab,
+                    })),
+                );
+            }
+            _ => {}
+        }
+    }
+    (Some(Overlay::Tabs(tab)), None)
+}
+
+fn step_tab(layout: &Layout, location: Location, selected: Uuid, previous: bool) -> Uuid {
+    let Some(workspace) = layout
+        .workspaces
+        .iter()
+        .find(|ws| ws.id == location.workspace)
+    else {
+        return selected;
+    };
+    let Some(index) = workspace
+        .tabs
+        .iter()
+        .position(|tab| tab.id == selected)
+        .or_else(|| workspace.tabs.iter().position(|tab| tab.id == location.tab))
+    else {
+        return selected;
+    };
+    let next = if previous {
+        index.saturating_sub(1)
+    } else {
+        (index + 1).min(workspace.tabs.len() - 1)
+    };
+    workspace.tabs[next].id
+}
+
+fn choices(kind: ListKind, query: &str, layout: &Layout, keymap: Keymap) -> Vec<(String, Choice)> {
     let mut items = match kind {
-        Kind::Workspaces => layout
+        ListKind::Workspaces => layout
             .workspaces
             .iter()
             .map(|workspace| (workspace.label.clone(), Choice::Workspace(workspace.id)))
             .collect(),
-        Kind::Tabs => layout
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == location.workspace)
-            .map(|ws| {
-                ws.tabs
-                    .iter()
-                    .map(|tab| {
-                        let mut panes = Vec::new();
-                        tab.root.pane_ids(&mut panes);
-                        (tab.label.clone(), Choice::Tab(tab.id, panes.len()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        Kind::Commands => {
+        ListKind::Commands => {
             let mut commands: Vec<_> = WorkspaceCommand::ALL
                 .into_iter()
                 .filter_map(|action| {
@@ -464,7 +424,6 @@ fn choices(
             }
             commands
         }
-        Kind::Panes => Vec::new(),
     };
     let query = query.to_lowercase();
     items.retain(|(label, _)| label.to_lowercase().contains(&query));

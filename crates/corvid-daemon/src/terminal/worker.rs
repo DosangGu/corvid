@@ -89,7 +89,7 @@ pub(crate) struct RetainedTerminal {
 impl LaunchScope {
     fn content(&self, viewport: TuiViewport, location: Location, keymap: Keymap) -> Viewport {
         if keymap.workspace_ui {
-            Composition::new(viewport.outer, &self.metadata.layout(), location)
+            Composition::new(viewport.outer, &self.metadata.layout(), location, None)
                 .active_size(location)
         } else {
             viewport.content()
@@ -131,9 +131,6 @@ pub(crate) enum Action {
         route: InputRoute,
         sequence: u64,
         bytes: Vec<u8>,
-    },
-    ReopenTabs {
-        route: InputRoute,
     },
     MouseClick {
         route: InputRoute,
@@ -187,7 +184,7 @@ pub(crate) enum Event {
     Detached,
     Tab(TabCommand),
     Click(Uuid, Mouse),
-    Close(corvid_core::layout::CloseTarget, bool),
+    Close(corvid_core::layout::CloseTarget),
     PairController,
     DisconnectOthers,
 }
@@ -967,7 +964,7 @@ impl Worker {
                     Some(KeyCommand::Close(kind)) => {
                         lease.switch_pending = true;
                         let target = kind.target(lease.location);
-                        if lease.events.try_send(Event::Close(target, false)).is_err() {
+                        if lease.events.try_send(Event::Close(target)).is_err() {
                             self.revoke();
                         }
                     }
@@ -977,13 +974,7 @@ impl Worker {
                     }
                     Some(KeyCommand::End(target)) => {
                         lease.switch_pending = true;
-                        let reopen_tabs =
-                            matches!(target, corvid_core::layout::CloseTarget::Tab { .. });
-                        if lease
-                            .events
-                            .try_send(Event::Close(target, reopen_tabs))
-                            .is_err()
-                        {
+                        if lease.events.try_send(Event::Close(target)).is_err() {
                             self.revoke();
                         }
                     }
@@ -1008,18 +999,6 @@ impl Worker {
                     }
                     Some(KeyCommand::DisconnectOthers) => {}
                 }
-            }
-            Action::ReopenTabs { route } => {
-                if route != lease.route || !lease.keymap.workspace_ui {
-                    return Err(stale_route());
-                }
-                let display = self.scope.metadata.display();
-                lease.overlay = Some(Overlay::open(
-                    navigation::Kind::Tabs,
-                    &display.layout,
-                    lease.location,
-                ));
-                lease.navigation_dirty = true;
             }
             Action::MouseClick { route, mouse } => {
                 if route != lease.route || !lease.keymap.workspace_ui {
@@ -2179,7 +2158,16 @@ impl Lease {
     ) -> Result<Option<(String, LastFrame)>> {
         let cache = self.composition.as_mut().expect("composition enabled");
         let display = scope.metadata.display();
-        let view = Composition::new(self.viewport.outer, &display.layout, self.location);
+        let selected_tab = match self.overlay {
+            Some(Overlay::Tabs(id)) => Some(id),
+            _ => None,
+        };
+        let view = Composition::new(
+            self.viewport.outer,
+            &display.layout,
+            self.location,
+            selected_tab,
+        );
         let size = view.active_size(self.location);
         let layout_changed = cache
             .layout
@@ -2196,9 +2184,8 @@ impl Lease {
         }
         let header_changed = view.update_header(&mut cache.header_motion, now);
         let picker = self.overlay.as_ref();
-        let picker_target = picker.and_then(|overlay| {
-            overlay.title_target(&display.layout, self.location, self.viewport.outer)
-        });
+        let picker_target =
+            picker.and_then(|overlay| overlay.title_target(&display.layout, self.viewport.outer));
         let picker_changed = cache.picker_motion.update(picker_target, now);
         if !terminal.dirty
             && !layout_changed
@@ -2214,7 +2201,6 @@ impl Lease {
             if picker_changed && let Some(overlay) = picker {
                 ansi.push_str(&overlay.paint(
                     &display.layout,
-                    self.location,
                     self.keymap,
                     self.viewport.outer,
                     &cache.picker_motion,
@@ -2252,7 +2238,6 @@ impl Lease {
         } else if let Some(overlay) = &self.overlay {
             ansi.push_str(&overlay.paint(
                 &display.layout,
-                self.location,
                 self.keymap,
                 self.viewport.outer,
                 &cache.picker_motion,

@@ -271,8 +271,8 @@ Window size, position, and monitor restoration remain deferred to #49.
 
 ![Desktop's New window and Quit menu](images/desktop-window-menu.png)
 
-Press `Ctrl+]` to start a Desktop command. The workspace, tab and pane
-selectors use the same keys as the TUI. Press `?` after the leader and search
+Press `Ctrl+]` to start a Desktop command. Use `w` for workspaces, `t` for tabs,
+or `p` for panes. Press `?` after the leader and search
 for **New workspace**, **Settings**, **Agents**, or window actions. Click a tab
 to return to the pane you last used in it, or click inside a pane to focus it.
 

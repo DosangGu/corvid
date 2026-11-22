@@ -85,7 +85,7 @@ impl Keymap {
                     _ => None,
                 };
             }
-            // The visible list and pane selector confirm destructive actions.
+            // Workspace navigation handles closure through the visible selectors.
             if matches!(bytes, b"X" | b"T" | b"S") {
                 return None;
             }
