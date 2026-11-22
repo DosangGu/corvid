@@ -115,7 +115,7 @@ case "resolve":
                            relativeTo: nil, bookmarkDataIsStale: &stale)
     precondition(resolved.resolvingSymlinksInPath().path == app.path)
 
-case "handoff":
+case "handoff", "handoff-with-launch-error":
     // Emulate the published updater. Hold the helper's parent alive until the
     // old GUI quits, so early foreground registration is observable.
     guard let original = singleApplication("Before relaunch handoff") else {
@@ -143,6 +143,12 @@ case "handoff":
             precondition(current.processIdentifier == originalPID,
                          "Replacement registered before original PID \(originalPID) exited: \(describe([current]))")
         }
+    }
+    if args[1] == "handoff-with-launch-error" {
+        // The helper has acknowledged the handoff and is waiting for this process to exit.
+        // Keep the executable unavailable until Launch Services rejects the first open.
+        let held = app.deletingLastPathComponent().appendingPathComponent("held-desktop", isDirectory: false)
+        try FileManager.default.moveItem(at: bundle.executableURL!, to: held)
     }
     print(originalPID)
 case "running":
