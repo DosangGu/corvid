@@ -1,8 +1,7 @@
-Corvid v0.4.3 completes the switch to Compio across the daemon, command line, Desktop, and Agent Deck.
+Corvid v0.4.4 improves workspace focus restoration and Desktop tab titles.
 
-- Local IPC, SSH and WSL relays, and terminal attachment use Compio in standard builds. [#284](https://github.com/DosangGu/corvid/pull/284) · [#285](https://github.com/DosangGu/corvid/pull/285)
-- Companion monitoring, Desktop workspace inventory, and Agent Deck focus routing use the same runtime. [#286](https://github.com/DosangGu/corvid/pull/286) · [#288](https://github.com/DosangGu/corvid/pull/288)
-- On macOS, Desktop relaunches from its updated application bundle after the old process exits. [#321](https://github.com/DosangGu/corvid/pull/321)
-- The preview feature flags have been removed. CI checks the Linux, macOS, and Windows dependency graphs for Tokio. [#289](https://github.com/DosangGu/corvid/pull/289)
+- Reopening a workspace in Desktop or attaching to it explicitly in the TUI restores the last focused live pane when available. [#331](https://github.com/DosangGu/corvid/pull/331)
+- Long workspace and tab titles scroll into view, and assistive technologies can read full Desktop tab titles and their input indicators. [#325](https://github.com/DosangGu/corvid/pull/325) · [#329](https://github.com/DosangGu/corvid/pull/329)
+- Desktop and Agent Deck return to Zed GPUI. [#328](https://github.com/DosangGu/corvid/pull/328)
 
-[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.4.3/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.4.2...v0.4.3)
+[Distribution guide](https://github.com/DosangGu/corvid/blob/v0.4.4/docs/05_release_distribution.md) · [Full changelog](https://github.com/DosangGu/corvid/compare/v0.4.3...v0.4.4)

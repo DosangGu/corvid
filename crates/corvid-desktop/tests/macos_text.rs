@@ -5,10 +5,10 @@ mod terminal_fonts;
 // AppKit must initialize on the process main thread, not a Rust test worker.
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
-    use gpui::{Application, font, px};
+    use gpui::{font, px};
     use terminal_fonts::{DEFAULT_FONT, FONT_SIZE};
 
-    let application = Application::headless();
+    let application = gpui_platform::headless();
     let text = application.text_system();
     let ui = text.resolve_font(&font(".SystemUIFont"));
     let narrow = text.advance(ui, px(15.), 'i').unwrap().width;
