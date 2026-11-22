@@ -1,6 +1,7 @@
 //! Private, best-effort client preferences. These are navigation hints, never authority.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -9,9 +10,9 @@ use corvid_async::watch;
 use corvid_core::layout::Location;
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::snapshot::SynchronizedSnapshot;
-use corvid_protocol::wire::ViewSelection;
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::snapshot_entity::Body as Entity;
+use corvid_protocol::wire::{ViewSelection, WorkspaceState};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -26,6 +27,7 @@ const FILE: &str = "view.json";
 const BACKUP: &str = "view.json.bak";
 const MAX_BYTES: u64 = 64 * 1024;
 const MAX_TARGETS: usize = 64;
+const MAX_WORKSPACE_VIEWS: usize = 128;
 const SAVE_DELAY: Duration = Duration::from_millis(250);
 // A writer can hold this lock across multiple durable file replacements.
 #[cfg(windows)]
@@ -92,23 +94,12 @@ impl SavedView {
             snapshot.session().host_id == self.host_id.to_string(),
             ProtocolFault::new("HostMismatch", "the saved view belongs to a different host")
         );
-        let workspace = snapshot
-            .snapshot()
-            .entities()
-            .find_map(|entity| match &entity.body {
-                Some(Entity::Workspace(workspace))
-                    if workspace.workspace_id == self.location.workspace.to_string() =>
-                {
-                    Some(workspace)
-                }
-                _ => None,
-            })
-            .ok_or_else(|| {
-                ProtocolFault::new(
-                    "SavedWorkspaceGone",
-                    "The saved workspace was removed. Choose a workspace to continue.",
-                )
-            })?;
+        let workspace = self.workspace(snapshot).ok_or_else(|| {
+            ProtocolFault::new(
+                "SavedWorkspaceGone",
+                "The saved workspace was removed. Choose a workspace to continue.",
+            )
+        })?;
         let tab = workspace
             .tabs
             .iter()
@@ -139,6 +130,84 @@ impl SavedView {
             pane_id: (*pane).clone(),
         })
     }
+
+    /// Prefer the remembered pane, then another eligible pane in its tab.
+    /// The caller supplies the normal workspace selection if the tab has no candidate.
+    pub fn preferred_pane(
+        &self,
+        workspace: &WorkspaceState,
+        eligible: impl Fn(&ViewSelection) -> bool,
+    ) -> Option<ViewSelection> {
+        if workspace.workspace_id != self.location.workspace.to_string() {
+            return None;
+        }
+        let saved_tab = self.location.tab.to_string();
+        let tab = workspace.tabs.iter().find(|tab| tab.tab_id == saved_tab)?;
+        let saved_pane = self.location.pane.to_string();
+        let mut first = None;
+        for node in &tab.nodes {
+            let Some(Node::PaneId(pane_id)) = &node.body else {
+                continue;
+            };
+            let view = ViewSelection {
+                workspace_id: workspace.workspace_id.clone(),
+                tab_id: tab.tab_id.clone(),
+                pane_id: pane_id.clone(),
+            };
+            if eligible(&view) {
+                if *pane_id == saved_pane {
+                    return Some(view);
+                }
+                first.get_or_insert(view);
+            }
+        }
+        first
+    }
+
+    pub fn preferred_live_pane(&self, snapshot: &SynchronizedSnapshot) -> Option<ViewSelection> {
+        if snapshot.session().host_id != self.host_id.to_string() {
+            return None;
+        }
+        let workspace = self.workspace(snapshot)?;
+        let live: Vec<_> = snapshot
+            .snapshot()
+            .entities()
+            .filter_map(|entity| match &entity.body {
+                Some(Entity::Terminal(terminal)) => terminal.location.as_ref(),
+                _ => None,
+            })
+            .collect();
+        self.preferred_pane(workspace, |view| live.contains(&view))
+    }
+
+    fn workspace<'a>(&self, snapshot: &'a SynchronizedSnapshot) -> Option<&'a WorkspaceState> {
+        let workspace_id = self.location.workspace.to_string();
+        snapshot
+            .snapshot()
+            .entities()
+            .find_map(|entity| match &entity.body {
+                Some(Entity::Workspace(workspace)) if workspace.workspace_id == workspace_id => {
+                    Some(workspace)
+                }
+                _ => None,
+            })
+    }
+
+    fn same_workspace(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.host_id == other.host_id
+            && self.location.workspace == other.location.workspace
+    }
+}
+
+/// A remembered target can become unavailable between the snapshot and attach.
+pub fn workspace_preference_missed(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ProtocolFault>().is_some_and(|fault| {
+        matches!(
+            fault.code.as_str(),
+            "TargetGone" | "NoTerminal" | "WorkspaceBusy"
+        )
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -146,6 +215,8 @@ struct Stored {
     schema_version: u32,
     /// Most recently selected target first; at most one view per connection target.
     views: Vec<SavedView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workspace_views: Vec<SavedView>,
 }
 
 impl Default for Stored {
@@ -153,6 +224,7 @@ impl Default for Stored {
         Self {
             schema_version: 1,
             views: Vec::new(),
+            workspace_views: Vec::new(),
         }
     }
 }
@@ -164,7 +236,11 @@ fn decode(bytes: &[u8]) -> Result<Stored> {
         stored.views.len() <= MAX_TARGETS,
         "too many saved connection targets"
     );
-    for view in &stored.views {
+    ensure!(
+        stored.workspace_views.len() <= MAX_WORKSPACE_VIEWS,
+        "too many saved workspace views"
+    );
+    for view in stored.views.iter().chain(&stored.workspace_views) {
         view.target.validate()?;
     }
     Ok(stored)
@@ -200,11 +276,15 @@ fn retry_storage<T>(operation: impl Fn() -> Result<T>) -> Result<T> {
 #[derive(Clone)]
 pub struct ViewStore {
     path: PathBuf,
+    shared_workspace_path: Option<PathBuf>,
 }
 
 impl ViewStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            shared_workspace_path: None,
+        }
     }
 
     pub fn last(&self) -> Option<SavedView> {
@@ -215,6 +295,27 @@ impl ViewStore {
     pub fn for_target(&self, target: &Target) -> Option<SavedView> {
         self.read()
             .and_then(|stored| stored.views.into_iter().find(|view| &view.target == target))
+    }
+
+    pub fn for_workspace(&self, target: &Target, host: &str, workspace: &str) -> Option<SavedView> {
+        let host = Uuid::parse_str(host).ok()?;
+        let workspace = Uuid::parse_str(workspace).ok()?;
+        let find = |stored: Stored| {
+            stored
+                .workspace_views
+                .into_iter()
+                .chain(stored.views)
+                .find(|view| {
+                    &view.target == target
+                        && view.host_id == host
+                        && view.location.workspace == workspace
+                })
+        };
+        self.shared_workspace_path
+            .as_ref()
+            .and_then(|path| Self::new(path.clone()).read())
+            .and_then(find)
+            .or_else(|| self.read().and_then(find))
     }
 
     fn read(&self) -> Option<Stored> {
@@ -249,6 +350,19 @@ impl ViewStore {
     }
 
     fn save(&self, view: &SavedView) -> Result<()> {
+        self.save_views(std::slice::from_ref(view))
+    }
+
+    fn save_views(&self, views: &[SavedView]) -> Result<()> {
+        let saved = self.save_batch(views);
+        let Some(path) = &self.shared_workspace_path else {
+            return saved;
+        };
+        let shared = Self::new(path.clone()).save_batch(views);
+        saved.and(shared)
+    }
+
+    fn save_batch(&self, views: &[SavedView]) -> Result<()> {
         // Another first-time client may create the directory between open and mkdir.
         let directory = retry_storage(|| Directory::create_all(&self.path))?;
         // The lock is held only during a read/merge/replace, not for a client lifetime.
@@ -257,10 +371,10 @@ impl ViewStore {
         let _lock = directory.lock_storage_with_timeout(WINDOWS_SAVE_LOCK_TIMEOUT)?;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let _lock = retry_storage(|| directory.lock_storage())?;
-        Self::save_locked(&directory, view)
+        Self::save_locked(&directory, views)
     }
 
-    fn save_locked(directory: &Directory, view: &SavedView) -> Result<()> {
+    fn save_locked(directory: &Directory, views: &[SavedView]) -> Result<()> {
         let previous = directory.read_private_file(FILE, MAX_BYTES)?;
         let mut stored = match previous.as_deref() {
             None => Stored::default(),
@@ -279,10 +393,19 @@ impl ViewStore {
                 }
             },
         };
-        stored.views.retain(|old| old.target != view.target);
-        stored.views.insert(0, view.clone());
-        stored.views.truncate(MAX_TARGETS);
-        let bytes = serde_json::to_vec(&stored)?;
+        if stored.workspace_views.is_empty() {
+            stored.workspace_views.clone_from(&stored.views);
+        }
+        for view in views.iter().rev() {
+            stored.views.retain(|old| old.target != view.target);
+            stored.views.insert(0, view.clone());
+            stored.views.truncate(MAX_TARGETS);
+            remember_workspace(&mut stored.workspace_views, view.clone());
+        }
+        let mut bytes = serde_json::to_vec(&stored)?;
+        while bytes.len() as u64 > MAX_BYTES && stored.workspace_views.pop().is_some() {
+            bytes = serde_json::to_vec(&stored)?;
+        }
         ensure!(
             bytes.len() as u64 <= MAX_BYTES,
             "saved views exceed the size limit"
@@ -291,7 +414,9 @@ impl ViewStore {
     }
 
     pub fn recorder(&self) -> Result<Recorder> {
-        let (updates, mut incoming) = watch::channel::<Option<SavedView>>(None);
+        let (updates, mut incoming) = watch::channel(());
+        let pending = Arc::new(Mutex::new(PendingViews::default()));
+        let queued = pending.clone();
         let store = self.clone();
         let worker = thread::Builder::new()
             .name("corvid-view-save".into())
@@ -300,9 +425,9 @@ impl ViewStore {
                 runtime.block_on(async {
                     while incoming.changed().await.is_ok() {
                         compio::time::sleep(SAVE_DELAY).await;
-                        let view = incoming.borrow_and_update().clone();
-                        if let Some(view) = view {
-                            store.save(&view)?;
+                        let views = std::mem::take(&mut queued.lock().unwrap().batch);
+                        if !views.is_empty() {
+                            store.save_views(&views)?;
                         }
                     }
                     Ok(())
@@ -311,13 +436,27 @@ impl ViewStore {
         Ok(Recorder {
             updates: Some(updates),
             worker: Some(worker),
+            pending,
         })
     }
 }
 
+fn remember_workspace(views: &mut Vec<SavedView>, view: SavedView) {
+    views.retain(|old| !old.same_workspace(&view));
+    views.insert(0, view);
+    views.truncate(MAX_WORKSPACE_VIEWS);
+}
+
+#[derive(Default)]
+struct PendingViews {
+    latest: Option<SavedView>,
+    batch: Vec<SavedView>,
+}
+
 pub struct Recorder {
-    updates: Option<watch::Sender<Option<SavedView>>>,
+    updates: Option<watch::Sender<()>>,
     worker: Option<thread::JoinHandle<Result<()>>>,
+    pending: Arc<Mutex<PendingViews>>,
 }
 
 impl Recorder {
@@ -325,13 +464,12 @@ impl Recorder {
         if let Ok(view) = SavedView::new(target, host, selection)
             && let Some(updates) = &self.updates
         {
-            updates.send_if_modified(|previous| {
-                if previous.as_ref() == Some(&view) {
-                    return false;
-                }
-                *previous = Some(view);
-                true
-            });
+            let mut pending = self.pending.lock().unwrap();
+            if pending.latest.as_ref() != Some(&view) {
+                pending.latest = Some(view.clone());
+                remember_workspace(&mut pending.batch, view);
+                let _ = updates.send(());
+            }
         }
     }
 }

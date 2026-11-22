@@ -12,7 +12,9 @@ use corvid_async::time::{Instant, timeout};
 use corvid_async::{mpsc, oneshot, watch};
 #[cfg(windows)]
 use corvid_client::WslDistribution;
-use corvid_client::view_state::{Recorder, SavedView, Target as SavedTarget, ViewStore};
+use corvid_client::view_state::{
+    Recorder, SavedView, Target as SavedTarget, ViewStore, workspace_preference_missed,
+};
 use corvid_client::{
     AttachRecovery, ControlEndpoint, InteractiveConnection, RemoteHost, SshAlias, SshRetry,
 };
@@ -704,6 +706,7 @@ enum Action {
 struct Requests {
     monitor: agent_deck::Settings,
     recorder: Option<Recorder>,
+    view_store: ViewStore,
     actions: mpsc::Receiver<Action>,
     sizes: watch::Receiver<(u64, u64, Grid)>,
     activation: mpsc::Sender<DeckActivation>,
@@ -759,6 +762,7 @@ impl Session {
                         None
                     }
                 },
+                view_store: store,
                 actions: incoming,
                 sizes,
                 activation,
@@ -1343,6 +1347,7 @@ async fn run(
     Requests {
         monitor,
         recorder,
+        view_store,
         actions,
         sizes,
         activation,
@@ -1635,23 +1640,50 @@ async fn run(
                 AttachRecovery::request(link.session(), &mut request);
             }
             let epoch = link.session().server_epoch.clone();
-            match attach(&mut link, grid, resume, request.clone()).await {
-                Err(error)
-                    if new_tab.is_none()
-                        && error
-                            .downcast_ref::<ProtocolFault>()
-                            .is_some_and(|fault| fault.code == "NoTerminal") =>
-                {
-                    drop(link);
-                    link = endpoint.interactive(capabilities).await?;
-                    ensure!(
-                        link.session().host_id == *host_id && link.session().server_epoch == epoch,
-                        "The Corvid daemon changed while opening the workspace"
-                    );
-                    request.launch = Some(LaunchCommand::default());
-                    attach(&mut link, grid, resume, request).await?
+            let mut preferred = None;
+            if new_tab.is_none()
+                && let Some(saved) =
+                    view_store.for_workspace(&destination.saved_target(), host_id, id)
+                && let Ok(snapshot) = endpoint.view_snapshot(host_id, &epoch).await
+            {
+                preferred = saved.preferred_live_pane(&snapshot);
+            }
+            loop {
+                let mut attempt = request.clone();
+                if let Some(view) = &preferred {
+                    attempt.tab_id = Some(view.tab_id.clone());
+                    attempt.pane_id = Some(view.pane_id.clone());
                 }
-                result => result?,
+                match attach(&mut link, grid, resume, attempt).await {
+                    Ok(attached) => {
+                        ensure!(
+                            preferred
+                                .as_ref()
+                                .is_none_or(|view| attached.selection.as_ref() == Some(view)),
+                            "daemon attached to a different pane than requested"
+                        );
+                        break attached;
+                    }
+                    Err(error) if preferred.is_some() && workspace_preference_missed(&error) => {
+                        preferred = None;
+                    }
+                    Err(error)
+                        if new_tab.is_none()
+                            && request.launch.is_none()
+                            && error
+                                .downcast_ref::<ProtocolFault>()
+                                .is_some_and(|fault| fault.code == "NoTerminal") =>
+                    {
+                        request.launch = Some(LaunchCommand::default());
+                    }
+                    Err(error) => return Err(error),
+                }
+                drop(link);
+                link = endpoint.interactive(capabilities.clone()).await?;
+                ensure!(
+                    link.session().host_id == *host_id && link.session().server_epoch == epoch,
+                    "The Corvid daemon changed while opening the workspace"
+                );
             }
         }
         AttachTarget::Takeover {

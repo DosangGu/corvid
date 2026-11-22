@@ -72,9 +72,12 @@ Press Ctrl-] then d to detach and run `corvid` again to return to the shell.
 The TUI remembers its last successful daemon endpoint and workspace/tab/pane selection
 separately from Desktop. Plain `corvid` or `corvid attach` restores that view after
 verifying the host identity and reading a fresh layout snapshot. `--runtime-dir` and
-`CORVID_RUNTIME_DIR` override the saved endpoint; explicit workspace/tab/pane selectors,
-new-terminal commands, and layout commands override the saved selection. A TUI launched
-through SSH remembers the daemon on that execution host; it does not launch SSH or WSL.
+`CORVID_RUNTIME_DIR` override the saved endpoint. `corvid attach --workspace ID`
+prefers the last focused live pane in that workspace. If that pane is unavailable,
+it tries another live pane in the saved tab, then uses the usual workspace attach.
+Explicit tab or pane selectors, new-terminal commands, and layout commands take
+precedence. A TUI launched through SSH remembers the daemon on that execution host;
+it does not launch SSH or WSL.
 
 If a saved pane or tab was removed, restoration chooses the first remaining pane in
 that tab or the first tab in the same workspace. If the workspace no longer exists,
@@ -90,8 +93,10 @@ overrides the parent of the `tui` directory, including in isolated test fixtures
 Changes are coalesced for 250 ms by a separate writer and flushed on clean exit.
 An atomic replacement retains `view.json.bak`; malformed state falls back to the
 backup or default startup, while unsupported schemas and oversized files are preserved.
-Each target has one last saved selection, so concurrent TUIs use the most recently
-saved selection for their next startup. Failed connections do not overwrite it.
+Each target has one last saved selection for startup. The file also keeps a bounded
+history of the most recently used workspaces, scoped to the target and verified
+daemon host. Concurrent TUIs merge updates to different workspaces, and failed
+connections leave the saved selection intact.
 
 The bottom status bar shows **CORVID**, the current workspace, and tab numbers
 and names, such as **[1:Shell]** and **2:Tests**. Brackets and highlighting

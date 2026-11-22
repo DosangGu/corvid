@@ -44,7 +44,7 @@ const LEGACY_MAX_ROWS: u16 = 120;
 
 #[derive(Clone)]
 pub struct AttachOptions {
-    /// Persist TUI navigation separately from Desktop. Explicit targets override restoration.
+    /// Persist TUI navigation separately from Desktop. Explicit tab or pane selection takes precedence.
     pub remember_view: bool,
     pub launch: Option<Vec<OsString>>,
     pub take_over: bool,
@@ -164,7 +164,7 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
                 .and_then(|store| store.for_target(&saved_target))
         })
         .flatten();
-    let recorder = store.and_then(|store| match store.recorder() {
+    let recorder = store.as_ref().and_then(|store| match store.recorder() {
         Ok(recorder) => Some(recorder),
         Err(error) => {
             eprintln!("corvid: could not save TUI views: {error:#}");
@@ -208,18 +208,63 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
     }
     let escape_delay = options.escape_delay;
     let scope = connection.session.clone();
-    let attached = timeout(
+    let mut preferred = None;
+    let mut initial = options.clone();
+    if can_use_saved_focus(&options)
+        && scope
+            .capabilities
+            .iter()
+            .any(|cap| cap == CREATE_VIEW_CAPABILITY)
+        && let Some(workspace) = &options.workspace
+        && let Some(saved) = store
+            .as_ref()
+            .and_then(|store| store.for_workspace(&saved_target, &scope.host_id, workspace))
+        && let Ok(snapshot) = ControlEndpoint::Local(runtime.to_owned())
+            .view_snapshot(&scope.host_id, &scope.server_epoch)
+            .await
+        && let Some(view) = saved.preferred_live_pane(&snapshot)
+    {
+        initial.tab = Some(view.tab_id.clone());
+        initial.pane = Some(view.pane_id.clone());
+        preferred = Some(view);
+    }
+    let mut attached = timeout(
         COMMAND_TIMEOUT,
         request_attach(
             connection,
             viewport,
-            options.clone(),
+            initial,
             pane_writer,
             offer_recovery,
             true,
         ),
     )
     .await?;
+    if let Some(view) = preferred.as_ref() {
+        match &attached {
+            Ok((_, _, selection)) => ensure!(
+                selection.as_ref() == Some(view),
+                "daemon attached to a different pane than requested"
+            ),
+            Err(error) if view_state::workspace_preference_missed(error) => {
+                let connection = connect(runtime, required.clone()).await?;
+                check_recovery_scope(&scope, &connection.session)?;
+                attached = timeout(
+                    COMMAND_TIMEOUT,
+                    request_attach(
+                        connection,
+                        viewport,
+                        options.clone(),
+                        pane_writer,
+                        false,
+                        true,
+                    ),
+                )
+                .await?;
+            }
+            Err(_) => {}
+        }
+    }
     let (connection, route, selection) = match attached {
         Ok(attached) => attached,
         Err(error) => {
@@ -325,15 +370,18 @@ async fn connect(runtime: &Path, required: Vec<String>) -> Result<Connection> {
 }
 
 fn can_restore(options: &AttachOptions) -> bool {
+    options.workspace.is_none() && !options.take_over && can_use_saved_focus(options)
+}
+
+fn can_use_saved_focus(options: &AttachOptions) -> bool {
     options.remember_view
-        && options.workspace.is_none()
         && options.tab.is_none()
         && options.pane.is_none()
         && options.launch.is_none()
         && options.agent.is_none()
-        && !options.take_over
         && !options.restore_cwd
         && options.new_workspace.is_none()
+        && options.workspace_directory.is_none()
         && options.new_tab.is_none()
         && options.claim_workspaces.is_empty()
         && options.move_tab.is_none()

@@ -64,6 +64,56 @@ fn clean_shutdown_flushes_the_latest_view_and_separates_presentations() -> Resul
 }
 
 #[test]
+fn keeps_each_workspace_from_a_coalesced_batch_and_reads_legacy_views() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let path = fixture.path().join("views");
+    let store = ViewStore::new(path.clone());
+    let first = view(Target::Local);
+    let mut second = view(first.target.clone());
+    second.host_id = first.host_id;
+    let directory = Directory::create_all(&path)?;
+    directory.replace_private_file(
+        FILE,
+        &serde_json::to_vec(&serde_json::json!({ "schema_version": 1, "views": [&first] }))?,
+    )?;
+    let host = first.host_id.to_string();
+    let first_id = first.location.workspace.to_string();
+    let second_id = second.location.workspace.to_string();
+    assert_eq!(
+        store.for_workspace(&first.target, &host, &first_id),
+        Some(first.clone())
+    );
+    store.save(&second)?;
+    assert_eq!(
+        store.for_workspace(&first.target, &host, &first_id),
+        Some(first.clone())
+    );
+
+    let recorder = store.recorder()?;
+    let mut updated = first;
+    updated.location.pane = Uuid::new_v4();
+    recorder.record(updated.target.clone(), &host, &selection(&updated));
+    recorder.record(second.target.clone(), &host, &selection(&second));
+    drop(recorder);
+
+    assert_eq!(store.last(), Some(second.clone()));
+    assert_eq!(
+        store.for_workspace(&updated.target, &host, &first_id),
+        Some(updated)
+    );
+    assert_eq!(
+        store.for_workspace(&second.target, &host, &second_id),
+        Some(second.clone())
+    );
+    assert!(
+        store
+            .for_workspace(&second.target, &Uuid::new_v4().to_string(), &second_id)
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
 fn concurrent_clients_merge_other_hosts_and_keep_last_selection_per_target() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let store = ViewStore::new(fixture.path().join("views"));
@@ -121,7 +171,7 @@ fn concurrent_save_waits_for_a_slow_windows_writer() -> Result<()> {
         waiting.recv_timeout(Duration::from_secs(2))?;
         // Exceed the old 500 ms retry budget while holding the usual exclusive lock.
         thread::sleep(Duration::from_millis(850));
-        let saved = ViewStore::save_locked(&directory, &first);
+        let saved = ViewStore::save_locked(&directory, std::slice::from_ref(&first));
         drop(lock);
         let held_for = acquired.elapsed();
         saved.context("saving while holding the original Windows storage lock")?;
@@ -210,8 +260,8 @@ fn unknown_schema_and_oversized_files_are_not_overwritten() -> Result<()> {
 fn invalid_targets_and_ids_are_not_loaded() {
     let record = view(Target::Local);
     let mut stored = serde_json::to_value(Stored {
-        schema_version: 1,
         views: vec![record],
+        ..Stored::default()
     })
     .unwrap();
     stored["views"][0]["host_id"] = "not-an-id".into();
@@ -324,7 +374,7 @@ fn deleted_pane_falls_back_within_its_tab_and_deleted_tab_within_its_workspace()
             ..Default::default()
         },
         LayoutNodeState {
-            body: Some(Node::PaneId(second)),
+            body: Some(Node::PaneId(second.clone())),
             ..Default::default()
         },
     ];
@@ -333,7 +383,16 @@ fn deleted_pane_falls_back_within_its_tab_and_deleted_tab_within_its_workspace()
         .unwrap();
     assert_eq!(resolved.tab_id, saved.location.tab.to_string());
     assert_eq!(resolved.pane_id, first);
+    assert_eq!(
+        saved
+            .preferred_pane(&layout, |view| view.pane_id == second)
+            .unwrap()
+            .pane_id,
+        second,
+    );
+    assert!(saved.preferred_pane(&layout, |_| false).is_none());
     layout.tabs[0].tab_id = Uuid::new_v4().to_string();
+    assert!(saved.preferred_pane(&layout, |_| true).is_none());
     let resolved = saved
         .resolve(&snapshot(saved.host_id, vec![layout.clone()]))
         .unwrap();

@@ -1,9 +1,7 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::collections::HashSet;
-use std::io::Read;
-#[cfg(windows)]
-use std::io::Write;
+use std::io::{Read, Write};
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -53,6 +51,7 @@ impl Fixture {
         for number in 1..7 {
             locations.push(layout.add_tab(first.workspace, format!("Fixture {number}"))?);
         }
+        locations.push(layout.add_workspace("Other workspace".into(), "Shell".into())?);
         for location in &locations {
             layout.record_cwd(
                 *location,
@@ -417,13 +416,17 @@ async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Re
 struct StartupTui {
     child: Box<dyn PtyChild + Send + Sync>,
     _master: Box<dyn MasterPty + Send>,
-
+    input: Box<dyn Write + Send>,
     output: Receiver<Vec<u8>>,
     screen: vt100::Parser,
 }
 
 impl StartupTui {
     fn open(runtime: &Path, views: &Path, session: &str) -> Result<()> {
+        Self::start(runtime, views, &[])?.wait_for(&format!("READY-{session}"))
+    }
+
+    fn start(runtime: &Path, views: &Path, args: &[&str]) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows: 24,
             cols: 100,
@@ -431,7 +434,7 @@ impl StartupTui {
             pixel_height: 0,
         })?;
         let mut reader = pair.master.try_clone_reader()?;
-        let _input = pair.master.take_writer()?;
+        let input = pair.master.take_writer()?;
         let (sender, output) = sync_channel(16);
         std::thread::spawn(move || {
             let mut bytes = [0; 4096];
@@ -444,13 +447,17 @@ impl StartupTui {
         let mut command = CommandBuilder::new(BINARY);
         command.arg("--runtime-dir");
         command.arg(runtime);
+        for arg in args {
+            command.arg(arg);
+        }
         command.env("CORVID_AGENT_MONITOR", "0");
         command.env("CORVID_VIEW_STATE_DIR", views);
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);
-        let mut tui = Self {
+        let tui = Self {
             child,
             _master: pair.master,
+            input,
             output,
             screen: vt100::Parser::new(
                 NonZeroU16::new(24).unwrap(),
@@ -459,14 +466,28 @@ impl StartupTui {
             ),
         };
         #[cfg(windows)]
-        let mut _input = _input;
-        #[cfg(windows)]
-        {
+        let tui = {
+            let mut tui = tui;
             tui.wait_for_cursor_query()?;
-            _input.write_all(b"\x1b[1;1R")?;
-            _input.flush()?;
+            tui.input.write_all(b"\x1b[1;1R")?;
+            tui.input.flush()?;
+            tui
+        };
+        Ok(tui)
+    }
+
+    fn detach(&mut self) -> Result<()> {
+        self.input.write_all(b"\x1dd")?;
+        self.input.flush()?;
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                ensure!(status.success(), "TUI detach failed with {status}");
+                return Ok(());
+            }
+            ensure!(std::time::Instant::now() < deadline, "TUI did not detach");
+            std::thread::sleep(Duration::from_millis(25));
         }
-        tui.wait_for(&format!("READY-{session}"))
     }
 
     fn wait_for(&mut self, marker: &str) -> Result<()> {
@@ -501,6 +522,52 @@ impl StartupTui {
             tail.drain(..tail.len().saturating_sub(3));
         }
     }
+}
+
+#[compio::test]
+async fn tui_workspace_attach_restores_its_last_pane_and_honors_explicit_selectors() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let _daemon = fixture.start().await?;
+    for (index, session) in [
+        (0, "first-pane"),
+        (1, "remembered-pane"),
+        (7, "other-workspace"),
+    ] {
+        fixture
+            .attach(
+                index,
+                Some(LaunchCommand {
+                    argv: vec![b"--fixture-session".to_vec(), session.as_bytes().to_vec()],
+                    agent_provider: Some(AgentProvider::Claude as i32),
+                    ..Default::default()
+                }),
+            )
+            .await?;
+    }
+
+    let views = fixture.root.join("workspace-views");
+    let [first, remembered, other] = [0, 1, 7].map(|index| fixture.locations[index]);
+    let runtime = fixture.runtime.clone();
+    corvid_async::task::spawn_blocking(move || -> Result<()> {
+        let attach = |location: Location, exact: bool, session: &str| -> Result<()> {
+            let workspace = location.workspace.to_string();
+            let tab = location.tab.to_string();
+            let pane = location.pane.to_string();
+            let mut args = vec!["attach", "--workspace", &workspace];
+            if exact {
+                args.extend(["--tab", &tab, "--pane", &pane]);
+            }
+            let mut tui = StartupTui::start(&runtime, &views, &args)?;
+            tui.wait_for(&format!("READY-{session}"))?;
+            tui.detach()
+        };
+        attach(remembered, true, "remembered-pane")?;
+        attach(other, true, "other-workspace")?;
+        attach(remembered, false, "remembered-pane")?;
+        attach(first, true, "first-pane")
+    })
+    .await??;
+    Ok(())
 }
 
 impl Drop for StartupTui {
