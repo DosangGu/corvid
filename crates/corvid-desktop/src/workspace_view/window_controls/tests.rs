@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, ensure};
-use gpui::{AppContext, Context, FocusHandle, Render, TitlebarOptions, WindowOptions};
+use gpui::{AppContext, Application, Context, FocusHandle, Render, TitlebarOptions, WindowOptions};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
@@ -42,7 +42,7 @@ impl Render for Fixture {
 fn caption_gestures_reach_windows_with_a_focusable_workspace() {
     let result = Rc::new(RefCell::new(None));
     let output = result.clone();
-    gpui_platform::application().run(move |cx| {
+    Application::new().run(move |cx| {
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 appears_transparent: true,
@@ -69,7 +69,7 @@ fn caption_gestures_reach_windows_with_a_focusable_workspace() {
                 });
                 cx.spawn(async move |cx| {
                     *output.borrow_mut() = Some(receive.await.expect("caption probe finished"));
-                    cx.update(|cx| cx.quit());
+                    let _ = cx.update(|cx| cx.quit());
                 })
                 .detach();
             });

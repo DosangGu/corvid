@@ -1,6 +1,6 @@
 use super::*;
 use corvid_protocol::wire::AgentBadge;
-use gpui::{Anchor, MouseButton, anchored, deferred, px};
+use gpui::{Corner, MouseButton, anchored, deferred, px};
 
 #[cfg(windows)]
 use super::window_controls::{self, window_drag_region};
@@ -40,7 +40,7 @@ impl WorkspaceView {
         self.menu_open = true;
         self.menu_create = create;
         self.menu_index = 0;
-        window.focus(&self.setup_focus, cx);
+        window.focus(&self.setup_focus);
         cx.notify();
     }
 
@@ -157,7 +157,7 @@ impl WorkspaceView {
             MenuAction::DisconnectOthers => self.disconnect_others(window, cx),
             MenuAction::Detach => {
                 self.lifetime.stop();
-                window.focus(&self.setup_focus, cx);
+                window.focus(&self.setup_focus);
             }
             MenuAction::ClosePane | MenuAction::CloseTab | MenuAction::CloseWorkspace => {
                 if let Some(selected) = &self.selected {
@@ -225,22 +225,19 @@ impl WorkspaceView {
                 .flex_none()
                 .max_w(ui_px(250.))
                 .child(
-                    self.title_renderer
-                        .button(
-                            button_frame("workspaces", self.switcher_open).max_w(ui_px(250.)),
-                            title.clone(),
-                            Some("▾"),
-                        )
-                        .on_click(
-                            cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
-                        ),
+                    title::button(
+                        button_frame("workspaces", self.switcher_open).max_w(ui_px(250.)),
+                        title.clone(),
+                        Some("▾"),
+                    )
+                    .on_click(cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx))),
                 )
                 .when(self.switcher_open, |trigger| {
                     let position = div().absolute().top_full().mt(ui_px(4.));
                     let (position, anchor) = if switcher_on_right {
-                        (position.right_0(), Anchor::TopRight)
+                        (position.right_0(), Corner::TopRight)
                     } else {
-                        (position.left_0(), Anchor::TopLeft)
+                        (position.left_0(), Corner::TopLeft)
                     };
                     // Keep the picker above the backdrop while laying it out with the trigger.
                     trigger.child(
@@ -360,16 +357,17 @@ impl WorkspaceView {
                     .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                     .max_w(ui_px(240.))
                     .child(
-                        self.title_renderer
-                            .button(
-                                button_frame("select-tab", active).min_w_0().flex_shrink_1(),
-                                tab.label.clone(),
-                                attention.then_some("!"),
-                            )
-                            .on_click(cx.listener(move |view, _, window, cx| {
+                        title::button(
+                            button_frame("select-tab", active).min_w_0().flex_shrink(),
+                            tab.label.clone(),
+                            attention.then_some("!"),
+                        )
+                        .on_click(cx.listener(
+                            move |view, _, window, cx| {
                                 view.dismiss_overlay(window, cx);
                                 view.open_pane(target.clone(), open, window, cx);
-                            })),
+                            },
+                        )),
                     )
                     .when(ui.can_close(), |row| {
                         row.child(Self::close_button(

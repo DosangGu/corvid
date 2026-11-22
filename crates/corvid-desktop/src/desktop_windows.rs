@@ -120,7 +120,12 @@ impl DesktopWindows {
         let windows = self.clone();
         cx.spawn(async move |cx| {
             while let Some((endpoint, request)) = incoming.recv().await {
-                cx.update(|cx| windows.route_deck_focus(endpoint, request, cx));
+                if cx
+                    .update(|cx| windows.route_deck_focus(endpoint, request, cx))
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
         .detach();
@@ -201,7 +206,7 @@ impl DesktopWindows {
             let result = install.await;
             windows.0.applying.set(false);
             let replacement = result.as_ref().ok().cloned();
-            cx.update(move |cx| {
+            let _ = cx.update(move |cx| {
                 applied(result, cx);
                 if let Some(installed) = replacement {
                     windows.restart(Rc::new(installed), restart_failed, cx);
@@ -235,7 +240,7 @@ impl DesktopWindows {
                         )
                     })
                     .await;
-                cx.update(|cx| {
+                let _ = cx.update(|cx| {
                     for entry in windows.0.entries.borrow().values() {
                         let _ = entry
                             .handle
@@ -367,7 +372,7 @@ impl DesktopWindows {
                 .await
                 .context("Desktop window storage stopped")
                 .and_then(|result| result);
-            cx.update(|cx| {
+            let _ = cx.update(|cx| {
                 windows.0.opening.set(windows.0.opening.get() - 1);
                 if !windows.0.quitting.get() {
                     complete(result, cx);
@@ -437,7 +442,7 @@ impl DesktopWindows {
             // X11 invokes this callback while borrowing its platform state.
             let windows = self.clone();
             cx.spawn(async move |cx| {
-                cx.update(|cx| windows.quit(cx));
+                let _ = cx.update(|cx| windows.quit(cx));
             })
             .detach();
             return false;
@@ -468,7 +473,7 @@ impl DesktopWindows {
         let windows = self.clone();
         cx.spawn(async move |cx| {
             wait_for_shutdown(pending).await;
-            cx.update(|cx| windows.quit_after_shutdown(cx));
+            let _ = cx.update(|cx| windows.quit_after_shutdown(cx));
         })
         .detach();
     }
@@ -541,16 +546,19 @@ impl DesktopWindows {
         let executor = cx.background_executor().clone();
         cx.spawn(async move |cx| {
             wait_for_shutdown(pending).await;
-            cx.update(|_| {
+            let released = cx.update(|_| {
                 for entry in windows.0.entries.borrow_mut().values_mut() {
                     entry.state.take();
                 }
             });
+            if released.is_err() {
+                return;
+            }
             let target = installed.executable.clone();
             let started = executor
                 .spawn(async move { installed.start_desktop_restoring(args, &ids) })
                 .await;
-            cx.update(|cx| {
+            let _ = cx.update(|cx| {
                 if let Err(error) = windows.finish_restart(started, cx) {
                     *windows.0.failed_replacement.borrow_mut() = Some(target);
                     failed(error, cx);
@@ -583,7 +591,7 @@ impl DesktopWindows {
                             .and_then(|result| result),
                         Err(error) => Err(error),
                     };
-                    cx.update(|cx| windows.resume_windows(states, cx));
+                    let _ = cx.update(|cx| windows.resume_windows(states, cx));
                 })
                 .detach();
                 Err(error)
@@ -706,6 +714,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
 
+    use gpui::Application;
+
     use super::*;
 
     #[test]
@@ -721,7 +731,7 @@ mod tests {
         let timed_out = Rc::new(Cell::new(false));
         let expired = timed_out.clone();
 
-        gpui_platform::headless().run(move |cx| {
+        Application::headless().run(move |cx| {
             let owner = cx.new(|_| ());
             let view = owner.downgrade();
             windows.apply_update(
@@ -745,7 +755,7 @@ mod tests {
                     .timer(Duration::from_secs(10))
                     .await;
                 expired.set(true);
-                cx.update(|cx| cx.quit());
+                let _ = cx.update(|cx| cx.quit());
             })
             .detach();
         });

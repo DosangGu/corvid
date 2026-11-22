@@ -96,9 +96,9 @@ impl WorkspaceView {
                             } else {
                                 self.alias.clone()
                             })
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                window.focus(&view.alias_focus, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|view, _, window, _| window.focus(&view.alias_focus)),
+                            ),
                     )
                     .child(
                         button(

@@ -151,7 +151,7 @@ jobs:
         run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck -p corvid-update
       - name: Workspace tests
         if: inputs.qualify
-        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
+        run: xvfb-run -a cargo test --locked --release --target ${{ matrix.desktop }} --workspace
       - name: Workspace lints
         if: inputs.qualify
         run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings

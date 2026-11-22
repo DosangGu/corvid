@@ -26,7 +26,6 @@ default-members = [
     "plugins/agent-deck",
     "spikes/terminal",
 ]
-exclude = ["vendor/fontique", "vendor/parley"]
 resolver = "3"
 
 [workspace.package]
@@ -68,11 +67,10 @@ futures-channel = "=0.3.34"
 futures-lite = "=2.6.1"
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await-macro"] }
 glob = "0.3"
-gpui = { package = "gpui-ce", version = "=0.3.0", default-features = false }
-gpui_platform = { package = "gpui_ce_platform", version = "=0.3.0", default-features = false }
+gpui = { version = "=0.2.2", default-features = false }
 hex = "=0.4.3"
 image = { version = "0.25", default-features = false }
-libc = "=0.2.191"
+libc = "=0.2.189"
 nix = { version = "0.31.3", default-features = false }
 portable-pty = "=0.9.0"
 prost = "=0.14.4"
@@ -94,6 +92,7 @@ socket2 = "=0.6.5"
 tar = { version = "=0.4.46", default-features = false }
 tempfile = "3.27"
 thiserror = "2.0"
+unicode-segmentation = "=1.13.3"
 unicode-width = "0.2"
 url = "=2.5.8"
 uuid = { version = "1.29", features = ["v4", "serde"] }
@@ -111,10 +110,5 @@ unsafe_op_in_unsafe_fn = "deny"
 [profile.dev.package.corvid-desktop]
 debug = 0
 
-[profile.dev.package.gpui-ce]
+[profile.dev.package.gpui]
 debug = 0
-
-[patch.crates-io]
-# Temporary backport tracked in https://github.com/DosangGu/corvid/issues/291.
-fontique = { path = "vendor/fontique" }
-parley = { path = "vendor/parley" }

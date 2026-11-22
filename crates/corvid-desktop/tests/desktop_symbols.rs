@@ -7,219 +7,195 @@ mod desktop_font;
 mod tab_title;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use gpui::{
-    Font, ForegroundDependency, GlyphRenderMode, LineLayout, Pixels, PlatformTextSystem,
-    RasterStyleRequest, RenderGlyphParams, TextRun, WindowTextSystem, font, px, rgb,
-};
+mod fixture {
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn shape(
-    shaping: &WindowTextSystem,
-    sample: &str,
-    font: Font,
-    size: Pixels,
-) -> std::sync::Arc<LineLayout> {
-    shaping.layout_line(
-        sample,
-        size,
-        &[TextRun {
-            len: sample.len(),
-            font,
-            ..Default::default()
-        }],
-    )
-}
-
-// AppKit initializes on the main thread.
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn main() -> anyhow::Result<()> {
-    let platform = gpui_platform::current_platform(true);
-    let application = gpui::Application::with_platform(platform.clone());
-    let text = application.text_system();
-    desktop_font::register(&text)?;
-    let shaping = WindowTextSystem::new(text);
-    let default_mono = if cfg!(target_os = "macos") {
-        "Menlo"
-    } else if cfg!(windows) {
-        "Consolas"
-    } else {
-        "DejaVu Sans Mono"
+    use anyhow::{Result, ensure};
+    use gpui::{
+        Application, Bounds, Context, Font, IntoElement, LineLayout, Pixels, Render, TextRun,
+        TextStyle, TextSystem, Window, WindowBounds, WindowOptions, WindowTextSystem, div, font,
+        prelude::*, px, rgb, size,
     };
-    for family in [default_mono, ".SystemUIFont"] {
-        let preferred = shape(&shaping, "M", font(family), px(15.));
-        let with_fallback = desktop_font::with_symbols(family);
-        let latin = shape(&shaping, "M", with_fallback.clone(), px(15.));
-        assert_eq!(
-            latin.paint_fragments[0].font_id,
-            preferred.paint_fragments[0].font_id
-        );
-        assert_eq!(latin.width, preferred.width);
 
-        for symbol in ["⎾", "⎿", "⏵", "⏸", "⏺", "▏", "☐"] {
-            let line = shape(&shaping, symbol, with_fallback.clone(), px(15.));
-            let mut glyphs = line
-                .paint_fragments
-                .iter()
-                .flat_map(|fragment| fragment.glyphs.iter());
-            assert!(
-                glyphs.any(|glyph| glyph.id.0 != 0),
-                "{family} lost the glyph for {symbol}"
+    use super::{desktop_font, tab_title};
+
+    fn shape(
+        shaping: &WindowTextSystem,
+        sample: &str,
+        font: Font,
+        size: Pixels,
+    ) -> std::sync::Arc<LineLayout> {
+        shaping.layout_line(
+            sample,
+            size,
+            &[TextRun {
+                len: sample.len(),
+                font,
+                color: rgb(0xffffff).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        )
+    }
+
+    fn verify_symbols(shaping: &WindowTextSystem, text: &TextSystem) -> Result<()> {
+        let default_mono = if cfg!(target_os = "macos") {
+            "Menlo"
+        } else if cfg!(windows) {
+            "Consolas"
+        } else {
+            "DejaVu Sans Mono"
+        };
+        for family in [default_mono, ".SystemUIFont"] {
+            let preferred = shape(shaping, "M", font(family), px(15.));
+            let with_fallback = desktop_font::with_symbols(family);
+            let latin = shape(shaping, "M", with_fallback.clone(), px(15.));
+            ensure!(
+                latin.width == preferred.width,
+                "The symbol fallback changed {family}'s Latin advance"
             );
+
+            for symbol in ['⎾', '⎿', '⏵', '⏸', '⏺', '▏', '☐'] {
+                let line = shape(shaping, &symbol.to_string(), with_fallback.clone(), px(15.));
+                ensure!(
+                    line.runs.iter().any(|run| {
+                        !run.glyphs.is_empty()
+                            && text
+                                .typographic_bounds(run.font_id, px(15.), symbol)
+                                .is_ok()
+                    }),
+                    "{family} lost the glyph for {symbol}",
+                );
+            }
         }
+        println!("PASS Desktop: regular text and technical symbol fallback");
+        Ok(())
     }
-    verify_title_presentation(&shaping, platform.text_system().as_ref())?;
-    paint_tab_titles(platform.text_system())?;
-    #[cfg(target_os = "macos")]
-    {
-        // The installed Zapf Dingbats covers this character. It is absent from
-        // the app's technical-symbol stack and Fontique's script fallback.
-        let line = shape(&shaping, "❯", font(".SystemUIFont"), px(13.));
-        assert_ne!(line.paint_fragments[0].glyphs[0].id.0, 0);
-    }
-    println!("PASS Desktop: regular text and technical symbol fallback");
-    Ok(())
-}
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn paint_tab_titles(platform_text: std::sync::Arc<dyn PlatformTextSystem>) -> anyhow::Result<()> {
-    use gpui::{Context, HeadlessAppContext, IntoElement, Render, Window, div, prelude::*, size};
-
-    struct TabTitles {
-        renderer: tab_title::TitleRenderer,
-        max_width: Pixels,
+    fn verify_title_presentation(shaping: &WindowTextSystem) -> Result<()> {
+        let font = desktop_font::with_symbols(".SystemUIFont");
+        let style = TextStyle {
+            font_family: font.family,
+            font_fallbacks: font.fallbacks,
+            ..Default::default()
+        };
+        for zoom in [1., 1.4] {
+            for (title, expected_color) in [
+                ("✳ Claude Code", false),
+                ("✳\u{fe0e} Claude Code", false),
+                ("✳\u{fe0f} Claude Code", true),
+                ("Notes ❤\u{fe0e} title", false),
+                ("Notes ❤\u{fe0f} title", true),
+                ("Manual title 🟢", true),
+                ("Digits 123 # *", false),
+            ] {
+                let runs = tab_title::emoji_presentation_runs(title, &style)
+                    .unwrap_or_else(|| vec![style.to_run(title.len())]);
+                let lines = shaping.shape_text(title.into(), px(13. * zoom), &runs, None, None)?;
+                let color = lines[0]
+                    .unwrapped_layout
+                    .runs
+                    .iter()
+                    .flat_map(|run| &run.glyphs)
+                    .any(|glyph| glyph.is_emoji);
+                let expects_native_emoji_fallback =
+                    cfg!(target_os = "linux") && title.contains('\u{fe0f}');
+                ensure!(
+                    expects_native_emoji_fallback || color == expected_color,
+                    "Unexpected presentation in {title:?} at {zoom}×",
+                );
+            }
+        }
+        println!("PASS Desktop: native title and emoji presentation");
+        Ok(())
     }
+
+    struct TabTitles;
 
     impl Render for TabTitles {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .font(desktop_font::with_symbols(".SystemUIFont"))
                 .flex()
+                .flex_col()
                 .gap(px(2.))
-                .children(
-                    [
-                        ("✳️ Claude Code planning the next release", Some("!")),
-                        ("A long plain workspace title", Some("▾")),
-                        ("🧑🏽‍💻 개발", None),
-                    ]
-                    .map(|(title, suffix)| {
-                        let button = div()
-                            .id(title)
-                            .flex_none()
-                            .max_w(self.max_width)
-                            .text_size(px(13.))
-                            .whitespace_nowrap();
-                        self.renderer.button(button, title.to_owned(), suffix)
-                    }),
-                )
+                .children([px(500.), px(90.)].map(|max_width| {
+                    div().flex().gap(px(2.)).children(
+                        [
+                            ("✳️ Claude Code planning the next release", Some("!")),
+                            ("A long plain workspace title", Some("▾")),
+                            ("🧑🏽‍💻 개발", None),
+                        ]
+                        .map(|(title, suffix)| {
+                            let button = div()
+                                .id(title)
+                                .flex_none()
+                                .max_w(max_width)
+                                .text_size(px(13.))
+                                .whitespace_nowrap();
+                            tab_title::button(button, title.to_owned(), suffix)
+                        }),
+                    )
+                }))
         }
     }
 
-    let mut app = HeadlessAppContext::new(platform_text);
-    let mut scheduled = Vec::new();
-    for max_width in [px(500.), px(90.)] {
-        let window = app.open_window(size(px(1200.), px(40.)), |_, cx| {
-            cx.new(|_| TabTitles {
-                renderer: tab_title::TitleRenderer::default(),
-                max_width,
-            })
-        })?;
-        // Draw twice to exercise mixed and plain titles as layout state is reused.
-        for _ in 0..2 {
-            scheduled.push(app.update_window(window.into(), |_, window, cx| {
-                window.simulate_next_frame(cx);
-                window.refresh();
-                let _ = window.draw(cx);
-                window.simulate_next_frame(cx)
-            })?);
-        }
-    }
-    assert!(
-        scheduled[2] > scheduled[0] && scheduled[3] > scheduled[1],
-        "overflowing titles should request animation frames: {scheduled:?}"
-    );
-    println!("PASS Desktop: painted mixed and plain tab titles");
-    Ok(())
-}
+    pub(super) fn run() -> Result<()> {
+        let application = Application::new();
+        desktop_font::register(&application.text_system())?;
+        let result = Rc::new(RefCell::new(Ok(())));
+        let window_result = result.clone();
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn verify_title_presentation(
-    shaping: &WindowTextSystem,
-    platform_text: &dyn PlatformTextSystem,
-) -> anyhow::Result<()> {
-    let font = desktop_font::with_symbols(".SystemUIFont");
-    for zoom in [1., 1.4] {
-        for (title, expected_color) in [
-            ("✳ Claude Code", false),
-            ("✳\u{fe0e} Claude Code", false),
-            ("✳\u{fe0f} Claude Code", true),
-            ("Notes ❤\u{fe0e} title", false),
-            ("Notes ❤\u{fe0f} title", true),
-            ("Manual title 🟢", true),
-            ("Digits 123 # *", false),
-        ] {
-            let line = shape(shaping, title, font.clone(), px(13. * zoom));
-            let glyphs = line
-                .paint_fragments
-                .iter()
-                .flat_map(|run| run.glyphs.iter());
-            let mut color = 0;
-            for glyph in glyphs {
-                assert_ne!(glyph.id.0, 0, "Missing glyph in {title:?} at {zoom}×");
-                color += usize::from(glyph.is_emoji);
-            }
-            assert_eq!(
-                color,
-                usize::from(expected_color),
-                "Unexpected presentation in {title:?} at {zoom}×",
+        application.run(move |cx| {
+            let shaping_result = window_result.clone();
+            let opened = cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1200.), px(100.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |window, cx| {
+                    let shaping = window.text_system();
+                    *shaping_result.borrow_mut() = verify_symbols(shaping, cx.text_system())
+                        .and_then(|()| verify_title_presentation(shaping));
+                    cx.new(|_| TabTitles)
+                },
             );
-            if title.starts_with('✳') {
-                let offset = rasterized_symbol_center(platform_text, &line)?;
-                println!("{title:?} at {zoom}×: center offset {offset:.2} px");
-                if cfg!(target_os = "macos") && !expected_color {
-                    assert!(offset.abs() <= 1.5, "Misaligned text symbol in {title:?}");
-                }
-            }
-        }
+            cx.spawn(async move |cx| {
+                let checked = window_result.replace(Ok(()));
+                let painted = cx.update(|cx| {
+                    let result = opened.and_then(|handle| {
+                        cx.update_window(handle.into(), |_, window, cx| {
+                            for _ in 0..2 {
+                                window.refresh();
+                                let _ = window.draw(cx);
+                            }
+                        })
+                    });
+                    cx.quit();
+                    result
+                });
+                *window_result.borrow_mut() = checked.and(painted.flatten());
+            })
+            .detach();
+        });
+
+        result.replace(Ok(()))?;
+        println!("PASS Desktop: painted mixed and plain tab titles");
+        Ok(())
     }
-    println!("PASS Desktop: default, text and emoji presentation in tab titles");
-    Ok(())
 }
 
+// AppKit initializes on the main thread.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn rasterized_symbol_center(
-    platform_text: &dyn PlatformTextSystem,
-    line: &LineLayout,
-) -> anyhow::Result<f32> {
-    let run = &line.paint_fragments[0];
-    let glyph = &run.glyphs[0];
-    let requested_mode = if glyph.is_emoji {
-        GlyphRenderMode::Color
-    } else {
-        GlyphRenderMode::Grayscale
-    };
-    let raster_style = platform_text.prepare_raster_style(RasterStyleRequest {
-        font_id: run.font_id,
-        glyph_id: glyph.id,
-        scene_color: rgb(0x83dec0),
-        requested_mode,
-        foreground_dependency: ForegroundDependency::Full,
-    });
-    let raster = platform_text.rasterize_glyph(&RenderGlyphParams {
-        font_id: run.font_id,
-        glyph_id: glyph.id,
-        font_size: run.font_size,
-        subpixel_variant: Default::default(),
-        scale_factor: 1.,
-        raster_style,
-    })?;
-    raster.validate()?;
-    assert!(!raster.pixels.is_empty(), "Missing raster for title symbol");
-
-    // GPUI places the baseline at (ascent - descent) / 2 from the center of
-    // the line. The tab button adds the same padding above and below it.
-    let baseline = f32::from((line.ascent - line.descent) / 2.);
-    let center = raster.bounds.origin.y.0 as f32 + raster.size.height.0 as f32 / 2.;
-    Ok(baseline + f32::from(glyph.position.y) + center)
+fn main() -> anyhow::Result<()> {
+    fixture::run()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]

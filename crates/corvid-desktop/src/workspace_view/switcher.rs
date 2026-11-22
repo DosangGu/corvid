@@ -92,7 +92,7 @@ impl WorkspaceView {
             self.select_row(&rows, index);
         }
 
-        window.focus(&self.setup_focus, cx);
+        window.focus(&self.setup_focus);
         cx.notify();
     }
 
@@ -464,7 +464,7 @@ impl WorkspaceView {
                     .id("picker-rows")
                     .flex()
                     .flex_col()
-                    .flex_shrink(1.)
+                    .flex_shrink()
                     .min_h_0()
                     .max_h(ui_px(330.))
                     .overflow_y_scroll()

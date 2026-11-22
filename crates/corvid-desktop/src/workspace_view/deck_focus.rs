@@ -132,7 +132,7 @@ impl WorkspaceView {
     pub(super) fn focus_from_deck(
         &mut self,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
         reply: FocusReply,
     ) {
         let Some(terminal) = &self.terminal else {
@@ -143,8 +143,7 @@ impl WorkspaceView {
         self.creation = None;
         self.menu_open = false;
         self.switcher_open = false;
-        let focus = terminal.read(cx).focus_handle().clone();
-        window.focus(&focus, cx);
+        terminal.read(cx).focus(window);
         activate(window, cx, reply);
     }
 }
@@ -167,7 +166,7 @@ fn agent_view<'a>(ui: &'a Ui, run: &PresentedRunKey) -> Option<&'a ViewSelection
 
 #[cfg(target_os = "linux")]
 fn activate(window: &Window, _: &Context<WorkspaceView>, reply: FocusReply) {
-    window.activate();
+    window.activate_window();
     let _ = reply.send(Ok(()));
 }
 

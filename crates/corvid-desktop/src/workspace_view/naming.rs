@@ -61,7 +61,7 @@ impl WorkspaceView {
         });
         self.menu_open = false;
         self.switcher_open = false;
-        window.focus(&self.setup_focus, cx);
+        window.focus(&self.setup_focus);
         cx.notify();
     }
 

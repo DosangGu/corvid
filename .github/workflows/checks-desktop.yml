@@ -26,8 +26,6 @@ on:
       - 'crates/corvid-agent-deck-core/**'
       - 'crates/corvid-presentation/**'
       - 'crates/corvid-desktop/**'
-      - 'vendor/fontique/**'
-      - 'vendor/parley/**'
       - 'crates/corvid-tui/build.rs'
       - 'crates/corvid-tui/Cargo.toml'
       - 'crates/corvid-tui/corvid.terminfo'
@@ -59,7 +57,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
-          sudo apt-get -o Acquire::Retries=3 install -y build-essential libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev ncurses-bin fonts-dejavu-core fonts-noto-color-emoji
+          sudo apt-get -o Acquire::Retries=3 install -y build-essential libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev ncurses-bin libvulkan1 mesa-vulkan-drivers xvfb xauth fonts-dejavu-core fonts-noto-color-emoji
       - name: Prepare private test directory
         run: |
           mkdir -m 700 "$HOME/.corvid-tests"
@@ -83,7 +81,7 @@ jobs:
           --skip terminal_session::restore_test::desktop_relaunch_restores_the_same_terminal
           --skip terminal_session::restore_test::desktop_startup_attempts_recovery_and_leaves_failed_panes_empty
       - name: Desktop font fallback and emoji presentation
-        run: cargo test --locked -p corvid-desktop --test desktop_symbols
+        run: xvfb-run -a cargo test --locked -p corvid-desktop --test desktop_symbols
 
   native-fonts:
     name: Desktop fonts (${{ matrix.os }})
@@ -107,10 +105,10 @@ jobs:
             ~/.cargo/registry
             target/debug
           key: checks-desktop-fonts-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/checks-desktop.yml', 'Cargo.lock') }}
+      - name: Build Desktop and Agent Deck
+        run: cargo build --locked -p corvid-desktop -p corvid-agent-deck
       - name: Desktop font fallback and emoji presentation
         run: cargo test --locked -p corvid-desktop --test desktop_symbols
       - name: Relaunch a pinned macOS Desktop through the installed bundle
         if: runner.os == 'macOS'
-        run: |
-          cargo build --locked -p corvid-desktop
-          python3 deploy/test_macos_dock_update.py --relaunch-binary target/debug/corvid-desktop
+        run: python3 deploy/test_macos_dock_update.py --relaunch-binary target/debug/corvid-desktop

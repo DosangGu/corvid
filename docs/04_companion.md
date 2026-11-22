@@ -87,8 +87,12 @@ generated `x86_64-unknown-linux-musl/` directory. Copy the Windows x64 bundle
 from the Windows Desktop ZIP. Desktop uses the sessions, tabs, split panes,
 and Corvid Agent Deck described in the Windows quick start.
 
-The workspace pins `libc` to 0.2.189 while GPUI's HTTP client transitively uses
-`xattr` 0.2.3, which needs the Linux `ENOATTR` constant.
+Desktop and Agent Deck use Zed's GPUI 0.2.2. Its HTTP client brings its own
+Tokio dependencies. Corvid's IPC and session tasks run on Compio. The
+workspace pins `libc` to 0.2.189 for `xattr` 0.2.3, a transitive GPUI
+dependency that uses the Linux `ENOATTR` constant. GPUI's Linux font selection
+can use a text glyph for an explicit VS16 emoji request. Ordinary emoji use
+the same system fallback as terminal text.
 
 ### Windows quick start
 
@@ -401,7 +405,7 @@ For published packages and update behavior, use the
 command produces versioned Desktop and TUI archives with installation metadata.
 
 Windows source builds require the pinned MSVC Rust toolchain and the Windows
-SDK for the GUI. GPUI CE compiles the Direct3D shaders during native Windows
+SDK for the GUI. GPUI compiles the Direct3D shaders during native Windows
 builds. Cargo builds the Protobuf schema using `protox`.
 
 Set `$env:CORVID_MACOS_RUNTIME` to a macOS runtime artifact directory from the same

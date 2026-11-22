@@ -20,7 +20,7 @@ pub(super) fn hide(window: &gpui::Window) -> anyhow::Result<()> {
 pub(super) fn show(window: &gpui::Window, activate: bool, _: &gpui::App) -> anyhow::Result<()> {
     implementation::visible(window, true)?;
     if activate {
-        window.activate();
+        window.activate_window();
     }
     Ok(())
 }

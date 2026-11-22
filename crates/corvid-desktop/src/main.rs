@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let ready_directory = options.update_ready_directory;
 
     #[cfg(target_os = "macos")]
-    // No GPUI or Tokio threads have been started at this point.
+    // No GPUI threads have been started at this point.
     unsafe {
         macos::initialize_environment()
     };
@@ -108,9 +108,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     app_icon::identify()?;
     #[cfg(target_os = "linux")]
     anyhow::ensure!(
-        gpui::GraphicalEnvironment::detect()
-            .x11_display
-            .is_some_and(|display| !display.is_empty()),
+        gpui::guess_compositor() == "X11",
         "Corvid Desktop requires an X11 or XWayland display"
     );
 
@@ -142,10 +140,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let windows = DesktopWindows::new(agent_deck)?;
     let app_windows = windows.clone();
 
-    #[cfg(target_os = "linux")]
-    let application = gpui_platform::linux(gpui::WindowingModes::X11);
-    #[cfg(not(target_os = "linux"))]
-    let application = gpui_platform::application();
+    let application = gpui::Application::new();
     desktop_font::register(&application.text_system())?;
     #[cfg(target_os = "macos")]
     {
@@ -159,7 +154,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             cx.activate(true);
         });
     }
-    let initialize = move |cx: &mut gpui::App| {
+    application.run(move |cx| {
         #[cfg(target_os = "macos")]
         macos::menus(&app_windows, cx);
         #[cfg(target_os = "linux")]
@@ -178,13 +173,6 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             eprintln!("Could not listen for Agent Deck: {error:#}");
         }
         cx.activate(true);
-    };
-    application.run(move |cx| {
-        #[cfg(target_os = "macos")]
-        // GPUI CE 0.3.0 holds the platform lock during the launch callback.
-        cx.spawn(async move |cx| cx.update(initialize)).detach();
-        #[cfg(not(target_os = "macos"))]
-        initialize(cx);
     });
 
     let pending = windows.start_shutdown();

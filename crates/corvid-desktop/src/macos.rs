@@ -45,15 +45,21 @@ pub fn menus(windows: &DesktopWindows, cx: &mut App) {
         KeyBinding::new("cmd-shift-n", NewWindow, None),
     ]);
     cx.set_menus(vec![
-        Menu::new("Corvid").items([
-            MenuItem::os_submenu("Services", SystemMenuType::Services),
-            MenuItem::separator(),
-            MenuItem::action("Quit Corvid", Quit),
-        ]),
-        Menu::new("File").items([
-            MenuItem::action("New Window", NewWindow),
-            MenuItem::action("Close Window", CloseWindow),
-        ]),
+        Menu {
+            name: "Corvid".into(),
+            items: vec![
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Quit Corvid", Quit),
+            ],
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::action("Close Window", CloseWindow),
+            ],
+        },
     ]);
 }
 

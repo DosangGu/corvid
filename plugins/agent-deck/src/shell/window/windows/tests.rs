@@ -85,8 +85,8 @@ fn scaled_gap_and_small_work_areas_stay_on_screen() {
 #[ignore = "opens an isolated GPUI window to measure actual Windows placement"]
 fn native_window_tracks_the_tray_corner_after_resize() {
     use gpui::{
-        AppContext, Context, Render, TitlebarOptions, WindowBounds, WindowOptions, div, prelude::*,
-        px, rgb, size,
+        AppContext, Application, Context, Render, TitlebarOptions, WindowBounds, WindowOptions,
+        div, prelude::*, px, rgb, size,
     };
     use std::{cell::RefCell, rc::Rc};
 
@@ -232,7 +232,7 @@ fn native_window_tracks_the_tray_corner_after_resize() {
 
     let result = Rc::new(RefCell::new(None));
     let saved = result.clone();
-    gpui_platform::application().run(move |cx| {
+    Application::new().run(move |cx| {
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("Corvid Deck placement test".into()),

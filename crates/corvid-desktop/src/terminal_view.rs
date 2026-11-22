@@ -234,8 +234,8 @@ impl TerminalView {
         }
     }
 
-    pub fn focus_handle(&self) -> &FocusHandle {
-        &self.focus
+    pub fn focus(&self, window: &mut Window) {
+        window.focus(&self.focus);
     }
 
     fn start_selection(
@@ -246,7 +246,7 @@ impl TerminalView {
     ) {
         self.cancel_link();
         self.cancel_pending_wheel();
-        window.focus(&self.focus, cx);
+        self.focus(window);
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
@@ -386,7 +386,7 @@ impl TerminalView {
         }
     }
 
-    fn paste_clipboard(&self, cx: &mut Context<Self>) {
+    fn paste(&self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -662,7 +662,7 @@ impl TerminalView {
             self.open_history(HistoryOpen::Browse, self.visible_rows() as isize, cx);
         } else if edit_shortcut && key.key == "v" {
             self.selection = None;
-            self.paste_clipboard(cx);
+            self.paste(cx);
             cx.notify();
         } else if edit_shortcut && key.key == "c" {
             self.copy_visible(cx);
@@ -751,7 +751,6 @@ impl Render for TerminalView {
                     &focus,
                     TerminalInput {
                         view: view.downgrade(),
-                        element_bounds: bounds,
                     },
                     cx,
                 );
@@ -832,7 +831,6 @@ pub fn preview(session: Session, pane: String) -> impl IntoElement {
 // The terminal view belongs to the workspace and can be released before that cleanup finishes.
 struct TerminalInput {
     view: WeakEntity<TerminalView>,
-    element_bounds: Bounds<Pixels>,
 }
 
 impl InputHandler for TerminalInput {
@@ -944,14 +942,6 @@ impl InputHandler for TerminalInput {
     ) -> Option<usize> {
         None
     }
-
-    fn element_bounds(&mut self, _: &mut Window, _: &mut App) -> Option<Bounds<Pixels>> {
-        self.view.upgrade().map(|_| self.element_bounds)
-    }
-
-    fn accepts_text_input(&mut self, _: &mut Window, _: &mut App) -> bool {
-        self.view.upgrade().is_some()
-    }
 }
 
 #[cfg(test)]
@@ -1049,7 +1039,7 @@ mod tests {
         use std::rc::Rc;
         use std::time::Duration;
 
-        use gpui::{Entity, WindowOptions};
+        use gpui::{Application, Entity, WindowOptions};
 
         struct Probe {
             _terminal: Entity<TerminalView>,
@@ -1066,7 +1056,7 @@ mod tests {
         let observed = updates.clone();
         let at_next_frame = Rc::new(Cell::new(None));
         let sampled = at_next_frame.clone();
-        gpui_platform::application().run(move |cx| {
+        Application::new().run(move |cx| {
             cx.open_window(WindowOptions::default(), move |window, cx| {
                 let (session, changes) = Session::screen_change_fixture();
                 let terminal = cx.new(|cx| TerminalView::new(session, "probe".into(), window, cx));
@@ -1110,7 +1100,7 @@ mod tests {
 
             cx.spawn(async |cx| {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
-                cx.update(|cx| cx.quit());
+                let _ = cx.update(|cx| cx.quit());
             })
             .detach();
         });

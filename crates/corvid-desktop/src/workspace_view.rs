@@ -228,7 +228,6 @@ pub struct WorkspaceView {
     terminal: Option<Entity<TerminalView>>,
     selected: Option<ViewSelection>,
     tab_bar: tab_bar::TabBar,
-    title_renderer: title::TitleRenderer,
     preferred_tabs: HashMap<String, String>,
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
@@ -276,7 +275,7 @@ impl WorkspaceView {
         });
         let agent_deck = windows.settings();
         let setup_focus = cx.focus_handle();
-        window.focus(&setup_focus, cx);
+        window.focus(&setup_focus);
         let mut view = Self {
             windows,
             store,
@@ -307,7 +306,6 @@ impl WorkspaceView {
             terminal: None,
             selected: None,
             tab_bar: tab_bar::TabBar::default(),
-            title_renderer: title::TitleRenderer::default(),
             preferred_tabs: HashMap::new(),
             preferred_panes: HashMap::new(),
             updates: None,
@@ -441,7 +439,7 @@ impl WorkspaceView {
             let terminal = self.terminal_window;
             cx.defer(move |cx| {
                 let _ = terminal.update(cx, |view, window, cx| {
-                    window.activate();
+                    window.activate_window();
                     view.switch_to(destination, target, window, cx);
                 });
             });
@@ -461,10 +459,10 @@ impl WorkspaceView {
             self.focus_terminal(window, cx);
             cx.notify();
         } else if self.lifetime.available() {
-            window.focus(&self.setup_focus, cx);
+            window.focus(&self.setup_focus);
             self.connect(destination, target, true, window, cx);
         } else {
-            window.focus(&self.setup_focus, cx);
+            window.focus(&self.setup_focus);
             self.lifetime
                 .retire(self.destination.as_ref() != Some(&destination));
             self.host_switch = Some(cx.spawn_in(window, async move |view, cx| {
@@ -755,10 +753,9 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn focus_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn focus_terminal(&self, window: &mut Window, cx: &Context<Self>) {
         if let Some(terminal) = &self.terminal {
-            let focus = terminal.read(cx).focus_handle().clone();
-            window.focus(&focus, cx);
+            terminal.read(cx).focus(window);
         }
     }
 

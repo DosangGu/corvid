@@ -1,105 +1,68 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, ContentMask, Display, Div, Element, ElementId, ForegroundDependency,
-    GlobalElementId, GlyphRenderMode, InspectorElementId, IntoElement, LayoutId, PaintFragment,
-    Pixels, PreparedRasterStyle, RasterStyleRequest, RasterizedGlyph, RasterizedGlyphFormat,
-    RenderGlyphParams, ShapedGlyph, SharedString, Stateful, Style, StyledText, TextSystem, Window,
-    div, hsla_to_rgba, point, prelude::*, px, rems,
+    App, Bounds, ContentMask, Display, Div, Element, ElementId, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, LineLayout, Pixels, SharedString, Stateful, Style,
+    StyledText, TextRun, TextStyle, Window, div, point, prelude::*, px, rems,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 const PAUSE_SECONDS: f32 = 1.;
 const SPEED_REMS_PER_SECOND: f32 = 2.;
 
-#[derive(Clone, Default)]
-pub(super) struct TitleRenderer(Rc<RefCell<HashMap<RenderGlyphParams, Option<Pixels>>>>);
-
-impl TitleRenderer {
-    pub(super) fn button(
-        &self,
-        button: Stateful<Div>,
-        label: String,
-        suffix: Option<&'static str>,
-    ) -> Stateful<Div> {
-        let label = SharedString::from(label);
-        let accessible_name = suffix.map_or_else(
-            || label.clone(),
-            |suffix| SharedString::from(format!("{label} {suffix}")),
-        );
-        // Keep the title in flex layout so it paints its own glyphs.
-        button
-            .flex()
-            .items_center()
-            .gap(rems(0.25))
-            .aria_label(accessible_name)
-            .child(Title {
-                text: StyledText::new(label.clone()),
-                label,
-                renderer: self.clone(),
-            })
-            .children(suffix.map(|suffix| div().flex_none().child(suffix)))
-    }
-
-    fn color_glyph_center(
-        &self,
-        text: &TextSystem,
-        fragment: &PaintFragment,
-        glyph: &ShapedGlyph,
-        scale_factor: f32,
-    ) -> Option<Pixels> {
-        let params = RenderGlyphParams {
-            font_id: fragment.font_id,
-            glyph_id: glyph.id,
-            font_size: fragment.font_size,
-            scale_factor,
-            subpixel_variant: Default::default(),
-            raster_style: PreparedRasterStyle::preblend(RasterStyleRequest {
-                font_id: fragment.font_id,
-                glyph_id: glyph.id,
-                scene_color: hsla_to_rgba(fragment.style.color),
-                requested_mode: GlyphRenderMode::Color,
-                foreground_dependency: ForegroundDependency::Full,
-            }),
-        };
-        let mut centers = self.0.borrow_mut();
-        if let Some(center) = centers.get(&params) {
-            return *center;
-        }
-        if centers.len() >= 256 {
-            centers.clear();
-        }
-
-        let center = text
-            .rasterize_glyph(&params)
-            .ok()
-            .and_then(|raster| color_ink_center(&raster))
-            .map(|center| px(center / scale_factor));
-        centers.insert(params, center);
-        center
-    }
+pub(super) fn button(
+    button: Stateful<Div>,
+    label: String,
+    suffix: Option<&'static str>,
+) -> Stateful<Div> {
+    let label = SharedString::from(label);
+    // Flex layout keeps the text in the title's clipped viewport.
+    button
+        .flex()
+        .items_center()
+        .gap(rems(0.25))
+        .child(Title {
+            text: StyledText::new(label.clone()),
+            label,
+        })
+        .children(suffix.map(|suffix| div().flex_none().child(suffix)))
 }
 
-fn color_ink_center(raster: &RasterizedGlyph) -> Option<f32> {
-    // The rasterizer may pad the image. Use the alpha channel to locate the
-    // visible artwork, measuring the center between its top and bottom edges.
-    if raster.format != RasterizedGlyphFormat::BgraColor || raster.pixels.is_empty() {
+// GPUI 0.2.2 removes explicitly selected Linux fonts that lack a Latin 'm',
+// including Noto Color Emoji. Leave those fonts available through system fallback.
+pub(super) fn emoji_presentation_runs(label: &str, style: &TextStyle) -> Option<Vec<TextRun>> {
+    if cfg!(target_os = "linux") || !label.contains('\u{fe0f}') {
         return None;
     }
-    let row_width = raster.size.width.0 as usize * 4;
-    let mut rows = raster.pixels.chunks_exact(row_width);
-    let has_ink = |row: &[u8]| row.iter().skip(3).step_by(4).any(|alpha| *alpha != 0);
-    let top = rows.clone().position(has_ink)?;
-    let bottom = rows.rposition(has_ink)? + 1;
-    Some(raster.bounds.origin.y.0 as f32 + (top + bottom) as f32 / 2.)
+
+    let emoji_family = if cfg!(target_os = "macos") {
+        "Apple Color Emoji"
+    } else {
+        "Segoe UI Emoji"
+    };
+
+    let mut runs: Vec<TextRun> = Vec::new();
+    for grapheme in label.graphemes(true) {
+        let mut run = style.to_run(grapheme.len());
+        if grapheme.contains('\u{fe0f}') && !grapheme.contains('\u{fe0e}') {
+            run.font.family = emoji_family.into();
+            run.font.fallbacks = None;
+        }
+
+        if let Some(previous) = runs.last_mut()
+            && previous.font == run.font
+        {
+            previous.len += run.len;
+        } else {
+            runs.push(run);
+        }
+    }
+    Some(runs)
 }
 
 struct Title {
     text: StyledText,
     label: SharedString,
-    renderer: TitleRenderer,
 }
 
 struct TitleMotion {
@@ -146,6 +109,9 @@ impl Element for Title {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, LayoutId) {
+        if let Some(runs) = emoji_presentation_runs(&self.label, &window.text_style()) {
+            self.text = StyledText::new(self.label.clone()).with_runs(runs);
+        }
         let (text, ()) = self.text.request_layout(id, inspector, window, cx);
         // The viewport can shrink within the button while the text keeps its intrinsic width.
         let mut style = Style {
@@ -165,6 +131,9 @@ impl Element for Title {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
+        let mut text_bounds = window.layout_bounds(*text);
+        self.text
+            .prepaint(id, inspector, text_bounds, &mut (), window, cx);
         let width = self
             .text
             .layout()
@@ -201,11 +170,11 @@ impl Element for Title {
             },
         );
 
-        window.with_element_offset(point(-offset, px(0.)), |window| {
-            let text_bounds = window.layout_bounds(*text);
+        if offset > px(0.) {
+            text_bounds.origin.x -= offset;
             self.text
                 .prepaint(id, inspector, text_bounds, &mut (), window, cx);
-        });
+        }
         animate
     }
 
@@ -222,20 +191,18 @@ impl Element for Title {
         if *animate {
             window.request_animation_frame();
         }
-        let mask = ContentMask {
-            bounds,
-            ..Default::default()
-        };
+        let mask = ContentMask { bounds };
         window.with_content_mask(Some(mask), |window| {
             let layout = self.text.layout();
-            let Some(document) = layout.line_layout_for_index(0) else {
+            let Some(wrapped) = layout.line_layout_for_index(0) else {
                 return;
             };
-            let line = &document.layout;
+            let line = &wrapped.unwrapped_layout;
             if line
-                .paint_fragments
+                .runs
                 .iter()
-                .any(|fragment| fragment.glyphs.iter().any(|glyph| glyph.is_emoji))
+                .any(|run| run.glyphs.iter().any(|glyph| glyph.is_emoji))
+                && !self.label.contains('\n')
             {
                 self.paint_with_centered_emoji(line, bounds, window, cx);
             } else {
@@ -249,52 +216,63 @@ impl Element for Title {
 impl Title {
     fn paint_with_centered_emoji(
         &self,
-        line: &gpui::LineLayout,
+        line: &LineLayout,
         viewport: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) {
         let layout = self.text.layout();
-        // Retain the shaped visual order and horizontal positions. Center
-        // color artwork within the title line while text follows its baseline.
         let bounds = layout.bounds();
         let line_height = layout.line_height();
-        let baseline_offset = (line_height + line.ascent - line.descent) / 2.;
-        let text_system = cx.text_system().clone();
-        let scale_factor = window.scale_factor();
+        let middle = bounds.origin.y + line_height / 2.;
+        let baseline = middle + (line.ascent - line.descent) / 2.;
+        let text = cx.text_system();
+        let color = window.text_style().color;
+
         window.paint_layer(viewport, |window| {
-            for (row, visual) in line.visual_lines.iter().enumerate() {
-                let top = bounds.origin.y + line_height * row;
-                for fragment in &line.paint_fragments[visual.paint_fragment_range.clone()] {
-                    for glyph in &*fragment.glyphs {
-                        let x = bounds.origin.x + visual.offset + glyph.position.x;
-                        let y = top + baseline_offset + glyph.position.y;
-                        let color = fragment.style.color;
-                        if glyph.is_emoji {
-                            let centered_y = self
-                                .renderer
-                                .color_glyph_center(&text_system, fragment, glyph, scale_factor)
-                                .map_or(y, |center| top + line_height / 2. - center);
-                            let _ = window.paint_emoji_with_color(
-                                point(x, centered_y),
-                                fragment.font_id,
-                                glyph.id,
-                                fragment.font_size,
-                                color,
-                            );
-                        } else {
-                            let _ = window.paint_glyph(
-                                point(x, y),
-                                fragment.font_id,
-                                glyph.id,
-                                fragment.font_size,
-                                color,
-                            );
-                        }
+            for run in &line.runs {
+                for glyph in &run.glyphs {
+                    let x = bounds.origin.x + glyph.position.x;
+                    if glyph.is_emoji {
+                        // The original GPUI exposes character metrics. Keep the native baseline
+                        // for sequences or fonts that have no usable single-character bounds.
+                        let y = self
+                            .emoji_baseline(line, run, glyph, text, middle)
+                            .unwrap_or(baseline);
+                        let _ =
+                            window.paint_emoji(point(x, y), run.font_id, glyph.id, line.font_size);
+                    } else {
+                        let _ = window.paint_glyph(
+                            point(x, baseline),
+                            run.font_id,
+                            glyph.id,
+                            line.font_size,
+                            color,
+                        );
                     }
                 }
             }
         });
+    }
+
+    fn emoji_baseline(
+        &self,
+        line: &LineLayout,
+        run: &gpui::ShapedRun,
+        glyph: &gpui::ShapedGlyph,
+        text: &gpui::TextSystem,
+        middle: Pixels,
+    ) -> Option<Pixels> {
+        let grapheme = self.label.get(glyph.index..)?.graphemes(true).next()?;
+        let mut characters = grapheme.chars();
+        let character = characters.next()?;
+        if characters.any(|ch| !matches!(ch, '\u{fe0e}' | '\u{fe0f}')) {
+            return None;
+        }
+        let bounds = text
+            .typographic_bounds(run.font_id, line.font_size, character)
+            .ok()?;
+        (bounds.size.height > px(0.)).then_some(middle + bounds.origin.y + bounds.size.height / 2.)
     }
 }
 
@@ -317,26 +295,5 @@ mod tests {
         ] {
             assert_eq!(title_offset(distance, speed, seconds), px(offset));
         }
-    }
-
-    #[test]
-    fn measures_visible_emoji_without_transparent_padding() {
-        use gpui::{DevicePixels, size};
-
-        use super::*;
-
-        let size = size(DevicePixels(2), DevicePixels(5));
-        let mut raster = RasterizedGlyph {
-            bounds: Bounds::new(point(DevicePixels(0), DevicePixels(-7)), size),
-            size,
-            format: RasterizedGlyphFormat::BgraColor,
-            pixels: vec![0; 40],
-        };
-        assert_eq!(color_ink_center(&raster), None);
-
-        // Ink occupies the second and third rows, with asymmetric padding.
-        raster.pixels[11] = 255;
-        raster.pixels[23] = 100;
-        assert_eq!(color_ink_center(&raster), Some(-5.));
     }
 }
