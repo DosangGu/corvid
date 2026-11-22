@@ -23,6 +23,18 @@ has no live terminal. To start a shell explicitly, use `corvid attach --new`.
 The automatically started daemon uses the bundled terminfo entry.
 Use `corvid ensure-daemon` to start or reuse the same background daemon
 without attaching a TTY. It shares the startup lock with the ordinary CLI.
+On Linux, macOS and Windows, `corvid list` queries the same runtime the TUI
+would open. Standard output has one workspace per line, with the stable ID
+and escaped name separated by a tab. An empty list from a running daemon
+prints no rows. `corvid attach NAME_OR_ID` uses an exact name or ID from that
+list. If a name matches multiple workspaces, attach by one of the displayed
+IDs. These commands need an existing daemon to resolve workspaces. Bare
+`corvid attach` starts the daemon if necessary and attaches or offers
+recovery for an existing view. Without an existing terminal or a saved view,
+it returns `NoTerminal`. Use `corvid` for first-time startup or
+`corvid new NAME` to start a separate workspace rooted in your current
+directory.
+
 For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
 

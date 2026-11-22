@@ -76,6 +76,10 @@ pub(super) enum Command {
         browse_directory: bool,
         #[arg(long, conflicts_with = "tab")]
         new_tab: Option<String>,
+        /// Open an existing workspace by exact name or ID.
+        #[arg(value_name = "NAME_OR_ID", conflicts_with_all = ["workspace", "new_workspace"])]
+        target: Option<String>,
+        /// Program and arguments for an explicitly started terminal.
         #[arg(last = true)]
         argv: Vec<OsString>,
     },
@@ -87,6 +91,7 @@ pub(super) enum Command {
         request: Option<ControlRequest>,
     },
     /// Relay the interactive protocol over SSH stdio.
+    #[command(hide = true)]
     TerminalRelay,
     /// Print the provider observation hooks for explicit installation.
     Hooks {
@@ -94,6 +99,7 @@ pub(super) enum Command {
         provider: HookProvider,
     },
     /// Submit a provider observation from stdin.
+    #[command(hide = true)]
     Observe {
         #[arg(long, value_enum)]
         provider: HookProvider,
@@ -189,6 +195,7 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
         Command::Attach {
             new,
             take_over,
+            target,
             agent,
             workspace,
             tab,
@@ -199,6 +206,8 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
             new_tab,
             argv,
         } => {
+            let workspace =
+                super::workspace_cli::attach_target(&runtime, target, workspace).await?;
             let workspace_directory = if browse_directory {
                 check_tty()?;
                 ensure_local_daemon(&runtime).await?;
@@ -216,11 +225,6 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
                 || new_tab.is_some())
             .then_some(argv);
             let options = AttachOptions {
-                launch_if_empty: launch.is_none()
-                    && !take_over
-                    && workspace.is_none()
-                    && tab.is_none()
-                    && pane.is_none(),
                 launch,
                 take_over,
                 agent: agent.map(|provider| match provider {
@@ -235,7 +239,7 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
                 new_tab,
                 ..AttachOptions::default()
             };
-            return start_attach(runtime, options).await;
+            return super::workspace_cli::attach_existing(&runtime, options).await;
         }
         Command::Control { stdio, request } => match (stdio, request) {
             (true, _) => unreachable!("stdio relay dispatched before the CLI executor"),
@@ -272,7 +276,7 @@ fn local_app_data() -> Result<PathBuf> {
         .context("LOCALAPPDATA is unavailable")
 }
 
-async fn start_attach(runtime: PathBuf, mut options: AttachOptions) -> Result<u32> {
+pub(super) async fn start_attach(runtime: PathBuf, mut options: AttachOptions) -> Result<u32> {
     options.remember_view = true;
     check_tty()?;
     if !daemon_running(&runtime).await? {

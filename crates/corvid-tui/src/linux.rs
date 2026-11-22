@@ -103,6 +103,9 @@ pub(super) enum Command {
         /// Milliseconds to wait for a fragmented escape sequence.
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=2000))]
         escape_delay_ms: u64,
+        /// Open an existing workspace by exact name or ID.
+        #[arg(value_name = "NAME_OR_ID", conflicts_with_all = ["workspace", "new_workspace"])]
+        target: Option<String>,
         /// Program and arguments for an explicitly started terminal.
         #[arg(last = true)]
         argv: Vec<OsString>,
@@ -115,6 +118,7 @@ pub(super) enum Command {
         request: Option<ControlRequest>,
     },
     /// Relay the interactive writer protocol over a non-PTY SSH connection.
+    #[command(hide = true)]
     TerminalRelay,
     /// Manage an explicit controller registration or acknowledge an alert.
     Controller {
@@ -136,6 +140,7 @@ pub(super) enum Command {
         provider: HookProvider,
     },
     /// Submit one provider observation from stdin.
+    #[command(hide = true)]
     Observe {
         #[arg(long, value_enum)]
         provider: HookProvider,
@@ -270,6 +275,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
         Command::Attach {
             new,
             take_over,
+            target,
             agent,
             restore_cwd,
             escape_delay_ms,
@@ -285,6 +291,8 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             move_tab,
             to_workspace,
         } => {
+            let workspace =
+                super::workspace_cli::attach_target(&runtime, target, workspace).await?;
             let workspace_directory = if browse_directory {
                 corvid_client::check_tty()?;
                 ensure(&runtime).await?;
@@ -321,7 +329,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 claim_workspaces: claim_workspace,
                 move_tab: move_tab.zip(to_workspace),
             };
-            crate::attach_monitored(&runtime, options).await
+            super::workspace_cli::attach_existing(&runtime, options).await
         }
         Command::Controller {
             controller_id,

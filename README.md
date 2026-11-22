@@ -54,7 +54,12 @@ cargo build --locked -p corvid-tui
 ./target/debug/corvid
 ```
 
-Corvid starts the daemon and opens or reattaches to a shell. Press
+From an installed CLI, run `corvid` to start in the current directory or
+return to your last workspace. Run `corvid list` to see workspace IDs
+and names, `corvid attach review` to open an existing workspace, or
+`corvid new review` to create a workspace rooted in your current directory.
+
+Press
 <kbd>Ctrl</kbd>+<kbd>]</kbd> to see the available commands. To detach, press
 <kbd>Ctrl</kbd>+<kbd>]</kbd>, then <kbd>d</kbd>. Run Corvid again to return to the workspace.
 To close the current pane, tab, or session and stop its shells, press

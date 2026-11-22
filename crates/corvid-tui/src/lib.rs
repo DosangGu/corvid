@@ -7,6 +7,8 @@ mod retirement;
 mod update;
 #[cfg(windows)]
 mod windows;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod workspace_cli;
 
 use std::future::Future;
 use std::io::{self, BufRead, Read};
@@ -30,7 +32,9 @@ pub(crate) use corvid_client::runtime_path;
     version,
     about = "Terminal multiplexer with coding-agent integrations"
 )]
-#[command(after_help = "Run without a command to open the default workspace.")]
+#[command(
+    before_help = "Workspace quick start:\n  corvid                Start or return to the last workspace\n  corvid list           List workspace names and IDs\n  corvid attach review  Open an existing workspace\n  corvid new review     Create a workspace in the current directory\n"
+)]
 struct Options {
     /// Override the private directory containing daemon sockets.
     #[arg(long, global = true)]
@@ -41,6 +45,15 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List workspace names and IDs.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    List,
+    /// Create a workspace in the current directory and open its first terminal.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    New {
+        /// Name of the workspace to create.
+        name: String,
+    },
     /// Restore the saved agent conversation in each empty pane, without attaching.
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Restore {
@@ -255,6 +268,10 @@ pub fn run() -> ExitCode {
     let daemon_runtime = options.runtime_dir;
 
     let result = match options.command {
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        Some(Command::List) => execute(move || workspace_cli::list(daemon_runtime)),
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        Some(Command::New { name }) => execute(move || workspace_cli::create(daemon_runtime, name)),
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         Some(Command::Restore {
             workspace,
