@@ -855,10 +855,32 @@ def verify_workspace_ui(command, directory):
         terminal.expect(b"left-PANE")
         terminal.expect(b"top-PANE")
         terminal.expect(b"bottom-PANE")
+        terminal.send(b"\x1d.")
+        terminal.expect(b"Rename tab")
+        terminal.send(b"work\r")
+        terminal.expect(rb"\[1 work\]")
         terminal.send(b"\x1dt")
         terminal.expect(b"New tab")
         terminal.send(b"\t\r")
         terminal.expect(rb"\[2 ")
+        terminal.send(b"\x1d.")
+        terminal.expect(b"Rename tab")
+        terminal.send(b"hello\r")
+        terminal.expect(rb"\[2 hello\]")
+        for key, label, tab in (
+            (b"h", b"work", b"1"),
+            (b"\x1bOC", b"hello", b"2"),
+            (b"\x1b[D", b"work", b"1"),
+            (b"l", b"hello", b"2"),
+        ):
+            active = rb"\x1b\[0;1;36m\[" + tab + b" " + label + rb"\]"
+            terminal.output.clear()
+            terminal.send(b"\x1dt" + key)
+            terminal.expect(rb"\x1b\[2K> " + label)
+            assert not re.search(active, terminal.output), terminal.output
+            terminal.output.clear()
+            terminal.send(b"\r")
+            terminal.expect(active)
         terminal.output.clear()
         terminal.send(b"\x1d[")
         terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
@@ -868,6 +890,13 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.send(b"\x1b[<0;" + current_tab + b";1M")
         terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        terminal.output.clear()
+        terminal.send(b"\x1dt\x06hello")
+        terminal.expect(rb"Search \(typing\): hello")
+        terminal.expect(rb"\x1b\[2K> hello")
+        terminal.output.clear()
+        terminal.send(b"\r")
+        terminal.expect(rb"\x1b\[0;1;36m\[2 hello\]")
         terminal.resize(20, 6)
         terminal.expect(rb"\x1b\[1;1H")
         terminal.resize(100, 30)

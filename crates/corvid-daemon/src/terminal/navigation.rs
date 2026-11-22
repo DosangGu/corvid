@@ -23,6 +23,7 @@ pub(super) enum Overlay {
         index: usize,
         control: u8,
         query: String,
+        editing_query: bool,
         selected: Option<Uuid>,
     },
     Panes(Uuid),
@@ -73,6 +74,7 @@ impl Overlay {
             index,
             control: 0,
             query: String::new(),
+            editing_query: false,
             selected: match kind {
                 Kind::Workspaces => Some(location.workspace),
                 Kind::Tabs => Some(location.tab),
@@ -155,6 +157,7 @@ impl Overlay {
                 mut index,
                 mut control,
                 mut query,
+                mut editing_query,
                 mut selected,
             } => {
                 let items = choices(kind, &query, layout, location, keymap);
@@ -163,11 +166,18 @@ impl Overlay {
                     .unwrap_or_else(|| index.min(items.len().saturating_sub(1)));
                 let original_query = query.clone();
                 let mut moved = false;
+                let tab_picker = matches!(kind, Kind::Tabs);
+                let bytes = match (kind, editing_query, bytes) {
+                    (Kind::Tabs, false, b"h") | (Kind::Tabs, _, b"\x1b[D" | b"\x1bOD") => b"\x1b[A",
+                    (Kind::Tabs, false, b"l") | (Kind::Tabs, _, b"\x1b[C" | b"\x1bOC") => b"\x1b[B",
+                    _ => bytes,
+                };
                 match bytes {
-                    b"\t" | b"\x1b[Z" if matches!(kind, Kind::Tabs) => {
+                    b"\t" | b"\x1b[Z" if tab_picker => {
                         let controls = if keymap.close { 3 } else { 2 };
                         control =
                             (control + if bytes == b"\t" { 1 } else { controls - 1 }) % controls;
+                        editing_query = false;
                     }
                     b"\r" | b"\n" if control == 1 => {
                         return unfocused(KeyCommand::Tab(TabCommand::Create));
@@ -198,6 +208,7 @@ impl Overlay {
                                                 index,
                                                 control: 0,
                                                 query,
+                                                editing_query,
                                                 selected,
                                             })),
                                         }),
@@ -220,6 +231,7 @@ impl Overlay {
                         }
                     }
                     _ if control > 0 => {}
+                    b"\x06" if tab_picker => editing_query = !editing_query,
                     b"\x1b[A" | b"\x1bOA" => {
                         index = index.saturating_sub(1);
                         moved = true;
@@ -229,7 +241,9 @@ impl Overlay {
                         moved = true;
                     }
                     b"\x7f" | b"\x08" => {
-                        query.pop();
+                        if query.pop().is_some() {
+                            editing_query = tab_picker;
+                        }
                         index = 0;
                     }
                     _ => {
@@ -239,6 +253,7 @@ impl Overlay {
                             && query.len() + text.len() <= 256
                         {
                             query.push_str(text);
+                            editing_query = tab_picker;
                             index = 0;
                         }
                     }
@@ -248,6 +263,7 @@ impl Overlay {
                         .first()
                         .and_then(|(_, choice)| choice.id());
                 } else if moved {
+                    editing_query = false;
                     selected = items.get(index).and_then(|(_, choice)| choice.id());
                 }
                 (
@@ -256,6 +272,7 @@ impl Overlay {
                         index,
                         control,
                         query,
+                        editing_query,
                         selected,
                     }),
                     None,
@@ -325,15 +342,24 @@ impl Overlay {
                 index,
                 control,
                 query,
+                editing_query,
                 selected,
             } => {
                 let (title, hints) = match kind {
                     Kind::Workspaces => ("Workspaces", "↑/↓ Choose · Enter Open · Esc Cancel"),
-                    Kind::Tabs => ("Tabs", "↑/↓ Choose · Enter Open · Tab Actions · Esc Cancel"),
+                    Kind::Tabs if *editing_query => {
+                        ("Tabs", "←↑↓→ · Enter Focus · Tab Actions · Esc Cancel")
+                    }
+                    Kind::Tabs => ("Tabs", "←↑↓→ h/l · Enter Focus · Tab Actions · Esc Cancel"),
                     _ => ("CORVID COMMANDS", "↑/↓ Choose · Enter Run · Esc Cancel"),
                 };
                 lines.push(format!("{title} · {hints}"));
-                lines.push(format!("Search: {query}"));
+                let search = match kind {
+                    Kind::Tabs if *editing_query => "Search (typing)",
+                    Kind::Tabs => "Search (Ctrl-F)",
+                    _ => "Search",
+                };
+                lines.push(format!("{search}: {query}"));
                 if matches!(kind, Kind::Tabs) {
                     lines.push(
                         match control {

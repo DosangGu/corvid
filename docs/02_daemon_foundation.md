@@ -143,11 +143,17 @@ arrow keys to move, Enter to execute, or Esc to cancel.
 | Keys after Ctrl-] | Action |
 | --- | --- |
 | `w` | Filter and switch workspaces. Return to the last available pane in the selected workspace. |
-| `t` | Filter and select tabs. Press Tab to reach **New tab…** or **Close selected tab…**. |
+| `t` | Move the highlight with the arrow keys or `h`/`l` and press Enter to focus the highlighted tab. Press Tab to reach **New tab…** or **Close selected tab…**. |
 | `p` | Select a pane on the layout using the arrow keys. Press Enter to focus, `r` to split right, `d` to split down, or `x` to confirm ending the selected pane. |
 | Arrow keys | Focus a neighboring pane directly. |
 | `[` / `]` | Previous or next tab. |
 | `d` | Detach and keep terminals running. |
+
+Type to filter the tab list. For a query starting with `h` or `l`, press Ctrl-F
+to start typing. Use an arrow key or press Ctrl-F again to resume navigation
+with `h`/`l` while keeping the filter.
+
+![TUI tab picker with Editor highlighted](images/workspace-navigation/tui-tab-picker.png)
 
 The selectors overlay the layout without resizing the active PTY. Only pane
 writers resize their own terminals. The previous split aliases `%` and `"`
