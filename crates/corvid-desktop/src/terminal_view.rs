@@ -34,6 +34,7 @@ pub struct TerminalView {
     session: Session,
     pane: String,
     marked: String,
+    pending_pane_click: Option<(u16, u16)>,
     surface: Cell<Option<(Bounds<Pixels>, Metrics)>>,
     displayed: RefCell<Option<DisplayedScreen>>,
     link_hover: RefCell<Option<LinkHover>>,
@@ -220,6 +221,7 @@ impl TerminalView {
             session,
             pane,
             marked: String::new(),
+            pending_pane_click: None,
             surface: Cell::new(None),
             displayed: RefCell::new(None),
             link_hover: RefCell::new(None),
@@ -232,6 +234,10 @@ impl TerminalView {
             gesture: WheelGesture::default(),
             _updates: updates,
         }
+    }
+
+    pub(crate) fn pending_pane_click(&mut self, cell: Option<(u16, u16)>) {
+        self.pending_pane_click = cell;
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -255,6 +261,14 @@ impl TerminalView {
         }
         self.marked.clear();
         let anchor = metrics.position(bounds, event.position);
+        if self.history.is_none()
+            && !event.modifiers.modified()
+            && self.session.send_pane_click(&self.pane, anchor)
+        {
+            self.selection = None;
+            cx.notify();
+            return;
+        }
         let displayed = self.displayed.borrow().clone();
         self.selection = displayed.map(|displayed| {
             let link = if link_modifier(event.modifiers) {
@@ -399,6 +413,23 @@ impl TerminalView {
             .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
             .collect();
         self.session.send(&self.pane, text.into_bytes(), true);
+    }
+
+    pub(crate) fn open_history_command(&mut self, search: bool, cx: &mut Context<Self>) {
+        let mode = if search {
+            HistoryOpen::Search
+        } else {
+            HistoryOpen::Browse
+        };
+        self.open_history(
+            mode,
+            if search {
+                0
+            } else {
+                self.visible_rows() as isize
+            },
+            cx,
+        );
     }
 
     fn open_history(&mut self, mode: HistoryOpen, back: isize, cx: &mut Context<Self>) {
@@ -598,9 +629,6 @@ impl TerminalView {
                 self.copy_visible(cx);
                 return true;
             }
-            ("f", true, true) => {
-                history.search.get_or_insert_with(Default::default);
-            }
             ("v", true, _) if history.search.is_some() => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     history.edit_query(Some(&text));
@@ -656,11 +684,7 @@ impl TerminalView {
             self.selection = None;
             cx.notify();
         }
-        if edit_shortcut && key.key == "f" {
-            self.open_history(HistoryOpen::Search, 0, cx);
-        } else if modifiers == gpui::Modifiers::shift() && key.key == "pageup" {
-            self.open_history(HistoryOpen::Browse, self.visible_rows() as isize, cx);
-        } else if edit_shortcut && key.key == "v" {
+        if edit_shortcut && key.key == "v" {
             self.selection = None;
             self.paste(cx);
             cx.notify();
@@ -707,6 +731,12 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.pending_pane_click.is_some()
+            && self.session.screen_snapshot(&self.pane).is_some()
+            && let Some(cell) = self.pending_pane_click.take()
+        {
+            self.session.send_pane_click(&self.pane, cell);
+        }
         let view = cx.entity();
         let focus = self.focus.clone();
         let surface = canvas(
@@ -808,9 +838,25 @@ impl Render for TerminalView {
     }
 }
 
-pub fn preview(session: Session, pane: String) -> impl IntoElement {
+pub(crate) fn preview_cell(
+    bounds: Bounds<Pixels>,
+    point: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> CellPosition {
+    let family = cx.global::<TerminalFonts>().current().clone();
+    let font_size = cx.global::<Appearance>().terminal_size();
+    Metrics::measure(window, &family, font_size).position(bounds, point)
+}
+
+pub fn preview(
+    session: Session,
+    pane: String,
+    surface: std::rc::Rc<Cell<Option<Bounds<Pixels>>>>,
+) -> impl IntoElement {
     canvas(
         move |bounds, window, cx| {
+            surface.set(Some(bounds));
             let family = cx.global::<TerminalFonts>().current().clone();
             let font_size = cx.global::<Appearance>().terminal_size();
             let metrics = Metrics::measure(window, &family, font_size);

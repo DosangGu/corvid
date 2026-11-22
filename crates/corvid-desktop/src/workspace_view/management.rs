@@ -118,6 +118,15 @@ impl WorkspaceView {
             cx.stop_propagation();
             return;
         }
+        if key.key == "tab" {
+            if key.modifiers.shift {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if !self.alias_focus.is_focused(window) || self.management_page != Page::Connections {
             return;
         }
@@ -183,6 +192,7 @@ impl WorkspaceView {
             .id("management")
             .font(crate::desktop_font::with_symbols(".SystemUIFont"))
             .track_focus(&self.management_focus)
+            .tab_group()
             .capture_key_down(cx.listener(Self::management_key_down))
             .flex()
             .size_full()
@@ -236,8 +246,8 @@ impl WorkspaceView {
             .child(Self::terminal_font_settings(cx))
             .child(zoom)
             .child(description(concat!(
-                "Ctrl+Shift+Z expands the active pane ",
-                "and restores the split layout. These view settings apply to this window.",
+                "Use the command list to expand the active pane or restore the split layout. ",
+                "These view settings apply to this window.",
             )))
     }
 
@@ -384,21 +394,19 @@ fn description(text: &'static str) -> Div {
 }
 
 fn shortcuts() -> Div {
-    let keys = [
-        ("Ctrl+Shift+P", "Switch workspace / search"),
-        ("Ctrl+,", "Settings"),
-        ("Ctrl+Shift+N", "New workspace"),
-        ("Ctrl+Shift+T", "New tab"),
-        ("Ctrl+Shift+W", "Close active pane"),
-        ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
-        ("Ctrl+Shift+D / Ctrl+Shift+E", "Split right / down"),
-        ("Ctrl+Shift+F", "Search terminal history"),
-        ("Ctrl+Shift+Z", "Expand / restore active pane"),
-        ("Ctrl+Shift+R", "Rename tab"),
-        ("Ctrl+Shift+C / Ctrl+Shift+V", "Copy / paste"),
-        (TERMINAL_SHORTCUTS, "Adjust / reset terminal font size"),
-        ("Esc", "Close a menu or settings"),
-    ];
+    use corvid_core::navigation::WorkspaceCommand;
+    let keys = WorkspaceCommand::ALL
+        .into_iter()
+        .map(|command| (format!("Ctrl+] → {}", command.key()), command.label()))
+        .chain([
+            ("Ctrl+] → Arrow".into(), "Focus a neighboring pane"),
+            ("Ctrl+Shift+C / Ctrl+Shift+V".into(), "Copy / paste"),
+            (
+                TERMINAL_SHORTCUTS.into(),
+                "Adjust / reset terminal font size",
+            ),
+            ("Esc".into(), "Close a menu or settings"),
+        ]);
     settings_page("Shortcuts").children(keys.into_iter().map(|(key, label)| {
         div()
             .flex()

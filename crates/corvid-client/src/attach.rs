@@ -327,7 +327,8 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
         biased;
         result = shutdown => result.map(|()| 0),
         result = async {
-            let tty = Tty::enter()?;
+            let mouse = workspace_ui(&connection, pane_writer);
+            let tty = Tty::enter(mouse)?;
             timeout(COMMAND_TIMEOUT, tty.write_all(b"\x1b[?1049h\x1b[?2004h")).await??;
             let mut client = Interactive::new(connection, viewport, route, escape_delay, notification);
             client.saved_view = recorder.map(|recorder| (recorder, saved_target));
@@ -353,6 +354,16 @@ fn attach_shutdown() -> Result<impl Future<Output = Result<()>>> {
         compio::signal::windows::ctrl_break().await?;
         Ok(())
     })
+}
+
+fn workspace_ui(connection: &Connection, pane_writer: bool) -> bool {
+    pane_writer
+        && std::env::var_os("CORVID_LEGACY_TUI").is_none_or(|value| value != "1")
+        && connection
+            .session
+            .capabilities
+            .iter()
+            .any(|name| name == corvid_protocol::WORKSPACE_UI_CAPABILITY)
 }
 
 async fn connect(runtime: &Path, required: Vec<String>) -> Result<Connection> {
@@ -388,7 +399,7 @@ fn can_use_saved_focus(options: &AttachOptions) -> bool {
 }
 
 async fn confirm_recovery_shell(offer: &AttachRecovery) -> Result<bool> {
-    let tty = Tty::enter()?;
+    let tty = Tty::enter(false)?;
     let reason = offer
         .pane
         .error
@@ -476,6 +487,9 @@ async fn request_attach(
         {
             terminal_capabilities.push(capability.into());
         }
+    }
+    if workspace_ui(&connection, pane_writer) {
+        terminal_capabilities.push(corvid_protocol::WORKSPACE_UI_CAPABILITY.into());
     }
     if pane_writer
         && connection

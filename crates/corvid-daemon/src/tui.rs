@@ -62,6 +62,7 @@ const CAPABILITIES: &[&str] = &[
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     PAIR_CAPABILITY,
     STATUS_BAR_CAPABILITY,
+    corvid_protocol::WORKSPACE_UI_CAPABILITY,
     ADAPTIVE_VIEWPORT_CAPABILITY,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     RESPONSE_NOTIFICATION_CAPABILITY,
@@ -525,7 +526,49 @@ impl TuiConnection<'_> {
                 return Ok(true);
             }
             Event::Tab(command) => self.switch(Destination::Tab(command), None, true).await?,
-            Event::Close(target) => return self.close(target, None, true).await,
+            Event::Click(pane, mouse) => {
+                let destination = Location {
+                    pane,
+                    ..self.active.location
+                };
+                self.switch(Destination::Exact(destination), None, true)
+                    .await?;
+                if self.active.location == destination {
+                    self.active
+                        .terminal
+                        .action(
+                            self.active.route.client_id,
+                            None,
+                            Action::MouseClick {
+                                route: self.active.route,
+                                mouse,
+                            },
+                        )
+                        .await?;
+                }
+            }
+            Event::Close(target, reopen_tabs) => {
+                let route = self.active.route;
+                let old_workspace = self.active.location.workspace;
+                if self.close(target, None, true).await? {
+                    return Ok(true);
+                }
+                if reopen_tabs
+                    && self.active.route != route
+                    && self.active.location.workspace == old_workspace
+                {
+                    self.active
+                        .terminal
+                        .action(
+                            self.active.route.client_id,
+                            None,
+                            Action::ReopenTabs {
+                                route: self.active.route,
+                            },
+                        )
+                        .await?;
+                }
+            }
             Event::PairController => self.pair(None).await?,
             Event::DisconnectOthers => self.disconnect_others(None).await?,
         }
@@ -864,6 +907,14 @@ async fn create_destination(
             Ok(SplitAxis::Vertical) => Ok(Destination::Split(Axis::Vertical)),
             _ => Err(invalid("invalid split axis")),
         },
+        Target::SplitPane(split) => {
+            let axis = match SplitAxis::try_from(split.axis) {
+                Ok(SplitAxis::Horizontal) => Axis::Horizontal,
+                Ok(SplitAxis::Vertical) => Axis::Vertical,
+                _ => return Err(invalid("invalid split axis")),
+            };
+            Ok(Destination::SplitPane(parse_id(&split.pane_id)?, axis))
+        }
         Target::OpenPane(view) => Ok(Destination::Open(parse_selection(view)?)),
     }
 }
@@ -1120,6 +1171,11 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         resume_token,
         issue_resume_token,
         keymap: Keymap {
+            workspace_ui: pane_writer
+                && attach
+                    .terminal_capabilities
+                    .iter()
+                    .any(|cap| cap == corvid_protocol::WORKSPACE_UI_CAPABILITY),
             naming: attach
                 .terminal_capabilities
                 .iter()

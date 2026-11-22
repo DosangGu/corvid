@@ -14,14 +14,17 @@ use anyhow::{Context, Result, ensure};
 use corvid_core::Viewport;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use windows_sys::Win32::System::Console::{
-    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    FlushConsoleInputBuffer, GetConsoleMode, GetNumberOfConsoleInputEvents, INPUT_RECORD,
-    KEY_EVENT, KEY_EVENT_RECORD, ReadConsoleInputW, SetConsoleMode,
+    CONSOLE_SCREEN_BUFFER_INFO, ENABLE_EXTENDED_FLAGS, ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_OUTPUT,
+    ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    FROM_LEFT_1ST_BUTTON_PRESSED, FlushConsoleInputBuffer, GetConsoleMode,
+    GetConsoleScreenBufferInfo, GetNumberOfConsoleInputEvents, INPUT_RECORD, KEY_EVENT,
+    KEY_EVENT_RECORD, MOUSE_EVENT, MOUSE_EVENT_RECORD, ReadConsoleInputW, SetConsoleMode,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_MENU;
 
 pub(crate) struct Tty {
     output_mode: u32,
+    mouse: bool,
     input: RefCell<ConsoleInput>,
     input_handle: Arc<OwnedHandle>,
     input_wait: RefCell<Option<compio::runtime::Submit<WaitForConsoleInput>>>,
@@ -41,7 +44,7 @@ impl Tty {
         Viewport::new(cols, rows).with_context(|| format!("terminal reports {cols}×{rows} cells"))
     }
 
-    pub(crate) fn enter() -> Result<Self> {
+    pub(crate) fn enter(mouse: bool) -> Result<Self> {
         let input_handle = Arc::new(io::stdin().as_handle().try_clone_to_owned()?);
         let output = io::stdout().as_raw_handle();
         let mut output_mode = 0;
@@ -55,6 +58,7 @@ impl Tty {
         })?;
         let tty = Self {
             output_mode,
+            mouse,
             input: RefCell::new(ConsoleInput::default()),
             input_handle,
             input_wait: RefCell::new(None),
@@ -65,7 +69,12 @@ impl Tty {
         // Keep ConPTY's VT input boundaries, including bracketed paste markers.
         // Crossterm restores the original input mode when raw mode is disabled.
         checked(unsafe { GetConsoleMode(input, &mut input_mode) })?;
-        checked(unsafe { SetConsoleMode(input, input_mode | ENABLE_VIRTUAL_TERMINAL_INPUT) })?;
+        input_mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+        if mouse {
+            input_mode =
+                (input_mode | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT) & !ENABLE_QUICK_EDIT_MODE;
+        }
+        checked(unsafe { SetConsoleMode(input, input_mode) })?;
         tty.discard_input()?;
         Ok(tty)
     }
@@ -128,12 +137,20 @@ impl Tty {
             let mut read = 0;
             // A record is available and both output pointers are writable.
             checked(unsafe { ReadConsoleInputW(handle, &mut record, 1, &mut read) })?;
-            if read == 0 || record.EventType != KEY_EVENT as u16 {
+            if read == 0 {
                 continue;
             }
-            // EventType identifies the active union member. VT input arrives as
-            // UTF-16 key records, including literal ESC and control characters.
-            input.key(unsafe { record.Event.KeyEvent });
+            // EventType identifies the active union member.
+            if record.EventType == KEY_EVENT as u16 {
+                input.key(unsafe { record.Event.KeyEvent });
+            } else if self.mouse && record.EventType == MOUSE_EVENT as u16 {
+                let mut info = CONSOLE_SCREEN_BUFFER_INFO::default();
+                if unsafe { GetConsoleScreenBufferInfo(io::stdout().as_raw_handle(), &mut info) }
+                    != 0
+                {
+                    input.mouse(unsafe { record.Event.MouseEvent }, info);
+                }
+            }
         }
         if count == 0 {
             return Err(ErrorKind::WouldBlock.into());
@@ -171,7 +188,9 @@ unsafe impl compio::driver::OpCode for WaitForConsoleInput {
 impl Drop for Tty {
     fn drop(&mut self) {
         let mut output = io::stdout().lock();
-        let _ = output.write_all(b"\x1b[?2004l\x1b[?1l\x1b>\x1b[0m\x1b[?25h\x1b[r\x1b[?1049l");
+        let _ = output.write_all(
+            b"\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?1l\x1b>\x1b[0m\x1b[?25h\x1b[r\x1b[?1049l",
+        );
         let _ = output.flush();
         // The output handle remains owned by this process.
         let _ = unsafe { SetConsoleMode(io::stdout().as_raw_handle(), self.output_mode) };
@@ -183,9 +202,26 @@ impl Drop for Tty {
 struct ConsoleInput {
     pending: VecDeque<u8>,
     surrogate: Option<u16>,
+    left_down: bool,
 }
 
 impl ConsoleInput {
+    fn mouse(&mut self, mouse: MOUSE_EVENT_RECORD, info: CONSOLE_SCREEN_BUFFER_INFO) {
+        if mouse.dwEventFlags != 0 {
+            return;
+        }
+        let pressed = mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED != 0;
+        if pressed == std::mem::replace(&mut self.left_down, pressed) {
+            return;
+        }
+        let x = i32::from(mouse.dwMousePosition.X) - i32::from(info.srWindow.Left) + 1;
+        let y = i32::from(mouse.dwMousePosition.Y) - i32::from(info.srWindow.Top) + 1;
+        if x > 0 && y > 0 {
+            let end = if pressed { 'M' } else { 'm' };
+            self.pending.extend(format!("\x1b[<0;{x};{y}{end}").bytes());
+        }
+    }
+
     fn key(&mut self, key: KEY_EVENT_RECORD) {
         // ReadConsoleInputW supplies the Unicode member of this union.
         let unit = unsafe { key.uChar.UnicodeChar };

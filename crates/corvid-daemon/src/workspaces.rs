@@ -121,6 +121,7 @@ pub(crate) enum Destination {
     CreateWorkspace(String, Option<Vec<u8>>),
     CreateTab(String),
     Split(Axis),
+    SplitPane(Uuid, Axis),
     Tab(TabCommand),
 }
 
@@ -183,6 +184,8 @@ struct Client {
     keymap: Keymap,
     resume_token: Option<Uuid>,
     view: Option<ClientView>,
+    tabs: HashMap<Uuid, Location>,
+    workspaces: HashMap<Uuid, Location>,
     focuses: mpsc::Sender<FocusDispatch>,
     disconnect: Option<oneshot::Sender<()>>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -672,6 +675,8 @@ impl Workspaces {
                                 keymap: target.keymap,
                                 resume_token,
                                 view: None,
+                                tabs: HashMap::new(),
+                                workspaces: HashMap::new(),
                                 focuses,
                                 disconnect,
                                 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1186,6 +1191,21 @@ fn terminal_host_ended(error: &anyhow::Error) -> bool {
 }
 
 impl Registry {
+    pub(crate) fn preview_handles(&self, location: Location) -> Vec<(Uuid, TerminalHandle)> {
+        self.metadata
+            .layout()
+            .panes(location.workspace, location.tab)
+            .into_iter()
+            .filter(|pane| *pane != location)
+            .filter_map(|pane| {
+                let terminal = &self.slots.get(&pane.pane)?.terminal;
+                terminal
+                    .has_live_terminal()
+                    .then(|| (pane.pane, terminal.clone()))
+            })
+            .collect()
+    }
+
     fn has_live_at(&self, location: Location) -> bool {
         self.slots
             .get(&location.pane)
@@ -1354,6 +1374,17 @@ impl Registry {
                 && let Some(slot) = self.slots.get_mut(&active.location.pane)
             {
                 slot.resume_token = client.resume_token.map(|token| (route.terminal_id, token));
+            }
+            if view.is_some() {
+                let layout = self.metadata.layout();
+                client.tabs.retain(|_, location| layout.contains(*location));
+                client
+                    .workspaces
+                    .retain(|_, location| layout.contains(*location));
+                client.tabs.insert(active.location.tab, active.location);
+                client
+                    .workspaces
+                    .insert(active.location.workspace, active.location);
             }
             client.view = view;
             self.pane_claims.retain(|pane, claim| {
@@ -1708,6 +1739,51 @@ fn resolve_switch(
                 };
             Ok(Some((location, launch)))
         }
+        Destination::Tab(TabCommand::Pane(pane)) => resolve_switch(
+            registry,
+            layout,
+            old,
+            Destination::Exact(Location {
+                pane,
+                ..old.location
+            }),
+            checked,
+        ),
+        Destination::Tab(TabCommand::SplitAt(pane, axis)) => resolve_switch(
+            registry,
+            layout,
+            old,
+            Destination::SplitPane(pane, axis),
+            checked,
+        ),
+        Destination::Tab(TabCommand::Workspace(workspace)) => {
+            let Some(target) = layout.workspaces.iter().find(|item| item.id == workspace) else {
+                return Err(target_gone().into());
+            };
+            let client = old.route.client_id;
+            let preferred = registry.clients[&client]
+                .workspaces
+                .get(&workspace)
+                .copied();
+            let available = |pane| {
+                layout.contains(pane)
+                    && registry.has_live_at(pane)
+                    && registry.check_pane_available(client, pane).is_ok()
+            };
+            let location = preferred
+                .filter(|pane| available(*pane))
+                .or_else(|| {
+                    target
+                        .tabs
+                        .iter()
+                        .flat_map(|tab| layout.panes(workspace, tab.id))
+                        .find(|pane| available(*pane))
+                })
+                .ok_or_else(|| {
+                    ProtocolFault::new("NoTerminal", "workspace has no available terminal")
+                })?;
+            Ok(Some((location, None)))
+        }
         Destination::Tab(TabCommand::Create) => {
             let workspace = layout
                 .workspaces
@@ -1759,6 +1835,13 @@ fn resolve_switch(
                 }
                 Destination::CreateTab(label) => layout.add_tab(old.location.workspace, label),
                 Destination::Split(axis) => layout.split_pane(old.location, axis),
+                Destination::SplitPane(pane, axis) => layout.split_pane(
+                    Location {
+                        pane,
+                        ..old.location
+                    },
+                    axis,
+                ),
                 _ => unreachable!("all other destinations have already been handled"),
             }
             .map_err(|_| invalid_layout())?;
@@ -1787,9 +1870,22 @@ fn select_tab(
     let old = active.location;
     let client = active.route.client_id;
     let select = |tab| {
-        layout.panes(old.workspace, tab).into_iter().find(|pane| {
-            registry.has_live_at(*pane) && registry.check_pane_available(client, *pane).is_ok()
-        })
+        let available = |pane| {
+            layout.contains(pane)
+                && registry.has_live_at(pane)
+                && registry.check_pane_available(client, pane).is_ok()
+        };
+        registry.clients[&client]
+            .tabs
+            .get(&tab)
+            .copied()
+            .filter(|pane| available(*pane))
+            .or_else(|| {
+                layout
+                    .panes(old.workspace, tab)
+                    .into_iter()
+                    .find(|pane| available(*pane))
+            })
     };
     let workspace = layout
         .workspaces
@@ -1804,7 +1900,12 @@ fn select_tab(
             return select(tab).or_else(|| registry.live_tab(layout, old.workspace, tab));
         }
         TabCommand::Next | TabCommand::Previous => {}
-        TabCommand::Create | TabCommand::Split(_) | TabCommand::NextPane => return None,
+        TabCommand::Create
+        | TabCommand::Split(_)
+        | TabCommand::SplitAt(_, _)
+        | TabCommand::NextPane
+        | TabCommand::Pane(_)
+        | TabCommand::Workspace(_) => return None,
     }
 
     let index = workspace.tabs.iter().position(|tab| tab.id == old.tab)?;

@@ -28,7 +28,7 @@ impl Tty {
         Viewport::new(cols, rows).with_context(|| format!("terminal reports {cols}×{rows} cells"))
     }
 
-    pub(crate) fn enter() -> Result<Self> {
+    pub(crate) fn enter(_mouse: bool) -> Result<Self> {
         // Reopen the devices so nonblocking mode does not affect the inherited descriptors.
         #[cfg(target_os = "linux")]
         let (input_path, output_path) = ("/proc/self/fd/0".into(), "/proc/self/fd/1".into());
@@ -107,7 +107,9 @@ impl Tty {
 impl Drop for Tty {
     fn drop(&mut self) {
         let mut output = self.output_file();
-        let _ = output.write_all(b"\x1b[?2004l\x1b[?1l\x1b>\x1b[0m\x1b[?25h\x1b[r\x1b[?1049l");
+        let _ = output.write_all(
+            b"\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?1l\x1b>\x1b[0m\x1b[?25h\x1b[r\x1b[?1049l",
+        );
         let _ = disable_raw_mode();
     }
 }

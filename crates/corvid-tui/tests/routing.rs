@@ -3368,9 +3368,12 @@ fn flooding_child(progress: &Path) -> LaunchCommand {
     let mut argv = shell(
         r#"
         stty raw -echo
+        # Flood a scroll region below the marker so the next burst cannot erase
+        # it between render ticks. Query coordinates still refer to the full screen.
+        printf '\033[6;24r'
         i=0
         while :; do
-            printf '%32768s\033[3;5H\033[6n' ''
+            printf '\033[6;1H%32768s\033[3;5H\033[6n' ''
             reply=$(head -c 6)
             [ "$reply" = "$(printf '\033[3;5R')" ] || exit 42
             i=$((i+1))

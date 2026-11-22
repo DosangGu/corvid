@@ -91,6 +91,18 @@ def paste_child():
     return 0
 
 
+def mouse_child(output):
+    attributes = termios.tcgetattr(0)
+    try:
+        tty.setraw(0)
+        os.write(1, b"\x1b[?1000h\x1b[?1006hEDITOR-READY")
+        output.write_bytes(read_exact(18))
+        os.write(1, b"\r\nAPP-MOUSE-RECEIVED")
+    finally:
+        os.write(1, b"\x1b[?1000l\x1b[?1006l")
+        termios.tcsetattr(0, termios.TCSANOW, attributes)
+
+
 class OuterTerminal:
     def __init__(self, command, cols=80, rows=24, env=None):
         self.master, self.slave = pty.openpty()
@@ -100,6 +112,7 @@ class OuterTerminal:
         env = dict(os.environ if env is None else env)
         # Dedicated monitor/SSH fixtures exercise background monitoring and clean it up.
         env.setdefault("CORVID_AGENT_MONITOR", "0")
+        env.setdefault("CORVID_LEGACY_TUI", "1")
         # Crossterm must measure this PTY, not an inherited terminal's dimensions.
         env.pop("COLUMNS", None)
         env.pop("LINES", None)
@@ -788,6 +801,87 @@ def verify_shell_agent_notifications(
         stop(daemon)
 
 
+def verify_workspace_ui(command, directory):
+    env = os.environ | {"CORVID_LEGACY_TUI": "0"}
+    mouse_marker = directory / "app-mouse-input"
+
+    def send_line(terminal, text):
+        # Separate the terminal's input echo from output and wait for the side effect.
+        terminal.send(text.encode() + b"\r")
+
+    launch = [*command, "attach", "--new-workspace", "Workspace UI"]
+    with OuterTerminal(launch, cols=100, rows=30, env=env) as terminal:
+        terminal.expect(rb"Ctrl\+\] commands")
+        terminal.send(b"\x1d?")
+        terminal.expect(b"CORVID COMMANDS")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        time.sleep(0.15)
+        terminal.expect(rb"Ctrl\+\] commands")
+        send_line(terminal, "export CORVID_TEST_PANE=left; printf 'left-%s\\n' PANE")
+        terminal.expect(b"left-PANE")
+
+        terminal.send(b"\x1dpr")
+        terminal.expect(b"Pane 2")
+        send_line(terminal, "export CORVID_TEST_PANE=top; printf 'top-%s\\n' PANE")
+        terminal.expect(b"top-PANE")
+        terminal.send(b"\x1dpd")
+        terminal.expect(b"Pane 3")
+        send_line(terminal, "export CORVID_TEST_PANE=bottom; printf 'bottom-%s\\n' PANE")
+        terminal.expect(b"bottom-PANE")
+
+        # Mouse coordinates are relative to the outer screen. This is inside the left pane.
+        terminal.output.clear()
+        terminal.send(b"\x1b[<0;4;5M")
+        terminal.expect(rb"\x1b\[2;1H\x1b\[0;1;36m" + "● ".encode())
+        send_line(terminal, 'printf "FOCUSED-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"FOCUSED-left")
+
+        terminal.output.clear()
+        terminal.send(b"\x1d\x1b[C")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        send_line(terminal, shlex.join((sys.executable, __file__, "--mouse-child", str(mouse_marker))))
+        terminal.expect(b"EDITOR-READY")
+        terminal.output.clear()
+        terminal.send(b"\x1b[<0;5;6M")
+        terminal.expect(rb"\x1b\[2;1H\x1b\[0;1;36m" + "● ".encode())
+        terminal.send(b"\x1b[<0;55;6M")
+        terminal.expect(b"APP-MOUSE-RECEIVED")
+        assert mouse_marker.read_bytes() == b"\x1b[<0;5;4M\x1b[<0;5;4m"
+        terminal.send(b"\x1dd")
+        terminal.wait(0)
+
+    with OuterTerminal([*command, "attach"], cols=100, rows=30, env=env) as terminal:
+        terminal.expect(b"left-PANE")
+        terminal.expect(b"top-PANE")
+        terminal.expect(b"bottom-PANE")
+        terminal.send(b"\x1dt")
+        terminal.expect(b"New tab")
+        terminal.send(b"\t\r")
+        terminal.expect(rb"\[2 ")
+        terminal.output.clear()
+        terminal.send(b"\x1d[")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        current_tab = terminal.expect(rb"\x1b\[1;(\d+)H\x1b\[0;1;36m\[1 ").group(1)
+        terminal.send(b"\x1d]")
+        terminal.expect(rb"\[2 ")
+        terminal.output.clear()
+        terminal.send(b"\x1b[<0;" + current_tab + b";1M")
+        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        terminal.resize(20, 6)
+        terminal.expect(rb"\x1b\[1;1H")
+        terminal.resize(100, 30)
+        terminal.send(b"\x1dw")
+        terminal.expect(b"Workspaces")
+        terminal.send(b"\x1dd")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        time.sleep(0.15)
+        terminal.expect(rb"Ctrl\+\] commands")
+        terminal.send(b"\x1dd")
+        terminal.wait(0)
+
+
 def run(binary, *, tty_only=False):
     binary = str(Path(binary).resolve())
     os.environ["TERM"] = "xterm-256color"
@@ -813,6 +907,7 @@ def run(binary, *, tty_only=False):
             verify_paste(command)
             verify_tabs(command, directory)
             verify_tab_picker(command, directory)
+            verify_workspace_ui(command, directory)
         finally:
             stop(daemon)
         verify_resume(binary, directory)
@@ -837,6 +932,8 @@ def run(binary, *, tty_only=False):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--mouse-child"]:
+        sys.exit(mouse_child(Path(sys.argv[2])))
     if sys.argv[1:2] == ["--child"]:
         sys.exit(child(Path(sys.argv[2])))
     if sys.argv[1:2] == ["--paste-child"]:

@@ -62,9 +62,8 @@ and names, `corvid attach review` to open an existing workspace, or
 Press
 <kbd>Ctrl</kbd>+<kbd>]</kbd> to see the available commands. To detach, press
 <kbd>Ctrl</kbd>+<kbd>]</kbd>, then <kbd>d</kbd>. Run Corvid again to return to the workspace.
-To close the current pane, tab, or session and stop its shells, press
-<kbd>Ctrl</kbd>+<kbd>]</kbd> followed by uppercase <kbd>X</kbd>, <kbd>T</kbd>,
-or <kbd>S</kbd>, respectively.
+Use `Ctrl+]` then `w` to switch workspaces, `t` to manage tabs, or `p`
+to select, split or close a pane. Use `Ctrl+]` then `?` to search commands.
 See the [daemon guide](docs/02_daemon_foundation.md) for session controls and
 systemd setup.
 

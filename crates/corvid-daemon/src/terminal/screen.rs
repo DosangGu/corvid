@@ -341,7 +341,7 @@ impl TerminalScreen {
     }
 }
 
-fn is_bidi_control(ch: char) -> bool {
+pub(super) fn is_bidi_control(ch: char) -> bool {
     matches!(ch, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 

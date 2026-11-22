@@ -31,7 +31,7 @@ vt100.workspace = true
 vte.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-nix = { workspace = true, features = ["fs", "user"] }
+nix = { workspace = true, features = ["fs", "hostname", "user"] }
 semver.workspace = true
 
 [target.'cfg(windows)'.dependencies]
