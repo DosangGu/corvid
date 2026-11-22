@@ -1,0 +1,46 @@
+[package]
+name = "corvid-agent-deck"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Agent activity and focus controls for Corvid"
+publish = ["crates-io"]
+
+[dependencies]
+anyhow.workspace = true
+async-process.workspace = true
+corvid-async.workspace = true
+corvid-client.workspace = true
+corvid-companion.workspace = true
+corvid-presentation.workspace = true
+corvid-protocol = { workspace = true, features = ["compio", "borrowed-io"] }
+corvid-update.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+compio.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+
+[dev-dependencies]
+compio.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

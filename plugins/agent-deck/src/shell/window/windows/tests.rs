@@ -239,7 +239,7 @@ fn native_window_tracks_the_tray_corner_after_resize() {
                 appears_transparent: true,
                 ..Default::default()
             }),
-            window_bounds: Some(WindowBounds::centered(size(px(392.), px(256.)), cx)),
+            window_bounds: Some(WindowBounds::centered(None, size(px(392.), px(256.)), cx)),
             focus: false,
             show: false,
             ..Default::default()

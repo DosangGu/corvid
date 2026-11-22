@@ -55,11 +55,11 @@ impl WorkspaceView {
         // GPUI draws a new window before open_window returns. Defer creation so
         // its first render can read the owner after this update has finished.
         cx.defer(move |cx| {
-            if owner
-                .read(cx)
-                .management_window
-                .is_some_and(|handle| handle.update(cx, |_, window, _| window.activate()).is_ok())
-            {
+            if owner.read(cx).management_window.is_some_and(|handle| {
+                handle
+                    .update(cx, |_, window, _| window.activate_window())
+                    .is_ok()
+            }) {
                 return;
             }
             let options = WindowOptions {
@@ -111,7 +111,7 @@ impl WorkspaceView {
             let terminal = self.terminal_window;
             cx.defer(move |cx| {
                 let _ = terminal.update(cx, |view, window, cx| {
-                    window.activate();
+                    window.activate_window();
                     view.focus_terminal(window, cx);
                 });
             });

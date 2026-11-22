@@ -23,8 +23,7 @@ pub(crate) fn run(session: Session, preferences: shell::Window) {
     let application = gpui_platform::linux(gpui::WindowingModes::X11);
     #[cfg(not(target_os = "linux"))]
     let application = gpui_platform::application();
-
-    let initialize = move |cx: &mut gpui::App| {
+    application.with_assets(DeckAssets).run(move |cx| {
         shell::prepare();
         #[cfg(target_os = "macos")]
         cx.on_app_quit(|_| {
@@ -74,12 +73,5 @@ pub(crate) fn run(session: Session, preferences: shell::Window) {
             }
         })
         .detach();
-    };
-    application.with_assets(DeckAssets).run(move |cx| {
-        #[cfg(target_os = "macos")]
-        // GPUI CE 0.3.0 holds the platform lock during the launch callback.
-        cx.spawn(async move |cx| cx.update(initialize)).detach();
-        #[cfg(not(target_os = "macos"))]
-        initialize(cx);
     });
 }

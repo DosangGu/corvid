@@ -35,18 +35,20 @@ corvid-tui.workspace = true
 corvid-update.workspace = true
 glob.workspace = true
 hex.workspace = true
+icu_properties.workspace = true
 qwertty-term-input.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+unicode-segmentation.workspace = true
 unicode-width.workspace = true
 url.workspace = true
 uuid.workspace = true
 vt100.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-gpui = { workspace = true, features = ["windows-manifest"] }
+gpui = { workspace = true }
 gpui_platform = { workspace = true }
 raw-window-handle.workspace = true
 windows-sys = { workspace = true, features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
@@ -64,7 +66,6 @@ embed-resource.workspace = true
 
 [target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dev-dependencies]
 corvid-daemon.workspace = true
-gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

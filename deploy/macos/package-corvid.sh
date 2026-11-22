@@ -13,7 +13,7 @@ build=${CARGO_TARGET_DIR:-target}
 release="$build/$target/release"
 runtime="$build/runtime/$target"
 output="$build/macos-dist"
-cargo build --locked --release --target "$target" -p corvid-tui -p corvid-desktop -p corvid-agent-deck
+cargo build --locked --release --target "$target" -p corvid-tui -p corvid-desktop -p corvid-agent-deck-ui
 python3 deploy/package.py runtime --target "$target" --binary "$release/corvid" --output "$runtime"
 python3 deploy/package.py package --product tui --target "$target" --runtime "$runtime" --build "$release" --output "$output"
 python3 deploy/package.py package --product desktop --target "$target" --runtime "$runtime" --linux-runtime "$1" --windows-runtime "$2" --linux-arm64-runtime "$3" --windows-arm64-runtime "$4" --macos-runtime "$runtime" --build "$release" --output "$output"

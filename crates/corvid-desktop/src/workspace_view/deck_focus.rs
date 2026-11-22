@@ -167,7 +167,7 @@ fn agent_view<'a>(ui: &'a Ui, run: &PresentedRunKey) -> Option<&'a ViewSelection
 
 #[cfg(target_os = "linux")]
 fn activate(window: &Window, _: &Context<WorkspaceView>, reply: FocusReply) {
-    window.activate();
+    window.activate_window();
     let _ = reply.send(Ok(()));
 }
 

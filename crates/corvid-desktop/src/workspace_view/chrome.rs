@@ -225,15 +225,12 @@ impl WorkspaceView {
                 .flex_none()
                 .max_w(ui_px(250.))
                 .child(
-                    self.title_renderer
-                        .button(
-                            button_frame("workspaces", self.switcher_open).max_w(ui_px(250.)),
-                            title.clone(),
-                            Some("▾"),
-                        )
-                        .on_click(
-                            cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx)),
-                        ),
+                    title::button(
+                        button_frame("workspaces", self.switcher_open).max_w(ui_px(250.)),
+                        title.clone(),
+                        Some("▾"),
+                    )
+                    .on_click(cx.listener(|view, _, window, cx| view.toggle_switcher(window, cx))),
                 )
                 .when(self.switcher_open, |trigger| {
                     let position = div().absolute().top_full().mt(ui_px(4.));
@@ -360,16 +357,17 @@ impl WorkspaceView {
                     .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                     .max_w(ui_px(240.))
                     .child(
-                        self.title_renderer
-                            .button(
-                                button_frame("select-tab", active).min_w_0().flex_shrink_1(),
-                                tab.label.clone(),
-                                attention.then_some("!"),
-                            )
-                            .on_click(cx.listener(move |view, _, window, cx| {
+                        title::button(
+                            button_frame("select-tab", active).min_w_0().flex_shrink(1.),
+                            tab.label.clone(),
+                            attention.then_some("!"),
+                        )
+                        .on_click(cx.listener(
+                            move |view, _, window, cx| {
                                 view.dismiss_overlay(window, cx);
                                 view.open_pane(target.clone(), open, window, cx);
-                            })),
+                            },
+                        )),
                     )
                     .when(ui.can_close(), |row| {
                         row.child(Self::close_button(

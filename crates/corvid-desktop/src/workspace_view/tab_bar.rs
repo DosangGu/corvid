@@ -79,7 +79,7 @@ impl TabBar {
             .when(!TABS_IN_TITLEBAR, |strip| strip.gap(ui_px(3.)))
             .overflow_x_scroll()
             .track_scroll(&self.scroll)
-            .on_scroll_wheel(move |_, _, _| {
+            .on_scroll(move |_, _, _| {
                 if scroll.max_offset().x > SCROLL_EPSILON {
                     follow_selection.set(false);
                 }

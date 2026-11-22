@@ -25,10 +25,6 @@ impl WheelGesture {
         route: (u64, WheelTarget),
         delta: f32,
     ) -> Option<isize> {
-        if phase == TouchPhase::Cancelled {
-            *self = Self::default();
-            return None;
-        }
         if matches!(phase, TouchPhase::Started)
             || !self.touching
                 && self

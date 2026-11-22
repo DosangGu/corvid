@@ -1047,7 +1047,7 @@ mod tests {
         }
     }
 
-    fn press(draft: &mut Draft, key: &str) {
+    fn press(draft: &mut Draft, key: &'static str) {
         assert!(draft.folder_key(&Keystroke::parse(key).unwrap()));
     }
 

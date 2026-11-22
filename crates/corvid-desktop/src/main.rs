@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     let ready_directory = options.update_ready_directory;
 
     #[cfg(target_os = "macos")]
-    // No GPUI or Tokio threads have been started at this point.
+    // No GPUI threads have been started at this point.
     unsafe {
         macos::initialize_environment()
     };
@@ -159,7 +159,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             cx.activate(true);
         });
     }
-    let initialize = move |cx: &mut gpui::App| {
+    application.run(move |cx| {
         #[cfg(target_os = "macos")]
         macos::menus(&app_windows, cx);
         #[cfg(target_os = "linux")]
@@ -178,13 +178,6 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             eprintln!("Could not listen for Agent Deck: {error:#}");
         }
         cx.activate(true);
-    };
-    application.run(move |cx| {
-        #[cfg(target_os = "macos")]
-        // GPUI CE 0.3.0 holds the platform lock during the launch callback.
-        cx.spawn(async move |cx| cx.update(initialize)).detach();
-        #[cfg(not(target_os = "macos"))]
-        initialize(cx);
     });
 
     let pending = windows.start_shutdown();

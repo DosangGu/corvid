@@ -9,8 +9,8 @@ use corvid_async::oneshot;
 use gpui::{
     App, Bounds, ClipboardItem, Context, FocusHandle, HitboxBehavior, InputHandler, IntoElement,
     KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollWheelEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div,
-    prelude::*, rgb,
+    Pixels, Point, ScrollEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div, prelude::*,
+    rgb,
 };
 use vt100::Screen;
 
@@ -386,7 +386,7 @@ impl TerminalView {
         }
     }
 
-    fn paste_clipboard(&self, cx: &mut Context<Self>) {
+    fn paste(&self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -500,7 +500,7 @@ impl TerminalView {
         })
     }
 
-    fn scroll_history(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn scroll_history(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
@@ -662,7 +662,7 @@ impl TerminalView {
             self.open_history(HistoryOpen::Browse, self.visible_rows() as isize, cx);
         } else if edit_shortcut && key.key == "v" {
             self.selection = None;
-            self.paste_clipboard(cx);
+            self.paste(cx);
             cx.notify();
         } else if edit_shortcut && key.key == "c" {
             self.copy_visible(cx);
@@ -751,7 +751,6 @@ impl Render for TerminalView {
                     &focus,
                     TerminalInput {
                         view: view.downgrade(),
-                        element_bounds: bounds,
                     },
                     cx,
                 );
@@ -781,7 +780,7 @@ impl Render for TerminalView {
                     view.clear_link_hover(cx);
                 }
             }))
-            .on_scroll_wheel(cx.listener(Self::scroll_history))
+            .on_scroll(cx.listener(Self::scroll_history))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::release_selection))
             .on_mouse_up_out(
                 MouseButton::Left,
@@ -832,7 +831,6 @@ pub fn preview(session: Session, pane: String) -> impl IntoElement {
 // The terminal view belongs to the workspace and can be released before that cleanup finishes.
 struct TerminalInput {
     view: WeakEntity<TerminalView>,
-    element_bounds: Bounds<Pixels>,
 }
 
 impl InputHandler for TerminalInput {
@@ -943,14 +941,6 @@ impl InputHandler for TerminalInput {
         _: &mut App,
     ) -> Option<usize> {
         None
-    }
-
-    fn element_bounds(&mut self, _: &mut Window, _: &mut App) -> Option<Bounds<Pixels>> {
-        self.view.upgrade().map(|_| self.element_bounds)
-    }
-
-    fn accepts_text_input(&mut self, _: &mut Window, _: &mut App) -> bool {
-        self.view.upgrade().is_some()
     }
 }
 

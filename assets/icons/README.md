@@ -10,7 +10,7 @@ See the [artwork preview](../../docs/images/app-icon-refinement.png).
 Regenerate the application and Agent Deck tray assets from the workspace root:
 
 ```sh
-cargo run -p corvid-agent-deck --example render-icons
+cargo run -p corvid-agent-deck-ui --example render-icons
 ```
 
 The generator also updates the copies in the TUI, updater, and Agent Deck

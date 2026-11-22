@@ -228,7 +228,6 @@ pub struct WorkspaceView {
     terminal: Option<Entity<TerminalView>>,
     selected: Option<ViewSelection>,
     tab_bar: tab_bar::TabBar,
-    title_renderer: title::TitleRenderer,
     preferred_tabs: HashMap<String, String>,
     preferred_panes: HashMap<String, String>,
     updates: Option<Task<()>>,
@@ -307,7 +306,6 @@ impl WorkspaceView {
             terminal: None,
             selected: None,
             tab_bar: tab_bar::TabBar::default(),
-            title_renderer: title::TitleRenderer::default(),
             preferred_tabs: HashMap::new(),
             preferred_panes: HashMap::new(),
             updates: None,
@@ -441,7 +439,7 @@ impl WorkspaceView {
             let terminal = self.terminal_window;
             cx.defer(move |cx| {
                 let _ = terminal.update(cx, |view, window, cx| {
-                    window.activate();
+                    window.activate_window();
                     view.switch_to(destination, target, window, cx);
                 });
             });
