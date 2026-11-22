@@ -13,6 +13,7 @@ inputs match the paths in their YAML. A documentation-only PR runs Basics.
 | **Checks / TUI** | Linux client and companion tests, TUI crate tests, and a real TUI process exchanging IPC messages with a scripted peer in a PTY. |
 | **Checks / Desktop** | Linux Desktop unit tests and scripted IPC tests for inventory, render state, and attach negotiation. |
 | **Checks / Agent Deck** | Linux Agent Deck, Deck core, and presentation tests. |
+| **Checks / UI** | Desktop tab input, Unicode paste, and Agent Deck window smoke tests on all five release targets when the UI test harness changes. Also supports manual runs by platform and case. |
 | **Checks / Packaging** | Shared icons, manifest and packaging fixtures, and installer shell syntax. |
 
 Workspace manifest, lockfile, and Rust toolchain changes run the component
@@ -31,7 +32,8 @@ Cargo source packages on Linux, Windows, and macOS.
 The workflows use `ubuntu-latest`, `windows-latest`, and `macos-latest` for the
 default images. Linux and Windows ARM64 use `ubuntu-26.04-arm` and
 `windows-11-arm`. Release publication builds the assets from the tag with
-the same targets. See [build and publish](05_release_distribution.md#build-and-publish).
+the same targets. Each installer job must pass the packaged UI smoke suite
+before GitHub Release publication. See [build and publish](05_release_distribution.md#build-and-publish).
 
 | Platform | Automated behavior |
 | --- | --- |
@@ -39,12 +41,13 @@ the same targets. See [build and publish](05_release_distribution.md#build-and-p
 | Windows | `windows_daemon.rs` runs real ConPTY sessions and private named pipes, including input/paste isolation, tab naming, detach/resume, multiple writers, provider observations, and daemon handoff. |
 | Linux and macOS | The terminal spike and `interactive.py --tty-only` exercise real PTYs: fragmented UTF-8, escape sequences, bracketed paste, terminal queries, resize, Ctrl-C, exit status, TTY restoration, pairing, tabs, and reattachment to the same child. Linux runs the full interactive suite instead of the TTY-only subset. |
 | Linux | The full interactive suite also checks automatic daemon startup, shell continuity across replacement, and synthetic agent notifications. The loopback OpenSSH fixture checks abrupt disconnects, companion resynchronization, and same-PTY reattachment under a transient systemd user service. |
+| All five Desktop targets | The packaged UI smoke suite opens two tabs, pastes synthetic Unicode through the system clipboard, checks the receiving shell and first-tab continuity, and opens an Agent Deck window. |
+| Windows Deck | The notification-area test hides and reopens the Deck, then verifies its compact, expanded, and pinned window state. |
 | Linux Desktop | Xvfb/Openbox tests drive the real application with keyboard and clipboard events. They check Unicode paste, tab creation and selection, independent windows, the new-window menu, settings, close/quit/relaunch, saved window count, and retained shell variables. |
 
-The Python integration drivers are explicit workflow steps; `cargo test` alone
-does not run them. They have ten-minute step limits. The UI test checks observable
-state and exact synthetic output instead of comparing font-dependent pixels.
-It uses a private home/state directory, temporary daemon, and separate X11 display.
+The Python integration drivers run as explicit workflow steps. UI tests check
+observable state and exact synthetic output using a private profile and a
+temporary daemon. Linux creates a separate X11 display for each case.
 The SSH fixture generates temporary keys and pins its loopback server's host key;
 it does not need repository secrets or an external host.
 
@@ -67,8 +70,7 @@ workspace actions). They do not establish every acceptance case in those rows.
 ## Additional packaging checks
 
 Package integration tests installation, corruption rejection, version switching,
-and daemon lifecycle on all three platforms. Linux repeats the Desktop UI suite
-against the archive. Windows validates executable icons and Setup
+and daemon lifecycle on all three platforms. Windows validates executable icons and Setup
 install/upgrade/uninstall. macOS validates the DMG, signatures, architectures,
 bundled runtimes, and a real Desktop window.
 
@@ -87,15 +89,39 @@ and provider cases. `ssh_lifecycle.py target/debug/corvid` also needs `sshd`,
 `ssh-keygen`, `protoc`, `tic`, and a working `systemctl --user` session. The CI job
 starts the runner's user manager before invoking that fixture.
 
-For Linux UI tests, install the Desktop build dependencies plus `xvfb`, `xauth`,
-`x11-utils`, `xdotool`, `xclip`, `openbox`, and Mesa Vulkan drivers:
+### Desktop and Agent Deck UI
+
+Build the executables and run the smoke suite from the checkout. Use `python3`
+where the platform installs Python under that name.
 
 ```sh
 cargo build --locked -p corvid-tui -p corvid-desktop -p corvid-agent-deck-ui
-xvfb-run -a python3 deploy/test_desktop.py --build target/debug
-# Or validate an extracted release workflow's archive directory:
-xvfb-run -a python3 deploy/test_desktop.py target/dist
+python tests/ui/run.py --list
+python tests/ui/run.py --build target/debug --suite smoke
+python tests/ui/run.py --build target/debug --case desktop-paste
+python tests/ui/run.py --assets target/dist --suite smoke
 ```
+
+`--assets` takes a release asset directory containing the Linux Desktop archive,
+Windows Desktop ZIP, or macOS DMG for the current platform. `--suite full`
+includes Linux window and Deck focus tests for a build, the Windows Deck tray
+test, and the macOS DMG verification when a DMG is supplied. The Windows tray
+case compiles the Rust integration test and uses the selected Deck executable.
+
+- Linux needs the Desktop build dependencies plus Xvfb, xauth, X11 utilities,
+  xdotool, xclip, Openbox, scrot, and a Vulkan driver such as Mesa. The Deck
+  focus case also needs OpenSSH client and server and a writable test home.
+- Windows needs an unlocked interactive desktop. macOS needs a logged-in GUI
+  session, Xcode command line tools, and Accessibility permission to post key
+  events. Use a US input source on both platforms for the navigation shortcuts.
+  The tests use the system clipboard and foreground window. Use a dedicated
+  session if other applications need those resources.
+
+In GitHub Actions, run **Checks / UI** to select a platform and optional case.
+Failures report the scenario in the job log and save available screenshots and
+process logs under `target/ui-tests/`.
+
+### SSH title synchronization
 
 To run the Linux Desktop title test over isolated loopback SSH, install OpenSSH
 client/server and ensure `/run/sshd` exists, then run:
@@ -114,8 +140,6 @@ packet loss, and the user's SSH configuration require separate environment check
 
 ## Remaining device qualification
 
-Windows and macOS do not yet run the Linux Desktop keyboard/clipboard scenario.
-Their native Rust tests and macOS window smoke test are narrower evidence.
 WSL installation/reconnection still requires the explicitly ignored isolated-WSL
 fixture. Real reboot and last-login tests need dedicated machines/accounts.
 IME composition, accessibility permissions, notifications, multiple displays,

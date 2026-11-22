@@ -31,7 +31,9 @@ fn tray_reopen_preserves_view_bounds_and_pin() -> Result<()> {
     )?;
     let shortcut = fixture_shortcut(controller)?;
     ensure!(!shortcut.exists(), "fixture shortcut already exists");
-    let child = Command::new(env!("CARGO_BIN_EXE_corvid-agent-deck"))
+    let executable = std::env::var_os("CORVID_UI_DECK_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_corvid-agent-deck").into());
+    let child = Command::new(executable)
         .arg("--managed-start")
         .arg("--state-dir")
         .arg(&state)

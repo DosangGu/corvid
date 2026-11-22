@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ui-${{ github.ref }}
+  group: checks-ui-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -103,3 +103,4 @@ jobs:
         with:
           name: ui-failure-${{ matrix.target }}
           path: target/ui-tests/
+          if-no-files-found: ignore

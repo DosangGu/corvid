@@ -1,10 +1,13 @@
 """Desktop and Deck scenarios driven through native window and keyboard events."""
 from contextlib import ExitStack, contextmanager
+import json
 import os
+from pathlib import Path
 import re
 import shlex
 import subprocess
 import time
+from uuid import UUID, uuid4
 
 import monitor_fixture
 
@@ -21,13 +24,17 @@ def wait_for(description, probe, process, timeout=25):
 
 
 @contextmanager
-def running(command, env, root, log):
+def running(command, env, root, log, *, children=False):
     process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=log)
     try:
         yield process
     finally:
         if process.poll() is None:
-            process.terminate()
+            if children and os.name == "nt":
+                subprocess.run(["taskkill.exe", "/t", "/f", "/pid", str(process.pid)],
+                               capture_output=True, timeout=10)
+            if process.poll() is None:
+                process.terminate()
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -84,6 +91,22 @@ def verify_paste(ui, cli, desktop, window, env, root):
     command("isolated", mark("isolated", tag), "first", probe=True)
 
 
+def fixture_shortcuts(state):
+    script = (
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+        "[Environment]::GetFolderPath('Programs')"
+    )
+    programs = Path(subprocess.check_output(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        encoding="utf-8", timeout=10).strip())
+    for record in monitor_fixture.records(state):
+        controller = UUID(json.loads(record.read_text(encoding="utf-8"))["controller"])
+        path = programs / f"Corvid Agent Deck {controller.hex[:8]}.lnk"
+        if path.exists():
+            raise FileExistsError(f"Fixture shortcut already exists: {path}")
+        yield path
+
+
 def run_case(case, root, artifacts, paths, ui):
     cli, desktop, deck = paths
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -99,7 +122,7 @@ def run_case(case, root, artifacts, paths, ui):
     screenshot = artifacts / "failure.png"
     screenshot.unlink(missing_ok=True)
     with log_path.open("wb") as log, running([cli, "daemon", "--state-dir", root / "d"],
-                                             env, root, log) as daemon:
+                                             env, root, log, children=True) as daemon:
         wait_for("fixture daemon", lambda: subprocess.run([cli, "control", "ping"], env=env,
                  capture_output=True, timeout=5).returncode == 0, daemon)
         window = None
@@ -107,12 +130,18 @@ def run_case(case, root, artifacts, paths, ui):
             # The automatic monitor is detached from the Desktop process.
             processes.callback(monitor_fixture.stop, cli, state, env)
             try:
-                app = processes.enter_context(running([desktop, "--state-dir", state], env, root, log))
+                command = [desktop, "--state-dir", state]
+                if os.name == "nt":
+                    command += ["--pipe-instance", uuid4().hex]
+                app = processes.enter_context(running(command, env, root, log))
                 window = wait_for("Desktop window", lambda: ui.window(app.pid), app)
                 if case == "desktop-paste":
                     verify_paste(ui, cli, app, window, env, root)
                 else:
                     reader, epoch = monitor_fixture.ready(cli, state, env)
+                    if os.name == "nt":
+                        for shortcut in fixture_shortcuts(state):
+                            processes.callback(shortcut.unlink, missing_ok=True)
                     panel = processes.enter_context(running([deck, "--state-dir", state], env, root, log))
                     window = wait_for("Agent Deck window", lambda: ui.window(panel.pid), panel)
                     monitor_fixture.assert_same(reader, epoch, env)

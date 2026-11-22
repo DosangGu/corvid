@@ -95,7 +95,8 @@ class Desktop:
             "Set-Clipboard -Value ([Console]::In.ReadToEnd())"
         )
         subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                       input=text.encode("utf-8"), timeout=10, check=True)
+                       input=text.encode("utf-8"), creationflags=subprocess.CREATE_NO_WINDOW,
+                       timeout=10, check=True)
         keys = ("clear", "paste", "return") if clear else ("paste", "return")
         self.keys(window, *keys)
 

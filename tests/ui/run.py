@@ -16,29 +16,35 @@ ROOT = HERE.parents[1]
 DEPLOY = ROOT / "deploy"
 sys.path.insert(0, str(DEPLOY))
 
+SMOKE = ("desktop-paste", "deck-window")
 CASES = {
-    "Linux": ("desktop-paste", "desktop-lifecycle", "deck-focus"),
-    "Windows": ("desktop-paste", "deck-window"),
-    "Darwin": ("desktop-paste", "deck-window", "dmg-windows"),
-}
-SMOKE = {
-    "Linux": ("desktop-paste",),
-    "Windows": ("desktop-paste", "deck-window"),
-    "Darwin": ("desktop-paste", "deck-window"),
+    "Linux": (*SMOKE, "desktop-lifecycle", "deck-focus"),
+    "Windows": (*SMOKE, "deck-tray"),
+    "Darwin": (*SMOKE, "dmg-windows"),
 }
 
 
 def linux(case, build, assets, artifacts):
-    env = dict(os.environ, CORVID_UI_FAILURE_SCREENSHOT=str(artifacts / "failure.png"))
+    screenshot = artifacts / "failure.png"
+    screenshot.unlink(missing_ok=True)
+    env = dict(os.environ, CORVID_UI_FAILURE_SCREENSHOT=str(screenshot))
     if case == "deck-focus":
         args = [DEPLOY / "test_deck_focus.py", "--build", build,
-                "--failure-screenshot", artifacts / "failure.png"]
+                "--failure-screenshot", screenshot]
+        for variable, flag in [
+            ("CORVID_DECK_HISTORY_SCREENSHOT", "--history-screenshot"),
+            ("CORVID_DECK_TOOLTIP_SCREENSHOT", "--tooltip-screenshot"),
+        ]:
+            if destination := env.get(variable):
+                args += [flag, destination]
     else:
         args = [DEPLOY / "test_desktop.py", "--build", build] if build else [
             DEPLOY / "test_desktop.py", assets,
         ]
         if case == "desktop-paste":
             args += ["--paste-only"]
+        elif case == "deck-window":
+            args += ["--deck-only"]
     subprocess.run(["xvfb-run", "-a", sys.executable, *args], env=env, check=True)
 
 
@@ -55,7 +61,11 @@ def binaries(stack, system, build, assets, root):
     if build:
         payload = deck = build
     elif system == "Windows":
-        machine = {"AMD64": "x86_64", "ARM64": "aarch64"}[platform.machine().upper()]
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+            architecture, _ = winreg.QueryValueEx(key, "PROCESSOR_ARCHITECTURE")
+        machine = {"AMD64": "x86_64", "ARM64": "aarch64"}[architecture.upper()]
         archive = unique_asset(assets, f"corvid-desktop-*-{machine}-pc-windows-msvc.zip")
         with zipfile.ZipFile(archive) as stream:
             stream.extractall(extracted)
@@ -81,8 +91,8 @@ def native(system, cases, build, assets, artifacts):
     else:
         from windows import Desktop
 
-    # Presentation sockets on macOS need a short, private absolute path.
-    parent = "/tmp" if system == "Darwin" else None
+    # Corvid checks Unix socket directory ownership and permissions.
+    parent = Path.home() if system == "Darwin" else None
     for case in cases:
         print(f"RUN {case}", flush=True)
         if case == "dmg-windows":
@@ -92,6 +102,12 @@ def native(system, cases, build, assets, artifacts):
         with ExitStack() as stack:
             root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="cvui-", dir=parent)))
             paths = binaries(stack, system, build, assets, root)
+            if case == "deck-tray":
+                env = dict(os.environ, CORVID_UI_DECK_BINARY=str(paths[2]))
+                subprocess.run(["cargo", "test", "--locked", "--release", "-p", "corvid-agent-deck-ui",
+                                "--test", "windows_tray", "--", "--ignored", "--nocapture"],
+                               cwd=ROOT, env=env, check=True)
+                continue
             ui = Desktop(root) if system == "Darwin" else Desktop()
             run_case(case, root, artifacts / case, paths, ui)
 
@@ -125,7 +141,7 @@ def main():
         parser.error("install Xvfb and the Linux UI dependencies listed in docs/08_ci_validation.md")
     build = args.build.resolve() if args.build else None
     assets = args.assets.resolve() if args.assets else None
-    cases = (args.case,) if args.case else SMOKE[system] if args.suite == "smoke" else CASES[system]
+    cases = (args.case,) if args.case else SMOKE if args.suite == "smoke" else CASES[system]
     # The full suite expands with the checks supported by the selected input.
     if not args.case:
         cases = tuple(case for case in cases
