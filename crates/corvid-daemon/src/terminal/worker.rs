@@ -1106,6 +1106,10 @@ impl Worker {
                     )
                     .map_err(|_| terminal_fault())?;
                 lease.viewport = next_viewport;
+                if let Some(cache) = &mut lease.composition {
+                    cache.visible = None;
+                    cache.pending_layout = None;
+                }
                 lease.leader = None;
                 if let Some(paste) = lease.paste.take()
                     && lease
@@ -1871,7 +1875,14 @@ impl Lease {
                 if self.input_mode() == InputMode::Command {
                     return Ok(None);
                 }
-                let view = Composition::new(self.viewport.outer, layout, self.location);
+                // Resolve clicks against the layout the client acknowledged drawing.
+                let Some(view) = self
+                    .composition
+                    .as_ref()
+                    .and_then(|cache| cache.visible.as_ref())
+                else {
+                    return Ok(None);
+                };
                 if mouse.y == 0 && view.panes[0].1.y > 0 {
                     let tab = mouse
                         .is_primary()
@@ -2056,6 +2067,9 @@ impl Lease {
             .is_some_and(|flight| flight.generation == generation && flight.frame_id == frame_id)
         {
             self.in_flight = None;
+            if let Some(cache) = &mut self.composition {
+                cache.visible = cache.pending_layout.take();
+            }
             Ok(())
         } else if generation < self.render_generation {
             Ok(())
@@ -2219,6 +2233,7 @@ impl Lease {
             ));
         }
         cache.layout = Some(display.layout);
+        cache.pending_layout = Some(view);
         self.navigation_dirty = false;
         Ok(Some((ansi, LastFrame::Composition)))
     }
@@ -2302,6 +2317,8 @@ type PreviewReply = oneshot::Receiver<Reply<(Viewport, Vec<u8>)>>;
 
 struct CompositionCache {
     layout: Option<Arc<Layout>>,
+    visible: Option<Composition>,
+    pending_layout: Option<Composition>,
     size: Option<Viewport>,
     active: Option<Arc<Screen>>,
     screens: HashMap<Uuid, Arc<Screen>>,
@@ -2314,6 +2331,8 @@ impl CompositionCache {
     fn new() -> Self {
         Self {
             layout: None,
+            visible: None,
+            pending_layout: None,
             size: None,
             active: None,
             screens: HashMap::new(),
