@@ -34,7 +34,7 @@ use crate::workspaces::WeakRegistry;
 
 use super::backend::Backend;
 use super::commands;
-use super::composition::Composition;
+use super::composition::{Composition, HeaderMotion};
 use super::host::HostConfig;
 use super::input::{Kind, WriteFailure};
 use super::keys::{InputMode, KeyCommand, Keymap, TabCommand};
@@ -42,6 +42,7 @@ use super::navigation::{self, Mouse, Overlay};
 use super::paste::Paste;
 use super::status::{self, TuiViewport};
 use super::tabs::{PickerAction, TabPicker};
+use super::title_motion::TitleMotion;
 
 const COMMAND_CAPACITY: usize = 32;
 const TICK: Duration = Duration::from_millis(8);
@@ -1889,10 +1890,10 @@ impl Lease {
                         .then(|| {
                             view.tabs
                                 .iter()
-                                .find(|(_, rect, _)| rect.contains(mouse.x, mouse.y))
+                                .find(|tab| tab.rect.contains(mouse.x, mouse.y))
                         })
                         .flatten();
-                    return Ok(tab.map(|(id, _, _)| KeyCommand::Tab(TabCommand::Select(*id))));
+                    return Ok(tab.map(|tab| KeyCommand::Tab(TabCommand::Select(tab.id))));
                 }
                 if let Some((pane, region)) = view
                     .panes
@@ -2067,8 +2068,10 @@ impl Lease {
             .is_some_and(|flight| flight.generation == generation && flight.frame_id == frame_id)
         {
             self.in_flight = None;
-            if let Some(cache) = &mut self.composition {
-                cache.visible = cache.pending_layout.take();
+            if let Some(cache) = &mut self.composition
+                && let Some(layout) = cache.pending_layout.take()
+            {
+                cache.visible = Some(layout);
             }
             Ok(())
         } else if generation < self.render_generation {
@@ -2124,7 +2127,7 @@ impl Lease {
         if !self.armed || self.frozen || self.in_flight.is_some() || now < self.next_frame {
             return Ok(());
         }
-        let Some((ansi, painted)) = self.paint(terminal, scope)? else {
+        let Some((ansi, painted)) = self.paint(terminal, scope, now)? else {
             return Ok(());
         };
 
@@ -2172,6 +2175,7 @@ impl Lease {
         &mut self,
         terminal: &mut Running,
         scope: &LaunchScope,
+        now: Instant,
     ) -> Result<Option<(String, LastFrame)>> {
         let cache = self.composition.as_mut().expect("composition enabled");
         let display = scope.metadata.display();
@@ -2190,13 +2194,33 @@ impl Lease {
         if let Some(editor) = &self.naming {
             self.navigation_dirty |= editor.dirty;
         }
+        let header_changed = view.update_header(&mut cache.header_motion, now);
+        let picker = self.overlay.as_ref();
+        let picker_target = picker.and_then(|overlay| {
+            overlay.title_target(&display.layout, self.location, self.viewport.outer)
+        });
+        let picker_changed = cache.picker_motion.update(picker_target, now);
         if !terminal.dirty
             && !layout_changed
             && !preview_changed
             && !self.navigation_dirty
             && self.previous.is_some()
         {
-            return Ok(None);
+            let mut ansi = if header_changed {
+                view.repaint_header(&cache.header_motion)
+            } else {
+                String::new()
+            };
+            if picker_changed && let Some(overlay) = picker {
+                ansi.push_str(&overlay.paint(
+                    &display.layout,
+                    self.location,
+                    self.keymap,
+                    self.viewport.outer,
+                    &cache.picker_motion,
+                ));
+            }
+            return Ok((!ansi.is_empty()).then_some((ansi, LastFrame::Composition)));
         }
         if terminal.dirty || cache.active.is_none() {
             let (ansi, snapshot) = terminal.session.render(None, size, None)?;
@@ -2209,13 +2233,19 @@ impl Lease {
             Some(Overlay::Panes(id)) => Some(*id),
             _ => None,
         };
-        let mut ansi = view.paint(self.location, selected, &display.titles, |pane| {
-            if pane == self.location.pane {
-                cache.active.clone()
-            } else {
-                cache.screens.get(&pane).cloned()
-            }
-        });
+        let mut ansi = view.paint(
+            self.location,
+            selected,
+            &display.titles,
+            &cache.header_motion,
+            |pane| {
+                if pane == self.location.pane {
+                    cache.active.clone()
+                } else {
+                    cache.screens.get(&pane).cloned()
+                }
+            },
+        );
         if let Some(editor) = &mut self.naming {
             ansi.push_str(&editor.paint(self.viewport.outer));
             editor.dirty = false;
@@ -2225,6 +2255,7 @@ impl Lease {
                 self.location,
                 self.keymap,
                 self.viewport.outer,
+                &cache.picker_motion,
             ));
         } else if self.leader.is_some() {
             ansi.push_str(&navigation::paint_lines(
@@ -2242,9 +2273,10 @@ impl Lease {
         &mut self,
         terminal: &mut Running,
         scope: &LaunchScope,
+        now: Instant,
     ) -> Result<Option<(String, LastFrame)>> {
         if self.composition.is_some() {
-            return self.paint_composition(terminal, scope);
+            return self.paint_composition(terminal, scope, now);
         }
         let metadata = &scope.metadata;
         if let Some(editor) = &mut self.naming {
@@ -2316,6 +2348,8 @@ impl Lease {
 type PreviewReply = oneshot::Receiver<Reply<(Viewport, Vec<u8>)>>;
 
 struct CompositionCache {
+    header_motion: HeaderMotion,
+    picker_motion: TitleMotion,
     layout: Option<Arc<Layout>>,
     visible: Option<Composition>,
     pending_layout: Option<Composition>,
@@ -2330,6 +2364,8 @@ struct CompositionCache {
 impl CompositionCache {
     fn new() -> Self {
         Self {
+            header_motion: HeaderMotion::default(),
+            picker_motion: TitleMotion::default(),
             layout: None,
             visible: None,
             pending_layout: None,

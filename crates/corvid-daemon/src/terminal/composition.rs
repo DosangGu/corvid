@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::time::Instant;
 
 use corvid_core::Viewport;
 use corvid_core::layout::{Layout, Location};
@@ -7,14 +8,70 @@ use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 use vt100::{Cell, Color, Screen};
 
+use super::title_motion::{TitleMotion, window};
 use super::{navigation, status::clip};
 
 pub(super) struct Composition {
     outer: Viewport,
     pub(super) panes: Vec<(Uuid, Rect)>,
     pub(super) split: bool,
-    pub(super) tabs: Vec<(Uuid, Rect, String)>,
-    workspace: String,
+    pub(super) tabs: Vec<TabLabel>,
+    workspace: Option<WorkspaceLabel>,
+}
+
+pub(super) struct TabLabel {
+    pub(super) id: Uuid,
+    pub(super) rect: Rect,
+    number: String,
+    title: String,
+    active: bool,
+}
+
+struct WorkspaceLabel {
+    id: Uuid,
+    host: String,
+    title: String,
+    width: usize,
+}
+
+#[derive(Default)]
+pub(super) struct HeaderMotion {
+    workspace: TitleMotion,
+    tab: TitleMotion,
+}
+
+impl TabLabel {
+    fn title_width(&self) -> usize {
+        let decoration = self.number.len() + usize::from(self.active) * 2 + 1;
+        usize::from(self.rect.width).saturating_sub(decoration)
+    }
+
+    fn paint(&self, ansi: &mut String, motion: &TitleMotion) {
+        let (color, open, close) = if self.active {
+            ("\x1b[0;1;36m", "[", "]")
+        } else {
+            ("\x1b[0m", "", "")
+        };
+        let title = if self.active {
+            motion.visible().to_owned()
+        } else {
+            window(&self.title, self.title_width(), 0)
+        };
+        let label = if self.title_width() == 0 || self.title.is_empty() {
+            format!("{open}{}{close}", self.number)
+        } else if self.active {
+            let padding = self.title_width().saturating_sub(title.width());
+            format!("{open}{} {title}{:padding$}{close}", self.number, "")
+        } else {
+            format!("{} {title}", self.number)
+        };
+        let _ = write!(
+            ansi,
+            "\x1b[1;{}H{color}{}",
+            self.rect.x + 1,
+            window(&label, usize::from(self.rect.width), 0),
+        );
+    }
 }
 
 impl Composition {
@@ -69,36 +126,73 @@ impl Composition {
         Viewport::new(rect.width, rect.height).expect("pane has a usable area")
     }
 
+    pub(super) fn update_header(&self, motion: &mut HeaderMotion, now: Instant) -> bool {
+        if self.panes[0].1.y == 0 {
+            return false;
+        }
+        let workspace = self
+            .workspace
+            .as_ref()
+            .map(|name| (name.id, name.title.as_str(), name.width));
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.active)
+            .map(|tab| (tab.id, tab.title.as_str(), tab.title_width()));
+        let workspace_changed = motion.workspace.update(workspace, now);
+        motion.tab.update(tab, now) || workspace_changed
+    }
+
+    fn paint_header(&self, ansi: &mut String, motion: &HeaderMotion) {
+        if self.panes[0].1.y == 0 {
+            return;
+        }
+        ansi.push_str("\x1b[1;1H\x1b[0m\x1b[2K");
+        let workspace_width = if let Some(label) = &self.workspace {
+            let _ = write!(
+                ansi,
+                "\x1b[0;2m{}{}",
+                label.host,
+                motion.workspace.visible()
+            );
+            label.host.width() as u16 + label.width as u16
+        } else {
+            0
+        };
+        for tab in &self.tabs {
+            tab.paint(ansi, &motion.tab);
+        }
+        let hint = "Ctrl+] commands";
+        let start = self.outer.cols.get().saturating_sub(hint.len() as u16);
+        if start
+            >= self
+                .tabs
+                .last()
+                .map_or(0, |tab| tab.rect.x + tab.rect.width + 1)
+            && start > workspace_width
+        {
+            let _ = write!(ansi, "\x1b[1;{}H\x1b[0;2m{hint}", start + 1);
+        }
+    }
+
+    pub(super) fn repaint_header(&self, motion: &HeaderMotion) -> String {
+        // Preserve cursor state and keep a title in the rightmost column from wrapping.
+        let mut ansi = String::from("\x1b7\x1b[?7l");
+        self.paint_header(&mut ansi, motion);
+        ansi.push_str("\x1b[0m\x1b[?7h\x1b8");
+        ansi
+    }
+
     pub(super) fn paint(
         &self,
         location: Location,
         selected: Option<Uuid>,
         titles: &std::collections::HashMap<Uuid, String>,
+        header: &HeaderMotion,
         mut screen: impl FnMut(Uuid) -> Option<std::sync::Arc<Screen>>,
     ) -> String {
         let mut ansi = String::from("\x1b[?6l\x1b[r\x1b[?7l\x1b[?25l\x1b[0m\x1b[2J");
-        if self.panes[0].1.y > 0 {
-            let _ = write!(ansi, "\x1b[1;1H\x1b[0;2m{}", self.workspace);
-            for (id, rect, title) in &self.tabs {
-                let color = if *id == location.tab {
-                    "\x1b[0;1;36m"
-                } else {
-                    "\x1b[0m"
-                };
-                let _ = write!(ansi, "\x1b[1;{}H{color}{title}", rect.x + 1);
-            }
-            let hint = "Ctrl+] commands";
-            let start = self.outer.cols.get().saturating_sub(hint.len() as u16);
-            if start
-                >= self
-                    .tabs
-                    .last()
-                    .map_or(0, |(_, rect, _)| rect.x + rect.width + 1)
-                && start > self.workspace.width() as u16
-            {
-                let _ = write!(ansi, "\x1b[1;{}H\x1b[0;2m{hint}", start + 1);
-            }
-        }
+        self.paint_header(&mut ansi, header);
         let mut input = None;
         for (ordinal, &(id, region)) in self.panes.iter().enumerate() {
             let body = self.body(region);
@@ -166,91 +260,88 @@ impl Composition {
     }
 }
 
-fn top_row(layout: &Layout, location: Location, width: u16) -> (String, Vec<(Uuid, Rect, String)>) {
+fn top_row(
+    layout: &Layout,
+    location: Location,
+    width: u16,
+) -> (Option<WorkspaceLabel>, Vec<TabLabel>) {
     let Some(workspace) = layout
         .workspaces
         .iter()
         .find(|ws| ws.id == location.workspace)
     else {
-        return (String::new(), Vec::new());
+        return (None, Vec::new());
     };
-    let prefix = if width >= 26 {
-        let label = if width >= 72 {
-            if let Some(host) = host_name() {
-                format!(
-                    "{} / {}",
-                    clip(host, usize::from(width / 8)),
-                    workspace.label
-                )
-            } else {
-                workspace.label.clone()
-            }
-        } else {
-            workspace.label.clone()
-        };
-        format!("{}  ", clip(&label, usize::from(width / 3)))
-    } else {
-        String::new()
-    };
-    let start = prefix.width() as u16;
     let limit = width - if width >= 48 { 16 } else { 0 };
-    let labels: Vec<_> = workspace
+    let workspace_label = (width >= 16).then(|| {
+        let budget = usize::from(width / 3);
+        let host = if width >= 72 {
+            host_name()
+                .map(|name| format!("{} / ", clip(name, usize::from(width / 8))))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let title = corvid_core::layout::clean_title(&workspace.label);
+        let width = title.width().min(budget.saturating_sub(host.width()));
+        WorkspaceLabel {
+            id: workspace.id,
+            host,
+            title,
+            width,
+        }
+    });
+    let start = workspace_label
+        .as_ref()
+        .map_or(0, |label| (label.host.width() + label.width + 2) as u16);
+    let label_width = usize::from(limit - start).clamp(1, 20);
+    let mut tabs: Vec<_> = workspace
         .tabs
         .iter()
         .enumerate()
         .map(|(index, tab)| {
-            let label = format!("{} {}", index + 1, tab.label);
-            (
-                tab.id,
-                if tab.id == location.tab {
-                    format!("[{label}]")
-                } else {
-                    label
+            let number = (index + 1).to_string();
+            let title = corvid_core::layout::clean_title(&tab.label);
+            let active = tab.id == location.tab;
+            let size = number.len() + usize::from(active) * 2 + 1 + title.width();
+            TabLabel {
+                id: tab.id,
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: size.min(label_width) as u16,
+                    height: 1,
                 },
-            )
+                number,
+                title,
+                active,
+            }
         })
         .collect();
-    let active = labels
-        .iter()
-        .position(|(id, _)| *id == location.tab)
-        .unwrap_or(0);
-    let span = usize::from(limit - start);
-    let label_width = span.clamp(1, 20);
+    let active = tabs.iter().position(|tab| tab.active).unwrap_or(0);
     let mut first = active;
-    let mut available = span.saturating_sub(
-        labels
-            .get(active)
-            .map_or(0, |(_, name)| name.width().min(label_width)),
-    );
+    let mut remaining =
+        (limit - start).saturating_sub(tabs.get(active).map_or(0, |tab| tab.rect.width));
     while first > 0 {
-        let need = labels[first - 1].1.width().min(label_width) + 2;
-        if available < need {
+        let required = tabs[first - 1].rect.width + 2;
+        if remaining < required {
             break;
         }
-        available -= need;
+        remaining -= required;
         first -= 1;
     }
     let mut x = start;
-    let mut tabs = Vec::new();
-    for (id, label) in labels.into_iter().skip(first) {
+    tabs.drain(..first);
+    tabs.retain_mut(|tab| {
         if x >= limit {
-            break;
+            return false;
         }
-        let label = clip(&label, usize::from(limit - x).min(label_width));
-        let width = label.width() as u16;
-        tabs.push((
-            id,
-            Rect {
-                x,
-                y: 0,
-                width,
-                height: 1,
-            },
-            label,
-        ));
-        x += width + 2;
-    }
-    (prefix, tabs)
+        tab.rect.x = x;
+        tab.rect.width = tab.rect.width.min(limit - x);
+        x += tab.rect.width + 2;
+        true
+    });
+    (workspace_label, tabs)
 }
 
 fn host_name() -> Option<&'static str> {
@@ -342,5 +433,52 @@ impl Style {
             }
         }
         ansi.push('m');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn header_motion_preserves_the_tab_hitboxes_and_terminal_cursor() {
+        let outer = Viewport::new(44, 12).unwrap();
+        let mut layout = Layout::empty_terminal();
+        let location = layout.primary().unwrap();
+        layout.workspaces[0].label = "workspace-review-WEST".into();
+        layout.workspaces[0].tabs[0].label = "shared-prefix-한글-TAIL".into();
+        layout.add_tab(location.workspace, "Run".into()).unwrap();
+        let view = Composition::new(outer, &layout, location);
+        let start = Instant::now();
+        let mut motion = HeaderMotion::default();
+        assert!(view.update_header(&mut motion, start));
+        let mut terminal = vt100::Parser::new(outer.rows, outer.cols, 0);
+        let mut frame = String::from("\x1b[?7l");
+        view.paint_header(&mut frame, &motion);
+        frame.push_str("\x1b[?7h\x1b[3;4H\x1b[31m");
+        terminal.process(frame.as_bytes());
+        let hitboxes = view
+            .tabs
+            .iter()
+            .map(|tab| (tab.id, tab.rect))
+            .collect::<Vec<_>>();
+        let before = terminal.screen().contents();
+        assert!(before.contains("[1 shared-prefix"));
+
+        assert!(view.update_header(&mut motion, start + Duration::from_millis(2000)));
+        let patch = view.repaint_header(&motion);
+        assert!(!patch.contains("\x1b[2J"));
+        terminal.process(patch.as_bytes());
+        assert!(terminal.screen().contents().contains("TAIL]"));
+        assert_eq!(terminal.screen().cursor_position(), (2, 3));
+        assert_eq!(terminal.screen().fgcolor(), Color::Idx(1));
+        assert_eq!(
+            hitboxes,
+            view.tabs
+                .iter()
+                .map(|tab| (tab.id, tab.rect))
+                .collect::<Vec<_>>(),
+        );
     }
 }
