@@ -108,17 +108,12 @@ def geometry(handle):
 
 
 def open_deck(desktop):
-    width = int(geometry(desktop)["WIDTH"])
-    # Font metrics and the display scale can change the width of the Agents
-    # label. Stay in the right side of the toolbar and dismiss incidental menus.
-    for offset in (65, 55, 75, 45, 85, 95, 105):
-        run("xdotool", "windowactivate", "--sync", desktop, "key", "Escape")
-        click(desktop, width - offset, 20)
-        deadline = time.monotonic() + 1
-        while time.monotonic() < deadline:
-            if deck := window("Corvid Agent Deck"):
-                return deck
-            time.sleep(0.1)
+    run("xdotool", "windowactivate", "--sync", desktop)
+    # Give the overlay time to process the shortcut and filter before submitting.
+    run("xdotool", "key", "--clearmodifiers", "--delay", "150", "ctrl+bracketright", "question")
+    run("xdotool", "type", "--clearmodifiers", "--delay", "100", "Agents")
+    time.sleep(0.2)
+    run("xdotool", "key", "--clearmodifiers", "Return")
     return until("Agent Deck opened from Desktop", lambda: window("Corvid Agent Deck"))
 
 
@@ -245,6 +240,7 @@ def main(build, screenshot, history_screenshot, tooltip_screenshot):
             raise AssertionError(f"{error}\n{slots()}\n{control('agents')}") from error
         agents = [fields(line) for line in control("agents").splitlines()]
         terminals = {agent["session"]: agent["terminal"] for agent in agents}
+        until("Desktop pane writer", lambda: "pane-writer=" in control("clients"))
         deck = open_deck(desktop)
         run("xdotool", "windowactivate", "--sync", deck)
         scale = int(geometry(deck)["WIDTH"]) / 392
