@@ -46,6 +46,7 @@ pub struct TerminalView {
     history_epoch: Option<u64>,
     gesture: WheelGesture,
     _updates: Task<()>,
+    _clipboard: Task<()>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -181,6 +182,24 @@ fn hit_cell(
 
 impl TerminalView {
     pub fn new(session: Session, pane: String, window: &Window, cx: &mut Context<Self>) -> Self {
+        let mut clipboard = session.clipboard_changes();
+        let clipboard_task = cx.spawn_in(window, async move |view, cx| {
+            while clipboard.changed().await.is_ok() {
+                let _ = cx.update(|window, cx| {
+                    if let Some(view) = view.upgrade() {
+                        let view = view.read(cx);
+                        let text = view.session.take_clipboard(&view.pane);
+                        if window.is_window_active()
+                            && view.focus.is_focused(window)
+                            && cx.global::<TerminalFonts>().allows_clipboard_write()
+                            && let Some(text) = text
+                        {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                    }
+                });
+            }
+        });
         let mut changes = session.screen_changes();
         let updates = cx.spawn_in(window, async move |view, cx| {
             while changes.changed().await.is_ok() {
@@ -233,6 +252,7 @@ impl TerminalView {
             history_epoch: None,
             gesture: WheelGesture::default(),
             _updates: updates,
+            _clipboard: clipboard_task,
         }
     }
 

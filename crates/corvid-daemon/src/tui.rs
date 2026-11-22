@@ -11,14 +11,14 @@ use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentResponded, Attach, AttachRole, Attached, CloseView, CreateView, Envelope, FocusViewAgent,
-    LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader, RouteToken,
-    SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
+    AgentResponded, Attach, AttachRole, Attached, ClipboardWrite, CloseView, CreateView, Envelope,
+    FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader,
+    RouteToken, SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
     WorkspaceClientsDisconnected, WorkspaceRestored, WriterClaimed,
 };
 use corvid_protocol::{
-    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
-    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLIPBOARD_WRITE_CAPABILITY,
+    CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY,
     LEGACY_DEFAULT_LAUNCH_CAPABILITY, MOVE_TAB_CAPABILITY, PANE_PREVIEW_CAPABILITY, PeerRole,
     ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session,
     TERMINAL_HISTORY_CAPABILITY, WRITER_RESUME_CAPABILITY,
@@ -58,6 +58,7 @@ const CAPABILITIES: &[&str] = &[
     CLOSE_VIEW_CAPABILITY,
     PANE_PREVIEW_CAPABILITY,
     TERMINAL_HISTORY_CAPABILITY,
+    CLIPBOARD_WRITE_CAPABILITY,
     MOVE_TAB_CAPABILITY,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     PAIR_CAPABILITY,
@@ -496,6 +497,19 @@ impl TuiConnection<'_> {
                 }
             }
             Event::RenameTab(_, _) => {}
+            Event::ClipboardWrite(route, text)
+                if route == self.active.route && corvid_protocol::valid_clipboard_text(&text) =>
+            {
+                self.send(
+                    None,
+                    Body::ClipboardWrite(ClipboardWrite {
+                        route_token: Some(wire_route(route)),
+                        text,
+                    }),
+                )
+                .await?;
+            }
+            Event::ClipboardWrite(_, _) => {}
             Event::Render(render) if render.route == self.active.route => {
                 self.render(render).await?
             }
@@ -1154,6 +1168,10 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         resume_token,
         issue_resume_token,
         keymap: Keymap {
+            clipboard_write: attach
+                .terminal_capabilities
+                .iter()
+                .any(|name| name == CLIPBOARD_WRITE_CAPABILITY),
             workspace_ui: pane_writer
                 && attach
                     .terminal_capabilities

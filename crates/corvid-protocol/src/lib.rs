@@ -55,6 +55,13 @@ pub const RESUME_ATTACH_CAPABILITY: &str = "attach.resume.v1";
 pub const RESTORE_AGENTS_CAPABILITY: &str = "workspace.restore_agents.v1";
 /// Opt in to a single-pane WorkspaceRestored reply before attaching to a recoverable empty pane.
 pub const ATTACH_RECOVERY_CAPABILITY: &str = "attach.recovery.v1";
+pub const CLIPBOARD_WRITE_CAPABILITY: &str = "clipboard_write.v1";
+pub const CLIPBOARD_WRITE_MAX_BYTES: usize = 64 * 1024;
+
+pub fn valid_clipboard_text(text: &str) -> bool {
+    !text.is_empty() && text.len() <= CLIPBOARD_WRITE_MAX_BYTES && !text.contains('\0')
+}
+
 pub const TERMINAL_HISTORY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(180);
 pub const TERMINAL_HISTORY_MAX_ROWS: usize = 2048;
 pub const TERMINAL_HISTORY_MAX_BYTES: usize = 192 * 1024;

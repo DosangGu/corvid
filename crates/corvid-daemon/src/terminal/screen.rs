@@ -157,6 +157,14 @@ impl TerminalScreen {
         Ok(mem::take(&mut replies.bytes))
     }
 
+    pub(super) fn configure_clipboard(&mut self, enabled: bool, reset: bool) {
+        self.sgr.configure_clipboard(enabled, reset);
+    }
+
+    pub(super) fn take_clipboard(&mut self) -> Option<String> {
+        self.sgr.take_clipboard()
+    }
+
     pub fn resize(&mut self, viewport: Viewport) {
         self.parser.set_size(viewport.rows, viewport.cols);
     }
@@ -347,6 +355,87 @@ pub(super) fn is_bidi_control(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    fn clipboard_sequence(text: &[u8], terminator: &[u8]) -> Vec<u8> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let mut sequence = b"\x1b]52;c;".to_vec();
+        sequence.extend(STANDARD.encode(text).bytes());
+        sequence.extend(terminator);
+        sequence
+    }
+
+    #[test]
+    fn copies_complete_unicode_clipboard_text_across_chunks() {
+        let mut terminal = TerminalScreen::new(Viewport::new(40, 5).unwrap());
+        terminal.configure_clipboard(true, false);
+        let text = "한글 🐦\nsecond line\n".repeat(300);
+        for chunk in clipboard_sequence(text.as_bytes(), b"\x1b\\").chunks(7) {
+            assert!(terminal.process(chunk).unwrap().is_empty());
+        }
+        assert_eq!(terminal.take_clipboard().as_deref(), Some(text.as_str()));
+        assert!(terminal.take_clipboard().is_none());
+
+        terminal.process(b"\x1b]52;;aGVsbG8=\x07").unwrap();
+        assert_eq!(terminal.take_clipboard().as_deref(), Some("hello"));
+        terminal.process(b"visible").unwrap();
+        assert_eq!(terminal.snapshot().contents(), "visible");
+    }
+
+    #[test]
+    fn ignores_disabled_invalid_and_stale_clipboard_requests() {
+        let mut terminal = TerminalScreen::new(Viewport::new(40, 5).unwrap());
+        let valid = b"\x1b]52;c;aGVsbG8=\x07";
+        terminal.process(valid).unwrap();
+        assert!(terminal.take_clipboard().is_none());
+        terminal.configure_clipboard(true, false);
+        for invalid in [
+            &b"\x1b]52;c;?\x07"[..],
+            &b"\x1b]52;p;aGVsbG8=\x07"[..],
+            &b"\x1b]52;c;aGVsbG8\x07"[..],
+            &b"\x1b]52;c;aGVs\x00bG8=\x07"[..],
+            &b"\x1b]52;c;aGVsbG8=\x18"[..],
+            &b"\x1b]52;c;aGVsbG8=\x1b[0m"[..],
+            &b"\x1b]52;c;/w==\x07"[..],
+            &b"\x1b]52;c;AA==\x07"[..],
+            &b"\x1b]52;c;\x07"[..],
+        ] {
+            assert!(terminal.process(invalid).unwrap().is_empty());
+            assert!(terminal.take_clipboard().is_none());
+        }
+        terminal.process(&valid[..10]).unwrap();
+        terminal.configure_clipboard(true, true);
+        terminal.process(&valid[10..]).unwrap();
+        assert!(terminal.take_clipboard().is_none());
+
+        terminal.process(b"\x1b]52;c;aGVsbG8=\x1b").unwrap();
+        terminal.configure_clipboard(true, true);
+        terminal.process(b"\\").unwrap();
+        assert!(terminal.take_clipboard().is_none());
+        terminal.process(valid).unwrap();
+        assert_eq!(terminal.take_clipboard().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn enforces_clipboard_limit_without_copying_a_truncated_prefix() {
+        use corvid_protocol::CLIPBOARD_WRITE_MAX_BYTES;
+
+        let mut terminal = TerminalScreen::new(Viewport::new(40, 5).unwrap());
+        terminal.configure_clipboard(true, false);
+        for length in [
+            CLIPBOARD_WRITE_MAX_BYTES + 1,
+            CLIPBOARD_WRITE_MAX_BYTES * 2,
+            CLIPBOARD_WRITE_MAX_BYTES,
+        ] {
+            let text = vec![b'x'; length];
+            terminal
+                .process(&clipboard_sequence(&text, b"\x07"))
+                .unwrap();
+            let expected =
+                (length == CLIPBOARD_WRITE_MAX_BYTES).then(|| String::from_utf8(text).unwrap());
+            assert_eq!(terminal.take_clipboard(), expected);
+        }
+    }
+
     use super::*;
     use std::num::NonZeroU16;
     use vt100::Color;

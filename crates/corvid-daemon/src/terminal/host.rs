@@ -63,6 +63,10 @@ struct Request {
     footer_row: u32,
     #[prost(uint32, tag = "7")]
     version: u32,
+    #[prost(bool, tag = "8")]
+    clipboard_enabled: bool,
+    #[prost(bool, tag = "9")]
+    clipboard_reset: bool,
 }
 
 #[derive(Message)]
@@ -102,6 +106,8 @@ pub(super) struct Response {
     wheel_encoding: i32,
     #[prost(bool, optional, tag = "17")]
     alternate_screen: Option<bool>,
+    #[prost(string, optional, tag = "18")]
+    pub(super) clipboard: Option<String>,
 }
 
 impl Response {
@@ -319,6 +325,19 @@ impl Client {
             }
         }
         Ok(response)
+    }
+
+    pub(super) fn poll(
+        &mut self,
+        clipboard_enabled: bool,
+        clipboard_reset: bool,
+    ) -> Result<Response> {
+        self.call(Request {
+            operation: Operation::Poll as i32,
+            clipboard_enabled,
+            clipboard_reset,
+            ..Default::default()
+        })
     }
 
     pub(super) fn resize(&mut self, viewport: Viewport) -> Result<()> {
@@ -573,6 +592,7 @@ impl Host {
                 break;
             }
         }
+        self.session.screen.configure_clipboard(false, true);
         if self.retain {
             self.session.fence_input()?;
         }
@@ -629,6 +649,10 @@ impl Host {
         match Operation::try_from(request.operation)? {
             Operation::Hello => bail!("terminal host is already connected"),
             Operation::Poll => {
+                self.session
+                    .screen
+                    .configure_clipboard(request.clipboard_enabled, request.clipboard_reset);
+                response.clipboard = self.session.screen.take_clipboard();
                 response.changed = std::mem::take(&mut self.changed);
                 if let Some(failure) = self.failure.take() {
                     response.failure = match failure.kind {

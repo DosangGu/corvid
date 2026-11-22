@@ -24,6 +24,8 @@ const MAX_BYTES: u64 = 4096;
 #[derive(Default, Serialize, Deserialize)]
 struct Preferences {
     font_family: Option<String>,
+    #[serde(default)]
+    allow_clipboard_write: bool,
 }
 
 pub struct TerminalFonts {
@@ -31,6 +33,7 @@ pub struct TerminalFonts {
     available: Vec<SharedString>,
     default: SharedString,
     selected: Option<SharedString>,
+    allow_clipboard_write: bool,
 }
 
 impl Global for TerminalFonts {}
@@ -64,6 +67,7 @@ impl TerminalFonts {
             available,
             default,
             selected,
+            allow_clipboard_write: preference.allow_clipboard_write,
         }
     }
 
@@ -93,12 +97,26 @@ impl TerminalFonts {
                 .is_none_or(|name| self.available.contains(name)),
             "The selected terminal font is unavailable."
         );
+        self.save(family, self.allow_clipboard_write)
+    }
+
+    pub fn allows_clipboard_write(&self) -> bool {
+        self.allow_clipboard_write
+    }
+
+    pub fn set_clipboard_write(&mut self, allowed: bool) -> Result<()> {
+        self.save(self.selected.clone(), allowed)
+    }
+
+    fn save(&mut self, family: Option<SharedString>, allow_clipboard_write: bool) -> Result<()> {
         let preferences = Preferences {
             font_family: family.as_ref().map(ToString::to_string),
+            allow_clipboard_write,
         };
         let directory = Directory::create_all(&self.path)?;
         directory.replace_private_file(FILE, &serde_json::to_vec(&preferences)?)?;
         self.selected = family;
+        self.allow_clipboard_write = allow_clipboard_write;
         Ok(())
     }
 }
@@ -137,9 +155,13 @@ mod tests {
             available: vec!["Other Mono".into()],
             default: DEFAULT_FONT.into(),
             selected: None,
+            allow_clipboard_write: false,
         };
         assert!(fonts.select(Some("Unavailable".into())).is_err());
         assert_eq!(fonts.current().as_str(), DEFAULT_FONT);
+
+        assert!(!read_preferences(&path)?.allow_clipboard_write);
+        fonts.set_clipboard_write(true)?;
 
         fonts.select(Some("Other Mono".into()))?;
         assert_eq!(fonts.current().as_str(), "Other Mono");
@@ -150,7 +172,11 @@ mod tests {
 
         fonts.select(None)?;
         assert_eq!(fonts.current().as_str(), DEFAULT_FONT);
-        assert!(read_preferences(&path)?.font_family.is_none());
+        let saved = read_preferences(&path)?;
+        assert!(saved.font_family.is_none());
+        assert!(saved.allow_clipboard_write);
+        fonts.set_clipboard_write(false)?;
+        assert!(!read_preferences(&path)?.allow_clipboard_write);
         Ok(())
     }
 }

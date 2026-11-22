@@ -72,6 +72,47 @@ fn preview_snapshot_allows_publication_during_rendering() {
 }
 
 #[test]
+fn clipboard_write_is_single_use_and_matches_the_current_view() {
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
+    let (actions, _) = mpsc::channel(1);
+    let (size, _) = watch::channel((0, 0, Grid::new(2, 24)));
+    let session = Session {
+        shared: Arc::clone(&shared),
+        actions,
+        size,
+    };
+    shared.edit(|snapshot| {
+        let ui = Arc::make_mut(&mut snapshot.ui);
+        ui.connected = true;
+        ui.changing = false;
+        ui.selected = Some(ViewSelection {
+            pane_id: "pane".into(),
+            ..Default::default()
+        });
+        snapshot.view_epoch = 2;
+        Changed::View
+    });
+    let publish = |view_epoch| {
+        shared.clipboard.send_replace(Some(ClipboardWrite {
+            view_epoch,
+            text: "한글 🐦".into(),
+        }));
+    };
+    publish(1);
+    assert!(session.take_clipboard("pane").is_none());
+    publish(2);
+    assert!(session.take_clipboard("another pane").is_none());
+    assert_eq!(session.take_clipboard("pane").as_deref(), Some("한글 🐦"));
+    assert!(session.take_clipboard("pane").is_none());
+
+    publish(2);
+    let change = shared.reserve_view_change().unwrap();
+    assert!(session.take_clipboard("pane").is_none());
+    drop(change);
+    assert!(session.take_clipboard("pane").is_none());
+}
+
+#[test]
 fn snapshot_reads_do_not_wait_for_the_state_actor() {
     let shared = Shared::new(&Destination::Local, session_runtime().unwrap());
     thread::scope(|scope| {

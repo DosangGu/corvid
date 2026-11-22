@@ -574,6 +574,14 @@ Drag across terminal cells and press **Ctrl+Shift+C** to copy the selection.
 The selected cells stay stable while new output arrives. Escape or typing
 returns a live selection to the current screen.
 
+In **Settings → Terminal**, enable **Allow terminal apps to copy to the
+clipboard** to let programs in the focused pane copy text to your desktop via
+OSC 52, including programs running on a Corvid SSH host. This setting is off
+by default. Corvid accepts UTF-8 text writes up to 64 KiB to the system clipboard.
+
+![Terminal settings with application clipboard writes enabled](images/desktop-terminal-clipboard.png)
+
+
 Hover over a URL in the focused terminal pane to see a dotted underline.
 **Ctrl+click** the URL to open it in its registered local app. On macOS,
 **Cmd+click** also works. Desktop recognizes `http:`, `https:`, `mailto:` and

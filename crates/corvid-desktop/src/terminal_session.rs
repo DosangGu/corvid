@@ -33,11 +33,11 @@ use corvid_protocol::wire::{
     Viewport, WheelEncoding, WorkspaceState,
 };
 use corvid_protocol::{
-    CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
-    DEFAULT_SHELL_CAPABILITY, Frame, GRACEFUL_DETACH_CAPABILITY, PANE_PREVIEW_CAPABILITY,
-    ProtocolFault, RenderFrame, SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY,
-    TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS, WRITER_RESUME_CAPABILITY,
-    decode_envelope,
+    CLAIM_WORKSPACE_CAPABILITY, CLIPBOARD_WRITE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT,
+    CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, GRACEFUL_DETACH_CAPABILITY,
+    PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame, SESSION_CLIENTS_CAPABILITY,
+    TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS,
+    WRITER_RESUME_CAPABILITY, decode_envelope,
 };
 use uuid::Uuid;
 use vt100::{Parser, Screen};
@@ -365,10 +365,16 @@ enum Changed {
 
 type StateEdit = Box<dyn FnOnce(&mut Snapshot) -> Changed + Send>;
 
+pub(super) struct ClipboardWrite {
+    view_epoch: u64,
+    text: String,
+}
+
 struct Shared {
     edits: mpsc::Sender<(StateEdit, blocking::SyncSender<()>)>,
     snapshots: watch::Receiver<Arc<Snapshot>>,
     screen_changed: watch::Sender<()>,
+    clipboard: watch::Sender<Option<ClipboardWrite>>,
     ui_changed: watch::Sender<()>,
     inventory_reconnect: watch::Sender<()>,
     view_change: Arc<AtomicBool>,
@@ -434,6 +440,7 @@ impl Shared {
             edits,
             snapshots: latest,
             screen_changed,
+            clipboard: watch::channel(None).0,
             ui_changed,
             inventory_reconnect: watch::channel(()).0,
             view_change: Arc::new(AtomicBool::new(false)),
@@ -879,6 +886,29 @@ impl Session {
 
     pub fn changes(&self) -> watch::Receiver<()> {
         self.shared.ui_changed.subscribe()
+    }
+
+    pub(super) fn clipboard_changes(&self) -> watch::Receiver<Option<ClipboardWrite>> {
+        self.shared.clipboard.subscribe()
+    }
+
+    pub(super) fn take_clipboard(&self, pane: &str) -> Option<String> {
+        let snapshot = self.shared.snapshot();
+        if !in_pane(&snapshot.ui, pane) {
+            return None;
+        }
+        let mut clipboard = None;
+        self.shared.clipboard.send_if_modified(|pending| {
+            clipboard = pending.take();
+            false
+        });
+        let clipboard = clipboard?;
+        let snapshot = self.shared.snapshot();
+        (snapshot.view_epoch == clipboard.view_epoch
+            && snapshot.ui.can_write()
+            && in_pane(&snapshot.ui, pane)
+            && !self.changing(&snapshot))
+        .then_some(clipboard.text)
     }
 
     pub fn screen_changes(&self) -> watch::Receiver<()> {
@@ -2040,6 +2070,16 @@ async fn attach(
     request.take_over |= resume && supports_resume && existing;
     request.viewport = Some(grid.wire());
     request.terminal_capabilities.push("legacy_vt.v1".into());
+    if link
+        .session()
+        .capabilities
+        .iter()
+        .any(|cap| cap == CLIPBOARD_WRITE_CAPABILITY)
+    {
+        request
+            .terminal_capabilities
+            .push(CLIPBOARD_WRITE_CAPABILITY.into());
+    }
     if request.create_tab.is_some()
         && link
             .session()
@@ -2162,6 +2202,7 @@ impl Client<'_> {
     }
 
     fn publish_view(&self) {
+        self.shared.clipboard.send_replace(None);
         self.record_view();
         let selected = self.selected.clone();
         let terminal_id = self.route.terminal_id.clone();
@@ -2627,6 +2668,20 @@ impl Client<'_> {
             return Ok(None);
         }
         match body {
+            Body::ClipboardWrite(clipboard) => {
+                let snapshot = self.shared.snapshot();
+                if clipboard.route_token.as_ref() == Some(&self.route)
+                    && self.pending.is_none()
+                    && snapshot.ui.can_write()
+                    && !snapshot.ui.changing
+                    && corvid_protocol::valid_clipboard_text(&clipboard.text)
+                {
+                    self.shared.clipboard.send_replace(Some(ClipboardWrite {
+                        view_epoch: snapshot.view_epoch,
+                        text: clipboard.text,
+                    }));
+                }
+            }
             Body::ViewRenamed(_) => {
                 let pending = self.pending.take().context("unexpected rename result")?;
                 ensure!(

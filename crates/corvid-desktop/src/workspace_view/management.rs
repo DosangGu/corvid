@@ -243,12 +243,43 @@ impl WorkspaceView {
             },
         ));
         settings_page("Terminal")
+            .child(Self::terminal_clipboard_settings(cx))
             .child(Self::terminal_font_settings(cx))
             .child(zoom)
             .child(description(concat!(
                 "Use the command list to expand the active pane or restore the split layout. ",
                 "These view settings apply to this window.",
             )))
+    }
+
+    fn terminal_clipboard_settings(cx: &mut Context<Self>) -> Div {
+        let enabled = cx.global::<TerminalFonts>().allows_clipboard_write();
+        let label = if enabled {
+            "☑ Allow terminal apps to copy to the clipboard"
+        } else {
+            "☐ Allow terminal apps to copy to the clipboard"
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui_px(6.))
+            .child(button("terminal-clipboard-write", label, enabled).on_click(
+                cx.listener(move |_, _, window, cx| {
+                    match cx.global_mut::<TerminalFonts>().set_clipboard_write(!enabled) {
+                        Ok(()) => cx.refresh_windows(),
+                        Err(error) => {
+                            drop(window.prompt(
+                                PromptLevel::Warning,
+                                "Could not save the clipboard setting",
+                                Some(&format!("{error:#}")),
+                                &["OK"],
+                                cx,
+                            ));
+                        }
+                    }
+                }),
+            ))
+            .child(description("Programs in the focused terminal pane, including SSH sessions, can copy text to this computer."))
     }
 
     fn terminal_font_settings(cx: &mut Context<Self>) -> Div {

@@ -11,6 +11,7 @@ pub(crate) struct Keymap {
     pub(crate) close: bool,
     pub(crate) pane_writer: bool,
     pub(crate) disconnect: bool,
+    pub(crate) clipboard_write: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
