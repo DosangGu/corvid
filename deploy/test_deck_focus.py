@@ -109,8 +109,10 @@ def geometry(handle):
 
 def open_deck(desktop):
     run("xdotool", "windowactivate", "--sync", desktop)
-    run("xdotool", "key", "--clearmodifiers", "ctrl+bracketright", "question")
-    run("xdotool", "type", "--clearmodifiers", "Agents")
+    # Give the overlay time to process the shortcut and filter before submitting.
+    run("xdotool", "key", "--clearmodifiers", "--delay", "150", "ctrl+bracketright", "question")
+    run("xdotool", "type", "--clearmodifiers", "--delay", "100", "Agents")
+    time.sleep(0.2)
     run("xdotool", "key", "--clearmodifiers", "Return")
     return until("Agent Deck opened from Desktop", lambda: window("Corvid Agent Deck"))
 
