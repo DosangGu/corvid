@@ -1250,16 +1250,11 @@ impl Interactive {
 
 fn peer_disconnected(error: &std::io::Error) -> bool {
     #[cfg(windows)]
+    if error.raw_os_error().map(|code| code as u32)
+        == Some(windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED)
     {
-        use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED};
-
-        // A named pipe can report either a closing pipe or an already disconnected one.
-        if matches!(
-            error.raw_os_error().map(|code| code as u32),
-            Some(ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED)
-        ) {
-            return true;
-        }
+        // std does not map this Windows named-pipe error to ErrorKind::NotConnected.
+        return true;
     }
     matches!(
         error.kind(),
@@ -1397,6 +1392,14 @@ mod restore_tests {
         use corvid_protocol::FrameRole;
         use corvid_protocol::windows::{CompioPipeListener, open_compio_pipe};
         use corvid_protocol::wire::TerminalExited;
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_NOT_CONNECTED};
+
+        assert!(peer_disconnected(&std::io::Error::from_raw_os_error(
+            ERROR_PIPE_NOT_CONNECTED as i32
+        )));
+        assert!(!peer_disconnected(&std::io::Error::from_raw_os_error(
+            ERROR_ACCESS_DENIED as i32
+        )));
 
         for expected in [Some(0), Some(7), None] {
             let instance = Uuid::new_v4().simple().to_string();
