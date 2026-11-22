@@ -174,7 +174,25 @@ def check_managed_update(previous, archive, directory, dock, live_dock):
     print("PASS legacy managed Desktop bookmark survives its in-place CLI update")
 
 
-def check_running_relaunch(app, directory, dock, alias, entry):
+def handoff_with_launch_error(dock, app, *args):
+    executable = app / "Contents/MacOS/corvid-desktop"
+    held = app.parent / "held-desktop"
+    log = app.parent / "interrupted-launch.log"
+    try:
+        with log.open("wb") as errors:
+            previous_pid = run(dock, "handoff-with-launch-error", app, *args, stderr=errors)
+        deadline = time.monotonic() + 10
+        while b"Retrying Desktop launch:" not in log.read_bytes():
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"No launch retry after the failed open: {log.read_text()}")
+            time.sleep(0.05)
+        return previous_pid
+    finally:
+        if held.exists():
+            held.rename(executable)
+
+
+def check_running_relaunch(app, directory, dock, alias, entry, *, fail_first_open=False):
     state = directory / f"restored windows {Path(entry).name}"
     window = str(uuid.uuid4())
     view = state / "desktop-view"
@@ -183,8 +201,11 @@ def check_running_relaunch(app, directory, dock, alias, entry):
     registry.write_text(json.dumps({"schema_version": 1, "windows": [window]}))
     registry.chmod(0o600)
     with tempfile.TemporaryDirectory(prefix="corvid-desktop-ready-") as handoff:
-        previous_pid = run(dock, "handoff", app, alias, entry, handoff, "--state-dir", state,
-                           "--restore-window", window)
+        args = (alias, entry, handoff, "--state-dir", state, "--restore-window", window)
+        if fail_first_open:
+            previous_pid = handoff_with_launch_error(dock, app, *args)
+        else:
+            previous_pid = run(dock, "handoff", app, *args)
         replacement_pid = run(dock, "running", app, alias, previous_pid)
         lease = state / "desktop-view" / "windows" / window / "startup.lock"
         for _ in range(200):
@@ -272,6 +293,10 @@ def check_pinned_relaunch(binary):
         tile = run(dock, "pin", app, alias)
         try:
             launch_dock_tile(dock, app, alias, tile)
+            check_running_relaunch(app, directory, dock, alias, "Contents/Helpers/corvid-relaunch",
+                                   fail_first_open=True)
+            check_single_dock_tile(app)
+            print("PASS restored the original window after Launch Services rejected the first open")
             for attempt in range(1, 4):
                 print(f"Checking pinned Desktop relaunches ({attempt}/3)", flush=True)
                 iteration = directory / f"relaunch-{attempt}"

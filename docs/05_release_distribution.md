@@ -176,8 +176,9 @@ Repeated clicks cannot start concurrent checks or installations.
 Once prepared, the update offers **Restart to apply** and **Later**. Later closes
 Settings and keeps the prepared update available in the current app session.
 **Restart to apply** runs the verified installer. On macOS a background helper accepts the
-window IDs, waits for the old Desktop to exit, then asks Launch Services to open
-the installed app bundle. It checks that the new Desktop restored its windows
+window IDs, waits for the old Desktop to exit, and refreshes the installed bundle's
+Launch Services registration. It retries a failed open for up to five seconds.
+After launch, it checks that the new Desktop restored its windows
 and reports a launch or restore failure. On Linux and Windows, the previous
 Desktop waits for the replacement to restore its windows and reclaims them if
 startup fails. Managed Desktops also follow an

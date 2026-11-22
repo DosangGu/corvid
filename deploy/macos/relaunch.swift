@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import Foundation
 
 struct RelaunchError: LocalizedError {
@@ -21,12 +22,37 @@ struct Relaunch {
     }
 
     @MainActor
-    static func open(_ app: URL, arguments: [String], startup: URL) async throws {
+    static func launch(_ app: URL, arguments: [String], startup: URL,
+                       previousPID: pid_t) async throws -> NSRunningApplication {
         let config = NSWorkspace.OpenConfiguration()
         config.allowsRunningApplicationSubstitution = false
+        config.promptsUserIfNeeded = false
         config.arguments = arguments
         config.environment = ["TMPDIR": startup.deletingLastPathComponent().path]
-        let running = try await NSWorkspace.shared.openApplication(at: app, configuration: config)
+
+        let deadline = ContinuousClock.now + .seconds(5)
+        var delay = Duration.milliseconds(200)
+        while true {
+            // Updates exchange Contents in place to preserve the Dock's bookmark.
+            // Refresh the record for that same URL before requesting the new executable.
+            _ = LSRegisterURL(app as CFURL, true)
+            do {
+                let running = try await NSWorkspace.shared.openApplication(at: app, configuration: config)
+                guard running.processIdentifier != previousPID else {
+                    throw RelaunchError("macOS still reports the previous Desktop as running.")
+                }
+                return running
+            } catch {
+                guard ContinuousClock.now + delay <= deadline else { throw error }
+                FileHandle.standardError.write(Data("Retrying Desktop launch: \(error.localizedDescription)\n".utf8))
+                try await Task.sleep(for: delay)
+                delay = min(delay * 2, .seconds(1))
+            }
+        }
+    }
+
+    @MainActor
+    static func waitForWindows(_ running: NSRunningApplication, startup: URL) async throws {
         let ready = startup.appendingPathComponent("ready")
         let deadline = ContinuousClock.now + .seconds(20)
         while !FileManager.default.fileExists(atPath: ready.path) {
@@ -68,7 +94,8 @@ struct Relaunch {
         }
 
         do {
-            try await open(app, arguments: args, startup: startup)
+            let running = try await launch(app, arguments: args, startup: startup, previousPID: parent)
+            try await waitForWindows(running, startup: startup)
         } catch {
             // The old GUI can report errors only up to the handoff acknowledgment.
             NSApplication.shared.setActivationPolicy(.accessory)
