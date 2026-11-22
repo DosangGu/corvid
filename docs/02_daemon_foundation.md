@@ -116,6 +116,17 @@ show pane titles, a marker for the active pane, and read-only terminal previews.
 A click in the layout selects the pane or tab under the pointer. A terminal
 application that enables mouse reporting can receive pane-relative clicks.
 Narrow terminals keep the active terminal visible.
+
+Set `CORVID_ALLOW_CLIPBOARD_WRITE=1` in the environment of the Corvid TUI to
+let programs in its current pane copy up to 64 KiB of UTF-8 text to the system
+clipboard using OSC 52. The outer terminal must support and permit OSC 52
+writes. Use **Applications in terminal may access clipboard** in iTerm2 or
+the `compatibility.allowOSC52` profile setting in Windows Terminal. Apple
+Terminal does not support OSC 52 writes.
+
+For one invocation on a POSIX shell, run `CORVID_ALLOW_CLIPBOARD_WRITE=1 corvid`.
+In PowerShell, set `$env:CORVID_ALLOW_CLIPBOARD_WRITE = '1'` before running
+`corvid`.
 Long workspace names and active tab titles scroll back and forth inside their
 fixed columns, pausing at each end. The highlighted title in tab mode and the
 selected row in the workspace picker do the same. Tab numbers and click targets

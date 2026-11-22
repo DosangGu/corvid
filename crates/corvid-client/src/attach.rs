@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use compio::runtime::{JoinHandle, spawn};
 use compio::time::{sleep_until, timeout};
 use corvid_async::mpsc;
@@ -20,9 +21,9 @@ use corvid_protocol::wire::{
     RestoreWorkspace, RouteToken, ViewChanged, ViewSelection, Viewport as WireViewport,
 };
 use corvid_protocol::{
-    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLOSE_VIEW_CAPABILITY,
-    COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, FrameError,
-    MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
+    ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLIPBOARD_WRITE_CAPABILITY,
+    CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY,
+    Frame, FrameError, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
     RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session, decode_envelope,
 };
 use corvid_protocol::{CompioFrameReader as FrameReader, CompioFrameWriter as FrameWriter};
@@ -500,6 +501,9 @@ async fn request_attach(
     {
         terminal_capabilities.push(PANE_WRITERS_CAPABILITY.into());
     }
+    if clipboard_write_enabled(&connection.session) {
+        terminal_capabilities.push(CLIPBOARD_WRITE_CAPABILITY.into());
+    }
     if ResponseNotification::negotiate(&connection.session).is_some() {
         terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
     }
@@ -685,6 +689,15 @@ struct Interactive {
     pairing: Option<PairingDisplay>,
     restoring: bool,
     notification: Option<ResponseNotification>,
+    clipboard_write: bool,
+}
+
+fn clipboard_write_enabled(session: &Session) -> bool {
+    std::env::var_os("CORVID_ALLOW_CLIPBOARD_WRITE").is_some_and(|value| value == "1")
+        && session
+            .capabilities
+            .iter()
+            .any(|cap| cap == CLIPBOARD_WRITE_CAPABILITY)
 }
 
 #[derive(Clone, Copy)]
@@ -746,6 +759,7 @@ impl Interactive {
         escape_delay: Duration,
         notification: Option<ResponseNotification>,
     ) -> Self {
+        let clipboard_write = clipboard_write_enabled(&connection.session);
         Self {
             saved_view: None,
             session: connection.session,
@@ -761,6 +775,7 @@ impl Interactive {
             pairing: None,
             restoring: false,
             notification,
+            clipboard_write,
         }
     }
 
@@ -964,6 +979,17 @@ impl Interactive {
                 }
                 if paste_discarded {
                     timeout(COMMAND_TIMEOUT, tty.write_all(b"\x07")).await??;
+                }
+            }
+            Some(Body::ClipboardWrite(clipboard)) => {
+                if self.clipboard_write
+                    && clipboard.route_token.as_ref() == Some(&self.route)
+                    && self.pending_resize.is_none()
+                    && corvid_protocol::valid_clipboard_text(&clipboard.text)
+                {
+                    let encoded = STANDARD.encode(clipboard.text);
+                    let osc = format!("\x1b]52;c;{encoded}\x1b\\");
+                    timeout(COMMAND_TIMEOUT, tty.write_all(osc.as_bytes())).await??;
                 }
             }
             Some(Body::PairingCode(code)) => self.show_pairing(tty, code).await?,
