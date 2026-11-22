@@ -338,6 +338,10 @@ impl WorkspaceView {
 
     fn tabs(&self, workspace: &WorkspaceState, ui: &Ui, cx: &mut Context<Self>) -> Div {
         let selected = ui.selected.as_ref().map(|view| view.tab_id.as_str());
+        let highlighted = self
+            .navigation
+            .as_ref()
+            .and_then(|mode| mode.highlighted_tab(&workspace.workspace_id));
         let inventory = ui.inventory.as_ref();
         self.tab_bar.render(workspace.tabs.iter().filter_map(|tab| {
             let (target, open) = self.choose(workspace, tab, inventory?)?;
@@ -361,6 +365,14 @@ impl WorkspaceView {
                     .items_center()
                     .rounded_md()
                     .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
+                    .border_1()
+                    .border_color(rgb(if highlighted == Some(tab.tab_id.as_str()) {
+                        NAVIGATION_HIGHLIGHT
+                    } else if active {
+                        ACTIVE_FILL
+                    } else {
+                        PANEL
+                    }))
                     .max_w(ui_px(240.))
                     .child(
                         title::button(
@@ -561,10 +573,15 @@ impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(cx.global::<Appearance>().rem_size());
         let ui = self.session.as_ref().map(Session::ui);
+        let selected = ui.as_ref().and_then(|ui| ui.selected.as_ref());
+        let highlighted = selected.and_then(|selected| {
+            self.navigation
+                .as_ref()?
+                .highlighted_tab(&selected.workspace_id)
+        });
         self.tab_bar.select(
-            ui.as_ref()
-                .and_then(|ui| ui.selected.as_ref())
-                .map(|selected| selected.tab_id.as_str()),
+            highlighted.or_else(|| selected.map(|selected| selected.tab_id.as_str())),
+            highlighted.is_some(),
         );
         let inventory = ui.as_ref().and_then(|ui| ui.inventory.as_ref());
         let workspace = ui

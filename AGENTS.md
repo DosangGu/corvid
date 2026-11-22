@@ -95,6 +95,14 @@ acceptance IDs; include screenshots for visible UI changes.
 Use the exact version tag as the GitHub Release title, such as `v0.1.2` or
 `v0.2.0-rc.1`. Do not add `Corvid`, a product name, or any other prefix or suffix.
 
+## Presentation UX
+
+Desktop and TUI should provide as close to the same user experience as
+practical. Review both clients when changing a user-facing workflow and keep
+their keyboard interactions, defaults, feedback, and outcomes aligned. Use
+platform-appropriate presentation. Document any necessary differences, such
+as SSH connection setup or platform limitations, and explain them in the PR.
+
 ## Architecture & Security Constraints
 
 Preserve the daemon/client boundary: the daemon owns PTYs and authoritative state.

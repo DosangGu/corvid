@@ -33,10 +33,10 @@
 
 Corvid is a Rust terminal multiplexer with integrations for Claude Code and Codex.
 The desktop GUI on Windows and Linux and the Linux TUI attach to the same Corvid
-multiplexer and share workspace, tab, pane, and focus rules. Their controls and key bindings may
-differ. The Linux TUI runs inside an existing terminal emulator. The daemon on
-the Linux execution host owns the workspaces, PTYs, screen state, and agent
-observations.
+multiplexer and aim to provide the same user experience wherever practical.
+They share workspace, tab, pane, and focus rules. The Linux TUI runs inside an
+existing terminal emulator. The daemon on the Linux execution host owns the
+workspaces, PTYs, screen state, and agent observations.
 Losing an attached TUI, its working SSH connection, or a local controller must not
 stop remote work **while that daemon and the execution host remain alive**.
 
@@ -770,16 +770,19 @@ outside the initial profile.
 
 ### 7.7 Shared TUI and GUI behavior
 
-This is the target contract; complete parity is not yet implemented. The GUI
-presents the TUI's workspace concepts with graphical controls. Presentation code
+Desktop and TUI aim to provide the same user experience wherever practical.
+Keep workflows, keyboard interactions, defaults, feedback, and outcomes
+aligned across both clients. Use idiomatic graphical and terminal controls.
+Document differences caused by SSH setup, platform capabilities, or other
+constraints so users know what to expect in each client. Presentation code
 maps gestures to shared domain operations, and the execution daemon remains the
 authority for accepted state changes and terminal lifetimes.
 
 | Area | Shared behavior |
 |---|---|
 | Hierarchy and identity | Workspace → Tab → split tree → Pane → optional Terminal; switching or moving a view preserves the existing terminal/run identity |
-| Tabs | Creation, ordering, selection, cycling, and closure have the same meaning; graphical tab controls and the TUI tab picker address the same operations |
-| Panes | Split direction, pane selection, resize, and closure use common layout rules, including the next selection after a close and handling of the last pane/tab |
+| Tabs | Browse the tab bar with arrows or `h`/`l`, Enter to focus, `n` to open, `x` to close the highlighted tab, and Esc to cancel |
+| Panes | Browse the layout with arrows or `h`/`j`/`k`/`l`, Enter to focus, `r`/`d` to split, `x` to close the highlighted pane, and Esc to cancel |
 | Focus and input | Selection targets an exact pane in one client; writer ownership, route fencing, and literal terminal input follow the same contract |
 | Names | Rename sets the current tab's name. Each pane follows its terminal title, and an unnamed tab with one pane follows that pane's title |
 | Session lifetime | Hiding a tab, closing a presentation window, or detaching is distinct from explicitly closing a terminal; daemon-owned sessions survive client loss |
@@ -788,7 +791,7 @@ authority for accepted state changes and terminal lifetimes.
 Share layout transitions and their validation through `corvid-core` and the
 daemon; keep rendering, mouse interaction, and key bindings in the presentations.
 Equivalent action sequences must produce equivalent domain state and lifecycle
-outcomes. This does not require identical pixels or keyboard shortcuts.
+outcomes.
 
 Both clients can create tabs and split or select panes on the daemon. A pane
 writer can close views in its workspace when the target contains no pane

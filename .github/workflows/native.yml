@@ -166,7 +166,8 @@ jobs:
           CORVID_AGENT_DECK_SCREENSHOT: target/agent-deck-ready.png
           CORVID_AGENT_DECK_SETTINGS_SCREENSHOT: target/agent-deck-settings.png
           CORVID_WORKSPACE_SCREENSHOT: target/workspace-directory.png
-          CORVID_CLOSE_SCREENSHOT: target/desktop-close-confirmation.png
+          CORVID_TAB_MODE_SCREENSHOT: target/desktop-tab-mode.png
+          CORVID_PANE_MODE_SCREENSHOT: target/desktop-pane-mode.png
           CORVID_PANE_CLOSE_PREVIEW_DIR: target
           CORVID_SCROLL_PREVIEW_DIR: target
         run: xvfb-run -a python3 deploy/test_desktop.py --build target/${{ matrix.desktop }}/release
@@ -212,7 +213,8 @@ jobs:
           name: workspace-directory-preview-${{ matrix.desktop }}
           path: |
             target/workspace-directory.png
-            target/desktop-close-confirmation.png
+            target/desktop-tab-mode.png
+            target/desktop-pane-mode.png
             target/pane-close-before.png
             target/pane-close-after.png
             target/agent-history.png

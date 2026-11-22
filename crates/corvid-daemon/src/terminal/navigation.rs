@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use corvid_core::Viewport;
 use corvid_core::layout::{Axis, CloseTarget, Layout, Location, Node};
-use corvid_core::navigation::{Direction, Rect, WorkspaceCommand};
+use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint, tab_mode_hint};
 use corvid_protocol::wire::WheelEncoding;
 use uuid::Uuid;
 
@@ -242,24 +242,14 @@ impl Overlay {
                     },
                 ));
             }
-            Self::Tabs(_) => lines.push(
-                if keymap.close {
-                    "Tabs · ←/→ h/l · Enter Focus · n New · x Close · Esc Cancel"
-                } else {
-                    "Tabs · ←/→ h/l · Enter Focus · n New · Esc Cancel"
-                }
-                .into(),
-            ),
+            Self::Tabs(_) => lines.push(tab_mode_hint(keymap.close).into()),
             Self::Panes(pane) => {
                 let label = layout
                     .panes(location.workspace, location.tab)
                     .iter()
                     .position(|item| item.pane == *pane)
                     .map_or_else(|| "Panes".into(), |index| format!("Pane {}", index + 1));
-                let close = if keymap.close { " · x Close" } else { "" };
-                lines.push(format!(
-                    "{label} · ←↓↑→ h/j/k/l · Enter Focus · r Right · d Down{close} · Esc Cancel"
-                ));
+                lines.push(format!("{label} · {}", pane_mode_hint(keymap.close)));
             }
             Self::ConfirmWorkspace(_) => {
                 lines.push("End the current workspace and its terminals?".into());

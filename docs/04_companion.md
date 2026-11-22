@@ -276,12 +276,20 @@ or `p` for panes. Press `?` after the leader and search
 for **New workspace**, **Settings**, **Agents**, or window actions. Click a tab
 to return to the pane you last used in it, or click inside a pane to focus it.
 
-![Desktop with three panes and pane selection](images/workspace-navigation/desktop.png)
+The keyboard modes match the TUI. Press `Ctrl+]` then `t` to highlight a tab in
+the tab bar. Browse with the arrow keys or `h`/`l`, press Enter to focus, `n` to
+open a tab, or `x` to close the highlighted tab and its terminals. Press
+`Ctrl+]` then `p` and use the arrow keys or `h`/`j`/`k`/`l` to browse the pane
+layout. Press Enter to focus, `r` or `d` to split, or `x` to close the
+highlighted pane and its terminal. Esc cancels either mode.
 
-Use `Ctrl+]` then `p` to select a pane. Press `x` to open its termination
-confirmation. Closing the last pane also closes its tab. To end an entire tab,
-use **Close selected tab…** in the tab list (`Ctrl+]` then `t`) or click the
-tab's **×**. Use **Detach** to keep terminals and jobs running.
+![Desktop tab mode with Editor highlighted while Tests stays focused](images/workspace-navigation/desktop-tab-mode.png)
+
+![Desktop pane mode with Editor highlighted while Logs stays focused](images/workspace-navigation/desktop.png)
+
+Keyboard `x` closes the highlighted target immediately. The **×** buttons
+open a confirmation. Closing the last pane also closes its tab. Use
+**Detach** to keep terminals and jobs running.
 
 Each pane follows its terminal's OSC 0/2 title in real time and uses `Pane N`
 until the terminal supplies a title. An automatic tab follows its only pane's

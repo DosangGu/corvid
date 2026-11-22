@@ -1,6 +1,6 @@
 use super::*;
 use corvid_core::layout::Axis;
-use corvid_core::navigation::{Direction, Rect, WorkspaceCommand};
+use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint, tab_mode_hint};
 use corvid_protocol::wire::SplitPane;
 
 pub(super) enum Overlay {
@@ -9,12 +9,22 @@ pub(super) enum Overlay {
         index: usize,
     },
     Tabs {
-        query: String,
-        index: usize,
-        control: u8,
-        tab_id: Option<String>,
+        workspace_id: String,
+        tab_id: String,
     },
     Panes(ViewSelection),
+}
+
+impl Overlay {
+    pub(super) fn highlighted_tab(&self, workspace: &str) -> Option<&str> {
+        match self {
+            Self::Tabs {
+                workspace_id,
+                tab_id,
+            } if workspace_id == workspace => Some(tab_id),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -124,23 +134,11 @@ impl WorkspaceView {
         match command {
             Workspace(WorkspaceCommand::Workspaces) => self.show_switcher(window, cx),
             Workspace(WorkspaceCommand::Tabs) => {
-                if let Some((selected, inventory)) = self.navigation_target()
-                    && let Some(workspace) = inventory
-                        .workspaces
-                        .iter()
-                        .find(|ws| ws.workspace_id == selected.workspace_id)
-                {
-                    let index = workspace
-                        .tabs
-                        .iter()
-                        .position(|tab| tab.tab_id == selected.tab_id)
-                        .unwrap_or(0);
+                if let Some((selected, _)) = self.navigation_target() {
                     self.show_navigation(
                         Overlay::Tabs {
-                            query: String::new(),
-                            index,
-                            control: 0,
-                            tab_id: Some(selected.tab_id),
+                            workspace_id: selected.workspace_id,
+                            tab_id: selected.tab_id,
                         },
                         window,
                         cx,
@@ -223,6 +221,11 @@ impl WorkspaceView {
                 key.key.as_str(),
                 "left" | "right" | "up" | "down" | "backspace"
             )
+            && !matches!(
+                (&self.navigation, key.key.as_str()),
+                (Some(Overlay::Tabs { .. }), "h" | "l")
+                    | (Some(Overlay::Panes(_)), "h" | "j" | "k" | "l")
+            )
         {
             return;
         }
@@ -260,6 +263,10 @@ impl WorkspaceView {
         let Some(overlay) = self.navigation.take() else {
             return;
         };
+        if key.modifiers.modified() && matches!(overlay, Overlay::Tabs { .. } | Overlay::Panes(_)) {
+            self.navigation = Some(overlay);
+            return;
+        }
         match overlay {
             Overlay::Commands {
                 mut query,
@@ -277,82 +284,10 @@ impl WorkspaceView {
                 self.navigation = Some(Overlay::Commands { query, index });
             }
             Overlay::Tabs {
-                mut query,
-                mut index,
-                mut control,
-                mut tab_id,
+                workspace_id,
+                tab_id,
             } => {
-                let Some((selected, inventory)) = self.navigation_target() else {
-                    self.dismiss_overlay(window, cx);
-                    return;
-                };
-                let Some(workspace) = inventory
-                    .workspaces
-                    .iter()
-                    .find(|ws| ws.workspace_id == selected.workspace_id)
-                else {
-                    self.dismiss_overlay(window, cx);
-                    return;
-                };
-                let tabs = matching(workspace.tabs.iter(), &query, |tab| tab.label.as_str());
-                let selected_index = tabs
-                    .iter()
-                    .position(|tab| Some(&tab.tab_id) == tab_id.as_ref());
-                index = selected_index.unwrap_or_else(|| index.min(tabs.len().saturating_sub(1)));
-                match key.key.as_str() {
-                    "tab" => control = (control + if key.modifiers.shift { 2 } else { 1 }) % 3,
-                    "enter" if control == 1 => {
-                        self.dismiss_overlay(window, cx);
-                        self.create(Target::TabLabel(String::new()));
-                        return;
-                    }
-                    "enter" if control == 2 => {
-                        if let Some(tab) = selected_index.and_then(|index| tabs.get(index)) {
-                            let count = inventory
-                                .terminals
-                                .iter()
-                                .filter(|term| {
-                                    term.location
-                                        .as_ref()
-                                        .is_some_and(|view| view.tab_id == tab.tab_id)
-                                })
-                                .count();
-                            self.confirm_close(
-                                &format!("End tab {:?} and its {count} terminal(s)?", tab.label),
-                                CloseView {
-                                    workspace_id: selected.workspace_id,
-                                    tab_id: Some(tab.tab_id.clone()),
-                                    ..Default::default()
-                                },
-                                window,
-                                cx,
-                            );
-                        }
-                    }
-                    "enter" => {
-                        if let Some((target, open)) = selected_index
-                            .and_then(|index| tabs.get(index))
-                            .and_then(|tab| self.choose(workspace, tab, &inventory))
-                        {
-                            self.dismiss_overlay(window, cx);
-                            self.open_pane(target, open, window, cx);
-                            return;
-                        }
-                    }
-                    _ if control == 0 => {
-                        edit_list(key, &mut query, &mut index, tabs.len());
-                        tab_id = matching(workspace.tabs.iter(), &query, |tab| tab.label.as_str())
-                            .get(index)
-                            .map(|tab| tab.tab_id.clone());
-                    }
-                    _ => {}
-                }
-                self.navigation = Some(Overlay::Tabs {
-                    query,
-                    index,
-                    control,
-                    tab_id,
-                });
+                self.tab_mode_key(key.key.as_str(), workspace_id, tab_id, window, cx);
             }
             Overlay::Panes(mut target) => {
                 match key.key.as_str() {
@@ -388,29 +323,22 @@ impl WorkspaceView {
                         return;
                     }
                     "x" => {
-                        let title = self.navigation_target().and_then(|(_, inventory)| {
-                            inventory.workspaces.iter().find(|ws| ws.workspace_id == target.workspace_id)?
-                                .tabs.iter().find(|tab| tab.tab_id == target.tab_id)?
-                                .nodes.iter().find(|node| matches!(&node.body, Some(Node::PaneId(id)) if *id == target.pane_id))
-                                .map(|node| node.title.clone()).filter(|title| !title.is_empty())
-                        }).unwrap_or_else(|| "selected pane".into());
-                        self.dismiss_overlay(window, cx);
-                        self.confirm_close(
-                            &format!("End {title}?"),
+                        if self.close_highlighted(
                             CloseView {
-                                workspace_id: target.workspace_id,
-                                tab_id: Some(target.tab_id),
-                                pane_id: Some(target.pane_id),
+                                workspace_id: target.workspace_id.clone(),
+                                tab_id: Some(target.tab_id.clone()),
+                                pane_id: Some(target.pane_id.clone()),
                                 ..Default::default()
                             },
                             window,
                             cx,
-                        );
-                        return;
+                        ) {
+                            return;
+                        }
                     }
                     key => {
-                        if let Some(next) =
-                            direction(key).and_then(|direction| self.neighbor(&target, direction))
+                        if let Some(next) = pane_direction(key)
+                            .and_then(|direction| self.neighbor(&target, direction))
                         {
                             target = next;
                         }
@@ -420,6 +348,100 @@ impl WorkspaceView {
             }
         }
         cx.notify();
+    }
+
+    fn tab_mode_key(
+        &mut self,
+        key: &str,
+        workspace_id: String,
+        mut tab_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((selected, inventory)) = self.navigation_target() else {
+            self.dismiss_overlay(window, cx);
+            return;
+        };
+        let Some(workspace) = inventory.workspaces.iter().find(|workspace| {
+            workspace.workspace_id == workspace_id && workspace_id == selected.workspace_id
+        }) else {
+            self.dismiss_overlay(window, cx);
+            return;
+        };
+        let index = workspace.tabs.iter().position(|tab| tab.tab_id == tab_id);
+        match key {
+            "enter" => {
+                if let Some((target, open)) = index
+                    .and_then(|index| workspace.tabs.get(index))
+                    .and_then(|tab| self.choose(workspace, tab, &inventory))
+                {
+                    self.dismiss_overlay(window, cx);
+                    self.open_pane(target, open, window, cx);
+                    return;
+                }
+            }
+            "n" => {
+                self.dismiss_overlay(window, cx);
+                self.create(Target::TabLabel(String::new()));
+                return;
+            }
+            "x" if index.is_some() => {
+                if self.close_highlighted(
+                    CloseView {
+                        workspace_id: workspace_id.clone(),
+                        tab_id: Some(tab_id.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                ) {
+                    return;
+                }
+            }
+            "h" | "left" | "up" | "l" | "right" | "down" => {
+                if let Some(index) = index.or_else(|| {
+                    workspace
+                        .tabs
+                        .iter()
+                        .position(|tab| tab.tab_id == selected.tab_id)
+                }) {
+                    let next = if matches!(key, "h" | "left" | "up") {
+                        index.saturating_sub(1)
+                    } else {
+                        (index + 1).min(workspace.tabs.len() - 1)
+                    };
+                    tab_id = workspace.tabs[next].tab_id.clone();
+                }
+            }
+            _ => {}
+        }
+        self.navigation = Some(Overlay::Tabs {
+            workspace_id,
+            tab_id,
+        });
+    }
+
+    fn close_highlighted(
+        &mut self,
+        mut target: CloseView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session) = self.session.clone().filter(|session| {
+            let ui = session.ui();
+            ui.can_close()
+                && ui.selected.as_ref().is_some_and(|active| {
+                    active.workspace_id == target.workspace_id
+                        && (target.pane_id.is_none()
+                            || target.tab_id.as_ref() == Some(&active.tab_id))
+                })
+        }) else {
+            return false;
+        };
+        target.expected_view_revision = Some(session.view_revision());
+        self.dismiss_overlay(window, cx);
+        session.close(target);
+        true
     }
 
     fn neighbor(&self, view: &ViewSelection, direction: Direction) -> Option<ViewSelection> {
@@ -441,7 +463,36 @@ impl WorkspaceView {
     }
 
     pub(super) fn navigation_panel(&self) -> Option<Div> {
-        let mut panel = div()
+        let can_close = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.ui().can_close());
+        let mode_hint = match self.navigation.as_ref() {
+            Some(Overlay::Tabs { .. }) => Some(tab_mode_hint(can_close).to_owned()),
+            Some(Overlay::Panes(target)) => {
+                let label = self
+                    .pane_ordinal(target)
+                    .map_or_else(|| "Panes".into(), |ordinal| format!("Pane {ordinal}"));
+                Some(format!("{label} · {}", pane_mode_hint(can_close)))
+            }
+            _ => None,
+        };
+        if let Some(hint) = mode_hint {
+            return Some(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .px(ui_px(12.))
+                    .py(ui_px(5.))
+                    .bg(rgb(PANEL))
+                    .text_color(rgb(TEXT))
+                    .text_size(ui_px(12.))
+                    .child(hint),
+            );
+        }
+        let panel = div()
             .absolute()
             .top(ui_px(45.))
             .right(ui_px(8.))
@@ -456,79 +507,46 @@ impl WorkspaceView {
         if self.leader {
             return Some(panel.child("w Workspaces · t Tabs · p Panes · ? Search · Esc Cancel"));
         }
-        let (title, query, index, items) =
-            match self.navigation.as_ref()? {
-                Overlay::Panes(_) => {
-                    return Some(panel.child(
-                        "←↓↑→ Select · Enter Focus · r Right · d Down · x Close · Esc Cancel",
-                    ));
-                }
-                Overlay::Commands { query, index } => (
-                    "Commands",
-                    query,
-                    *index,
-                    self.commands(query)
-                        .into_iter()
-                        .map(|item| item.label().to_owned())
-                        .collect::<Vec<_>>(),
-                ),
-                Overlay::Tabs {
-                    query,
-                    index,
-                    control,
-                    tab_id,
-                } => {
-                    let (selected, inventory) = self.navigation_target()?;
-                    let workspace = inventory
-                        .workspaces
-                        .iter()
-                        .find(|ws| ws.workspace_id == selected.workspace_id)?;
-                    panel = panel.child(
-                        div().flex().gap(ui_px(8.)).children(
-                            ["Tabs", "New tab…", "Close selected tab…"]
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, label)| {
-                                    div()
-                                        .text_color(rgb(if i == usize::from(*control) {
-                                            ACTIVE
-                                        } else {
-                                            MUTED
-                                        }))
-                                        .child(label)
-                                }),
-                        ),
-                    );
-                    (
-                        "Choose tab",
-                        query,
-                        matching(workspace.tabs.iter(), query, |tab| &tab.label)
-                            .iter()
-                            .position(|tab| Some(&tab.tab_id) == tab_id.as_ref())
-                            .unwrap_or(*index),
-                        matching(workspace.tabs.iter(), query, |tab| &tab.label)
-                            .into_iter()
-                            .map(|tab| tab.label.clone())
-                            .collect(),
-                    )
-                }
-            };
+        let Some(Overlay::Commands { query, index }) = &self.navigation else {
+            return None;
+        };
+        let index = *index;
+        let items = self.commands(query);
         let start = index.saturating_sub(5).min(items.len().saturating_sub(10));
         Some(
-            panel.child(format!("{title} · {query}")).children(
+            panel.child(format!("Commands · {query}")).children(
                 items
                     .into_iter()
                     .enumerate()
                     .skip(start)
                     .take(10)
-                    .map(|(row, label)| {
+                    .map(|(row, command)| {
                         div()
                             .px(ui_px(5.))
                             .when(row == index, |row| row.bg(rgb(ACTIVE_FILL)))
-                            .child(label)
+                            .child(command.label())
                     }),
             ),
         )
+    }
+
+    fn pane_ordinal(&self, target: &ViewSelection) -> Option<usize> {
+        let (_, inventory) = self.navigation_target()?;
+        let tab = inventory
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == target.workspace_id)?
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == target.tab_id)?;
+        tab.nodes
+            .iter()
+            .filter_map(|node| match &node.body {
+                Some(Node::PaneId(id)) => Some(id),
+                _ => None,
+            })
+            .position(|id| id == &target.pane_id)
+            .map(|index| index + 1)
     }
 }
 
@@ -578,6 +596,16 @@ fn direction(key: &str) -> Option<Direction> {
         "down" => Direction::Down,
         _ => return None,
     })
+}
+
+fn pane_direction(key: &str) -> Option<Direction> {
+    match key {
+        "h" => Some(Direction::Left),
+        "j" => Some(Direction::Down),
+        "k" => Some(Direction::Up),
+        "l" => Some(Direction::Right),
+        _ => direction(key),
+    }
 }
 
 fn pane_rects<'a>(tab: &'a TabState, index: usize, region: Rect, panes: &mut Vec<(&'a str, Rect)>) {
