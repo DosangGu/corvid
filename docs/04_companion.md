@@ -227,6 +227,11 @@ Desktop process and preserves all its terminal windows. Closing an individual wi
 removes it from restoration; closing the last terminal window exits and preserves it.
 Settings windows are not restored. No named profile or extra workspace concept is needed.
 
+Opening a workspace from the picker prefers its last focused live pane. If that
+pane is unavailable, Desktop tries another eligible pane in the same tab, then
+uses the usual workspace selection. This history is shared across Desktop windows,
+including after the window that last used the workspace closes.
+
 Relaunching Desktop reopens saved windows that are not already open in another process.
 Launching again while all saved windows are open creates a new picker window. An explicit
 `--ssh-alias` or `--wsl-distribution` opens only that destination, using an available saved
@@ -249,8 +254,9 @@ capability. See [saved conversation restoration](02_daemon_foundation.md#restore
 for provider setup, identity rules, and unsupported conversation transitions.
 
 These preferences are independent of TUI navigation and daemon metadata. Desktop
-stores a private, schema-versioned window list in `desktop-view/windows.json` and
-navigation in `desktop-view/windows/<internal-id>/view.json` below its `--state-dir`
+stores a private, schema-versioned window list in `desktop-view/windows.json`,
+window navigation in `desktop-view/windows/<internal-id>/view.json`, and shared
+workspace focus in `desktop-view/workspace-focus/view.json` below its `--state-dir`
 (by default `%LOCALAPPDATA%\Corvid\companion` on Windows or
 `$XDG_STATE_HOME/corvid/companion`, falling back to `~/.local/state/corvid/companion`,
 on Linux). Writes are coalesced for 250 ms off the UI thread and flushed on clean

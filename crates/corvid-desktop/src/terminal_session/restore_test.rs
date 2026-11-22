@@ -534,13 +534,40 @@ async fn verify_restore(runtime: &Path, state: &Path) -> Result<()> {
     let command = b"printf 'CHECK_%s\\n' \"$restore_value\"\n".to_vec();
     ensure!(second.session.send(&view.pane_id, command, false));
     wait_screen(&second.session, &view.pane_id, "CHECK_kept").await?;
+    second.session.select(initial.clone(), false);
+    wait_view(&second.session, |ui| ui.selected.as_ref() == Some(&initial)).await?;
+    corvid_async::task::spawn_blocking(move || drop(second)).await?;
     ensure!(
-        second
+        store
+            .last()
+            .context("missing saved view")?
+            .location
+            .workspace
+            .to_string()
+            == initial.workspace_id
+    );
+
+    let reopened = AttachedSession::with_target(
+        state,
+        store.clone(),
+        AttachTarget::Workspace {
+            id: view.workspace_id.clone(),
+            host_id: snapshot.session().host_id.clone(),
+            new_tab: None,
+        },
+    )?;
+    let restored = wait_view(&reopened.session, |_| true).await?;
+    ensure!(
+        restored.selected.as_ref() == Some(view) && restored.terminal_id == selected.terminal_id,
+        "opening a workspace did not restore its remembered pane"
+    );
+    ensure!(
+        reopened
             .session
             .send(&view.pane_id, b"exit\r".to_vec(), false)
     );
-    wait_disconnected(&second.session).await?;
-    drop(second);
+    wait_disconnected(&reopened.session).await?;
+    drop(reopened);
     wait_for_client_release(runtime).await?;
 
     let empty = AttachedSession::start(state)?;

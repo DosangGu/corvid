@@ -1549,7 +1549,7 @@ the explicit handoff record and private protocol identity.
 |---|---|---|
 | Remote identity | HostId, identity schema version | A past epoch or peer authentication |
 | Remote state | Layout IDs/tree, settings, last known CWD with source/time, sanitized labels, AgentSessionKey/parent/resume links, historical run IDs, last observation/time/confidence, request-kind/status metadata, attention acknowledgment, schema version | Live PTYs/process handles, current clients/leases, unresolved approvals as actionable current prompts |
-| Desktop / TUI navigation | Separate private JSON files with connection target, expected HostId, and last workspace/tab/pane IDs per target; Desktop additionally stores an automatic window list and independent navigation per internal window ID | ClientId, input routes, writer leases, queued input, process identity, or terminal content |
+| Desktop / TUI navigation | Separate private JSON files with connection target, expected HostId, and last focused tab/pane per workspace in each presentation; Desktop additionally stores an automatic window list and independent startup navigation per internal window ID | ClientId, input routes, writer leases, queued input, process identity, or terminal content |
 | Local companion | ControllerId, configured SSH aliases and expected HostId, slots/pins/suppressed runs, stale status cache, schema version | Window/PID/TTY associations without fresh instance/connection validation; queued focus/input |
 
 Do not persist full prompts, questions, answers, output, tool arguments, environment,

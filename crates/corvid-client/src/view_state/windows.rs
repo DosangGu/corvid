@@ -134,7 +134,10 @@ impl WindowRegistry {
         };
         Ok(Some(WindowState {
             id,
-            store: ViewStore::new(path),
+            store: ViewStore {
+                path,
+                shared_workspace_path: Some(self.path.join("workspace-focus")),
+            },
             first_launch: false,
             _lease: lease,
         }))

@@ -38,7 +38,7 @@ use crate::terminal_session::{
 };
 use crate::terminal_view::{TerminalView, preview};
 use corvid_async::{oneshot, watch};
-use corvid_client::view_state::ViewStore;
+use corvid_client::view_state::{SavedView, ViewStore};
 
 const BACKGROUND: u32 = 0x101318;
 const PANEL: u32 = 0x191c23;
@@ -856,12 +856,8 @@ impl WorkspaceView {
                     .workspaces
                     .iter()
                     .find(|workspace| workspace.workspace_id == id)
-                && let Some(tab) = workspace
-                    .tabs
-                    .iter()
-                    .find(|tab| self.preferred_tabs.get(&id) == Some(&tab.tab_id))
-                    .or_else(|| workspace.tabs.first())
-                && let Some((target, open)) = self.choose(workspace, tab, &inventory)
+                && let Some((target, open)) =
+                    self.choose_workspace(&destination, &host_id, workspace, &inventory)
             {
                 self.open_pane(target, open, window, cx);
             }
@@ -873,6 +869,38 @@ impl WorkspaceView {
             new_tab: None,
         };
         self.switch_to(destination, target, window, cx);
+    }
+
+    fn choose_workspace(
+        &self,
+        destination: &Destination,
+        host_id: &str,
+        workspace: &WorkspaceState,
+        inventory: &Inventory,
+    ) -> Option<(ViewSelection, bool)> {
+        let target = destination.saved_target();
+        let id = &workspace.workspace_id;
+        let remembered = self
+            .preferred_tabs
+            .get(id)
+            .and_then(|tab_id| {
+                let view = ViewSelection {
+                    workspace_id: id.clone(),
+                    tab_id: tab_id.clone(),
+                    pane_id: self.preferred_panes.get(tab_id)?.clone(),
+                };
+                SavedView::new(target.clone(), host_id, &view).ok()
+            })
+            .or_else(|| self.store.for_workspace(&target, host_id, id));
+        if let Some(view) = remembered.and_then(|saved| {
+            saved.preferred_pane(workspace, |view| {
+                inventory.live(view)
+                    && (self.selected.as_ref() == Some(view) || !inventory.has_writer(view))
+            })
+        }) {
+            return Some((view, false));
+        }
+        self.choose(workspace, workspace.tabs.first()?, inventory)
     }
 
     fn create(&self, target: Target) {
