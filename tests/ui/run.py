@@ -27,7 +27,8 @@ CASES = {
 def linux(case, build, assets, artifacts):
     screenshot = artifacts / "failure.png"
     screenshot.unlink(missing_ok=True)
-    env = dict(os.environ, CORVID_UI_FAILURE_SCREENSHOT=str(screenshot))
+    env = dict(os.environ, CORVID_UI_FAILURE_SCREENSHOT=str(screenshot), XDG_SESSION_TYPE="x11")
+    env.pop("WAYLAND_DISPLAY", None)
     if case == "deck-focus":
         args = [DEPLOY / "test_deck_focus.py", "--build", build,
                 "--failure-screenshot", screenshot]

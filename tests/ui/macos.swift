@@ -8,15 +8,14 @@ func fail(_ message: String) -> Never {
 }
 
 let arguments = CommandLine.arguments
-let pid = pid_t(arguments[2])!
+let pid = Int(arguments[2])!
 
 if arguments[1] == "window" {
     let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
         as? [[String: Any]] ?? []
-    for window in windows where window[kCGWindowOwnerPID as String] as? Int32 == pid {
+    for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid {
         let layer = window[kCGWindowLayer as String] as? Int
-        if layer == Int(CGWindowLevelForKey(.normalWindow)) ||
-            layer == NSWindow.Level.popUpMenu.rawValue {
+        if layer == 0 || layer == NSWindow.Level.popUpMenu.rawValue {
             print(window[kCGWindowNumber as String] as! Int)
             break
         }
@@ -27,7 +26,7 @@ if arguments[1] == "window" {
 guard CGPreflightPostEventAccess() else {
     fail("macOS denied synthetic keyboard events. Enable Accessibility for the test launcher.")
 }
-guard let app = NSRunningApplication(processIdentifier: pid) else {
+guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
     fail("Fixture application is no longer available")
 }
 if !app.isActive {

@@ -3,7 +3,6 @@ from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
-import re
 import shlex
 import subprocess
 import time
@@ -42,17 +41,7 @@ def running(command, env, root, log, *, children=False):
                 process.wait(timeout=10)
 
 
-def verify_paste(ui, cli, desktop, window, env, root):
-    def terminal(previous=None, expected=None):
-        def selected():
-            output = subprocess.check_output([cli, "control", "clients"], env=env,
-                                             encoding="utf-8", timeout=5)
-            writers = [line for line in output.splitlines() if "pane-writer=" in line]
-            match = len(writers) == 1 and re.search(r" terminal=(\S+)", writers[0])
-            if match and match[1] != previous and (expected is None or expected == match[1]):
-                return match[1]
-        return wait_for("selected tab's input route", selected, desktop)
-
+def verify_paste(ui, desktop, window, root):
     def command(marker, script, expected, *, probe=False):
         path = root / marker
         if probe:
@@ -74,20 +63,19 @@ def verify_paste(ui, cli, desktop, window, env, root):
         path = shlex.quote(str(root / marker))
         return f"{assignment}printf %s {text} > {path}"
 
-    first = terminal()
     assignment = "$tag='first'; " if os.name == "nt" else "tag=first; "
     tag = "$tag" if os.name == "nt" else '"$tag"'
     command("first", mark("first", tag, assignment=assignment), "first", probe=True)
     ui.keys(window, "leader", "t", "n")
-    second = terminal(previous=first)
-    command("ready", mark("ready", "'ready'"), "ready", probe=True)
+    # The first shell already has $tag. Only a fresh tab can acknowledge this probe.
+    fresh = ("if ([string]::IsNullOrEmpty($tag)) { " + mark("ready", "'ready'") + " }"
+             if os.name == "nt" else '[ -z "${tag-}" ] && ' + mark("ready", "'ready'"))
+    command("ready", fresh, "ready", probe=True)
 
     pasted = "한글 e\u0301 🐦"
     assignment = f"$tag='{pasted}'; " if os.name == "nt" else f"tag={shlex.quote(pasted)}; "
     command("pasted", mark("pasted", tag, assignment=assignment), pasted)
-    terminal(expected=second)
     ui.keys(window, "leader", "previous")
-    terminal(expected=first)
     command("isolated", mark("isolated", tag), "first", probe=True)
 
 
@@ -136,7 +124,7 @@ def run_case(case, root, artifacts, paths, ui):
                 app = processes.enter_context(running(command, env, root, log))
                 window = wait_for("Desktop window", lambda: ui.window(app.pid), app)
                 if case == "desktop-paste":
-                    verify_paste(ui, cli, app, window, env, root)
+                    verify_paste(ui, app, window, root)
                 else:
                     reader, epoch = monitor_fixture.ready(cli, state, env)
                     if os.name == "nt":

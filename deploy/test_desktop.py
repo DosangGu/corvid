@@ -531,10 +531,14 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         time.sleep(0.5)
         assert wait_for_writer() == retired, "A new window displaced the existing writer"
 
-        # The overflow menu is in the top-right of the 1080px client area.
         key(window, "Escape")  # Dismiss the picker before opening the menu.
         time.sleep(0.1)
-        subprocess.run(["xdotool", "mousemove", "--window", window, "1055", "20", "click", "1"], check=True, timeout=10)
+        geometry = subprocess.check_output(
+            ["xdotool", "getwindowgeometry", "--shell", window], text=True, timeout=5
+        )
+        width = int(re.search(r"^WIDTH=(\d+)$", geometry, re.M)[1])
+        subprocess.run(["xdotool", "mousemove", "--window", window, str(width - 25), "20",
+                        "click", "1"], check=True, timeout=10)
         time.sleep(0.3)
         if screenshot := os.environ.get("CORVID_DESKTOP_SCREENSHOT"):
             # Capture the empty window's menu, never a user's terminal content.
