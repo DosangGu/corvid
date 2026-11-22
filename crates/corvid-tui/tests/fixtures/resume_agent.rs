@@ -35,6 +35,11 @@ fn main() {
     if session == "mismatch" {
         session = "wrong-session".into();
     }
+    if resumed.is_some() && session == "saved-claude" && Path::new("delay-claude-restore").is_file()
+    {
+        // Exceed the old TUI test deadline but confirm within the daemon's window.
+        std::thread::sleep(std::time::Duration::from_secs(21));
+    }
     observe(
         provider,
         &session,
