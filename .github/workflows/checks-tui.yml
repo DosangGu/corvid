@@ -63,3 +63,27 @@ jobs:
       - run: cargo test --locked -p corvid-tui --lib --bins
       - name: TUI attach, render and input against a scripted peer
         run: cargo test --locked -p corvid-tui --test scripted_attach
+
+  windows-tui-exit:
+    name: TUI lifecycle (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Read queued terminal and detach events after named-pipe closure
+        run: cargo test --locked --release -p corvid-client --lib closed_named_pipe_preserves_the_queued_terminal_status
+      - name: Repeat the release-mode ConPTY lifecycle tests
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            cargo test --locked --release -p corvid-tui --test windows_daemon -- ordinary_attach_resumes tui_reopens_its_last_workspace retains_the_windows_shell
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

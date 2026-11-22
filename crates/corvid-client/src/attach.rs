@@ -909,13 +909,7 @@ impl Interactive {
         };
 
         if let Some(FrameError::Io(io)) = error.downcast_ref()
-            && matches!(
-                io.kind(),
-                ErrorKind::BrokenPipe
-                    | ErrorKind::ConnectionReset
-                    | ErrorKind::ConnectionAborted
-                    | ErrorKind::NotConnected
-            )
+            && peer_disconnected(io)
             && let Some(status) = self.read_final_status().await?
         {
             return Ok(Some(status));
@@ -1254,6 +1248,28 @@ impl Interactive {
     }
 }
 
+fn peer_disconnected(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED};
+
+        // A named pipe can report either a closing pipe or an already disconnected one.
+        if matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED)
+        ) {
+            return true;
+        }
+    }
+    matches!(
+        error.kind(),
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+    )
+}
+
 async fn wait_until(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => sleep_until(deadline).await,
@@ -1369,6 +1385,95 @@ mod restore_tests {
                 assert_eq!(result?, exit_code);
             } else {
                 assert!(result.is_err(), "an unexpected closure must still fail");
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[compio::test]
+    async fn closed_named_pipe_preserves_the_queued_terminal_status() -> Result<()> {
+        use compio::io::util::Splittable;
+        use corvid_protocol::FrameRole;
+        use corvid_protocol::windows::{CompioPipeListener, open_compio_pipe};
+        use corvid_protocol::wire::TerminalExited;
+
+        for expected in [Some(0), Some(7), None] {
+            let instance = Uuid::new_v4().simple().to_string();
+            let mut listener = CompioPipeListener::bind(&instance)?;
+            let (read, write) = timeout(COMMAND_TIMEOUT, open_compio_pipe(&instance))
+                .await??
+                .split();
+            let mut daemon = timeout(COMMAND_TIMEOUT, listener.accept()).await??;
+            let session = Session {
+                role: PeerRole::Tui,
+                protocol_minor: corvid_protocol::PROTOCOL_MINOR,
+                host_id: Uuid::new_v4().to_string(),
+                server_epoch: Uuid::new_v4().to_string(),
+                controller_id: None,
+                capabilities: Vec::new(),
+                provider_profiles: Vec::new(),
+                daemon_version: None,
+            };
+            let route = RouteToken {
+                terminal_id: Uuid::new_v4().to_string(),
+                ..Default::default()
+            };
+            let final_event = match expected {
+                Some(0) => Some(Body::Detach(Detach {})),
+                Some(exit_code) => Some(Body::TerminalExited(TerminalExited {
+                    terminal_id: route.terminal_id.clone(),
+                    exit_code,
+                    signal: None,
+                })),
+                None => None,
+            };
+            {
+                let mut daemon_writer =
+                    FrameWriter::start(&mut daemon, FrameRole::TuiOutput).await?;
+                if let Some(event) = final_event {
+                    daemon_writer
+                        .envelope(&session.envelope(None, event))
+                        .await?;
+                }
+            }
+            let writer = FrameWriter::start(write, FrameRole::StructuredOnly).await?;
+            let reader = FrameReader::start(read, FrameRole::TuiOutput).await?;
+            let mut client = Interactive::new(
+                Connection {
+                    session,
+                    reader,
+                    writer,
+                },
+                Viewport::new(80, 24)?,
+                route,
+                Duration::ZERO,
+                None,
+            );
+            if expected.is_some() {
+                // Wait until the reader has queued the status before closing the server handle.
+                timeout(COMMAND_TIMEOUT, async {
+                    while client.incoming.frames.is_empty() {
+                        compio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .context("waiting for the queued status")?;
+            }
+            drop(daemon);
+            let result = client
+                .acknowledge_frame(FrameApplied {
+                    render_generation: 1,
+                    frame_id: 1,
+                })
+                .await;
+            if expected.is_some() {
+                assert_eq!(result?, expected);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "a pipe closure without a final status must fail"
+                );
             }
         }
         Ok(())
