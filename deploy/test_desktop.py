@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import signal
+import sys
 import subprocess
 import tarfile
 import tempfile
@@ -18,6 +19,7 @@ import monitor_fixture
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("assets", type=Path, nargs="?", help="directory containing the Desktop archive")
 parser.add_argument("--build", type=Path, help="directory containing built Desktop and runtime binaries")
+parser.add_argument("--paste-only", action="store_true", help="run the tab and Unicode paste smoke test")
 args = parser.parse_args()
 if (args.assets is None) == (args.build is None):
     parser.error("provide either an assets directory or --build")
@@ -216,6 +218,15 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                 assert time.monotonic() < deadline, layout
                 time.sleep(0.05)
 
+        def paste_unicode():
+            pasted = "한글 e\u0301 🐦"
+            paste_marker = root / "pasted"
+            paste_command = f"printf %s {shlex.quote(pasted)} > {shlex.quote(str(paste_marker))}"
+            subprocess.run(["xclip", "-selection", "clipboard"], input=paste_command.encode("utf-8"),
+                           check=True, timeout=10)
+            key(window, "ctrl+shift+v", "Return")
+            wait_for_marker(paste_marker, pasted)
+
         retired = wait_for_writer()
         first_probe = wait_for_keyboard(window, retired)
         first_marker = root / "first"
@@ -226,6 +237,18 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             raise AssertionError(
                 f"{error} ({input_status(window, retired, first_probe)})"
             ) from error
+        if args.paste_only:
+            first_terminal = wait_for_terminal()
+            new_tab(window)
+            wait_for_terminal(previous=first_terminal)
+            paste_unicode()
+            key(window, "ctrl+bracketright", "bracketleft")
+            wait_for_terminal(expected=first_terminal)
+            marker = root / "isolated"
+            write_marker(window, marker, f'printf %s "$kept" > {shlex.quote(str(marker))}')
+            print("PASS desktop-paste")
+            sys.exit(0)
+
         # Scrollback must release the keyboard at the bottom, and an ordinary
         # foreground program that never enabled mouse reporting must keep it.
         def wheel(button, count):
@@ -366,15 +389,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             f"unexpected terminal chords: {chords!r}"
         )
 
-        # Use the real clipboard and keyboard path, with synthetic Unicode data.
-        pasted = "한글 e\u0301 🐦"
-        paste_marker = root / "pasted"
-        paste_command = f"printf %s {shlex.quote(pasted)} > {shlex.quote(str(paste_marker))}"
-        subprocess.run(["xclip", "-selection", "clipboard"], input=paste_command.encode("utf-8"),
-                       check=True, timeout=10)
-        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"], check=True, timeout=10)
-        subprocess.run(["xdotool", "key", "Return"], check=True, timeout=10)
-        wait_for_marker(paste_marker, pasted)
+        paste_unicode()
         search_ready = root / "search-ready"
         type_command(f"seq -f 'search-item-%03g' 1 75; printf ready > {shlex.quote(str(search_ready))}")
         wait_for_marker(search_ready, "ready")
@@ -580,6 +595,14 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
 
         print("PASS Desktop keyboard input, Unicode clipboard paste, tab creation/switching, independent windows, new-window menu, close/quit/relaunch, shell continuity, settings, and X11 icons")
+    except Exception:
+        if screenshot := os.environ.get("CORVID_UI_FAILURE_SCREENSHOT"):
+            try:
+                subprocess.run(["scrot", "--overwrite", "--focused", screenshot],
+                               check=True, timeout=10)
+            except (OSError, subprocess.SubprocessError) as error:
+                print(f"Could not capture fixture window: {error}", file=sys.stderr)
+        raise
     finally:
         for process in [deck, desktop, previous, daemon, manager]:
             if process is not None and process.poll() is None:

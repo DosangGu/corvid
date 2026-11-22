@@ -199,7 +199,7 @@ def capture_history(deck, scale, screenshot):
     run("scrot", "--overwrite", "--focused", str(screenshot))
 
 
-def main(build, screenshot, history_screenshot, tooltip_screenshot):
+def main(build, screenshot, history_screenshot, tooltip_screenshot, failure_screenshot):
     with ExitStack() as stack:
         root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".deck-focus-", dir=Path.home())))
         runtime = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".cvf-", dir=Path.home())))
@@ -227,6 +227,15 @@ def main(build, screenshot, history_screenshot, tooltip_screenshot):
         desktop = until("Desktop window", lambda: window("Corvid Desktop"))
         reader, _ = monitor_fixture.ready(corvid, state, env)
         stack.callback(monitor_fixture.stop, corvid, state, env)
+
+        def capture_failure(exc_type, _value, _traceback):
+            if exc_type is not None and failure_screenshot:
+                try:
+                    run("scrot", "--overwrite", "--focused", failure_screenshot)
+                except (OSError, subprocess.SubprocessError) as error:
+                    print(f"Could not capture fixture window: {error}")
+
+        stack.push(capture_failure)
 
         def control(command):
             return run(corvid, "control", command, env=env, capture_output=True, text=True).stdout
@@ -315,5 +324,7 @@ if __name__ == "__main__":
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--history-screenshot", type=Path)
     parser.add_argument("--tooltip-screenshot", type=Path)
+    parser.add_argument("--failure-screenshot", type=Path)
     args = parser.parse_args()
-    main(args.build.resolve(), args.screenshot, args.history_screenshot, args.tooltip_screenshot)
+    main(args.build.resolve(), args.screenshot, args.history_screenshot, args.tooltip_screenshot,
+         args.failure_screenshot)
