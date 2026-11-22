@@ -7,7 +7,7 @@ use corvid_protocol::wire::WheelEncoding;
 use uuid::Uuid;
 
 use super::keys::{KeyCommand, Keymap, TabCommand};
-use super::status::clip;
+use super::title_motion::{TitleMotion, TitleTarget, window};
 
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
@@ -264,12 +264,59 @@ impl Overlay {
         }
     }
 
+    pub(super) fn title_target<'a>(
+        &self,
+        layout: &'a Layout,
+        location: Location,
+        outer: Viewport,
+    ) -> Option<TitleTarget<'a>> {
+        let Self::List {
+            kind,
+            selected: Some(id),
+            query,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        // Keep at least one terminal row above the picker, plus its controls.
+        let title = match kind {
+            Kind::Workspaces if outer.rows.get() > 3 => {
+                &layout
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == *id)?
+                    .label
+            }
+            Kind::Tabs if outer.rows.get() > 4 => {
+                &layout
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == location.workspace)?
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == *id)?
+                    .label
+            }
+            _ => return None,
+        };
+        title
+            .to_lowercase()
+            .contains(&query.to_lowercase())
+            .then_some((
+                *id,
+                title.as_str(),
+                usize::from(outer.cols.get().saturating_sub(2)),
+            ))
+    }
+
     pub(super) fn paint(
         &self,
         layout: &Layout,
         location: Location,
         keymap: Keymap,
         outer: Viewport,
+        motion: &TitleMotion,
     ) -> String {
         let mut lines = Vec::new();
         match self {
@@ -307,7 +354,13 @@ impl Overlay {
                     .saturating_sub(visible / 2)
                     .min(items.len().saturating_sub(visible));
                 lines.extend(items.into_iter().enumerate().skip(start).take(visible).map(
-                    |(row, (label, _))| format!("{} {label}", if row == index { '>' } else { ' ' }),
+                    |(row, (label, choice))| {
+                        if row == index && choice.id().is_some() && choice.id() == *selected {
+                            format!("> {}", motion.visible())
+                        } else {
+                            format!("{} {label}", if row == index { '>' } else { ' ' })
+                        }
+                    },
                 ));
             }
             Self::Panes(_) => lines.push(
@@ -402,7 +455,7 @@ pub(super) fn paint_lines(outer: Viewport, lines: &[String]) -> String {
         let _ = write!(
             frame,
             "\x1b[{row};1H{style}\x1b[2K{}",
-            clip(line, usize::from(outer.cols.get()))
+            window(line, usize::from(outer.cols.get()), 0)
         );
     }
     frame.push_str("\x1b[0m\x1b[?7h");

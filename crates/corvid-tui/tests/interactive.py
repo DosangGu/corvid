@@ -882,6 +882,47 @@ def verify_workspace_ui(command, directory):
         terminal.wait(0)
 
 
+def verify_overflowing_titles(command):
+    env = os.environ | {"CORVID_LEGACY_TUI": "0"}
+    with OuterTerminal(
+        [*command, "attach", "--new-workspace", "workspace-review-WEST"],
+        cols=40, rows=12, env=env,
+    ) as terminal:
+        terminal.expect(rb"workspace-rev")
+        terminal.send(b"\x1dt")
+        terminal.expect(b"New tab")
+        terminal.send(b"\t\r")
+        terminal.expect(rb"\x1b\[0;1;36m\[2 ")
+        terminal.output.clear()
+        terminal.send(b"\x1d[")
+        terminal.expect(rb"\x1b\[0;1;36m\[1 ")
+        terminal.send(b"\x1d.")
+        terminal.expect(rb"Rename tab")
+        terminal.send("shared-prefix-한글-TAIL\r".encode())
+        active_tab = terminal.expect(rb"\x1b\[1;(\d+)H\x1b\[0;1;36m\[1 shared-prefix").group(1)
+        terminal.output.clear()
+
+        # While the shell is idle, the next animation frame changes only the header.
+        frame = terminal.expect(rb"\x1b7(?:(?!\x1b8).)*TAIL\].*?\x1b8").group()
+        assert b"\x1b[2J" not in frame
+        assert b"\x1b[1;" + active_tab + b"H" in frame
+        second_tab = re.search(rb"\x1b\[1;(\d+)H\x1b\[0m2 ", frame)[1]
+        terminal.expect(rb"\x1b7(?:(?!\x1b8).)*WEST(?:(?!\x1b8).)*\x1b8")
+        terminal.output.clear()
+        terminal.send(b"\x1b[<0;" + second_tab + b";1M")
+        terminal.expect(rb"\x1b\[0;1;36m\[2 ")
+        terminal.resize(20, 12)
+        terminal.output.clear()
+        terminal.expect(rb"\x1b\[1;1H\x1b\[0m\x1b\[2K\x1b\[0;2mworksp")
+        terminal.send(b"\x1dw")
+        terminal.expect(rb"Workspaces")
+        terminal.expect(rb"\x1b\[\d+;1H\x1b\[0m\x1b\[2K> [^\x1b]*WEST")
+        terminal.send(b"\x1b")
+        time.sleep(0.15)
+        terminal.send(b"\x1dd")
+        terminal.wait(0)
+
+
 def run(binary, *, tty_only=False):
     binary = str(Path(binary).resolve())
     os.environ["TERM"] = "xterm-256color"
@@ -908,6 +949,7 @@ def run(binary, *, tty_only=False):
             verify_tabs(command, directory)
             verify_tab_picker(command, directory)
             verify_workspace_ui(command, directory)
+            verify_overflowing_titles(command)
         finally:
             stop(daemon)
         verify_resume(binary, directory)

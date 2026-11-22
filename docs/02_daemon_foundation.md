@@ -116,8 +116,13 @@ show pane titles, a marker for the active pane, and read-only terminal previews.
 A click in the layout selects the pane or tab under the pointer. A terminal
 application that enables mouse reporting can receive pane-relative clicks.
 Narrow terminals keep the active terminal visible.
+Long workspace names and active tab titles scroll back and forth inside their
+fixed columns, pausing at each end. The selected row in the workspace and tab
+pickers does the same. Tab numbers and click targets stay in place.
 
 ![TUI with three panes and pane selection](images/workspace-navigation/tui.png)
+
+![Long workspace and tab titles scrolling in a 40-column TUI](images/workspace-navigation/tui-title-animation.gif)
 
 Use `corvid attach -- program arg` to start an explicit command on the running
 daemon. When starting a daemon directly, install the terminfo entry with

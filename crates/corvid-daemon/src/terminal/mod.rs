@@ -16,6 +16,7 @@ mod screen;
 mod session;
 mod status;
 mod tabs;
+mod title_motion;
 mod worker;
 
 pub(crate) use keys::{InputMode, Keymap, TabCommand};
