@@ -158,7 +158,7 @@ jobs:
       - name: Linux Desktop title synchronization over SSH
         if: inputs.qualify
         timeout-minutes: 10
-        run: python3 deploy/test_title_ssh.py --binary target/${{ matrix.desktop }}/release/corvid --target ${{ matrix.desktop }} --release
+        run: python3 tests/ui/linux/test_title_ssh.py --binary target/${{ matrix.desktop }}/release/corvid --target ${{ matrix.desktop }} --release
       - name: Linux Desktop UI interactions
         if: inputs.qualify
         timeout-minutes: 10
@@ -170,17 +170,18 @@ jobs:
           CORVID_PANE_MODE_SCREENSHOT: target/desktop-pane-mode.png
           CORVID_PANE_CLOSE_PREVIEW_DIR: target
           CORVID_SCROLL_PREVIEW_DIR: target
-        run: xvfb-run -a python3 deploy/test_desktop.py --build target/${{ matrix.desktop }}/release
+        run: python3 tests/ui/run.py --build target/${{ matrix.desktop }}/release --case desktop-lifecycle
       - name: Connected managed SSH updates
         if: inputs.qualify
         timeout-minutes: 10
-        run: xvfb-run -a python3 deploy/test_remote_update.py --build target/${{ matrix.desktop }}/release --target ${{ matrix.desktop }} --screenshot target/remote-update-prompt.png
+        run: xvfb-run -a python3 tests/ui/linux/test_remote_update.py --build target/${{ matrix.desktop }}/release --target ${{ matrix.desktop }} --screenshot target/remote-update-prompt.png
       - name: Linux Agent Deck card focus
         if: inputs.qualify
         timeout-minutes: 5
-        run: |
-          xvfb-run -a python3 deploy/test_deck_focus.py --build target/${{ matrix.desktop }}/release \
-            --history-screenshot target/agent-deck-run-history.png --tooltip-screenshot target/agent-deck-tooltip.png
+        env:
+          CORVID_DECK_HISTORY_SCREENSHOT: target/agent-deck-run-history.png
+          CORVID_DECK_TOOLTIP_SCREENSHOT: target/agent-deck-tooltip.png
+        run: python3 tests/ui/run.py --build target/${{ matrix.desktop }}/release --case deck-focus
       - name: Linux Agent Deck multi-host grid
         if: inputs.qualify
         timeout-minutes: 5
@@ -222,6 +223,12 @@ jobs:
             target/scroll-live.png
             target/tab-search.png
           if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: failure()
+        with:
+          name: native-ui-failure-${{ matrix.desktop }}
+          path: target/ui-tests/
+          if-no-files-found: ignore
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: bash

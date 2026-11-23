@@ -402,8 +402,8 @@ the previous published release with live terminal sessions.
 
 `deploy/test_native.py` checks Windows Setup install, upgrade from a synthetic earlier
 version with a running daemon, and uninstall with retained user state.
-`deploy/test_desktop.py` checks that the packaged Linux Desktop opens an X11 window.
-Visible menu behavior and native Windows Desktop startup require separate UI
-verification; archive checks and compilation alone do not establish those results.
+`tests/ui/run.py` exercises the packaged Desktop and Agent Deck on Linux,
+Windows, and macOS before publication. See the
+[UI test commands](08_ci_validation.md#desktop-and-agent-deck-ui).
 On WSL, run Unix integration tests from a Linux filesystem checkout: fixtures
 under a Windows mount can fail the runtime's parent-directory permission checks.

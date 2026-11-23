@@ -1031,19 +1031,32 @@ def verify_overflowing_titles(command):
         terminal.output.clear()
         terminal.send(b"\x1b[<0;" + second_tab + b";1M")
         terminal.expect(rb"\x1b\[0;1;36m\[2 ")
-        terminal.resize(20, 12)
+        full_redraw = rb"\x1b\[2J\x1b\[1;1H\x1b\[0m"
+        header_redraw = full_redraw + rb"\x1b\[2K"
+        shell_redraw = (
+            full_redraw + rb"\x1b\[0(?:;\d+)*m"
+            rb"(?:(?!\x1b\[\?25).)*\x1b\[\?25h"
+        )
         terminal.output.clear()
-        terminal.expect(rb"\x1b\[1;1H\x1b\[0m\x1b\[2K\x1b\[0;2mworksp")
+        terminal.resize(20, 12)
+        terminal.expect(header_redraw + rb"\x1b\[0;2mworksp\x1b")
+        terminal.output.clear()
         terminal.resize(20, 2)
+        # At two rows the normal redraw starts with the shell and ends with a visible cursor.
+        # A row-two cursor move alone can belong to the old viewport.
+        terminal.expect(shell_redraw)
         terminal.output.clear()
-        terminal.expect(rb"\x1b\[2;1H")
-        terminal.send(b"\x1dth")
+        terminal.send(b"\x1dt")
+        terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m\[2 ")
+        terminal.output.clear()
+        terminal.send(b"h")
         terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m1 shared-")
-        terminal.send(b"\x1b")
-        time.sleep(0.15)
-        terminal.resize(20, 12)
         terminal.output.clear()
-        terminal.expect(rb"\x1b\[0;1;36m\[2 ")
+        terminal.send(b"\x1b")
+        terminal.expect(shell_redraw)
+        terminal.output.clear()
+        terminal.resize(20, 12)
+        terminal.expect(header_redraw + rb"\x1b\[0;2m[^\x1b]*\x1b\[1;\d+H\x1b\[0;1;36m\[2 ")
         terminal.send(b"\x1dw")
         terminal.expect(rb"Workspaces")
         terminal.expect(rb"\x1b\[\d+;1H\x1b\[0m\x1b\[2K> [^\x1b]*WEST")

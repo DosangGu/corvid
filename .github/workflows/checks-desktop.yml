@@ -18,8 +18,8 @@ on:
       - 'crates/corvid-update/**'
       - 'deploy/macos/relaunch.swift'
       - 'deploy/macos_package.py'
-      - 'deploy/macos_dock_fixture.swift'
-      - 'deploy/test_macos_dock_update.py'
+      - 'tests/ui/macos/macos_dock_fixture.swift'
+      - 'tests/ui/macos/test_dock_update.py'
       - 'crates/corvid-client/**'
       - 'crates/corvid-companion/**'
       - 'crates/corvid-agent-deck/**'
@@ -112,4 +112,4 @@ jobs:
         run: cargo test --locked -p corvid-desktop --test desktop_symbols
       - name: Relaunch a pinned macOS Desktop through the installed bundle
         if: runner.os == 'macOS'
-        run: python3 deploy/test_macos_dock_update.py --relaunch-binary target/debug/corvid-desktop
+        run: python3 tests/ui/macos/test_dock_update.py --relaunch-binary target/debug/corvid-desktop
