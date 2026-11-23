@@ -183,19 +183,98 @@ impl Fixture {
         }
     }
 
+    async fn wait_for_saved_sessions(&self, sessions: &[&str]) -> Result<()> {
+        let result = timeout(WAIT, async {
+            loop {
+                let stored = self.stored()?;
+                if sessions.iter().enumerate().all(|(index, session)| {
+                    let pane = self.locations[index].pane.to_string();
+                    stored["resumes"][pane]["key"]["provider_session_id"] == *session
+                }) {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        match result {
+            Ok(result) => result,
+            Err(error) => {
+                let diagnostics = self.saved_session_diagnostics(sessions).await;
+                Err(error).context(format!("waiting for saved conversations: {diagnostics}"))
+            }
+        }
+    }
+
+    async fn saved_session_diagnostics(&self, sessions: &[&str]) -> String {
+        let stored = self.stored();
+        let running = timeout(RESTORE_DIAGNOSTIC_WAIT, async {
+            corvid_async::join!(
+                corvid_client::agents(&self.runtime),
+                corvid_client::status(&self.runtime),
+            )
+        })
+        .await;
+        let pane_states: Vec<_> = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| {
+                let pane = self.locations[index].pane.to_string();
+                let saved = stored.as_ref().ok().map(|stored| {
+                    let resume = &stored["resumes"][&pane];
+                    (
+                        resume["key"]["provider_session_id"].as_str(),
+                        resume["verified"].as_bool(),
+                    )
+                });
+                let runs: Vec<_> = running
+                    .as_ref()
+                    .ok()
+                    .and_then(|(agents, _)| agents.as_ref().ok())
+                    .into_iter()
+                    .flat_map(|list| &list.agents)
+                    .filter(|agent| {
+                        agent
+                            .location
+                            .as_ref()
+                            .is_some_and(|view| view.pane_id == pane)
+                    })
+                    .map(|agent| {
+                        (
+                            agent.process(),
+                            agent.collection(),
+                            agent.provider_session_id.as_deref(),
+                        )
+                    })
+                    .collect();
+                let observer = self.observer_diagnostics(session, "startup");
+                format!("{session}: saved={saved:?}, runs={runs:?}, observer={observer:?}")
+            })
+            .collect();
+        let status = running.map(|(_, status)| status);
+        format!("{}; daemon status: {status:?}", pane_states.join(", "))
+    }
+
+    fn observer_diagnostics(&self, session: &str, source: &str) -> Option<String> {
+        std::fs::read_to_string(self.root.join(format!("observer-{session}-{source}.txt"))).ok()
+    }
+
     async fn inspect_restore(&self, location: Location) -> Result<String> {
         timeout(RESTORE_DIAGNOSTIC_WAIT, async {
             let mut connection = self.connection().await?;
-            let result = connection
-                .restore_workspace(RestoreWorkspace {
+            let (result, status) = corvid_async::join!(
+                connection.restore_workspace(RestoreWorkspace {
                     workspace_id: location.workspace.to_string(),
                     pane_id: Some(location.pane.to_string()),
                     mode: AgentRestoreMode::Inspect as i32,
-                })
-                .await?;
+                }),
+                corvid_client::status(&self.runtime),
+            );
+            let result = result?;
             let pane = result.panes.first().context("missing restore pane")?;
+            let collector = status.map(|status| status.collector);
             Ok(format!(
-                "status={:?}, error={:?}, terminal={:?}",
+                "status={:?}, error={:?}, terminal={:?}, collector={collector:?}",
                 pane.status(),
                 pane.error.as_ref().map(|error| &error.code),
                 pane.terminal_id
@@ -233,15 +312,9 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
             .await?;
         old_terminals.insert(attached.route_token.unwrap().terminal_id);
     }
-    timeout(WAIT, async {
-        loop {
-            let stored = fixture.stored()?;
-            if ["switched-a", "session-b", "session-c"].iter().enumerate().all(|(index, key)| {
-                stored["resumes"][fixture.locations[index].pane.to_string()]["key"]["provider_session_id"] == *key
-            }) { break Ok::<_, anyhow::Error>(()); }
-            sleep(Duration::from_millis(50)).await;
-        }
-    }).await.context("waiting for verified saved conversations")??;
+    fixture
+        .wait_for_saved_sessions(&["switched-a", "session-b", "session-c"])
+        .await?;
     let before = corvid_client::agents(&fixture.runtime).await?;
     ensure!(
         before.agents.iter().any(|agent| agent.pending_requests > 0),
@@ -382,20 +455,9 @@ async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Re
             )
             .await?;
     }
-    timeout(WAIT, async {
-        loop {
-            let stored = fixture.stored()?;
-            if agents.iter().enumerate().all(|(index, (_, session))| {
-                let pane = fixture.locations[index].pane.to_string();
-                stored["resumes"][pane]["key"]["provider_session_id"] == *session
-            }) {
-                return Ok::<_, anyhow::Error>(());
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .context("waiting for saved startup conversations")??;
+    fixture
+        .wait_for_saved_sessions(&agents.map(|(_, session)| session))
+        .await?;
     daemon.kill()?;
     daemon.status().await?;
 
@@ -432,9 +494,10 @@ async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Re
                 .inspect_restore(location)
                 .await
                 .unwrap_or_else(|error| format!("{error:#}"));
+            let observer = fixture.observer_diagnostics(session, "resume");
             return Err(error.context(format!(
-                "startup restore of {session} in pane {}: {restore}",
-                location.pane
+                "startup restore of {session} in pane {}: {restore}, observer={observer:?}",
+                location.pane,
             )));
         }
         let agents = corvid_client::agents(&fixture.runtime).await?;
