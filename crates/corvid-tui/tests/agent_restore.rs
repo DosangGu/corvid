@@ -10,6 +10,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use async_process::{Child, Command};
 use corvid_async::time::{sleep, timeout};
+#[cfg(windows)]
+use corvid_async::{Semaphore, SemaphoreGuard};
 use corvid_client::view_state::{ViewStore, tui_target};
 use corvid_client::{ControlEndpoint, InteractiveConnection};
 use corvid_core::layout::{CwdObservation, CwdSource, Layout, Location};
@@ -33,16 +35,25 @@ const WAIT: Duration = Duration::from_secs(20);
 const STARTUP_RESTORE_WAIT: Duration = Duration::from_secs(60);
 const RESTORE_DIAGNOSTIC_WAIT: Duration = Duration::from_secs(2);
 
+#[cfg(windows)]
+static WINDOWS_RESTORE_FIXTURE: Semaphore = Semaphore::new(1);
+
 struct Fixture {
     _root: tempfile::TempDir,
     root: PathBuf,
     runtime: PathBuf,
     state: PathBuf,
     locations: Vec<Location>,
+    #[cfg(windows)]
+    _windows_slot: SemaphoreGuard<'static>,
 }
 
 impl Fixture {
-    fn new() -> Result<Self> {
+    async fn new() -> Result<Self> {
+        // Each case starts real ConPTY sessions and short-lived hook processes.
+        // Avoid competing with the other fixtures for the collector deadline.
+        #[cfg(windows)]
+        let windows_slot = WINDOWS_RESTORE_FIXTURE.acquire().await;
         let temporary = tempfile::tempdir_in(std::env::home_dir().context("home directory")?)?;
         let root = temporary.path().to_owned();
         let runtime = root.join("run");
@@ -104,6 +115,8 @@ impl Fixture {
             runtime,
             state,
             locations,
+            #[cfg(windows)]
+            _windows_slot: windows_slot,
         })
     }
 
@@ -288,7 +301,7 @@ impl Fixture {
 #[compio::test]
 async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_clients()
 -> Result<()> {
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::new().await?;
     let mut daemon = fixture.start().await?;
     let mut old_terminals = HashSet::new();
     for (index, provider, session) in [
@@ -437,7 +450,7 @@ async fn restores_exact_pane_conversations_after_loss_and_is_idempotent_across_c
 
 #[compio::test]
 async fn tui_startup_resumes_exact_agent_conversations_after_daemon_loss() -> Result<()> {
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::new().await?;
     let mut daemon = fixture.start().await?;
     let agents = [
         (AgentProvider::Claude, "saved-claude"),
@@ -632,7 +645,7 @@ impl StartupTui {
 
 #[compio::test]
 async fn tui_workspace_attach_restores_its_last_pane_and_honors_explicit_selectors() -> Result<()> {
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::new().await?;
     let _daemon = fixture.start().await?;
     for (index, session) in [
         (0, "first-pane"),
