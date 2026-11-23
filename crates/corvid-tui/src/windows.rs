@@ -175,8 +175,11 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
     match command {
         Command::Daemon { .. } => unreachable!("Compio daemon dispatched before the CLI executor"),
         Command::EnsureDaemon { state_dir, ssh } => {
-            crate::daemon_bootstrap::prepare_cli(&runtime).await?;
-            ensure_daemon(&runtime, &state_path(state_dir)?, ssh, None).await?;
+            let state = state_path(state_dir)?;
+            crate::daemon_bootstrap::ensure_with_install(|| {
+                ensure_daemon(&runtime, &state, ssh, None)
+            })
+            .await?;
         }
         Command::Upgrade {
             managed_ssh_from: Some(managed_ssh_from),
@@ -260,10 +263,9 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
 pub(super) async fn start_attach(runtime: PathBuf, mut options: AttachOptions) -> Result<u32> {
     options.remember_view = true;
     check_tty()?;
-    if !daemon::probe(&runtime, Instant::now() + daemon::STARTUP_TIMEOUT).await? {
-        crate::daemon_bootstrap::prepare_cli(&runtime).await?;
-        ensure_daemon(&runtime, &state_path(None)?, false, None).await?;
-    }
+    let state = state_path(None)?;
+    crate::daemon_bootstrap::ensure_with_install(|| ensure_daemon(&runtime, &state, false, None))
+        .await?;
     crate::attach_monitored(&runtime, options).await
 }
 

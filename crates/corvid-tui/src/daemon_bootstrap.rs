@@ -1,4 +1,6 @@
 use std::ffi::{OsStr, OsString};
+use std::fmt;
+use std::future::Future;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -34,17 +36,32 @@ pub async fn install_local_daemon() -> Result<PathBuf> {
 }
 
 pub(super) async fn ensure_cli(runtime: &Path) -> Result<()> {
-    prepare_cli(runtime).await?;
-    super::ensure_local_daemon(runtime).await
+    ensure_with_install(|| super::ensure_local_daemon(runtime)).await
 }
 
-pub(super) async fn prepare_cli(runtime: &Path) -> Result<()> {
-    match corvid_client::ping(runtime).await {
-        Ok(()) => Ok(()),
-        Err(error) if corvid_client::daemon_missing(&error) => require_cli_daemon().await,
-        Err(error) => Err(error),
+pub(super) async fn ensure_with_install<F: Future<Output = Result<()>>>(
+    mut ensure: impl FnMut() -> F,
+) -> Result<()> {
+    match ensure().await {
+        Err(error) if error.is::<DaemonExecutableMissing>() => {
+            require_cli_daemon().await?;
+            ensure().await
+        }
+        result => result,
     }
 }
+
+#[derive(Debug)]
+pub struct DaemonExecutableMissing;
+
+impl fmt::Display for DaemonExecutableMissing {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .write_str("The Corvid daemon is missing. Run corvid from a terminal to install it.")
+    }
+}
+
+impl std::error::Error for DaemonExecutableMissing {}
 
 pub(super) async fn require_cli_daemon() -> Result<()> {
     if find()?.is_none() {

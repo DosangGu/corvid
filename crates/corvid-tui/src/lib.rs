@@ -170,13 +170,12 @@ async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions)
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-pub use daemon_bootstrap::{daemon_is_installed, install_local_daemon};
+pub use daemon_bootstrap::{DaemonExecutableMissing, daemon_is_installed, install_local_daemon};
 
 /// Resolve the local daemon independently of the client executable.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn local_daemon_executable() -> Result<PathBuf> {
-    daemon_bootstrap::find()?
-        .context("The Corvid daemon is missing. Run corvid from a terminal to install it.")
+    daemon_bootstrap::find()?.ok_or_else(|| DaemonExecutableMissing.into())
 }
 
 /// Replace an automatically started daemon while preserving its hosted terminals.

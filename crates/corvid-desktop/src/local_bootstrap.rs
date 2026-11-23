@@ -26,12 +26,16 @@ pub async fn connect(
     let connection_guard = LOCAL_CONNECTION.lock().await;
     let connection = match endpoint.interactive(capabilities.clone()).await {
         Err(error) if explicit && daemon_missing(&error) => {
-            install_if_needed(prompts, &progress).await?;
             progress("Starting the local Corvid daemon…");
-            match corvid_tui::ensure_local_daemon(&runtime).await {
-                Ok(()) => endpoint.interactive(capabilities.clone()).await,
-                Err(error) => Err(error.context("starting the local Corvid daemon")),
+            if let Err(error) = corvid_tui::ensure_local_daemon(&runtime).await {
+                if !error.is::<corvid_tui::DaemonExecutableMissing>() {
+                    return Err(error.context("starting the local Corvid daemon"));
+                }
+                install_if_needed(prompts, &progress).await?;
+                progress("Starting the local Corvid daemon…");
+                corvid_tui::ensure_local_daemon(&runtime).await?;
             }
+            endpoint.interactive(capabilities.clone()).await
         }
         connection => connection,
     };
