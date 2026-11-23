@@ -327,7 +327,7 @@ impl Projection {
         while let Some((index, row)) = rows.next_dirty() {
             let wrapped = row.raw_row()?.is_wrapped()?;
             let mut cells = self.cells.update(row)?;
-            let mut line = Vec::with_capacity(columns);
+            let mut line: Vec<FrameCell> = Vec::with_capacity(columns);
             while let Some(cell) = cells.next() {
                 let raw = cell.raw_cell()?;
                 let tag = raw.content_tag()?;
@@ -337,6 +337,26 @@ impl Projection {
                         tag,
                         CellContentTag::BgColorRgb | CellContentTag::BgColorPalette
                     );
+                if codepoint == 0 && !styled {
+                    // Only the cell immediately after a wide glyph can be an
+                    // unstyled continuation. Other empty cells share defaults.
+                    let cell = if line.last().is_some_and(FrameCell::is_wide) {
+                        FrameCell::new("", Width::Continuation, FrameStyle::default())
+                    } else {
+                        FrameCell::default()
+                    };
+                    line.push(cell);
+                    continue;
+                }
+                if !styled && tag == CellContentTag::Codepoint && (32..=126).contains(&codepoint) {
+                    let ascii = [codepoint as u8];
+                    line.push(FrameCell::new(
+                        std::str::from_utf8(&ascii).unwrap(),
+                        Width::Single,
+                        FrameStyle::default(),
+                    ));
+                    continue;
+                }
                 let (style, invisible) = if styled {
                     let attributes = cell.style()?;
                     (cell_style(raw, tag, attributes)?, attributes.invisible)
