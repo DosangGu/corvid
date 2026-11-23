@@ -1,6 +1,21 @@
 """Quartz window discovery and native Cocoa input."""
 from pathlib import Path
+import shutil
 import subprocess
+
+from macos_package import plist, sign
+
+
+def bundle_deck(source, root):
+    # UserNotifications requires a bundle even when testing a local Cargo build.
+    app = root / "Corvid Agent Deck.app"
+    binary = app / "Contents/MacOS/corvid-agent-deck"
+    binary.parent.mkdir(parents=True)
+    shutil.copy2(source, binary)
+    plist(app, "Corvid Agent Deck", binary.name, "org.corvid.agent-deck.ui-test",
+          "0.0.0", background=True)
+    sign(app)
+    return binary
 
 
 class Desktop:

@@ -97,7 +97,7 @@ def native(system, cases, build, assets, artifacts):
     from scenario import run_case
 
     if system == "Darwin":
-        from macos import Desktop
+        from macos import Desktop, bundle_deck
     else:
         from windows import Desktop
 
@@ -112,6 +112,9 @@ def native(system, cases, build, assets, artifacts):
         with ExitStack() as stack:
             root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="cvui-", dir=parent)))
             paths = binaries(stack, system, build, assets, root)
+            if build and system == "Darwin" and case == "deck-window":
+                cli, desktop, deck = paths
+                paths = (cli, desktop, bundle_deck(deck, root))
             if case == "deck-tray":
                 env = dict(os.environ, CORVID_UI_DECK_BINARY=str(paths[2]))
                 subprocess.run(["cargo", "test", "--locked", "--release", "-p", "corvid-agent-deck-ui",

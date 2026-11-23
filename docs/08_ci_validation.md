@@ -117,7 +117,8 @@ case compiles the Rust integration test and uses the selected Deck executable.
   interactive ARM64 desktop with a US input source for the same input check.
   The hosted ARM64 runner refused foreground activation during qualification.
 - macOS needs a logged-in GUI session, Xcode command line tools, and
-  Accessibility permission to post key events. Paste tests use the system
+  Accessibility permission to post key events. The runner wraps a local Deck
+  build in a temporary signed app bundle. Paste tests use the system
   clipboard and foreground window. Use a dedicated session if other
   applications need those resources.
 
