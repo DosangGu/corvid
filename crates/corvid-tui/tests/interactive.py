@@ -81,10 +81,12 @@ def read_exact(length):
 def paste_child():
     tty.setraw(0)
     os.write(1, b"PLAIN-READY")
-    assert read_exact(len(PASTE)) == PASTE
+    plain = read_exact(len(PASTE))
+    assert plain == PASTE, ("plain paste", plain)
     os.write(1, b"\x1b[2;1H\x1b[?2004hBRACKET-READY")
     bracketed = PASTE_START + PASTE + PASTE_END
-    assert read_exact(len(bracketed)) == bracketed
+    received = read_exact(len(bracketed))
+    assert received == bracketed, ("bracketed paste", received)
     os.write(1, b"\x1b[3;1HKEYS-READY")
     assert read_exact(len(KEYS)) == KEYS
     os.write(1, b"\x1b[4;1HINPUT-COMPLETE")
@@ -130,7 +132,7 @@ class OuterTerminal:
         while (match := re.search(pattern, self.output)) is None:
             wait = max(0, deadline - time.monotonic())
             assert select.select([self.master], [], [], wait)[0], (
-                self.output[:700], self.output[-500:]
+                f"outer TTY status: {self.process.poll()}", self.output[:700], self.output[-500:]
             )
             self.output.extend(os.read(self.master, 8192))
             assert len(self.output) <= 1024 * 1024, "unexpected output volume"
@@ -294,8 +296,10 @@ def verify_command_menu(outer, progress, pid):
     wait_for_child_size(progress, "80x23")
 
 
-def send_paste(outer):
-    for chunk in (PASTE_START[:4], PASTE_START[4:], PASTE, PASTE_END[:2], PASTE_END[2:]):
+def send_paste(outer, *, opener_delay=0.01):
+    outer.send(PASTE_START[:4])
+    time.sleep(opener_delay)
+    for chunk in (PASTE_START[4:], PASTE, PASTE_END[:2], PASTE_END[2:]):
         outer.send(chunk)
         time.sleep(0.01)
 
@@ -304,7 +308,8 @@ def verify_paste(command):
     start = [*command, "attach", "--", sys.executable, __file__, "--paste-child"]
     with OuterTerminal(start) as outer:
         outer.expect(b"PLAIN-READY")
-        send_paste(outer)
+        # The opener must survive a gap longer than the 100 ms Esc key delay.
+        send_paste(outer, opener_delay=0.25)
         outer.expect(b"BRACKET-READY")
         send_paste(outer)
         outer.expect(b"KEYS-READY")

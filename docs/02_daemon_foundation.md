@@ -239,7 +239,9 @@ manual hook configuration.
 
 The TUI recognizes split legacy VT keys, UTF-8, and bracketed paste. The
 `--escape-delay-ms` option defaults to 100 ms. Network delays above this setting
-can split an Alt key into literal Esc and a subsequent key. The daemon receives
+can split an Alt key into literal Esc and a subsequent key. A partial bracketed
+paste opener starting with `ESC [ 2` uses its own bounded deadline. If it expires
+before the opener completes, the TUI reports an input error. The daemon receives
 paste as a route-scoped transaction with a 1 MiB limit. The outer TTY always
 captures paste and the daemon adds delimiters when the child enables that mode.
 An accepted write holds the input barrier until it finishes or stalls.
