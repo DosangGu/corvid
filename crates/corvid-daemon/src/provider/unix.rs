@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use corvid_core::agent::Provider;
 use corvid_protocol::wire::ProviderProfile;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
+use semver::Version;
 
 use super::{CONTRACTS, adapter, contract, hooks};
 use crate::process::Executable;
@@ -19,15 +20,10 @@ use crate::process::Executable;
 const VERSION_TIMEOUT: Duration = Duration::from_millis(350);
 const VERSION_OUTPUT_LIMIT: usize = 128;
 
-pub(crate) fn qualify(provider: Provider, path: &Path) -> Option<Executable> {
+pub(crate) fn qualify(provider: Provider, path: &Path) -> Option<(Executable, Version)> {
     let executable = Executable::read(path)?;
-    let version = version_output(path)?;
-    if !contract(provider).recognizes_version(&version)
-        || Executable::read(path) != Some(executable)
-    {
-        return None;
-    }
-    Some(executable)
+    let version = contract(provider).version(&version_output(path)?)?;
+    (Executable::read(path) == Some(executable)).then_some((executable, version))
 }
 
 pub(crate) fn program(provider: Provider) -> &'static str {
@@ -38,13 +34,17 @@ pub(crate) fn installed_program(provider: Provider) -> Option<PathBuf> {
     find_on_path(program(provider), None)
 }
 
-pub(crate) fn observer_arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> {
+pub(crate) fn observer_arguments(
+    provider: Provider,
+    version: &Version,
+    argv: &[OsString],
+) -> Vec<OsString> {
     contract(provider)
         .unix
         .launch_prefix
         .iter()
         .map(OsString::from)
-        .chain(hooks::arguments(provider, argv))
+        .chain(hooks::arguments(provider, version, argv))
         .collect()
 }
 
@@ -141,7 +141,7 @@ mod tests {
 
             let version = read_version_output(reader).expect("complete version banner was lost");
             assert_eq!(version, banner);
-            assert!(contract(provider).recognizes_version(&version));
+            assert!(contract(provider).version(&version).is_some());
             drop(writer);
         }
         Ok(())

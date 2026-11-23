@@ -117,13 +117,6 @@ impl Hook {
                 .to_owned(),
             );
         }
-        if provider::contract(self.provider).first_stop_per_turn
-            && self.event == HookEvent::ResponseObserved
-            && let Some(turn) = &self.turn
-        {
-            let id = format!("first-stop/{turn}");
-            evidence.provider_event_id = valid_id(&id).then_some(id);
-        }
         evidence
     }
 
@@ -163,7 +156,11 @@ impl Hook {
                 confidence = Confidence::Inferred;
                 ObservationKind::WorkStarted(self.work_key()?)
             }
-            HookEvent::ToolFinished => ObservationKind::WorkFinished(self.work_key()?),
+            HookEvent::ToolFinished => ObservationKind::ToolExecuted(self.work_key()?),
+            HookEvent::ModelRequested => ObservationKind::ModelRequested(self.turn.clone()?),
+            HookEvent::ModelAttemptFinished => {
+                ObservationKind::ModelAttemptFinished(self.turn.clone()?)
+            }
             HookEvent::TurnInterrupted => ObservationKind::Response {
                 response: Response {
                     turn: Some(self.turn.clone()?),
@@ -220,7 +217,7 @@ pub(crate) fn hook_evidence(provider: Provider, confidence: Confidence) -> Evide
     #[cfg(windows)]
     {
         let _ = provider;
-        evidence.source_version = "native-hook.v1".to_owned();
+        evidence.source_version = "native-hook.v2".to_owned();
     }
     evidence
 }

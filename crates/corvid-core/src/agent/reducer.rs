@@ -27,6 +27,7 @@ pub(super) struct Correlation {
     provider_events: Recent<(Source, String)>,
     tentative_turns: Recent<String>,
     displaced_prompts: Recent<String>,
+    superseded_turns: Recent<String>,
     completed_turns: Recent<String>,
     response_attention_turns: Recent<String>,
     interrupted_turns: Recent<String>,
@@ -157,6 +158,21 @@ impl AgentRun {
             ObservationKind::InteractivePromptSubmitted(turn) => {
                 self.start_turn(turn, evidence, true)
             }
+            ObservationKind::ModelRequested(turn) => {
+                self.observe_execution(turn, PromptObservation::ModelRequested, evidence)
+            }
+            ObservationKind::ModelAttemptFinished(turn) => {
+                self.observe_execution(turn, PromptObservation::ModelAttemptFinished, evidence)
+            }
+            ObservationKind::ToolExecuted(key) => {
+                let turn = key.turn.clone();
+                let (first, closed) = self.finish_work_scope(key, evidence);
+                (first
+                    && turn.is_some_and(|turn| {
+                        self.observe_execution(turn, PromptObservation::ToolExecuted, evidence)
+                    }))
+                    || closed
+            }
             ObservationKind::WorkStarted(key) => self.start_work(key, evidence),
             ObservationKind::WorkFinished(key) => self.finish_work(key, evidence),
             ObservationKind::InputRequested { key, kind } => {
@@ -191,7 +207,11 @@ impl AgentRun {
     }
 
     fn start_turn(&mut self, turn: String, evidence: &Evidence, recheck_input: bool) -> bool {
-        if self.correlation.completed_turns.contains(&turn) || self.active_turns.contains_key(&turn)
+        if self.correlation.completed_turns.contains(&turn)
+            || self.correlation.superseded_turns.contains(&turn)
+            || self.active_turns.contains_key(&turn)
+            || self.correlation.current_turn.as_ref() == Some(&turn)
+                && self.prompt_observation.is_some()
         {
             return false;
         }
@@ -204,8 +224,11 @@ impl AgentRun {
             return false;
         }
         let previous = self.correlation.current_turn.replace(turn.clone());
-        if recheck_input && let Some(previous) = previous.filter(|previous| previous != &turn) {
-            self.displace_prompt(previous, evidence);
+        if let Some(previous) = previous.filter(|previous| previous != &turn) {
+            self.correlation.superseded_turns.insert(previous.clone());
+            if recheck_input {
+                self.displace_prompt(previous, evidence);
+            }
         }
         self.correlation.response_for_prompt = false;
         self.prompt_observation = (evidence.source == Source::ProviderHook
@@ -213,7 +236,7 @@ impl AgentRun {
             && self.lifecycle.value == Lifecycle::Live
             && self.collection.value == Collection::Healthy
             && !self.correlation.response_attention_turns.contains(&turn))
-        .then_some(PromptObservation::Submitted);
+        .then(|| Observed::new(PromptObservation::Submitted, evidence));
         self.activity = Observed::new(Activity::Unknown, evidence);
         if confirmed {
             self.active_turns.insert(turn, evidence.clone());
@@ -222,8 +245,56 @@ impl AgentRun {
         true
     }
 
+    fn observe_execution(
+        &mut self,
+        turn: String,
+        signal: PromptObservation,
+        evidence: &Evidence,
+    ) -> bool {
+        if evidence.source != Source::ProviderHook
+            || evidence.confidence != Confidence::Confirmed
+            || self.lifecycle.value != Lifecycle::Live
+            || self.collection.value != Collection::Healthy
+            || self.correlation.completed_turns.contains(&turn)
+            || self.correlation.superseded_turns.contains(&turn)
+        {
+            return false;
+        }
+
+        let last_signal = self.prompt_observation();
+        if self.correlation.current_turn.as_ref() != Some(&turn)
+            && self.correlation.response_attention_turns.contains(&turn)
+        {
+            return false;
+        }
+        if let Some(current) = self.correlation.current_turn.as_ref() {
+            if current != &turn {
+                // An unseen turn can replace an observed response or interrupted turn
+                // when its submission is missing. An open turn keeps ownership.
+                if last_signal != Some(PromptObservation::Responded)
+                    && !self.correlation.completed_turns.contains(current)
+                {
+                    return false;
+                }
+                let previous = current.clone();
+                self.correlation.superseded_turns.insert(previous.clone());
+                self.displace_prompt(previous, evidence);
+            } else if last_signal == Some(PromptObservation::Responded)
+                && signal != PromptObservation::ModelRequested
+            {
+                // Only a new model request can show that a Stop hook continued the turn.
+                return false;
+            }
+        }
+        self.correlation.current_turn = Some(turn);
+        self.correlation.response_for_prompt = false;
+        self.prompt_observation = Some(Observed::new(signal, evidence));
+        self.activity = Observed::new(Activity::Working, evidence);
+        true
+    }
+
     fn displace_prompt(&mut self, turn: String, evidence: &Evidence) {
-        let uncertain = evidence.uncertain("another prompt was submitted before an input result");
+        let uncertain = evidence.uncertain("another prompt was observed before an input result");
         for request in self.requests.values_mut() {
             if request.state.value == RequestStatus::Pending
                 && request.key.as_ref().and_then(|key| key.turn.as_deref()) == Some(turn.as_str())
@@ -236,6 +307,11 @@ impl AgentRun {
 
     fn start_work(&mut self, key: WorkKey, evidence: &Evidence) -> bool {
         if self.was_interrupted(&key.turn)
+            || evidence.confidence == Confidence::Inferred
+                && key.turn.as_ref().is_some_and(|turn| {
+                    self.correlation.superseded_turns.contains(turn)
+                        || self.correlation.completed_turns.contains(turn)
+                })
             || self.correlation.completed_work.contains(&key)
             || self.work.contains_key(&key)
         {
@@ -251,15 +327,19 @@ impl AgentRun {
     }
 
     fn finish_work(&mut self, key: WorkKey, evidence: &Evidence) -> bool {
+        self.finish_work_scope(key, evidence).1
+    }
+
+    fn finish_work_scope(&mut self, key: WorkKey, evidence: &Evidence) -> (bool, bool) {
         if evidence.confidence != Confidence::Confirmed {
-            return false;
+            return (false, false);
         }
         let closed = self.work.remove(&key).is_some();
-        self.correlation.completed_work.insert(key);
+        let first = self.correlation.completed_work.insert(key);
         if closed {
             self.refresh_work_activity(evidence);
         }
-        closed
+        (first, closed)
     }
 
     fn refresh_work_activity(&mut self, evidence: &Evidence) {
@@ -267,8 +347,11 @@ impl AgentRun {
             return;
         }
         let confirmed = self
-            .active_turns
-            .values()
+            .prompt_observation
+            .iter()
+            .filter(|observation| observation.value.confirms_execution())
+            .map(|observation| &observation.evidence)
+            .chain(self.active_turns.values())
             .chain(self.work.values())
             .find(|scope| {
                 scope.confidence == Confidence::Confirmed
@@ -502,6 +585,9 @@ impl AgentRun {
         evidence: &Evidence,
     ) -> bool {
         let mut current_boundary = false;
+        let execution_observed = self
+            .prompt_observation()
+            .is_some_and(PromptObservation::confirms_execution);
         if self.prompt_observation.is_some()
             && evidence.source == Source::ProviderHook
             && evidence.confidence == Confidence::Confirmed
@@ -510,8 +596,24 @@ impl AgentRun {
                 .as_deref()
                 .is_some_and(|turn| self.is_current_open_turn(turn))
         {
-            self.prompt_observation = (response.outcome == ResponseOutcome::Observed)
-                .then_some(PromptObservation::Responded);
+            if self.prompt_observation() != Some(PromptObservation::Responded)
+                || response.outcome != ResponseOutcome::Observed
+            {
+                self.prompt_observation = (response.outcome == ResponseOutcome::Observed)
+                    .then(|| Observed::new(PromptObservation::Responded, evidence));
+            }
+            if execution_observed {
+                self.refresh_work_activity(evidence);
+            }
+        }
+        if !final_boundary
+            && response.outcome == ResponseOutcome::Observed
+            && response
+                .turn
+                .as_ref()
+                .is_some_and(|turn| self.correlation.interrupted_turns.contains(turn))
+        {
+            return false;
         }
         if final_boundary
             && evidence.confidence == Confidence::Confirmed
@@ -521,7 +623,8 @@ impl AgentRun {
                 return false;
             }
             let observed_start = self.active_turns.remove(turn).is_some()
-                || self.correlation.tentative_turns.contains(turn);
+                || self.correlation.tentative_turns.contains(turn)
+                || execution_observed && self.correlation.current_turn.as_ref() == Some(turn);
             current_boundary =
                 observed_start && self.correlation.current_turn.as_ref() == Some(turn);
             if response.outcome == ResponseOutcome::Interrupted {
@@ -596,6 +699,9 @@ impl AgentRun {
     fn can_assert_wait(&self, evidence: &Evidence) -> bool {
         evidence.confidence == Confidence::Confirmed
             && self.collection.value == Collection::Healthy
+            && !self
+                .prompt_observation()
+                .is_some_and(PromptObservation::confirms_execution)
             && self.active_turns.is_empty()
             && self.work.is_empty()
     }
@@ -730,8 +836,12 @@ impl Observation {
         }
         match &self.kind {
             ObservationKind::TurnStarted(turn)
-            | ObservationKind::InteractivePromptSubmitted(turn) => valid_id(turn),
-            ObservationKind::WorkStarted(key) | ObservationKind::WorkFinished(key) => {
+            | ObservationKind::InteractivePromptSubmitted(turn)
+            | ObservationKind::ModelRequested(turn)
+            | ObservationKind::ModelAttemptFinished(turn) => valid_id(turn),
+            ObservationKind::WorkStarted(key)
+            | ObservationKind::WorkFinished(key)
+            | ObservationKind::ToolExecuted(key) => {
                 valid_optional_id(&key.turn) && valid_id(&key.item)
             }
             ObservationKind::InputRequested { key: Some(key), .. }

@@ -6,7 +6,8 @@ use corvid_agent_deck::desktop::FocusRequest;
 use corvid_async::task::JoinSet;
 use corvid_companion::HostEndpoint;
 use corvid_presentation::desktop_focus::FocusFailure;
-use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, wire::DesktopAgentFocused};
+use corvid_protocol::wire::{AgentBadge, AgentCollection, DesktopAgentFocused, PromptObservation};
+use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 
 use super::*;
 
@@ -45,7 +46,27 @@ impl FixtureHost {
             agent_run_id: run_id.to_string(),
         };
         let (_, feed) = watch::channel(Vec::new());
-        jobs.spawn(serve(address, controller, run.clone(), feed));
+        let mut presented = fixture_run(run.clone());
+        presented.collection = AgentCollection::Healthy as i32;
+        match id.as_u128() {
+            1 => {
+                presented.provider = AgentProvider::Codex as i32;
+                presented.last_badge = AgentBadge::Working as i32;
+                presented.prompt_observation = PromptObservation::ModelRequested as i32;
+                presented.session_title = Some("Model request".into());
+            }
+            2 => {
+                presented.last_badge = AgentBadge::Unknown as i32;
+                presented.unverified_requests = 1;
+                presented.prompt_observation = PromptObservation::ToolExecuted as i32;
+                presented.session_title = Some("Tool execution".into());
+            }
+            _ => {
+                presented.last_badge = AgentBadge::ResponseObserved as i32;
+                presented.session_title = Some("Response observed".into());
+            }
+        }
+        jobs.spawn(serve(address, controller, presented, feed));
         let (focus, requests) = mpsc::channel(1);
         jobs.spawn(corvid_presentation::desktop_focus::serve(
             id, controller, epoch, focus,

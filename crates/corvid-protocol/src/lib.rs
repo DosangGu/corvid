@@ -22,6 +22,15 @@ pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/corvid.protocol.v1.rs"));
 }
 
+impl wire::PromptObservation {
+    pub fn confirms_execution(self) -> bool {
+        matches!(
+            self,
+            Self::ModelRequested | Self::ModelAttemptFinished | Self::ToolExecuted
+        )
+    }
+}
+
 pub use frame::{
     CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameRole, RENDER_LIMIT, RenderFrame,
     decode_envelope,

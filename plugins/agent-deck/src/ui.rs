@@ -434,10 +434,15 @@ fn prompt_detail(run: &PresentedRun) -> Option<PromptObservation> {
 }
 
 fn evidence_label(run: &PresentedRun) -> &'static str {
-    match prompt_detail(run) {
-        Some(PromptObservation::Submitted) => return "Prompt submission observed",
-        Some(PromptObservation::Responded) => return "Response observed for this prompt",
-        _ => {}
+    if run.collection == AgentCollection::Healthy as i32 {
+        match PromptObservation::try_from(run.prompt_observation).unwrap_or_default() {
+            PromptObservation::Submitted => return "Prompt submission observed",
+            PromptObservation::Responded => return "Response observed for this prompt",
+            PromptObservation::ModelRequested => return "Model request observed",
+            PromptObservation::ModelAttemptFinished => return "Model request attempt finished",
+            PromptObservation::ToolExecuted => return "Tool execution observed",
+            PromptObservation::Unspecified => {}
+        }
     }
     match AgentCollection::try_from(run.collection) {
         Ok(AgentCollection::Healthy) => match EvidenceConfidence::try_from(run.confidence) {
@@ -448,6 +453,7 @@ fn evidence_label(run: &PresentedRun) -> &'static str {
         Ok(AgentCollection::GapDetected) => "Collection gap",
         Ok(AgentCollection::Degraded) => "Collection degraded",
         Ok(AgentCollection::Unsupported) => "Unsupported collection",
+        Ok(AgentCollection::NotRegistered) => "Session hook not received",
         _ => "Collection unavailable",
     }
 }

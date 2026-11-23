@@ -257,6 +257,10 @@ impl ClaudeInput {
     fn event(&self) -> Option<HookEvent> {
         let question = self.tool_name.as_deref() == Some("AskUserQuestion");
         let plan = self.tool_name.as_deref() == Some("ExitPlanMode");
+        let observed_tool = matches!(self.tool_name.as_deref(), Some("Bash" | "Read"))
+            && self.agent_id.is_none()
+            && self.prompt_id.is_some()
+            && self.tool_use_id.is_some();
         Some(match self.hook_event_name.as_str() {
             "SessionStart" => match self.source.as_deref() {
                 Some("startup") => HookEvent::Startup,
@@ -271,6 +275,8 @@ impl ClaudeInput {
             "PostToolUse" if question => HookEvent::QuestionResult,
             "PreToolUse" if plan => HookEvent::PlanApprovalStarted,
             "PostToolUse" if plan => HookEvent::PlanApprovalResult,
+            "PreToolUse" if observed_tool => HookEvent::ToolStarted,
+            "PostToolUse" if observed_tool => HookEvent::ToolFinished,
             "PostToolUse" if self.tool_name.as_deref() == Some("Agent") => {
                 HookEvent::SubagentLinked
             }
@@ -338,6 +344,8 @@ impl ClaudeInput {
                 | HookEvent::QuestionResult
                 | HookEvent::PlanApprovalStarted
                 | HookEvent::PlanApprovalResult
+                | HookEvent::ToolStarted
+                | HookEvent::ToolFinished
         ) {
             self.tool_use_id
         } else {

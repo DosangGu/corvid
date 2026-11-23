@@ -391,6 +391,11 @@ impl ManagedRun {
                 .as_ref()
                 .map(|response| response.evidence.observed_unix_ms),
             end_reason: projection::end_reason(run.lifecycle.value) as i32,
+            prompt_observation: projection::prompt_observation(run),
+            prompt_observed_unix_ms: run
+                .prompt_observation
+                .as_ref()
+                .map(|observation| observation.evidence.observed_unix_ms),
             qualified_provider_version: self.qualified_version.map(str::to_owned),
             cancelled_requests: self.request_count(RequestStatus::Cancelled),
             adapter: Some(crate::provider::adapter(

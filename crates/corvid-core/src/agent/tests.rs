@@ -203,13 +203,13 @@ fn prompt_observations_follow_only_the_current_turn_and_healthy_collection() {
     };
     assert!(submit(&mut fixture, "first"));
     assert_eq!(
-        fixture.run.prompt_observation,
+        fixture.run.prompt_observation(),
         Some(PromptObservation::Submitted)
     );
     assert_eq!(fixture.run.badge(), Badge::Unknown);
     assert!(fixture.response(Some("first"), ResponseOutcome::Observed, false));
     assert_eq!(
-        fixture.run.prompt_observation,
+        fixture.run.prompt_observation(),
         Some(PromptObservation::Responded)
     );
 
@@ -218,16 +218,88 @@ fn prompt_observations_follow_only_the_current_turn_and_healthy_collection() {
     assert!(fixture.response(None, ResponseOutcome::Observed, false));
     assert!(!submit(&mut fixture, "first"));
     assert_eq!(
-        fixture.run.prompt_observation,
+        fixture.run.prompt_observation(),
         Some(PromptObservation::Submitted)
     );
     fixture.push(ObservationKind::Collection(Collection::GapDetected));
     fixture.push(ObservationKind::Collection(Collection::Healthy));
     assert!(fixture.response(Some("second"), ResponseOutcome::Observed, false));
-    assert_eq!(fixture.run.prompt_observation, None);
+    assert_eq!(fixture.run.prompt_observation(), None);
     assert!(submit(&mut fixture, "third"));
     assert!(fixture.response(Some("third"), ResponseOutcome::Interrupted, true));
-    assert_eq!(fixture.run.prompt_observation, None);
+    assert_eq!(fixture.run.prompt_observation(), None);
+}
+
+#[test]
+fn model_requests_recover_a_missing_submission_and_stay_working_across_attempts() {
+    let mut fixture = Fixture::new();
+    let turn = "without-submit";
+    assert!(fixture.push(ObservationKind::ModelRequested(turn.into())));
+    assert_eq!(fixture.run.badge(), Badge::Working);
+    assert!(!fixture.turn(turn));
+    assert!(fixture.push(ObservationKind::ModelAttemptFinished(turn.into())));
+    assert_eq!(fixture.run.badge(), Badge::Working);
+    assert!(fixture.run.attention.is_empty());
+
+    assert!(fixture.push(ObservationKind::ModelRequested(turn.into())));
+    assert!(fixture.response(Some(turn), ResponseOutcome::Observed, false));
+    assert_eq!(
+        fixture.run.prompt_observation(),
+        Some(PromptObservation::Responded)
+    );
+    assert_ne!(fixture.run.badge(), Badge::Working);
+    assert!(!fixture.push(ObservationKind::ModelAttemptFinished(turn.into())));
+
+    assert!(fixture.push(ObservationKind::ModelRequested(turn.into())));
+    assert_eq!(fixture.run.badge(), Badge::Working);
+    assert!(fixture.response(Some(turn), ResponseOutcome::Observed, false));
+    assert_eq!(
+        fixture.run.prompt_observation(),
+        Some(PromptObservation::Responded)
+    );
+    assert_eq!(fixture.run.attention.len(), 1);
+}
+
+#[test]
+fn late_execution_does_not_replace_a_new_turn_or_revive_an_interrupted_turn() {
+    let mut fixture = Fixture::new();
+    assert!(fixture.push(ObservationKind::ModelRequested("first".into())));
+    assert!(!fixture.push(ObservationKind::ModelRequested("unidentified".into())));
+    assert!(fixture.response(Some("first"), ResponseOutcome::Observed, false));
+    assert!(fixture.push(ObservationKind::ModelRequested("second".into())));
+    assert!(!fixture.push(ObservationKind::ModelRequested("first".into())));
+    assert!(fixture.response(Some("second"), ResponseOutcome::Interrupted, true));
+    assert_eq!(fixture.run.badge(), Badge::Interrupted);
+    assert!(!fixture.push(ObservationKind::ModelRequested("second".into())));
+    assert!(!fixture.push(ObservationKind::ModelAttemptFinished("second".into())));
+    assert!(!fixture.response(Some("second"), ResponseOutcome::Observed, false));
+    assert_eq!(fixture.run.badge(), Badge::Interrupted);
+}
+
+#[test]
+fn tool_execution_reveals_activity_without_resolving_an_earlier_request() {
+    let mut fixture = Fixture::new();
+    assert!(fixture.push(ObservationKind::InteractivePromptSubmitted("first".into())));
+    let request = fixture.request("first", "question");
+    assert!(fixture.response(Some("first"), ResponseOutcome::Observed, false));
+    assert_eq!(fixture.run.badge(), Badge::NeedsInput(1));
+    let tool = WorkKey {
+        turn: Some("second".into()),
+        item: "read".into(),
+    };
+    assert!(fixture.push(ObservationKind::ToolExecuted(tool.clone())));
+    assert!(!fixture.push(ObservationKind::ToolExecuted(tool)));
+    assert_eq!(
+        fixture.run.prompt_observation(),
+        Some(PromptObservation::ToolExecuted)
+    );
+    assert_eq!(fixture.run.activity.value, Activity::Working);
+    assert_eq!(fixture.request_state(request), RequestStatus::Unverified);
+    assert_eq!(fixture.run.badge(), Badge::Unknown);
+
+    assert!(fixture.push(ObservationKind::Collection(Collection::GapDetected)));
+    assert!(!fixture.push(ObservationKind::ModelRequested("second".into())));
+    assert_eq!(fixture.run.prompt_observation(), None);
 }
 
 #[test]

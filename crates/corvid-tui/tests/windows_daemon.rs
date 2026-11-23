@@ -613,22 +613,25 @@ fn native_hook_provider_fixture() -> Result<()> {
         "could not generate hook configuration"
     );
     let config: serde_json::Value = serde_json::from_slice(&config.stdout)?;
+    let handoff = std::env::var_os("CORVID_TEST_HOOK_HANDOFF").is_some();
+    let (execution_event, execution_group) = if provider == "codex" {
+        ("PreModelRequest", 0)
+    } else {
+        ("PostToolUse", 1)
+    };
     let mut events = vec![
-        ("SessionStart", serde_json::json!({"source": "startup"})),
+        ("SessionStart", 0, serde_json::json!({"source": "startup"})),
         (
             "UserPromptSubmit",
+            0,
             serde_json::json!({"turn_id": "turn-1", "prompt_id": "turn-1", "prompt": "discarded fixture text"}),
         ),
-        (
-            "Stop",
-            serde_json::json!({"turn_id": "turn-1", "prompt_id": "turn-1", "stop_hook_active": false}),
-        ),
     ];
-    if std::env::var_os("CORVID_TEST_HOOK_HANDOFF").is_some() {
-        events.pop();
+    if handoff {
         events.extend([
             (
                 "PreToolUse",
+                0,
                 serde_json::json!({
                     "turn_id": "turn-1", "prompt_id": "turn-1",
                     "tool_name": "AskUserQuestion", "tool_use_id": "after-upgrade",
@@ -636,6 +639,7 @@ fn native_hook_provider_fixture() -> Result<()> {
             ),
             (
                 "PostToolUse",
+                0,
                 serde_json::json!({
                     "turn_id": "turn-1", "prompt_id": "turn-1",
                     "tool_name": "AskUserQuestion", "tool_use_id": "after-upgrade",
@@ -643,12 +647,26 @@ fn native_hook_provider_fixture() -> Result<()> {
             ),
             (
                 "UserPromptSubmit",
+                0,
                 serde_json::json!({"turn_id": "turn-3", "prompt_id": "turn-3"}),
             ),
         ]);
+    } else {
+        events.extend([
+            (
+                execution_event,
+                execution_group,
+                serde_json::json!({"turn_id": "turn-1", "prompt_id": "turn-1", "tool_name": "Read", "tool_use_id": "tool-1"}),
+            ),
+            (
+                "Stop",
+                0,
+                serde_json::json!({"turn_id": "turn-1", "prompt_id": "turn-1", "stop_hook_active": false}),
+            ),
+        ]);
     }
-    for (event, event_fields) in events {
-        let handler = &config["hooks"][event][0]["hooks"][0];
+    for (event, group, event_fields) in events {
+        let handler = &config["hooks"][event][group]["hooks"][0];
         let invocation = handler["command"].as_str().context("missing command")?;
         let mut command = if provider == "codex" {
             let mut command = Command::new("powershell.exe");
@@ -685,6 +703,7 @@ fn native_hook_provider_fixture() -> Result<()> {
             "UserPromptSubmit" if fields["prompt_id"] == "turn-3" => Some("HOOK_PROMPT_RECOVERED"),
             "UserPromptSubmit" => Some("HOOK_PROMPT_SUBMITTED"),
             "PreToolUse" => Some("HOOK_QUESTION_WAITING"),
+            event if !handoff && event == execution_event => Some("HOOK_EXECUTION_OBSERVED"),
             _ => None,
         };
         if let Some(step) = step {
@@ -735,6 +754,21 @@ async fn windows_shell_hooks_publish_only_bound_provider_observations() -> Resul
         assert_eq!(
             submitted.prompt_observation,
             PromptObservation::Submitted as i32
+        );
+        tui.send(b"\r")?;
+        tui.wait_for("HOOK_EXECUTION_OBSERVED")?;
+        let active = native_agent(&runtime, AgentProcessState::Running).await?;
+        let expected = if provider == "codex" {
+            PromptObservation::ModelRequested
+        } else {
+            PromptObservation::ToolExecuted
+        };
+        assert_eq!(active.prompt_observation, expected as i32);
+        let summary = active.summary.context("missing active hook run")?;
+        assert!(summary.prompt_observed_unix_ms.is_some());
+        assert_eq!(
+            summary.badge,
+            corvid_protocol::wire::AgentBadge::Working as i32
         );
         tui.send(b"\r")?;
         tui.wait_for("HOOK_FIXTURE_READY")?;

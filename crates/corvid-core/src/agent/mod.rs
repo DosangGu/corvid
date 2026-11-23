@@ -133,6 +133,18 @@ pub enum Activity {
 pub enum PromptObservation {
     Submitted,
     Responded,
+    ModelRequested,
+    ModelAttemptFinished,
+    ToolExecuted,
+}
+
+impl PromptObservation {
+    fn confirms_execution(self) -> bool {
+        matches!(
+            self,
+            Self::ModelRequested | Self::ModelAttemptFinished | Self::ToolExecuted
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +246,9 @@ pub enum ObservationKind {
     TurnStarted(String),
     /// Another interactive submission was observed without a result for the prior prompt.
     InteractivePromptSubmitted(String),
+    ModelRequested(String),
+    ModelAttemptFinished(String),
+    ToolExecuted(WorkKey),
     WorkStarted(WorkKey),
     WorkFinished(WorkKey),
     /// A key is present only when the adapter can prove its correlation scope.
@@ -295,7 +310,7 @@ pub struct AgentRun {
     pub process: Observed<ProcessLiveness>,
     pub activity: Observed<Activity>,
     pub collection: Observed<Collection>,
-    pub prompt_observation: Option<PromptObservation>,
+    pub prompt_observation: Option<Observed<PromptObservation>>,
     pub recent_response: Option<Observed<Response>>,
     pub requests: BTreeMap<Uuid, InputRequest>,
     pub attention: BTreeMap<Uuid, Attention>,
@@ -321,6 +336,12 @@ impl AgentRun {
             work: BTreeMap::new(),
             correlation: Correlation::default(),
         }
+    }
+
+    pub fn prompt_observation(&self) -> Option<PromptObservation> {
+        self.prompt_observation
+            .as_ref()
+            .map(|observation| observation.value)
     }
 
     pub fn badge(&self) -> Badge {

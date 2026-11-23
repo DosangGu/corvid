@@ -108,8 +108,8 @@ pub fn qualified_arguments(
     executable: &Path,
     argv: &[OsString],
 ) -> Option<Vec<OsString>> {
-    qualify(provider, executable)?;
-    Some(observer_arguments(provider, argv))
+    let (_, version) = qualify(provider, executable)?;
+    Some(observer_arguments(provider, &version, argv))
 }
 
 pub fn interactive_invocation(provider: Provider, argv: &[OsString]) -> bool {
