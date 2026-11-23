@@ -294,7 +294,10 @@ struct Manifest {
     sha256: String,
 }
 
-async fn read_bundle(host: &RemoteHost, platform: HostPlatform) -> Result<(Vec<u8>, String)> {
+pub(crate) async fn read_bundle(
+    host: &RemoteHost,
+    platform: HostPlatform,
+) -> Result<(Vec<u8>, String)> {
     let target = host.probe_daemon_target(platform).await?;
     let binary_name = match platform {
         HostPlatform::Windows => "corvid.exe",

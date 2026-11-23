@@ -1,8 +1,5 @@
 use super::*;
-use async_process::windows::CommandExt;
 use corvid_client::{DaemonInstallation, HostPlatform};
-
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 async fn wait_for(session: &Session, ready: impl Fn(&Ui) -> bool) -> Result<Ui> {
     let mut changes = session.changes();
@@ -132,25 +129,25 @@ async fn verify_live_session(
 
     let endpoint = ControlEndpoint::Wsl(distro.clone());
     let before = endpoint.host().await?;
-    let output = timeout(
-        Duration::from_secs(20),
-        async_process::Command::new(
-            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/wsl.exe"),
-        )
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "--distribution",
-            distro.as_str(),
-            "--exec",
-            "/bin/sh",
-            "-c",
-            "exec \"$HOME/.corvid/corvid\" upgrade",
-        ])
-        .kill_on_drop(true)
-        .output(),
+    let remote = RemoteHost::Wsl(distro);
+    let platform = HostPlatform::Linux;
+    let installed = remote
+        .daemon_version(platform, DaemonInstallation::Managed)
+        .await?;
+    let (binary, digest) = remote_bootstrap::read_bundle(&remote, platform).await?;
+    // Restage the matching daemon through the same checked path as Desktop.
+    timeout(
+        Duration::from_secs(60),
+        remote.upgrade_managed_daemon(
+            platform,
+            &binary,
+            &digest,
+            &installed,
+            Some(Uuid::parse_str(&before.host_id)?),
+        ),
     )
-    .await??;
-    ensure!(output.status.success(), "WSL daemon upgrade failed");
+    .await?
+    .context("upgrading the WSL daemon")?;
     let after = endpoint.host().await?;
     assert_eq!(before.host_id, after.host_id);
     assert_ne!(before.server_epoch, after.server_epoch);
@@ -185,8 +182,8 @@ async fn verify_live_session(
     .await?;
     wait_screen(session, pane, "WSL_AFTER_retained").await?;
 
-    let version = RemoteHost::Wsl(distro)
-        .daemon_version(HostPlatform::Linux, DaemonInstallation::Managed)
+    let version = remote
+        .daemon_version(platform, DaemonInstallation::Managed)
         .await?;
     assert_eq!(version, env!("CARGO_PKG_VERSION"));
     println!(
