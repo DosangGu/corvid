@@ -66,7 +66,7 @@ jobs:
           key: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-
       - name: Build runtime and launchers
-        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update
       - name: Runtime tests
         if: inputs.qualify
         env:
@@ -104,6 +104,9 @@ jobs:
       - name: Runtime manifest
         if: inputs.package
         run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid --output target/runtime
+      - name: Stage standalone daemon release asset
+        if: inputs.package
+        run: python deploy/package.py daemon-asset --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvidd --output target/dist
       - name: Package TUI
         if: inputs.package
         run: python deploy/package.py package --product tui --target ${{ matrix.runtime }} --runtime target/runtime --build target/${{ matrix.runtime }}/release --output target/dist
@@ -269,13 +272,16 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: *runtime-cache
       - name: Build runtime and launchers
-        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update
       - name: Runtime tests
         if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
       - name: Runtime manifest
         if: inputs.package
         run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid.exe --output target/runtime
+      - name: Stage standalone daemon release asset
+        if: inputs.package
+        run: python deploy/package.py daemon-asset --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvidd.exe --output target/dist
       - name: Package TUI
         if: inputs.package
         run: python deploy/package.py package --product tui --target ${{ matrix.runtime }} --runtime target/runtime --build target/${{ matrix.runtime }}/release --output target/dist
@@ -362,7 +368,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: *runtime-cache
       - name: Build runtime and launchers
-        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update
       - name: Runtime tests
         if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
@@ -387,6 +393,9 @@ jobs:
       - name: Runtime manifest
         if: inputs.package
         run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid --output target/runtime
+      - name: Stage standalone daemon release asset
+        if: inputs.package
+        run: python deploy/package.py daemon-asset --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvidd --output target/dist
       - name: Package TUI
         if: inputs.package
         run: python deploy/package.py package --product tui --target ${{ matrix.runtime }} --runtime target/runtime --build target/${{ matrix.runtime }}/release --output target/dist

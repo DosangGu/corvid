@@ -53,37 +53,70 @@ def copy(source, destination, executable=False):
     destination.chmod(0o755 if executable else 0o644)
 
 
-def runtime(args):
-    version, revision = identity()
-    binary = args.binary.resolve()
-    output = subprocess.check_output([str(binary), "--version"], text=True).strip()
-    if output != f"corvid {version}":
+def validate_runtime_binary(binary, target, version, program):
+    reported = subprocess.check_output([str(binary), "--version"], text=True).strip()
+    if reported != f"{program} {version}":
         raise ValueError("Runtime version differs from the workspace")
     if not 0 < binary.stat().st_size <= 32 * 1024 * 1024:
         raise ValueError("Runtime exceeds the daemon transfer limit")
-    if args.target in LINUX_TARGETS:
+    if target in LINUX_TARGETS:
         headers = subprocess.check_output(["readelf", "--wide", "--program-headers", str(binary)], text=True)
         dynamic = subprocess.check_output(["readelf", "--wide", "--dynamic", str(binary)], text=True)
         if " INTERP " in headers or "(NEEDED)" in dynamic:
             raise ValueError("Linux runtime must be statically linked")
-    args.output.mkdir(parents=True, exist_ok=True)
-    name = "corvid.exe" if args.target in WINDOWS_TARGETS else "corvid"
-    copy(binary, args.output / name, True)
-    write_json(args.output / "manifest.json", {
-        "schema_version": 1, "target": args.target, "version": version,
-        "source_revision": revision, "size": binary.stat().st_size, "sha256": digest(binary),
+
+
+def runtime_identity(target, version, revision):
+    return {"schema_version": 1, "target": target, "version": version, "source_revision": revision}
+
+
+def record_runtime(binary, metadata, target, version, revision):
+    write_json(metadata, {
+        **runtime_identity(target, version, revision),
+        "size": binary.stat().st_size,
+        "sha256": digest(binary),
     })
 
 
-def verify_runtime(directory, target, version, revision):
-    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    binary = directory / ("corvid.exe" if target in WINDOWS_TARGETS else "corvid")
-    expected = {"schema_version": 1, "target": target, "version": version, "source_revision": revision}
+def runtime(args):
+    version, revision = identity()
+    binary = args.binary.resolve()
+    validate_runtime_binary(binary, args.target, version, "corvid")
+    name = "corvid.exe" if args.target in WINDOWS_TARGETS else "corvid"
+    output = args.output / name
+    copy(binary, output, True)
+    record_runtime(output, args.output / "manifest.json", args.target, version, revision)
+
+
+def daemon_asset_name(target, version):
+    suffix = ".exe" if target in WINDOWS_TARGETS else ""
+    return f"corvidd-{version}-{target}{suffix}"
+
+
+def daemon_asset(args):
+    version, revision = identity()
+    binary = args.binary.resolve()
+    validate_runtime_binary(binary, args.target, version, "corvidd")
+    output = args.output / daemon_asset_name(args.target, version)
+    copy(binary, output, True)
+    record_runtime(output, output.with_name(output.name + ".provenance.json"),
+                   args.target, version, revision)
+
+
+def verify_runtime_file(binary, metadata, target, version, revision):
+    manifest = json.loads(metadata.read_text(encoding="utf-8"))
+    expected = runtime_identity(target, version, revision)
     if any(manifest.get(key) != value for key, value in expected.items()):
-        raise ValueError(f"Runtime identity mismatch: {directory}")
-    if manifest["size"] != binary.stat().st_size or manifest["sha256"] != digest(binary):
-        raise ValueError(f"Runtime integrity mismatch: {directory}")
+        raise ValueError(f"Runtime identity mismatch: {binary}")
+    if (not 0 < manifest["size"] <= 32 * 1024 * 1024
+            or manifest["size"] != binary.stat().st_size or manifest["sha256"] != digest(binary)):
+        raise ValueError(f"Runtime integrity mismatch: {binary}")
     return binary
+
+
+def verify_runtime(directory, target, version, revision):
+    binary = directory / ("corvid.exe" if target in WINDOWS_TARGETS else "corvid")
+    return verify_runtime_file(binary, directory / "manifest.json", target, version, revision)
 
 
 def package(args):
@@ -182,6 +215,12 @@ def manifest(args):
         required.append(native_package.verify(args.output, version, revision, target))
     import macos_package
     required.append(macos_package.verify(args.output, version, revision))
+    for target in RUNTIME_TARGETS:
+        name = daemon_asset_name(target, version)
+        binary = args.output / name
+        verify_runtime_file(binary, binary.with_name(binary.name + ".provenance.json"),
+                            target, version, revision)
+        required.append(name)
     installers = ["install.sh", "install.ps1"]
     for name in installers:
         copy(ROOT / "deploy" / name, args.output / name)
@@ -201,6 +240,11 @@ def main():
     command.add_argument("--binary", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(run=runtime)
+    command = sub.add_parser("daemon-asset")
+    command.add_argument("--target", choices=RUNTIME_TARGETS, required=True)
+    command.add_argument("--binary", type=Path, required=True)
+    command.add_argument("--output", type=Path, required=True)
+    command.set_defaults(run=daemon_asset)
     command = sub.add_parser("package")
     command.add_argument("--product", choices=["tui", "desktop"], required=True)
     command.add_argument("--target", choices=sorted(set(RUNTIME_TARGETS + DESKTOP_TARGETS)), required=True)

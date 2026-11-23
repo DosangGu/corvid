@@ -114,9 +114,24 @@ class PackageTests(unittest.TestCase):
             for product, targets in [("tui", package.RUNTIME_TARGETS), ("desktop", package.DESKTOP_TARGETS)]:
                 for target in targets:
                     package.package(self.arguments(product, target))
+            with patch("package.validate_runtime_binary"):
+                for target in package.RUNTIME_TARGETS:
+                    filename = "corvid.exe" if target in package.WINDOWS_TARGETS else "corvid"
+                    package.daemon_asset(SimpleNamespace(target=target, output=self.output,
+                                                         binary=self.runtimes[target] / filename))
             package.manifest(SimpleNamespace(output=self.output))
             manifest = json.loads((self.output / "release-manifest.json").read_text())
-            self.assertEqual(len(manifest["assets"]), 12)  # Ten archives and two scripts.
+            self.assertEqual(len(manifest["assets"]), 17)  # Archives, scripts and standalone runtimes.
+            for target in package.RUNTIME_TARGETS:
+                name = package.daemon_asset_name(target, self.version)
+                asset = next(asset for asset in manifest["assets"] if asset["name"] == name)
+                self.assertEqual(asset["sha256"], package.digest(self.output / name))
+            daemon = self.output / package.daemon_asset_name(package.LINUX, self.version)
+            original = daemon.read_bytes()
+            daemon.write_bytes(b"invalid daemon")
+            with self.assertRaisesRegex(ValueError, "Runtime integrity mismatch"):
+                package.manifest(SimpleNamespace(output=self.output))
+            daemon.write_bytes(original)
             self.archive("tui", package.LINUX_ARM64).unlink()
             with self.assertRaises(FileNotFoundError):
                 package.manifest(SimpleNamespace(output=self.output))
