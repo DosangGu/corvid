@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use super::screen::ScreenSnapshot;
 use crate::executor::{self, Task};
 #[cfg(windows)]
 use anyhow::Context;
@@ -20,7 +21,6 @@ use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault, RENDER_LIMIT};
 use portable_pty::{CommandBuilder, ExitStatus};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use vt100::Screen;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::agents::ManagedLaunch;
@@ -1857,7 +1857,7 @@ struct Lease {
 
 enum LastFrame {
     Naming,
-    Terminal(Option<Box<Screen>>),
+    Terminal(Option<Box<ScreenSnapshot>>),
     Picker,
     Commands(bool),
     Composition,
@@ -2323,10 +2323,9 @@ impl Lease {
         }
         if terminal.dirty || cache.active.is_none() {
             let (ansi, snapshot) = terminal.session.render(None, size, None)?;
-            cache.active =
-                Some(Arc::from(snapshot.unwrap_or_else(|| {
-                    Box::new(parse_screen(size, ansi.as_bytes()))
-                })));
+            cache.active = Some(Arc::from(snapshot.unwrap_or_else(|| {
+                Box::new(ScreenSnapshot::from_ansi(size, ansi.as_bytes(), None))
+            })));
         }
         let selected = match &self.overlay {
             Some(Overlay::Panes(id)) => Some(*id),
@@ -2453,8 +2452,8 @@ struct CompositionCache {
     visible: Option<Composition>,
     pending_layout: Option<Composition>,
     size: Option<Viewport>,
-    active: Option<Arc<Screen>>,
-    screens: HashMap<Uuid, Arc<Screen>>,
+    active: Option<Arc<ScreenSnapshot>>,
+    screens: HashMap<Uuid, Arc<ScreenSnapshot>>,
     pending: Option<(Uuid, Instant, PreviewReply)>,
     next_preview: Instant,
     index: usize,
@@ -2511,20 +2510,14 @@ impl CompositionCache {
                     // Reading a wider preview neither resizes nor retains a full copy of that PTY.
                     let cols = viewport.cols.get().min(body.width);
                     let rows = viewport.rows.get().min(body.height);
-                    let mut parser = vt100::Parser::new(viewport.rows, viewport.cols, 0);
-                    parser.process(&bytes);
-                    if (cols, rows) != (viewport.cols.get(), viewport.rows.get()) {
-                        let size =
-                            Viewport::new(cols, rows).expect("composition has a usable body");
-                        parser.set_size(size.rows, size.cols);
-                    }
-                    let screen = parser.screen();
+                    let clip = Viewport::new(cols, rows).expect("composition has a usable body");
+                    let screen = ScreenSnapshot::from_ansi(viewport, &bytes, Some(clip));
                     if self
                         .screens
                         .get(&pane)
-                        .is_none_or(|previous| !screen.contents_diff(previous).is_empty())
+                        .is_none_or(|previous| !screen.matches(previous))
                     {
-                        self.screens.insert(pane, Arc::new(screen.clone()));
+                        self.screens.insert(pane, Arc::new(screen));
                         changed = true;
                     }
                 }
@@ -2559,12 +2552,6 @@ impl CompositionCache {
         }
         changed
     }
-}
-
-fn parse_screen(size: Viewport, bytes: &[u8]) -> Screen {
-    let mut parser = vt100::Parser::new(size.rows, size.cols, 0);
-    parser.process(bytes);
-    parser.screen().clone()
 }
 
 fn stale_route() -> ProtocolFault {

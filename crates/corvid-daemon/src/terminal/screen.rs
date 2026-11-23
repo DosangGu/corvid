@@ -11,6 +11,9 @@ use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
 mod history;
 mod sgr;
+mod snapshot;
+
+pub(crate) use snapshot::{CellColor, CellStyle, CellWidth, ScreenSnapshot};
 
 use history::{HistoryBuilder, HistoryLine, OlderRows};
 
@@ -208,8 +211,8 @@ impl TerminalScreen {
         }
     }
 
-    pub(crate) fn snapshot(&self) -> Screen {
-        self.parser.screen().clone()
+    pub(crate) fn snapshot(&self) -> ScreenSnapshot {
+        ScreenSnapshot::from_screen(self.parser.screen())
     }
 
     pub(crate) fn history(&mut self) -> TerminalHistory {
@@ -247,7 +250,7 @@ impl TerminalScreen {
 
     pub(crate) fn render(
         &self,
-        previous: Option<&Screen>,
+        previous: Option<&ScreenSnapshot>,
         outer: Viewport,
         footer: Option<(u16, &str)>,
     ) -> Result<String> {
@@ -256,12 +259,13 @@ impl TerminalScreen {
 
     fn render_frame(
         &self,
-        previous: Option<&Screen>,
+        previous: Option<&ScreenSnapshot>,
         outer_paste: bool,
         outer: Viewport,
         footer: Option<(u16, &str)>,
     ) -> Result<String> {
         let screen = self.parser.screen();
+        let previous = previous.map(|snapshot| &snapshot.0);
         let (rows, cols) = screen.size();
         let clipped_width = cols < outer.cols;
         let mut frame = String::new();
@@ -378,7 +382,7 @@ mod tests {
         terminal.process(b"\x1b]52;;aGVsbG8=\x07").unwrap();
         assert_eq!(terminal.take_clipboard().as_deref(), Some("hello"));
         terminal.process(b"visible").unwrap();
-        assert_eq!(terminal.snapshot().contents(), "visible");
+        assert_eq!(terminal.parser.screen().contents(), "visible");
     }
 
     #[test]
@@ -452,7 +456,7 @@ mod tests {
             terminal.process(&[*byte]).unwrap();
         }
         assert_eq!(terminal.title(), " 한글; build 🐦 ");
-        assert_eq!(terminal.snapshot().contents(), "content");
+        assert_eq!(terminal.parser.screen().contents(), "content");
         terminal.process(b"\x1b]2;next").unwrap();
         assert_eq!(terminal.title(), " 한글; build 🐦 ");
         terminal.process(b"\x1b\\").unwrap();
@@ -540,7 +544,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(screen.title(), "38:2::240:230:220m");
-        let snapshot = screen.snapshot();
+        let snapshot = screen.parser.screen();
         assert_eq!(snapshot.contents(), "mA");
         assert_eq!(snapshot.cell(0, 1).unwrap().fgcolor(), Color::Idx(1));
     }
@@ -557,17 +561,17 @@ mod tests {
         let full = inner.render(None, viewport, Some(footer)).unwrap();
         outer.process(full.as_bytes()).unwrap();
         assert_eq!(
-            outer.snapshot().cursor_position(),
-            inner.snapshot().cursor_position()
+            outer.parser.screen().cursor_position(),
+            inner.parser.screen().cursor_position()
         );
-        assert_eq!(outer.snapshot().fgcolor(), Color::Idx(1));
+        assert_eq!(outer.parser.screen().fgcolor(), Color::Idx(1));
 
         let previous = inner.snapshot();
         inner.process(b"Z").unwrap();
         let diff = inner.render(Some(&previous), viewport, None).unwrap();
         outer.process(diff.as_bytes()).unwrap();
-        let content = inner.snapshot();
-        let composed = outer.snapshot();
+        let content = inner.parser.screen();
+        let composed = outer.parser.screen();
         for row in 0..4 {
             for col in 0..12 {
                 assert_eq!(
@@ -596,9 +600,9 @@ mod tests {
         outer.process(frame.as_bytes()).unwrap();
 
         let previous = inner.snapshot();
-        assert_eq!(outer.snapshot().cell(1, 0), previous.cell(1, 0));
+        assert_eq!(outer.parser.screen().cell(1, 0), previous.0.cell(1, 0));
         assert_eq!(
-            outer.snapshot().cell(3, 8).unwrap().bgcolor(),
+            outer.parser.screen().cell(3, 8).unwrap().bgcolor(),
             Color::Default
         );
 
@@ -702,7 +706,7 @@ mod tests {
             .map(|row| format!("turn {row} 한"))
             .collect::<Vec<_>>();
         terminal.process(rows.join("\r\n").as_bytes()).unwrap();
-        assert_eq!(terminal.snapshot().scrollback_len(), 128);
+        assert_eq!(terminal.parser.screen().scrollback_len(), 128);
         let history = terminal.history();
         assert_eq!(history.lines, rows);
         assert!(!history.truncated);

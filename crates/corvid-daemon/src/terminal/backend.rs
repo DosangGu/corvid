@@ -1,11 +1,11 @@
 use std::path::Path;
 
+use super::screen::ScreenSnapshot;
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
 use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
 use portable_pty::{CommandBuilder, ExitStatus};
 use uuid::Uuid;
-use vt100::Screen;
 
 use super::host::{Client, HostConfig, Operation};
 use super::input::WriteFailure;
@@ -160,10 +160,10 @@ impl Backend {
 
     pub(super) fn render(
         &mut self,
-        previous: Option<&Option<Box<Screen>>>,
+        previous: Option<&Option<Box<ScreenSnapshot>>>,
         outer: Viewport,
         footer: Option<(u16, &str)>,
-    ) -> Result<(String, Option<Box<Screen>>)> {
+    ) -> Result<(String, Option<Box<ScreenSnapshot>>)> {
         match self {
             Self::Local(session) => {
                 let previous = previous.and_then(Option::as_deref);
