@@ -34,6 +34,9 @@ class Desktop:
         subprocess.run([self.helper, "submit", window[0], *keys], input=text.encode("utf-8"),
                        check=True, timeout=10)
 
+    def keys(self, window, *keys):
+        subprocess.run([self.helper, "keys", window[0], *keys], check=True, timeout=10)
+
     def screenshot(self, window, destination):
         subprocess.run(["screencapture", "-x", "-l", window[1], destination],
                        check=True, timeout=10)

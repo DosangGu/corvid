@@ -2,7 +2,7 @@
 from scenario import expect_shell_output
 
 
-def verify_paste(ui, desktop, window, root):
+def verify_paste(ui, desktop, window, root, *, cli, env):
     def mark(marker, value="$tag"):
         return f"[IO.File]::WriteAllText((Join-Path $env:CORVID_UI_ROOT '{marker}'), {value})"
 
