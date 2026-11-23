@@ -1885,6 +1885,7 @@ impl Lease {
                     .composition
                     .as_ref()
                     .and_then(|cache| cache.visible.as_ref())
+                    .filter(|view| !view.tab_mode)
                 else {
                     return Ok(None);
                 };
@@ -2187,13 +2188,23 @@ impl Lease {
             Some(Overlay::Tabs(id)) => Some(id),
             _ => None,
         };
-        let view = Composition::new(
+        let mut view = Composition::new(
             self.viewport.outer,
             &display.layout,
             self.location,
             selected_tab,
         );
         let size = view.active_size(self.location);
+        let preview = selected_tab
+            .filter(|tab| *tab != self.location.tab)
+            .and_then(|tab| {
+                display
+                    .layout
+                    .locate(Some(self.location.workspace), Some(tab))
+            });
+        if let Some(location) = preview {
+            view.show_tab(&display.layout, location);
+        }
         let layout_changed = cache
             .layout
             .as_ref()
@@ -2203,7 +2214,8 @@ impl Lease {
             cache.size = Some(size);
             terminal.dirty = true;
         }
-        let preview_changed = cache.previews(&view, scope, self.location);
+        let shown_tab = preview.map_or(self.location.tab, |location| location.tab);
+        let preview_changed = cache.previews(&view, scope, self.location, shown_tab);
         if let Some(editor) = &self.naming {
             self.navigation_dirty |= editor.dirty;
         }
@@ -2390,7 +2402,13 @@ impl CompositionCache {
         }
     }
 
-    fn previews(&mut self, view: &Composition, scope: &LaunchScope, location: Location) -> bool {
+    fn previews(
+        &mut self,
+        view: &Composition,
+        scope: &LaunchScope,
+        location: Location,
+        shown_tab: Uuid,
+    ) -> bool {
         let pane_body = |pane| {
             view.panes
                 .iter()
@@ -2405,16 +2423,15 @@ impl CompositionCache {
             })
         });
         let mut changed = before != self.screens.len();
-        if !view.split {
+        if !view.split && shown_tab == location.tab {
             self.pending = None;
             return changed;
         }
-        if let Some((pane, until, mut pending)) = self.pending.take() {
+        if let Some((pane, until, mut pending)) = self.pending.take()
+            && let Some(body) = pane_body(pane)
+        {
             match pending.try_recv() {
                 Ok(Ok((viewport, bytes))) => {
-                    let Some(body) = pane_body(pane) else {
-                        return changed;
-                    };
                     // Each cached preview occupies at most its rendered area.
                     // Reading a wider preview neither resizes nor retains a full copy of that PTY.
                     let cols = viewport.cols.get().min(body.width);
@@ -2446,10 +2463,11 @@ impl CompositionCache {
         }
         if self.pending.is_none() && Instant::now() >= self.next_preview {
             self.next_preview = Instant::now() + Duration::from_millis(125);
-            if let Some(handles) = scope
+            if let Some(mut handles) = scope
                 .registry
-                .request(move |registry| registry.preview_handles(location))
+                .request(move |registry| registry.preview_handles(location, shown_tab))
             {
+                handles.retain(|(pane, _)| pane_body(*pane).is_some());
                 let before = self.screens.len();
                 self.screens
                     .retain(|pane, _| handles.iter().any(|(id, _)| id == pane));

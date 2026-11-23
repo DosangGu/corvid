@@ -579,6 +579,12 @@ impl Render for WorkspaceView {
                 .as_ref()?
                 .highlighted_tab(&selected.workspace_id)
         });
+        let preview_tab = selected
+            .zip(highlighted)
+            .and_then(|(selected, tab)| (selected.tab_id != tab).then_some(tab));
+        if let Some(session) = &self.session {
+            session.set_preview_tab(preview_tab);
+        }
         self.tab_bar.select(
             highlighted.or_else(|| selected.map(|selected| selected.tab_id.as_str())),
             highlighted.is_some(),
@@ -599,7 +605,8 @@ impl Render for WorkspaceView {
                 .as_ref()
                 .is_some_and(|ui| ui.ssh_offline || ui.inventory_offline);
         let content = if let Some((ui, inventory)) = ui.as_ref().zip(inventory) {
-            self.terminal_layout(ui, inventory, cx).into_any_element()
+            self.terminal_layout(ui, inventory, preview_tab, cx)
+                .into_any_element()
         } else if ui.as_ref().is_some_and(|ui| ui.connected) {
             div()
                 .flex_1()

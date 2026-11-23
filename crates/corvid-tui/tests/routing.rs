@@ -917,8 +917,33 @@ async fn control(runtime: &Path, request: &str) -> String {
     String::from_utf8(result.stdout).unwrap()
 }
 
+async fn expect_pane_preview(tui: &mut Tui, target: &ViewSelection, text: &str) {
+    tui.send(Body::ReadPanePreview(ReadPanePreview {
+        expected_view_revision: Some(tui.route.view_revision),
+        pane_id: target.pane_id.clone(),
+    }))
+    .await;
+    loop {
+        let Frame::Render(frame) = tui.reader.next_frame().await.unwrap().unwrap() else {
+            panic!("expected a render frame")
+        };
+        if let Some(preview) = frame.header.preview {
+            assert_eq!(frame.header.view_revision, tui.route.view_revision);
+            assert_eq!(preview.pane_id, target.pane_id);
+            assert!(frame.header.base_frame_id.is_none());
+            assert!(String::from_utf8_lossy(&frame.ansi).contains(text));
+            break;
+        }
+        tui.send(Body::FrameApplied(FrameApplied {
+            render_generation: frame.header.render_generation,
+            frame_id: frame.header.frame_id,
+        }))
+        .await;
+    }
+}
+
 #[compio::test]
-async fn daemon_owns_split_panes_previews_and_exact_reattach() {
+async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
     let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
@@ -954,26 +979,31 @@ async fn daemon_owns_split_panes_previews_and_exact_reattach() {
         assert_eq!(error.code, "StaleRoute");
 
         tui.send(Body::ReadPanePreview(ReadPanePreview {
-            expected_view_revision: Some(tui.route.view_revision),
+            expected_view_revision: Some(retired.view_revision),
             pane_id: original.pane_id.clone(),
         }))
         .await;
-        loop {
-            let Frame::Render(frame) = tui.reader.next_frame().await.unwrap().unwrap() else {
-                panic!("expected a render frame")
-            };
-            if let Some(preview) = frame.header.preview {
-                assert_eq!(preview.pane_id, original.pane_id);
-                assert!(frame.header.base_frame_id.is_none());
-                assert!(String::from_utf8_lossy(&frame.ansi).contains("SOURCE-READY"));
-                break;
-            }
-            tui.send(Body::FrameApplied(FrameApplied {
-                render_generation: frame.header.render_generation,
-                frame_id: frame.header.frame_id,
-            }))
-            .await;
-        }
+        assert!(matches!(
+            tui.next_body(&mut output).await,
+            Body::Error(error) if error.code == "StaleRoute"
+        ));
+        expect_pane_preview(&mut tui, &original, "SOURCE-READY").await;
+
+        tui.send(Body::CreateView(CreateView {
+            expected_view_revision: Some(tui.route.view_revision),
+            target: Some(Target::TabLabel("Other tab".into())),
+        }))
+        .await;
+        let Body::ViewChanged(tab) = tui.next_body(&mut output).await else {
+            panic!("expected a new tab")
+        };
+        tui.selection = tab.selection.unwrap();
+        tui.route = tab.route_token.unwrap();
+        assert_eq!(tui.selection.workspace_id, original.workspace_id);
+        assert_ne!(tui.selection.tab_id, original.tab_id);
+
+        sleep(Duration::from_millis(200)).await;
+        expect_pane_preview(&mut tui, &original, "SOURCE-READY").await;
 
         tui.send(Body::CreateView(CreateView {
             expected_view_revision: Some(tui.route.view_revision),
@@ -987,6 +1017,16 @@ async fn daemon_owns_split_panes_previews_and_exact_reattach() {
             workspace.selection.unwrap().workspace_id,
             original.workspace_id
         );
+        sleep(Duration::from_millis(200)).await;
+        tui.send(Body::ReadPanePreview(ReadPanePreview {
+            expected_view_revision: Some(workspace.route_token.unwrap().view_revision),
+            pane_id: original.pane_id.clone(),
+        }))
+        .await;
+        assert!(matches!(
+            tui.next_body(&mut output).await,
+            Body::Error(error) if error.code == "TargetGone"
+        ));
         drop(tui);
         loop {
             if corvid_client::clients(&runtime)

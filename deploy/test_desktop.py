@@ -200,8 +200,31 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         def split_right(window):
             key(window, "ctrl+bracketright", "p", "r")
 
-        def prepare_preview(title, text):
-            type_command("printf '\\033]2;%s\\007\\033[2J\\033[H%s\\n' " + shlex.join([title, text]))
+        def prepare_preview(title, text, color=None):
+            background = ""
+            if color is not None:
+                rgb = ";".join(map(str, color))
+                background = f"\\033[48;2;{rgb}m"
+            type_command(
+                f"printf '\\033]2;%s\\007\\033[2J\\033[H{background}%s\\033[0m\\n' "
+                + shlex.join([title, text])
+            )
+
+        def wait_for_terminal_colors(*colors):
+            # Capture the actual Desktop frame. A solid truecolor run comes from
+            # the shell's output, even if the tab bar and input route stay put.
+            screenshot = root / "terminal-preview.ppm"
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                subprocess.run(
+                    ["scrot", "--overwrite", "--format", "ppm", "--window", window, str(screenshot)],
+                    check=True, timeout=5,
+                )
+                pixels = screenshot.read_bytes().partition(b"\n255\n")[2]
+                if all(bytes(color) * 8 in pixels for color in colors):
+                    return
+                time.sleep(0.05)
+            raise AssertionError(f"Desktop did not render terminal backgrounds {colors}")
 
         def wait_for_layout(*, tabs, panes):
             deadline = time.monotonic() + 5
@@ -398,8 +421,10 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         first_terminal = wait_for_terminal()
         tab_screenshot = os.environ.get("CORVID_TAB_MODE_SCREENSHOT")
         pane_screenshot = os.environ.get("CORVID_PANE_MODE_SCREENSHOT")
-        if tab_screenshot:
-            prepare_preview("Editor", "Editing scratch.txt")
+        editor_color = (72, 44, 99)
+        tests_color = (20, 82, 102)
+        if args.build or tab_screenshot:
+            prepare_preview("Editor", "Editing scratch.txt", editor_color)
         new_tab(window)
         second_terminal = wait_for_terminal(previous=first_terminal)
         second_tab_marker = root / "second-tab"
@@ -407,11 +432,22 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                      f"second=preserved; printf %s \"$second\" > {shlex.quote(str(second_tab_marker))}")
         key(window, "ctrl+bracketright", "t", "h", "Escape")
         wait_for_terminal(expected=second_terminal)
+        if args.build or tab_screenshot:
+            prepare_preview("Tests", "Tests ready", tests_color)
+        if args.build:
+            wait_for_terminal_colors(tests_color)
+            focused = writers()
+            key(window, "ctrl+bracketright", "t", "h")
+            wait_for_terminal_colors(editor_color)
+            assert writers() == focused, "Tab preview changed the writer or input route"
+            key(window, "Escape")
+            wait_for_terminal_colors(tests_color)
+            assert writers() == focused, "Cancelling tab preview changed the input route"
+        key(window, "ctrl+bracketright", "t", "Left")
+        if args.build:
+            wait_for_terminal_colors(editor_color)
+            assert writers() == focused, "Arrow key preview changed the input route"
         if tab_screenshot:
-            prepare_preview("Tests", "Tests ready")
-        key(window, "ctrl+bracketright", "t", "h")
-        if tab_screenshot:
-            time.sleep(0.3)
             subprocess.run(["scrot", "--overwrite", "--focused", tab_screenshot], check=True, timeout=10)
         key(window, "Return")
         wait_for_terminal(expected=first_terminal)
@@ -420,12 +456,21 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         if args.build:
             new_tab(window)
             added_tab = wait_for_terminal(previous=second_terminal)
-            if pane_screenshot:
-                prepare_preview("Editor", "Editing scratch.txt")
+            left_color = (96, 52, 20)
+            right_color = (28, 74, 43)
+            prepare_preview("Editor", "Editing scratch.txt", left_color)
             split_right(window)
             split = wait_for_terminal(previous=added_tab)
-            if pane_screenshot:
-                prepare_preview("Logs", "Watching logs")
+            prepare_preview("Logs", "Watching logs", right_color)
+            wait_for_terminal_colors(left_color, right_color)
+            key(window, "ctrl+bracketright", "t", "h", "Return")
+            wait_for_terminal(expected=second_terminal)
+            focused = writers()
+            key(window, "ctrl+bracketright", "t", "Right")
+            wait_for_terminal_colors(left_color, right_color)
+            assert writers() == focused, "Split tab preview changed the input route"
+            key(window, "Return")
+            wait_for_terminal(expected=split)
             key(window, "ctrl+bracketright", "p", "h")
             if pane_screenshot:
                 time.sleep(0.3)

@@ -243,17 +243,12 @@ impl Inventory {
             .any(|client| client.active_selection() == Some(selection))
     }
 
-    fn live_siblings(&self, selected: &ViewSelection) -> Vec<String> {
+    fn live_preview_panes(&self, selected: &ViewSelection, tab_id: &str) -> Vec<String> {
         let Some(tab) = self
             .workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == selected.workspace_id)
-            .and_then(|workspace| {
-                workspace
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.tab_id == selected.tab_id)
-            })
+            .and_then(|workspace| workspace.tabs.iter().find(|tab| tab.tab_id == tab_id))
         else {
             return Vec::new();
         };
@@ -263,6 +258,7 @@ impl Inventory {
                 Some(Node::PaneId(pane))
                     if *pane != selected.pane_id
                         && self.live(&ViewSelection {
+                            tab_id: tab_id.to_owned(),
                             pane_id: pane.clone(),
                             ..selected.clone()
                         }) =>
@@ -294,6 +290,7 @@ pub struct Ui {
     pub connected: bool,
     pub changing: bool,
     pub close_supported: bool,
+    pub tab_preview_supported: bool,
     pub session_clients_supported: bool,
     pub closed_view: bool,
     pub ssh_offline: bool,
@@ -374,6 +371,7 @@ struct Shared {
     edits: mpsc::Sender<(StateEdit, blocking::SyncSender<()>)>,
     snapshots: watch::Receiver<Arc<Snapshot>>,
     screen_changed: watch::Sender<()>,
+    preview_tab: watch::Sender<Option<String>>,
     clipboard: watch::Sender<Option<ClipboardWrite>>,
     ui_changed: watch::Sender<()>,
     inventory_reconnect: watch::Sender<()>,
@@ -404,6 +402,7 @@ impl Shared {
                 connected: false,
                 changing: true,
                 close_supported: false,
+                tab_preview_supported: false,
                 session_clients_supported: false,
                 closed_view: false,
                 ssh_offline: false,
@@ -440,6 +439,7 @@ impl Shared {
             edits,
             snapshots: latest,
             screen_changed,
+            preview_tab: watch::channel(None).0,
             clipboard: watch::channel(None).0,
             ui_changed,
             inventory_reconnect: watch::channel(()).0,
@@ -926,6 +926,16 @@ impl Session {
             return None;
         }
         snapshot.screen.clone()
+    }
+
+    pub fn set_preview_tab(&self, tab: Option<&str>) {
+        self.shared.preview_tab.send_if_modified(|current| {
+            if current.as_deref() == tab {
+                return false;
+            }
+            *current = tab.map(str::to_owned);
+            true
+        });
     }
 
     pub fn preview<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
@@ -1829,7 +1839,13 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == corvid_protocol::VIEW_TITLES_CAPABILITY);
+    let tab_preview_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == corvid_protocol::TAB_PREVIEW_CAPABILITY);
     shared.update_ui(move |ui| {
+        ui.tab_preview_supported = tab_preview_supported;
         ui.close_supported = close_supported;
         ui.naming_supported = naming_supported;
         ui.split_target_supported = split_target_supported;
@@ -2256,16 +2272,27 @@ impl Client<'_> {
         Ok(())
     }
 
+    fn preview_panes(&self, ui: &Ui) -> Vec<String> {
+        let preview_tab = self.shared.preview_tab.borrow();
+        let tab = preview_tab
+            .as_deref()
+            .filter(|_| ui.tab_preview_supported)
+            .unwrap_or(&self.selected.tab_id);
+        ui.inventory.as_ref().map_or_else(Vec::new, |inventory| {
+            inventory.live_preview_panes(&self.selected, tab)
+        })
+    }
+
     async fn read_preview(&mut self) -> Result<()> {
-        let panes = self
-            .shared
-            .snapshot()
-            .ui
-            .inventory
-            .as_ref()
-            .map_or_else(Vec::new, |inventory| {
-                inventory.live_siblings(&self.selected)
+        let snapshot = self.shared.snapshot();
+        let panes = self.preview_panes(&snapshot.ui);
+        if snapshot.previews.keys().any(|pane| !panes.contains(pane)) {
+            let keep = panes.clone();
+            self.shared.edit(move |state| {
+                Arc::make_mut(&mut state.previews).retain(|pane, _| keep.contains(pane));
+                Changed::Ui
             });
+        }
         if panes.is_empty() {
             return Ok(());
         }
@@ -2851,6 +2878,12 @@ impl Client<'_> {
                 preview.pane_id == expected,
                 "daemon returned a different pane preview"
             );
+            if !self
+                .preview_panes(&self.shared.snapshot().ui)
+                .contains(&expected)
+            {
+                return Ok(());
+            }
             if let Ok(grid) = Grid::read(preview.viewport.context("pane preview has no size")?) {
                 let mut parser = Parser::new(grid.rows, grid.cols, 0);
                 parser.process(&frame.ansi);

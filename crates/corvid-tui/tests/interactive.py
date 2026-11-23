@@ -877,20 +877,28 @@ def verify_workspace_ui(command, directory):
         terminal.expect(b"Rename tab")
         terminal.send(b"hello\r")
         terminal.expect(rb"\[2 hello\]")
-        for key, label, tab in (
-            (b"h", b"work", b"1"),
-            (b"\x1bOC", b"hello", b"2"),
-            (b"\x1b[D", b"work", b"1"),
-            (b"l", b"hello", b"2"),
+        for key, label, tab, markers, previous in (
+            (b"h", b"work", b"1", (b"left-PANE", b"top-PANE", b"bottom-PANE"), b"INPUT-NEW_TAB"),
+            (b"\x1bOC", b"hello", b"2", (b"INPUT-NEW_TAB",), b"left-PANE"),
+            (b"\x1b[D", b"work", b"1", (b"left-PANE", b"top-PANE", b"bottom-PANE"), b"INPUT-NEW_TAB"),
+            (b"l", b"hello", b"2", (b"INPUT-NEW_TAB",), b"left-PANE"),
         ):
             active = rb"\x1b\[0;1;36m\[" + tab + b" " + label + rb"\]"
             terminal.output.clear()
             terminal.send(b"\x1dt" + key)
             terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m" + tab + b" " + label)
+            for marker in markers:
+                match = terminal.expect(marker)
+                frame = terminal.output[terminal.output.rfind(b"\x1b[2J", 0, match.start()):]
+                assert previous not in frame, frame
+                assert b"\x1b[?25h" not in frame, frame
             assert not re.search(active, terminal.output), terminal.output
             terminal.output.clear()
-            terminal.send(b"\r")
+            terminal.send(b"q\r")
             terminal.expect(active)
+            terminal.expect(cursor_visible)
+            send_line(terminal, "printf 'WRITABLE-%s\\n' " + label.decode())
+            terminal.expect(b"WRITABLE-" + label)
         terminal.output.clear()
         terminal.send(b"\x1d[")
         terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
@@ -903,6 +911,7 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.send(b"\x1dtl")
         terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m2 hello")
+        terminal.expect(b"INPUT-NEW_TAB")
         terminal.send(b"\x1b")
         terminal.output.clear()
         terminal.expect(rb"\x1b\[0;1;36m\[1 work\][^\r\n]*Ctrl\+\] commands")

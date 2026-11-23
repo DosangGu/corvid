@@ -1167,9 +1167,11 @@ impl WorkspaceView {
                 let selected = ui.selected.as_ref().expect("pane tree has a selected tab");
                 *ordinal += 1;
                 let target = ViewSelection {
+                    tab_id: tab.tab_id.clone(),
                     pane_id: pane.clone(),
                     ..selected.clone()
                 };
+                let preview_only = target.tab_id != selected.tab_id;
                 let active = ui.connected && target == *selected;
                 let live = inventory.live(&target);
                 let title = tab.nodes[index].title.clone();
@@ -1182,7 +1184,7 @@ impl WorkspaceView {
                     .session
                     .clone()
                     .filter(|_| ui.connected && live && !active);
-                region
+                let region = region
                     .flex_col()
                     .border_1()
                     .border_color(rgb(if self.pane_highlight(pane) {
@@ -1203,24 +1205,31 @@ impl WorkspaceView {
                             .text_color(rgb(if active { ACTIVE } else { MUTED }))
                             .text_size(ui_px(12.))
                             .child(div().flex_1().min_w_0().truncate().child(title))
-                            .when(ui.connected && ui.close_supported, |header| {
-                                header.child(
-                                    div()
-                                        .id(SharedString::from(format!("pane-header-{pane}")))
-                                        .child(Self::close_button(
-                                            "close-pane",
-                                            "Close this pane?",
-                                            CloseView {
-                                                workspace_id: target.workspace_id.clone(),
-                                                tab_id: Some(target.tab_id.clone()),
-                                                pane_id: Some(target.pane_id.clone()),
-                                                ..Default::default()
-                                            },
-                                            cx,
-                                        )),
-                                )
-                            }),
-                    )
+                            .when(
+                                !preview_only && ui.connected && ui.close_supported,
+                                |header| {
+                                    header.child(
+                                        div()
+                                            .id(SharedString::from(format!("pane-header-{pane}")))
+                                            .child(Self::close_button(
+                                                "close-pane",
+                                                "Close this pane?",
+                                                CloseView {
+                                                    workspace_id: target.workspace_id.clone(),
+                                                    tab_id: Some(target.tab_id.clone()),
+                                                    pane_id: Some(target.pane_id.clone()),
+                                                    ..Default::default()
+                                                },
+                                                cx,
+                                            )),
+                                    )
+                                },
+                            ),
+                    );
+                if preview_only {
+                    return region.child(self.read_only_pane(pane, ui, live));
+                }
+                region
                     .when(active, |region| {
                         region.child(
                             div()
@@ -1323,8 +1332,36 @@ impl WorkspaceView {
         }
     }
 
-    fn terminal_layout(&self, ui: &Ui, inventory: &Inventory, cx: &mut Context<Self>) -> Div {
-        if self.zoom_pane && ui.connected {
+    fn preview_status(&self, message: &'static str) -> Div {
+        div()
+            .flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .text_color(rgb(MUTED))
+            .child(message)
+    }
+
+    fn read_only_pane(&self, pane: &str, ui: &Ui, live: bool) -> Div {
+        if let Some(session) = self.session.clone().filter(|_| ui.connected && live) {
+            div().flex_1().min_h_0().overflow_hidden().child(preview(
+                session,
+                pane.to_owned(),
+                Rc::default(),
+            ))
+        } else {
+            self.preview_status("No running terminal")
+        }
+    }
+
+    fn terminal_layout(
+        &self,
+        ui: &Ui,
+        inventory: &Inventory,
+        preview_tab: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        if self.zoom_pane && ui.connected && preview_tab.is_none() {
             return div()
                 .flex()
                 .flex_1()
@@ -1338,6 +1375,24 @@ impl WorkspaceView {
             .workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == selected.workspace_id);
+        if let Some(tab) =
+            preview_tab.and_then(|id| workspace?.tabs.iter().find(|tab| tab.tab_id == id))
+        {
+            if !ui.tab_preview_supported {
+                return self.preview_status("Tab preview requires a newer Corvid daemon");
+            }
+            if let [node] = tab.nodes.as_slice()
+                && let Some(Node::PaneId(pane)) = &node.body
+            {
+                let target = ViewSelection {
+                    tab_id: tab.tab_id.clone(),
+                    pane_id: pane.clone(),
+                    ..selected.clone()
+                };
+                return self.read_only_pane(pane, ui, inventory.live(&target));
+            }
+            return self.panes(tab, 0, ui, inventory, &mut 0, cx);
+        }
         let tab = workspace.and_then(|workspace| {
             workspace
                 .tabs

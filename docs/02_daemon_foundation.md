@@ -155,18 +155,21 @@ arrow keys to move, Enter to execute, or Esc to cancel.
 | Keys after Ctrl-] | Action |
 | --- | --- |
 | `w` | Filter and switch workspaces. Return to the last available pane in the selected workspace. |
-| `t` | Browse the top tab bar. Use the arrow keys or `h`/`l` to move the highlight, Enter to focus, `n` to open a new tab, `x` to close the highlighted tab, or Esc to cancel. |
+| `t` | Browse the top tab bar. Use the arrow keys or `h`/`l` to preview the highlighted tab, Enter to focus, `n` to open a new tab, `x` to close the highlighted tab, or Esc to cancel. |
 | `p` | Browse the pane layout with the arrow keys or `h`/`j`/`k`/`l`. Press Enter to focus, `r` to split right, `d` to split down, `x` to close the highlighted pane, or Esc to cancel. |
 | Arrow keys | Focus a neighboring pane directly. |
 | `[` / `]` | Previous or next tab. |
 | `d` | Detach and keep terminals running. |
 
-Tab mode starts with the current tab highlighted. Navigating keeps terminal
-focus on the current pane until you press Enter. Pressing `n` opens a tab and
-focuses its shell. Pressing `x` immediately closes the highlighted tab and all
-of its panes. Both commands return to terminal input when a pane is available.
+Tab mode starts with the current tab highlighted. Moving the highlight shows
+the tab's live terminal contents in read-only mode, including its split panes
+when the viewport fits them. Enter focuses the highlighted tab and enables
+terminal input. Esc restores the original tab and input focus. Pressing `n`
+opens a tab and focuses its shell. Pressing `x` immediately closes the
+highlighted tab and all of its panes. Both commands return to terminal input
+when a pane is available.
 
-![TUI tab bar with Tests highlighted while Editor stays focused](images/workspace-navigation/tui-tab-picker.png)
+![TUI previewing the Tests terminal while Editor retains input focus](images/workspace-navigation/tui-tab-picker.png)
 
 Pane mode starts with the current pane highlighted. The hint line shows the
 highlighted pane number, including when the terminal is too small for split
