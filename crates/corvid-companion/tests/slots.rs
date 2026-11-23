@@ -37,7 +37,7 @@ fn private_parent() -> tempfile::TempDir {
 }
 
 #[test]
-fn retains_completed_agents_and_packs_the_queue_after_pane_closure() {
+fn retains_context_ended_runs_and_packs_the_queue_after_pane_closure() {
     let mut layout = SlotLayout::new(3).unwrap();
     let [a, b, c, d, e] = [key(10), key(8), key(4), key(5), key(6)];
     let mut runs = BTreeMap::from([
@@ -98,7 +98,7 @@ fn retains_completed_agents_and_packs_the_queue_after_pane_closure() {
 }
 
 #[test]
-fn admits_an_already_completed_run_with_an_existing_pane() {
+fn admits_an_already_ended_context_with_an_existing_pane() {
     let mut completed = live(1);
     completed.navigable = false;
     completed.ended = true;

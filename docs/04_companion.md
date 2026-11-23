@@ -714,11 +714,12 @@ When running Agent Deck directly,
 choose a paired TUI in **Target terminal**, then click the agent's key.
 The result bar reports the outcome.
 **Acknowledge alert** marks that alert seen. Answer questions and grant
-permissions in the terminal. Completed agents retain their cards while their
-panes remain in the current daemon epoch. Additional agents queue in arrival
-order. Closing a pane shifts all following cards forward and fills vacancies
-from the queue. Pins follow their cards. **Run history** shows recent runs
-removed after pane closure or daemon replacement. Manually suppressed runs
+permissions in the terminal. A completed response keeps its card. When the
+daemon confirms that the agent process exited, Deck removes its card even if
+the pane stays open. Additional agents queue in arrival order. Process exit and
+pane closure shift following cards forward and fill vacancies from the queue.
+Pins follow their cards. **Run history** shows recent runs retired after process
+exit, pane closure, or daemon replacement. Manually suppressed runs
 from the current epoch can still be re-added.
 
 On Windows, closing the Deck window hides it to the tray. **Notifications &

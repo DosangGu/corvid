@@ -29,6 +29,7 @@ pub(crate) struct Remote {
 pub(crate) struct ObservedRun {
     pub(crate) observation: RunObservation,
     pub(crate) display: PresentedRun,
+    pub(crate) process_exited: bool,
     latest_alert: Option<(u64, String)>,
     latest_result: Option<(u64, bool)>,
 }
@@ -96,7 +97,7 @@ impl Remote {
                 .observation
                 .pane
                 .and_then(|pane| pane_titles.get(&pane).copied());
-            run.observation.eligible = title.is_some();
+            run.observation.eligible = title.is_some() && !run.process_exited;
             run.display.session_title = title.filter(|title| !title.is_empty()).map(str::to_owned);
         }
         let requests: BTreeMap<_, _> = snapshot
@@ -227,12 +228,9 @@ impl ObservedRun {
 
     fn new(key: RunKey, agent: &AgentState) -> Self {
         let summary = agent.summary.as_ref().expect("validated agent summary");
-        let ended = agent.lifecycle == AgentLifecycle::Ended as i32
-            || summary.process == AgentProcessState::Exited as i32;
+        let process_exited = summary.process == AgentProcessState::Exited as i32;
+        let ended = agent.lifecycle == AgentLifecycle::Ended as i32 || process_exited;
         let navigable = summary.terminal_available && !ended;
-        let eligible = navigable
-            && (agent.lifecycle == AgentLifecycle::Live as i32
-                || summary.process == AgentProcessState::Running as i32);
         let availability = if navigable {
             RunAvailability::Available
         } else {
@@ -262,7 +260,7 @@ impl ObservedRun {
                     .as_ref()
                     .and_then(|location| Uuid::parse_str(&location.pane_id).ok()),
                 navigable,
-                eligible,
+                eligible: false,
                 ended,
             },
             display: PresentedRun {
@@ -280,6 +278,7 @@ impl ObservedRun {
                 last_observed_unix_ms,
                 ..Default::default()
             },
+            process_exited,
             latest_alert: None,
             latest_result: None,
         }

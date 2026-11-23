@@ -288,10 +288,14 @@ login startup, mixed-DPI dragging, and taskbar relocation remain unverified for
 the GPUI migration. Earlier renderer qualification is not evidence for those
 new runtime paths.
 
-An agent's card survives work completion, process exit, and provider context
-changes within the current daemon epoch. Closing its pane, tab, or workspace
-removes the card. Closing the Desktop window detaches the presentation and
-retains the layout.
+An agent's card survives work completion and provider context changes within
+the current daemon epoch. When the daemon confirms process exit, Deck moves
+the tracked run to **Run history**, including when its shell and pane stay open.
+Closing the owning pane, tab, or workspace also retires the card. Closing the
+Desktop window detaches the presentation and retains the layout.
+
+![Mini Deck with a tracked Claude fixture](images/agent-deck/agent-cli-exit-before.png)
+![Mini Deck after the fixture exits with the same Desktop shell still open](images/agent-deck/agent-cli-exit-after.png)
 
 New runs enter the queue in creation order, with run identity as a deterministic
 fallback. On a full grid a queued card replaces the lowest-priority unpinned
@@ -301,12 +305,12 @@ halves every 30 minutes. A pending input request starts at 60, rises to 90
 over 30 minutes, then halves every 90 minutes. Recent input requests use
 their existing visible positions in oldest-first order. Scores use observed
 event times and are recalculated as events arrive and as time passes.
-Removing a pane compacts the slots and fills the freed space from the queue.
+Retiring a run compacts the slots and fills the freed space from the queue.
 Pins protect a card from reprioritization and follow it during compaction.
 
 Pane ownership is saved with each tracked run. During a disconnect, Deck shows
-cached cards. The next synchronized layout confirms pane closures that happened
-while Deck was offline. If the same host starts a new daemon epoch, Companion
+cached cards. Companion reconciles confirmed process exits and pane closures
+after synchronization. If the same host starts a new daemon epoch, Companion
 moves the previous epoch's runs into **Run history** as part of synchronization.
 Rediscovered agents get new cards and fresh pins. The queue is bounded to 4,096
 tracked runs and run history to 256 entries. Legacy CLI layout-editing commands
@@ -394,11 +398,12 @@ normal state and a separate attention overlay. See the [icon preview](images/age
 
 ## Validation and remaining qualification
 
-Automated coverage includes retained completed runs, FIFO compaction, persisted
+Automated coverage includes retained completed responses, FIFO compaction, persisted
 pane ownership, stale slot captures, off-page attention and bounds, request metadata,
 notification deduplication and snooze, cross-host rejection, Desktop reconnection,
 and activation without replacing an existing registration. The Linux routing fixture
-exercises real process exit, relaunch in the same pane, and explicit pane closure.
+exercises real process exit with the shell still open, relaunch in the same pane,
+and explicit pane closure.
 
 The Linux Deck focus fixture clicks cards for two live agent tabs. It verifies
 that Desktop comes to the foreground, including from a minimized window, and

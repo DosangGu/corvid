@@ -1393,13 +1393,17 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert!(one_process.foreground_group.is_some());
 
         let (_companion, mut companion) =
-            start_companion(&runtime, temporary.path(), &first.session.host_id, 2).await;
+            start_companion(&runtime, temporary.path(), &first.session.host_id, 1).await;
         let placements = presented(&mut companion, |view| {
             view.connection == CompanionConnection::Ready as i32
         })
         .await;
         assert_eq!(slot_run(&placements, 0), Some(one.agent_run_id.as_str()));
-        assert_eq!(slot_run(&placements, 1), Some(two.agent_run_id.as_str()));
+        assert_eq!(placements.overflow_count, 1);
+        assert_eq!(
+            placements.overflow[0].key.as_ref().unwrap().agent_run_id,
+            two.agent_run_id
+        );
 
         first.input(first.route.clone(), 1, b"7\n").await;
         assert!(matches!(
@@ -1422,6 +1426,13 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         assert!(first.reader.next_frame().await.unwrap().is_none());
         drop(first);
 
+        let compacted = presented(&mut companion, |view| {
+            slot_run(view, 0) == Some(two.agent_run_id.as_str()) && view.overflow_count == 0
+        })
+        .await;
+        assert!(compacted.slots[0].revision > placements.slots[0].revision);
+        assert_eq!(compacted.recent_ended[0].agent_run_id, one.agent_run_id);
+
         let mut replacement = Tui::attach_command(&runtime, Some(launch("NEW"))).await;
         let fresh = wait_for_agent(&runtime, &replacement.route.terminal_id, |agent| {
             agent.terminal_available
@@ -1433,7 +1444,7 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
         let unchanged = wait_for_agent(&runtime, &two.terminal_id, |_| true).await;
         assert_eq!(unchanged.agent_run_id, two.agent_run_id);
         assert_eq!(unchanged.process, AgentProcessState::Running as i32);
-        let changed = presented(&mut companion, |view| {
+        let relaunched = presented(&mut companion, |view| {
             view.overflow.iter().any(|run| {
                 run.key
                     .as_ref()
@@ -1441,16 +1452,8 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
             })
         })
         .await;
-        assert_eq!(slot_run(&changed, 0), Some(one.agent_run_id.as_str()));
-        assert_eq!(changed.slots[0].revision, placements.slots[0].revision);
-        // The other run may be observed again while the first run is replaced.
-        let mut expected_other_slot = placements.slots[1].clone();
-        let expected_other_run = expected_other_slot.run.as_mut().unwrap();
-        let observed_at = changed.slots[1].run.as_ref().unwrap().last_observed_unix_ms;
-        assert!(observed_at >= expected_other_run.last_observed_unix_ms);
-        expected_other_run.last_observed_unix_ms = observed_at;
-        assert_eq!(changed.slots[1], expected_other_slot);
-        assert!(changed.recent_ended.is_empty());
+        assert_eq!(slot_run(&relaunched, 0), Some(two.agent_run_id.as_str()));
+        assert_eq!(relaunched.slots[0].revision, compacted.slots[0].revision);
 
         replacement
             .send(Body::CloseView(CloseView {
@@ -1465,23 +1468,76 @@ async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
             replacement.next_body(&mut replacement_output).await,
             Body::Detach(_)
         ));
-        let compacted = presented(&mut companion, |view| {
+        let closed = presented(&mut companion, |view| {
             slot_run(view, 0) == Some(two.agent_run_id.as_str()) && view.overflow_count == 0
         })
         .await;
-        assert!(compacted.slots[0].revision > placements.slots[0].revision);
-        assert_eq!(slot_run(&compacted, 1), None);
-        let closed: std::collections::BTreeSet<_> = compacted
-            .recent_ended
-            .iter()
-            .map(|run| run.agent_run_id.as_str())
-            .collect();
+        assert_eq!(closed.slots[0].revision, compacted.slots[0].revision);
         assert_eq!(
-            closed,
-            std::collections::BTreeSet::from([
-                one.agent_run_id.as_str(),
-                fresh.agent_run_id.as_str()
-            ])
+            closed
+                .recent_ended
+                .iter()
+                .map(|run| run.agent_run_id.as_str())
+                .collect::<Vec<_>>(),
+            [fresh.agent_run_id.as_str(), one.agent_run_id.as_str()]
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[compio::test]
+async fn agent_cli_exit_retires_the_card_while_the_shell_remains_open() {
+    let fixture = fixture_directory().unwrap();
+    let runtime = fixture.path().join("run");
+    let provider = fixture.path().join("claude");
+    compile_shell_agent(&provider);
+    let paths = std::iter::once(fixture.path().to_owned())
+        .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap()))
+        .collect::<Vec<_>>();
+    let mut daemon_command = command(&runtime);
+    daemon_command
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("SHELL", "/bin/bash")
+        .env("CORVID_FIXTURE_BINARY", env!("CARGO_BIN_EXE_corvid"))
+        .env("CORVID_FIXTURE_HANDOFF", "1");
+    let _daemon = start_daemon(daemon_command, &runtime, &fixture.path().join("state")).await;
+
+    timeout(WAIT, async {
+        let mut tui = Tui::attach_command(&runtime, Some(LaunchCommand::default())).await;
+        let mut output = Vec::new();
+        tui.input(tui.route.clone(), 1, b"claude\n").await;
+        wait_for_text(&mut tui, &mut output, "RETAINED-claude").await;
+        let terminal = tui.route.terminal_id.clone();
+        let original = wait_for_agent(&runtime, &terminal, |agent| agent.terminal_available).await;
+        let (_companion, mut companion) =
+            start_companion(&runtime, fixture.path(), &tui.session.host_id, 1).await;
+        let before = presented(&mut companion, |view| {
+            slot_run(view, 0) == Some(original.agent_run_id.as_str())
+        })
+        .await;
+
+        tui.input(tui.route.clone(), 2, b"exit\n").await;
+        let after = presented(&mut companion, |view| {
+            view.recent_ended
+                .iter()
+                .any(|run| run.agent_run_id == original.agent_run_id)
+        })
+        .await;
+        assert_eq!(slot_run(&after, 0), None);
+        assert_eq!(after.overflow_count, 0);
+        assert!(after.slots[0].revision > before.slots[0].revision);
+
+        tui.input(
+            tui.route.clone(),
+            3,
+            b"printf '%s%s\\n' SHELL- STILL-OPEN\n",
+        )
+        .await;
+        wait_for_text(&mut tui, &mut output, "SHELL-STILL-OPEN").await;
+        assert_eq!(
+            tui.client_state(&runtime).await.terminal_id.as_deref(),
+            Some(terminal.as_str())
         );
     })
     .await
@@ -1504,27 +1560,7 @@ async fn verify_claude_update_restart(legacy_handoff: bool) {
     let updated = fixture.path().join("updated");
     std::fs::create_dir(&first).unwrap();
     std::fs::create_dir(&updated).unwrap();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell_agent.rs");
-    let compiled = std::process::Command::new("rustc")
-        .args(["--edition", "2024"])
-        .arg(source)
-        .arg("-o")
-        .arg(first.join("claude"))
-        .env(
-            "CORVID_FIXTURE_CLAUDE",
-            corvid_protocol::collector::CLAUDE_VERSION,
-        )
-        .env(
-            "CORVID_FIXTURE_CODEX",
-            corvid_protocol::collector::CODEX_VERSION,
-        )
-        .output()
-        .unwrap();
-    assert!(
-        compiled.status.success(),
-        "{}",
-        String::from_utf8_lossy(&compiled.stderr)
-    );
+    compile_shell_agent(&first.join("claude"));
     std::fs::copy(first.join("claude"), updated.join("claude")).unwrap();
 
     for managed in [true, false] {
@@ -1653,6 +1689,30 @@ async fn verify_claude_update_restart(legacy_handoff: bool) {
         .await
         .unwrap_or_else(|error| panic!("restart timed out (managed={managed}): {error}"));
     }
+}
+
+fn compile_shell_agent(destination: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell_agent.rs");
+    let compiled = std::process::Command::new("rustc")
+        .args(["--edition", "2024"])
+        .arg(source)
+        .arg("-o")
+        .arg(destination)
+        .env(
+            "CORVID_FIXTURE_CLAUDE",
+            corvid_protocol::collector::CLAUDE_VERSION,
+        )
+        .env(
+            "CORVID_FIXTURE_CODEX",
+            corvid_protocol::collector::CODEX_VERSION,
+        )
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
 }
 
 #[compio::test]

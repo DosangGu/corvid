@@ -53,7 +53,7 @@ fn agent(run: Uuid, location: &ViewSelection, sequence: u64) -> AgentState {
             terminal_id: Uuid::new_v4().to_string(),
             location: Some(location.clone()),
             provider: AgentProvider::Claude as i32,
-            process: AgentProcessState::Exited as i32,
+            process: AgentProcessState::Running as i32,
             badge: AgentBadge::Ended as i32,
             collection: AgentCollection::Healthy as i32,
             ..Default::default()
@@ -151,6 +151,45 @@ fn run_titles_follow_the_owning_pane_or_its_custom_single_pane_tab_name() {
         assert!(run.observation.eligible);
         assert_eq!(run.display.session_title.as_deref(), title);
     }
+}
+
+#[test]
+fn excludes_confirmed_process_exits_from_admission_with_an_open_pane() {
+    let location = ViewSelection {
+        workspace_id: Uuid::new_v4().to_string(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let bodies = [
+        AgentProcessState::Running,
+        AgentProcessState::Unknown,
+        AgentProcessState::Exited,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, process)| {
+        let mut agent = agent(Uuid::new_v4(), &location, index as u64 + 1);
+        agent.summary.as_mut().unwrap().process = process as i32;
+        Body::Agent(Box::new(agent))
+    });
+    let cache = snapshot(
+        std::iter::once(workspace(&location))
+            .chain(bodies)
+            .map(|body| SnapshotEntity { body: Some(body) })
+            .collect(),
+    );
+    let remote = Remote::read(&cache, &Uuid::new_v4().to_string()).unwrap();
+    let mut eligible = Vec::new();
+    for run in remote.runs.values() {
+        assert!(run.observation.ended);
+        assert!(!run.observation.navigable);
+        assert_eq!(run.observation.eligible, !run.process_exited);
+        if run.observation.eligible {
+            eligible.push(run.observation.created_sequence.unwrap());
+        }
+    }
+    eligible.sort_unstable();
+    assert_eq!(eligible, [1, 2]);
 }
 
 #[test]
