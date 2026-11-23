@@ -256,7 +256,10 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 | Push of a `v*` tag | **Publish Corvid Release** builds and publishes the assets for the tagged revision. |
 
 Release qualification and publication share **Package Corvid**, which calls
-the native build workflow. Desktop packages bundle all five runtime artifacts.
+the native build workflow. Desktop packages bundle all five standalone daemon targets for SSH and WSL.
+Managed remote installs keep the existing on-disk filename so an older client
+can still find the daemon it installed. The client accepts version banners
+from both executables.
 The native workflow caches Cargo dependencies and build outputs separately for
 Runtime and Desktop on each runner and target. Commits with the same lockfile,
 toolchain, and CI build configuration can share the cache.

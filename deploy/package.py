@@ -169,9 +169,14 @@ def package(args):
             ]:
                 if directory is None:
                     raise ValueError(f"Desktop requires the {target} runtime")
-                binary = verify_runtime(directory, target, version, revision)
-                copy(binary, stage / "daemon" / target / binary.name, True)
-                copy(directory / "manifest.json", stage / "daemon" / target / "manifest.json")
+                suffix_for_target = ".exe" if target in WINDOWS_TARGETS else ""
+                metadata = directory / "daemon-manifest.json"
+                binary = verify_runtime_file(directory / f"corvidd{suffix_for_target}", metadata,
+                                             target, version, revision)
+                remote = stage / "daemon" / target
+                # The SSH/WSL installer retains the historical managed filename.
+                copy(binary, remote / f"corvid{suffix_for_target}", True)
+                copy(metadata, remote / "manifest.json")
         write_json(stage / "package.json", {
             "schema_version": 1, "version": version, "source_revision": revision,
             "product": args.product, "target": args.target,

@@ -133,8 +133,10 @@ impl RemoteHost {
         let output = self
             .bootstrap(&daemon_command(platform, daemon, "--version"), None)
             .await?;
-        let version = std::str::from_utf8(response(&output))?
+        let banner = std::str::from_utf8(response(&output))?;
+        let version = banner
             .strip_prefix("corvid ")
+            .or_else(|| banner.strip_prefix("corvidd "))
             .context("unexpected Corvid version response")?;
         Ok(version.to_owned())
     }

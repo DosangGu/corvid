@@ -38,6 +38,16 @@ private_root() {
         [ "$(stat -f %u:%Lp "$root")" = "$user:700" ]
 }
 
+path_daemon() {
+    if command -v corvidd >/dev/null 2>&1; then
+        printf 'corvidd\n'
+    elif command -v corvid >/dev/null 2>&1; then
+        printf 'corvid\n'
+    else
+        return 1
+    fi
+}
+
 managed_binary() {
     [ -f "$root/corvid" ] && [ ! -L "$root/corvid" ] &&
         [ "$(stat -f %u:%Lp "$root/corvid")" = "$user:700" ]
@@ -63,7 +73,7 @@ verify_payload() {
 # Persisted endpoints can resolve either installation after reconnecting.
 if [ "$1" = auto ]; then
     shift
-    if command -v corvid >/dev/null 2>&1; then
+    if path_daemon >/dev/null; then
         set -- path "$@"
     elif [ -e "$root/corvid" ] || [ -L "$root/corvid" ]; then
         set -- managed "$@"
@@ -76,7 +86,7 @@ fi
 case "$1" in
     probe)
         [ "$(uname -s)" = Darwin ] || exit 70
-        if command -v corvid >/dev/null 2>&1; then
+        if path_daemon >/dev/null; then
             printf 'path\n'
         elif [ -e "$root/corvid" ] || [ -L "$root/corvid" ]; then
             safe_home && private_root && managed_binary || exit 71
@@ -89,7 +99,7 @@ case "$1" in
         ;;
     install|upgrade)
         [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || exit 70
-        if command -v corvid >/dev/null 2>&1; then exit 74; fi
+        if path_daemon >/dev/null; then exit 74; fi
         safe_home || exit 71
         umask 077
         mkdir -m 700 -- "$root" 2>/dev/null || [ -d "$root" ] || exit 71
@@ -122,13 +132,13 @@ case "$1" in
         ;;
     path)
         shift
-        if ! command -v corvid >/dev/null 2>&1; then
+        if ! binary=$(path_daemon); then
             printf 'corvid: not found\n' >&2
             exit 127
         fi
         prepare_runtime
         restore_runtime_locale
-        exec corvid "$@"
+        exec "$binary" "$@"
         ;;
     managed)
         shift

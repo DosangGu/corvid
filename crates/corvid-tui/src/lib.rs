@@ -196,29 +196,6 @@ pub async fn upgrade_local_daemon(runtime: &Path) -> Result<()> {
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-async fn verify_installed_version(executable: &Path, previous_version: &str) -> Result<()> {
-    use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
-
-    let output = corvid_async::time::timeout(
-        COMMAND_TIMEOUT,
-        async_process::Command::new(executable)
-            .arg("--version")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await??;
-    anyhow::ensure!(
-        output.status.success()
-            && std::str::from_utf8(&output.stdout)?.trim_end_matches(['\r', '\n'])
-                == format!("corvid {previous_version}"),
-        ProtocolFault::new(
-            "InstallationChanged",
-            "the installed Corvid version changed; reconnect and retry"
-        )
-    );
-    Ok(())
-}
-
 /// Dispatch daemon subprocesses and Linux agent helpers before opening a GUI.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn run_daemon_helper() -> Option<ExitCode> {

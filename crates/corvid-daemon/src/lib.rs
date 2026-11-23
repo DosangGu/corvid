@@ -91,7 +91,7 @@ pub async fn run_native(
 /// Read an existing daemon identity without creating state.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn stored_host_id(state_path: &std::path::Path) -> anyhow::Result<Option<uuid::Uuid>> {
-    identity::read(&platform::StateDirectory::open(state_path)?)
+    corvid_client::daemon_control::identity::stored_host_id(state_path)
 }
 
 // Keep room for ordinary requests when the snapshot watch limit is full.

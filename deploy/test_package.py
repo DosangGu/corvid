@@ -83,6 +83,8 @@ class PackageTests(unittest.TestCase):
                 for remote in package.RUNTIME_TARGETS:
                     manifest = json.loads(contents[f"daemon/{remote}/manifest.json"])
                     self.assertEqual(manifest["target"], remote)
+                    remote_name = "corvid.exe" if remote in package.WINDOWS_TARGETS else "corvid"
+                    self.assertEqual(contents[f"daemon/{remote}/{remote_name}"], f"daemon:{remote}".encode())
 
     def test_rejects_swapped_or_missing_arm64_runtimes(self):
         args = self.arguments("desktop", package.WINDOWS_ARM64)
