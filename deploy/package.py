@@ -87,6 +87,13 @@ def runtime(args):
     copy(binary, output, True)
     record_runtime(output, args.output / "manifest.json", args.target, version, revision)
 
+    daemon = args.daemon.resolve()
+    validate_runtime_binary(daemon, args.target, version, "corvidd")
+    name = "corvidd.exe" if args.target in WINDOWS_TARGETS else "corvidd"
+    output = args.output / name
+    copy(daemon, output, True)
+    record_runtime(output, args.output / "daemon-manifest.json", args.target, version, revision)
+
 
 def daemon_asset_name(target, version):
     suffix = ".exe" if target in WINDOWS_TARGETS else ""
@@ -129,11 +136,14 @@ def package(args):
     native_target = args.target.replace("-linux-gnu", "-linux-musl")
     native = verify_runtime(args.runtime, native_target, version, revision)
     suffix = ".exe" if windows else ""
+    daemon = verify_runtime_file(args.runtime / f"corvidd{suffix}", args.runtime / "daemon-manifest.json",
+                                 native_target, version, revision)
     extension = "zip" if windows else "tar.gz"
     args.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="corvid-package-") as temporary:
         stage = Path(temporary)
         copy(native, stage / f"corvid{suffix}", True)
+        copy(daemon, stage / daemon.name, True)
         copy(ROOT / "LICENSE", stage / "LICENSE")
         if windows:
             copy(args.build / "corvid-launch.exe", stage / "corvid-launch.exe", True)
@@ -239,6 +249,7 @@ def main():
     command.add_argument("--target", choices=RUNTIME_TARGETS, required=True)
     command.add_argument("--binary", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
+    command.add_argument("--daemon", type=Path, required=True)
     command.set_defaults(run=runtime)
     command = sub.add_parser("daemon-asset")
     command.add_argument("--target", choices=RUNTIME_TARGETS, required=True)

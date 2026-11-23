@@ -10,6 +10,7 @@ publish = ["crates-io"]
 
 [dependencies]
 anyhow.workspace = true
+corvid-protocol.workspace = true
 hex.workspace = true
 semver.workspace = true
 serde = { workspace = true, features = ["derive"] }

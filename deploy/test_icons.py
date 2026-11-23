@@ -52,13 +52,13 @@ def desktop_packages():
         for target in package.RUNTIME_TARGETS:
             directory = base / target
             directory.mkdir()
-            binary = directory / ("corvid.exe" if target in package.WINDOWS_TARGETS else "corvid")
+            suffix = ".exe" if target in package.WINDOWS_TARGETS else ""
+            binary = directory / f"corvid{suffix}"
             binary.write_bytes(b"fixture runtime")
-            package.write_json(directory / "manifest.json", {
-                "schema_version": 1, "target": target, "version": version,
-                "source_revision": revision, "size": binary.stat().st_size,
-                "sha256": package.digest(binary),
-            })
+            package.record_runtime(binary, directory / "manifest.json", target, version, revision)
+            daemon = directory / f"corvidd{suffix}"
+            daemon.write_bytes(b"fixture daemon")
+            package.record_runtime(daemon, directory / "daemon-manifest.json", target, version, revision)
             runtimes[target] = directory
         build = base / "build"
         build.mkdir()
@@ -83,10 +83,12 @@ def desktop_packages():
                 with zipfile.ZipFile(archive) as stream:
                     names = stream.namelist()
                     assert stream.read("corvid.ico") == (ROOT / "assets/icons/corvid.ico").read_bytes()
+                    assert "corvidd.exe" in names
             else:
                 with tarfile.open(archive) as stream:
                     names = stream.getnames()
                     assert "install-desktop.sh" in names
+                    assert "corvidd" in names
             assert {"icons/corvid.svg", "icons/corvid.png", "files.sha256"} <= set(names)
         print("PASS Desktop archive names and packaged icon assets on both platforms")
 

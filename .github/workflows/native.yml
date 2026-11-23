@@ -103,7 +103,7 @@ jobs:
         run: python3 crates/corvid-tui/tests/ssh_lifecycle.py target/${{ matrix.runtime }}/release/corvid
       - name: Runtime manifest
         if: inputs.package
-        run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid --output target/runtime
+        run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid --daemon target/${{ matrix.runtime }}/release/corvidd --output target/runtime
       - name: Stage standalone daemon release asset
         if: inputs.package
         run: python deploy/package.py daemon-asset --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvidd --output target/dist
@@ -278,7 +278,7 @@ jobs:
         run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
       - name: Runtime manifest
         if: inputs.package
-        run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid.exe --output target/runtime
+        run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid.exe --daemon target/${{ matrix.runtime }}/release/corvidd.exe --output target/runtime
       - name: Stage standalone daemon release asset
         if: inputs.package
         run: python deploy/package.py daemon-asset --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvidd.exe --output target/dist
@@ -392,7 +392,7 @@ jobs:
           python3 crates/corvid-tui/tests/agent_handoff.py target/${{ matrix.runtime }}/release/corvid
       - name: Runtime manifest
         if: inputs.package
-        run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid --output target/runtime
+        run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid --daemon target/${{ matrix.runtime }}/release/corvidd --output target/runtime
       - name: Stage standalone daemon release asset
         if: inputs.package
         run: python deploy/package.py daemon-asset --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvidd --output target/dist

@@ -13,5 +13,5 @@ target_key=${target_key//-/_}
 export "CARGO_TARGET_${target_key}_LINKER"=musl-gcc
 build_dir=${CARGO_TARGET_DIR:-target}
 rustup target add "$target"
-cargo build --locked --release --target "$target" --target-dir "$build_dir" -p corvid-tui
-python3 deploy/package.py runtime --target "$target" --binary "$build_dir/$target/release/corvid" --output "$build_dir/linux-dist/$target"
+cargo build --locked --release --target "$target" --target-dir "$build_dir" -p corvid-tui -p corvid-daemon
+python3 deploy/package.py runtime --target "$target" --binary "$build_dir/$target/release/corvid" --daemon "$build_dir/$target/release/corvidd" --output "$build_dir/linux-dist/$target"

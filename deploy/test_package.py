@@ -33,6 +33,10 @@ class PackageTests(unittest.TestCase):
                 "source_revision": self.revision, "size": binary.stat().st_size,
                 "sha256": package.digest(binary),
             })
+            daemon = binary.with_name(binary.name.replace("corvid", "corvidd"))
+            daemon.write_bytes(f"daemon:{target}".encode())
+            package.record_runtime(daemon, directory / "daemon-manifest.json",
+                                   target, self.version, self.revision)
             self.runtimes[target] = directory
         self.build = self.root / "build"
         self.build.mkdir()
@@ -71,6 +75,8 @@ class PackageTests(unittest.TestCase):
                         contents = {entry.name: archive.extractfile(entry).read() for entry in archive}
                     binary = "corvid"
                 self.assertEqual(contents[binary], target.replace("-linux-gnu", "-linux-musl").encode())
+                daemon = binary.replace("corvid", "corvidd")
+                self.assertEqual(contents[daemon], f"daemon:{target.replace('-linux-gnu', '-linux-musl')}".encode())
                 self.assertEqual(json.loads(contents["package.json"])["target"], target)
                 self.assertEqual(contents["STIX-OFL.txt"],
                                  (package.ROOT / "assets/fonts/STIX-OFL.txt").read_bytes())

@@ -45,10 +45,10 @@ try {
     rustup target add $target
     if ($LASTEXITCODE -ne 0) { throw 'Rust target installation failed' }
     if (!$nativeRuntime) {
-        cargo build --locked --release --target $target -p corvid-tui -p corvid-update
+        cargo build --locked --release --target $target -p corvid-tui -p corvid-daemon -p corvid-update
         if ($LASTEXITCODE -ne 0) { throw 'Windows runtime build failed' }
         $nativeRuntime = Join-Path $metadata.target_directory "runtime/$target"
-        python deploy/package.py runtime --target $target --binary (Join-Path $build 'corvid.exe') --output $nativeRuntime
+        python deploy/package.py runtime --target $target --binary (Join-Path $build 'corvid.exe') --daemon (Join-Path $build 'corvidd.exe') --output $nativeRuntime
         if ($LASTEXITCODE -ne 0) { throw 'Windows runtime packaging failed' }
     }
     if ($architecture -eq 'ARM64') { $WindowsArm64DaemonDirectory = $nativeRuntime } else { $WindowsDaemonDirectory = $nativeRuntime }

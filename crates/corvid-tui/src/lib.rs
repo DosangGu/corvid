@@ -134,7 +134,7 @@ pub async fn monitor_agent_host(
 }
 
 pub fn monitor_executable() -> Result<PathBuf> {
-    local_daemon_executable()
+    corvid_update::layout::local_daemon_executable(&std::env::current_exe()?)
 }
 
 mod directory_picker;
@@ -170,7 +170,15 @@ async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions)
 /// Use the shared runtime payload when starting a daemon from packaged Desktop.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn local_daemon_executable() -> Result<PathBuf> {
+    use corvid_protocol::paths::{StateRole, state_directory};
+
     let executable = std::env::current_exe()?;
+    let state = state_directory(StateRole::Daemon, None)?;
+    if let Some(daemon) =
+        corvid_update::daemon::find(&executable, &state, env!("CARGO_PKG_VERSION"))?
+    {
+        return Ok(daemon);
+    }
     corvid_update::layout::local_daemon_executable(&executable)
 }
 
