@@ -121,6 +121,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: cargo test --locked --target "$RUST_TARGET" -p corvid-daemon --features ghostty-vt --lib wheel_history_stays_live_while_powershell_runs_a_console_program
+      - name: Verify Windows concurrent daemon startup
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo test --locked --target "$RUST_TARGET" -p corvid-tui --test windows_daemon ensure_daemon_
       - name: Remove Unix test directory
         if: ${{ always() && env.CORVID_TEST_TMPDIR != '' }}
         shell: bash
