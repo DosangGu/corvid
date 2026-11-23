@@ -9,13 +9,15 @@ use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
 #[cfg(test)]
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
+#[cfg(feature = "ghostty-vt")]
+mod ghostty;
 #[cfg(all(test, feature = "ghostty-vt"))]
 mod ghostty_qualification;
 mod history;
 mod sgr;
 mod snapshot;
 
-pub(crate) use snapshot::{CellColor, CellStyle, CellWidth, ScreenSnapshot};
+pub(crate) use snapshot::{CellWidth, ScreenSnapshot};
 
 use history::{HistoryBuilder, HistoryLine, OlderRows};
 
@@ -114,10 +116,16 @@ impl Callbacks for QueryReplies {
 pub struct TerminalScreen {
     parser: Parser<QueryReplies>,
     sgr: sgr::Normalizer,
+    #[cfg(feature = "ghostty-vt")]
+    ghostty: Option<Box<ghostty::Ghostty>>,
 }
 
 impl TerminalScreen {
     pub(super) fn title(&self) -> &str {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return &engine.title;
+        }
         &self.parser.callbacks().title
     }
     pub fn new(viewport: Viewport) -> Self {
@@ -127,6 +135,21 @@ impl TerminalScreen {
     pub(super) fn live(viewport: Viewport) -> Self {
         // Only the recent styled rows are cloned when computing a render diff.
         Self::with_scrollback(viewport, 128, Some(OlderRows::default()))
+    }
+
+    pub(super) fn for_session(viewport: Viewport) -> Result<Self> {
+        #[cfg(feature = "ghostty-vt")]
+        if std::env::var_os("CORVID_VT_ENGINE").is_some_and(|value| value == "ghostty") {
+            return Self::with_ghostty(viewport);
+        }
+        Ok(Self::live(viewport))
+    }
+
+    #[cfg(feature = "ghostty-vt")]
+    fn with_ghostty(viewport: Viewport) -> Result<Self> {
+        let mut screen = Self::with_scrollback(viewport, 0, None);
+        screen.ghostty = Some(Box::new(ghostty::Ghostty::new(viewport)?));
+        Ok(screen)
     }
 
     fn with_scrollback(viewport: Viewport, rows: usize, older_rows: Option<OlderRows>) -> Self {
@@ -143,10 +166,24 @@ impl TerminalScreen {
         Self {
             parser,
             sgr: sgr::Normalizer::default(),
+            #[cfg(feature = "ghostty-vt")]
+            ghostty: None,
         }
     }
 
     pub fn process(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &mut self.ghostty {
+            let mut replies = Vec::new();
+            let mut result = Ok(());
+            self.sgr.process(bytes, |chunk, _| {
+                if result.is_ok() {
+                    result = engine.process(chunk, &mut replies);
+                }
+            });
+            result?;
+            return Ok(replies);
+        }
         self.sgr.process(bytes, |chunk, clear_history| {
             self.parser.process(chunk);
             if clear_history
@@ -174,34 +211,63 @@ impl TerminalScreen {
         self.parser.set_size(viewport.rows, viewport.cols);
     }
 
+    pub(super) fn resize_session(&mut self, viewport: Viewport) -> Result<()> {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &mut self.ghostty {
+            return engine.resize(viewport);
+        }
+        self.resize(viewport);
+        Ok(())
+    }
+
     pub fn redraw(&self, outer: Viewport) -> Result<String> {
         self.render_frame(None, self.bracketed_paste(), outer, None)
     }
 
     pub(crate) fn viewport(&self) -> Viewport {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return engine.viewport;
+        }
         let (rows, cols) = self.parser.screen().size();
         Viewport { rows, cols }
     }
 
     pub(super) fn bracketed_paste(&self) -> bool {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return engine.bracketed_paste();
+        }
         self.parser.screen().bracketed_paste()
     }
 
     pub(super) fn shell_prompt(&self) -> Option<bool> {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return engine.shell_prompt();
+        }
         self.parser.callbacks().shell_prompt
     }
 
     pub(super) fn allows_shell_history(&self) -> bool {
-        !self.parser.screen().alternate_screen()
+        !self.alternate_screen()
             && self.shell_prompt() != Some(false)
             && self.wheel_encoding() == WheelEncoding::Disabled
     }
 
     pub(super) fn alternate_screen(&self) -> bool {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return engine.alternate_screen();
+        }
         self.parser.screen().alternate_screen()
     }
 
     pub(super) fn wheel_encoding(&self) -> WheelEncoding {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return engine.wheel_encoding();
+        }
         let screen = self.parser.screen();
         if screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None {
             return WheelEncoding::Disabled;
@@ -213,11 +279,19 @@ impl TerminalScreen {
         }
     }
 
-    pub(crate) fn snapshot(&self) -> ScreenSnapshot {
-        ScreenSnapshot::from_screen(self.parser.screen())
+    pub(super) fn snapshot(&self) -> Result<ScreenSnapshot> {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return Ok(ScreenSnapshot::from_screen(engine.screen()?));
+        }
+        Ok(ScreenSnapshot::from_screen(self.parser.screen()))
     }
 
-    pub(crate) fn history(&mut self) -> TerminalHistory {
+    pub(super) fn history(&mut self) -> Result<TerminalHistory> {
+        #[cfg(feature = "ghostty-vt")]
+        if let Some(engine) = &self.ghostty {
+            return engine.history();
+        }
         let screen = self.parser.screen_mut();
         let (rows, cols) = screen.size();
         let height = usize::from(rows.get());
@@ -247,7 +321,7 @@ impl TerminalScreen {
         }
         let mut snapshot = history.finish();
         snapshot.alternate_screen = Some(alternate_screen);
-        snapshot
+        Ok(snapshot)
     }
 
     pub(crate) fn render(
@@ -266,6 +340,12 @@ impl TerminalScreen {
         outer: Viewport,
         footer: Option<(u16, &str)>,
     ) -> Result<String> {
+        #[cfg(feature = "ghostty-vt")]
+        let screen = match &self.ghostty {
+            Some(engine) => engine.screen()?,
+            None => self.parser.screen(),
+        };
+        #[cfg(not(feature = "ghostty-vt"))]
         let screen = self.parser.screen();
         let previous = previous.map(|snapshot| &snapshot.0);
         let (rows, cols) = screen.size();
@@ -568,7 +648,7 @@ mod tests {
         );
         assert_eq!(outer.parser.screen().fgcolor(), Color::Idx(1));
 
-        let previous = inner.snapshot();
+        let previous = inner.snapshot().unwrap();
         inner.process(b"Z").unwrap();
         let diff = inner.render(Some(&previous), viewport, None).unwrap();
         outer.process(diff.as_bytes()).unwrap();
@@ -601,7 +681,7 @@ mod tests {
         let frame = inner.render(None, viewport, Some(footer)).unwrap();
         outer.process(frame.as_bytes()).unwrap();
 
-        let previous = inner.snapshot();
+        let previous = inner.snapshot().unwrap();
         assert_eq!(outer.parser.screen().cell(1, 0), previous.0.cell(1, 0));
         assert_eq!(
             outer.parser.screen().cell(3, 8).unwrap().bgcolor(),
@@ -688,7 +768,7 @@ mod tests {
                 .unwrap();
         }
         let live = terminal.parser.screen().contents();
-        let history = terminal.history();
+        let history = terminal.history().unwrap();
         assert_eq!(
             history.lines,
             (0..10)
@@ -709,7 +789,7 @@ mod tests {
             .collect::<Vec<_>>();
         terminal.process(rows.join("\r\n").as_bytes()).unwrap();
         assert_eq!(terminal.parser.screen().scrollback_len(), 128);
-        let history = terminal.history();
+        let history = terminal.history().unwrap();
         assert_eq!(history.lines, rows);
         assert!(!history.truncated);
 
@@ -717,14 +797,14 @@ mod tests {
             .process(b"\x1b[?1049h\x1b[3J\x1b[?1000h\x1b[?1006h")
             .unwrap();
         assert_eq!(terminal.wheel_encoding(), WheelEncoding::Sgr);
-        assert!(!terminal.history().lines.contains(&rows[0]));
+        assert!(!terminal.history().unwrap().lines.contains(&rows[0]));
         terminal.process(b"\x1b[?1000l\x1b[?1049l").unwrap();
         assert_eq!(terminal.wheel_encoding(), WheelEncoding::Disabled);
-        assert_eq!(terminal.history().lines, rows);
+        assert_eq!(terminal.history().unwrap().lines, rows);
 
         terminal.process(b"\x1b[3").unwrap();
         terminal.process(b"Jafter").unwrap();
-        assert_eq!(terminal.history().lines.len(), 4);
+        assert_eq!(terminal.history().unwrap().lines.len(), 4);
     }
 
     #[test]
@@ -757,7 +837,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let history = terminal.history();
+        let history = terminal.history().unwrap();
         for row in [0, 300] {
             let text = &history.lines[row];
             assert_eq!(text, &format!("row{row:03} 한글 end"));
@@ -789,7 +869,7 @@ mod tests {
                 .process(format!("row {row}\r\n").as_bytes())
                 .unwrap();
         }
-        let history = terminal.history();
+        let history = terminal.history().unwrap();
         assert!(history.truncated);
         assert_eq!(history.lines.len(), TERMINAL_HISTORY_MAX_ROWS);
         assert_eq!(
@@ -797,7 +877,7 @@ mod tests {
             format!("row {}", 3001 - TERMINAL_HISTORY_MAX_ROWS)
         );
         terminal.process(b"\x1bchello").unwrap();
-        let history = terminal.history();
+        let history = terminal.history().unwrap();
         assert!(!history.truncated);
         assert_eq!(history.lines, ["hello", "", "", ""]);
     }
@@ -812,7 +892,7 @@ mod tests {
             terminal.process(line.as_bytes()).unwrap();
         }
         terminal.process(b"newest").unwrap();
-        let history = terminal.history();
+        let history = terminal.history().unwrap();
         assert!(history.truncated);
         assert_eq!(history.lines.last().map(String::as_str), Some("newest"));
         assert!(history.encoded_len() < TERMINAL_HISTORY_MAX_BYTES);
@@ -845,7 +925,7 @@ mod tests {
             inner.parser.screen().cursor_position()
         );
 
-        let previous = inner.snapshot();
+        let previous = inner.snapshot().unwrap();
         inner
             .process("\x1b[2;1Hvisible\u{202e} update".as_bytes())
             .unwrap();

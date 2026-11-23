@@ -273,29 +273,46 @@ impl TerminalHandle {
         scope: LaunchScope,
         saved: RetainedTerminal,
     ) -> Result<(Self, Task)> {
-        let (scope, terminal) = executor::blocking(move || {
-            let terminal = Running::recover(saved, &scope)?;
-            Ok::<_, anyhow::Error>((scope, terminal))
-        })
-        .await??;
-        Ok(Self::start_worker(scope, Some(terminal)))
+        let (ready, result) = oneshot::channel();
+        let (handle, worker) = Self::start_worker(scope, Some((saved, ready)));
+        result.await.map_err(|_| terminal_fault())??;
+        Ok((handle, worker))
     }
 
-    fn start_worker(scope: LaunchScope, terminal: Option<Running>) -> (Self, Task) {
+    fn start_worker(
+        scope: LaunchScope,
+        recovery: Option<(RetainedTerminal, oneshot::Sender<Result<()>>)>,
+    ) -> (Self, Task) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
-        let live = Arc::new(AtomicBool::new(terminal.is_some()));
+        let live = Arc::new(AtomicBool::new(false));
         let viewing = Arc::new(AtomicBool::new(false));
         let (hidden_viewport, pending_viewport) = watch::channel(None);
-        let mut worker = Worker {
-            scope,
-            terminal,
-            lease: None,
-            live: Arc::clone(&live),
-            viewing: Arc::clone(&viewing),
-            hidden_viewport: pending_viewport,
-            retaining: false,
-        };
-        let worker = executor::spawn_worker(move || worker.run(receiver));
+        let worker_live = Arc::clone(&live);
+        let worker_viewing = Arc::clone(&viewing);
+        let worker = executor::spawn_worker(move || {
+            // Terminal engines are created, used, and dropped on this worker.
+            let mut worker = Worker {
+                scope,
+                terminal: None,
+                lease: None,
+                live: worker_live,
+                viewing: worker_viewing,
+                hidden_viewport: pending_viewport,
+                retaining: false,
+            };
+            if let Some((saved, ready)) = recovery {
+                let result = Running::recover(saved, &worker.scope).map(|terminal| {
+                    worker.terminal = Some(terminal);
+                    worker.live.store(true, Ordering::Release);
+                });
+                let recovered = result.is_ok();
+                let _ = ready.send(result);
+                if !recovered {
+                    return;
+                }
+            }
+            worker.run(receiver);
+        });
         (
             Self {
                 commands,

@@ -688,7 +688,8 @@ impl Host {
                 response.bytes = self.session.screen.redraw(size)?.into_bytes();
             }
             operation @ (Operation::History | Operation::ShellHistory) => {
-                response.history = Some(self.session.history(operation == Operation::ShellHistory));
+                response.history =
+                    Some(self.session.history(operation == Operation::ShellHistory)?);
             }
             Operation::Render => {
                 let size = viewport(request.cols, request.rows)?;
@@ -708,7 +709,7 @@ impl Host {
                     .into_bytes();
                 response.wheel_encoding = self.session.screen.wheel_encoding().into();
                 response.alternate_screen = Some(self.session.screen.alternate_screen());
-                self.previous = Some(self.session.screen.snapshot());
+                self.previous = Some(self.session.screen.snapshot()?);
             }
             Operation::Retain => {
                 ensure!(!self.session.input.paste_pending(), "paste is pending");

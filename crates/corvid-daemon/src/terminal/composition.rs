@@ -1,7 +1,7 @@
 use std::fmt::Write;
 use std::time::Instant;
 
-use super::screen::{CellColor, CellStyle, CellWidth, ScreenSnapshot};
+use super::screen::{CellWidth, ScreenSnapshot};
 use corvid_core::Viewport;
 use corvid_core::layout::{Layout, Location};
 use corvid_core::navigation::Rect;
@@ -437,7 +437,7 @@ fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
             }
             let attrs = cell.style;
             if style != Some(attrs) {
-                paint_style(ansi, attrs);
+                attrs.paint(ansi);
                 style = Some(attrs);
             }
             if !cell.text.is_empty() && (cell.width == CellWidth::Single || col + 1 < width) {
@@ -451,27 +451,6 @@ fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
             }
         }
     }
-}
-
-fn paint_style(ansi: &mut String, style: CellStyle) {
-    ansi.push_str("\x1b[0");
-    for (index, enabled) in style.flags.into_iter().enumerate() {
-        if enabled {
-            let _ = write!(ansi, ";{}", if index == 4 { 7 } else { index + 1 });
-        }
-    }
-    for (prefix, color) in [(38, style.fg), (48, style.bg)] {
-        match color {
-            CellColor::Default => {}
-            CellColor::Indexed(index) => {
-                let _ = write!(ansi, ";{prefix};5;{index}");
-            }
-            CellColor::Rgb(r, g, b) => {
-                let _ = write!(ansi, ";{prefix};2;{r};{g};{b}");
-            }
-        }
-    }
-    ansi.push('m');
 }
 
 #[cfg(test)]
