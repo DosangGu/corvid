@@ -25,6 +25,11 @@ impl ScreenSnapshot {
         self.0.contents_diff(&previous.0).is_empty()
     }
 
+    #[cfg(all(test, windows))]
+    pub(crate) fn contents(&self) -> String {
+        self.0.contents()
+    }
+
     pub(crate) fn size(&self) -> (NonZeroU16, NonZeroU16) {
         self.0.size()
     }
