@@ -117,6 +117,19 @@ pub fn for_executable(executable: &Path) -> Result<Box<dyn PackageLayout + '_>> 
     for_platform(executable, std::env::consts::OS)
 }
 
+/// Locate a standalone daemon beside the client or its registered runtime.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub fn bundled_daemon(executable: &Path) -> Result<Option<PathBuf>> {
+    #[cfg(target_os = "macos")]
+    let registered = crate::macos::versioned_runtime(executable);
+    #[cfg(target_os = "macos")]
+    let executable = registered.as_deref().unwrap_or(executable);
+
+    let layout = for_executable(executable)?;
+    let daemon = layout.binary_directory().join(crate::daemon::EXECUTABLE);
+    Ok(daemon.is_file().then_some(daemon))
+}
+
 /// A packaged Desktop delegates daemon work to its adjacent runtime.
 /// Standalone and development executables can run the daemon themselves.
 pub fn local_daemon_executable(executable: &Path) -> Result<PathBuf> {

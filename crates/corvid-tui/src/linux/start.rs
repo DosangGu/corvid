@@ -59,6 +59,9 @@ pub(crate) async fn ensure(path: &Path) -> Result<()> {
 async fn ensure_daemon(runtime: &RuntimeDir) -> Result<()> {
     timeout(COMMAND_TIMEOUT, async {
         let _startup = lock_startup(runtime).await?;
+        if daemon_ready(runtime.path()).await? {
+            return Ok(());
+        }
         ensure_daemon_locked(runtime, None, &crate::local_daemon_executable()?)
             .await
             .map(|_| ())
@@ -70,13 +73,9 @@ async fn ensure_daemon(runtime: &RuntimeDir) -> Result<()> {
 pub(crate) async fn upgrade(path: &Path) -> Result<()> {
     let runtime = RuntimeDir::create_all(path)?;
     let _startup = upgrade_lock(&runtime).await?;
+    let executable = crate::local_daemon_executable()?;
     let target = stop_for_upgrade(&runtime, None).await?;
-    finish_upgrade(
-        &runtime,
-        target.as_ref(),
-        &crate::local_daemon_executable()?,
-    )
-    .await
+    finish_upgrade(&runtime, target.as_ref(), &executable).await
 }
 
 pub(crate) async fn desktop_handoff(path: &Path, host: Uuid, epoch: Uuid) -> Result<()> {

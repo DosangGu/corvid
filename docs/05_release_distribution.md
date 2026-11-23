@@ -56,7 +56,9 @@ Desktop archive. Each daemon payload has its own `manifest.json`.
 The native build matrix also stages `corvidd-<version>-<target>`
 (`.exe` on Windows) for each of the five runtime targets. Release assembly
 checks the daemon's target, source revision, size, and SHA-256 before adding
-it to the release manifest.
+it to the release manifest. TUI and Desktop packages include the
+local daemon alongside the client. The client looks for that daemon before
+checking the per-user versioned installation.
 
 Downloads trust the public repository over HTTPS and verify the expected asset
 identity and checksums. SHA-256 detects changed bytes; it is not a publisher

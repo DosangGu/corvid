@@ -1484,6 +1484,7 @@ name = "corvid-update"
 version = "0.5.3"
 dependencies = [
  "anyhow",
+ "corvid-protocol",
  "embed-resource",
  "hex",
  "libc",

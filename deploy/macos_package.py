@@ -65,7 +65,7 @@ def app_bundle(stage, version):
     app = stage / "Corvid.app"
     binaries = app / "Contents/MacOS"
     binaries.mkdir(parents=True)
-    for name in ["corvid", "corvid-desktop"]:
+    for name in ["corvid", "corvidd", "corvid-desktop"]:
         shutil.move(stage / name, binaries / name)
     plist(app, "Corvid", "corvid-desktop", "org.corvid.desktop", version)
     copy(stage / "package.json", app / "Contents/Resources/package.json")
@@ -74,6 +74,7 @@ def app_bundle(stage, version):
     copy(stage / "LICENSE", app / "Contents/Resources/LICENSE")
     copy(stage / "STIX-OFL.txt", app / "Contents/Resources/STIX-OFL.txt")
     sign(binaries / "corvid")
+    sign(binaries / "corvidd")
     build_relaunch_helper(app)
     # Remote runtime manifests describe the exact transferred bytes. Do not re-sign them.
     plugin = stage / "plugins/agent-deck/corvid-agent-deck"

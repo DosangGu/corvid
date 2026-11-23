@@ -1,4 +1,6 @@
 //! GitHub release discovery and installation, independent of daemon lifecycle.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod daemon;
 mod download;
 mod install;
 pub mod layout;
