@@ -68,6 +68,9 @@ embed-resource.workspace = true
 corvid-daemon.workspace = true
 tempfile.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { workspace = true }
 gpui_platform = { workspace = true, features = ["font-kit"] }
