@@ -159,3 +159,19 @@ fixture. Real reboot and last-login tests need dedicated machines/accounts.
 IME composition, accessibility permissions, notifications, multiple displays,
 and hardware GPU behavior require separate device qualification. Synthetic
 Unicode input does not validate an OS input method editor.
+# WSL 2 lifecycle check
+
+`Checks / WSL 2` first boots an isolated Alpine distribution on a Windows
+runner. A runner without a bootable WSL 2 environment reports a skipped
+lifecycle in the workflow summary. On a WSL 2 Windows host, the same check
+can reuse a trusted Linux rootfs archive and matching built artifacts.
+
+```powershell
+python deploy/test_wsl.py --rootfs rootfs.tar.gz --desktop-test corvid_desktop_test.exe --daemon corvidd
+```
+
+Build the Windows test executable with `cargo test --locked -p corvid-desktop
+--bin corvid-desktop --no-run`. Supply a release-build Linux musl daemon for
+the distribution architecture with `ghostty-vt` enabled. The harness verifies
+managed install consent, then opens a PTY and checks that the shell survives a
+daemon upgrade. It unregisters the temporary distribution it imported.
