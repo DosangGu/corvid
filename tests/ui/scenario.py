@@ -63,6 +63,9 @@ def verify_paste(ui, desktop, window, root):
 
     pasted = "한글 e\u0301 🐦"
     if os.name != "nt":
+        # TODO: Stabilize macOS tab navigation in UI qualification
+        # Synchronize tab selection and shell readiness before extending this smoke case.
+        # Issue URL: https://github.com/DosangGu/corvid/issues/357
         command("pasted", mark("pasted", shlex.quote(pasted)), pasted, probe=True)
         return
 

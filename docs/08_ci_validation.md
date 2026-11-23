@@ -42,7 +42,7 @@ before GitHub Release publication. See [build and publish](05_release_distributi
 | Linux and macOS | The terminal spike and `interactive.py --tty-only` exercise real PTYs: fragmented UTF-8, escape sequences, bracketed paste, terminal queries, resize, Ctrl-C, exit status, TTY restoration, pairing, tabs, and reattachment to the same child. Linux runs the full interactive suite instead of the TTY-only subset. |
 | Linux | The full interactive suite also checks automatic daemon startup, shell continuity across replacement, and synthetic agent notifications. The loopback OpenSSH fixture checks abrupt disconnects, companion resynchronization, and same-PTY reattachment under a transient systemd user service. |
 | All five Desktop targets | The packaged UI smoke suite opens Desktop, connects to the fixture daemon, and opens an Agent Deck window. |
-| Linux and macOS Desktop | The packaged smoke suite pastes synthetic Unicode through the system clipboard and checks the receiving shell. Linux also checks tab isolation. |
+| Linux, Windows x64, and macOS Desktop | The packaged smoke suite pastes synthetic Unicode through the system clipboard and checks the receiving shell. Linux and Windows x64 also check tab isolation. |
 | Windows Deck | The notification-area test hides and reopens the Deck, then verifies its compact, expanded, and pinned window state. |
 | Linux Desktop | Xvfb/Openbox tests drive the real application with keyboard and clipboard events. They check Unicode paste, tab creation and selection, independent windows, the new-window menu, settings, close/quit/relaunch, saved window count, and retained shell variables. |
 
@@ -112,9 +112,9 @@ case compiles the Rust integration test and uses the selected Deck executable.
 - Linux needs the Desktop build dependencies plus Xvfb, xauth, X11 utilities,
   xdotool, xclip, Openbox, scrot, and a Vulkan driver such as Mesa. The Deck
   focus case also needs OpenSSH client and server and a writable test home.
-- Windows smoke tests verify the Desktop and Deck windows on GitHub-hosted
-  runners. Run `--case desktop-paste` on an unlocked interactive Windows
-  desktop with a US input source to exercise keyboard shortcuts and paste.
+- Windows smoke tests verify Desktop and Deck windows. They also check tab
+  isolation and paste on x64. Run `--case desktop-paste` on an unlocked
+  interactive ARM64 desktop with a US input source for the same input check.
   The hosted ARM64 runner refused foreground activation during qualification.
 - macOS needs a logged-in GUI session, Xcode command line tools, and
   Accessibility permission to post key events. Paste tests use the system

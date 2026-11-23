@@ -60,17 +60,22 @@ def unique_asset(directory, pattern):
     return matches[0]
 
 
+def windows_machine():
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+        architecture, _ = winreg.QueryValueEx(key, "PROCESSOR_ARCHITECTURE")
+    return {"AMD64": "x86_64", "ARM64": "aarch64"}[architecture.upper()]
+
+
 def binaries(stack, system, build, assets, root):
     suffix = ".exe" if system == "Windows" else ""
     extracted = root / "package"
     if build:
         payload = deck = build
     elif system == "Windows":
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
-            architecture, _ = winreg.QueryValueEx(key, "PROCESSOR_ARCHITECTURE")
-        machine = {"AMD64": "x86_64", "ARM64": "aarch64"}[architecture.upper()]
+        machine = windows_machine()
         archive = unique_asset(assets, f"corvid-desktop-*-{machine}-pc-windows-msvc.zip")
         with zipfile.ZipFile(archive) as stream:
             stream.extractall(extracted)
@@ -147,6 +152,8 @@ def main():
     build = args.build.resolve() if args.build else None
     assets = args.assets.resolve() if args.assets else None
     cases = (args.case,) if args.case else SMOKE[system] if args.suite == "smoke" else CASES[system]
+    if not args.case and args.suite == "smoke" and system == "Windows" and windows_machine() == "x86_64":
+        cases = (*cases, "desktop-paste")
     # The full suite expands with the checks supported by the selected input.
     if not args.case:
         cases = tuple(case for case in cases
