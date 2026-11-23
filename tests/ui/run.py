@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run Corvid's UI tests with local builds or release assets."""
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import os
 from pathlib import Path
 import platform
@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 HERE = Path(__file__).resolve().parent
@@ -93,6 +94,24 @@ def binaries(stack, system, build, assets, root):
             deck / f"corvid-agent-deck{suffix}")
 
 
+@contextmanager
+def fixture_directory(parent):
+    directory = tempfile.TemporaryDirectory(prefix="cvui-", dir=parent)
+    try:
+        yield Path(directory.name)
+    finally:
+        deadline = time.monotonic() + 8
+        while True:
+            try:
+                directory.cleanup()
+                break
+            except PermissionError:
+                # A stopped Windows monitor can hold an executable briefly after its pipe closes.
+                if os.name != "nt" or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
+
+
 def native(system, cases, build, assets, artifacts):
     from scenario import run_case
 
@@ -110,7 +129,7 @@ def native(system, cases, build, assets, artifacts):
             check(assets)
             continue
         with ExitStack() as stack:
-            root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="cvui-", dir=parent)))
+            root = stack.enter_context(fixture_directory(parent))
             paths = binaries(stack, system, build, assets, root)
             if build and system == "Darwin" and case == "deck-window":
                 cli, desktop, deck = paths
@@ -156,7 +175,7 @@ def main():
     assets = args.assets.resolve() if args.assets else None
     cases = (args.case,) if args.case else SMOKE[system] if args.suite == "smoke" else CASES[system]
     if not args.case and args.suite == "smoke" and system == "Windows" and windows_machine() == "x86_64":
-        cases = (*cases, "desktop-paste")
+        cases = ("desktop-paste", "deck-window")
     # The full suite expands with the checks supported by the selected input.
     if not args.case:
         cases = tuple(case for case in cases

@@ -22,7 +22,9 @@ def wait_for(description, probe, process, timeout=25):
 
 @contextmanager
 def running(command, env, root, log, *, children=False):
-    process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=log)
+    # Detached Windows subprocesses pin their current directory until they exit.
+    cwd = root.parent if os.name == "nt" else root
+    process = subprocess.Popen(command, env=env, cwd=cwd, stdout=log, stderr=log)
     try:
         yield process
     finally:
