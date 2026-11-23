@@ -16,11 +16,15 @@ ROOT = HERE.parents[1]
 DEPLOY = ROOT / "deploy"
 sys.path.insert(0, str(DEPLOY))
 
-SMOKE = ("desktop-paste", "deck-window")
+SMOKE = {
+    "Linux": ("desktop-paste", "deck-window"),
+    "Windows": ("desktop-window", "deck-window"),
+    "Darwin": ("desktop-paste", "deck-window"),
+}
 CASES = {
-    "Linux": (*SMOKE, "desktop-lifecycle", "deck-focus"),
-    "Windows": (*SMOKE, "deck-tray"),
-    "Darwin": (*SMOKE, "dmg-windows"),
+    "Linux": (*SMOKE["Linux"], "desktop-lifecycle", "deck-focus"),
+    "Windows": (*SMOKE["Windows"], "desktop-paste", "deck-tray"),
+    "Darwin": (*SMOKE["Darwin"], "dmg-windows"),
 }
 
 
@@ -142,7 +146,7 @@ def main():
         parser.error("install Xvfb and the Linux UI dependencies listed in docs/08_ci_validation.md")
     build = args.build.resolve() if args.build else None
     assets = args.assets.resolve() if args.assets else None
-    cases = (args.case,) if args.case else SMOKE if args.suite == "smoke" else CASES[system]
+    cases = (args.case,) if args.case else SMOKE[system] if args.suite == "smoke" else CASES[system]
     # The full suite expands with the checks supported by the selected input.
     if not args.case:
         cases = tuple(case for case in cases

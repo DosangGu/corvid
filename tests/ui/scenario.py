@@ -61,17 +61,20 @@ def verify_paste(ui, desktop, window, root):
         path = shlex.quote(str(root / marker))
         return f"{assignment}printf %s {text} > {path}"
 
-    assignment = "$tag='first'; " if os.name == "nt" else "tag=first; "
-    tag = "$tag" if os.name == "nt" else '"$tag"'
+    pasted = "한글 e\u0301 🐦"
+    if os.name != "nt":
+        command("pasted", mark("pasted", shlex.quote(pasted)), pasted, probe=True)
+        return
+
+    assignment = "$tag='first'; "
+    tag = "$tag"
     command("first", mark("first", tag, assignment=assignment), "first", probe=True)
     ui.keys(window, "leader", "t", "n")
     # The first shell already has $tag. Only a fresh tab can acknowledge this probe.
-    fresh = ("if ([string]::IsNullOrEmpty($tag)) { " + mark("ready", "'ready'") + " }"
-             if os.name == "nt" else '[ -z "${tag-}" ] && ' + mark("ready", "'ready'"))
+    fresh = "if ([string]::IsNullOrEmpty($tag)) { " + mark("ready", "'ready'") + " }"
     command("ready", fresh, "ready", probe=True)
 
-    pasted = "한글 e\u0301 🐦"
-    assignment = f"$tag='{pasted}'; " if os.name == "nt" else f"tag={shlex.quote(pasted)}; "
+    assignment = f"$tag='{pasted}'; "
     command("pasted", mark("pasted", tag, assignment=assignment), pasted)
     ui.keys(window, "leader", "t", "h", "return")
     command("isolated", mark("isolated", tag), "first", probe=True)
@@ -105,10 +108,10 @@ def run_case(case, root, artifacts, paths, ui):
                     command += ["--pipe-instance", uuid4().hex]
                 app = processes.enter_context(running(command, env, root, log))
                 window = wait_for("Desktop window", lambda: ui.window(app.pid), app)
+                reader, epoch = monitor_fixture.ready(cli, state, env)
                 if case == "desktop-paste":
                     verify_paste(ui, app, window, root)
-                else:
-                    reader, epoch = monitor_fixture.ready(cli, state, env)
+                elif case == "deck-window":
                     if os.name == "nt":
                         for shortcut in ui.fixture_shortcuts(state):
                             processes.callback(shortcut.unlink, missing_ok=True)

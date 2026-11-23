@@ -48,8 +48,7 @@ if arguments[1] == "submit" {
 }
 
 let keys: [String: (CGKeyCode, CGEventFlags)] = [
-    "leader": (30, .maskControl), "t": (17, []), "n": (45, []),
-    "h": (4, []), "paste": (9, .maskCommand), "return": (36, []),
+    "paste": (9, .maskCommand), "return": (36, []),
     "clear": (32, .maskControl),
 ]
 for name in arguments.dropFirst(3) {

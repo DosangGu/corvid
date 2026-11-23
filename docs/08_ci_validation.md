@@ -13,7 +13,7 @@ inputs match the paths in their YAML. A documentation-only PR runs Basics.
 | **Checks / TUI** | Linux client and companion tests, TUI crate tests, and a real TUI process exchanging IPC messages with a scripted peer in a PTY. |
 | **Checks / Desktop** | Linux Desktop unit tests and scripted IPC tests for inventory, render state, and attach negotiation. |
 | **Checks / Agent Deck** | Linux Agent Deck, Deck core, and presentation tests. |
-| **Checks / UI** | Desktop tab input, Unicode paste, and Agent Deck window smoke tests on all five release targets when the UI test harness changes. Also supports manual runs by platform and case. |
+| **Checks / UI** | Desktop and Agent Deck smoke tests on all five release targets when the UI test harness changes. Also supports manual runs by platform and case. |
 | **Checks / Packaging** | Shared icons, manifest and packaging fixtures, and installer shell syntax. |
 
 Workspace manifest, lockfile, and Rust toolchain changes run the component
@@ -41,7 +41,8 @@ before GitHub Release publication. See [build and publish](05_release_distributi
 | Windows | `windows_daemon.rs` runs real ConPTY sessions and private named pipes, including input/paste isolation, tab naming, detach/resume, multiple writers, provider observations, and daemon handoff. |
 | Linux and macOS | The terminal spike and `interactive.py --tty-only` exercise real PTYs: fragmented UTF-8, escape sequences, bracketed paste, terminal queries, resize, Ctrl-C, exit status, TTY restoration, pairing, tabs, and reattachment to the same child. Linux runs the full interactive suite instead of the TTY-only subset. |
 | Linux | The full interactive suite also checks automatic daemon startup, shell continuity across replacement, and synthetic agent notifications. The loopback OpenSSH fixture checks abrupt disconnects, companion resynchronization, and same-PTY reattachment under a transient systemd user service. |
-| All five Desktop targets | The packaged UI smoke suite opens two tabs, pastes synthetic Unicode through the system clipboard, checks the receiving shell and first-tab continuity, and opens an Agent Deck window. |
+| All five Desktop targets | The packaged UI smoke suite opens Desktop, connects to the fixture daemon, and opens an Agent Deck window. |
+| Linux and macOS Desktop | The packaged smoke suite pastes synthetic Unicode through the system clipboard and checks the receiving shell. Linux also checks tab isolation. |
 | Windows Deck | The notification-area test hides and reopens the Deck, then verifies its compact, expanded, and pinned window state. |
 | Linux Desktop | Xvfb/Openbox tests drive the real application with keyboard and clipboard events. They check Unicode paste, tab creation and selection, independent windows, the new-window menu, settings, close/quit/relaunch, saved window count, and retained shell variables. |
 
@@ -111,11 +112,14 @@ case compiles the Rust integration test and uses the selected Deck executable.
 - Linux needs the Desktop build dependencies plus Xvfb, xauth, X11 utilities,
   xdotool, xclip, Openbox, scrot, and a Vulkan driver such as Mesa. The Deck
   focus case also needs OpenSSH client and server and a writable test home.
-- Windows needs an unlocked interactive desktop. macOS needs a logged-in GUI
-  session, Xcode command line tools, and Accessibility permission to post key
-  events. Use a US input source on both platforms for the navigation shortcuts.
-  The tests use the system clipboard and foreground window. Use a dedicated
-  session if other applications need those resources.
+- Windows smoke tests verify the Desktop and Deck windows on GitHub-hosted
+  runners. Run `--case desktop-paste` on an unlocked interactive Windows
+  desktop with a US input source to exercise keyboard shortcuts and paste.
+  The hosted ARM64 runner refused foreground activation during qualification.
+- macOS needs a logged-in GUI session, Xcode command line tools, and
+  Accessibility permission to post key events. Paste tests use the system
+  clipboard and foreground window. Use a dedicated session if other
+  applications need those resources.
 
 In GitHub Actions, run **Checks / UI** to select a platform and optional case.
 Failures report the scenario in the job log and save available screenshots and

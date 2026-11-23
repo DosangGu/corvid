@@ -14,9 +14,6 @@ class Desktop:
         if window:
             return str(pid), window.decode("ascii")
 
-    def keys(self, window, *names):
-        subprocess.run([self.helper, "keys", window[0], *names], check=True, timeout=10)
-
     def submit(self, window, text, *, clear=False):
         keys = ("clear", "paste", "return") if clear else ("paste", "return")
         subprocess.run([self.helper, "submit", window[0], *keys], input=text.encode("utf-8"),

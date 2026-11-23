@@ -39,6 +39,11 @@ user.GetWindowThreadProcessId.argtypes = [W.HWND, W.LPDWORD]
 user.IsWindowVisible.argtypes = [W.HWND]
 user.SetForegroundWindow.argtypes = [W.HWND]
 user.GetForegroundWindow.restype = W.HWND
+user.AttachThreadInput.argtypes = [W.DWORD, W.DWORD, W.BOOL]
+user.OpenInputDesktop.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+user.OpenInputDesktop.restype = W.HANDLE
+user.CloseDesktop.argtypes = [W.HANDLE]
+kernel.GetCurrentThreadId.restype = W.DWORD
 user.SendInput.argtypes = [W.UINT, POINTER(Input), W.INT]
 user.SendInput.restype = W.UINT
 user.CreateWindowExW.argtypes = [W.DWORD, W.LPCWSTR, W.LPCWSTR, W.DWORD, W.INT, W.INT,
@@ -77,6 +82,30 @@ def send(chord):
                   for key in reversed(chord))
     if user.SendInput(len(events), (Input * len(events))(*events), sizeof(Input)) != len(events):
         raise WinError()
+
+
+def focus(window):
+    if user.GetForegroundWindow() == window:
+        return
+    desktop = user.OpenInputDesktop(0, False, 1)  # DESKTOP_READOBJECTS
+    if not desktop:
+        raise RuntimeError(f"Fixture cannot access the Windows input desktop: {WinError()}")
+    user.CloseDesktop(desktop)
+    user.SetForegroundWindow(window)
+    foreground = user.GetForegroundWindow()
+    if foreground and foreground != window:
+        current = kernel.GetCurrentThreadId()
+        active = user.GetWindowThreadProcessId(foreground, None)
+        if active and active != current and user.AttachThreadInput(current, active, True):
+            try:
+                user.SetForegroundWindow(window)
+            finally:
+                user.AttachThreadInput(current, active, False)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and user.GetForegroundWindow() != window:
+        time.sleep(0.05)
+    if user.GetForegroundWindow() != window:
+        raise RuntimeError(f"Cannot activate fixture window {window}; foreground window is {foreground}")
 
 
 def clipboard(text):
@@ -140,13 +169,7 @@ class Desktop:
         return next(iter(windows), None)
 
     def keys(self, window, *names):
-        if user.GetForegroundWindow() != window:
-            user.SetForegroundWindow(window)
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline and user.GetForegroundWindow() != window:
-                time.sleep(0.05)
-        if user.GetForegroundWindow() != window:
-            raise RuntimeError("Fixture window could not take focus on the Windows interactive desktop")
+        focus(window)
         for name in names:
             if user.GetForegroundWindow() != window:
                 raise RuntimeError("Fixture window lost keyboard focus")
