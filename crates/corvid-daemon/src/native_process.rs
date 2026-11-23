@@ -116,10 +116,15 @@ pub(crate) fn verify_hook(pid: u32, root: ProcessKey, provider: Provider) -> Opt
     let as_of = file_time_now()?;
     let entries = snapshot()?;
     let peer = Process::open(pid)?;
-    if peer.key.created > as_of || !is_helper(&peer.image()?) {
+    let image = peer.image()?.canonicalize().ok()?;
+    if peer.key.created > as_of || !is_helper(&image) {
         return None;
     }
     let mut parent = parent(&entries, peer.key)?;
+    let launcher = corvid_update::layout::observer_executable(&image);
+    if launcher != image && parent.image()?.canonicalize().ok()? == launcher.canonicalize().ok()? {
+        parent = self::parent(&entries, parent.key)?;
+    }
     if crate::provider::contract(provider)
         .windows
         .allows_hook_shell
@@ -154,9 +159,6 @@ pub(crate) fn verify_hook(pid: u32, root: ProcessKey, provider: Provider) -> Opt
 }
 
 fn is_helper(path: &Path) -> bool {
-    let Ok(path) = path.canonicalize() else {
-        return false;
-    };
     let Some(current) = std::env::current_exe()
         .ok()
         .and_then(|path| path.canonicalize().ok())

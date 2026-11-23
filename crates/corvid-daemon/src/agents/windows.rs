@@ -30,6 +30,7 @@ pub(crate) struct Agents {
     roots: BTreeMap<ProcessKey, Uuid>,
     managed: BTreeMap<Uuid, ProcessKey>,
     shell: BTreeMap<ProcessKey, (Uuid, Process)>,
+    retained_observers: BTreeMap<Uuid, (ProcessKey, Uuid)>,
     retired: VecDeque<Uuid>,
     dirty: BTreeSet<Uuid>,
 }
@@ -102,6 +103,35 @@ impl Agents {
         })
     }
 
+    pub(crate) fn retain_observers(&mut self, terminal: Uuid, root: ProcessKey, epoch: Uuid) {
+        self.retained_observers.insert(terminal, (root, epoch));
+    }
+
+    pub(crate) fn retained_observer_epoch(&self, terminal: Uuid) -> Option<Uuid> {
+        let (root, epoch) = *self.retained_observers.get(&terminal)?;
+        (self.hook_root(terminal) == Some(root)).then_some(epoch)
+    }
+
+    pub(crate) fn observer_root(
+        &self,
+        terminal: Uuid,
+        observer_epoch: Option<Uuid>,
+        current_epoch: Uuid,
+    ) -> Result<ProcessKey, ProtocolFault> {
+        if let Some(epoch) = observer_epoch
+            && epoch != current_epoch
+            && self.retained_observer_epoch(terminal) != Some(epoch)
+        {
+            return Err(ProtocolFault::new(
+                "EpochMismatch",
+                "observer launch epoch was not retained for this terminal",
+            ));
+        }
+        self.hook_root(terminal).ok_or_else(|| {
+            ProtocolFault::new("Unauthorized", "hook has no verified Windows agent owner")
+        })
+    }
+
     pub(crate) fn roots(&self) -> Vec<ProcessKey> {
         self.roots.keys().copied().collect()
     }
@@ -165,13 +195,14 @@ impl Agents {
         hook: Hook,
         owner: HookOwner,
         location: Location,
+        current_epoch: Uuid,
     ) -> Result<(), ProtocolFault> {
         let unauthorized =
             || ProtocolFault::new("Unauthorized", "hook has no verified Windows agent owner");
         let terminal = hook.association;
         let process = owner.found.process;
         let key = process.key;
-        if self.hook_root(terminal) != Some(owner.found.root)
+        if self.observer_root(terminal, hook.observer_epoch, current_epoch)? != owner.found.root
             || process.liveness() != ProcessLiveness::Running
         {
             return Err(unauthorized());
@@ -179,6 +210,18 @@ impl Agents {
         if hook.actor.is_some() || hook.parent_actor.is_some() {
             return Ok(());
         }
+        // A retained process can continue its existing session without sending
+        // SessionStart again. The first typed event binds only this verified owner.
+        let bind_observer = self.retained_observer_epoch(terminal).is_some()
+            && matches!(
+                hook.event,
+                HookEvent::PromptSubmitted
+                    | HookEvent::QuestionStarted
+                    | HookEvent::PlanApprovalStarted
+            )
+            && hook.session.is_some()
+            && hook.turn.is_some()
+            && (hook.event == HookEvent::PromptSubmitted || hook.tool.is_some());
         let id = if let Some(id) = self.active.get(&terminal).copied() {
             if self.managed.get(&terminal) != Some(&key) {
                 return Err(unauthorized());
@@ -187,7 +230,7 @@ impl Agents {
         } else if let Some((id, _)) = self.shell.get(&key) {
             *id
         } else if self.shell.len() < MAX_SHELL_RUNS
-            && matches!(hook.event, HookEvent::Startup | HookEvent::Resume)
+            && (bind_observer || matches!(hook.event, HookEvent::Startup | HookEvent::Resume))
         {
             let id = self.start_run(terminal, location, hook.provider, ProcessLiveness::Running);
             self.shell.insert(key, (id, process));
@@ -221,6 +264,17 @@ impl Agents {
         ) {
             return self.hook_context(id, key, owner.producer, hook);
         }
+        if bind_observer && run.producer.is_none() {
+            let run = self.runs.get_mut(&id).expect("active run");
+            Self::establish_context(run, session, owner.producer, Uuid::new_v4(), &hook);
+            if hook.event != HookEvent::PromptSubmitted {
+                let turn = hook.turn.clone().expect("retained input has a turn");
+                let (kind, confidence) = (crate::provider::contract(hook.provider).prompt)(turn);
+                run.apply(Uuid::new_v4(), kind, hook.evidence(confidence));
+            }
+            self.dirty.insert(id);
+        }
+        let run = &self.runs[&id];
         if run.producer.is_none() || run.state.identity.provider_session.as_deref() != Some(session)
         {
             return Err(unauthorized());
@@ -294,22 +348,28 @@ impl Agents {
             id
         };
         let run = self.runs.get_mut(&id).expect("current context");
+        Self::establish_context(run, session, producer, hook.delivery, &hook);
+        self.dirty.insert(id);
+        Ok(())
+    }
+
+    fn establish_context(
+        run: &mut Run,
+        session: &str,
+        producer: ProcessKey,
+        delivery: Uuid,
+        hook: &Hook,
+    ) {
         run.sessions.insert(session.to_owned());
         run.producer = Some(producer);
         run.state.identity.provider_session = Some(session.to_owned());
         let evidence = hook.evidence(Confidence::Confirmed);
-        run.apply(
-            hook.delivery,
-            ObservationKind::ContextObserved,
-            evidence.clone(),
-        );
+        run.apply(delivery, ObservationKind::ContextObserved, evidence.clone());
         run.apply(
             Uuid::new_v4(),
             ObservationKind::Collection(Collection::Healthy),
             evidence,
         );
-        self.dirty.insert(id);
-        Ok(())
     }
 
     fn gap(&mut self, id: Uuid, hook: &Hook, reason: &str) {
@@ -395,6 +455,7 @@ impl Agents {
     pub(crate) fn terminal_unavailable(&mut self, terminal: Uuid) {
         self.roots.retain(|_, owner| *owner != terminal);
         self.managed.remove(&terminal);
+        self.retained_observers.remove(&terminal);
         for (&id, run) in &mut self.runs {
             if run.state.identity.terminal_id == terminal && run.available {
                 run.available = false;

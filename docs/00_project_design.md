@@ -1544,10 +1544,12 @@ epoch requires fresh client identities and writer routes. Older updater clients 
 idle-only contract through explicit handoff capability negotiation.
 
 Terminal hosts keep their launching implementation until their sessions end. New terminals
-use the updated executable. Qualified provider hook observations remain scoped to their daemon
-epoch. Agent invocations made after reattaching a retained shell register with the new epoch.
-Automatic recovery after an unplanned PTY-owner failure remains deferred. Adoption requires
-the explicit handoff record and private protocol identity.
+use the updated executable. A planned handoff allows the retained Unix agent association or
+Windows ConPTY root to keep its original observer epoch. The replacement validates the
+hook producer before publishing current activity. Unix input evidence from the retained
+prompt is Unverified until a matching hook confirms or closes it. Automatic recovery
+after an unplanned PTY-owner failure remains deferred. Adoption requires the explicit
+handoff record and private protocol identity.
 
 ### 12.3 Stored data and privacy
 

@@ -84,6 +84,9 @@ pub(crate) struct RetainedTerminal {
     #[cfg(windows)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<Provider>,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observer_epoch: Option<Uuid>,
 }
 
 impl LaunchScope {
@@ -706,6 +709,15 @@ impl Worker {
             agent_handoff: true,
             #[cfg(windows)]
             provider: terminal.provider,
+            #[cfg(windows)]
+            observer_epoch: self
+                .scope
+                .registry
+                .request({
+                    let id = terminal.id;
+                    move |registry| registry.agents.retained_observer_epoch(id)
+                })
+                .flatten(),
         }))
     }
 
@@ -1446,6 +1458,10 @@ impl Running {
                     }
                 } else if let Some(root) = process_key {
                     registry.agents.track_shell(saved.id, root);
+                }
+                #[cfg(windows)]
+                if let (Some(root), Some(epoch)) = (process_key, saved.observer_epoch) {
+                    registry.agents.retain_observers(saved.id, root, epoch);
                 }
                 registry.terminal_started(saved.id, location);
                 #[cfg(any(target_os = "linux", target_os = "macos"))]

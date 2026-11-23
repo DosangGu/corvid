@@ -11,12 +11,11 @@ use crate::executor::time::timeout;
 use anyhow::{Context, Result};
 use corvid_protocol::collector::{CAPABILITY, INPUT_BATCH_CAPABILITY};
 use corvid_protocol::collector::{
-    HOST_ID, LAUNCH_ASSOCIATION, RUNTIME_DIR, SERVER_EPOCH, SHELL_TERMINAL,
+    HOST_ID, LAUNCH_ASSOCIATION, RETAINED_AGENT_CAPABILITY, RUNTIME_DIR, SERVER_EPOCH,
+    SHELL_TERMINAL,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use corvid_protocol::collector::{
-    NESTED_SUBAGENT_CAPABILITY, RETAINED_AGENT_CAPABILITY, SHELL_AGENT_CAPABILITY,
-};
+use corvid_protocol::collector::{NESTED_SUBAGENT_CAPABILITY, SHELL_AGENT_CAPABILITY};
 use corvid_protocol::wire::CollectorTraffic;
 use corvid_protocol::wire::HookCollected;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -166,7 +165,6 @@ async fn collect(stream: Stream, identity: &Identity, workspaces: &Workspaces) -
             NESTED_SUBAGENT_CAPABILITY,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             SHELL_AGENT_CAPABILITY,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
             RETAINED_AGENT_CAPABILITY,
         ],
     )

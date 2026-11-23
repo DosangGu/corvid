@@ -4,7 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use corvid_core::agent::{
-    Collection, Confidence, Lifecycle, ObservationKind, ProcessLiveness, Provider, Source,
+    Collection, Confidence, Lifecycle, ObservationKind, ProcessLiveness, Provider, RequestKey,
+    RequestKind, RequestStatus, Source,
 };
 use corvid_core::layout::Location;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,14 @@ use super::{Agents, evidence};
 use crate::process::{HookProducer, ProcessImage};
 
 /// Private handoff metadata, never terminal content or a live controller address.
+const MAX_RETAINED_INPUTS: usize = 16;
+
+#[derive(Clone, Deserialize, Serialize)]
+struct RetainedInput {
+    tool: String,
+    kind: RequestKind,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct RetainedAgent {
     pub(crate) association: Uuid,
@@ -26,6 +35,8 @@ pub(crate) struct RetainedAgent {
     session: String,
     sessions: Vec<String>,
     turn: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    inputs: Vec<RetainedInput>,
     gap: bool,
 }
 
@@ -48,6 +59,7 @@ impl RetainedAgent {
             session: session.provider_session_id.clone(),
             sessions: vec![session.provider_session_id],
             turn: None,
+            inputs: Vec::new(),
             gap: false,
         })
     }
@@ -62,6 +74,15 @@ impl RetainedAgent {
             && self.sessions.iter().all(|id| valid_id(id))
             && self.sessions.contains(&self.session)
             && self.turn.as_deref().is_none_or(valid_id)
+            && self.inputs.len() <= MAX_RETAINED_INPUTS
+            && (self.turn.is_some() || self.inputs.is_empty())
+            && self.inputs.iter().all(|input| {
+                valid_id(&input.tool)
+                    && matches!(
+                        input.kind,
+                        RequestKind::Question | RequestKind::PlanApproval
+                    )
+            })
             && self.restart_path.as_ref().is_none_or(|path| {
                 self.provider == Provider::Claude
                     && path.len() <= 4096
@@ -101,6 +122,30 @@ impl Agents {
             {
                 return None;
             }
+            let turn = record.run.current_open_turn();
+            let inputs = record
+                .run
+                .requests
+                .values()
+                .filter_map(|request| {
+                    let key = request.key.as_ref()?;
+                    (key.turn.as_deref() == turn
+                        && turn.is_some()
+                        && matches!(
+                            request.kind,
+                            RequestKind::Question | RequestKind::PlanApproval
+                        )
+                        && matches!(
+                            request.state.value,
+                            RequestStatus::Pending | RequestStatus::Unverified
+                        ))
+                    .then(|| RetainedInput {
+                        tool: key.provider_request_id.clone(),
+                        kind: request.kind,
+                    })
+                })
+                .take(MAX_RETAINED_INPUTS)
+                .collect();
             Some(RetainedAgent {
                 association: *association,
                 observer_epoch: launch.observer_epoch.unwrap_or(epoch),
@@ -113,7 +158,8 @@ impl Agents {
                 producer: launch.producer,
                 session: record.run.identity.provider_session.clone()?,
                 sessions: launch.sessions.iter().cloned().collect(),
-                turn: record.run.current_open_turn().map(str::to_owned),
+                turn: turn.map(str::to_owned),
+                inputs,
                 gap: launch.gap,
             })
         })
@@ -161,11 +207,21 @@ impl Agents {
         if let Some(turn) = saved.turn {
             record.apply(
                 Uuid::new_v4(),
-                ObservationKind::InteractivePromptSubmitted(turn),
+                ObservationKind::InteractivePromptSubmitted(turn.clone()),
                 evidence(Source::Collector, Confidence::Confirmed),
             );
+            for input in saved.inputs {
+                record.run.recover_input(
+                    RequestKey {
+                        turn: Some(turn.clone()),
+                        provider_request_id: input.tool,
+                    },
+                    input.kind,
+                    &evidence(Source::Collector, Confidence::Confirmed),
+                );
+            }
         }
-        // Previous requests/attention remain historical. A fresh authenticated
+        // Keep historical attention out of the new run. A fresh authenticated
         // observation must confirm collection in this epoch before notifying.
         record.apply(
             Uuid::new_v4(),

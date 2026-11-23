@@ -125,6 +125,15 @@ pub(crate) async fn recover(
             .all(|(location, terminal)| { panes.insert(location.pane) && ids.insert(terminal.id) }),
         "duplicate terminal handoff identity"
     );
+    #[cfg(windows)]
+    {
+        let epoch = uuid::Uuid::parse_str(&handoff.epoch)?;
+        ensure!(!epoch.is_nil(), "invalid daemon handoff epoch");
+        for (_, terminal) in &mut handoff.terminals {
+            let observer_epoch = terminal.observer_epoch.get_or_insert(epoch);
+            ensure!(!observer_epoch.is_nil(), "invalid retained observer epoch");
+        }
+    }
     let terminals = std::mem::take(&mut handoff.terminals);
     let recovered = async {
         workspaces.recover_terminals(terminals).await?;
