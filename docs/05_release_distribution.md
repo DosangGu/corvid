@@ -53,6 +53,11 @@ the application archives, Windows Setup, and installation scripts with their
 sizes and SHA-256 digests. The Setup `.provenance.json` links it to its source
 Desktop archive. Each daemon payload has its own `manifest.json`.
 
+The native build matrix also stages `corvidd-<version>-<target>`
+(`.exe` on Windows) for each of the five runtime targets. Release assembly
+checks the daemon's target, source revision, size, and SHA-256 before adding
+it to the release manifest.
+
 Downloads trust the public repository over HTTPS and verify the expected asset
 identity and checksums. SHA-256 detects changed bytes; it is not a publisher
 signature independent of GitHub. The repository's release assets and tags should
