@@ -829,6 +829,22 @@ def verify_workspace_ui(command, directory):
         workspace = layout.split(" Workspace UI\n", 1)[1].split("\nworkspace ", 1)[0]
         return re.findall(r"^    pane ([\da-f-]+)$", workspace, re.M)
 
+    def wait_for_writer_mode(terminal, mode):
+        deadline = time.monotonic() + 5
+        while True:
+            clients = subprocess.check_output([*command, "control", "clients"], text=True, timeout=3)
+            writers = []
+            for client in clients.splitlines():
+                identity, *fields = client.split()
+                view = dict(field.split("=", 1) for field in fields)
+                if "pane-writer" in view:
+                    writers.append((identity, view))
+            if len(writers) == 1 and writers[0][1].get("mode") == mode:
+                return writers[0]
+            assert terminal.process.poll() is None, ("TUI exited", terminal.output[-500:], clients)
+            assert time.monotonic() < deadline, (mode, clients)
+            time.sleep(0.02)
+
     pane_hint = rb"\x1b\[30;1H\x1b\[0;7m\x1b\[2KPane "
     cursor_visible = rb"\x1b\[\?25h"
     launch = [*command, "attach", "--new-workspace", "Workspace UI"]
@@ -946,14 +962,6 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.expect(rb"Ctrl\+\] commands")
 
-        terminal.send(b"\x1dw")
-        terminal.expect(b"Workspaces")
-        terminal.send(b"\x1dd")
-        terminal.output.clear()
-        terminal.send(b"\x1b")
-        time.sleep(0.15)
-        terminal.expect(rb"Ctrl\+\] commands")
-
         terminal.output.clear()
         terminal.send(b"\x1dp")
         terminal.expect(pane_hint + b"2")
@@ -989,10 +997,36 @@ def verify_workspace_ui(command, directory):
         terminal.expect(rb"\x1b\[6;1H\x1b\[0;7m\x1b\[2KPane 3")
         terminal.output.clear()
         terminal.send(b"\x1b")
+        client, narrow_view = wait_for_writer_mode(terminal, "Passthrough")
         terminal.expect(cursor_visible)
         terminal.output.clear()
         terminal.resize(100, 30)
-        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        restored_split = (
+            rb"\x1b\[2J\x1b\[1;1H\x1b\[0m(?s:.*?)"
+            rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode()
+            + rb"(?s:.*?)" + cursor_visible
+        )
+        # The narrow viewport cannot draw the right-hand pane at column 51.
+        # A complete restored frame follows the resize's new input route.
+        terminal.expect(restored_split)
+        restored_client, restored_view = wait_for_writer_mode(terminal, "Passthrough")
+        assert restored_client == client
+        assert restored_view["pane-writer"] == narrow_view["pane-writer"]
+        assert restored_view["terminal"] == narrow_view["terminal"]
+        assert int(restored_view["view_revision"]) > int(narrow_view["view_revision"])
+
+        terminal.output.clear()
+        terminal.send(b"\x1dw")
+        terminal.expect(b"Workspaces")
+        terminal.output.clear()
+        terminal.send(b"\x1dd")
+        terminal.expect(b"Search: d")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        wait_for_writer_mode(terminal, "Passthrough")
+        terminal.expect(restored_split)
+        send_line(terminal, 'printf "AFTER-RESIZE-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"AFTER-RESIZE-top")
 
         # Closing the highlighted lower pane leaves input on the upper pane.
         left_pane, top_pane, _ = workspace_panes()
