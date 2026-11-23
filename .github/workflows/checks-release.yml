@@ -7,16 +7,24 @@ on:
       - '.github/workflows/checks-release.yml'
       - 'deploy/release-notes.md'
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Validation to run
+        type: choice
+        options: [release, wsl]
+        default: release
 
 permissions:
   contents: read
 
 jobs:
   qualify:
+    if: inputs.scope != 'wsl'
     name: Release package and UI qualification
     uses: ./.github/workflows/package.yml
 
   source-packages:
+    if: inputs.scope != 'wsl'
     name: Cargo source packages (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -37,3 +45,10 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: python deploy/crates_io.py verify
+
+  wsl:
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'wsl'
+    name: WSL 2 lifecycle qualification
+    uses: ./.github/workflows/checks-wsl.yml
+    with:
+      require_runtime: true

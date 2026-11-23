@@ -9,6 +9,11 @@ on:
       - 'crates/corvid-client/src/endpoint/**'
       - 'crates/corvid-desktop/src/terminal_session/wsl_test.rs'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      require_runtime:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -43,8 +48,11 @@ jobs:
       - name: Record unavailable WSL 2 environment
         if: steps.probe.outcome != 'success'
         shell: pwsh
+        env:
+          CORVID_REQUIRE_WSL: ${{ inputs.require_runtime || github.event_name == 'workflow_dispatch' }}
         run: |
           'WSL 2 did not boot on this runner. Lifecycle qualification was skipped.' >> $env:GITHUB_STEP_SUMMARY
+          if ($env:CORVID_REQUIRE_WSL -eq 'true') { throw 'WSL 2 did not boot' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: steps.probe.outcome == 'success'
         with:
@@ -103,8 +111,12 @@ jobs:
         run: |
           rustup toolchain install --no-self-update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked -p corvid-desktop --bin corvid-desktop --no-run --message-format=json > target/wsl/cargo.jsonl
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --release --target x86_64-pc-windows-msvc -p corvid-desktop --bin corvid-desktop --no-run --message-format=json-render-diagnostics > target/wsl/cargo.jsonl
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            Get-Content target/wsl/cargo.jsonl | ForEach-Object { ConvertFrom-Json $_ } | ForEach-Object { $_.message.rendered }
+            exit $exitCode
+          }
       - name: Verify WSL installation and terminal handoff
         shell: pwsh
         run: |
