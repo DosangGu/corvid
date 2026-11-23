@@ -346,6 +346,14 @@ impl WorkspaceView {
         self.tab_bar.render(workspace.tabs.iter().filter_map(|tab| {
             let (target, open) = self.choose(workspace, tab, inventory?)?;
             let active = selected == Some(tab.tab_id.as_str());
+            let previewed = highlighted == Some(tab.tab_id.as_str());
+            let fill = if previewed {
+                BORDER
+            } else if active {
+                ACTIVE_FILL
+            } else {
+                PANEL
+            };
             let attention = ui.connected
                 && ui.inventory_ready
                 && inventory?.agents.iter().any(|agent| {
@@ -364,19 +372,16 @@ impl WorkspaceView {
                     .flex_none()
                     .items_center()
                     .rounded_md()
-                    .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
-                    .border_1()
-                    .border_color(rgb(if highlighted == Some(tab.tab_id.as_str()) {
-                        NAVIGATION_HIGHLIGHT
-                    } else if active {
-                        ACTIVE_FILL
-                    } else {
-                        PANEL
-                    }))
+                    .bg(rgb(fill))
+                    .p(px(1.))
                     .max_w(ui_px(240.))
                     .child(
                         title::button(
-                            button_frame("select-tab", active).min_w_0().flex_shrink(1.),
+                            button_frame("select-tab", active)
+                                .bg(rgb(fill))
+                                .when(previewed && !active, |button| button.text_color(rgb(TEXT)))
+                                .min_w_0()
+                                .flex_shrink(1.),
                             tab.label.clone(),
                             attention.then_some("!"),
                         )
