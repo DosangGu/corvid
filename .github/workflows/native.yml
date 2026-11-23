@@ -312,12 +312,6 @@ jobs:
       - name: Workspace lints
         if: inputs.qualify
         run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
-      - name: Windows Agent Deck tray
-        if: inputs.qualify
-        timeout-minutes: 10
-        env:
-          CARGO_BUILD_TARGET: ${{ matrix.desktop }}
-        run: python tests/ui/run.py --build target/${{ matrix.desktop }}/release --case deck-tray
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: pwsh

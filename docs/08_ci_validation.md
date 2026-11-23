@@ -43,7 +43,6 @@ before GitHub Release publication. See [build and publish](05_release_distributi
 | Linux | The full interactive suite also checks automatic daemon startup, shell continuity across replacement, and synthetic agent notifications. The loopback OpenSSH fixture checks abrupt disconnects, companion resynchronization, and same-PTY reattachment under a transient systemd user service. |
 | All five Desktop targets | The packaged UI smoke suite opens Desktop, connects to the fixture daemon, and opens an Agent Deck window. |
 | Linux, Windows x64, and macOS Desktop | The packaged smoke suite pastes synthetic Unicode through the system clipboard and checks the receiving shell. Linux and Windows x64 also check tab isolation. |
-| Windows Deck | The notification-area test hides and reopens the Deck, then verifies its compact, expanded, and pinned window state. |
 | Linux Desktop | Xvfb/Openbox tests drive the real application with keyboard and clipboard events. They check Unicode paste, tab creation and selection, independent windows, the new-window menu, settings, close/quit/relaunch, saved window count, and retained shell variables. |
 
 The Python integration drivers run as explicit workflow steps. UI tests check
@@ -108,6 +107,8 @@ Windows Desktop ZIP, or macOS DMG for the current platform. `--suite full`
 includes Linux window and Deck focus tests for a build, the Windows Deck tray
 test, and the macOS DMG verification when a DMG is supplied. The Windows tray
 case compiles the Rust integration test and uses the selected Deck executable.
+Run it in a session with a Windows notification area to verify hiding, reopening,
+and pinning the Deck. The hosted ARM64 runner did not expose the Deck tray window.
 
 - Linux needs the Desktop build dependencies plus Xvfb, xauth, X11 utilities,
   xdotool, xclip, Openbox, scrot, and a Vulkan driver such as Mesa. The Deck
