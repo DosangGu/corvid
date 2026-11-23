@@ -591,6 +591,7 @@ impl WorkspaceView {
             self.watch_host(previous, window, cx);
         }
         let changes = session.changes();
+        let mut view_changes = session.view_changes();
         self.session = Some(session);
         self.sync(window, cx);
         self.updates = Some(cx.spawn_in(window, async move |view, cx| {
@@ -602,6 +603,15 @@ impl WorkspaceView {
         self.events = Some(cx.spawn_in(window, async move |view, cx| {
             loop {
                 corvid_async::select! {
+                    changed = view_changes.changed() => {
+                        // Move keyboard focus when the daemon changes the input route,
+                        // even if the window has no frame scheduled for terminal output.
+                        if changed.is_err() || view.update_in(cx, |view, window, cx| {
+                            view.sync(window, cx);
+                        }).is_err() {
+                            break;
+                        }
+                    }
                     Some(activation) = activations.recv() => {
                         let _ = view.update_in(cx, |view, window, cx| {
                             if activation.reply.is_closed() {

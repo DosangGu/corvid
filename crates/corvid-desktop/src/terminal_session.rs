@@ -371,6 +371,7 @@ struct Shared {
     edits: mpsc::Sender<(StateEdit, blocking::SyncSender<()>)>,
     snapshots: watch::Receiver<Arc<Snapshot>>,
     screen_changed: watch::Sender<()>,
+    view_changed: watch::Sender<()>,
     preview_tab: watch::Sender<Option<String>>,
     clipboard: watch::Sender<Option<ClipboardWrite>>,
     ui_changed: watch::Sender<()>,
@@ -419,8 +420,10 @@ impl Shared {
         let (snapshots, latest) = watch::channel(Arc::new(state.clone()));
         let (edits, mut incoming) = mpsc::channel::<(StateEdit, blocking::SyncSender<()>)>(2);
         let (screen_changed, _) = watch::channel(());
+        let (view_changed, _) = watch::channel(());
         let (ui_changed, _) = watch::channel(());
         let screen = screen_changed.clone();
+        let view = view_changed.clone();
         let ui = ui_changed.clone();
         runtime.spawn(async move {
             while let Some((edit, committed)) = incoming.recv().await {
@@ -432,6 +435,9 @@ impl Shared {
                 if matches!(changed, Changed::Ui | Changed::View) {
                     ui.send_replace(());
                 }
+                if matches!(changed, Changed::View) {
+                    view.send_replace(());
+                }
                 let _ = committed.send(());
             }
         });
@@ -439,6 +445,7 @@ impl Shared {
             edits,
             snapshots: latest,
             screen_changed,
+            view_changed,
             preview_tab: watch::channel(None).0,
             clipboard: watch::channel(None).0,
             ui_changed,
@@ -898,6 +905,10 @@ impl Session {
 
     pub fn changes(&self) -> watch::Receiver<()> {
         self.shared.ui_changed.subscribe()
+    }
+
+    pub fn view_changes(&self) -> watch::Receiver<()> {
+        self.shared.view_changed.subscribe()
     }
 
     pub(super) fn clipboard_changes(&self) -> watch::Receiver<Option<ClipboardWrite>> {
