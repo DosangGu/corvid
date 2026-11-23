@@ -1,6 +1,7 @@
 #[cfg(unix)]
 use std::process::Stdio;
 use std::process::{Command, ExitStatus};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use compio::buf::IoBufMut;
@@ -76,28 +77,66 @@ pub(super) async fn output(
     command: Command,
     payload: Option<(Vec<u8>, Vec<u8>)>,
     limit: usize,
+    timeout: Duration,
+    timeout_context: &str,
 ) -> Result<Output> {
     use compio::io::AsyncWriteExt;
+    use compio::time::timeout_at;
 
+    let deadline = Instant::now() + timeout;
     let Process {
         mut child,
         mut stdin,
         stdout,
         stderr,
-    } = Process::start(command).await?;
-    let send = async move {
-        if let Some((header, binary)) = payload {
-            stdin.write_all(header).await.0?;
-            stdin.write_all(binary).await.0?;
+    } = timeout_at(deadline, Process::start(command))
+        .await
+        .with_context(|| format!("{timeout_context} while starting the child and its pipes"))??;
+
+    let mut input = "closing stdin";
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let send = async {
+        let result = async {
+            if let Some((header, binary)) = payload {
+                input = "writing the header";
+                stdin.write_all(header).await.0?;
+                input = "writing the payload";
+                stdin.write_all(binary).await.0?;
+            }
+            Ok::<_, std::io::Error>(())
         }
-        Ok::<_, std::io::Error>(())
+        .await;
+        // Deliver EOF independently of the child wait and output readers. AsyncFd's
+        // AsyncWrite::shutdown leaves this pipe open.
+        drop(stdin);
+        input = if result.is_ok() {
+            "stdin closed"
+        } else {
+            "stdin write failed and pipe closed"
+        };
+        result
     };
-    let (status, received, diagnostic, sent) = corvid_async::join!(
-        child.status(),
-        read_bounded(stdout, limit),
-        drain_diagnostic(stderr),
-        send,
-    );
+    let receive_stdout = async {
+        let result = read_bounded(stdout, limit).await;
+        stdout_done = true;
+        result
+    };
+    let receive_stderr = async {
+        let result = drain_diagnostic(stderr).await;
+        stderr_done = true;
+        result
+    };
+    let result = timeout_at(deadline, async {
+        corvid_async::join!(child.status(), receive_stdout, receive_stderr, send)
+    })
+    .await;
+    let (status, received, diagnostic, sent) = result.with_context(|| {
+        let status = child.try_status();
+        format!(
+            "{timeout_context} waiting for the child ({input}, stdout completed: {stdout_done}, stderr completed: {stderr_done}, exit status: {status:?})"
+        )
+    })?;
     let status = status?;
     let stdout = if status.success() {
         sent?;

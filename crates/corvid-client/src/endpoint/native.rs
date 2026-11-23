@@ -250,9 +250,9 @@ async fn set_up(request: SetupRequest) {
         timeout_context,
         mut output,
     } = request;
-    let command = compio::time::timeout(timeout, super::process::output(command, payload, limit));
+    let command = super::process::output(command, payload, limit, timeout, timeout_context);
     let result = corvid_async::select! {
-        result = command => result.context(timeout_context).and_then(|result| result),
+        result = command => result,
         _ = output.closed() => return,
     };
     let _ = output.send(result);
