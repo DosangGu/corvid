@@ -186,16 +186,19 @@ impl Fixture {
     async fn inspect_restore(&self, location: Location) -> Result<String> {
         timeout(RESTORE_DIAGNOSTIC_WAIT, async {
             let mut connection = self.connection().await?;
-            let result = connection
-                .restore_workspace(RestoreWorkspace {
+            let (result, status) = corvid_async::join!(
+                connection.restore_workspace(RestoreWorkspace {
                     workspace_id: location.workspace.to_string(),
                     pane_id: Some(location.pane.to_string()),
                     mode: AgentRestoreMode::Inspect as i32,
-                })
-                .await?;
+                }),
+                corvid_client::status(&self.runtime),
+            );
+            let result = result?;
             let pane = result.panes.first().context("missing restore pane")?;
+            let collector = status.map(|status| status.collector);
             Ok(format!(
-                "status={:?}, error={:?}, terminal={:?}",
+                "status={:?}, error={:?}, terminal={:?}, collector={collector:?}",
                 pane.status(),
                 pane.error.as_ref().map(|error| &error.code),
                 pane.terminal_id

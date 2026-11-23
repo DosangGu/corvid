@@ -440,7 +440,10 @@ impl Workspaces {
         let association = hook.association;
         let root = self
             .registry
-            .request(move |registry| registry.agents.hook_root(association))
+            .request(move |registry| registry.agents.hook_binding(association))
+            .await
+            .ok_or_else(unauthorized)?
+            .root()
             .await
             .ok_or_else(unauthorized)?;
         let provider = hook.provider;
