@@ -59,3 +59,23 @@ transaction, and modal sequence recognition. The spike writes full redraws
 synchronously. Production rendering needs an independent bounded queue and must
 disconnect a stalled client. Reattach, daemon survival, and resource accounting
 across many PTYs are Phase 1 gates.
+
+## libghostty-vt evaluation
+
+Issue [#377](https://github.com/DosangGu/corvid/issues/377) tracks migration of
+the daemon terminal engine. The optional daemon feature `ghostty-vt` enables
+linked qualification tests for libghostty-vt 1.0.1. Run them with Zig 0.17.1 on
+`PATH` for targets that require a source build.
+
+```sh
+cargo test --locked -p corvid-daemon --features ghostty-vt --lib \
+  terminal::screen::ghostty_qualification
+```
+
+The tests exercise fragmented Unicode and RGB through the render snapshot,
+cursor and wrap state, resized child queries, alternate screen, scrollback,
+and denial of library clipboard writes. The Rust binding keeps its native
+terminal and render handles on the creating thread in these fixtures.
+Production rendering and release builds still use the existing engine.
+Qualify the production adapter, Linux musl, Windows MSVC, and macOS before
+making the feature part of the release matrix.
