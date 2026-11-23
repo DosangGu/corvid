@@ -89,3 +89,19 @@ The `Checks / libghostty-vt` workflow builds the opt-in daemon and TUI for the
 five release targets. It runs the linked VT fixtures on each target, PTY
 routing and handoff on Linux, the terminal relay on Linux and macOS, and a
 ConPTY shell history test on Windows.
+
+### Comparing engine costs
+
+Run `python3 spikes/terminal/benchmark_engines.py` with Zig on `PATH`. The
+driver builds a release-mode daemon test binary and emits JSON Lines for each
+engine, synthetic Codex and Claude Code workload, and session count. Each case
+runs in a fresh process. Use `--sessions 1 32 64` to extend the idle fleet.
+
+`parse_ms` covers fragmented PTY output and reply handling. The frame timings
+include encoding and retaining the next acknowledged snapshot. Each frame
+starts from a fresh screen mutation. Divide by `frames_per_kind` to get mean
+cost and bytes per full or incremental frame. `exported_history_bytes` is the
+current bounded history wire size. Linux reports the idle process RSS delta
+after all sessions retain scrollback. Unix CPU time covers the complete child
+process and is rounded at the OS clock resolution. These synthetic cases do
+not include PTY scheduling, clients, or external agent workloads.
