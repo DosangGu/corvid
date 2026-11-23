@@ -109,6 +109,9 @@ jobs:
       - name: Run linked VT and adapter fixtures
         shell: bash
         run: cargo test --locked --target "$RUST_TARGET" -p corvid-daemon --features ghostty-vt --lib terminal::screen::ghostty_qualification
+      - name: Verify Linux idle scrollback compression
+        if: runner.os == 'Linux'
+        run: cargo test --locked --target "$RUST_TARGET" -p corvid-daemon --features ghostty-vt --lib idle_compression_preserves_history_and_restarts_after_scroll
       - name: Build the opt-in daemon and TUI
         shell: bash
         run: cargo build --locked --target "$RUST_TARGET" -p corvid-daemon -p corvid-tui --features corvid-daemon/ghostty-vt

@@ -40,6 +40,11 @@ struct Batch {
 }
 
 impl InputQueue {
+    #[cfg(all(feature = "ghostty-vt", target_os = "linux"))]
+    pub(super) fn is_idle(&self) -> bool {
+        self.active.is_none() && self.user.is_empty() && self.replies.is_empty()
+    }
+
     pub(super) fn user(&mut self, bytes: Vec<u8>) -> bool {
         if self.user_bytes + bytes.len() > USER_LIMIT {
             return false;
