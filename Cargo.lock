@@ -1412,7 +1412,6 @@ dependencies = [
  "unicode-width 0.2.3",
  "url",
  "uuid",
- "vt100",
  "windows-sys 0.61.2",
  "x11rb 0.14.0",
 ]
@@ -1447,9 +1446,13 @@ dependencies = [
  "prost-types",
  "protox",
  "rustix",
+ "smol_str",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-segmentation",
+ "unicode-width 0.2.3",
  "uuid",
+ "vte",
  "windows-sys 0.61.2",
 ]
 

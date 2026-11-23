@@ -18,11 +18,6 @@ impl Session {
     }
 }
 
-struct PauseOnBell {
-    parsing: blocking::Sender<()>,
-    resume: blocking::Receiver<()>,
-}
-
 #[test]
 fn preview_snapshot_allows_publication_during_rendering() {
     let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
@@ -34,7 +29,7 @@ fn preview_snapshot_allows_publication_during_rendering() {
         actions,
         size,
     };
-    let mut parser = Parser::new(grid.rows, grid.cols, 0);
+    let mut parser = Decoder::new(grid.rows, grid.cols);
     parser.process(b"before");
     let screen = Arc::new(parser.screen().clone());
     shared.edit(move |state| {
@@ -173,13 +168,6 @@ fn rejected_view_change_releases_its_input_gate() {
     );
 }
 
-impl vt100::Callbacks for PauseOnBell {
-    fn audible_bell(&mut self, _: &mut Screen) {
-        self.parsing.send(()).unwrap();
-        self.resume.recv_timeout(Duration::from_secs(5)).unwrap();
-    }
-}
-
 #[test]
 fn wheel_reports_use_the_child_encoding_and_terminal_coordinates() {
     let cell = (1, 254);
@@ -231,8 +219,7 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
     thread::scope(|scope| {
         let (parsing, parsing_started) = blocking::channel();
         let (resume_parsing, resume) = blocking::channel();
-        let mut parser =
-            Parser::new_with_callbacks(grid.rows, grid.cols, 0, PauseOnBell { parsing, resume });
+        let mut parser = Decoder::new(grid.rows, grid.cols);
         shared.apply_ansi(&mut parser, b"before", WheelEncoding::Sgr, Some(false));
         assert!(session.wheel_target("other").is_none());
         let route = session.wheel_target("pane").unwrap();
@@ -243,12 +230,16 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         changes.borrow_and_update();
         let shared = &shared;
         let parsing = scope.spawn(move || {
-            let mut ansi = b"\x1b[2J\x1b[Hpartial\x07".to_vec();
-            ansi.resize(corvid_protocol::RENDER_LIMIT - 1024, b'\0');
-            ansi.extend_from_slice(b"\x1b[2J\x1b[Hafter ");
-            let korean = "한".as_bytes();
-            ansi.extend_from_slice(&korean[..1]);
-            shared.apply_ansi(&mut parser, &ansi, WheelEncoding::Disabled, Some(false));
+            shared.apply_frame(WheelEncoding::Disabled, Some(false), || {
+                parser.process(b"\x1b[2J\x1b[Hpartial");
+                parsing.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                let mut ansi = vec![0; corvid_protocol::RENDER_LIMIT - 1024];
+                ansi.extend_from_slice(b"\x1b[2J\x1b[Hafter ");
+                ansi.extend_from_slice(&"한".as_bytes()[..1]);
+                parser.process(&ansi);
+                parser.screen().clone()
+            });
             parser
         });
 

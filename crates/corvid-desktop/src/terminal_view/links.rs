@@ -1,7 +1,7 @@
 use std::ops::Range;
 
+use corvid_protocol::ansi_screen::Screen;
 use url::Url;
-use vt100::Screen;
 
 use crate::terminal_session::Grid;
 
@@ -220,7 +220,7 @@ mod tests {
     use super::*;
 
     fn screen(grid: Grid, text: &str) -> Screen {
-        let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+        let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
         parser.process(text.as_bytes());
         parser.screen().clone()
     }

@@ -20,6 +20,7 @@ use corvid_client::{
 };
 use corvid_companion::{Config, HostEndpoint};
 use corvid_presentation::desktop_focus::{FocusFailure, FocusReply};
+use corvid_protocol::ansi_screen::{Decoder, Screen};
 use corvid_protocol::snapshot::SynchronizedSnapshot;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
@@ -40,7 +41,6 @@ use corvid_protocol::{
     WRITER_RESUME_CAPABILITY, decode_envelope,
 };
 use uuid::Uuid;
-use vt100::{Parser, Screen};
 
 use crate::daemon_prompt::{Prompt, Prompts};
 use crate::{agent_deck, local_bootstrap, remote_bootstrap};
@@ -338,7 +338,7 @@ impl Snapshot {
         } else {
             match self.alternate_screen {
                 Some(true) => WheelTarget::Cursor {
-                    application: screen.application_cursor(),
+                    application: screen.application_cursor,
                 },
                 Some(false) => WheelTarget::Scrollback,
                 None => WheelTarget::LegacyScrollback,
@@ -480,13 +480,25 @@ impl Shared {
 
     fn apply_ansi(
         &self,
-        parser: &mut Parser<impl vt100::Callbacks>,
+        parser: &mut Decoder,
         ansi: &[u8],
         wheel_encoding: WheelEncoding,
         alternate_screen: Option<bool>,
     ) {
-        parser.process(ansi);
-        let screen = Arc::new(parser.screen().clone());
+        self.apply_frame(wheel_encoding, alternate_screen, || {
+            parser.process(ansi);
+            parser.screen().clone()
+        });
+    }
+
+    fn apply_frame(
+        &self,
+        wheel_encoding: WheelEncoding,
+        alternate_screen: Option<bool>,
+        decode: impl FnOnce() -> Screen,
+    ) {
+        // Decode on the connection worker before editing the published state.
+        let screen = Arc::new(decode());
         self.edit(move |state| {
             state.wheel_encoding = wheel_encoding;
             state.alternate_screen = alternate_screen;
@@ -1154,7 +1166,7 @@ struct Client<'a> {
     selected: ViewSelection,
     route: RouteToken,
     grid: Grid,
-    parser: Parser,
+    parser: Decoder,
     applied: Option<(u64, u64)>,
     sequence: u64,
     pending: Option<Pending>,
@@ -1902,7 +1914,7 @@ async fn run(
         selected,
         route,
         grid,
-        parser: Parser::new(grid.rows, grid.cols, 0),
+        parser: Decoder::new(grid.rows, grid.cols),
         applied: None,
         sequence: 0,
         pending: None,
@@ -2742,7 +2754,7 @@ impl Client<'_> {
                 if route != self.route {
                     let grid = Grid::read(view.viewport.context("view update has no viewport")?)?;
                     self.grid = grid;
-                    self.parser = Parser::new(grid.rows, grid.cols, 0);
+                    self.parser = Decoder::new(grid.rows, grid.cols);
                     self.route = route;
                     self.selected = selection;
                     self.applied = None;
@@ -2885,7 +2897,7 @@ impl Client<'_> {
                 return Ok(());
             }
             if let Ok(grid) = Grid::read(preview.viewport.context("pane preview has no size")?) {
-                let mut parser = Parser::new(grid.rows, grid.cols, 0);
+                let mut parser = Decoder::new(grid.rows, grid.cols);
                 parser.process(&frame.ansi);
                 let screen = Arc::new(parser.screen().clone());
                 self.shared.edit(move |state| {

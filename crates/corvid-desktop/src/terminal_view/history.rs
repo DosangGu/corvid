@@ -1,9 +1,9 @@
 use std::num::NonZeroU16;
 use std::ops::Range;
 
+use corvid_protocol::ansi_screen::{Decoder, Screen};
 use corvid_protocol::wire::TerminalHistory;
 use unicode_width::UnicodeWidthChar;
-use vt100::{Parser, Screen};
 
 use crate::terminal_session::Grid;
 
@@ -123,7 +123,7 @@ impl History {
         let rows = usize::from(grid.rows.get());
         let top = self.first.min(self.last_top(rows));
         let cols = NonZeroU16::new(snapshot.columns as u16)?;
-        let mut parser = Parser::new(grid.rows, cols, 0);
+        let mut parser = Decoder::new(grid.rows, cols);
         for (row, line) in snapshot.lines.iter().skip(top).take(rows).enumerate() {
             parser.process(format!("\x1b[0m\x1b[{};1H", row + 1).as_bytes());
             let index = (top + row) as u32;
@@ -254,9 +254,15 @@ mod tests {
         history.edit_query(Some("diff"));
         let (screen, hit) = history.screen(Grid::new(2, 20)).unwrap();
         assert_eq!(hit.unwrap(), (0, 5)..(0, 9));
-        assert_eq!(screen.cell(0, 5).unwrap().fgcolor(), vt100::Color::Idx(1));
-        assert!(screen.cell(0, 5).unwrap().underline());
-        assert_eq!(screen.cell(1, 0).unwrap().fgcolor(), vt100::Color::Default);
+        assert_eq!(
+            screen.cell(0, 5).unwrap().style.fg,
+            corvid_protocol::ansi_screen::Color::Indexed(1)
+        );
+        assert!(screen.cell(0, 5).unwrap().style.underline);
+        assert_eq!(
+            screen.cell(1, 0).unwrap().style.fg,
+            corvid_protocol::ansi_screen::Color::Default
+        );
     }
 
     #[test]
