@@ -275,7 +275,9 @@ impl AgentRun {
                 {
                     return false;
                 }
-                self.correlation.superseded_turns.insert(current.clone());
+                let previous = current.clone();
+                self.correlation.superseded_turns.insert(previous.clone());
+                self.displace_prompt(previous, evidence);
             } else if last_signal == Some(PromptObservation::Responded)
                 && signal != PromptObservation::ModelRequested
             {
@@ -291,7 +293,7 @@ impl AgentRun {
     }
 
     fn displace_prompt(&mut self, turn: String, evidence: &Evidence) {
-        let uncertain = evidence.uncertain("another prompt was submitted before an input result");
+        let uncertain = evidence.uncertain("another prompt was observed before an input result");
         for request in self.requests.values_mut() {
             if request.state.value == RequestStatus::Pending
                 && request.key.as_ref().and_then(|key| key.turn.as_deref()) == Some(turn.as_str())
@@ -650,6 +652,9 @@ impl AgentRun {
     fn can_assert_wait(&self, evidence: &Evidence) -> bool {
         evidence.confidence == Confidence::Confirmed
             && self.collection.value == Collection::Healthy
+            && !self
+                .prompt_observation()
+                .is_some_and(PromptObservation::confirms_execution)
             && self.active_turns.is_empty()
             && self.work.is_empty()
     }

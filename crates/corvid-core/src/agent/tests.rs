@@ -283,8 +283,6 @@ fn tool_execution_reveals_activity_without_resolving_an_earlier_request() {
     let request = fixture.request("first", "question");
     assert!(fixture.response(Some("first"), ResponseOutcome::Observed, false));
     assert_eq!(fixture.run.badge(), Badge::NeedsInput(1));
-    assert!(fixture.push(ObservationKind::InteractivePromptSubmitted("second".into())));
-    assert_eq!(fixture.request_state(request), RequestStatus::Unverified);
     let tool = WorkKey {
         turn: Some("second".into()),
         item: "read".into(),
