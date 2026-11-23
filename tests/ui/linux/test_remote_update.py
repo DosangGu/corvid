@@ -68,14 +68,14 @@ def verify_default_and_capture(root, environment, output):
 
 def verify(args, root, test_binary):
     build = args.build.resolve(strict=True)
-    for name in ("corvid", "corvid-desktop", "corvid-agent-deck"):
+    for name in ("corvid", "corvidd", "corvid-desktop", "corvid-agent-deck"):
         shutil.copy2(build / name, root / name)
     shutil.copy2(test_binary, root / "test-runner")
     current = subprocess.check_output([str(root / "corvid"), "--version"], text=True).split()[1]
     target = f"{platform.machine()}-unknown-linux-musl"
     bundle = root / "daemon" / target
     bundle.mkdir(parents=True)
-    payload = (root / "corvid").read_bytes()
+    payload = (root / "corvidd").read_bytes()
     # The fixture only verifies dispatch, so the host-native test binary can stand
     # in for the release's musl bundle without claiming musl runtime coverage.
     (bundle / "corvid").write_bytes(payload)
