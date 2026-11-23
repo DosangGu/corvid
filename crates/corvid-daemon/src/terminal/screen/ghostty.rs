@@ -1,4 +1,4 @@
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::fmt::Write;
 
 use anyhow::{Result, ensure};
@@ -23,6 +23,7 @@ const MAX_CELL_CODEPOINTS: usize = 24;
 pub(super) struct Ghostty {
     terminal: Terminal,
     surface: OnceCell<Screen>,
+    projection: RefCell<Option<Projection>>,
     prompt_parser: vte::Parser,
     prompt: Prompt,
     pub(super) viewport: Viewport,
@@ -48,6 +49,7 @@ impl Ghostty {
         Ok(Self {
             terminal,
             surface: OnceCell::new(),
+            projection: RefCell::new(None),
             prompt_parser: vte::Parser::new(),
             prompt: Prompt::default(),
             viewport,
@@ -83,6 +85,7 @@ impl Ghostty {
         self.terminal.events().for_each(drop);
         self.viewport = viewport;
         self.surface.take();
+        self.projection.get_mut().take();
         Ok(())
     }
 
@@ -123,7 +126,17 @@ impl Ghostty {
         if let Some(screen) = self.surface.get() {
             return Ok(screen);
         }
-        let screen = self.project_visible_screen()?;
+        let mut projection = self.projection.borrow_mut();
+        if projection.is_none() {
+            *projection = Some(Projection::new(self.viewport)?);
+        }
+        let screen = match projection.as_mut().unwrap().update(&self.terminal) {
+            Ok(screen) => screen,
+            Err(error) => {
+                projection.take();
+                return Err(error);
+            }
+        };
         Ok(self.surface.get_or_init(|| screen))
     }
 
@@ -140,7 +153,7 @@ impl Ghostty {
                     .grid_ref(Point::Screen(PointCoordinate { x, y }))?;
                 let cell = reference.cell()?;
                 let raw_style = reference.style()?;
-                let style = cell_style(cell, raw_style)?;
+                let style = cell_style(cell, cell.content_tag()?, raw_style)?;
                 let mut codepoints = ['\0'; MAX_CELL_CODEPOINTS];
                 let text = if raw_style.invisible {
                     String::new()
@@ -171,37 +184,69 @@ impl Ghostty {
     fn mode(&self, mode: Mode) -> bool {
         self.terminal.mode(mode).unwrap_or(false)
     }
+}
 
-    fn project_visible_screen(&self) -> Result<Screen> {
-        // The existing per-client ANSI encoder compares owned vt100 screens.
-        // Only reconstructed cell text, rendition, and supported modes enter it.
-        let mut render = RenderState::new()?;
-        let snapshot = render.update(&self.terminal)?;
-        let mut row_iter = RowIterator::new()?;
-        let mut cell_iter = CellIterator::new()?;
-        let mut rows = row_iter.update(&snapshot)?;
-        let mut parser = Parser::new(self.viewport.rows, self.viewport.cols, 0);
+struct Projection {
+    render: RenderState,
+    rows: RowIterator,
+    cells: CellIterator,
+    parser: Parser,
+}
+
+impl Projection {
+    fn new(viewport: Viewport) -> Result<Self> {
+        Ok(Self {
+            render: RenderState::new()?,
+            rows: RowIterator::new()?,
+            cells: CellIterator::new()?,
+            parser: Parser::new(viewport.rows, viewport.cols, 0),
+        })
+    }
+
+    fn update(&mut self, terminal: &Terminal) -> Result<Screen> {
+        // This cache holds the current grid. Clients still compare their own
+        // acknowledged snapshots with that grid in the ANSI encoder.
+        let snapshot = self.render.update(terminal)?;
+        let mut rows = self.rows.update(&snapshot)?;
         let mut ansi = String::new();
         let mut text = String::new();
-        while let Some(row) = rows.next() {
+        while let Some((row_index, row)) = rows.next_dirty() {
             ansi.clear();
-            let y = row.viewport_y()? + 1;
-            let mut cells = cell_iter.update(row)?;
+            let y = row_index + 1;
+            write!(ansi, "\x1b[{y};1H\x1b[0m\x1b[2K")?;
+            let mut cells = self.cells.update(row)?;
             let mut x = 0;
+            let mut next_x = 1;
             let mut painted = CellStyle::default();
             while let Some(cell) = cells.next() {
                 x += 1;
                 let raw = cell.raw_cell()?;
+                let tag = raw.content_tag()?;
+                let codepoint = raw.codepoint()?;
+                let styled = raw.has_styling()?
+                    || matches!(
+                        tag,
+                        CellContentTag::BgColorRgb | CellContentTag::BgColorPalette
+                    );
+                if codepoint == 0 && !styled {
+                    continue;
+                }
                 if cell_width(raw)? == CellWidth::Continuation {
                     continue;
                 }
-                let raw_style = cell.style()?;
-                let style = cell_style(raw, raw_style)?;
+                let (style, invisible) = if styled {
+                    let raw_style = cell.style()?;
+                    (cell_style(raw, tag, raw_style)?, raw_style.invisible)
+                } else {
+                    (CellStyle::default(), false)
+                };
                 text.clear();
-                if !raw_style.invisible {
-                    if cell.graphemes_len()? <= MAX_CELL_CODEPOINTS {
+                if !invisible && codepoint != 0 {
+                    if tag == CellContentTag::CodepointGrapheme
+                        && cell.graphemes_len()? <= MAX_CELL_CODEPOINTS
+                    {
                         cell.graphemes_utf8(&mut text)?;
-                    } else if let Some(base) = char::from_u32(raw.codepoint()?) {
+                    } else if let Some(base) = char::from_u32(codepoint) {
                         text.push(base);
                     }
                 }
@@ -209,7 +254,9 @@ impl Ghostty {
                 if text.is_empty() && style == CellStyle::default() {
                     continue;
                 }
-                write!(ansi, "\x1b[{y};{x}H")?;
+                if x != next_x {
+                    write!(ansi, "\x1b[{y};{x}H")?;
+                }
                 if painted != style {
                     style.paint(&mut ansi);
                     painted = style;
@@ -219,20 +266,27 @@ impl Ghostty {
                 } else {
                     ansi.push_str(&text);
                 }
+                // ASCII occupies one column. Other cells may use different
+                // widths in the projection parser, so address the next one.
+                next_x = if text.is_ascii() && text.len() <= 1 {
+                    x + 1
+                } else {
+                    0
+                };
             }
-            ansi.push_str("\x1b[0m");
-            parser.process(ansi.as_bytes());
+            self.parser.process(ansi.as_bytes());
         }
-        self.project_cursor(&mut parser)?;
-        Ok(parser.screen().clone())
+        snapshot.clean()?;
+        Self::project_cursor(terminal, &mut self.parser)?;
+        Ok(self.parser.screen().clone())
     }
 
-    fn project_cursor(&self, parser: &mut Parser) -> Result<()> {
-        let row = self.terminal.cursor_y()?;
-        let mut column = self.terminal.cursor_x()?;
+    fn project_cursor(terminal: &Terminal, parser: &mut Parser) -> Result<()> {
+        let row = terminal.cursor_y()?;
+        let mut column = terminal.cursor_x()?;
         let mut ansi = String::new();
         let screen = parser.screen();
-        if self.terminal.is_cursor_pending_wrap()? {
+        if terminal.is_cursor_pending_wrap()? {
             if screen
                 .cell(row, column)
                 .is_some_and(vt100::Cell::is_wide_continuation)
@@ -247,17 +301,24 @@ impl Ghostty {
         } else {
             write!(ansi, "\x1b[{};{}H", row + 1, column + 1)?;
         }
-        let style = self.terminal.cursor_style()?;
+        let style = terminal.cursor_style()?;
         convert_style(style, style.bg_color.into()).paint(&mut ansi);
-        if !self.terminal.is_cursor_visible()? {
-            ansi.push_str("\x1b[?25l");
-        }
-        if self.mode(Mode::DECCKM) {
-            ansi.push_str("\x1b[?1h");
-        }
-        if self.mode(Mode::KEYPAD_KEYS) {
-            ansi.push_str("\x1b=");
-        }
+        let cursor = if terminal.is_cursor_visible()? {
+            'h'
+        } else {
+            'l'
+        };
+        let keys = if terminal.mode(Mode::DECCKM)? {
+            'h'
+        } else {
+            'l'
+        };
+        let keypad = if terminal.mode(Mode::KEYPAD_KEYS)? {
+            '='
+        } else {
+            '>'
+        };
+        write!(ansi, "\x1b[?25{cursor}\x1b[?1{keys}\x1b{keypad}")?;
         parser.process(ansi.as_bytes());
         Ok(())
     }
@@ -279,8 +340,8 @@ impl OwnedCell {
     }
 }
 
-fn cell_style(cell: Cell, style: Style) -> Result<CellStyle> {
-    let bg = match cell.content_tag()? {
+fn cell_style(cell: Cell, tag: CellContentTag, style: Style) -> Result<CellStyle> {
+    let bg = match tag {
         CellContentTag::BgColorRgb => StyleColor::Rgb(cell.bg_color_rgb()?),
         CellContentTag::BgColorPalette => StyleColor::Palette(cell.bg_color_palette()?),
         _ => style.bg_color,
