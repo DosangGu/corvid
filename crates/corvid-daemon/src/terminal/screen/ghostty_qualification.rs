@@ -162,7 +162,7 @@ fn reports_resized_inner_geometry_and_cursor_to_the_child() {
     terminal
         .resize(resized.cols.get(), resized.rows.get(), 0, 0)
         .unwrap();
-    current.resize(resized);
+    current.resize(resized).unwrap();
     let queries = b"\x1b[4;10H\x1b[6n\x1b[18t";
     terminal.vt_write(queries);
     let expected = current.process(queries).unwrap();

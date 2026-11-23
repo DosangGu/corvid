@@ -6,6 +6,7 @@ use std::num::NonZeroU16;
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
 use corvid_protocol::ansi_screen::{Cell, Decoder, Screen};
+use unicode_width::UnicodeWidthStr;
 
 const RESET_DRAWING: &str = "\x1b[?6l\x1b[r\x1b[?7h\x1b[0m\x1b[2J";
 const MAX_FRAME_BYTES: usize = corvid_protocol::RENDER_LIMIT;
@@ -173,9 +174,10 @@ fn encode_row(
         if cell.has_contents() {
             let text = cell.contents();
             frame.push_str(text);
-            column += 1 + usize::from(cell.is_wide());
-            // An outer terminal can use different Unicode width tables.
-            if !text.is_ascii() && column < end {
+            let width = 1 + usize::from(cell.is_wide());
+            column += width;
+            // Keep ordinary text contiguous and correct known width mismatches.
+            if !text.is_ascii() && text.width() != width && column < end {
                 write!(frame, "\x1b[{};{}H", row + 1, column + 1)?;
             }
             continue;
