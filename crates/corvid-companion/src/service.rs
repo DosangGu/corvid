@@ -308,10 +308,16 @@ impl Service {
             ));
         }
         let remote = Remote::read(watch.state(), &self.controller)?;
-        let removed = self
+        let mut removed = self
             .store
             .layout()
             .retired_runs(remote.epoch, &remote.panes);
+        removed.extend(
+            remote
+                .runs
+                .iter()
+                .filter_map(|(key, run)| run.process_exited.then_some(*key)),
+        );
         let runs = observations(&remote);
         let now = now_ms();
         self.store

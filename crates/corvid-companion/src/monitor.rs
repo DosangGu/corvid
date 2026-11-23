@@ -22,6 +22,7 @@ use crate::{Config, HostEndpoint, PresentationAddress, PresentationClient};
 pub const CAPABILITY: &str = "automatic_monitor.v1";
 pub(crate) const EPOCH_RETIREMENT_CAPABILITY: &str = "retire_previous_epoch_slots.v1";
 pub(crate) const DECK_PRIORITY_CAPABILITY: &str = "deck_priority.v1";
+pub(crate) const PROCESS_EXIT_RETIREMENT_CAPABILITY: &str = "retire_exited_process_slots.v1";
 const LIMIT: u64 = 8192;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STARTUP_POLL: Duration = Duration::from_millis(50);
@@ -305,15 +306,19 @@ impl Scope {
 }
 
 fn supports_current_layout(client: &PresentationClient) -> bool {
-    [EPOCH_RETIREMENT_CAPABILITY, DECK_PRIORITY_CAPABILITY]
-        .into_iter()
-        .all(|required| {
-            client
-                .session()
-                .capabilities
-                .iter()
-                .any(|cap| cap == required)
-        })
+    [
+        EPOCH_RETIREMENT_CAPABILITY,
+        DECK_PRIORITY_CAPABILITY,
+        PROCESS_EXIT_RETIREMENT_CAPABILITY,
+    ]
+    .into_iter()
+    .all(|required| {
+        client
+            .session()
+            .capabilities
+            .iter()
+            .any(|cap| cap == required)
+    })
 }
 
 async fn wait_for_lock(mut try_lock: impl FnMut() -> Result<StateLock>) -> Result<StateLock> {

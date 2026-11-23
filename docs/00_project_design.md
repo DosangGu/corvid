@@ -310,7 +310,7 @@ Use text/icon alongside color. All presentations use the same derivation.
 | Priority | Condition | Primary display | Secondary behavior |
 |---|---|---|---|
 | 1 | Controller not Ready | Connecting / Syncing / Offline / Incompatible | Dim last-known badge/timestamp; retain slot; disable focus until synchronized |
-| 2 | Run definitively ended | Ended, with reason | Distinguish process exit from context replacement; retain its card until pane closure under §11 policy |
+| 2 | Run definitively ended | Ended, with reason | Distinguish process exit from context replacement when retiring cards under §11 |
 | 3 | Confirmed pending requests | Needs input (count/kind) | Focus/ack never clears; warning if resolution may have been missed |
 | 4 | Unknown run, material collection gap, ambiguous or unverified request/activity | Unknown / Check terminal | Last-known facts remain visible; stale Working/Ready is not current certainty |
 | 5 | Current correlated failure/interruption | Error / Interrupted | Independent unseen-attention marker |
@@ -1433,14 +1433,14 @@ A slot record contains SlotId, optional `(HostId, ServerEpoch, AgentRunId)`, mon
 increasing slot revision, pin, eligibility order, and removal status. Bind to a run, not
 PaneId or a provider session that might be resumed in another execution.
 
-- Admit top-level runs with an owning pane in the synchronized layout, including runs
-  already completed when first observed. Preserve saved order, then append new runs by
-  server creation sequence and ID. The first N occupy slots; the rest form the queue.
-- Keep a run through work completion, process exit, context replacement, acknowledgment,
-  and quiet waiting. The run can move between slots and the queue as priority changes.
-- Remove a tracked run when its owning pane is absent from a synchronized daemon layout
-  after an explicit pane, tab, or workspace/session close. Shift every following card
-  forward, then admit queued cards at the tail. Pins follow their cards; empty holes are
+- Admit top-level runs with an owning pane in the synchronized layout and no confirmed
+  process exit. Preserve saved order, then append new runs by server creation sequence
+  and ID. The first N occupy slots; the rest form the queue.
+- Keep a run through work completion, context replacement, acknowledgment, and quiet
+  waiting. The run can move between slots and the queue as priority changes.
+- Remove a tracked run when a synchronized daemon snapshot confirms its agent process
+  exited or its owning pane was closed. Shift every following card forward, then admit
+  queued cards at the tail. Pins follow their cards; empty holes are
   not reserved. Increment each changed slot's revision and retain run history.
 - Persist pane ownership so history pruning and reconnects cannot lose that association.
   Offline/Syncing/Unknown and missing agent records within the same epoch retain
@@ -1532,7 +1532,7 @@ actual deployment, including service/cgroup policy and runtime-directory lifetim
 | E. Remote control relay restart | Preserved | Daemon and working client unchanged | Reconnect background stdio SSH and full snapshot; retain/revalidate existing binding |
 | F. PTY-owning daemon crash/restart | **Not preserved/recoverable by contract**; an orphan process might survive, but PTY ownership/screen continuity is lost | New epoch; saved layout only, old runs historical/Unknown; old focus rejected | Reconcile stale slots; explicitly create new PTYs/runs; no silent process adoption |
 | G. Remote OS reboot | Old processes/PTYs do not survive | HostId/layout may survive; new epoch, no old Live run | Restore the layout and resume a verified conversation when its pane is opened |
-| H. Agent process exits | That run ends; shell/PTY may remain | Record exit evidence and cancel its pending requests with reason | Retain its card until pane closure; next agent gets a distinct run ID and queues even in the same pane |
+| H. Agent process exits | That run ends; shell/PTY may remain | Record exit evidence and cancel its pending requests with reason | Move its card to run history and compact the deck; the next agent gets a distinct run ID even in the same pane |
 
 Planned replacement of an automatically started daemon is implemented on Linux and Windows.
 Each terminal host owns its PTY, ordered input, VT parser, and screen state. The daemon
@@ -1753,7 +1753,7 @@ negative assertions (including no unexpected process/window/input creation).
 | A3 | Two clients own different workspaces; focus A in client 1 | Client 2's selection/mode/keymap unchanged; busy destination rejects without lease theft | P2 |
 | A4 | Open a screen with a pending question and acknowledge its alert | Request remains pending; only view/attention fields change | P2 |
 | A5 | Answer one of two outstanding questions in the terminal | Only matching resolution changes its RequestId; other request remains; missing correlation becomes Unverified | P2, P3 |
-| A6 | Response boundary, then later agent process exit and pane closure | Response and exit retain the card; closing the owning pane removes it and compacts following cards from the FIFO queue | P2, P3 |
+| A6 | Response boundary, then agent process exit with the owning pane still open | Response retains the card; confirmed exit moves it to history and compacts following cards from the FIFO queue | P2, P3 |
 | A7 | PC/control link off while remote agent asks a question | Healthy remote collector retains request; full resync displays it without replaying a prompt/answer | P2, P3 |
 | A8 | Mutate request and move pane during snapshot encoding | Immutable S plus contiguous deltas yields latest consistent result; gap/overflow triggers full resync | P2 |
 | A9 | Duplicate, delayed, reversed events; old Stop after new turn; `/clear`; child shares environment | No old/child event overwrites new/parent activity; bounded orphan correlation; ambiguity explicitly visible | P2, P3 |
