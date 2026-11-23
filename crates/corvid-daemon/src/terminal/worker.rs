@@ -1670,6 +1670,7 @@ impl TerminalProcess {
             program.filter(|_| qualified),
             observer.as_ref().map(|(_, version)| version),
         );
+        crate::terminfo::configure(&mut command, &scope.hook_environment.runtime);
         scope
             .hook_environment
             .configure(&mut command, association, shell.then_some(id));

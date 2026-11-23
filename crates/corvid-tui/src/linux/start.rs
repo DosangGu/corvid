@@ -18,7 +18,6 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 use uuid::Uuid;
 
-const TERMINFO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/corvid.terminfo"));
 const STARTUP_POLL: Duration = Duration::from_millis(25);
 
 pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
@@ -303,19 +302,8 @@ impl StartingDaemon {
         state_directory: Option<&Path>,
         executable: &Path,
     ) -> Result<Self> {
-        let terminfo = runtime.path().join("terminfo");
-        let entries = RuntimeDir::create_all(&terminfo.join(if cfg!(target_os = "macos") {
-            "63"
-        } else {
-            "c"
-        }))?;
-        entries.replace_private_file("corvid", TERMINFO)?;
-        let entries = RuntimeDir::create_all(&terminfo.join(if cfg!(target_os = "macos") {
-            "78"
-        } else {
-            "x"
-        }))?;
-        entries.replace_private_file("xterm-corvid-256color", TERMINFO)?;
+        // Keep the environment expected by older daemon images during rollback.
+        let terminfo = corvid_daemon::terminfo::install(runtime)?;
 
         let diagnostics = tempfile::tempfile()?;
         let mut command = Command::new(executable);

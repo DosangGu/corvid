@@ -20,7 +20,8 @@ using `protox`. Running `corvid`
 without a subcommand starts a background daemon if needed and joins a live
 terminal in the default workspace. It opens the user's shell when the workspace
 has no live terminal. To start a shell explicitly, use `corvid attach --new`.
-The automatically started daemon uses the bundled terminfo entry.
+On Unix, the daemon supplies the bundled terminfo profile to new PTYs when
+`TERMINFO` is unset.
 Use `corvid ensure-daemon` to start or reuse the same background daemon
 without attaching a TTY. It shares the startup lock with the ordinary CLI.
 On Linux, macOS and Windows, `corvid list` queries the same runtime the TUI
@@ -34,6 +35,24 @@ recovery for an existing view. Without an existing terminal or a saved view,
 it returns `NoTerminal`. Use `corvid` for first-time startup or
 `corvid new NAME` to start a separate workspace rooted in your current
 directory.
+
+### Run the standalone daemon
+
+Build `corvidd` and the TUI from the same checkout.
+
+```sh
+cargo build --locked -p corvid-daemon -p corvid-tui
+target/debug/corvidd
+```
+
+Run `target/debug/corvid` or open Desktop from another terminal to connect to
+the same default runtime. On Windows, run the corresponding `.exe` binaries.
+Use `corvidd --runtime-dir PATH --state-dir PATH` to start a foreground daemon
+with separate runtime and metadata directories. Give the clients the same
+runtime directory with `CORVID_RUNTIME_DIR`. The existing `corvid daemon`,
+`corvid control --stdio`, and `corvid terminal-relay` commands also work.
+The standalone binary provides `corvidd control --stdio` and
+`corvidd terminal-relay` for relaying to that runtime.
 
 For a daemon that must survive the host's last-login policy, follow the
 [systemd setup](#run-under-systemd).
@@ -151,8 +170,7 @@ stay in place during animation.
 ![Long workspace and tab titles scrolling in a 40-column TUI](images/workspace-navigation/tui-title-animation.gif)
 
 Use `corvid attach -- program arg` to start an explicit command on the running
-daemon. When starting a daemon directly, install the terminfo entry with
-`tic -x -o "$HOME/.terminfo" crates/corvid-tui/assets/corvid.terminfo` first.
+daemon.
 
 New Linux PTYs use `TERM=xterm-corvid-256color`. The name enables title output
 in shells that recognize the `xterm*` prefix, while the bundled entry advertises
@@ -459,12 +477,11 @@ daemon and the attach client must support the response notification capability.
 ## Run Under systemd
 
 The [user unit](../deploy/systemd/corvid.service) starts Corvid under the user's
-service manager and provisions the private socket directory. Install the binary,
-terminal profile, and unit on the execution host.
+service manager and provisions the private socket directory. Install the binary
+and unit on the execution host.
 
 ```sh
 cargo install --locked --path crates/corvid-tui --root "$HOME/.local"
-tic -x -o "$HOME/.terminfo" crates/corvid-tui/assets/corvid.terminfo
 install -Dm644 deploy/systemd/corvid.service "$HOME/.config/systemd/user/corvid.service"
 systemctl --user daemon-reload
 systemctl --user enable --now corvid.service
@@ -866,7 +883,7 @@ unshare --user --map-root-user bwrap --unshare-pid --as-pid-1 \
   --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 --dir /run \
   --ro-bind "$PWD/target/debug/corvid" /corvid \
   --ro-bind "$PWD/crates/corvid-tui/tests" /fixtures \
-  --ro-bind "$PWD/crates/corvid-tui/assets/corvid.terminfo" /corvid.terminfo \
+  --ro-bind "$PWD/crates/corvid-daemon/assets/corvid.terminfo" /corvid.terminfo \
   --clearenv --setenv PATH /usr/bin --setenv PYTHONDONTWRITEBYTECODE 1 --chdir / \
   -- /usr/bin/python3 /fixtures/pid_reuse.py /corvid /corvid.terminfo
 ```

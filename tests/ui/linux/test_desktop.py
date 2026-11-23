@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Exercise Linux Desktop UI interactions under an isolated X11 display."""
 import argparse
+from contextlib import contextmanager
 import os
 import platform
+import pty
 import json
 from pathlib import Path
 import re
@@ -13,6 +15,7 @@ import sys
 import subprocess
 import tarfile
 import tempfile
+import termios
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -24,15 +27,20 @@ parser.add_argument("--build", type=Path, help="directory containing built Deskt
 selection = parser.add_mutually_exclusive_group()
 selection.add_argument("--paste-only", action="store_true", help="run the tab and Unicode paste smoke test")
 selection.add_argument("--deck-only", action="store_true", help="run the Agent Deck window smoke test")
+selection.add_argument("--standalone-daemon", action="store_true", help="attach Desktop and TUI to corvidd")
 args = parser.parse_args()
 if (args.assets is None) == (args.build is None):
     parser.error("provide either an assets directory or --build")
+if args.standalone_daemon and not args.build:
+    parser.error("--standalone-daemon requires --build")
 
 with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home()) as directory,
       tempfile.TemporaryDirectory(prefix=".cvr-", dir=Path.home()) as runtime_directory):
     root = Path(directory)
     if args.build:
-        for binary in ("corvid", "corvid-desktop", "corvid-agent-deck"):
+        binaries = ["corvid", "corvid-desktop"]
+        binaries.append("corvidd" if args.standalone_daemon else "corvid-agent-deck")
+        for binary in binaries:
             shutil.copy2(args.build / binary, root / binary)
     else:
         archive, = args.assets.glob(f"corvid-desktop-*-{platform.machine()}-unknown-linux-gnu.tar.gz")
@@ -51,8 +59,12 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                        CORVID_VIEW_STATE_DIR=str(root / "views"), XDG_STATE_HOME=str(root / "state"),
                        SHELL="/bin/sh", ENV=str(shell_init), XDG_RUNTIME_DIR=str(runtime))
     monitor_state = root / "state/corvid/companion"
-    # A foreground daemon keeps this test in control of its process lifecycle.
-    daemon = subprocess.Popen([str(root / "corvid"), "daemon"], env=environment, start_new_session=True)
+    # A foreground process keeps this test in control of the daemon lifecycle.
+    daemon_command = [str(root / "corvid"), "daemon"]
+    if args.standalone_daemon:
+        daemon_command = [str(root / "corvidd"), "--autostarted"]
+        environment.pop("TERMINFO", None)
+    daemon = subprocess.Popen(daemon_command, env=environment, start_new_session=True)
     manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     desktop = None
     previous = None
@@ -298,6 +310,63 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                            check=True, timeout=10)
             key(window, "ctrl+shift+v", "Return")
             wait_for_marker(paste_marker, pasted)
+
+        if args.standalone_daemon:
+            desktop_writer = wait_for_writer()
+            wait_for_keyboard(window, desktop_writer)
+            marker = root / "tui-input"
+            shell = (
+                "infocmp >/dev/null && IFS= read -r value && "
+                f'printf %s "$value" > {shlex.quote(str(marker))} && exec /bin/sh'
+            )
+            @contextmanager
+            def attach_tui(*arguments):
+                master, slave = pty.openpty()
+                try:
+                    termios.tcsetwinsize(slave, (24, 80))
+                    tui = subprocess.Popen(
+                        [str(root / "corvid"), "attach", *arguments],
+                        stdin=slave, stdout=slave, stderr=slave,
+                        env=dict(environment, TERM="xterm-256color", CORVID_AGENT_MONITOR="0"),
+                    )
+                    try:
+                        yield tui, master
+                    finally:
+                        if tui.poll() is None:
+                            tui.terminate()
+                            tui.wait(timeout=10)
+                finally:
+                    os.close(slave)
+                    os.close(master)
+
+            def wait_for_tui_writer(tui, previous=None):
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    active = {line.split()[0]: line for line in writers()}
+                    if len(active) == 2 and desktop_writer in active:
+                        writer, = active.keys() - {desktop_writer}
+                        if writer != previous:
+                            terminal = re.search(r" terminal=(\S+)", active[writer])
+                            if terminal:
+                                return writer, terminal[1]
+                    assert tui.poll() is None, f"TUI exited with {tui.returncode}"
+                    time.sleep(0.1)
+                raise AssertionError("Desktop and TUI did not attach together")
+
+            with attach_tui("--new-workspace", "TUI", "--", "/bin/sh", "-c", shell) as (tui, master):
+                writer, terminal = wait_for_tui_writer(tui)
+                os.write(master, b"tui-ready\r")
+                wait_for_marker(marker, "tui-ready")
+
+            assert wait_for_writer() == desktop_writer
+            with attach_tui("TUI") as (tui, master):
+                _, resumed = wait_for_tui_writer(tui, previous=writer)
+                assert resumed == terminal, "TUI reattach replaced the terminal"
+                os.write(master, f"printf resumed > {shlex.quote(str(marker))}\r".encode())
+                wait_for_marker(marker, "resumed")
+                wait_for_keyboard(window, desktop_writer)
+            print("PASS standalone daemon with simultaneous Desktop and TUI input")
+            sys.exit(0)
 
         retired = wait_for_writer()
         first_probe = wait_for_keyboard(window, retired)

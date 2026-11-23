@@ -8,15 +8,21 @@ repository.workspace = true
 description = "PTY and session daemon for the Corvid terminal multiplexer"
 publish = ["crates-io"]
 
+[[bin]]
+name = "corvidd"
+path = "src/main.rs"
+
 [features]
 compio = []
 
 [dependencies]
 corvid-async.workspace = true
-compio = { workspace = true, features = ["macros"] }
+compio = { workspace = true, features = ["macros", "signal"] }
 futures-util.workspace = true
 anyhow.workspace = true
 base64.workspace = true
+clap.workspace = true
+corvid-client.workspace = true
 corvid-update.workspace = true
 corvid-core.workspace = true
 corvid-protocol = { workspace = true, features = ["compio"] }
@@ -33,11 +39,14 @@ vt100.workspace = true
 vte.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-nix = { workspace = true, features = ["fs", "hostname", "user"] }
+nix = { workspace = true, features = ["fs", "hostname", "poll", "user"] }
 semver.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 corvid-core = { workspace = true, features = ["test-provider"] }

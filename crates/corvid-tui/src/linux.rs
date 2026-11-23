@@ -1,4 +1,3 @@
-pub(crate) mod shell_agent;
 mod start;
 
 use std::collections::BTreeMap;
@@ -236,7 +235,8 @@ pub(super) fn execute(
         } => {
             let runtime = runtime_path(runtime_dir)?;
             let state = state_path(state_dir)?;
-            crate::run_compio_daemon(&runtime, &state, autostarted)
+            corvid_daemon::command::run_foreground(&runtime, &state, autostarted)?;
+            Ok(0)
         }
         Command::Control {
             stdio: false,

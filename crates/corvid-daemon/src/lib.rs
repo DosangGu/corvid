@@ -2,6 +2,8 @@
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod agents;
 mod collector;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod command;
 mod control;
 mod directories;
 mod executor;
@@ -21,6 +23,8 @@ mod provider;
 mod publication;
 mod snapshot;
 pub mod terminal;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod terminfo;
 mod tui;
 mod upgrade;
 #[cfg(windows)]
@@ -107,6 +111,9 @@ async fn serve_daemon(
 ) -> Result<()> {
     let runtime = RuntimeDir::create(runtime_path)?;
     let instance = runtime.lock_instance()?;
+    if std::env::var_os("TERMINFO").is_none() {
+        terminfo::install(&runtime)?;
+    }
     let state = RuntimeDir::create_all(state_path)?;
     let identity = Arc::new(Identity::load(&state)?);
     let lock = state.lock_storage()?;
