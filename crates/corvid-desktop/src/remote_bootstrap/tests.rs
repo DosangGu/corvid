@@ -15,7 +15,7 @@ fn compares_release_precedence_without_downgrading() {
 // the daemon; daemon handoff itself is covered by the runtime lifecycle tests.
 #[cfg(target_os = "linux")]
 #[compio::test]
-#[ignore = "run with deploy/test_remote_update.py"]
+#[ignore = "run with tests/ui/linux/test_remote_update.py"]
 async fn connected_managed_installations_offer_updates() -> Result<()> {
     use corvid_async::mpsc;
     use corvid_client::SshAlias;

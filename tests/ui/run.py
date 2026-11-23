@@ -35,7 +35,7 @@ def linux(case, build, assets, artifacts):
     env = dict(os.environ, CORVID_UI_FAILURE_SCREENSHOT=str(screenshot), XDG_SESSION_TYPE="x11")
     env.pop("WAYLAND_DISPLAY", None)
     if case == "deck-focus":
-        args = [DEPLOY / "test_deck_focus.py", "--build", build,
+        args = [HERE / "linux/test_deck_focus.py", "--build", build,
                 "--failure-screenshot", screenshot]
         for variable, flag in [
             ("CORVID_DECK_HISTORY_SCREENSHOT", "--history-screenshot"),
@@ -44,8 +44,8 @@ def linux(case, build, assets, artifacts):
             if destination := env.get(variable):
                 args += [flag, destination]
     else:
-        args = [DEPLOY / "test_desktop.py", "--build", build] if build else [
-            DEPLOY / "test_desktop.py", assets,
+        args = [HERE / "linux/test_desktop.py", "--build", build] if build else [
+            HERE / "linux/test_desktop.py", assets,
         ]
         if case == "desktop-paste":
             args += ["--paste-only"]
@@ -83,7 +83,7 @@ def binaries(stack, system, build, assets, root):
         payload = extracted
         deck = extracted / "plugins/agent-deck"
     else:
-        from test_macos import attach_dmg, run
+        from macos.test_dmg_windows import attach_dmg, run
         dmg = unique_asset(assets, "corvid-desktop-*-aarch64-apple-darwin.dmg")
         attach_dmg(dmg, extracted)
         stack.callback(run, "hdiutil", "detach", extracted)
@@ -116,16 +116,18 @@ def native(system, cases, build, assets, artifacts):
     from scenario import run_case
 
     if system == "Darwin":
-        from macos import Desktop, bundle_deck
+        from macos.driver import Desktop, bundle_deck
+        from macos.test_desktop_paste import verify_paste
     else:
-        from windows import Desktop
+        from windows.driver import Desktop
+        from windows.test_desktop_paste import verify_paste
 
     # Corvid checks Unix socket directory ownership and permissions.
     parent = Path.home() if system == "Darwin" else None
     for case in cases:
         print(f"RUN {case}", flush=True)
         if case == "dmg-windows":
-            from test_macos import check
+            from macos.test_dmg_windows import check
             check(assets)
             continue
         with ExitStack() as stack:
@@ -141,7 +143,7 @@ def native(system, cases, build, assets, artifacts):
                                cwd=ROOT, env=env, check=True)
                 continue
             ui = Desktop(root) if system == "Darwin" else Desktop()
-            run_case(case, root, artifacts / case, paths, ui)
+            run_case(case, root, artifacts / case, paths, ui, verify_paste)
 
 
 def main():

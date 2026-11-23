@@ -158,7 +158,7 @@ jobs:
       - name: Linux Desktop title synchronization over SSH
         if: inputs.qualify
         timeout-minutes: 10
-        run: python3 deploy/test_title_ssh.py --binary target/${{ matrix.desktop }}/release/corvid --target ${{ matrix.desktop }} --release
+        run: python3 tests/ui/linux/test_title_ssh.py --binary target/${{ matrix.desktop }}/release/corvid --target ${{ matrix.desktop }} --release
       - name: Linux Desktop UI interactions
         if: inputs.qualify
         timeout-minutes: 10
@@ -174,7 +174,7 @@ jobs:
       - name: Connected managed SSH updates
         if: inputs.qualify
         timeout-minutes: 10
-        run: xvfb-run -a python3 deploy/test_remote_update.py --build target/${{ matrix.desktop }}/release --target ${{ matrix.desktop }} --screenshot target/remote-update-prompt.png
+        run: xvfb-run -a python3 tests/ui/linux/test_remote_update.py --build target/${{ matrix.desktop }}/release --target ${{ matrix.desktop }} --screenshot target/remote-update-prompt.png
       - name: Linux Agent Deck card focus
         if: inputs.qualify
         timeout-minutes: 5

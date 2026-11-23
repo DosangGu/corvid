@@ -3,7 +3,7 @@ use corvid_protocol::wire::Detach;
 
 #[cfg(target_os = "linux")]
 #[compio::test]
-#[ignore = "requires the isolated deploy/test_title_ssh.py fixture"]
+#[ignore = "requires the isolated tests/ui/linux/test_title_ssh.py fixture"]
 async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -> Result<()> {
     let root = PathBuf::from(std::env::var_os("CORVID_SSH_TEST_ROOT").context("SSH fixture root")?);
     let alias = SshAlias::new(std::env::var("CORVID_TITLE_TEST_SSH_ALIAS")?)?;

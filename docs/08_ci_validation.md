@@ -91,6 +91,14 @@ starts the runner's user manager before invoking that fixture.
 
 ### Desktop and Agent Deck UI
 
+Desktop and Agent Deck UI scenarios and drivers live in
+`tests/ui/linux/`, `tests/ui/macos/`, and `tests/ui/windows/`.
+The platform directories also contain the Linux SSH and the macOS Dock and
+DMG scenarios. Their shared monitor fixture lives in `tests/ui/`.
+The plugin manifest registers the Windows Deck tray integration test from
+`plugins/agent-deck/tests/ui/windows_tray.rs`. The TUI PTY suite lives
+alongside the other integration tests in `crates/corvid-tui/tests/`.
+
 Build the executables and run the smoke suite from the checkout. Use `python3`
 where the platform installs Python under that name.
 
@@ -134,7 +142,7 @@ client/server and ensure `/run/sshd` exists, then run:
 
 ```sh
 cargo build --locked -p corvid-tui
-python3 deploy/test_title_ssh.py --binary target/debug/corvid
+python3 tests/ui/linux/test_title_ssh.py --binary target/debug/corvid
 ```
 
 Pass `--release` and/or `--target <triple>` when using those Cargo build options.

@@ -1,7 +1,6 @@
 """Desktop and Deck scenarios driven through native window and keyboard events."""
 from contextlib import ExitStack, contextmanager
 import os
-import shlex
 import subprocess
 import time
 from uuid import uuid4
@@ -41,51 +40,26 @@ def running(command, env, root, log, *, children=False):
                 process.wait(timeout=10)
 
 
-def verify_paste(ui, desktop, window, root):
-    def command(marker, script, expected, *, probe=False):
-        path = root / marker
-        if probe:
-            # The input route can be published before the shell accepts input.
-            def ready():
-                if path.is_file() and path.read_text(encoding="utf-8") == expected:
-                    return True
-                ui.submit(window, script, clear=True)
-                time.sleep(1)
-            wait_for(f"keyboard acknowledgement for {marker}", ready, desktop)
-        else:
-            ui.submit(window, script)
-            wait_for(marker, lambda: path.is_file() and path.read_text(encoding="utf-8") == expected,
-                     desktop)
+def expect_shell_output(ui, desktop, window, marker, command, expected, *, probe=False):
+    def received():
+        return marker.is_file() and marker.read_text(encoding="utf-8") == expected
 
-    def mark(marker, text, *, assignment=""):
-        if os.name == "nt":
-            return f"{assignment}[IO.File]::WriteAllText((Join-Path $env:CORVID_UI_ROOT '{marker}'), {text})"
-        path = shlex.quote(str(root / marker))
-        return f"{assignment}printf %s {text} > {path}"
-
-    pasted = "한글 e\u0301 🐦"
-    if os.name != "nt":
-        # TODO: Stabilize macOS tab navigation in UI qualification
-        # Synchronize tab selection and shell readiness before extending this smoke case.
-        # Issue URL: https://github.com/DosangGu/corvid/issues/357
-        command("pasted", mark("pasted", shlex.quote(pasted)), pasted, probe=True)
+    if not probe:
+        ui.submit(window, command)
+        wait_for(marker.name, received, desktop)
         return
 
-    assignment = "$tag='first'; "
-    tag = "$tag"
-    command("first", mark("first", tag, assignment=assignment), "first", probe=True)
-    ui.keys(window, "leader", "t", "n")
-    # The first shell already has $tag. Only a fresh tab can acknowledge this probe.
-    fresh = "if ([string]::IsNullOrEmpty($tag)) { " + mark("ready", "'ready'") + " }"
-    command("ready", fresh, "ready", probe=True)
+    # An input route can be published before the shell accepts commands.
+    def ready():
+        if received():
+            return True
+        ui.submit(window, command, clear=True)
+        time.sleep(1)
 
-    assignment = f"$tag='{pasted}'; "
-    command("pasted", mark("pasted", tag, assignment=assignment), pasted)
-    ui.keys(window, "leader", "t", "h", "return")
-    command("isolated", mark("isolated", tag), "first", probe=True)
+    wait_for(f"keyboard acknowledgement for {marker.name}", ready, desktop)
 
 
-def run_case(case, root, artifacts, paths, ui):
+def run_case(case, root, artifacts, paths, ui, verify_paste):
     cli, desktop, deck = paths
     artifacts.mkdir(parents=True, exist_ok=True)
     state = root / "c"

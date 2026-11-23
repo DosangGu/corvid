@@ -12,6 +12,8 @@ import tempfile
 import time
 import uuid
 
+UI_TESTS = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(UI_TESTS), str(UI_TESTS.parents[1] / "deploy")]
 from package import MACOS, RUNTIME_TARGETS, WINDOWS_TARGETS, digest
 import monitor_fixture
 

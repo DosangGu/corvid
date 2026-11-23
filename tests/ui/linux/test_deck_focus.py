@@ -14,10 +14,11 @@ import termios
 import tempfile
 import time
 
+REPOSITORY = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPOSITORY / "tests/ui"))
 import monitor_fixture
 
 WAIT = 15
-REPOSITORY = Path(__file__).resolve().parents[1]
 
 
 def until(description, check):

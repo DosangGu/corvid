@@ -9,16 +9,18 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 import uuid
 from urllib.parse import unquote, urlsplit
 
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "deploy"))
 from macos_package import build_relaunch_helper, plist, sign
 from package import digest
 
-ROOT = Path(__file__).resolve().parents[1]
 CLI = "Contents/MacOS/corvid"
 BUNDLE = "org.corvid.desktop"
 
