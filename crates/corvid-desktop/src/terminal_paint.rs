@@ -1,10 +1,10 @@
 use std::ops::Range;
 
+use corvid_protocol::ansi_screen::{Cell, Color, Screen};
 use gpui::{
     App, Bounds, FontStyle, FontWeight, PathBuilder, Pixels, Point, SharedString, TextRun,
     UnderlineStyle, Window, fill, point, px, rgb, size,
 };
-use vt100::{Cell, Color, Screen};
 
 #[cfg(test)]
 use crate::terminal_fonts::DEFAULT_FONT;
@@ -110,15 +110,15 @@ impl Default for Style {
 
 impl Style {
     fn from_cell(cell: &Cell) -> Self {
-        let mut fg = color(cell.fgcolor(), FOREGROUND);
-        let mut bg = color(cell.bgcolor(), BACKGROUND);
-        if cell.inverse() {
+        let mut fg = color(cell.style.fg, FOREGROUND);
+        let mut bg = color(cell.style.bg, BACKGROUND);
+        if cell.style.inverse {
             std::mem::swap(&mut fg, &mut bg);
         }
-        if cell.dim() {
-            fg = if !cell.inverse()
-                && cell.fgcolor() == Color::Default
-                && cell.bgcolor() == Color::Default
+        if cell.style.dim {
+            fg = if !cell.style.inverse
+                && cell.style.fg == Color::Default
+                && cell.style.bg == Color::Default
             {
                 DIM_FOREGROUND
             } else {
@@ -128,9 +128,9 @@ impl Style {
         Self {
             fg,
             bg,
-            bold: cell.bold(),
-            italic: cell.italic(),
-            underline: cell.underline(),
+            bold: cell.style.bold,
+            italic: cell.style.italic,
+            underline: cell.style.underline,
         }
     }
 }
@@ -193,11 +193,8 @@ impl Frame {
             }
         }
         let (row, col) = screen.cursor_position();
-        let cursor = (selection.is_none()
-            && !screen.hide_cursor()
-            && screen.scrollback() == 0
-            && row < grid.rows.get())
-        .then_some((row, col.min(grid.cols.get() - 1)));
+        let cursor = (selection.is_none() && !screen.hide_cursor() && row < grid.rows.get())
+            .then_some((row, col.min(grid.cols.get() - 1)));
         Self { spans, cursor }
     }
 
@@ -403,13 +400,13 @@ fn color(color: Color, default: u32) -> u32 {
     match color {
         Color::Default => default,
         Color::Rgb(r, g, b) => rgb(r, g, b),
-        Color::Idx(index @ 0..=15) => ANSI[usize::from(index)],
-        Color::Idx(index @ 16..=231) => {
+        Color::Indexed(index @ 0..=15) => ANSI[usize::from(index)],
+        Color::Indexed(index @ 16..=231) => {
             let level = [0, 95, 135, 175, 215, 255];
             let index = usize::from(index - 16);
             rgb(level[index / 36], level[index / 6 % 6], level[index % 6])
         }
-        Color::Idx(index) => {
+        Color::Indexed(index) => {
             let gray = 8 + (index - 232) * 10;
             rgb(gray, gray, gray)
         }
@@ -432,7 +429,7 @@ mod tests {
     #[test]
     fn dims_text_against_the_displayed_background_until_intensity_resets() {
         let grid = Grid::new(1, 6);
-        let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+        let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
         parser.process(b"\x1b[2mA\x1b[38;2;240;200;160;48;2;32;64;96mB\x1b[7mC\x1b[22mD");
 
         let frame = Frame::new(parser.screen(), grid);

@@ -1,3 +1,6 @@
+#[cfg(feature = "ansi-screen")]
+pub mod ansi_screen;
+
 #[cfg(feature = "compio")]
 pub use frame::compio::{CompioFrameReader, CompioFrameWriter};
 

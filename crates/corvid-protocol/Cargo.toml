@@ -10,14 +10,19 @@ publish = ["crates-io"]
 
 [features]
 default = ["compio", "borrowed-io"]
+ansi-screen = ["dep:smol_str", "dep:unicode-segmentation", "dep:unicode-width", "dep:vte"]
 compio = ["dep:compio", "dep:rustix"]
 borrowed-io = ["compio"]
 
 [dependencies]
 corvid-async.workspace = true
 prost.workspace = true
+smol_str = { workspace = true, optional = true }
 thiserror.workspace = true
+unicode-segmentation = { workspace = true, optional = true }
+unicode-width = { workspace = true, optional = true }
 uuid.workspace = true
+vte = { workspace = true, optional = true }
 
 [build-dependencies]
 prost-build.workspace = true

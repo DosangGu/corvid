@@ -6,13 +6,13 @@ use std::{
 };
 
 use corvid_async::oneshot;
+use corvid_protocol::ansi_screen::{Cell as ScreenCell, Screen};
 use gpui::{
     App, Bounds, ClipboardItem, Context, FocusHandle, HitboxBehavior, InputHandler, IntoElement,
     KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, ScrollEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div, prelude::*,
     rgb,
 };
-use vt100::Screen;
 
 use crate::appearance::{Appearance, ui_px};
 use crate::terminal_fonts::TerminalFonts;
@@ -116,7 +116,7 @@ impl Selection {
             .displayed
             .screen
             .cell(row, col)
-            .is_some_and(vt100::Cell::is_wide_continuation)
+            .is_some_and(ScreenCell::is_wide_continuation)
         {
             col = col.saturating_sub(1);
         }
@@ -131,7 +131,7 @@ impl Selection {
             .displayed
             .screen
             .cell(row, col)
-            .is_some_and(vt100::Cell::is_wide);
+            .is_some_and(ScreenCell::is_wide);
         anchor.min(head)..(row, col + 1 + u16::from(wide))
     }
 
@@ -715,9 +715,7 @@ impl TerminalView {
         } else {
             let (cursor, keypad) = self
                 .session
-                .screen(&self.pane, |s| {
-                    (s.application_cursor(), s.application_keypad())
-                })
+                .screen(&self.pane, |s| (s.application_cursor, s.application_keypad))
                 .unwrap_or_default();
             let Some(bytes) = keyboard::encode(key, cursor, keypad) else {
                 return;
@@ -1018,7 +1016,7 @@ mod tests {
     #[test]
     fn copies_reverse_selection_across_wide_cells_and_soft_wrap() {
         let grid = Grid::new(3, 5);
-        let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+        let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
         parser.process("A한BCde\r\nend".as_bytes());
         let selection = Selection {
             displayed: DisplayedScreen {
@@ -1036,7 +1034,7 @@ mod tests {
     #[test]
     fn releases_a_link_only_once_and_never_after_dragging() {
         let grid = Grid::new(2, 32);
-        let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+        let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
         parser.process(b"https://example.test/");
         let make_selection = || Selection {
             displayed: DisplayedScreen {
@@ -1068,7 +1066,7 @@ mod tests {
     #[test]
     fn keeps_the_underline_within_the_hovered_link_and_clears_it_on_new_output() {
         let grid = Grid::new(4, 16);
-        let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+        let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
         parser.process(b"https://example.test/path");
         let displayed = DisplayedScreen {
             screen: Arc::new(parser.screen().clone()),

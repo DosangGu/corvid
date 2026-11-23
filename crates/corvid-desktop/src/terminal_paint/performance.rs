@@ -18,7 +18,7 @@ struct Sample {
 }
 
 struct Probe {
-    parser: vt100::Parser,
+    parser: corvid_protocol::ansi_screen::Decoder,
     samples: Rc<RefCell<Vec<Sample>>>,
     tick: usize,
     preview: bool,
@@ -124,9 +124,9 @@ fn native_agent_redraw() {
     );
 }
 
-fn synthetic_screen() -> vt100::Parser {
+fn synthetic_screen() -> corvid_protocol::ansi_screen::Decoder {
     let grid = Grid::new(45, 165);
-    let mut parser = vt100::Parser::new(grid.rows, grid.cols, 0);
+    let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
     for row in 0..45 {
         let line = if row % 4 == 0 {
             format!("\x1b[38;2;200;150;100m{}", "─".repeat(160))
