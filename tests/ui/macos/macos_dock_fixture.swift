@@ -114,6 +114,18 @@ case "resolve":
     let resolved = try URL(resolvingBookmarkData: saved, options: .withoutUI,
                            relativeTo: nil, bookmarkDataIsStale: &stale)
     precondition(resolved.resolvingSymlinksInPath().path == app.path)
+case "inspect":
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).filter {
+        !$0.isTerminated
+    }
+    print("Running \(identifier) applications: \(describe(running))")
+    for tile in tiles() {
+        let entry = data(tile)
+        guard (entry["bundle-identifier"] as? String) == identifier ||
+              (entry["file-label"] as? String) == label else { continue }
+        let file = entry["file-data"] as? [String: Any]
+        print("Pinned Dock item \(tile["GUID"] ?? "?"): \(file?["_CFURLString"] ?? "?")")
+    }
 
 case "handoff", "handoff-with-launch-error":
     // Emulate the published updater. Hold the helper's parent alive until the
