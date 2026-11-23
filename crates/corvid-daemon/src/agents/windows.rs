@@ -13,8 +13,10 @@ use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentInfo, AgentList, HookEvent, ProviderAdapter,
     ProviderExecutionMode,
 };
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::handoff::input::{RetainedInput, valid_id};
 use crate::hook_data::Hook;
 use crate::native_process::{Found, HookOwner, Process, ProcessKey};
 use crate::projection;
@@ -46,6 +48,7 @@ pub(crate) struct Agents {
     managed: BTreeMap<Uuid, ProcessKey>,
     starting: BTreeMap<Uuid, watch::Sender<Option<ProcessKey>>>,
     shell: BTreeMap<ProcessKey, (Uuid, Process)>,
+    retained_observers: BTreeMap<Uuid, (ProcessKey, Uuid)>,
     retired: VecDeque<Uuid>,
     dirty: BTreeSet<Uuid>,
 }
@@ -56,6 +59,37 @@ struct Run {
     available: bool,
     producer: Option<ProcessKey>,
     sessions: BTreeSet<String>,
+    retained_collection: Option<Collection>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct RetainedContext {
+    owner: ProcessKey,
+    producer: ProcessKey,
+    provider: Provider,
+    session: String,
+    sessions: BTreeSet<String>,
+    turn: Option<String>,
+    inputs: Vec<RetainedInput>,
+    gap: bool,
+}
+
+impl RetainedContext {
+    pub(crate) fn valid_all(contexts: &[Self]) -> bool {
+        let mut owners = BTreeSet::new();
+        contexts.len() <= MAX_SHELL_RUNS
+            && contexts.iter().all(|context| {
+                context.owner.valid()
+                    && context.producer.valid()
+                    && owners.insert(context.owner)
+                    && valid_id(&context.session)
+                    && context.sessions.len() <= MAX_CONTEXTS
+                    && context.sessions.contains(&context.session)
+                    && context.sessions.iter().all(|id| valid_id(id))
+                    && context.turn.as_deref().is_none_or(valid_id)
+                    && RetainedInput::valid_all(context.turn.as_deref(), &context.inputs)
+            })
+    }
 }
 
 impl Agents {
@@ -69,7 +103,9 @@ impl Agents {
             .filter(|id| self.dirty.contains(id))
             .filter_map(|id| {
                 let run = self.runs.get(&id)?;
-                (run.producer.is_some() && run.state.process.value == ProcessLiveness::Running)
+                (run.producer.is_some()
+                    && run.retained_collection.is_none()
+                    && run.state.process.value == ProcessLiveness::Running)
                     .then(|| {
                         (
                             run.location,
@@ -135,6 +171,111 @@ impl Agents {
         })
     }
 
+    pub(crate) fn observer_handoff(
+        &self,
+        terminal: Uuid,
+    ) -> (Option<Uuid>, Option<ProcessKey>, Vec<RetainedContext>) {
+        (
+            self.retained_observer_epoch(terminal),
+            self.hook_root(terminal),
+            self.retain_contexts(terminal),
+        )
+    }
+
+    fn retain_contexts(&self, terminal: Uuid) -> Vec<RetainedContext> {
+        self.managed
+            .get(&terminal)
+            .zip(self.active.get(&terminal))
+            .into_iter()
+            .chain(self.shell.iter().map(|(key, (id, _))| (key, id)))
+            .filter_map(|(&owner, id)| {
+                let run = &self.runs[id];
+                if run.state.identity.terminal_id != terminal
+                    || !run.live()
+                    || run.state.lifecycle.value != Lifecycle::Live
+                {
+                    return None;
+                }
+                Some(RetainedContext {
+                    owner,
+                    producer: run.producer?,
+                    provider: run.state.identity.provider,
+                    session: run.state.identity.provider_session.clone()?,
+                    sessions: run.sessions.clone(),
+                    turn: run.state.current_open_turn().map(str::to_owned),
+                    inputs: RetainedInput::collect(&run.state),
+                    gap: run
+                        .retained_collection
+                        .unwrap_or(run.state.collection.value)
+                        == Collection::GapDetected,
+                })
+            })
+            .take(MAX_SHELL_RUNS)
+            .collect()
+    }
+
+    pub(crate) fn recover_observers(
+        &mut self,
+        terminal: Uuid,
+        location: Location,
+        root: ProcessKey,
+        epoch: Uuid,
+        contexts: Vec<RetainedContext>,
+    ) {
+        self.retained_observers.insert(terminal, (root, epoch));
+        for context in contexts {
+            let Some(process) = Process::reopen(context.owner, context.provider) else {
+                continue;
+            };
+            let id = if let Some(&id) = self.active.get(&terminal) {
+                if self.managed.get(&terminal) != Some(&context.owner)
+                    || self.runs[&id].state.identity.provider != context.provider
+                {
+                    continue;
+                }
+                id
+            } else if self.shell.len() < MAX_SHELL_RUNS {
+                let id = self.start_run(
+                    terminal,
+                    location,
+                    context.provider,
+                    ProcessLiveness::Running,
+                );
+                self.shell.insert(context.owner, (id, process));
+                id
+            } else {
+                continue;
+            };
+            self.runs
+                .get_mut(&id)
+                .expect("recovered run")
+                .recover_context(context);
+        }
+    }
+
+    fn retained_observer_epoch(&self, terminal: Uuid) -> Option<Uuid> {
+        let (root, epoch) = *self.retained_observers.get(&terminal)?;
+        (self.hook_root(terminal) == Some(root)).then_some(epoch)
+    }
+
+    pub(crate) fn validate_observer_epoch(
+        &self,
+        terminal: Uuid,
+        observer_epoch: Option<Uuid>,
+        current_epoch: Uuid,
+    ) -> Result<(), ProtocolFault> {
+        if let Some(epoch) = observer_epoch
+            && epoch != current_epoch
+            && self.retained_observer_epoch(terminal) != Some(epoch)
+        {
+            return Err(ProtocolFault::new(
+                "EpochMismatch",
+                "observer launch epoch was not retained for this terminal",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn roots(&self) -> Vec<ProcessKey> {
         self.roots.keys().copied().collect()
     }
@@ -198,12 +339,14 @@ impl Agents {
         hook: Hook,
         owner: HookOwner,
         location: Location,
+        current_epoch: Uuid,
     ) -> Result<(), ProtocolFault> {
         let unauthorized =
             || ProtocolFault::new("Unauthorized", "hook has no verified Windows agent owner");
         let terminal = hook.association;
         let process = owner.found.process;
         let key = process.key;
+        self.validate_observer_epoch(terminal, hook.observer_epoch, current_epoch)?;
         if self.hook_root(terminal) != Some(owner.found.root)
             || process.liveness() != ProcessLiveness::Running
         {
@@ -212,6 +355,18 @@ impl Agents {
         if hook.actor.is_some() || hook.parent_actor.is_some() {
             return Ok(());
         }
+        // A retained process can continue its existing session without sending
+        // SessionStart again. The first typed event binds only this verified owner.
+        let bind_observer = self.retained_observer_epoch(terminal).is_some()
+            && matches!(
+                hook.event,
+                HookEvent::PromptSubmitted
+                    | HookEvent::QuestionStarted
+                    | HookEvent::PlanApprovalStarted
+            )
+            && hook.session.is_some()
+            && hook.turn.is_some()
+            && (hook.event == HookEvent::PromptSubmitted || hook.tool.is_some());
         let id = if let Some(id) = self.active.get(&terminal).copied() {
             if self.managed.get(&terminal) != Some(&key) {
                 return Err(unauthorized());
@@ -220,7 +375,7 @@ impl Agents {
         } else if let Some((id, _)) = self.shell.get(&key) {
             *id
         } else if self.shell.len() < MAX_SHELL_RUNS
-            && matches!(hook.event, HookEvent::Startup | HookEvent::Resume)
+            && (bind_observer || matches!(hook.event, HookEvent::Startup | HookEvent::Resume))
         {
             let id = self.start_run(terminal, location, hook.provider, ProcessLiveness::Running);
             self.shell.insert(key, (id, process));
@@ -254,13 +409,25 @@ impl Agents {
         ) {
             return self.hook_context(id, key, owner.producer, hook);
         }
+        if bind_observer && run.producer.is_none() {
+            let run = self.runs.get_mut(&id).expect("active run");
+            Self::establish_context(run, session, owner.producer, Uuid::new_v4(), &hook);
+            if hook.event != HookEvent::PromptSubmitted {
+                let turn = hook.turn.clone().expect("retained input has a turn");
+                let (kind, confidence) = (crate::provider::contract(hook.provider).prompt)(turn);
+                run.apply(Uuid::new_v4(), kind, hook.evidence(confidence));
+            }
+            self.dirty.insert(id);
+        }
+        let run = &self.runs[&id];
         if run.producer.is_none() || run.state.identity.provider_session.as_deref() != Some(session)
         {
             return Err(unauthorized());
         }
         if let Some((kind, confidence)) = hook.observation() {
             let run = self.runs.get_mut(&id).expect("active run");
-            if run.apply(hook.delivery, kind, hook.evidence(confidence)) {
+            let recovered = run.confirm_collection(&hook);
+            if run.apply(hook.delivery, kind, hook.evidence(confidence)) || recovered {
                 self.dirty.insert(id);
             }
         } else if matches!(
@@ -285,6 +452,14 @@ impl Agents {
         let session = hook.session.as_deref().expect("context has session");
         let run = &self.runs[&id];
         if run.state.identity.provider_session.as_deref() == Some(session) {
+            if self
+                .runs
+                .get_mut(&id)
+                .expect("current context")
+                .confirm_collection(&hook)
+            {
+                self.dirty.insert(id);
+            }
             return Ok(());
         }
         if run.sessions.contains(session) {
@@ -327,26 +502,33 @@ impl Agents {
             id
         };
         let run = self.runs.get_mut(&id).expect("current context");
+        Self::establish_context(run, session, producer, hook.delivery, &hook);
+        self.dirty.insert(id);
+        Ok(())
+    }
+
+    fn establish_context(
+        run: &mut Run,
+        session: &str,
+        producer: ProcessKey,
+        delivery: Uuid,
+        hook: &Hook,
+    ) {
         run.sessions.insert(session.to_owned());
         run.producer = Some(producer);
         run.state.identity.provider_session = Some(session.to_owned());
         let evidence = hook.evidence(Confidence::Confirmed);
-        run.apply(
-            hook.delivery,
-            ObservationKind::ContextObserved,
-            evidence.clone(),
-        );
+        run.apply(delivery, ObservationKind::ContextObserved, evidence.clone());
         run.apply(
             Uuid::new_v4(),
             ObservationKind::Collection(Collection::Healthy),
             evidence,
         );
-        self.dirty.insert(id);
-        Ok(())
     }
 
     fn gap(&mut self, id: Uuid, hook: &Hook, reason: &str) {
         let run = self.runs.get_mut(&id).expect("tracked context");
+        run.retained_collection = None;
         let mut evidence = hook.evidence(Confidence::Confirmed);
         evidence.uncertainty = Some(reason.into());
         if run.apply(
@@ -395,6 +577,7 @@ impl Agents {
                 available: true,
                 producer: None,
                 sessions: BTreeSet::new(),
+                retained_collection: None,
             },
         );
         self.dirty.insert(id);
@@ -429,6 +612,7 @@ impl Agents {
         self.starting.remove(&terminal);
         self.roots.retain(|_, owner| *owner != terminal);
         self.managed.remove(&terminal);
+        self.retained_observers.remove(&terminal);
         for (&id, run) in &mut self.runs {
             if run.state.identity.terminal_id == terminal && run.available {
                 run.available = false;
@@ -504,6 +688,49 @@ impl Agents {
 }
 
 impl Run {
+    fn recover_context(&mut self, context: RetainedContext) {
+        self.producer = Some(context.producer);
+        self.sessions = context.sessions;
+        self.state.identity.provider_session = Some(context.session);
+        let evidence = evidence(Source::Collector, Confidence::Confirmed);
+        self.apply(
+            Uuid::new_v4(),
+            ObservationKind::ContextObserved,
+            evidence.clone(),
+        );
+        if let Some(turn) = context.turn {
+            self.apply(
+                Uuid::new_v4(),
+                ObservationKind::InteractivePromptSubmitted(turn.clone()),
+                evidence.clone(),
+            );
+            for input in context.inputs {
+                input.restore(&mut self.state, &turn, &evidence);
+            }
+        }
+        self.apply(
+            Uuid::new_v4(),
+            ObservationKind::Collection(Collection::Degraded),
+            evidence,
+        );
+        self.retained_collection = Some(if context.gap {
+            Collection::GapDetected
+        } else {
+            Collection::Healthy
+        });
+    }
+
+    fn confirm_collection(&mut self, hook: &Hook) -> bool {
+        let Some(collection) = self.retained_collection.take() else {
+            return false;
+        };
+        self.apply(
+            Uuid::new_v4(),
+            ObservationKind::Collection(collection),
+            hook.evidence(Confidence::Confirmed),
+        )
+    }
+
     fn live(&self) -> bool {
         self.available
             && self.state.process.value == ProcessLiveness::Running

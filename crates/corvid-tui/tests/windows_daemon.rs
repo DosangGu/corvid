@@ -613,7 +613,7 @@ fn native_hook_provider_fixture() -> Result<()> {
         "could not generate hook configuration"
     );
     let config: serde_json::Value = serde_json::from_slice(&config.stdout)?;
-    for (event, event_fields) in [
+    let mut events = vec![
         ("SessionStart", serde_json::json!({"source": "startup"})),
         (
             "UserPromptSubmit",
@@ -623,7 +623,31 @@ fn native_hook_provider_fixture() -> Result<()> {
             "Stop",
             serde_json::json!({"turn_id": "turn-1", "prompt_id": "turn-1", "stop_hook_active": false}),
         ),
-    ] {
+    ];
+    if std::env::var_os("CORVID_TEST_HOOK_HANDOFF").is_some() {
+        events.pop();
+        events.extend([
+            (
+                "PreToolUse",
+                serde_json::json!({
+                    "turn_id": "turn-1", "prompt_id": "turn-1",
+                    "tool_name": "AskUserQuestion", "tool_use_id": "after-upgrade",
+                }),
+            ),
+            (
+                "PostToolUse",
+                serde_json::json!({
+                    "turn_id": "turn-1", "prompt_id": "turn-1",
+                    "tool_name": "AskUserQuestion", "tool_use_id": "after-upgrade",
+                }),
+            ),
+            (
+                "UserPromptSubmit",
+                serde_json::json!({"turn_id": "turn-3", "prompt_id": "turn-3"}),
+            ),
+        ]);
+    }
+    for (event, event_fields) in events {
         let handler = &config["hooks"][event][0]["hooks"][0];
         let invocation = handler["command"].as_str().context("missing command")?;
         let mut command = if provider == "codex" {
@@ -657,8 +681,14 @@ fn native_hook_provider_fixture() -> Result<()> {
         } else {
             assert!(result.stdout.is_empty());
         }
-        if event == "UserPromptSubmit" {
-            println!("HOOK_PROMPT_SUBMITTED");
+        let step = match event {
+            "UserPromptSubmit" if fields["prompt_id"] == "turn-3" => Some("HOOK_PROMPT_RECOVERED"),
+            "UserPromptSubmit" => Some("HOOK_PROMPT_SUBMITTED"),
+            "PreToolUse" => Some("HOOK_QUESTION_WAITING"),
+            _ => None,
+        };
+        if let Some(step) = step {
+            println!("{step}");
             std::io::stdin().read_line(&mut String::new())?;
         }
     }
@@ -756,6 +786,111 @@ async fn windows_shell_hooks_publish_only_bound_provider_observations() -> Resul
         tui.send(b"\rexit\r")?;
         tui.expect_exit(0)?;
     }
+    Ok(())
+}
+
+#[compio::test]
+async fn windows_shell_hooks_publish_only_bound_provider_observations_after_upgrade() -> Result<()>
+{
+    use corvid_protocol::wire::{AgentBadge, AgentCollection, AgentProcessState};
+
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    ensure_daemon(&runtime, &fixture.path().join("state")).await?;
+    let mut daemon = BackgroundDaemon::open(&runtime).await?;
+    let original = corvid_client::host(&runtime).await?;
+    let executable = fixture.path().join("claude.exe");
+    std::fs::copy(std::env::current_exe()?, &executable)?;
+    let mut tui = Tui::open(
+        &runtime,
+        [
+            "attach",
+            "--new",
+            "--",
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+        ]
+        .map(OsString::from),
+    )?;
+    tui.wait_for("PS ")?;
+    let launch = format!(
+        "$env:CORVID_TEST_HOOK_HANDOFF='1'; $env:CORVID_TEST_HOOK_HELPER='{}'; & '{}' --exact native_hook_provider_fixture --nocapture\r",
+        CORVID.replace('\'', "''"),
+        executable.to_string_lossy().replace('\'', "''"),
+    );
+    tui.send(launch.as_bytes())?;
+    tui.wait_for("HOOK_PROMPT_SUBMITTED")?;
+    let old = native_agent(&runtime, AgentProcessState::Running).await?;
+    let old = old.summary.context("missing original hook run")?;
+    assert_eq!(old.collection, AgentCollection::Healthy as i32);
+
+    // Preserve the original environment through two replacements, including
+    // one while the question is waiting for an answer.
+    let mut previous = original;
+    let mut waiting = old;
+    for generation in 0..2 {
+        let result = async_process::Command::new(CORVID)
+            .arg("--runtime-dir")
+            .arg(&runtime)
+            .arg("upgrade")
+            .output()
+            .await?;
+        ensure!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let current = corvid_client::host(&runtime).await?;
+        ensure!(
+            current.host_id == previous.host_id && current.server_epoch != previous.server_epoch
+        );
+        previous = current;
+        let replacement = BackgroundDaemon::open(&runtime).await?;
+        drop(daemon);
+        daemon = replacement;
+        drop(tui);
+        tui = Tui::open(&runtime, [])?;
+        if generation == 0 {
+            tui.wait_for("HOOK_PROMPT_SUBMITTED")?;
+            tui.send(b"\r")?;
+        }
+        tui.wait_for("HOOK_QUESTION_WAITING")?;
+        let question = native_agent(&runtime, AgentProcessState::Running).await?;
+        let question = question.summary.context("missing recovered hook run")?;
+        assert_ne!(question.agent_run_id, waiting.agent_run_id);
+        assert_eq!(question.terminal_id, waiting.terminal_id);
+        assert_eq!(question.provider_session_id, waiting.provider_session_id);
+        if generation == 0 {
+            assert_eq!(question.collection, AgentCollection::Healthy as i32);
+            assert_eq!(question.badge, AgentBadge::NeedsInput as i32);
+            assert_eq!(question.pending_requests, 1);
+        } else {
+            assert_eq!(question.collection, AgentCollection::Degraded as i32);
+            assert_eq!(question.pending_requests, 0);
+            assert_eq!(question.unverified_requests, 1);
+        }
+        waiting = question;
+    }
+
+    tui.send(b"\r")?;
+    tui.wait_for("HOOK_PROMPT_RECOVERED")?;
+    let activity = native_agent(&runtime, AgentProcessState::Running).await?;
+    assert_eq!(
+        activity.prompt_observation,
+        corvid_protocol::wire::PromptObservation::Submitted as i32
+    );
+    let answered = activity.summary.context("missing answered hook run")?;
+    assert_eq!(answered.agent_run_id, waiting.agent_run_id);
+    assert_eq!(answered.collection, AgentCollection::Healthy as i32);
+    assert_eq!(answered.unverified_requests, 0);
+    assert_eq!(answered.resolved_requests, 1);
+    assert_eq!(answered.pending_requests, 0);
+    tui.send(b"\r")?;
+    tui.wait_for("HOOK_FIXTURE_READY")?;
+    tui.send(b"\rexit\r")?;
+    tui.expect_exit(0)?;
+    drop(daemon);
     Ok(())
 }
 

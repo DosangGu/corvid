@@ -638,7 +638,8 @@ mod tests {
         fixture.agents = Agents::default();
         fixture.agents.recover(terminal, location, saved);
         assert_ne!(fixture.current().run.identity.id, old_run);
-        assert!(fixture.current().run.requests.is_empty());
+        let restored = fixture.current().run.requests.values().next().unwrap();
+        assert_eq!(restored.state.value, RequestStatus::Unverified);
         assert!(fixture.current().run.attention.is_empty());
         assert_eq!(fixture.current().run.collection.value, Collection::Degraded);
         assert!(
@@ -656,6 +657,10 @@ mod tests {
                 .agents
                 .accepts_observer_epoch(Uuid::new_v4(), epoch, next_epoch)
         );
+        fixture.apply("session", HookEvent::QuestionResult);
+        let resolved = fixture.current().run.requests.values().next().unwrap();
+        assert_eq!(resolved.state.value, RequestStatus::Resolved);
+        assert!(fixture.current().run.attention.is_empty());
         let response = fixture.hook("session", HookEvent::ResponseObserved);
         assert_eq!(
             fixture.submit_notice(response).unwrap(),
