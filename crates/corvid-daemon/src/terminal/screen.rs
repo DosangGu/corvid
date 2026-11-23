@@ -141,7 +141,7 @@ impl TerminalScreen {
 
     pub(super) fn for_session(viewport: Viewport) -> Result<Self> {
         #[cfg(feature = "ghostty-vt")]
-        if std::env::var_os("CORVID_VT_ENGINE").is_some_and(|value| value == "ghostty") {
+        if !std::env::var_os("CORVID_VT_ENGINE").is_some_and(|value| value == "vt100") {
             return Self::with_ghostty(viewport);
         }
         Ok(Self::live(viewport))

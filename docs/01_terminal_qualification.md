@@ -71,21 +71,24 @@ from source.
 cargo test --locked -p corvid-daemon --features ghostty-vt --lib \
   terminal::screen::ghostty_qualification
 cargo build --locked -p corvid-daemon --features ghostty-vt
-CORVID_VT_ENGINE=ghostty target/debug/corvidd daemon
+target/debug/corvidd daemon
 ```
 
-New sessions in an opt-in daemon use Ghostty for PTY output, reflow, cursor and
+New sessions in a build with `ghostty-vt` use Ghostty for PTY output, reflow, cursor and
 input modes, query replies, and history. Retained sessions keep the engine of
 their existing terminal host. Native terminal and render handles stay on their
 creating worker thread. Corvid projects the supported text cells and styles into
 the existing ANSI encoder and uses each client's acknowledged frame as its
 comparison baseline. Corvid handles clipboard consent and delivery.
 
-The release build still selects `vt100`. The projection supports the existing
-text rendition and input profile. Extended formatting, Kitty graphics and
-keyboard negotiation, and resource profiling remain follow-up gates.
+Native release builds enable `ghostty-vt` for `corvidd`. Set
+`CORVID_VT_ENGINE=vt100` in the daemon environment before launch to select the
+legacy engine for new terminal hosts. Source builds without the Cargo feature
+use `vt100`. The projection supports the existing text rendition and input
+profile. Extended formatting and Kitty graphics and keyboard negotiation
+remain outside the release profile.
 
-The `Checks / libghostty-vt` workflow builds the opt-in daemon and TUI for the
+The `Checks / libghostty-vt` workflow builds the Ghostty daemon and TUI for the
 five release targets. It runs the linked VT fixtures on each target, PTY
 routing and handoff on Linux, the terminal relay on Linux and macOS, and a
 ConPTY shell history test on Windows.

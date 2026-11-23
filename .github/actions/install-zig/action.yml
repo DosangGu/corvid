@@ -1,0 +1,32 @@
+name: Install pinned Zig
+description: Install the verified Zig toolchain for libghostty-vt
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        $version = '0.17.1'
+        $archives = @{
+          'Linux/X64' = @('x86_64-linux', 'tar.xz', '3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a')
+          'Linux/ARM64' = @('aarch64-linux', 'tar.xz', 'a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795')
+          'Windows/X64' = @('x86_64-windows', 'zip', 'b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e')
+          'Windows/ARM64' = @('aarch64-windows', 'zip', '4789895bdb1e312a2ea73b2a7c0a0cc8d2ab62ba6976e834a7c54cf443377c15')
+          'macOS/ARM64' = @('aarch64-macos', 'tar.xz', '75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d')
+        }
+        $target = "$env:RUNNER_OS/$env:RUNNER_ARCH"
+        if (!$archives.ContainsKey($target)) { throw "Unsupported Zig host $target" }
+        $platform, $suffix, $sha256 = $archives[$target]
+        $stem = "zig-$platform-$version"
+        $filename = "$stem.$suffix"
+        $archive = Join-Path $env:RUNNER_TEMP $filename
+        Invoke-WebRequest "https://ziglang.org/download/$version/$filename" -OutFile $archive -MaximumRetryCount 3
+        if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne $sha256) {
+          throw 'Zig download checksum mismatch'
+        }
+        if ($suffix -eq 'zip') {
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP
+        } else {
+          tar -xJf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        (Join-Path $env:RUNNER_TEMP $stem) >> $env:GITHUB_PATH

@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/checks-ghostty.yml'
+      - '.github/actions/install-zig/**'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/corvid-daemon/Cargo.toml'
@@ -22,7 +23,6 @@ env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'
-  ZIG_VERSION: '0.17.1'
 
 jobs:
   native:
@@ -35,31 +35,15 @@ jobs:
         include:
           - runner: ubuntu-latest
             runtime: x86_64-unknown-linux-musl
-            zig: x86_64-linux
-            suffix: tar.xz
-            sha256: 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a
           - runner: ubuntu-26.04-arm
             runtime: aarch64-unknown-linux-musl
-            zig: aarch64-linux
-            suffix: tar.xz
-            sha256: a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795
           - runner: windows-latest
             runtime: x86_64-pc-windows-msvc
-            zig: x86_64-windows
-            suffix: zip
-            sha256: b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e
           - runner: windows-11-arm
             runtime: aarch64-pc-windows-msvc
-            zig: aarch64-windows
-            suffix: zip
-            sha256: 4789895bdb1e312a2ea73b2a7c0a0cc8d2ab62ba6976e834a7c54cf443377c15
           - runner: macos-latest
             runtime: aarch64-apple-darwin
-            zig: aarch64-macos
-            suffix: tar.xz
-            sha256: 75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d
     env:
-      CORVID_VT_ENGINE: ghostty
       MACOSX_DEPLOYMENT_TARGET: '15.0'
       RUST_TARGET: ${{ matrix.runtime }}
     steps:
@@ -80,27 +64,7 @@ jobs:
           temp_dir=$(mktemp -d "$HOME/cghost-XXXXXX")
           echo "TMPDIR=$temp_dir" >> "$GITHUB_ENV"
           echo "CORVID_TEST_TMPDIR=$temp_dir" >> "$GITHUB_ENV"
-      - name: Install pinned Zig
-        shell: pwsh
-        env:
-          ZIG_PLATFORM: ${{ matrix.zig }}
-          ZIG_SUFFIX: ${{ matrix.suffix }}
-          ZIG_SHA256: ${{ matrix.sha256 }}
-        run: |
-          $stem = "zig-$env:ZIG_PLATFORM-$env:ZIG_VERSION"
-          $name = "$stem.$env:ZIG_SUFFIX"
-          $archive = Join-Path $env:RUNNER_TEMP $name
-          Invoke-WebRequest "https://ziglang.org/download/$env:ZIG_VERSION/$name" -OutFile $archive -MaximumRetryCount 3
-          if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne $env:ZIG_SHA256) {
-            throw "Zig download checksum mismatch"
-          }
-          if ($env:ZIG_SUFFIX -eq 'zip') {
-            Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP
-          } else {
-            tar -xJf $archive -C $env:RUNNER_TEMP
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          (Join-Path $env:RUNNER_TEMP $stem) >> $env:GITHUB_PATH
+      - uses: ./.github/actions/install-zig
       - name: Install Rust toolchain and target
         shell: bash
         run: |
@@ -112,7 +76,7 @@ jobs:
       - name: Verify Linux idle scrollback compression
         if: runner.os == 'Linux'
         run: cargo test --locked --target "$RUST_TARGET" -p corvid-daemon --features ghostty-vt --lib idle_compression_preserves_history_and_restarts_after_scroll
-      - name: Build the opt-in daemon and TUI
+      - name: Build the Ghostty daemon and TUI
         shell: bash
         run: cargo build --locked --target "$RUST_TARGET" -p corvid-daemon -p corvid-tui --features corvid-daemon/ghostty-vt
       - name: Verify Unix PTY routing and handoff
