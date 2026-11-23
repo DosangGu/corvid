@@ -128,13 +128,13 @@ pub(super) fn dispatch(
     started: Instant,
 ) -> Result<u32> {
     match command {
-        Command::Hooks { provider } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&hooks::settings(provider)?)?
-            );
-            Ok(0)
-        }
+        Command::Hooks { provider } => crate::daemon_bootstrap::forward_cli([
+            "hooks",
+            match provider {
+                HookProvider::Claude => "claude",
+                HookProvider::Codex => "codex",
+            },
+        ]),
         Command::Observe {
             provider,
             neutral_json,
@@ -148,8 +148,7 @@ pub(super) fn dispatch(
         } => {
             let runtime = runtime_path(runtime)?;
             let state = state_path(state_dir)?;
-            corvid_daemon::command::run_foreground(&runtime, &state, autostarted)?;
-            Ok(0)
+            crate::daemon_bootstrap::foreground(&runtime, &state, autostarted)
         }
         Command::Control {
             stdio: false,
@@ -176,6 +175,7 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
     match command {
         Command::Daemon { .. } => unreachable!("Compio daemon dispatched before the CLI executor"),
         Command::EnsureDaemon { state_dir, ssh } => {
+            crate::daemon_bootstrap::prepare_cli(&runtime).await?;
             ensure_daemon(&runtime, &state_path(state_dir)?, ssh, None).await?;
         }
         Command::Upgrade {
@@ -183,7 +183,10 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
             expected_host,
             ssh,
         } => daemon::upgrade_managed(&runtime, &managed_ssh_from, expected_host, ssh).await?,
-        Command::Upgrade { .. } => upgrade_local_daemon(&runtime, false).await?,
+        Command::Upgrade { .. } => {
+            crate::daemon_bootstrap::require_cli_daemon().await?;
+            upgrade_local_daemon(&runtime, false).await?;
+        }
         Command::Attach {
             new,
             take_over,
@@ -202,7 +205,7 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
                 super::workspace_cli::attach_target(&runtime, target, workspace).await?;
             let workspace_directory = if browse_directory {
                 check_tty()?;
-                ensure_local_daemon(&runtime).await?;
+                crate::daemon_bootstrap::ensure_cli(&runtime).await?;
                 super::directory_picker::pick(&runtime).await?
             } else {
                 workspace_directory
@@ -258,6 +261,7 @@ pub(super) async fn start_attach(runtime: PathBuf, mut options: AttachOptions) -
     options.remember_view = true;
     check_tty()?;
     if !daemon::probe(&runtime, Instant::now() + daemon::STARTUP_TIMEOUT).await? {
+        crate::daemon_bootstrap::prepare_cli(&runtime).await?;
         ensure_daemon(&runtime, &state_path(None)?, false, None).await?;
     }
     crate::attach_monitored(&runtime, options).await

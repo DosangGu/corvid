@@ -559,7 +559,8 @@ async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
     let previous = b"#!/bin/sh\nprintf 'corvid 0.0.1\\n'\n";
     std::fs::write(&installed, previous).unwrap();
     std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_corvid"), &staged).unwrap();
+    let daemon = Path::new(env!("CARGO_BIN_EXE_corvid")).with_file_name("corvidd");
+    std::fs::copy(daemon, &staged).unwrap();
 
     let mut daemon = command(&runtime)
         .args(["daemon", "--autostarted", "--state-dir"])

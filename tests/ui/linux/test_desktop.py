@@ -38,8 +38,9 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
       tempfile.TemporaryDirectory(prefix=".cvr-", dir=Path.home()) as runtime_directory):
     root = Path(directory)
     if args.build:
-        binaries = ["corvid", "corvid-desktop"]
-        binaries.append("corvidd" if args.standalone_daemon else "corvid-agent-deck")
+        binaries = ["corvid", "corvidd", "corvid-desktop"]
+        if not args.standalone_daemon:
+            binaries.append("corvid-agent-deck")
         for binary in binaries:
             shutil.copy2(args.build / binary, root / binary)
     else:

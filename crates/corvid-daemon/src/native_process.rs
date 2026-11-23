@@ -181,7 +181,7 @@ fn is_helper(path: &Path) -> bool {
     path == current
         || (current
             .file_stem()
-            .is_some_and(|name| name == "corvid-desktop")
+            .is_some_and(|name| name == "corvid-desktop" || name == "corvidd")
             && path == current.with_file_name("corvid.exe"))
 }
 

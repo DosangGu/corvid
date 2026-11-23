@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 
 use super::processes::Running;
 
+const DAEMON_IMAGES: [&str; 2] = ["corvid.exe", "corvidd.exe"];
+
 fn hash(path: &Path) -> Result<Vec<u8>> {
     let mut file = fs::File::open(path)?;
     let mut digest = Sha256::new();
@@ -69,12 +71,15 @@ pub(super) fn pin_legacy_hosts(
         if metadata["update_protocol"].as_u64().is_some() {
             continue;
         }
-        let exe = dir.join("corvid.exe");
-        if exe.is_file()
-            && let Some(matches) = images.get(&fs::metadata(&exe)?.len())
-            && matches.contains(&hash(&exe)?)
-        {
-            pinned.insert(dir.clone());
+        for name in DAEMON_IMAGES {
+            let exe = dir.join(name);
+            if exe.is_file()
+                && let Some(matches) = images.get(&fs::metadata(&exe)?.len())
+                && matches.contains(&hash(&exe)?)
+            {
+                pinned.insert(dir.clone());
+                break;
+            }
         }
     }
     Ok(())
@@ -120,8 +125,11 @@ impl Copies {
             "redirected runtime directory"
         );
         let mut runtimes = HashMap::<u64, Vec<(PathBuf, Vec<u8>)>>::new();
-        for dir in packages {
-            let binary = dir.join("corvid.exe");
+        for (dir, name) in packages
+            .iter()
+            .flat_map(|dir| DAEMON_IMAGES.map(|name| (dir, name)))
+        {
+            let binary = dir.join(name);
             if binary.is_file() && dunce::canonicalize(&binary)? == binary {
                 runtimes
                     .entry(fs::metadata(&binary)?.len())

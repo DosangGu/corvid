@@ -86,7 +86,7 @@ jobs:
         run: |
           rustup toolchain install --no-self-update
           rustup target add ${{ matrix.target }}
-          cargo build --locked --release --target ${{ matrix.target }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
+          cargo build --locked --release --target ${{ matrix.target }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
       - name: Run UI tests
         timeout-minutes: 10
         shell: bash

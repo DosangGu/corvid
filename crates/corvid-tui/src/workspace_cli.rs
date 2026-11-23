@@ -38,7 +38,7 @@ pub(super) async fn create(runtime: Option<PathBuf>, name: String) -> Result<u32
     }
     #[cfg(unix)]
     {
-        super::ensure_local_daemon(&runtime).await?;
+        super::daemon_bootstrap::ensure_cli(&runtime).await?;
         super::attach_monitored(&runtime, options).await
     }
 }
@@ -63,7 +63,7 @@ pub(super) async fn attach_existing(runtime: &Path, mut options: AttachOptions) 
         let start_if_missing = options.workspace.is_none() && options.launch.is_none();
         match super::attach_monitored(runtime, options.clone()).await {
             Err(error) if start_if_missing && corvid_client::daemon_missing(&error) => {
-                super::ensure_local_daemon(runtime).await?;
+                super::daemon_bootstrap::ensure_cli(runtime).await?;
                 super::attach_monitored(runtime, options).await
             }
             result => result,

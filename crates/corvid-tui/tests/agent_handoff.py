@@ -131,6 +131,9 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
         "PATH": str(programs), "CORVID_FIXTURE_BINARY": str(binary), "CORVID_FIXTURE_HANDOFF": "1",
         "CORVID_AGENT_MONITOR": "0", "CORVID_VIEW_STATE_DIR": str(root / "views"),
     }
+    standalone = candidate.with_name("corvidd")
+    if standalone.is_file():
+        env["CORVID_DAEMON"] = str(standalone)
     for key in ("ENV", "BASH_ENV", "ZDOTDIR", "CORVID_FIXTURE_BROKER"):
         env.pop(key, None)
     if broker:

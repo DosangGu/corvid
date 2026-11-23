@@ -4,13 +4,12 @@ use anyhow::Result;
 use corvid_client::AttachOptions;
 use corvid_client::daemon_control::unix;
 use corvid_protocol::ProtocolFault;
-use corvid_protocol::unix::RuntimeDir;
 use uuid::Uuid;
 
 pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
     corvid_client::check_tty()?;
     let path = corvid_client::view_state::tui_runtime(override_path)?;
-    ensure(&path).await?;
+    crate::daemon_bootstrap::ensure_cli(&path).await?;
 
     let options = AttachOptions {
         remember_view: true,
@@ -39,23 +38,15 @@ pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
 }
 
 pub(crate) async fn ensure(path: &Path) -> Result<()> {
-    unix::ensure(path, None, executable).await
+    unix::ensure(path, None, |_| crate::local_daemon_executable()).await
 }
 
 pub(crate) async fn upgrade(path: &Path) -> Result<()> {
-    unix::upgrade(path, executable).await
+    unix::upgrade(path, |_| crate::local_daemon_executable()).await
 }
 
 pub(crate) async fn desktop_handoff(path: &Path, host: Uuid, epoch: Uuid) -> Result<()> {
-    unix::desktop_handoff(path, host, epoch, executable).await
+    unix::desktop_handoff(path, host, epoch, |_| crate::local_daemon_executable()).await
 }
 
 pub(super) use unix::upgrade_managed;
-
-fn executable(runtime: &RuntimeDir) -> Result<PathBuf> {
-    let path = crate::local_daemon_executable()?;
-    if path.file_name() != Some(corvid_update::daemon::EXECUTABLE.as_ref()) {
-        corvid_daemon::terminfo::install(runtime)?;
-    }
-    Ok(path)
-}

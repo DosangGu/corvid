@@ -3,6 +3,8 @@ mod compio_relay;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod daemon_control;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod hooks;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use compio_relay::{compio_relay, compio_relay_tui};
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

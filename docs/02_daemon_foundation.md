@@ -11,7 +11,7 @@ independently of the attached TUI.
 ## Run Locally
 
 ```sh
-cargo build --locked -p corvid-tui
+cargo build --locked -p corvid-tui -p corvid-daemon
 target/debug/corvid
 ```
 

@@ -13,6 +13,7 @@ corvid-async.workspace = true
 async-process.workspace = true
 compio = { workspace = true, features = ["macros", "signal"] }
 anyhow.workspace = true
+clap.workspace = true
 base64.workspace = true
 corvid-core.workspace = true
 tempfile.workspace = true
@@ -24,7 +25,7 @@ uuid.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 crossterm.workspace = true
-nix = { workspace = true, features = ["fs", "term"] }
+nix = { workspace = true, features = ["fs", "poll", "term"] }
 
 [target.'cfg(windows)'.dependencies]
 corvid-update.workspace = true

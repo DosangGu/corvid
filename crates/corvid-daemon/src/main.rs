@@ -25,6 +25,9 @@ mod cli {
         state_dir: Option<PathBuf>,
         #[arg(long, global = true, hide = true)]
         autostarted: bool,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[arg(long, global = true, hide = true)]
+        inherit_terminfo: bool,
         #[command(subcommand)]
         command: Option<Command>,
     }
@@ -56,6 +59,11 @@ mod cli {
         },
         /// Relay the interactive writer protocol over stdio.
         TerminalRelay,
+        /// Print the provider observation hooks for explicit installation.
+        Hooks {
+            #[arg(value_enum)]
+            provider: hooks::HookProvider,
+        },
         #[command(hide = true)]
         Observe {
             #[arg(long, value_enum)]
@@ -104,7 +112,11 @@ mod cli {
                     &state,
                     options.autostarted,
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    corvid_daemon::terminfo::Mode::Bundled,
+                    if options.inherit_terminfo {
+                        corvid_daemon::terminfo::Mode::Inherit
+                    } else {
+                        corvid_daemon::terminfo::Mode::Bundled
+                    },
                 )
             }
             Some(Command::EnsureDaemon {
@@ -150,6 +162,13 @@ mod cli {
                     expected_host,
                     ssh,
                 ))
+            }
+            Some(Command::Hooks { provider }) => {
+                println!(
+                    "{:#}",
+                    corvid_daemon::observer_settings(provider.provider())?
+                );
+                Ok(())
             }
             Some(Command::Observe {
                 provider,

@@ -155,7 +155,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
       - name: Workspace tests
         if: inputs.qualify
         run: xvfb-run -a cargo test --locked --release --target ${{ matrix.desktop }} --workspace
@@ -315,7 +315,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
       - name: Workspace tests
         if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
@@ -433,7 +433,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
       - name: Workspace tests
         if: inputs.qualify
         run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
