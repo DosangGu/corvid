@@ -127,14 +127,20 @@ class OuterTerminal:
         size = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, size)
 
+    def read_output(self, timeout):
+        if not select.select([self.master], [], [], timeout)[0]:
+            return False
+        self.output.extend(os.read(self.master, 8192))
+        return True
+
     def expect(self, pattern):
         deadline = time.monotonic() + 5
         while (match := re.search(pattern, self.output)) is None:
             wait = max(0, deadline - time.monotonic())
-            assert select.select([self.master], [], [], wait)[0], (
+            received = self.read_output(wait)
+            assert received, (
                 f"outer TTY status: {self.process.poll()}", self.output[:700], self.output[-500:]
             )
-            self.output.extend(os.read(self.master, 8192))
             assert len(self.output) <= 1024 * 1024, "unexpected output volume"
         return match
 
@@ -148,10 +154,9 @@ class OuterTerminal:
         while (status := self.process.poll()) is None:
             remaining = deadline - time.monotonic()
             assert remaining > 0, ("outer TTY process did not exit", self.output[-500:])
-            if select.select([self.master], [], [], min(remaining, 0.05))[0]:
-                self.output.extend(os.read(self.master, 8192))
-                if len(self.output) > 1024 * 1024:
-                    del self.output[:-500]
+            self.read_output(min(remaining, 0.05))
+            if len(self.output) > 1024 * 1024:
+                del self.output[:-500]
         assert status == code, (status, self.output[-500:])
         restored = terminal_attributes(self.slave)
         assert restored == self.original, ("outer TTY was not restored", self.original, restored)
@@ -843,7 +848,10 @@ def verify_workspace_ui(command, directory):
                 return writers[0]
             assert terminal.process.poll() is None, ("TUI exited", terminal.output[-500:], clients)
             assert time.monotonic() < deadline, (mode, clients)
-            time.sleep(0.02)
+            # An unread redraw can fill the outer PTY before the client reads
+            # another key. Keep the bytes for the following redraw assertion.
+            terminal.read_output(0.02)
+            assert len(terminal.output) <= 1024 * 1024, "unexpected output volume"
 
     pane_hint = rb"\x1b\[30;1H\x1b\[0;7m\x1b\[2KPane "
     cursor_visible = rb"\x1b\[\?25h"
