@@ -159,7 +159,8 @@ fixture. Real reboot and last-login tests need dedicated machines/accounts.
 IME composition, accessibility permissions, notifications, multiple displays,
 and hardware GPU behavior require separate device qualification. Synthetic
 Unicode input does not validate an OS input method editor.
-# WSL 2 lifecycle check
+
+## WSL 2 lifecycle check
 
 `Checks / WSL 2` first boots an isolated Alpine distribution on a Windows
 runner. A runner without a bootable WSL 2 environment reports a skipped
