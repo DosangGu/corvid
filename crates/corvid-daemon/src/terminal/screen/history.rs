@@ -1,12 +1,12 @@
 use std::collections::VecDeque;
-use std::fmt::Write;
 
 use corvid_protocol::wire::{HistoryStyle, TerminalHistory};
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 use unicode_width::UnicodeWidthChar;
-use vt100::{Cell, Color, Screen, capture::RowContents};
+use vt100::{Screen, capture::RowContents};
 
 use super::is_bidi_control;
+use super::snapshot::{CellStyle, CellWidth, ScreenCell};
 
 #[derive(Default)]
 pub(super) struct OlderRows {
@@ -50,30 +50,33 @@ pub(super) struct HistoryLine {
 
 impl HistoryLine {
     pub(super) fn from_screen(screen: &Screen, row: u16, columns: u16) -> Self {
+        Self::from_cells((0..columns).filter_map(|col| screen.cell(row, col).map(ScreenCell::from)))
+    }
+
+    pub(super) fn from_cells<'a>(cells: impl IntoIterator<Item = ScreenCell<'a>>) -> Self {
         let mut line = Self::default();
-        let mut style = Rendition::default();
+        let mut style = CellStyle::default();
         let mut blanks = 0;
-        for col in 0..columns {
-            let Some(cell) = screen.cell(row, col) else {
-                break;
-            };
-            if cell.is_wide_continuation() {
+        for cell in cells {
+            if cell.width == CellWidth::Continuation {
                 continue;
             }
-            let next = Rendition::from(cell);
+            let next = cell.style;
             if next != style {
                 // Empty cells with the previous style still belong before the change.
                 line.text.extend(std::iter::repeat_n(' ', blanks));
                 blanks = 0;
-                line.change(next.sgr());
+                let mut sgr = String::new();
+                next.write_sgr(&mut sgr);
+                line.change(sgr);
                 style = next;
             }
-            if cell.has_contents() {
+            if !cell.text.is_empty() {
                 line.text.extend(std::iter::repeat_n(' ', blanks));
                 blanks = 0;
                 line.text
-                    .extend(cell.contents().chars().filter(|&ch| printable(ch)));
-            } else if style == Rendition::default() {
+                    .extend(cell.text.chars().filter(|&ch| printable(ch)));
+            } else if style == CellStyle::default() {
                 blanks += 1;
             } else {
                 line.text.push(' ');
@@ -125,56 +128,6 @@ impl HistoryLine {
 
 fn printable(ch: char) -> bool {
     !ch.is_control() && !is_bidi_control(ch)
-}
-
-#[derive(Clone, Copy, Default, PartialEq)]
-struct Rendition {
-    fg: Color,
-    bg: Color,
-    bold: bool,
-    dim: bool,
-    italic: bool,
-    underline: bool,
-    inverse: bool,
-}
-
-impl From<&Cell> for Rendition {
-    fn from(cell: &Cell) -> Self {
-        Self {
-            fg: cell.fgcolor(),
-            bg: cell.bgcolor(),
-            bold: cell.bold(),
-            dim: cell.dim(),
-            italic: cell.italic(),
-            underline: cell.underline(),
-            inverse: cell.inverse(),
-        }
-    }
-}
-
-impl Rendition {
-    fn sgr(self) -> String {
-        let mut sgr = String::from("0");
-        for (enabled, parameter) in [
-            (self.bold, ";1"),
-            (self.dim, ";2"),
-            (self.italic, ";3"),
-            (self.underline, ";4"),
-            (self.inverse, ";7"),
-        ] {
-            if enabled {
-                sgr.push_str(parameter);
-            }
-        }
-        for (prefix, color) in [(38, self.fg), (48, self.bg)] {
-            match color {
-                Color::Idx(index) => write!(sgr, ";{prefix};5;{index}").unwrap(),
-                Color::Rgb(r, g, b) => write!(sgr, ";{prefix};2;{r};{g};{b}").unwrap(),
-                Color::Default => {}
-            }
-        }
-        sgr
-    }
 }
 
 pub(super) struct HistoryBuilder {

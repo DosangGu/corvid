@@ -63,19 +63,25 @@ across many PTYs are Phase 1 gates.
 ## libghostty-vt evaluation
 
 Issue [#377](https://github.com/DosangGu/corvid/issues/377) tracks migration of
-the daemon terminal engine. The optional daemon feature `ghostty-vt` enables
-linked qualification tests for libghostty-vt 1.0.1. Run them with Zig 0.17.1 on
-`PATH` for targets that require a source build.
+the daemon terminal engine. The optional daemon feature `ghostty-vt` links
+libghostty-vt 1.0.1. Use Zig 0.17.1 on `PATH` for targets that build the library
+from source.
 
 ```sh
 cargo test --locked -p corvid-daemon --features ghostty-vt --lib \
   terminal::screen::ghostty_qualification
+cargo build --locked -p corvid-daemon --features ghostty-vt
+CORVID_VT_ENGINE=ghostty target/debug/corvidd daemon
 ```
 
-The tests exercise fragmented Unicode and RGB through the render snapshot,
-cursor and wrap state, resized child queries, alternate screen, scrollback,
-and denial of library clipboard writes. The Rust binding keeps its native
-terminal and render handles on the creating thread in these fixtures.
-Production rendering and release builds still use the existing engine.
-Qualify the production adapter, Linux musl, Windows MSVC, and macOS before
-making the feature part of the release matrix.
+New sessions in an opt-in daemon use Ghostty for PTY output, reflow, cursor and
+input modes, query replies, and history. Retained sessions keep the engine of
+their existing terminal host. Native terminal and render handles stay on their
+creating worker thread. Corvid projects the supported text cells and styles into
+the existing ANSI encoder and uses each client's acknowledged frame as its
+comparison baseline. Corvid handles clipboard consent and delivery.
+
+The release build still selects `vt100`. The projection supports the existing
+text rendition and input profile. Extended formatting, Kitty graphics and
+keyboard negotiation, resource profiling, and native Windows and macOS runtime
+qualification remain follow-up gates.

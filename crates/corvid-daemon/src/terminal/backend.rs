@@ -153,7 +153,7 @@ impl Backend {
 
     pub(super) fn history(&mut self, shell_only: bool) -> Result<TerminalHistory> {
         match self {
-            Self::Local(session) => Ok(session.history(shell_only)),
+            Self::Local(session) => session.history(shell_only),
             Self::Hosted(client) => client.history(shell_only),
         }
     }
@@ -168,7 +168,7 @@ impl Backend {
             Self::Local(session) => {
                 let previous = previous.and_then(Option::as_deref);
                 let ansi = session.screen.render(previous, outer, footer)?;
-                Ok((ansi, Some(Box::new(session.screen.snapshot()))))
+                Ok((ansi, Some(Box::new(session.screen.snapshot()?))))
             }
             Self::Hosted(client) => Ok((client.render(previous.is_some(), outer, footer)?, None)),
         }

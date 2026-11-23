@@ -41,17 +41,20 @@ fn reads_fragmented_unicode_attributes_and_cursor_from_render_state() {
         current.process(chunk).unwrap();
     }
 
-    let dimensions = current.snapshot().size();
+    let dimensions = current.snapshot().unwrap().size();
     let mut state = RenderState::new().unwrap();
     let snapshot = state.update(&terminal).unwrap();
     assert_eq!(snapshot.rows().unwrap(), dimensions.0.get());
     assert_eq!(snapshot.cols().unwrap(), dimensions.1.get());
     assert_eq!(
         snapshot.cursor_visible().unwrap(),
-        !current.snapshot().hide_cursor()
+        !current.snapshot().unwrap().hide_cursor()
     );
     let cursor = snapshot.cursor_viewport().unwrap().unwrap();
-    assert_eq!((cursor.y, cursor.x), current.snapshot().cursor_position());
+    assert_eq!(
+        (cursor.y, cursor.x),
+        current.snapshot().unwrap().cursor_position()
+    );
 
     let mut rows = RowIterator::new().unwrap();
     let mut cells = CellIterator::new().unwrap();
@@ -131,4 +134,140 @@ fn keeps_pending_wrap_and_distinguishes_it_from_the_last_column() {
     terminal.vt_write(b"\x1b[1;4H");
     assert_eq!(terminal.cursor_x().unwrap(), 3);
     assert!(!terminal.is_cursor_pending_wrap().unwrap());
+}
+
+#[test]
+fn adapter_renders_full_frames_and_diffs_against_each_view_baseline() {
+    let viewport = Viewport::new(12, 4).unwrap();
+    let mut terminal = TerminalScreen::with_ghostty(viewport).unwrap();
+    let sequence = "\x1b[1;38;2;10;20;30m한e\u{301}\x1b[0m\x1b[?1h\x1b[?25l";
+    for byte in sequence.as_bytes() {
+        terminal.process(std::slice::from_ref(byte)).unwrap();
+    }
+    let first = terminal.snapshot().unwrap();
+    let mut viewer = vt100::Parser::new(viewport.rows, viewport.cols, 0);
+    viewer.process(terminal.redraw(viewport).unwrap().as_bytes());
+    let screen = viewer.screen();
+    assert!(ScreenSnapshot::from_screen(screen).matches(&first));
+    assert_eq!(screen.cell(0, 0).unwrap().contents(), "한");
+    assert_eq!(
+        screen.cell(0, 0).unwrap().fgcolor(),
+        vt100::Color::Rgb(10, 20, 30)
+    );
+    assert!(screen.cell(0, 1).unwrap().is_wide_continuation());
+    assert_eq!(screen.cell(0, 2).unwrap().contents(), "e\u{301}");
+    assert!(screen.application_cursor());
+    assert!(screen.hide_cursor());
+
+    terminal.process(b"\x1b[2;1Hintermediate").unwrap();
+    let intermediate = terminal.snapshot().unwrap();
+    let mut faster = vt100::Parser::new(viewport.rows, viewport.cols, 0);
+    faster.process(terminal.redraw(viewport).unwrap().as_bytes());
+
+    terminal.process(b"\x1b[2;1Hfinal\x1b[K\x1b[?25h").unwrap();
+    viewer.process(
+        terminal
+            .render(Some(&first), viewport, None)
+            .unwrap()
+            .as_bytes(),
+    );
+    faster.process(
+        terminal
+            .render(Some(&intermediate), viewport, None)
+            .unwrap()
+            .as_bytes(),
+    );
+    assert_eq!(viewer.screen().contents(), "한e\u{301}\nfinal");
+    assert_eq!(faster.screen().contents(), viewer.screen().contents());
+    assert_eq!(
+        faster.screen().cursor_position(),
+        viewer.screen().cursor_position()
+    );
+    assert!(!viewer.screen().hide_cursor());
+}
+
+#[test]
+fn adapter_uses_ghostty_reflow_and_keeps_history_with_styles() {
+    let viewport = Viewport::new(6, 3).unwrap();
+    let mut terminal = TerminalScreen::with_ghostty(viewport).unwrap();
+    terminal
+        .process(b"\x1b[31mabcdefgh\r\n\x1b[0mnext\r\nlast")
+        .unwrap();
+    let history = terminal.history().unwrap();
+    assert_eq!(history.lines, ["abcdef", "gh", "next", "last"]);
+    assert!(
+        history
+            .styles
+            .iter()
+            .any(|style| style.sgr.contains(";38;5;1"))
+    );
+    terminal
+        .resize_session(Viewport::new(8, 4).unwrap())
+        .unwrap();
+    let history = terminal.history().unwrap();
+    assert!(history.lines.iter().any(|line| line == "abcdefgh"));
+    terminal.process(b"\x1b[?1049hinner").unwrap();
+    assert!(terminal.alternate_screen());
+    assert_eq!(terminal.history().unwrap().alternate_screen, Some(true));
+    assert!(
+        !terminal
+            .history()
+            .unwrap()
+            .lines
+            .iter()
+            .any(|line| line == "abcdefgh")
+    );
+    terminal.process(b"\x1b[?1049l").unwrap();
+    assert!(!terminal.alternate_screen());
+}
+
+#[test]
+fn adapter_applies_corvid_query_prompt_and_clipboard_policy() {
+    let mut terminal = TerminalScreen::with_ghostty(Viewport::new(20, 6).unwrap()).unwrap();
+    terminal.configure_clipboard(true, false);
+    let replies = terminal
+        .process(b"\x1b[3;4H\x1b[c\x1b[5n\x1b[6n\x1b[18t\x1b[>q\x1b[14t")
+        .unwrap();
+    assert_eq!(replies, b"\x1b[?6c\x1b[0n\x1b[3;4R\x1b[8;6;20t");
+    for chunk in b"\x1b]52;c;aGVsbG8=\x07\x1b]633;A\x07\x1b]2;shell\x07".chunks(3) {
+        assert!(terminal.process(chunk).unwrap().is_empty());
+    }
+    assert_eq!(terminal.title(), "shell");
+    assert_eq!(terminal.take_clipboard().as_deref(), Some("hello"));
+    assert_eq!(terminal.shell_prompt(), Some(true));
+    terminal
+        .process(b"\x1b[?1002h\x1b[?1006h\x1b[?2004h")
+        .unwrap();
+    assert_eq!(terminal.wheel_encoding(), WheelEncoding::Sgr);
+    assert!(terminal.bracketed_paste());
+    assert!(!terminal.allows_shell_history());
+}
+
+#[test]
+fn adapter_preserves_pending_wrap_across_the_footer_and_next_frame() {
+    let inner = Viewport::new(4, 3).unwrap();
+    let outer = Viewport::new(4, 4).unwrap();
+    let mut terminal = TerminalScreen::with_ghostty(inner).unwrap();
+    terminal.process(b"\x1b[42m1234").unwrap();
+    let previous = terminal.snapshot().unwrap();
+    let mut viewer = vt100::Parser::new(outer.rows, outer.cols, 0);
+    viewer.process(
+        terminal
+            .render(None, outer, Some((4, "test")))
+            .unwrap()
+            .as_bytes(),
+    );
+    assert_eq!(viewer.screen().cursor_position(), (0, 4));
+    terminal.process(b"5").unwrap();
+    viewer.process(
+        terminal
+            .render(Some(&previous), outer, Some((4, "test")))
+            .unwrap()
+            .as_bytes(),
+    );
+    assert_eq!(viewer.screen().contents(), "1234\n5\n\ntest");
+    assert_eq!(
+        viewer.screen().cell(1, 0).unwrap().bgcolor(),
+        vt100::Color::Idx(2)
+    );
 }

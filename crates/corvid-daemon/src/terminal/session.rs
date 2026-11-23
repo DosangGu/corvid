@@ -22,14 +22,15 @@ pub(super) struct TerminalSession {
 
 impl TerminalSession {
     pub(super) fn start(command: CommandBuilder, viewport: Viewport) -> Result<Self> {
+        let screen = TerminalScreen::for_session(viewport)?;
         Ok(Self {
             pty: TerminalPty::spawn(command, viewport)?,
-            screen: TerminalScreen::live(viewport),
+            screen,
             input: InputQueue::default(),
         })
     }
 
-    pub(super) fn history(&mut self, shell_only: bool) -> TerminalHistory {
+    pub(super) fn history(&mut self, shell_only: bool) -> Result<TerminalHistory> {
         if !shell_only {
             return self.screen.history();
         }
@@ -38,20 +39,19 @@ impl TerminalSession {
                 .pty
                 .foreground_shell(self.screen.shell_prompt() == Some(true))
         {
-            return TerminalHistory {
+            return Ok(TerminalHistory {
                 columns: self.screen.viewport().cols.get().into(),
                 ..Default::default()
-            };
+            });
         }
-        let mut history = self.screen.history();
+        let mut history = self.screen.history()?;
         history.shell_foreground = true;
-        history
+        Ok(history)
     }
 
     pub(super) fn resize(&mut self, viewport: Viewport) -> Result<()> {
         self.pty.resize(viewport)?;
-        self.screen.resize(viewport);
-        Ok(())
+        self.screen.resize_session(viewport)
     }
 
     pub(super) fn read_output(&mut self) -> Result<(ReadState, bool)> {
@@ -139,8 +139,8 @@ mod tests {
                 "waiting for {phase}: exit={exited:?}, process={:?}, shell marker={:?}, shell foreground={}, screen={:?}",
                 session.pty.process_key(),
                 session.screen.shell_prompt(),
-                session.history(true).shell_foreground,
-                session.screen.snapshot().contents()
+                session.history(true).unwrap().shell_foreground,
+                session.screen.snapshot().unwrap().contents()
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -150,6 +150,7 @@ mod tests {
         session
             .screen
             .snapshot()
+            .unwrap()
             .contents()
             .lines()
             .any(|line| line.trim() == marker)
@@ -167,6 +168,7 @@ mod tests {
             session
                 .screen
                 .snapshot()
+                .unwrap()
                 .contents()
                 .lines()
                 .any(|line| line.trim_start().starts_with("PS ") && line.trim_end().ends_with('>'))
@@ -187,7 +189,7 @@ mod tests {
         wait_for(
             &mut session,
             "foreground PowerShell before cmd.exe",
-            |session| session.history(true).shell_foreground,
+            |session| session.history(true).unwrap().shell_foreground,
         );
 
         assert!(
@@ -204,12 +206,13 @@ mod tests {
             screen_has_line(session, "CHILD_READY")
         });
         wait_for(&mut session, "cmd.exe taking the foreground", |session| {
-            !session.history(true).shell_foreground
+            !session.history(true).unwrap().shell_foreground
         });
-        assert!(session.history(true).lines.is_empty());
+        assert!(session.history(true).unwrap().lines.is_empty());
         assert!(
             session
                 .history(false)
+                .unwrap()
                 .lines
                 .iter()
                 .any(|line| line.trim() == "HISTORY_1")
@@ -220,7 +223,7 @@ mod tests {
             screen_has_line(session, "SHELL_RETURNED")
         });
         wait_for(&mut session, "PowerShell after cmd.exe exits", |session| {
-            session.history(true).shell_foreground
+            session.history(true).unwrap().shell_foreground
         });
     }
 }
