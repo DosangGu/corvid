@@ -12,8 +12,10 @@ use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentInfo, AgentList, HookEvent, ProviderAdapter,
     ProviderExecutionMode,
 };
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::handoff::input::{RetainedInput, valid_id};
 use crate::hook_data::Hook;
 use crate::native_process::{Found, HookOwner, Process, ProcessKey};
 use crate::projection;
@@ -41,6 +43,37 @@ struct Run {
     available: bool,
     producer: Option<ProcessKey>,
     sessions: BTreeSet<String>,
+    retained_collection: Option<Collection>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct RetainedContext {
+    owner: ProcessKey,
+    producer: ProcessKey,
+    provider: Provider,
+    session: String,
+    sessions: BTreeSet<String>,
+    turn: Option<String>,
+    inputs: Vec<RetainedInput>,
+    gap: bool,
+}
+
+impl RetainedContext {
+    pub(crate) fn valid_all(contexts: &[Self]) -> bool {
+        let mut owners = BTreeSet::new();
+        contexts.len() <= MAX_SHELL_RUNS
+            && contexts.iter().all(|context| {
+                context.owner.valid()
+                    && context.producer.valid()
+                    && owners.insert(context.owner)
+                    && valid_id(&context.session)
+                    && context.sessions.len() <= MAX_CONTEXTS
+                    && context.sessions.contains(&context.session)
+                    && context.sessions.iter().all(|id| valid_id(id))
+                    && context.turn.as_deref().is_none_or(valid_id)
+                    && RetainedInput::valid_all(context.turn.as_deref(), &context.inputs)
+            })
+    }
 }
 
 impl Agents {
@@ -54,7 +87,9 @@ impl Agents {
             .filter(|id| self.dirty.contains(id))
             .filter_map(|id| {
                 let run = self.runs.get(&id)?;
-                (run.producer.is_some() && run.state.process.value == ProcessLiveness::Running)
+                (run.producer.is_some()
+                    && run.retained_collection.is_none()
+                    && run.state.process.value == ProcessLiveness::Running)
                     .then(|| {
                         (
                             run.location,
@@ -103,8 +138,75 @@ impl Agents {
         })
     }
 
-    pub(crate) fn retain_observers(&mut self, terminal: Uuid, root: ProcessKey, epoch: Uuid) {
+    pub(crate) fn retain_contexts(&self, terminal: Uuid) -> Vec<RetainedContext> {
+        self.managed
+            .get(&terminal)
+            .zip(self.active.get(&terminal))
+            .into_iter()
+            .chain(self.shell.iter().map(|(key, (id, _))| (key, id)))
+            .filter_map(|(&owner, id)| {
+                let run = &self.runs[id];
+                if run.state.identity.terminal_id != terminal
+                    || !run.live()
+                    || run.state.lifecycle.value != Lifecycle::Live
+                {
+                    return None;
+                }
+                Some(RetainedContext {
+                    owner,
+                    producer: run.producer?,
+                    provider: run.state.identity.provider,
+                    session: run.state.identity.provider_session.clone()?,
+                    sessions: run.sessions.clone(),
+                    turn: run.state.current_open_turn().map(str::to_owned),
+                    inputs: RetainedInput::collect(&run.state),
+                    gap: run
+                        .retained_collection
+                        .unwrap_or(run.state.collection.value)
+                        == Collection::GapDetected,
+                })
+            })
+            .take(MAX_SHELL_RUNS)
+            .collect()
+    }
+
+    pub(crate) fn recover_observers(
+        &mut self,
+        terminal: Uuid,
+        location: Location,
+        root: ProcessKey,
+        epoch: Uuid,
+        contexts: Vec<RetainedContext>,
+    ) {
         self.retained_observers.insert(terminal, (root, epoch));
+        for context in contexts {
+            let Some(process) = Process::reopen(context.owner, context.provider) else {
+                continue;
+            };
+            let id = if let Some(&id) = self.active.get(&terminal) {
+                if self.managed.get(&terminal) != Some(&context.owner)
+                    || self.runs[&id].state.identity.provider != context.provider
+                {
+                    continue;
+                }
+                id
+            } else if self.shell.len() < MAX_SHELL_RUNS {
+                let id = self.start_run(
+                    terminal,
+                    location,
+                    context.provider,
+                    ProcessLiveness::Running,
+                );
+                self.shell.insert(context.owner, (id, process));
+                id
+            } else {
+                continue;
+            };
+            self.runs
+                .get_mut(&id)
+                .expect("recovered run")
+                .recover_context(context);
+        }
     }
 
     pub(crate) fn retained_observer_epoch(&self, terminal: Uuid) -> Option<Uuid> {
@@ -281,7 +383,8 @@ impl Agents {
         }
         if let Some((kind, confidence)) = hook.observation() {
             let run = self.runs.get_mut(&id).expect("active run");
-            if run.apply(hook.delivery, kind, hook.evidence(confidence)) {
+            let recovered = run.confirm_collection(&hook);
+            if run.apply(hook.delivery, kind, hook.evidence(confidence)) || recovered {
                 self.dirty.insert(id);
             }
         } else if matches!(
@@ -306,6 +409,14 @@ impl Agents {
         let session = hook.session.as_deref().expect("context has session");
         let run = &self.runs[&id];
         if run.state.identity.provider_session.as_deref() == Some(session) {
+            if self
+                .runs
+                .get_mut(&id)
+                .expect("current context")
+                .confirm_collection(&hook)
+            {
+                self.dirty.insert(id);
+            }
             return Ok(());
         }
         if run.sessions.contains(session) {
@@ -374,6 +485,7 @@ impl Agents {
 
     fn gap(&mut self, id: Uuid, hook: &Hook, reason: &str) {
         let run = self.runs.get_mut(&id).expect("tracked context");
+        run.retained_collection = None;
         let mut evidence = hook.evidence(Confidence::Confirmed);
         evidence.uncertainty = Some(reason.into());
         if run.apply(
@@ -422,6 +534,7 @@ impl Agents {
                 available: true,
                 producer: None,
                 sessions: BTreeSet::new(),
+                retained_collection: None,
             },
         );
         self.dirty.insert(id);
@@ -531,6 +644,49 @@ impl Agents {
 }
 
 impl Run {
+    fn recover_context(&mut self, context: RetainedContext) {
+        self.producer = Some(context.producer);
+        self.sessions = context.sessions;
+        self.state.identity.provider_session = Some(context.session);
+        let evidence = evidence(Source::Collector, Confidence::Confirmed);
+        self.apply(
+            Uuid::new_v4(),
+            ObservationKind::ContextObserved,
+            evidence.clone(),
+        );
+        if let Some(turn) = context.turn {
+            self.apply(
+                Uuid::new_v4(),
+                ObservationKind::InteractivePromptSubmitted(turn.clone()),
+                evidence.clone(),
+            );
+            for input in context.inputs {
+                input.restore(&mut self.state, &turn, &evidence);
+            }
+        }
+        self.apply(
+            Uuid::new_v4(),
+            ObservationKind::Collection(Collection::Degraded),
+            evidence,
+        );
+        self.retained_collection = Some(if context.gap {
+            Collection::GapDetected
+        } else {
+            Collection::Healthy
+        });
+    }
+
+    fn confirm_collection(&mut self, hook: &Hook) -> bool {
+        let Some(collection) = self.retained_collection.take() else {
+            return false;
+        };
+        self.apply(
+            Uuid::new_v4(),
+            ObservationKind::Collection(collection),
+            hook.evidence(Confidence::Confirmed),
+        )
+    }
+
     fn live(&self) -> bool {
         self.available
             && self.state.process.value == ProcessLiveness::Running

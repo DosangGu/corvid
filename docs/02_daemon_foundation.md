@@ -75,9 +75,14 @@ On Windows, the replacement keeps the original observer epoch for each recovered
 ConPTY root. The daemon verifies the hook helper, provider process, and ConPTY
 ancestry on every submission. A verified prompt submission or typed input request
 can establish collection again when the same provider has no new `SessionStart`
-event. Previous Windows requests remain in history, and new requests appear on the
-recovered process's card. Controller actions and shell registrations require the
-current epoch on all platforms.
+event. When the handoff includes a verified Windows session, the daemon restores
+its input evidence with the same Unverified status as Unix. Controller actions and
+shell registrations require the current epoch on all platforms.
+
+The Deck shows a retained Claude question after a Linux daemon handoff. The
+question stays open in the original terminal until the user answers.
+
+![Agent Deck card showing Check terminal after restoring a Claude question](images/agent-deck/retained-question.png)
 
 Linux also migrates terminal-only handoffs from v0.2.5 and earlier. It checks the saved
 conversation and the surviving foreground provider, reading only Corvid's UUID scope

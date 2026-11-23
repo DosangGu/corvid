@@ -87,6 +87,12 @@ pub(crate) struct RetainedTerminal {
     #[cfg(windows)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) observer_epoch: Option<Uuid>,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observer_root: Option<crate::native_process::ProcessKey>,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) observer_contexts: Vec<crate::agents::RetainedContext>,
 }
 
 impl LaunchScope {
@@ -700,6 +706,21 @@ impl Worker {
                         .flatten()
                 })
         };
+        #[cfg(windows)]
+        let (observer_epoch, observer_root, observer_contexts) = self
+            .scope
+            .registry
+            .request({
+                let id = terminal.id;
+                move |registry| {
+                    (
+                        registry.agents.retained_observer_epoch(id),
+                        registry.agents.hook_root(id),
+                        registry.agents.retain_contexts(id),
+                    )
+                }
+            })
+            .unwrap_or_default();
         Ok(live.then_some(RetainedTerminal {
             id: terminal.id,
             shell: terminal.shell,
@@ -710,14 +731,11 @@ impl Worker {
             #[cfg(windows)]
             provider: terminal.provider,
             #[cfg(windows)]
-            observer_epoch: self
-                .scope
-                .registry
-                .request({
-                    let id = terminal.id;
-                    move |registry| registry.agents.retained_observer_epoch(id)
-                })
-                .flatten(),
+            observer_epoch,
+            #[cfg(windows)]
+            observer_root,
+            #[cfg(windows)]
+            observer_contexts,
         }))
     }
 
@@ -1460,8 +1478,18 @@ impl Running {
                     registry.agents.track_shell(saved.id, root);
                 }
                 #[cfg(windows)]
-                if let (Some(root), Some(epoch)) = (process_key, saved.observer_epoch) {
-                    registry.agents.retain_observers(saved.id, root, epoch);
+                if let (Some(root), Some(epoch)) = (process_key, saved.observer_epoch)
+                    && saved
+                        .observer_root
+                        .is_none_or(|saved_root| saved_root == root)
+                {
+                    registry.agents.recover_observers(
+                        saved.id,
+                        location,
+                        root,
+                        epoch,
+                        saved.observer_contexts,
+                    );
                 }
                 registry.terminal_started(saved.id, location);
                 #[cfg(any(target_os = "linux", target_os = "macos"))]

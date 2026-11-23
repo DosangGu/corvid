@@ -624,18 +624,19 @@ fn native_hook_provider_fixture() -> Result<()> {
         ),
     ];
     if std::env::var_os("CORVID_TEST_HOOK_HANDOFF").is_some() {
+        events.pop();
         events.extend([
             (
                 "PreToolUse",
                 serde_json::json!({
-                    "turn_id": "turn-2", "prompt_id": "turn-2",
+                    "turn_id": "turn-1", "prompt_id": "turn-1",
                     "tool_name": "AskUserQuestion", "tool_use_id": "after-upgrade",
                 }),
             ),
             (
                 "PostToolUse",
                 serde_json::json!({
-                    "turn_id": "turn-2", "prompt_id": "turn-2",
+                    "turn_id": "turn-1", "prompt_id": "turn-1",
                     "tool_name": "AskUserQuestion", "tool_use_id": "after-upgrade",
                 }),
             ),
@@ -823,9 +824,11 @@ async fn windows_shell_hooks_publish_only_bound_provider_observations_after_upgr
     let old = old.summary.context("missing original hook run")?;
     assert_eq!(old.collection, AgentCollection::Healthy as i32);
 
-    // Preserve the original environment through two consecutive replacements.
+    // Preserve the original environment through two replacements, including
+    // one while the question is waiting for an answer.
     let mut previous = original;
-    for _ in 0..2 {
+    let mut waiting = old;
+    for generation in 0..2 {
         let result = async_process::Command::new(CORVID)
             .arg("--runtime-dir")
             .arg(&runtime)
@@ -842,25 +845,32 @@ async fn windows_shell_hooks_publish_only_bound_provider_observations_after_upgr
             current.host_id == previous.host_id && current.server_epoch != previous.server_epoch
         );
         previous = current;
-        daemon = {
-            let replacement = BackgroundDaemon::open(&runtime).await?;
-            drop(daemon);
-            replacement
-        };
+        let replacement = BackgroundDaemon::open(&runtime).await?;
+        drop(daemon);
+        daemon = replacement;
+        drop(tui);
+        tui = Tui::open(&runtime, [])?;
+        if generation == 0 {
+            tui.wait_for("HOOK_PROMPT_SUBMITTED")?;
+            tui.send(b"\r")?;
+        }
+        tui.wait_for("HOOK_QUESTION_WAITING")?;
+        let question = native_agent(&runtime, AgentProcessState::Running).await?;
+        let question = question.summary.context("missing recovered hook run")?;
+        assert_ne!(question.agent_run_id, waiting.agent_run_id);
+        assert_eq!(question.terminal_id, waiting.terminal_id);
+        assert_eq!(question.provider_session_id, waiting.provider_session_id);
+        if generation == 0 {
+            assert_eq!(question.collection, AgentCollection::Healthy as i32);
+            assert_eq!(question.badge, AgentBadge::NeedsInput as i32);
+            assert_eq!(question.pending_requests, 1);
+        } else {
+            assert_eq!(question.collection, AgentCollection::Degraded as i32);
+            assert_eq!(question.pending_requests, 0);
+            assert_eq!(question.unverified_requests, 1);
+        }
+        waiting = question;
     }
-    drop(tui);
-    let mut tui = Tui::open(&runtime, [])?;
-    tui.wait_for("HOOK_PROMPT_SUBMITTED")?;
-    tui.send(b"\r")?;
-    tui.wait_for("HOOK_QUESTION_WAITING")?;
-    let question = native_agent(&runtime, AgentProcessState::Running).await?;
-    let question = question.summary.context("missing recovered hook run")?;
-    assert_ne!(question.agent_run_id, old.agent_run_id);
-    assert_eq!(question.terminal_id, old.terminal_id);
-    assert_eq!(question.provider_session_id, old.provider_session_id);
-    assert_eq!(question.collection, AgentCollection::Healthy as i32);
-    assert_eq!(question.badge, AgentBadge::NeedsInput as i32);
-    assert_eq!(question.pending_requests, 1);
 
     tui.send(b"\r")?;
     tui.wait_for("HOOK_PROMPT_RECOVERED")?;
@@ -870,7 +880,9 @@ async fn windows_shell_hooks_publish_only_bound_provider_observations_after_upgr
         corvid_protocol::wire::PromptObservation::Submitted as i32
     );
     let answered = activity.summary.context("missing answered hook run")?;
-    assert_eq!(answered.agent_run_id, question.agent_run_id);
+    assert_eq!(answered.agent_run_id, waiting.agent_run_id);
+    assert_eq!(answered.collection, AgentCollection::Healthy as i32);
+    assert_eq!(answered.unverified_requests, 0);
     assert_eq!(answered.resolved_requests, 1);
     assert_eq!(answered.pending_requests, 0);
     tui.send(b"\r")?;

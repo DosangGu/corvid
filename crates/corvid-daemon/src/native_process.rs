@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use corvid_core::agent::{ProcessLiveness, Provider};
+use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{FILETIME, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -19,13 +20,17 @@ const MAX_PROCESSES: usize = 8192;
 const MAX_CANDIDATES: usize = 128;
 const MAX_ANCESTORS: usize = 24;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub(crate) struct ProcessKey {
     pub pid: u32,
     pub created: u64,
 }
 
 impl ProcessKey {
+    pub(crate) fn valid(self) -> bool {
+        self.pid != 0 && self.created != 0
+    }
+
     pub fn read(pid: u32, handle: RawHandle) -> Option<Self> {
         let mut created = FILETIME::default();
         let mut exit = FILETIME::default();
@@ -62,6 +67,14 @@ impl Process {
         let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
         let key = ProcessKey::read(pid, handle.as_raw_handle())?;
         Some(Self { key, handle })
+    }
+
+    pub(crate) fn reopen(key: ProcessKey, provider: Provider) -> Option<Self> {
+        let process = Self::open(key.pid)?;
+        (process.key == key
+            && process.liveness() == ProcessLiveness::Running
+            && process.provider() == Some(provider))
+        .then_some(process)
     }
 
     pub fn liveness(&self) -> ProcessLiveness {

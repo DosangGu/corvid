@@ -4,25 +4,17 @@ use std::path::Path;
 use std::sync::Arc;
 
 use corvid_core::agent::{
-    Collection, Confidence, Lifecycle, ObservationKind, ProcessLiveness, Provider, RequestKey,
-    RequestKind, RequestStatus, Source,
+    Collection, Confidence, Lifecycle, ObservationKind, ProcessLiveness, Provider, Source,
 };
 use corvid_core::layout::Location;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{Agents, evidence};
+use crate::handoff::input::{RetainedInput, valid_id};
 use crate::process::{HookProducer, ProcessImage};
 
 /// Private handoff metadata, never terminal content or a live controller address.
-const MAX_RETAINED_INPUTS: usize = 16;
-
-#[derive(Clone, Deserialize, Serialize)]
-struct RetainedInput {
-    tool: String,
-    kind: RequestKind,
-}
-
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct RetainedAgent {
     pub(crate) association: Uuid,
@@ -65,8 +57,6 @@ impl RetainedAgent {
     }
 
     pub(crate) fn valid(&self) -> bool {
-        let valid_id =
-            |id: &str| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control);
         !self.association.is_nil()
             && !self.observer_epoch.is_nil()
             && valid_id(&self.session)
@@ -74,15 +64,7 @@ impl RetainedAgent {
             && self.sessions.iter().all(|id| valid_id(id))
             && self.sessions.contains(&self.session)
             && self.turn.as_deref().is_none_or(valid_id)
-            && self.inputs.len() <= MAX_RETAINED_INPUTS
-            && (self.turn.is_some() || self.inputs.is_empty())
-            && self.inputs.iter().all(|input| {
-                valid_id(&input.tool)
-                    && matches!(
-                        input.kind,
-                        RequestKind::Question | RequestKind::PlanApproval
-                    )
-            })
+            && RetainedInput::valid_all(self.turn.as_deref(), &self.inputs)
             && self.restart_path.as_ref().is_none_or(|path| {
                 self.provider == Provider::Claude
                     && path.len() <= 4096
@@ -122,30 +104,6 @@ impl Agents {
             {
                 return None;
             }
-            let turn = record.run.current_open_turn();
-            let inputs = record
-                .run
-                .requests
-                .values()
-                .filter_map(|request| {
-                    let key = request.key.as_ref()?;
-                    (key.turn.as_deref() == turn
-                        && turn.is_some()
-                        && matches!(
-                            request.kind,
-                            RequestKind::Question | RequestKind::PlanApproval
-                        )
-                        && matches!(
-                            request.state.value,
-                            RequestStatus::Pending | RequestStatus::Unverified
-                        ))
-                    .then(|| RetainedInput {
-                        tool: key.provider_request_id.clone(),
-                        kind: request.kind,
-                    })
-                })
-                .take(MAX_RETAINED_INPUTS)
-                .collect();
             Some(RetainedAgent {
                 association: *association,
                 observer_epoch: launch.observer_epoch.unwrap_or(epoch),
@@ -158,8 +116,8 @@ impl Agents {
                 producer: launch.producer,
                 session: record.run.identity.provider_session.clone()?,
                 sessions: launch.sessions.iter().cloned().collect(),
-                turn: turn.map(str::to_owned),
-                inputs,
+                turn: record.run.current_open_turn().map(str::to_owned),
+                inputs: RetainedInput::collect(&record.run),
                 gap: launch.gap,
             })
         })
@@ -211,12 +169,9 @@ impl Agents {
                 evidence(Source::Collector, Confidence::Confirmed),
             );
             for input in saved.inputs {
-                record.run.recover_input(
-                    RequestKey {
-                        turn: Some(turn.clone()),
-                        provider_request_id: input.tool,
-                    },
-                    input.kind,
+                input.restore(
+                    &mut record.run,
+                    &turn,
                     &evidence(Source::Collector, Confidence::Confirmed),
                 );
             }
