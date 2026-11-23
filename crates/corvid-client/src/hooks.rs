@@ -20,7 +20,6 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::unistd::read;
 use serde::Deserialize;
-use serde_json::Value;
 use uuid::Uuid;
 
 const SOURCE_LIMIT: usize = 64 * 1024;
@@ -31,6 +30,15 @@ const TOTAL_TIMEOUT: Duration = Duration::from_millis(100);
 pub enum HookProvider {
     Claude,
     Codex,
+}
+
+impl HookProvider {
+    pub fn provider(self) -> Provider {
+        match self {
+            Self::Claude => Provider::Claude,
+            Self::Codex => Provider::Codex,
+        }
+    }
 }
 
 pub fn observe(
@@ -58,7 +66,7 @@ fn observe_inner(
     for id in [&launch, &host, &epoch] {
         ensure!(Uuid::parse_str(id).is_ok(), "invalid managed launch scope");
     }
-    let runtime = corvid_client::runtime_path(runtime)?;
+    let runtime = crate::runtime_path(runtime)?;
 
     let deadline = started + TOTAL_TIMEOUT;
     let input = read_hook(started + SOURCE_TIMEOUT).ok();
@@ -74,7 +82,7 @@ fn observe_inner(
     fields.launch_association = launch;
     ensure!(Instant::now() < deadline, "hook deadline elapsed");
 
-    compio::runtime::Runtime::new()?.block_on(corvid_client::submit_hook(
+    compio::runtime::Runtime::new()?.block_on(crate::submit_hook(
         &runtime, &host, &epoch, fields, deadline,
     ))
 }
@@ -372,14 +380,6 @@ fn optional_id(value: Option<String>) -> Option<Option<String>> {
         Some(value) => valid_id(value).map(Some),
         None => Some(None),
     }
-}
-
-pub fn settings(provider: HookProvider) -> Result<Value> {
-    let provider = match provider {
-        HookProvider::Claude => Provider::Claude,
-        HookProvider::Codex => Provider::Codex,
-    };
-    crate::observer_settings(provider)
 }
 
 #[cfg(test)]

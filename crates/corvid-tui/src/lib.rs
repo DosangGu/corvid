@@ -1,6 +1,8 @@
 mod companion;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-use corvid_daemon::command::hooks;
+use corvid_client::hooks;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod daemon_bootstrap;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux;
 mod retirement;
@@ -167,19 +169,13 @@ async fn attach_monitored(runtime: &Path, options: corvid_client::AttachOptions)
     result
 }
 
-/// Use the shared runtime payload when starting a daemon from packaged Desktop.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub use daemon_bootstrap::{DaemonExecutableMissing, daemon_is_installed, install_local_daemon};
+
+/// Resolve the local daemon independently of the client executable.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn local_daemon_executable() -> Result<PathBuf> {
-    use corvid_protocol::paths::{StateRole, state_directory};
-
-    let executable = std::env::current_exe()?;
-    let state = state_directory(StateRole::Daemon, None)?;
-    if let Some(daemon) =
-        corvid_update::daemon::find(&executable, &state, env!("CARGO_PKG_VERSION"))?
-    {
-        return Ok(daemon);
-    }
-    corvid_update::layout::local_daemon_executable(&executable)
+    daemon_bootstrap::find()?.ok_or_else(|| DaemonExecutableMissing.into())
 }
 
 /// Replace an automatically started daemon while preserving its hosted terminals.
@@ -195,11 +191,10 @@ pub async fn upgrade_local_daemon(runtime: &Path) -> Result<()> {
     }
 }
 
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 /// Dispatch daemon subprocesses and Linux agent helpers before opening a GUI.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn run_daemon_helper() -> Option<ExitCode> {
-    if let Some(code) = corvid_daemon::command::run_helper() {
+    if let Some(code) = daemon_bootstrap::legacy_helper() {
         return Some(code);
     }
 
@@ -211,7 +206,7 @@ pub fn run_daemon_helper() -> Option<ExitCode> {
 
 pub fn run() -> ExitCode {
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    if let Some(code) = corvid_daemon::command::run_helper() {
+    if let Some(code) = daemon_bootstrap::legacy_helper() {
         return code;
     }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -242,7 +237,7 @@ pub fn run() -> ExitCode {
         }) => execute(move || async move {
             use corvid_protocol::wire::{AgentRestoreMode, PaneRestoreStatus, RestoreWorkspace};
             let runtime = runtime_path(daemon_runtime)?;
-            ensure_local_daemon(&runtime).await?;
+            daemon_bootstrap::ensure_cli(&runtime).await?;
             let endpoint = corvid_client::ControlEndpoint::Local(runtime);
             let mut connection = endpoint
                 .interactive(vec![corvid_protocol::RESTORE_AGENTS_CAPABILITY.into()])

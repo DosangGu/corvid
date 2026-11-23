@@ -225,23 +225,20 @@ pub(super) fn execute(
             );
             Ok(0)
         }
-        Command::Hooks { provider } => hooks::settings(provider).map(|settings| {
-            println!("{settings:#}");
-            0
-        }),
+        Command::Hooks { provider } => crate::daemon_bootstrap::forward_cli([
+            "hooks",
+            match provider {
+                HookProvider::Claude => "claude",
+                HookProvider::Codex => "codex",
+            },
+        ]),
         Command::Daemon {
             state_dir,
             autostarted,
         } => {
             let runtime = runtime_path(runtime_dir)?;
             let state = state_path(state_dir)?;
-            corvid_daemon::command::run_foreground(
-                &runtime,
-                &state,
-                autostarted,
-                corvid_daemon::terminfo::Mode::Inherit,
-            )?;
-            Ok(0)
+            crate::daemon_bootstrap::foreground(&runtime, &state, autostarted)
         }
         Command::Control {
             stdio: false,
@@ -270,14 +267,19 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             unreachable!("handled before daemon runtime")
         }
         Command::Daemon { .. } => unreachable!("Compio daemon dispatched before the CLI executor"),
-        Command::EnsureDaemon => start::ensure(&runtime).await.map(|()| 0),
+        Command::EnsureDaemon => crate::daemon_bootstrap::ensure_cli(&runtime)
+            .await
+            .map(|()| 0),
         Command::Upgrade {
             managed_ssh_from: Some(version),
             expected_host,
         } => start::upgrade_managed(&runtime, &version, expected_host)
             .await
             .map(|()| 0),
-        Command::Upgrade { .. } => start::upgrade(&runtime).await.map(|()| 0),
+        Command::Upgrade { .. } => {
+            crate::daemon_bootstrap::require_cli_daemon().await?;
+            start::upgrade(&runtime).await.map(|()| 0)
+        }
         Command::Attach {
             new,
             take_over,
@@ -301,7 +303,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 super::workspace_cli::attach_target(&runtime, target, workspace).await?;
             let workspace_directory = if browse_directory {
                 corvid_client::check_tty()?;
-                ensure(&runtime).await?;
+                crate::daemon_bootstrap::ensure_cli(&runtime).await?;
                 super::directory_picker::pick(&runtime).await?
             } else {
                 workspace_directory

@@ -106,6 +106,7 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
     # Keep Unix socket names within sockaddr_un even below the SSH fixture root.
     root = directory / f"a{int(legacy)}{int(managed)}{int(broker)}{''.join(name[0] for name in providers)}"
     root.mkdir(mode=0o700)
+    binary = Path(binary)
     candidate = binary
     if previous:
         binary = root / "corvid"
@@ -131,6 +132,9 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
         "PATH": str(programs), "CORVID_FIXTURE_BINARY": str(binary), "CORVID_FIXTURE_HANDOFF": "1",
         "CORVID_AGENT_MONITOR": "0", "CORVID_VIEW_STATE_DIR": str(root / "views"),
     }
+    standalone = candidate.with_name("corvidd")
+    if standalone.is_file():
+        env["CORVID_DAEMON"] = str(standalone)
     for key in ("ENV", "BASH_ENV", "ZDOTDIR", "CORVID_FIXTURE_BROKER"):
         env.pop(key, None)
     if broker:

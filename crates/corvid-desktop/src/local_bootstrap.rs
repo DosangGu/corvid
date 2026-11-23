@@ -27,10 +27,15 @@ pub async fn connect(
     let connection = match endpoint.interactive(capabilities.clone()).await {
         Err(error) if explicit && daemon_missing(&error) => {
             progress("Starting the local Corvid daemon…");
-            match corvid_tui::ensure_local_daemon(&runtime).await {
-                Ok(()) => endpoint.interactive(capabilities.clone()).await,
-                Err(error) => Err(error.context("starting the local Corvid daemon")),
+            if let Err(error) = corvid_tui::ensure_local_daemon(&runtime).await {
+                if !error.is::<corvid_tui::DaemonExecutableMissing>() {
+                    return Err(error.context("starting the local Corvid daemon"));
+                }
+                install_if_needed(prompts, &progress).await?;
+                progress("Starting the local Corvid daemon…");
+                corvid_tui::ensure_local_daemon(&runtime).await?;
             }
+            endpoint.interactive(capabilities.clone()).await
         }
         connection => connection,
     };
@@ -45,9 +50,19 @@ pub async fn connect(
         connection => connection?,
     };
     verify_host(&link, expected_host)?;
-    if !needs_handoff(link.session()) {
+    if !explicit || !needs_handoff(link.session()) {
         return Ok((endpoint, link));
     }
+    if !prompts
+        .offer_upgrade(
+            "Local",
+            "A compatible Corvid daemon is running. Upgrade it and retain its terminals?",
+        )
+        .await
+    {
+        return Ok((endpoint, link));
+    }
+    install_if_needed(prompts, &progress).await?;
 
     let host = link.session().host_id.clone();
     let epoch = link.session().server_epoch.clone();
@@ -122,6 +137,21 @@ async fn handoff(runtime: &Path, host: &str, epoch: &str) -> Result<()> {
     Ok(())
 }
 
+async fn install_if_needed(prompts: &Prompts, progress: &impl Fn(&str)) -> Result<()> {
+    if !corvid_tui::daemon_is_installed()? {
+        let detail = format!(
+            "Download Corvid daemon v{} from GitHub Releases and install it for this user.",
+            env!("CARGO_PKG_VERSION")
+        );
+        prompts
+            .confirm(Operation::Install, "Local", &detail)
+            .await?;
+        progress("Downloading the local Corvid daemon…");
+        corvid_tui::install_local_daemon().await?;
+    }
+    Ok(())
+}
+
 async fn upgrade(
     runtime: &std::path::Path,
     prompts: &Prompts,
@@ -134,6 +164,7 @@ async fn upgrade(
             "Replace the local Corvid daemon.\n\nHosted shells keep running.\nClients reconnect after the upgrade.",
         )
         .await?;
+    install_if_needed(prompts, &progress).await?;
     progress("Upgrading the local Corvid daemon…");
     corvid_tui::upgrade_local_daemon(runtime).await
 }

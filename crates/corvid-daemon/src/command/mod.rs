@@ -1,6 +1,6 @@
 //! Process entry points shared by corvidd and the legacy Corvid CLI.
 
-pub mod hooks;
+pub use corvid_client::hooks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod shell_agent;
 

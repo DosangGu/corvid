@@ -20,7 +20,6 @@ anyhow.workspace = true
 clap.workspace = true
 corvid-client.workspace = true
 corvid-companion.workspace = true
-corvid-daemon.workspace = true
 corvid-protocol = { workspace = true, features = ["compio", "borrowed-io"] }
 corvid-update.workspace = true
 corvid-core.workspace = true
@@ -40,10 +39,11 @@ sha2.workspace = true
 corvid-agent-deck.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console",
-    "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading",
+    "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
+corvid-daemon.workspace = true
 portable-pty.workspace = true
 tempfile.workspace = true
 vt100.workspace = true

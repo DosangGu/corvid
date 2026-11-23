@@ -1070,10 +1070,18 @@ async fn installed_update_hands_off_a_live_shell_and_collects_the_released_packa
         let dir = root.join("versions").join(version);
         fs::create_dir_all(&dir)?;
         fs::copy(source, dir.join("corvid.exe"))?;
+        let mut files = vec!["corvid.exe", "package.json"];
+        if source == Path::new(CORVID) {
+            fs::copy(
+                source.with_file_name("corvidd.exe"),
+                dir.join("corvidd.exe"),
+            )?;
+            files.push("corvidd.exe");
+        }
         let metadata = serde_json::json!({"schema_version":1, "product":"tui", "version":version, "target":target, "source_revision":"a".repeat(40)});
         fs::write(dir.join("package.json"), metadata.to_string())?;
         let mut manifest = String::new();
-        for name in ["corvid.exe", "package.json"] {
+        for name in files {
             let digest = Sha256::digest(fs::read(dir.join(name))?);
             use std::fmt::Write;
             for byte in digest {
@@ -1169,7 +1177,7 @@ async fn managed_upgrade_replaces_the_windows_image_after_terminal_handoff() -> 
     let root = fixture.path().join("Corvid-SSH");
     let installation = StateDirectory::create_all(&root)?;
     let staged = root.join(".corvid-update.exe");
-    let mut image = std::fs::read(CORVID)?;
+    let mut image = std::fs::read(Path::new(CORVID).with_file_name("corvidd.exe"))?;
     installation.replace_private_file("corvid.exe", &image)?;
     image.extend_from_slice(b"staged release");
     installation.replace_private_file(".corvid-update.exe", &image)?;

@@ -61,6 +61,15 @@ jobs:
       - run: cargo clippy --locked -p corvid-tui -p corvid-client -p corvid-companion --all-targets -- -D warnings
       - run: cargo test --locked -p corvid-client -p corvid-companion
       - run: cargo test --locked -p corvid-tui --lib --bins
+      - name: Verify client dependency graphs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p corvid-tui -p corvid-desktop --edges normal,build --prefix none > "$RUNNER_TEMP/corvid-client-graph"
+          if grep -E '^corvid-daemon ' "$RUNNER_TEMP/corvid-client-graph"; then
+            echo "A client links the daemon" >&2
+            exit 1
+          fi
       - name: TUI attach, render and input against a scripted peer
         run: cargo test --locked -p corvid-tui --test scripted_attach
 
@@ -88,6 +97,7 @@ jobs:
       - name: Repeat the release-mode routing suite
         run: |
           set -euo pipefail
+          cargo build --locked --release --target aarch64-unknown-linux-musl -p corvid-daemon --bin corvidd
           for attempt in 1 2 3; do
             cargo test --locked --release --target aarch64-unknown-linux-musl -p corvid-tui --test routing -- --no-capture
           done
@@ -106,6 +116,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
+      - name: Build the standalone daemon
+        run: cargo build --locked --release -p corvid-daemon --bin corvidd
       - name: Read queued terminal and detach events after named-pipe closure
         run: cargo test --locked --release -p corvid-client --lib closed_named_pipe_preserves_the_queued_terminal_status
       - name: Verify early Windows hook ownership
