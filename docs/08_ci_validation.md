@@ -24,6 +24,11 @@ the repository elects to require it there. Workflows with `workflow_dispatch`
 can be launched manually after they are available on `main`, including on
 branches used by stacked PRs.
 
+GitHub's native stack feature evaluates workflow branch filters against the
+stack's trunk for every entry. To run CI only as each PR reaches `main`,
+keep each PR based on the preceding branch and retarget it after that PR merges.
+See [GitHub's stack CI documentation](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/optimizing-ci-for-stacked-pull-requests).
+
 ## Release qualification
 
 Update `deploy/release-notes.md` in the version preparation PR to `main` to
