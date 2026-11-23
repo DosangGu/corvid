@@ -28,7 +28,10 @@ pub fn find(client: &Path, state: &Path, client_version: &str) -> Result<Option<
 
     let directory = install_directory(state, client_version)?;
     match fs::symlink_metadata(&directory) {
-        Ok(_) => installed(&StateDirectory::open(&directory)?),
+        Ok(_) => {
+            let _private = StateDirectory::open(&directory)?;
+            installed(&directory)
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).context("locating the installed Corvid daemon"),
     }
@@ -37,7 +40,8 @@ pub fn find(client: &Path, state: &Path, client_version: &str) -> Result<Option<
 /// Install the matching release daemon into a private, versioned directory.
 /// Callers obtain user consent before invoking this function.
 pub fn install(state: &Path, client_version: &str) -> Result<PathBuf> {
-    let directory = StateDirectory::create_all(&install_directory(state, client_version)?)?;
+    let directory = install_directory(state, client_version)?;
+    let _private = StateDirectory::create_all(&directory)?;
     if let Some(binary) = installed(&directory)? {
         return Ok(binary);
     }
@@ -53,7 +57,7 @@ pub fn install(state: &Path, client_version: &str) -> Result<PathBuf> {
         "Corvid daemon exceeds the allowed size"
     );
 
-    let temporary = tempfile::NamedTempFile::new_in(directory.path())?;
+    let temporary = tempfile::NamedTempFile::new_in(&directory)?;
     download::file(
         &format!("{RELEASES}/download/v{}/{name}", release.version),
         temporary.path(),
@@ -69,7 +73,7 @@ pub fn install(state: &Path, client_version: &str) -> Result<PathBuf> {
     }
     temporary.as_file().sync_all()?;
 
-    let path = directory.path().join(EXECUTABLE);
+    let path = directory.join(EXECUTABLE);
     match temporary.persist_noclobber(&path) {
         Ok(_) => Ok(path),
         Err(error) if error.error.kind() == ErrorKind::AlreadyExists => {
@@ -89,8 +93,8 @@ fn install_directory(state: &Path, client_version: &str) -> Result<PathBuf> {
         .join(crate::target(Product::Tui)?))
 }
 
-fn installed(directory: &StateDirectory) -> Result<Option<PathBuf>> {
-    let path = directory.path().join(EXECUTABLE);
+fn installed(directory: &Path) -> Result<Option<PathBuf>> {
+    let path = directory.join(EXECUTABLE);
     match fs::symlink_metadata(&path) {
         Ok(metadata) => {
             ensure!(
