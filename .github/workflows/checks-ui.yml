@@ -73,9 +73,10 @@ jobs:
       - name: macOS build environment
         if: runner.os == 'macOS'
         run: bash deploy/macos/prepare-build.sh
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: rust-cache
         with:
-          path: |
+          path: &rust-cache-paths |
             ~/.cargo/registry
             ~/.cargo/git
             target/release
@@ -83,6 +84,7 @@ jobs:
           key: desktop-${{ matrix.runner }}-${{ matrix.target }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: desktop-${{ matrix.runner }}-${{ matrix.target }}-v2-
       - name: Build Corvid
+        id: build
         run: |
           rustup toolchain install --no-self-update
           rustup target add ${{ matrix.target }}
@@ -104,3 +106,8 @@ jobs:
           name: ui-failure-${{ matrix.target }}
           path: target/ui-tests/
           if-no-files-found: ignore
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: *rust-cache-paths
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}

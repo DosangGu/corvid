@@ -1,12 +1,10 @@
 """Desktop and Deck scenarios driven through native window and keyboard events."""
 from contextlib import ExitStack, contextmanager
-import json
 import os
-from pathlib import Path
 import shlex
 import subprocess
 import time
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import monitor_fixture
 
@@ -75,24 +73,8 @@ def verify_paste(ui, desktop, window, root):
     pasted = "한글 e\u0301 🐦"
     assignment = f"$tag='{pasted}'; " if os.name == "nt" else f"tag={shlex.quote(pasted)}; "
     command("pasted", mark("pasted", tag, assignment=assignment), pasted)
-    ui.keys(window, "leader", "previous")
+    ui.keys(window, "leader", "t", "h", "return")
     command("isolated", mark("isolated", tag), "first", probe=True)
-
-
-def fixture_shortcuts(state):
-    script = (
-        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
-        "[Environment]::GetFolderPath('Programs')"
-    )
-    programs = Path(subprocess.check_output(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        encoding="utf-8", timeout=10).strip())
-    for record in monitor_fixture.records(state):
-        controller = UUID(json.loads(record.read_text(encoding="utf-8"))["controller"])
-        path = programs / f"Corvid Agent Deck {controller.hex[:8]}.lnk"
-        if path.exists():
-            raise FileExistsError(f"Fixture shortcut already exists: {path}")
-        yield path
 
 
 def run_case(case, root, artifacts, paths, ui):
@@ -128,7 +110,7 @@ def run_case(case, root, artifacts, paths, ui):
                 else:
                     reader, epoch = monitor_fixture.ready(cli, state, env)
                     if os.name == "nt":
-                        for shortcut in fixture_shortcuts(state):
+                        for shortcut in ui.fixture_shortcuts(state):
                             processes.callback(shortcut.unlink, missing_ok=True)
                     panel = processes.enter_context(running([deck, "--state-dir", state], env, root, log))
                     window = wait_for("Agent Deck window", lambda: ui.window(panel.pid), panel)
