@@ -34,12 +34,11 @@ Linux and Windows support x64 and ARM64. Windows ARM64 targets Windows 11.
 Apple Silicon packages target macOS 15 and later. See the [macOS guide](07_macos.md)
 for Gatekeeper, app layout, installation paths, and validation limitations.
 
-The `corvid` executable contains the TUI, daemon, terminal host, and relays.
-Actions builds this runtime once for each execution platform. TUI packages reuse
-it directly. All Desktop packages include Linux, Windows, and macOS runtime payloads under
-`daemon/TARGET/` (inside `Contents/Resources` on macOS), each with its own identity and integrity manifest. Packaged
-Desktop starts its adjacent native `corvid` for local daemon use; development
-builds retain their executable-based helper path.
+Actions builds the `corvid` client and standalone `corvidd` once per execution
+target. The daemon handles terminal hosts and relays. The TUI archive contains
+its matching daemon. Desktop packages also include daemon payloads for Linux,
+Windows, and macOS under `daemon/TARGET/` (inside `Contents/Resources` on
+macOS), each with an identity and integrity manifest for remote provisioning.
 
 Desktop packages include the built-in Agents window, implemented by Corvid Agent Deck.
 It ships and updates with Desktop. Windows Desktop retains the standalone
