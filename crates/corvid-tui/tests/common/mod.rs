@@ -8,6 +8,10 @@ use corvid_protocol::unix::{RuntimeDir, SocketRole};
 const BINARY: &str = env!("CARGO_BIN_EXE_corvid");
 pub const WAIT: Duration = Duration::from_secs(8);
 
+pub fn routing_diagnostics() -> bool {
+    std::env::var_os("CORVID_TEST_ROUTING_DIAGNOSTICS").is_some_and(|value| value == "1")
+}
+
 pub fn command(runtime: &Path) -> Command {
     let mut command = Command::new(BINARY);
     command.arg("--runtime-dir").arg(runtime).kill_on_drop(true);
@@ -25,12 +29,15 @@ pub async fn start_daemon(mut command: Command, runtime: &Path, state: &Path) ->
 }
 
 pub async fn wait_for_daemon(mut daemon: Child, runtime: &Path) -> Child {
+    let pid = daemon.id();
+    if routing_diagnostics() {
+        eprintln!("daemon pid={pid} starting, runtime={}", runtime.display());
+    }
     timeout(WAIT, async {
         loop {
-            assert!(
-                daemon.try_status().unwrap().is_none(),
-                "daemon exited during startup"
-            );
+            if let Some(status) = daemon.try_status().unwrap() {
+                panic!("daemon pid={pid} exited during startup: {status}");
+            }
             if let Ok(directory) = RuntimeDir::open(runtime)
                 && corvid_client::ping(runtime).await.is_ok()
                 && directory.connect(SocketRole::Client).await.is_ok()
@@ -41,6 +48,9 @@ pub async fn wait_for_daemon(mut daemon: Child, runtime: &Path) -> Child {
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|error| panic!("daemon pid={pid} did not become ready: {error}"));
+    if routing_diagnostics() {
+        eprintln!("daemon pid={pid} ready");
+    }
     daemon
 }
