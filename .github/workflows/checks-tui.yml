@@ -84,6 +84,6 @@ jobs:
         shell: pwsh
         run: |
           for ($attempt = 1; $attempt -le 3; $attempt++) {
-            cargo test --locked --release -p corvid-tui --test windows_daemon -- ordinary_attach_resumes tui_reopens_its_last_workspace retains_the_windows_shell
+            cargo test --locked --release -p corvid-tui --test windows_daemon -- ordinary_attach_resumes tui_reopens_its_last_workspace retains_the_windows_shell replies_to_fragmented_conpty_startup_queries
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
