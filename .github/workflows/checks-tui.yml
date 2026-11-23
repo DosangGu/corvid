@@ -64,6 +64,34 @@ jobs:
       - name: TUI attach, render and input against a scripted peer
         run: cargo test --locked -p corvid-tui --test scripted_attach
 
+  linux-arm64-routing:
+    name: Routing (Linux ARM64 musl)
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 20
+    env:
+      CC: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CORVID_TEST_ROUTING_DIAGNOSTICS: '1'
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update --error-on=any
+          sudo apt-get -o Acquire::Retries=3 install -y ncurses-bin musl-tools
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-unknown-linux-musl
+      - name: Repeat the release-mode routing suite
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            cargo test --locked --release --target aarch64-unknown-linux-musl -p corvid-tui --test routing -- --no-capture
+          done
+
   windows-tui-exit:
     name: TUI lifecycle (${{ matrix.os }})
     strategy:
