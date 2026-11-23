@@ -67,6 +67,13 @@ download before the executable is installed in the private daemon state
 directory. Source builds can use a sibling `corvidd` or set
 `CORVID_DAEMON` to an absolute executable path.
 
+The packaged `corvidd` uses libghostty-vt for new terminals. Set
+`CORVID_VT_ENGINE=vt100` in the daemon's environment before launch to select
+the legacy engine for new terminal hosts. Existing hosts retain the engine
+they started with through daemon handoff. Source users can build `corvidd`
+with `--features ghostty-vt` to enable the same default. Client builds have
+no native Zig requirement.
+
 Downloads trust the public repository over HTTPS and verify the expected asset
 identity and checksums. SHA-256 detects changed bytes; it is not a publisher
 signature independent of GitHub. The repository's release assets and tags should

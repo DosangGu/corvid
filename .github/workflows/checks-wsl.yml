@@ -75,13 +75,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 install -y ncurses-bin musl-tools
           rustup toolchain install --no-self-update
           rustup target add x86_64-unknown-linux-musl
-      - name: Install pinned Zig
-        run: |
-          name=zig-x86_64-linux-0.17.1
-          curl --fail --silent --show-error --location --retry 3 "https://ziglang.org/download/0.17.1/$name.tar.xz" -o "$RUNNER_TEMP/$name.tar.xz"
-          printf '%s  %s\n' 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a "$RUNNER_TEMP/$name.tar.xz" | sha256sum --check
-          tar -xJf "$RUNNER_TEMP/$name.tar.xz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/install-zig
       - name: Build the Linux daemon for WSL
         env:
           CC: musl-gcc

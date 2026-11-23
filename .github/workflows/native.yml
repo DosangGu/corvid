@@ -22,6 +22,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
   PYTHONUNBUFFERED: '1'
+  CORVID_DAEMON_FEATURES: ${{ inputs.package && 'corvid-daemon/ghostty-vt' || '' }}
 
 jobs:
   linux-runtime:
@@ -41,6 +42,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
+        if: inputs.package
       - name: Linux build tools
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
@@ -66,14 +69,14 @@ jobs:
           key: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: rust-${{ matrix.runner }}-${{ matrix.runtime }}-v2-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/native.yml', 'deploy/macos/prepare-build.sh') }}-
       - name: Build runtime and launchers
-        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Runtime tests
         if: inputs.qualify
         env:
           CORVID_TEST_ROUTING_DIAGNOSTICS: ${{ matrix.runtime == 'aarch64-unknown-linux-musl' && '1' || '0' }}
           RUST_BACKTRACE: ${{ matrix.runtime == 'aarch64-unknown-linux-musl' && '1' || '0' }}
           RUST_TEST_NOCAPTURE: ${{ matrix.runtime == 'aarch64-unknown-linux-musl' && '1' || '0' }}
-        run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
+        run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Unix PTY qualification
         if: inputs.qualify
         timeout-minutes: 10
@@ -134,6 +137,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
+        if: inputs.package
       - name: Linux Desktop dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
@@ -155,13 +160,13 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Workspace tests
         if: inputs.qualify
-        run: xvfb-run -a cargo test --locked --release --target ${{ matrix.desktop }} --workspace
+        run: xvfb-run -a cargo test --locked --release --target ${{ matrix.desktop }} --workspace --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Workspace lints
         if: inputs.qualify
-        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets --features "${{ env.CORVID_DAEMON_FEATURES }}" -- -D warnings
       - name: Linux Desktop title synchronization over SSH
         if: inputs.qualify
         timeout-minutes: 10
@@ -266,16 +271,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
+        if: inputs.package
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.runtime }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: *runtime-cache
       - name: Build runtime and launchers
-        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Runtime tests
         if: inputs.qualify
-        run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
+        run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Runtime manifest
         if: inputs.package
         run: python deploy/package.py runtime --target ${{ matrix.runtime }} --binary target/${{ matrix.runtime }}/release/corvid.exe --daemon target/${{ matrix.runtime }}/release/corvidd.exe --output target/runtime
@@ -309,19 +316,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
+        if: inputs.package
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: *desktop-cache
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Workspace tests
         if: inputs.qualify
-        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
+        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Workspace lints
         if: inputs.qualify
-        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets --features "${{ env.CORVID_DAEMON_FEATURES }}" -- -D warnings
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: pwsh
@@ -360,6 +369,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
+        if: inputs.package
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.runtime }}
@@ -368,10 +379,10 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: *runtime-cache
       - name: Build runtime and launchers
-        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Runtime tests
         if: inputs.qualify
-        run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
+        run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Unix PTY qualification
         if: inputs.qualify
         timeout-minutes: 10
@@ -425,6 +436,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
+        if: inputs.package
       - name: macOS build environment
         run: bash deploy/macos/prepare-build.sh
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -433,13 +446,13 @@ jobs:
         run: rustup toolchain install --no-self-update
       - run: rustup target add ${{ matrix.desktop }}
       - name: Build Desktop and plugins
-        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update
+        run: cargo build --locked --release --target ${{ matrix.desktop }} -p corvid-tui -p corvid-daemon -p corvid-desktop -p corvid-agent-deck-ui -p corvid-update --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Workspace tests
         if: inputs.qualify
-        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace
+        run: cargo test --locked --release --target ${{ matrix.desktop }} --workspace --features "${{ env.CORVID_DAEMON_FEATURES }}"
       - name: Workspace lints
         if: inputs.qualify
-        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --release --target ${{ matrix.desktop }} --workspace --all-targets --features "${{ env.CORVID_DAEMON_FEATURES }}" -- -D warnings
       - name: Stage binaries for Desktop integration
         if: inputs.package
         shell: bash
