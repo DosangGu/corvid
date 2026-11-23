@@ -5,9 +5,10 @@ mod cli {
     use std::time::Instant;
 
     use anyhow::Result;
-    use clap::{Parser, Subcommand};
+    use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+    use corvid_client::daemon_control;
     use corvid_daemon::command::{self, hooks};
-    use corvid_protocol::paths::{StateRole, state_directory};
+    use uuid::Uuid;
 
     #[derive(Parser)]
     #[command(
@@ -32,6 +33,22 @@ mod cli {
     enum Command {
         /// Run the daemon in the foreground. This is the default.
         Daemon,
+        /// Start or reuse a background daemon for a local or remote client.
+        EnsureDaemon {
+            #[cfg(windows)]
+            #[arg(long, hide = true)]
+            ssh: bool,
+        },
+        #[command(hide = true)]
+        Upgrade {
+            #[arg(long)]
+            managed_ssh_from: String,
+            #[arg(long)]
+            expected_host: Option<Uuid>,
+            #[cfg(windows)]
+            #[arg(long, hide = true)]
+            ssh: bool,
+        },
         /// Relay the control protocol over stdio.
         Control {
             #[arg(long, required = true)]
@@ -56,7 +73,7 @@ mod cli {
             return code;
         }
         let started = Instant::now();
-        match run(Options::parse(), started) {
+        match run(parse_options(), started) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("corvidd: {error:#}");
@@ -65,12 +82,23 @@ mod cli {
         }
     }
 
+    fn parse_options() -> Options {
+        // Desktop sends the standalone runtime under the pre-existing managed
+        // filename. Keep its version banner compatible with older clients.
+        let program = std::env::current_exe()
+            .ok()
+            .filter(|path| path.file_stem() == Some("corvid".as_ref()))
+            .map_or("corvidd", |_| "corvid");
+        let mut args = Options::command().name(program).get_matches();
+        Options::from_arg_matches_mut(&mut args).unwrap_or_else(|error| error.exit())
+    }
+
     fn run(options: Options, started: Instant) -> Result<()> {
         let runtime = options.runtime_dir;
         match options.command {
             None | Some(Command::Daemon) => {
                 let runtime = corvid_client::runtime_path(runtime)?;
-                let state = state_directory(StateRole::Daemon, options.state_dir)?;
+                let state = daemon_control::state_path(options.state_dir)?;
                 command::run_foreground(
                     &runtime,
                     &state,
@@ -78,6 +106,50 @@ mod cli {
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     corvid_daemon::terminfo::Mode::Bundled,
                 )
+            }
+            Some(Command::EnsureDaemon {
+                #[cfg(windows)]
+                ssh,
+            }) => {
+                let runtime = corvid_client::runtime_path(runtime)?;
+                let state = daemon_control::state_path(options.state_dir)?;
+                let executor = compio::runtime::Runtime::new()?;
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                return executor.block_on(daemon_control::unix::ensure(
+                    &runtime,
+                    Some(&state),
+                    |_| Ok(std::env::current_exe()?),
+                ));
+                #[cfg(windows)]
+                executor.block_on(daemon_control::windows::ensure(
+                    &runtime,
+                    &state,
+                    ssh,
+                    None,
+                    || Ok(std::env::current_exe()?),
+                ))
+            }
+            Some(Command::Upgrade {
+                managed_ssh_from,
+                expected_host,
+                #[cfg(windows)]
+                ssh,
+            }) => {
+                let runtime = corvid_client::runtime_path(runtime)?;
+                let executor = compio::runtime::Runtime::new()?;
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                return executor.block_on(daemon_control::unix::upgrade_managed(
+                    &runtime,
+                    &managed_ssh_from,
+                    expected_host,
+                ));
+                #[cfg(windows)]
+                executor.block_on(daemon_control::windows::upgrade_managed(
+                    &runtime,
+                    &managed_ssh_from,
+                    expected_host,
+                    ssh,
+                ))
             }
             Some(Command::Observe {
                 provider,

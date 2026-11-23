@@ -1284,6 +1284,7 @@ dependencies = [
  "corvid-async",
  "corvid-core",
  "corvid-protocol",
+ "corvid-update",
  "crossterm",
  "nix 0.31.3",
  "prost",

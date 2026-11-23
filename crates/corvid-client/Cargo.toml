@@ -15,6 +15,7 @@ compio = { workspace = true, features = ["macros", "signal"] }
 anyhow.workspace = true
 base64.workspace = true
 corvid-core.workspace = true
+tempfile.workspace = true
 corvid-protocol = { workspace = true, features = ["compio"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -23,18 +24,18 @@ uuid.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 crossterm.workspace = true
-nix = { workspace = true, features = ["term"] }
+nix = { workspace = true, features = ["fs", "term"] }
 
 [target.'cfg(windows)'.dependencies]
+corvid-update.workspace = true
 crossterm = { workspace = true, features = ["events", "windows"] }
 windows-sys = { workspace = true, features = [
-    "Win32_System_Console", "Win32_System_IO", "Win32_System_SystemInformation", "Win32_System_Threading",
+    "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Console", "Win32_System_IO", "Win32_System_SystemInformation", "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [dev-dependencies]
 prost.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

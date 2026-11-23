@@ -40,7 +40,10 @@ function RequireArchitecture {
 }
 
 function PathDaemon {
-    (Get-Command corvid.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    foreach ($name in @('corvidd.exe', 'corvid.exe')) {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command) { return $command.Source }
+    }
 }
 
 function ManagedDaemon {
