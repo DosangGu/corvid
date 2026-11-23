@@ -48,6 +48,8 @@ impl Ghostty {
             max_scrollback: SCROLLBACK_BYTES,
         })?;
         terminal.set_scrollback_max_lines(Some(TERMINAL_HISTORY_MAX_ROWS))?;
+        // The text-only render protocol cannot present or acknowledge images.
+        terminal.set_kitty_image_storage_limit(0)?;
         terminal.set_glyph_protocol_enabled(false)?;
         terminal.set_apc_max_bytes(Some(4096))?;
         terminal.set_clipboard_write_max_bytes(Some(0))?;

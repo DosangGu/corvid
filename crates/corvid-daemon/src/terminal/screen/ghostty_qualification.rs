@@ -5,6 +5,74 @@ use ghostty_vt::terminal::{ClipboardWritePolicy, Event, Mode, Options, Terminal}
 
 use super::*;
 
+const RED_IMAGE: &[u8] = b"\x1b_Ga=T,t=d,f=32,s=1,v=1,i=7,p=3,c=1,r=1,C=1,q=2;/wAA/w==\x1b\\";
+const GREEN_IMAGE: &[u8] = b"\x1b_Ga=t,t=d,f=32,s=1,v=1,i=7,q=2;AP8A/w==\x1b\\";
+
+#[test]
+fn kitty_storage_and_placement_follow_replace_screen_switch_and_delete() {
+    use ghostty_vt::render::{ImageIterator, ImagePlacement, KittyPlacementKind};
+
+    fn placements(terminal: &Terminal) -> Vec<ImagePlacement> {
+        let mut state = RenderState::new().unwrap();
+        let snapshot = state.update(terminal).unwrap();
+        let mut iterator = ImageIterator::new().unwrap();
+        let mut images = iterator.update(&snapshot).unwrap();
+        let mut result = Vec::new();
+        while let Some(image) = images.next() {
+            result.push(image.unwrap());
+        }
+        result
+    }
+
+    let mut terminal = ghostty(Viewport::new(16, 6).unwrap());
+    terminal.resize(16, 6, 8, 16).unwrap();
+    terminal.set_kitty_image_storage_limit(4096).unwrap();
+    terminal.set_kitty_image_from_file_allowed(false).unwrap();
+    terminal.set_kitty_image_temp_file_dir(None).unwrap();
+    terminal
+        .set_kitty_image_from_shared_mem_allowed(false)
+        .unwrap();
+    terminal.vt_write(b"\x1b[2;4H");
+    terminal.vt_write(RED_IMAGE);
+    let before = placements(&terminal);
+    assert_eq!(before.len(), 1);
+    let placement = before[0];
+    assert_eq!((placement.image_id, placement.placement_id), (7, 3));
+    assert_eq!((placement.viewport_row, placement.viewport_col), (1, 3));
+    assert_eq!((placement.grid_cols, placement.grid_rows), (1, 1));
+    assert_eq!(placement.kind, KittyPlacementKind::Fixed);
+    let graphics = terminal.kitty_graphics().unwrap();
+    let red = graphics.image(7).unwrap().data().unwrap().to_vec();
+    assert_eq!(red, [255, 0, 0, 255]);
+
+    terminal.vt_write(GREEN_IMAGE);
+    let graphics = terminal.kitty_graphics().unwrap();
+    let green = graphics.image(7).unwrap();
+    assert_eq!(green.data().unwrap(), [0, 255, 0, 255]);
+    assert_ne!(green.generation().unwrap(), placement.image_generation);
+    // Retransmitting an image drops its previous placements.
+    assert!(placements(&terminal).is_empty());
+    terminal.vt_write(b"\x1b_Ga=p,i=7,p=3,c=1,r=1,C=1,q=2\x1b\\");
+    assert_eq!(placements(&terminal).len(), 1);
+    terminal.vt_write(b"\x1b[?1049h");
+    assert!(placements(&terminal).is_empty());
+    terminal.vt_write(b"\x1b[?1049l");
+    assert_eq!(placements(&terminal).len(), 1);
+    terminal.vt_write(b"\x1b_Ga=d,d=I,i=7,q=2\x1b\\");
+    assert!(placements(&terminal).is_empty());
+    assert!(terminal.kitty_graphics().unwrap().image(7).is_none());
+}
+
+#[test]
+fn text_profile_never_relays_kitty_apc() {
+    let mut terminal = TerminalScreen::with_ghostty(Viewport::new(20, 6).unwrap()).unwrap();
+    assert!(terminal.process(RED_IMAGE).unwrap().is_empty());
+    terminal.process(b"visible").unwrap();
+    let frame = terminal.redraw(Viewport::new(20, 6).unwrap()).unwrap();
+    assert!(frame.contains("visible"));
+    assert!(!frame.contains("\x1b_G"));
+}
+
 fn ghostty(viewport: Viewport) -> Terminal {
     let mut terminal = Terminal::new(Options {
         cols: viewport.cols.get(),
