@@ -192,6 +192,19 @@ pub(crate) fn attention(record: &Attention, run: &str) -> AttentionState {
     }
 }
 
+pub(crate) fn prompt_observation(run: &AgentRun) -> i32 {
+    use corvid_protocol::wire::PromptObservation as Wire;
+
+    (match run.prompt_observation() {
+        Some(PromptObservation::Submitted) => Wire::Submitted,
+        Some(PromptObservation::Responded) => Wire::Responded,
+        Some(PromptObservation::ModelRequested) => Wire::ModelRequested,
+        Some(PromptObservation::ModelAttemptFinished) => Wire::ModelAttemptFinished,
+        Some(PromptObservation::ToolExecuted) => Wire::ToolExecuted,
+        None => Wire::Unspecified,
+    }) as i32
+}
+
 fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
     let response = match run
         .recent_response
@@ -204,15 +217,7 @@ fn agent_state(run: &AgentRun, summary: AgentInfo) -> AgentState {
         None => AgentResponse::Unspecified,
     };
     AgentState {
-        prompt_observation: match run.prompt_observation {
-            Some(PromptObservation::Submitted) => {
-                corvid_protocol::wire::PromptObservation::Submitted
-            }
-            Some(PromptObservation::Responded) => {
-                corvid_protocol::wire::PromptObservation::Responded
-            }
-            None => corvid_protocol::wire::PromptObservation::Unspecified,
-        } as i32,
+        prompt_observation: summary.prompt_observation,
         created_sequence: None,
         summary: Some(summary),
         lifecycle: lifecycle(run.lifecycle.value) as i32,

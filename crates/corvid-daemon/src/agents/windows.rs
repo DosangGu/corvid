@@ -535,13 +535,18 @@ impl Run {
                 .as_ref()
                 .map(|response| response.evidence.observed_unix_ms),
             end_reason: projection::end_reason(run.lifecycle.value) as i32,
+            prompt_observation: projection::prompt_observation(run),
+            prompt_observed_unix_ms: run
+                .prompt_observation
+                .as_ref()
+                .map(|observation| observation.evidence.observed_unix_ms),
             adapter: Some(ProviderAdapter {
                 mode: if self.producer.is_some() {
                     ProviderExecutionMode::InteractiveCli
                 } else {
                     ProviderExecutionMode::ProcessOnly
                 } as i32,
-                schema_revision: 1,
+                schema_revision: 2,
                 ..Default::default()
             }),
             ..Default::default()

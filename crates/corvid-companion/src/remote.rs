@@ -192,7 +192,12 @@ impl Remote {
             .truncate(crate::PRESENTATION_ATTENTION_LIMIT);
         for run in remote.runs.values_mut() {
             let active = run.display.last_badge == AgentBadge::Working as i32
-                || run.display.prompt_observation == PromptObservation::Submitted as i32;
+                || PromptObservation::try_from(run.display.prompt_observation).is_ok_and(
+                    |observation| {
+                        observation == PromptObservation::Submitted
+                            || observation.confirms_execution()
+                    },
+                );
             if !active {
                 run.display.new_result_unix_ms = run
                     .latest_result
@@ -265,6 +270,7 @@ impl ObservedRun {
                 availability: availability as i32,
                 last_badge: summary.badge,
                 prompt_observation: agent.prompt_observation,
+                prompt_observed_unix_ms: summary.prompt_observed_unix_ms,
                 provider: summary.provider,
                 confidence: evidence.map_or(0, |evidence| evidence.confidence),
                 collection: summary.collection,

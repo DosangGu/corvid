@@ -34,7 +34,6 @@ pub(crate) struct Contract {
     pub(crate) valid_hook_fields: fn(HookEvent, &CollectHook) -> bool,
     pub(crate) prompt: fn(String) -> (ObservationKind, Confidence),
     pub(crate) question_confidence: Confidence,
-    pub(crate) first_stop_per_turn: bool,
     pub(crate) valid_session_id: fn(&str) -> bool,
     pub(crate) resume: Option<Resume>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -90,6 +89,8 @@ const CLAUDE_EVENTS: &[HookEvent] = &[
     HookEvent::SubagentResponseObserved,
     HookEvent::SubagentLinked,
     HookEvent::NestedSubagentLinked,
+    HookEvent::ToolStarted,
+    HookEvent::ToolFinished,
 ];
 
 const CODEX_EVENTS: &[HookEvent] = &[
@@ -104,6 +105,8 @@ const CODEX_EVENTS: &[HookEvent] = &[
     HookEvent::ToolStarted,
     HookEvent::ToolFinished,
     HookEvent::TurnInterrupted,
+    HookEvent::ModelRequested,
+    HookEvent::ModelAttemptFinished,
 ];
 
 pub(crate) const CONTRACTS: &[Contract] = &[CLAUDE, CODEX];
@@ -112,7 +115,12 @@ const CLAUDE: Contract = Contract {
     provider: Provider::Claude,
     wire_id: AgentProvider::Claude as i32,
     events: CLAUDE_EVENTS,
-    valid_hook_fields: |_, _| true,
+    valid_hook_fields: |event, request| {
+        !matches!(event, HookEvent::ToolStarted | HookEvent::ToolFinished)
+            || (request.turn_id.is_some()
+                && request.tool_id.is_some()
+                && request.actor_id.is_none())
+    },
     prompt: |turn| {
         (
             ObservationKind::InteractivePromptSubmitted(turn),
@@ -120,7 +128,6 @@ const CLAUDE: Contract = Contract {
         )
     },
     question_confidence: Confidence::Confirmed,
-    first_stop_per_turn: false,
     valid_session_id: legacy_session_id,
     resume: Some(Resume {
         arguments: |id| vec!["--resume".into(), id.into()],
@@ -130,7 +137,7 @@ const CLAUDE: Contract = Contract {
     unix: UnixIntegration {
         program: "claude",
         fixture_version: CLAUDE_VERSION,
-        schema_revision: 3,
+        schema_revision: 4,
         version_prefix: "",
         version_suffix: " (Claude Code)",
         noninteractive_arguments: &["-p", "--print"],
@@ -172,7 +179,6 @@ const CODEX: Contract = Contract {
     valid_hook_fields: codex_hook_fields,
     prompt: |turn| (ObservationKind::TurnStarted(turn), Confidence::Inferred),
     question_confidence: Confidence::Inferred,
-    first_stop_per_turn: true,
     valid_session_id: legacy_session_id,
     resume: Some(Resume {
         arguments: |id| vec!["resume".into(), id.into()],
@@ -182,7 +188,7 @@ const CODEX: Contract = Contract {
     unix: UnixIntegration {
         program: "codex",
         fixture_version: CODEX_VERSION,
-        schema_revision: 1,
+        schema_revision: 2,
         version_prefix: "codex-cli ",
         version_suffix: "",
         noninteractive_arguments: &["e", "exec"],
@@ -327,14 +333,14 @@ impl Contract {
 
 impl Contract {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn recognizes_version(&self, output: &str) -> bool {
+    pub(super) fn version(&self, output: &str) -> Option<Version> {
         // A fixture release is evidence about the adapter, not an admission range.
         // Every provider still validates actual hook fields and process ownership.
         output
             .trim()
             .strip_prefix(self.unix.version_prefix)
             .and_then(|version| version.strip_suffix(self.unix.version_suffix))
-            .is_some_and(|version| Version::parse(version).is_ok())
+            .and_then(|version| Version::parse(version).ok())
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -364,7 +370,7 @@ mod tests {
                     "{}{version}{}\n",
                     contract.unix.version_prefix, contract.unix.version_suffix
                 );
-                assert!(contract.recognizes_version(&banner), "{banner}");
+                assert!(contract.version(&banner).is_some(), "{banner}");
             }
         }
     }
@@ -377,7 +383,7 @@ mod tests {
                     "{}{version}{}",
                     contract.unix.version_prefix, contract.unix.version_suffix
                 );
-                assert!(!contract.recognizes_version(&banner), "{banner}");
+                assert!(!contract.version(&banner).is_some(), "{banner}");
             }
             for other in CONTRACTS {
                 if other.provider == contract.provider {
@@ -389,7 +395,7 @@ mod tests {
                     other.unix.fixture_version,
                     other.unix.version_suffix
                 );
-                assert!(!contract.recognizes_version(&banner), "{banner}");
+                assert!(!contract.version(&banner).is_some(), "{banner}");
             }
         }
     }

@@ -738,6 +738,7 @@ impl Colors {
         let color = status.map(|status| self.status(status));
         let face = div()
             .size_full()
+            .relative()
             .flex()
             .items_center()
             .justify_center()
@@ -769,6 +770,20 @@ impl Colors {
                         }),
                 )
             })
+            .when(
+                run.is_some_and(|run| working_with_unverified_input(run, cached)),
+                |face| {
+                    face.child(
+                        div()
+                            .absolute()
+                            .top(px(5.))
+                            .right(px(5.))
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(self.working),
+                    )
+                },
+            )
             .when_some(host, |face, host| {
                 face.child(
                     self.muted(host.to_owned())
@@ -929,11 +944,23 @@ fn badge(raw: i32) -> (&'static str, StatusColor) {
         _ => ("Unknown", StatusColor::Muted),
     }
 }
+fn working_with_unverified_input(run: &PresentedRun, cached: bool) -> bool {
+    availability_label(RunAvailability::try_from(run.availability).ok(), cached).is_none()
+        && run.pending_requests == 0
+        && run.unverified_requests > 0
+        && run.collection == AgentCollection::Healthy as i32
+        && PromptObservation::try_from(run.prompt_observation)
+            .is_ok_and(PromptObservation::confirms_execution)
+}
+
 fn status(run: &PresentedRun, cached: bool) -> (&'static str, StatusColor) {
     if let Some(label) =
         availability_label(RunAvailability::try_from(run.availability).ok(), cached)
     {
         return (label, StatusColor::Muted);
+    }
+    if working_with_unverified_input(run, cached) {
+        return ("Check terminal · Working", StatusColor::Attention);
     }
     if run.pending_requests == 0 && run.unverified_requests > 0 {
         return ("Check terminal", StatusColor::Attention);
@@ -967,7 +994,9 @@ impl Colors {
                 "{} pending · {} unverified · {} unseen",
                 run.pending_requests, run.unverified_requests, run.unseen_attention
             )));
-        if let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
+        if let Some(age) = run.prompt_observed_unix_ms.and_then(observation_age) {
+            view = view.child(self.muted(format!("Prompt activity observed {age} ago")));
+        } else if let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
             view = view.child(self.muted(format!("Observed {age} ago")));
         }
         view
@@ -1065,6 +1094,27 @@ mod tests {
         );
         run.availability = RunAvailability::Offline as i32;
         assert_eq!(status(&run, false), ("Offline", StatusColor::Muted));
+    }
+
+    #[test]
+    fn confirmed_work_is_visible_alongside_unverified_input_only_on_live_cards() {
+        let mut run = available(AgentBadge::Unknown);
+        run.collection = AgentCollection::Healthy as i32;
+        run.unverified_requests = 1;
+        run.prompt_observation = PromptObservation::ToolExecuted as i32;
+
+        assert_eq!(
+            status(&run, false),
+            ("Check terminal · Working", StatusColor::Attention)
+        );
+        assert!(working_with_unverified_input(&run, false));
+        assert!(!working_with_unverified_input(&run, true));
+        assert_eq!(evidence_label(&run), "Tool execution observed");
+
+        run.last_badge = AgentBadge::NeedsInput as i32;
+        run.pending_requests = 1;
+        assert_eq!(status(&run, false), ("Needs input", StatusColor::Attention));
+        assert!(!working_with_unverified_input(&run, false));
     }
 
     #[test]

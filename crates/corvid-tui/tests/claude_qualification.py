@@ -277,8 +277,8 @@ def configure(directory, port, corvid, fault):
         for event, handlers in generated["hooks"].items():
             if fault == "helper-crash":
                 crash_hooks.add(event)
-                # These child fixture records lie outside the production matchers.
-                capture_tool = {"PreToolUse": "Agent", "PostToolUse": "Read"}.get(event)
+                # The child Agent invocation is outside the production matchers.
+                capture_tool = {"PreToolUse": "Agent"}.get(event)
                 settings["hooks"][event] = []
                 if capture_tool:
                     assert all(

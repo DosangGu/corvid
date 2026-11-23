@@ -35,13 +35,15 @@ impl Input {
                 _ => return None,
             },
             "UserPromptSubmit" => HookEvent::PromptSubmitted,
+            "PreModelRequest" => HookEvent::ModelRequested,
+            "PostModelRequest" => HookEvent::ModelAttemptFinished,
             "PreToolUse" if tool == Some("Bash") => HookEvent::ToolStarted,
             "PostToolUse" if tool == Some("Bash") => HookEvent::ToolFinished,
             "PreToolUse" if tool == Some("request_user_input") => HookEvent::QuestionStarted,
             "PostToolUse" if tool == Some("request_user_input") => HookEvent::QuestionResult,
             "PermissionRequest" if tool == Some("Bash") => HookEvent::PermissionRequested,
-            "Stop" if self.stop_hook_active == Some(false) => HookEvent::ResponseObserved,
-            "Stop" if self.stop_hook_active.is_none() => HookEvent::DeliveryGap,
+            "Stop" if self.stop_hook_active.is_some() => HookEvent::ResponseObserved,
+            "Stop" => HookEvent::DeliveryGap,
             "Interrupt" => HookEvent::TurnInterrupted,
             _ => return None,
         })
@@ -75,5 +77,40 @@ impl Input {
             actor_id: optional_id(self.agent_id)?,
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_request_hooks_retain_only_correlation_fields() {
+        for (event, expected) in [
+            ("PreModelRequest", HookEvent::ModelRequested),
+            ("PostModelRequest", HookEvent::ModelAttemptFinished),
+            ("Stop", HookEvent::ResponseObserved),
+        ] {
+            let payload = serde_json::json!({
+                "hook_event_name": event,
+                "session_id": "session",
+                "turn_id": "turn",
+                "agent_id": "child",
+                "status": "failed",
+                "error": "private",
+                "stop_hook_active": true,
+            });
+            assert_eq!(
+                fields(Some(payload.to_string().as_bytes())),
+                Some(CollectHook {
+                    event: expected as i32,
+                    provider: AgentProvider::Codex as i32,
+                    session_id: Some("session".into()),
+                    turn_id: Some("turn".into()),
+                    actor_id: Some("child".into()),
+                    ..Default::default()
+                })
+            );
+        }
     }
 }

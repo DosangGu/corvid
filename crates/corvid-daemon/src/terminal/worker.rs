@@ -1577,11 +1577,11 @@ impl TerminalProcess {
         let program = launcher
             .as_deref()
             .and_then(|path| path.canonicalize().ok());
-        let executable = launch
+        let observer = launch
             .provider
             .zip(program.as_deref())
             .and_then(|(provider, path)| provider::qualify(provider, path));
-        let qualified = executable.is_some();
+        let qualified = observer.is_some();
         let restart_path = launcher
             .as_deref()
             .filter(|_| qualified && launch.provider == Some(Provider::Claude))
@@ -1599,16 +1599,20 @@ impl TerminalProcess {
                 )
             })
             .transpose()?;
-        let association = executable
+        let association = observer
             .as_ref()
             .and(reservation.as_ref())
             .map(|launch| launch.association);
-        let mut command = launch.into_command(program.filter(|_| qualified), qualified);
+        let mut command = launch.into_command(
+            program.filter(|_| qualified),
+            observer.as_ref().map(|(_, version)| version),
+        );
         scope
             .hook_environment
             .configure(&mut command, association, shell.then_some(id));
 
         let mut session = Backend::start(scope.host.as_ref(), id, command, viewport)?;
+        let executable = observer.map(|(executable, _)| executable);
         let (mut process, identity) =
             Self::started(reservation, &mut session, scope, id, executable);
         if let Some(probe) = &mut process.probe {
@@ -1671,8 +1675,12 @@ impl TerminalProcess {
 
 impl Launch {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn into_command(self, program: Option<PathBuf>, qualified: bool) -> CommandBuilder {
-        let qualified_provider = self.provider.filter(|_| qualified);
+    fn into_command(
+        self,
+        program: Option<PathBuf>,
+        version: Option<&semver::Version>,
+    ) -> CommandBuilder {
+        let qualified_provider = self.provider.zip(version);
         let mut argv = self.argv.into_iter();
         let program = program
             .map(PathBuf::into_os_string)
@@ -1683,8 +1691,12 @@ impl Launch {
             .or_else(|| argv.next());
         let mut command = if let Some(program) = program {
             let mut command = CommandBuilder::new(program);
-            if let Some(provider) = qualified_provider {
-                command.args(provider::observer_arguments(provider, argv.as_slice()));
+            if let Some((provider, version)) = qualified_provider {
+                command.args(provider::observer_arguments(
+                    provider,
+                    version,
+                    argv.as_slice(),
+                ));
             }
             command.args(argv);
             command

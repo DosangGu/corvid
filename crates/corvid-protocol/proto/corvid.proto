@@ -489,6 +489,7 @@ message PresentedRun {
   optional uint64 new_result_unix_ms = 15;
   // Display title of the run's pane, or the custom name of its single-pane tab.
   optional string session_title = 16;
+  optional uint64 prompt_observed_unix_ms = 17;
 }
 
 message PresentedSlot {
@@ -757,6 +758,9 @@ enum PromptObservation {
   PROMPT_OBSERVATION_UNSPECIFIED = 0;
   PROMPT_OBSERVATION_SUBMITTED = 1;
   PROMPT_OBSERVATION_RESPONDED = 2;
+  PROMPT_OBSERVATION_MODEL_REQUESTED = 3;
+  PROMPT_OBSERVATION_MODEL_ATTEMPT_FINISHED = 4;
+  PROMPT_OBSERVATION_TOOL_EXECUTED = 5;
 }
 
 enum AgentLifecycle {
@@ -904,6 +908,8 @@ message AgentInfo {
   optional string parent_run_id = 21;
   optional string actor_id = 22;
   bool child_coverage_gap = 23;
+  PromptObservation prompt_observation = 24;
+  optional uint64 prompt_observed_unix_ms = 25;
 }
 
 message ProviderProfile {
@@ -1004,6 +1010,8 @@ enum HookEvent {
   HOOK_EVENT_SUBAGENT_LINKED = 21;
   HOOK_EVENT_INPUT_BATCH_FINISHED = 22;
   HOOK_EVENT_NESTED_SUBAGENT_LINKED = 23;
+  HOOK_EVENT_MODEL_REQUESTED = 24;
+  HOOK_EVENT_MODEL_ATTEMPT_FINISHED = 25;
 }
 
 message CollectHook {

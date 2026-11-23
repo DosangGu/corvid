@@ -13,6 +13,8 @@ pub(super) const CLAUDE: Config = Config {
         ("UserPromptSubmit", None),
         ("PreToolUse", Some("^(AskUserQuestion|ExitPlanMode)$")),
         ("PostToolUse", Some("^(AskUserQuestion|ExitPlanMode)$")),
+        ("PreToolUse", Some("^(Bash|Read)$")),
+        ("PostToolUse", Some("^(Bash|Read)$")),
         ("PermissionRequest", None),
         ("Stop", None),
         ("SessionEnd", None),
@@ -30,6 +32,8 @@ pub(super) const CODEX: Config = Config {
     events: &[
         ("SessionStart", Some("startup|resume|compact")),
         ("UserPromptSubmit", None),
+        ("PreModelRequest", None),
+        ("PostModelRequest", None),
         ("PreToolUse", Some("Bash|request_user_input")),
         ("PostToolUse", Some("Bash|request_user_input")),
         ("PermissionRequest", Some("Bash")),
@@ -66,7 +70,12 @@ pub fn observer_settings(provider: Provider) -> Result<Value> {
         if let Some(matcher) = matcher {
             group["matcher"] = json!(matcher);
         }
-        hooks.insert((*event).into(), json!([group]));
+        hooks
+            .entry((*event).to_owned())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .expect("observer groups are arrays")
+            .push(group);
     }
     Ok(json!({ "hooks": hooks }))
 }

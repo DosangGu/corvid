@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use nix::fcntl::OFlag;
+use semver::Version;
 use serde_json::{Map, Value, json};
 
 use corvid_core::agent::Provider;
@@ -38,9 +39,11 @@ pub(super) const CODEX: Config = Config {
 };
 
 const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
-const CODEX_EVENTS: [(&str, Option<&str>); 7] = [
+const CODEX_EVENTS: [(&str, Option<&str>); 9] = [
     ("SessionStart", Some("startup|resume|compact")),
     ("UserPromptSubmit", None),
+    ("PreModelRequest", None),
+    ("PostModelRequest", None),
     ("PreToolUse", Some("Bash|request_user_input")),
     ("PostToolUse", Some("Bash|request_user_input")),
     ("PermissionRequest", Some("Bash")),
@@ -53,7 +56,7 @@ pub fn observer_settings(provider: Provider) -> Result<Value> {
     Ok(json!({ "hooks": observer_hooks(provider, &executable) }))
 }
 
-pub(super) fn arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> {
+pub(super) fn arguments(provider: Provider, version: &Version, argv: &[OsString]) -> Vec<OsString> {
     let config = &super::contract(provider).unix.hooks;
     if config.accepts_settings_override
         && argv
@@ -67,6 +70,11 @@ pub(super) fn arguments(provider: Provider, argv: &[OsString]) -> Vec<OsString> 
         return Vec::new();
     };
     let mut hooks = observer_hooks(provider, &executable);
+    if provider == Provider::Codex && *version < Version::new(0, 165, 0) {
+        // Keep the legacy hook config usable on releases without model request hooks.
+        hooks.remove("PreModelRequest");
+        hooks.remove("PostModelRequest");
+    }
     if let Some(settings) = installed_settings(config.installed_settings) {
         retain_missing_hooks(&mut hooks, &settings);
     }
@@ -100,9 +108,11 @@ fn installed_settings(
 
 fn retain_missing_hooks(hooks: &mut Map<String, Value>, settings: &Value) {
     hooks.retain(|event, groups| {
-        settings["hooks"][event]
-            .as_array()
-            .is_none_or(|installed| !installed.contains(&groups[0]))
+        let groups = groups.as_array_mut().expect("observer groups are arrays");
+        if let Some(installed) = settings["hooks"][event].as_array() {
+            groups.retain(|group| !installed.contains(group));
+        }
+        !groups.is_empty()
     });
 }
 
@@ -145,7 +155,10 @@ fn claude_hooks(executable: &str) -> Map<String, Value> {
     ] {
         hooks.insert(
             event.to_owned(),
-            json!([{ "matcher": matcher, "hooks": [handler.clone()] }]),
+            json!([
+                { "matcher": matcher, "hooks": [handler.clone()] },
+                { "matcher": "^(Bash|Read)$", "hooks": [handler.clone()] },
+            ]),
         );
     }
     let mut batch = handler;

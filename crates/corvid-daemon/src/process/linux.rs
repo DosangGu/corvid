@@ -48,7 +48,8 @@ pub(crate) fn legacy_observer(
         return None;
     }
     let path = process.path().ok()?;
-    if crate::provider::qualify(provider, &path) != Some(owner.executable)
+    if crate::provider::qualify(provider, &path).map(|(executable, _)| executable)
+        != Some(owner.executable)
         || !owner.belongs_to(root)
     {
         return None;

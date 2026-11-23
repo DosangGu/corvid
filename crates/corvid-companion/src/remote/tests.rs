@@ -245,10 +245,16 @@ fn priority_uses_request_opening_time_and_only_the_latest_unread_result() {
     for (run, badge) in [
         (waiting, AgentBadge::NeedsInput),
         (finished, AgentBadge::ResponseObserved),
-        (working, AgentBadge::Working),
+        (working, AgentBadge::Unknown),
     ] {
         let mut state = agent(run, &location, 1);
-        state.summary.as_mut().unwrap().badge = badge as i32;
+        let summary = state.summary.as_mut().unwrap();
+        summary.badge = badge as i32;
+        if run == working {
+            state.prompt_observation = PromptObservation::ModelRequested as i32;
+            summary.prompt_observed_unix_ms = Some(60);
+            summary.unverified_requests = 1;
+        }
         bodies.push(Body::Agent(Box::new(state)));
     }
     bodies.push(Body::Request(RequestState {
@@ -294,5 +300,11 @@ fn priority_uses_request_opening_time_and_only_the_latest_unread_result() {
     };
     assert_eq!(display(waiting).pending_since_unix_ms, Some(10));
     assert_eq!(display(finished).new_result_unix_ms, None);
+    assert_eq!(
+        display(working).prompt_observation,
+        PromptObservation::ModelRequested as i32
+    );
+    assert_eq!(display(working).prompt_observed_unix_ms, Some(60));
+    assert_eq!(display(working).unverified_requests, 1);
     assert_eq!(display(working).new_result_unix_ms, None);
 }

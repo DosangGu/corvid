@@ -227,10 +227,20 @@ name for a single-pane tab. Unverified input requests use amber and say
 
 For monitored Claude and Codex sessions, submitting a prompt turns the key blue.
 The tooltip says **Working (inferred)** because another provider hook can still
-block the prompt. A response hook for that same prompt turns the key mint green
-when there is no stronger activity or input status. The next submission starts
-a new blue indication. This requires a daemon and companion that forward prompt
-observations. Process-only sessions keep their gray status.
+block the prompt. A Codex model request or a correlated tool result confirms
+**Working**. The same evidence can establish a turn when its submission hook
+was missed. A response hook for the current prompt turns the key mint green
+when there is no stronger activity or input status. Individual model request
+attempts keep the working indication through retries and tool calls.
+
+A confirmed pending request keeps the amber **Needs input** indication. When
+the outcome of a request is uncertain and current execution is confirmed,
+the card shows an amber **Check terminal** border and a blue dot. Hover for
+the last prompt event and its age. Process-only sessions stay gray. On Linux
+and macOS, `corvid control agents` also shows `prompt_observation` and
+`prompt_observed_unix_ms` when present.
+
+![Agent Deck showing Working, Check terminal with a blue working dot, and an observed response](images/agent-deck/working-with-unverified-input.png)
 
 ![Two live fixture sessions after the first responded and the second submitted a prompt](images/agent-deck/live-prompt-status.png)
 

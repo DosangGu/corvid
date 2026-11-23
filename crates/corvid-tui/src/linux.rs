@@ -16,8 +16,9 @@ use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentActivity, AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentLifecycle,
     AgentProcessState, AgentProvider, AttentionReason, CollectorStatus, HelloResult, HookEvent,
-    InputRequestKind, InputRequestStatus, LayoutRecovery, PersistenceState, ProviderCapabilityKind,
-    ProviderCorrelation, ProviderExecutionMode, ProviderQualification, TuiInputMode,
+    InputRequestKind, InputRequestStatus, LayoutRecovery, PersistenceState, PromptObservation,
+    ProviderCapabilityKind, ProviderCorrelation, ProviderExecutionMode, ProviderQualification,
+    TuiInputMode,
 };
 use uuid::Uuid;
 
@@ -756,6 +757,10 @@ fn print_agent(agent: AgentInfo) {
         agent.cancelled_requests,
         agent.response_observed_unix_ms.is_some(),
     );
+    if let Some(time) = agent.prompt_observed_unix_ms {
+        let signal = PromptObservation::try_from(agent.prompt_observation).unwrap_or_default();
+        print!(" prompt_observation={signal:?} prompt_observed_unix_ms={time}");
+    }
     if let Some(process) = agent.process_identity {
         print!(" pid={}", process.pid);
     }

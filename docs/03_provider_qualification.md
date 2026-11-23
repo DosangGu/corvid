@@ -13,9 +13,10 @@ version gate.
 The captured releases remain each adapter's qualification baseline, not a
 claim that every accepted release has been exercised. `ProviderProfile.version` and
 `AgentInfo.qualified_provider_version` identify that baseline; hook evidence
-identifies the parser contract as `claude-hooks.v3` or `codex-hooks.v1`. All versions use
-the same event allowlist, payload limits, correlation requirements, and process
-ownership checks. They do not automatically gain support for new hook events.
+identifies the parser contract as `claude-hooks.v4` or `codex-hooks.v2`. The collector enforces bounded payloads,
+correlation requirements, and process ownership checks. Linux and macOS register
+Codex model request observers for 0.165.0 and later. Earlier releases receive the
+existing prompt, tool, and response groups.
 
 The synthetic shell fixture reports Claude 2.1.300/2.1.325 and Codex
 0.166.0/0.168.0. It exercises registration, response attention, and duplicate bell
@@ -55,7 +56,9 @@ hooks or correlation fields must not invent activity, completion, or approval.
 Generate the observer groups with `corvid hooks claude` or
 `corvid hooks codex`. Merge the printed groups into Claude's user or project
 settings or into Codex's `hooks.json`. Use the provider's normal review and
-trust controls. Corvid does not edit provider configuration files.
+trust controls. Corvid does not edit provider configuration files. For Codex
+releases older than 0.165.0, omit the `PreModelRequest` and `PostModelRequest`
+groups when merging the generated settings.
 
 Run the provider inside a newly opened Corvid shell or use
 `corvid attach --agent`. The hook helper sends only allowlisted event fields
@@ -75,6 +78,23 @@ generated hooks. A loopback model endpoint supplied a synthetic response.
 For each CLI, the daemon associated `SessionStart` with its native run and
 published response attention after `Stop`. This run covered a single response
 per provider. The wider Claude interaction coverage below was exercised on Linux.
+
+## Working activity qualification
+
+On Linux, interactive Codex CLI 0.171.0 and Claude Code 2.1.329 ran through
+Corvid PTYs against local synthetic model servers on 2026-11-23. The Codex
+observer received no submission for the test turn. `PreModelRequest` still
+published **Working** while the response was held, and `PostModelRequest`
+reported the attempt before `Stop` published **Response observed**. Claude's
+root `Read` hooks shared a session, prompt, and tool ID. The tool result
+published **Working** while the next model response was held. The Claude
+observer also registers `Bash`; the live case exercised `Read`.
+
+Reducer fixtures cover retry attempts, responses after a continued Stop,
+interruption, delayed activity from earlier turns, and collection gaps. The
+native X11 fixture renders mixed activity and input evidence and checks focus
+routing. Windows ConPTY fixtures exercise the generated hook commands. The
+interactive releases above were exercised on Linux.
 
 ## Claude Code 2.1.318 on Linux
 
@@ -285,7 +305,7 @@ inspect the outer terminal. Corvid does not need tmux to run the adapter.
 | Bash `PermissionRequest` | Reports the turn with no tool-use ID. The real approval dialog remains visible. The separate permission observation stays Unverified after the command runs. |
 | `request_user_input` | Plan mode displays the question and emits a matching `PostToolUse` after the user answers. Default mode can emit `PreToolUse` without a dialog. Corvid records a typed Unverified question and resolves it only on the matching result. |
 | `Interrupt` | Canceling a Plan question reports its exact turn. Corvid cancels that turn's correlated open scopes and rejects late attempts to reopen them. Other runs and uncorrelated permission observations retain their state. |
-| `Stop` | Reports a turn and `stop_hook_active`. Corvid records the first response boundary for a turn. The hook emits a fixed empty JSON object and does not request continuation. |
+| `Stop` | Reports a turn and `stop_hook_active`. Corvid records the response boundary and emits one response alert per turn. A later model request can confirm renewed activity on the same turn. The observer emits a fixed empty JSON object. |
 | `/compact` | The manual `PreCompact` and `PostCompact` hooks share the current session and turn IDs. The next prompt emits `SessionStart` with `source=compact` for that session. Corvid retains the run and its requests. |
 | `resume` | The first prompt after resuming emits `SessionStart` with `source=resume` for the same conversation ID. A fresh managed process gets a new run and an empty request history. |
 | `notify` | A root completion can match the hook session and turn. The same executable also delivers completions with other thread IDs that have no matching lifecycle hook in this fixture. Corvid does not use `notify` to establish an interactive run's identity. |

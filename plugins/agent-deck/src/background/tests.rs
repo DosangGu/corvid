@@ -87,7 +87,8 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
     let controller = scope.config.controller_id;
     let fixture_key = key.clone();
     jobs.spawn(async move {
-        let result = serve(address, controller, fixture_key, receiver).await;
+        let run = fixture_run(fixture_key);
+        let result = serve(address, controller, run, receiver).await;
         if let Err(error) = &result {
             eprintln!("fixture server: {error:#}");
         }
@@ -157,10 +158,19 @@ async fn next_snapshot(
     result.with_context(|| format!("remote notification feed timed out: {issue}"))?
 }
 
+fn fixture_run(key: PresentedRunKey) -> PresentedRun {
+    PresentedRun {
+        key: Some(key),
+        provider: AgentProvider::Claude as i32,
+        availability: corvid_protocol::wire::RunAvailability::Available as i32,
+        ..Default::default()
+    }
+}
+
 async fn serve(
     address: <PresentationAddress as ToOwned>::Owned,
     controller: Uuid,
-    key: PresentedRunKey,
+    run: PresentedRun,
     feed: watch::Receiver<Vec<PresentedAttention>>,
 ) -> Result<()> {
     #[cfg(not(windows))]
@@ -181,10 +191,10 @@ async fn serve(
         let Some(stream) = listener.accept().await? else {
             continue;
         };
-        let key = key.clone();
+        let run = run.clone();
         let feed = feed.clone();
         peers.spawn(async move {
-            let result = peer(corvid_async::io::adapt(stream), controller, key, feed).await;
+            let result = peer(corvid_async::io::adapt(stream), controller, run, feed).await;
             if let Err(error) = &result {
                 eprintln!("fixture peer: {error:#}");
             }
@@ -196,9 +206,10 @@ async fn serve(
 async fn peer(
     stream: impl AsyncRead + AsyncWrite + Unpin,
     controller: Uuid,
-    key: PresentedRunKey,
+    run: PresentedRun,
     feed: watch::Receiver<Vec<PresentedAttention>>,
 ) -> Result<()> {
+    let key = run.key.as_ref().context("fixture run identity")?;
     let (input, output) = corvid_async::io::split(stream);
     let mut writer = FrameWriter::start(output, FrameRole::StructuredOnly).await?;
     let mut reader = FrameReader::start(input, FrameRole::StructuredOnly).await?;
@@ -234,12 +245,7 @@ async fn peer(
                 slots: vec![PresentedSlot {
                     slot_id: 1,
                     revision: 1,
-                    run: Some(PresentedRun {
-                        key: Some(key.clone()),
-                        provider: AgentProvider::Claude as i32,
-                        availability: corvid_protocol::wire::RunAvailability::Available as i32,
-                        ..Default::default()
-                    }),
+                    run: Some(run.clone()),
                     ..Default::default()
                 }],
                 ..Default::default()
