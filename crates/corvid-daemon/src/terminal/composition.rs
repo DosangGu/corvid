@@ -1,12 +1,12 @@
 use std::fmt::Write;
 use std::time::Instant;
 
+use super::screen::{CellColor, CellStyle, CellWidth, ScreenSnapshot};
 use corvid_core::Viewport;
 use corvid_core::layout::{Layout, Location};
 use corvid_core::navigation::Rect;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
-use vt100::{Cell, Color, Screen};
 
 use super::title_motion::{TitleMotion, window};
 use super::{navigation, status::clip};
@@ -236,7 +236,7 @@ impl Composition {
         selected: Option<Uuid>,
         titles: &std::collections::HashMap<Uuid, String>,
         header: &HeaderMotion,
-        mut screen: impl FnMut(Uuid) -> Option<std::sync::Arc<Screen>>,
+        mut screen: impl FnMut(Uuid) -> Option<std::sync::Arc<ScreenSnapshot>>,
     ) -> String {
         let mut ansi = String::from("\x1b[?6l\x1b[r\x1b[?7l\x1b[?25l\x1b[0m\x1b[2J");
         if self.panes[0].1.y != 0 {
@@ -422,7 +422,7 @@ fn host_name() -> Option<&'static str> {
     .as_deref()
 }
 
-fn draw(ansi: &mut String, screen: &Screen, body: Rect) {
+fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
     let (rows, cols) = screen.size();
     let width = cols.get().min(body.width);
     for row in 0..rows.get().min(body.height) {
@@ -432,17 +432,17 @@ fn draw(ansi: &mut String, screen: &Screen, body: Rect) {
             let Some(cell) = screen.cell(row, col) else {
                 continue;
             };
-            if cell.is_wide_continuation() {
+            if cell.width == CellWidth::Continuation {
                 continue;
             }
-            let attrs = Style::from(cell);
+            let attrs = cell.style;
             if style != Some(attrs) {
-                attrs.paint(ansi);
+                paint_style(ansi, attrs);
                 style = Some(attrs);
             }
-            if cell.has_contents() && (!cell.is_wide() || col + 1 < width) {
+            if !cell.text.is_empty() && (cell.width == CellWidth::Single || col + 1 < width) {
                 ansi.extend(
-                    cell.contents()
+                    cell.text
                         .chars()
                         .filter(|ch| !super::screen::is_bidi_control(*ch)),
                 );
@@ -453,50 +453,25 @@ fn draw(ansi: &mut String, screen: &Screen, body: Rect) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Style {
-    fg: Color,
-    bg: Color,
-    flags: [bool; 5],
-}
-
-impl From<&Cell> for Style {
-    fn from(cell: &Cell) -> Self {
-        Self {
-            fg: cell.fgcolor(),
-            bg: cell.bgcolor(),
-            flags: [
-                cell.bold(),
-                cell.dim(),
-                cell.italic(),
-                cell.underline(),
-                cell.inverse(),
-            ],
+fn paint_style(ansi: &mut String, style: CellStyle) {
+    ansi.push_str("\x1b[0");
+    for (index, enabled) in style.flags.into_iter().enumerate() {
+        if enabled {
+            let _ = write!(ansi, ";{}", if index == 4 { 7 } else { index + 1 });
         }
     }
-}
-
-impl Style {
-    fn paint(self, ansi: &mut String) {
-        ansi.push_str("\x1b[0");
-        for (index, enabled) in self.flags.into_iter().enumerate() {
-            if enabled {
-                let _ = write!(ansi, ";{}", if index == 4 { 7 } else { index + 1 });
+    for (prefix, color) in [(38, style.fg), (48, style.bg)] {
+        match color {
+            CellColor::Default => {}
+            CellColor::Indexed(index) => {
+                let _ = write!(ansi, ";{prefix};5;{index}");
+            }
+            CellColor::Rgb(r, g, b) => {
+                let _ = write!(ansi, ";{prefix};2;{r};{g};{b}");
             }
         }
-        for (prefix, color) in [(38, self.fg), (48, self.bg)] {
-            match color {
-                Color::Default => {}
-                Color::Idx(index) => {
-                    let _ = write!(ansi, ";{prefix};5;{index}");
-                }
-                Color::Rgb(r, g, b) => {
-                    let _ = write!(ansi, ";{prefix};2;{r};{g};{b}");
-                }
-            }
-        }
-        ansi.push('m');
     }
+    ansi.push('m');
 }
 
 #[cfg(test)]
@@ -535,7 +510,7 @@ mod tests {
         terminal.process(patch.as_bytes());
         assert!(terminal.screen().contents().contains("TAIL]"));
         assert_eq!(terminal.screen().cursor_position(), (2, 3));
-        assert_eq!(terminal.screen().fgcolor(), Color::Idx(1));
+        assert_eq!(terminal.screen().fgcolor(), vt100::Color::Idx(1));
         assert_eq!(
             hitboxes,
             view.tabs

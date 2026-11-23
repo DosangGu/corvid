@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use super::screen::ScreenSnapshot;
 use anyhow::{Context, Result, bail, ensure};
 use compio::time::{interval, timeout as host_timeout, timeout_at as host_timeout_at};
 use corvid_core::Viewport;
@@ -17,7 +18,6 @@ use portable_pty::{CommandBuilder, ExitStatus};
 use prost::{Enumeration, Message};
 use std::time::Instant;
 use uuid::Uuid;
-use vt100::Screen;
 
 use super::input::{Kind, WriteFailure};
 use super::session::{ReadState, TerminalSession};
@@ -495,7 +495,7 @@ async fn serve(path: &Path, id: Uuid, command: CommandBuilder, size: Viewport) -
 struct Host {
     id: Uuid,
     session: TerminalSession,
-    previous: Option<Screen>,
+    previous: Option<ScreenSnapshot>,
     exit: Option<ExitStatus>,
     failure: Option<WriteFailure>,
     changed: bool,
