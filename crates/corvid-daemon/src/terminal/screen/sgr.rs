@@ -10,7 +10,7 @@ pub(super) struct Normalizer {
 }
 
 impl Normalizer {
-    pub(super) fn process(&mut self, mut bytes: &[u8], mut process: impl FnMut(&[u8], bool)) {
+    pub(super) fn process(&mut self, mut bytes: &[u8], mut process: impl FnMut(&[u8])) {
         let mut sgr = Sgr {
             capture_clipboard: self.clipboard.is_some(),
             ..Default::default()
@@ -24,10 +24,10 @@ impl Normalizer {
             if let Some(replacement) = sgr.replacement.take() {
                 // Feed the prefix without the final 'm'. The replacement's ESC
                 // cancels the pending CSI, even when it began in an earlier chunk.
-                process(&chunk[..chunk.len() - 1], false);
-                process(replacement.as_bytes(), false);
+                process(&chunk[..chunk.len() - 1]);
+                process(replacement.as_bytes());
             } else {
-                process(chunk, std::mem::take(&mut sgr.clear_history));
+                process(chunk);
             }
             bytes = rest;
         }
@@ -49,21 +49,12 @@ impl Normalizer {
 #[derive(Default)]
 struct Sgr {
     replacement: Option<String>,
-    clear_history: bool,
     capture_clipboard: bool,
     clipboard_dispatched: bool,
 }
 
 impl vte::Perform for Sgr {
-    fn esc_dispatch(&mut self, intermediates: &[u8], _: bool, action: u8) {
-        self.clear_history = intermediates.is_empty() && action == b'c';
-    }
-
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], ignore: bool, c: char) {
-        // Match vt100's ED/DECSED dispatch, including fragmented CSI.
-        self.clear_history = c == 'J'
-            && matches!(intermediates.first(), None | Some(b'?'))
-            && params.iter().next().and_then(|group| group.first()) == Some(&3);
         if c != 'm' || ignore || !intermediates.is_empty() {
             return;
         }
@@ -74,8 +65,8 @@ impl vte::Perform for Sgr {
             return;
         }
 
-        // vt100 accepts compact colon RGB but does not accept the color space
-        // subparameter. Preserve the grouping and order of every other parameter.
+        // Accept ISO colon RGB with an omitted/default color space. Preserve
+        // the grouping and order of the other rendition parameters.
         let mut sgr = String::from("\x1b[");
         for (index, group) in params.iter().enumerate() {
             if index != 0 {
@@ -100,7 +91,7 @@ impl vte::Perform for Sgr {
     }
 
     fn terminated(&self) -> bool {
-        self.replacement.is_some() || self.clear_history || self.clipboard_dispatched
+        self.replacement.is_some() || self.clipboard_dispatched
     }
 }
 

@@ -1,47 +1,8 @@
-use std::collections::VecDeque;
-
+use corvid_protocol::ansi_screen::{Cell, Style};
 use corvid_protocol::wire::{HistoryStyle, TerminalHistory};
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
-use unicode_width::UnicodeWidthChar;
-use vt100::{Screen, capture::RowContents};
 
 use super::is_bidi_control;
-use super::snapshot::{CellStyle, CellWidth, ScreenCell};
-
-#[derive(Default)]
-pub(super) struct OlderRows {
-    // These strings come from the emulator's SGR-only row serializer.
-    lines: VecDeque<String>,
-    bytes: usize,
-    truncated: bool,
-}
-
-impl OlderRows {
-    pub(super) fn push(&mut self, row: RowContents<'_>) {
-        let mut line = String::new();
-        row.write_formatted_basic(&mut line, &mut Default::default())
-            .unwrap();
-        self.bytes += line.len() + 8;
-        self.lines.push_back(line);
-        while self.lines.len() > TERMINAL_HISTORY_MAX_ROWS
-            || self.bytes > TERMINAL_HISTORY_MAX_BYTES
-        {
-            let oldest = self.lines.pop_front().expect("history is over budget");
-            self.bytes -= oldest.len() + 8;
-            self.truncated = true;
-        }
-    }
-
-    pub(super) fn append(&self, snapshot: &mut HistoryBuilder) {
-        for line in self.lines.iter().rev() {
-            if !snapshot.push(HistoryLine::from_formatted(line, snapshot.columns)) {
-                break;
-            }
-        }
-        snapshot.truncated |= self.truncated;
-    }
-}
-
 #[derive(Default)]
 pub(super) struct HistoryLine {
     text: String,
@@ -49,16 +10,12 @@ pub(super) struct HistoryLine {
 }
 
 impl HistoryLine {
-    pub(super) fn from_screen(screen: &Screen, row: u16, columns: u16) -> Self {
-        Self::from_cells((0..columns).filter_map(|col| screen.cell(row, col).map(ScreenCell::from)))
-    }
-
-    pub(super) fn from_cells<'a>(cells: impl IntoIterator<Item = ScreenCell<'a>>) -> Self {
+    pub(super) fn from_cells(cells: &[Cell]) -> Self {
         let mut line = Self::default();
-        let mut style = CellStyle::default();
+        let mut style = Style::default();
         let mut blanks = 0;
         for cell in cells {
-            if cell.width == CellWidth::Continuation {
+            if cell.is_wide_continuation() {
                 continue;
             }
             let next = cell.style;
@@ -71,12 +28,12 @@ impl HistoryLine {
                 line.change(sgr);
                 style = next;
             }
-            if !cell.text.is_empty() {
+            if cell.has_contents() {
                 line.text.extend(std::iter::repeat_n(' ', blanks));
                 blanks = 0;
                 line.text
-                    .extend(cell.text.chars().filter(|&ch| printable(ch)));
-            } else if style == CellStyle::default() {
+                    .extend(cell.contents().chars().filter(|&ch| printable(ch)));
+            } else if style == Style::default() {
                 blanks += 1;
             } else {
                 line.text.push(' ');
@@ -89,30 +46,6 @@ impl HistoryLine {
             .is_some_and(|s| s.offset as usize == line.text.len())
         {
             line.styles.pop();
-        }
-        line
-    }
-
-    fn from_formatted(formatted: &str, columns: u16) -> Self {
-        let mut line = Self::default();
-        let mut width = 0;
-        let mut parts = formatted.split("\x1b[");
-        let mut text = parts.next().unwrap_or_default();
-        loop {
-            for ch in text.chars().filter(|&ch| printable(ch)) {
-                width += ch.width().unwrap_or(0);
-                if width > usize::from(columns) {
-                    return line;
-                }
-                line.text.push(ch);
-            }
-            let Some((sgr, rest)) = parts.next().and_then(|part| part.split_once('m')) else {
-                break;
-            };
-            if width < usize::from(columns) {
-                line.change(sgr.to_owned());
-            }
-            text = rest;
         }
         line
     }
@@ -134,7 +67,7 @@ pub(super) struct HistoryBuilder {
     columns: u16,
     lines: Vec<HistoryLine>,
     bytes: usize,
-    pub(super) truncated: bool,
+    truncated: bool,
 }
 
 impl HistoryBuilder {

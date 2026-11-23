@@ -24,6 +24,11 @@ the repository elects to require it there. Workflows with `workflow_dispatch`
 can be launched manually after they are available on `main`, including on
 branches used by stacked PRs.
 
+GitHub's native stack feature evaluates workflow branch filters against the
+stack's trunk for every entry. To run CI only as each PR reaches `main`,
+keep each PR based on the preceding branch and retarget it after that PR merges.
+See [GitHub's stack CI documentation](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/optimizing-ci-for-stacked-pull-requests).
+
 ## Release qualification
 
 Update `deploy/release-notes.md` in the version preparation PR to `main` to
@@ -179,6 +184,6 @@ python deploy/test_wsl.py --rootfs rootfs.tar.gz --desktop-test corvid_desktop_t
 
 Build the Windows test executable with `cargo test --locked --release -p corvid-desktop
 --bin corvid-desktop --no-run`. Supply a release-build Linux musl daemon for
-the distribution architecture with `ghostty-vt` enabled. The harness verifies
+the distribution architecture with libghostty-vt. The harness verifies
 managed install consent, then opens a PTY and checks that the shell survives a
 daemon upgrade. It unregisters the temporary distribution it imported.

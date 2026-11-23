@@ -440,9 +440,9 @@ fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
                 attrs.paint(ansi);
                 style = Some(attrs);
             }
-            if !cell.text.is_empty() && (cell.width == CellWidth::Single || col + 1 < width) {
+            if cell.has_contents() && (cell.width == CellWidth::Single || col + 1 < width) {
                 ansi.extend(
-                    cell.text
+                    cell.contents()
                         .chars()
                         .filter(|ch| !super::screen::is_bidi_control(*ch)),
                 );

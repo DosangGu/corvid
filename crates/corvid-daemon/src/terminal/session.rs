@@ -22,7 +22,7 @@ pub(super) struct TerminalSession {
 
 impl TerminalSession {
     pub(super) fn start(command: CommandBuilder, viewport: Viewport) -> Result<Self> {
-        let screen = TerminalScreen::for_session(viewport)?;
+        let screen = TerminalScreen::new(viewport)?;
         Ok(Self {
             pty: TerminalPty::spawn(command, viewport)?,
             screen,
@@ -51,7 +51,7 @@ impl TerminalSession {
 
     pub(super) fn resize(&mut self, viewport: Viewport) -> Result<()> {
         self.pty.resize(viewport)?;
-        self.screen.resize_session(viewport)
+        self.screen.resize(viewport)
     }
 
     pub(super) fn read_output(&mut self) -> Result<(ReadState, bool)> {
@@ -65,7 +65,7 @@ impl TerminalSession {
                     output = true;
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    #[cfg(all(feature = "ghostty-vt", target_os = "linux"))]
+                    #[cfg(target_os = "linux")]
                     if !output && self.input.is_idle() {
                         self.screen.compress_idle(std::time::Instant::now());
                     }

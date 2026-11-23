@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run isolated release-mode benchmarks against both daemon VT engines."""
+"""Run isolated release-mode benchmarks against the daemon VT engine."""
 
 import argparse
 import json
@@ -9,13 +9,13 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEST = "terminal::screen::benchmark::compare_engines"
+TEST = "terminal::screen::benchmark::measure_engine"
 
 
 def build():
     command = [
         "cargo", "test", "--locked", "--release", "--lib", "-p", "corvid-daemon",
-        "--features", "ghostty-vt", "--no-run", "--message-format=json",
+        "--no-run", "--message-format=json",
     ]
     result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
     artifacts = (json.loads(line) for line in result.stdout.splitlines())
@@ -27,9 +27,8 @@ def build():
     return executable
 
 
-def measure(executable, engine, profile, sessions):
+def measure(executable, profile, sessions):
     env = os.environ | {
-        "CORVID_BENCH_ENGINE": engine,
         "CORVID_BENCH_PROFILE": profile,
         "CORVID_BENCH_SESSIONS": str(sessions),
     }
@@ -59,8 +58,7 @@ def main():
     executable = args.binary.resolve(strict=True) if args.binary else build()
     for count in args.sessions:
         for profile in ("codex", "claude"):
-            for engine in ("vt100", "ghostty"):
-                print(json.dumps(measure(executable, engine, profile, count)), flush=True)
+            print(json.dumps(measure(executable, profile, count)), flush=True)
 
 
 if __name__ == "__main__":

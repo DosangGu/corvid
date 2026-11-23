@@ -1,11 +1,13 @@
 use std::cell::{OnceCell, RefCell};
-use std::fmt::Write;
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
 use corvid_protocol::TERMINAL_HISTORY_MAX_ROWS;
+use corvid_protocol::ansi_screen::{
+    Cell as FrameCell, Color, Cursor, Screen, Style as FrameStyle, Width,
+};
 use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
 use ghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use ghostty_vt::screen::{Cell, CellContentTag, CellWide, Screen as ActiveScreen};
@@ -15,10 +17,8 @@ use ghostty_vt::terminal::{
 };
 #[cfg(target_os = "linux")]
 use ghostty_vt::terminal::{CompressionActivity, CompressionMode, CompressionResult};
-use vt100::{Parser, Screen};
 
 use super::history::{HistoryBuilder, HistoryLine};
-use super::snapshot::{CellColor, CellStyle, CellWidth, ScreenCell};
 use super::{DEVICE_ATTRIBUTES, MAX_REPLY_BYTES, is_bidi_control};
 
 const SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
@@ -47,7 +47,9 @@ impl Ghostty {
             rows: viewport.rows.get(),
             max_scrollback: SCROLLBACK_BYTES,
         })?;
-        terminal.set_scrollback_max_lines(Some(TERMINAL_HISTORY_MAX_ROWS))?;
+        // Ghostty prunes whole pages. Keep enough rows to report when the
+        // smaller exported history limit truncates a snapshot.
+        terminal.set_scrollback_max_lines(Some(TERMINAL_HISTORY_MAX_ROWS * 2))?;
         // The text-only render protocol cannot present or acknowledge images.
         terminal.set_kitty_image_storage_limit(0)?;
         terminal.set_glyph_protocol_enabled(false)?;
@@ -153,22 +155,21 @@ impl Ghostty {
         }
     }
 
-    pub(super) fn screen(&self) -> Result<&Screen> {
+    pub(super) fn screen(&self) -> Result<Screen> {
         if let Some(screen) = self.surface.get() {
-            return Ok(screen);
+            return Ok(screen.clone());
         }
         let mut projection = self.projection.borrow_mut();
         if projection.is_none() {
             *projection = Some(Projection::new(self.viewport)?);
         }
-        let screen = match projection.as_mut().unwrap().update(&self.terminal) {
-            Ok(screen) => screen,
+        match projection.as_mut().unwrap().update(&self.terminal) {
+            Ok(screen) => Ok(self.surface.get_or_init(|| screen).clone()),
             Err(error) => {
                 projection.take();
-                return Err(error);
+                Err(error)
             }
-        };
-        Ok(self.surface.get_or_init(|| screen))
+        }
     }
 
     pub(super) fn history(&mut self) -> Result<TerminalHistory> {
@@ -201,13 +202,9 @@ impl Ghostty {
                         Err(error) => return Err(error.into()),
                     }
                 };
-                cells.push(OwnedCell {
-                    text,
-                    style,
-                    width: cell_width(cell)?,
-                });
+                cells.push(FrameCell::new(&text, cell_width(cell)?, style));
             }
-            if !history.push(HistoryLine::from_cells(cells.iter().map(OwnedCell::borrow))) {
+            if !history.push(HistoryLine::from_cells(&cells)) {
                 break;
             }
         }
@@ -307,7 +304,7 @@ struct Projection {
     render: RenderState,
     rows: RowIterator,
     cells: CellIterator,
-    parser: Parser,
+    screen: Screen,
 }
 
 impl Projection {
@@ -316,27 +313,22 @@ impl Projection {
             render: RenderState::new()?,
             rows: RowIterator::new()?,
             cells: CellIterator::new()?,
-            parser: Parser::new(viewport.rows, viewport.cols, 0),
+            screen: Screen::new(viewport.rows, viewport.cols),
         })
     }
 
     fn update(&mut self, terminal: &Terminal) -> Result<Screen> {
-        // This cache holds the current grid. Clients still compare their own
-        // acknowledged snapshots with that grid in the ANSI encoder.
+        // Refresh the owned grid using Ghostty damage. Each client's last
+        // acknowledged grid remains the independent baseline for ANSI diffs.
         let snapshot = self.render.update(terminal)?;
         let mut rows = self.rows.update(&snapshot)?;
-        let mut ansi = String::new();
+        let columns = usize::from(self.screen.size().1.get());
         let mut text = String::new();
-        while let Some((row_index, row)) = rows.next_dirty() {
-            ansi.clear();
-            let y = row_index + 1;
-            write!(ansi, "\x1b[{y};1H\x1b[0m\x1b[2K")?;
+        while let Some((index, row)) = rows.next_dirty() {
+            let wrapped = row.raw_row()?.is_wrapped()?;
             let mut cells = self.cells.update(row)?;
-            let mut x = 0;
-            let mut next_x = 1;
-            let mut painted = CellStyle::default();
+            let mut line: Vec<FrameCell> = Vec::with_capacity(columns);
             while let Some(cell) = cells.next() {
-                x += 1;
                 let raw = cell.raw_cell()?;
                 let tag = raw.content_tag()?;
                 let codepoint = raw.codepoint()?;
@@ -346,16 +338,30 @@ impl Projection {
                         CellContentTag::BgColorRgb | CellContentTag::BgColorPalette
                     );
                 if codepoint == 0 && !styled {
+                    // Only the cell immediately after a wide glyph can be an
+                    // unstyled continuation. Other empty cells share defaults.
+                    let cell = if line.last().is_some_and(FrameCell::is_wide) {
+                        FrameCell::new("", Width::Continuation, FrameStyle::default())
+                    } else {
+                        FrameCell::default()
+                    };
+                    line.push(cell);
                     continue;
                 }
-                if cell_width(raw)? == CellWidth::Continuation {
+                if !styled && tag == CellContentTag::Codepoint && (32..=126).contains(&codepoint) {
+                    let ascii = [codepoint as u8];
+                    line.push(FrameCell::new(
+                        std::str::from_utf8(&ascii).unwrap(),
+                        Width::Single,
+                        FrameStyle::default(),
+                    ));
                     continue;
                 }
                 let (style, invisible) = if styled {
-                    let raw_style = cell.style()?;
-                    (cell_style(raw, tag, raw_style)?, raw_style.invisible)
+                    let attributes = cell.style()?;
+                    (cell_style(raw, tag, attributes)?, attributes.invisible)
                 } else {
-                    (CellStyle::default(), false)
+                    (FrameStyle::default(), false)
                 };
                 text.clear();
                 if !invisible && codepoint != 0 {
@@ -368,133 +374,59 @@ impl Projection {
                     }
                 }
                 text.retain(|ch| !ch.is_control() && !is_bidi_control(ch));
-                if text.is_empty() && style == CellStyle::default() {
-                    continue;
-                }
-                if x != next_x {
-                    write!(ansi, "\x1b[{y};{x}H")?;
-                }
-                if painted != style {
-                    style.paint(&mut ansi);
-                    painted = style;
-                }
-                if text.is_empty() {
-                    ansi.push(' ');
-                } else {
-                    ansi.push_str(&text);
-                }
-                // ASCII occupies one column. Other cells may use different
-                // widths in the projection parser, so address the next one.
-                next_x = if text.is_ascii() && text.len() <= 1 {
-                    x + 1
-                } else {
-                    0
-                };
+                line.push(FrameCell::new(&text, cell_width(raw)?, style));
             }
-            self.parser.process(ansi.as_bytes());
+            self.screen.replace_row(index, line, wrapped);
         }
         snapshot.clean()?;
-        Self::project_cursor(terminal, &mut self.parser)?;
-        Ok(self.parser.screen().clone())
-    }
-
-    fn project_cursor(terminal: &Terminal, parser: &mut Parser) -> Result<()> {
-        let row = terminal.cursor_y()?;
-        let mut column = terminal.cursor_x()?;
-        let mut ansi = String::new();
-        let screen = parser.screen();
-        if terminal.is_cursor_pending_wrap()? {
-            if screen
-                .cell(row, column)
-                .is_some_and(vt100::Cell::is_wide_continuation)
-            {
-                column = column.saturating_sub(1);
-            }
-            if let Some(cell) = screen.cell(row, column).map(ScreenCell::from) {
-                write!(ansi, "\x1b[{};{}H", row + 1, column + 1)?;
-                cell.style.paint(&mut ansi);
-                ansi.push_str(if cell.text.is_empty() { " " } else { cell.text });
-            }
-        } else {
-            write!(ansi, "\x1b[{};{}H", row + 1, column + 1)?;
-        }
-        let style = terminal.cursor_style()?;
-        convert_style(style, style.bg_color.into()).paint(&mut ansi);
-        let cursor = if terminal.is_cursor_visible()? {
-            'h'
-        } else {
-            'l'
+        let attributes = terminal.cursor_style()?;
+        self.screen.cursor = Cursor {
+            row: terminal.cursor_y()?,
+            col: terminal.cursor_x()?,
+            wrap_pending: terminal.is_cursor_pending_wrap()?,
+            hidden: !terminal.is_cursor_visible()?,
+            style: convert_style(attributes, attributes.bg_color),
         };
-        let keys = if terminal.mode(Mode::DECCKM)? {
-            'h'
-        } else {
-            'l'
-        };
-        let keypad = if terminal.mode(Mode::KEYPAD_KEYS)? {
-            '='
-        } else {
-            '>'
-        };
-        write!(ansi, "\x1b[?25{cursor}\x1b[?1{keys}\x1b{keypad}")?;
-        parser.process(ansi.as_bytes());
-        Ok(())
+        self.screen.application_cursor = terminal.mode(Mode::DECCKM)?;
+        self.screen.application_keypad = terminal.mode(Mode::KEYPAD_KEYS)?;
+        Ok(self.screen.clone())
     }
 }
 
-struct OwnedCell {
-    text: String,
-    style: CellStyle,
-    width: CellWidth,
-}
-
-impl OwnedCell {
-    fn borrow(&self) -> ScreenCell<'_> {
-        ScreenCell {
-            text: &self.text,
-            width: self.width,
-            style: self.style,
-        }
-    }
-}
-
-fn cell_style(cell: Cell, tag: CellContentTag, style: Style) -> Result<CellStyle> {
+fn cell_style(cell: Cell, tag: CellContentTag, style: Style) -> Result<FrameStyle> {
     let bg = match tag {
         CellContentTag::BgColorRgb => StyleColor::Rgb(cell.bg_color_rgb()?),
         CellContentTag::BgColorPalette => StyleColor::Palette(cell.bg_color_palette()?),
         _ => style.bg_color,
     };
-    Ok(convert_style(style, bg.into()))
+    Ok(convert_style(style, bg))
 }
 
-fn convert_style(style: Style, bg: CellColor) -> CellStyle {
-    CellStyle {
-        fg: style.fg_color.into(),
-        bg,
-        flags: [
-            style.bold,
-            style.faint,
-            style.italic,
-            style.underline != Underline::None,
-            style.inverse,
-        ],
+fn convert_style(style: Style, bg: StyleColor) -> FrameStyle {
+    FrameStyle {
+        fg: color(style.fg_color),
+        bg: color(bg),
+        bold: style.bold,
+        dim: style.faint,
+        italic: style.italic,
+        underline: style.underline != Underline::None,
+        inverse: style.inverse,
     }
 }
 
-impl From<StyleColor> for CellColor {
-    fn from(color: StyleColor) -> Self {
-        match color {
-            StyleColor::None => Self::Default,
-            StyleColor::Palette(index) => Self::Indexed(index.0),
-            StyleColor::Rgb(rgb) => Self::Rgb(rgb.r, rgb.g, rgb.b),
-        }
+fn color(color: StyleColor) -> Color {
+    match color {
+        StyleColor::None => Color::Default,
+        StyleColor::Palette(index) => Color::Indexed(index.0),
+        StyleColor::Rgb(rgb) => Color::Rgb(rgb.r, rgb.g, rgb.b),
     }
 }
 
-fn cell_width(cell: Cell) -> Result<CellWidth> {
+fn cell_width(cell: Cell) -> Result<Width> {
     Ok(match cell.wide()? {
-        CellWide::Wide => CellWidth::Wide,
-        CellWide::SpacerTail => CellWidth::Continuation,
-        CellWide::Narrow | CellWide::SpacerHead => CellWidth::Single,
+        CellWide::Wide => Width::Wide,
+        CellWide::SpacerTail => Width::Continuation,
+        CellWide::Narrow | CellWide::SpacerHead => Width::Single,
     })
 }
 

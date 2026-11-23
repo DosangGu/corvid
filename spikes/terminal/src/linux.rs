@@ -43,7 +43,7 @@ fn run() -> Result<u32> {
     let tty = OuterTty::enter()?;
     let content = viewport.fit_screen();
     let pty = TerminalPty::spawn(child_command(), content).context("starting child PTY")?;
-    let screen = TerminalScreen::new(content);
+    let screen = TerminalScreen::new(content)?;
 
     interact(tty, pty, screen, viewport, &shutdown)
 }
@@ -84,7 +84,7 @@ fn interact(
         {
             let content = size.fit_screen();
             pty.resize(content)?;
-            screen.resize(content);
+            screen.resize(content)?;
             viewport = size;
             dirty = true;
         }

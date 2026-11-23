@@ -15,7 +15,8 @@ cargo build --locked -p corvid-tui -p corvid-daemon
 target/debug/corvid
 ```
 
-Linux builds use the ncurses `tic` compiler. Cargo builds the Protobuf schema
+Daemon source builds use Zig 0.17.1 for libghostty-vt and the ncurses `tic`
+compiler on Linux. Cargo builds the Protobuf schema
 using `protox`. Running `corvid`
 without a subcommand starts a background daemon if needed and joins a live
 terminal in the default workspace. It opens the user's shell when the workspace

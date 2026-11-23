@@ -55,6 +55,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
       - name: Install Linux build dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
@@ -101,6 +102,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
       - run: rustup toolchain install --no-self-update
       - name: macOS build environment
         if: runner.os == 'macOS'

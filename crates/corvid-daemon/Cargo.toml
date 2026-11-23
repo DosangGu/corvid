@@ -14,7 +14,6 @@ path = "src/main.rs"
 
 [features]
 compio = []
-ghostty-vt = ["dep:ghostty-vt", "ghostty-vt/kitty-graphics"]
 
 [dependencies]
 corvid-async.workspace = true
@@ -26,9 +25,9 @@ clap.workspace = true
 corvid-client.workspace = true
 corvid-update.workspace = true
 corvid-core.workspace = true
-corvid-protocol = { workspace = true, features = ["compio"] }
+corvid-protocol = { workspace = true, features = ["ansi-screen", "compio"] }
 dunce.workspace = true
-ghostty-vt = { workspace = true, optional = true }
+ghostty-vt = { workspace = true, features = ["kitty-graphics"] }
 portable-pty.workspace = true
 prost.workspace = true
 serde = { workspace = true, features = ["rc"] }
@@ -37,7 +36,6 @@ tempfile.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
 uuid.workspace = true
-vt100.workspace = true
 vte.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
@@ -51,6 +49,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+vt100.workspace = true
 corvid-core = { workspace = true, features = ["test-provider"] }
 
 [lints]

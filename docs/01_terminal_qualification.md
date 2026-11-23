@@ -60,44 +60,39 @@ synchronously. Production rendering needs an independent bounded queue and must
 disconnect a stalled client. Reattach, daemon survival, and resource accounting
 across many PTYs are Phase 1 gates.
 
-## libghostty-vt evaluation
+## libghostty-vt runtime
 
-Issue [#377](https://github.com/DosangGu/corvid/issues/377) tracks migration of
-the daemon terminal engine. The optional daemon feature `ghostty-vt` links
-libghostty-vt 1.0.1. Use Zig 0.17.1 on `PATH` for targets that build the library
-from source.
+Issue [#377](https://github.com/DosangGu/corvid/issues/377) tracks the daemon
+engine migration. Source builds of `corvidd` link libghostty-vt 1.0.1. Use Zig
+0.17.1 on `PATH` for targets that build the library from source.
 
 ```sh
-cargo test --locked -p corvid-daemon --features ghostty-vt --lib \
-  terminal::screen::ghostty_qualification
-cargo build --locked -p corvid-daemon --features ghostty-vt
+cargo test --locked -p corvid-daemon --lib terminal::screen
+cargo build --locked -p corvid-daemon
 target/debug/corvidd daemon
 ```
 
-New sessions in a build with `ghostty-vt` use Ghostty for PTY output, reflow, cursor and
-input modes, query replies, and history. Retained sessions keep the engine of
-their existing terminal host. Native terminal and render handles stay on their
-creating worker thread. Corvid projects the supported text cells and styles into
-the existing ANSI encoder and uses each client's acknowledged frame as its
-comparison baseline. Corvid handles clipboard consent and delivery.
-
-Native release builds enable `ghostty-vt` for `corvidd`. Set
-`CORVID_VT_ENGINE=vt100` in the daemon environment before launch to select the
-legacy engine for new terminal hosts. Source builds without the Cargo feature
-use `vt100`. The projection supports the existing text rendition and input
-profile. Extended formatting and Kitty graphics and keyboard negotiation
-remain outside the release profile.
+Ghostty owns the PTY text, cursor and input modes, query replies, reflow, and
+history of every new terminal host. Terminal hosts retained through a daemon
+upgrade continue running their original emulator. Corvid copies changed
+Ghostty rows into immutable text snapshots and encodes ANSI against the last
+frame acknowledged by each client. Corvid handles clipboard consent and
+delivery. The TUI forwards the ANSI to its outer terminal. Desktop decodes
+the same bounded text frame profile in Rust and can read older daemon frames.
+The clients can build without Zig or the Ghostty library.
 
 The `Checks / libghostty-vt` workflow builds the Ghostty daemon and TUI for the
 five release targets. It runs the linked VT fixtures on each target, PTY
 routing and handoff on Linux, the terminal relay on Linux and macOS, and a
 ConPTY shell history test on Windows.
 
-### Comparing engine costs
+### Measuring engine costs
 
 Run `python3 spikes/terminal/benchmark_engines.py` with Zig on `PATH`. The
 driver builds a release-mode daemon test binary and emits JSON Lines for each
-engine, synthetic Codex and Claude Code workload, and session count. Each case
+synthetic Codex and Claude Code workload and session count. The [original
+comparison](https://github.com/DosangGu/corvid/pull/388) preserves the vt100
+baseline. Each case
 runs in a fresh process. Use `--sessions 1 32 64` to extend the idle fleet.
 
 `parse_ms` covers fragmented PTY output and reply handling. The frame timings

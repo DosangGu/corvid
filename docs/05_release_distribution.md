@@ -34,12 +34,11 @@ Linux and Windows support x64 and ARM64. Windows ARM64 targets Windows 11.
 Apple Silicon packages target macOS 15 and later. See the [macOS guide](07_macos.md)
 for Gatekeeper, app layout, installation paths, and validation limitations.
 
-The `corvid` executable contains the TUI, daemon, terminal host, and relays.
-Actions builds this runtime once for each execution platform. TUI packages reuse
-it directly. All Desktop packages include Linux, Windows, and macOS runtime payloads under
-`daemon/TARGET/` (inside `Contents/Resources` on macOS), each with its own identity and integrity manifest. Packaged
-Desktop starts its adjacent native `corvid` for local daemon use; development
-builds retain their executable-based helper path.
+Actions builds the `corvid` client and standalone `corvidd` once per execution
+target. The daemon handles terminal hosts and relays. The TUI archive contains
+its matching daemon. Desktop packages also include daemon payloads for Linux,
+Windows, and macOS under `daemon/TARGET/` (inside `Contents/Resources` on
+macOS), each with an identity and integrity manifest for remote provisioning.
 
 Desktop packages include the built-in Agents window, implemented by Corvid Agent Deck.
 It ships and updates with Desktop. Windows Desktop retains the standalone
@@ -67,12 +66,10 @@ download before the executable is installed in the private daemon state
 directory. Source builds can use a sibling `corvidd` or set
 `CORVID_DAEMON` to an absolute executable path.
 
-The packaged `corvidd` uses libghostty-vt for new terminals. Set
-`CORVID_VT_ENGINE=vt100` in the daemon's environment before launch to select
-the legacy engine for new terminal hosts. Existing hosts retain the engine
-they started with through daemon handoff. Source users can build `corvidd`
-with `--features ghostty-vt` to enable the same default. Client builds have
-no native Zig requirement.
+Packaged and source-built `corvidd` use libghostty-vt for new terminals.
+Running terminal hosts keep their current emulator through daemon handoff.
+Building the daemon from source requires the [pinned Zig toolchain](01_terminal_qualification.md#libghostty-vt-runtime).
+The Desktop and TUI production builds are independent of Zig and libghostty-vt.
 
 Downloads trust the public repository over HTTPS and verify the expected asset
 identity and checksums. SHA-256 detects changed bytes; it is not a publisher
