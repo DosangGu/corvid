@@ -105,3 +105,12 @@ current bounded history wire size. Linux reports the idle process RSS delta
 after all sessions retain scrollback. Unix CPU time covers the complete child
 process and is rounded at the OS clock resolution. These synthetic cases do
 not include PTY scheduling, clients, or external agent workloads.
+
+### Idle scrollback on Linux
+
+The libghostty worker compresses cold scrollback after two seconds without
+terminal output, resize, or a history read. While input and output are idle,
+it allows at most one incremental step every 250 ms. It resumes after the
+library reports new compressible activity. The same worker owns parsing,
+rendering, history, and compression. Unsupported kernels and compression
+errors leave the normal bounded scrollback in use for that terminal.

@@ -65,6 +65,10 @@ impl TerminalSession {
                     output = true;
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    #[cfg(all(feature = "ghostty-vt", target_os = "linux"))]
+                    if !output && self.input.is_idle() {
+                        self.screen.compress_idle(std::time::Instant::now());
+                    }
                     return Ok((ReadState::Drained, output));
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,

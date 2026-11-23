@@ -1,5 +1,7 @@
 use std::cell::{OnceCell, RefCell};
 use std::fmt::Write;
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
@@ -11,6 +13,8 @@ use ghostty_vt::style::{Style, StyleColor, Underline};
 use ghostty_vt::terminal::{
     ClipboardWritePolicy, Event, Mode, Options, Point, PointCoordinate, Terminal,
 };
+#[cfg(target_os = "linux")]
+use ghostty_vt::terminal::{CompressionActivity, CompressionMode, CompressionResult};
 use vt100::{Parser, Screen};
 
 use super::history::{HistoryBuilder, HistoryLine};
@@ -19,11 +23,17 @@ use super::{DEVICE_ATTRIBUTES, MAX_REPLY_BYTES, is_bidi_control};
 
 const SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CELL_CODEPOINTS: usize = 24;
+#[cfg(target_os = "linux")]
+const COMPRESSION_IDLE: Duration = Duration::from_secs(2);
+#[cfg(target_os = "linux")]
+const COMPRESSION_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) struct Ghostty {
     terminal: Terminal,
     surface: OnceCell<Screen>,
     projection: RefCell<Option<Projection>>,
+    #[cfg(target_os = "linux")]
+    compression: Option<IdleCompression>,
     prompt_parser: vte::Parser,
     prompt: Prompt,
     pub(super) viewport: Viewport,
@@ -50,6 +60,8 @@ impl Ghostty {
             terminal,
             surface: OnceCell::new(),
             projection: RefCell::new(None),
+            #[cfg(target_os = "linux")]
+            compression: Some(IdleCompression::new(Instant::now())),
             prompt_parser: vte::Parser::new(),
             prompt: Prompt::default(),
             viewport,
@@ -59,6 +71,10 @@ impl Ghostty {
 
     pub(super) fn process(&mut self, bytes: &[u8], replies: &mut Vec<u8>) -> Result<()> {
         self.surface.take();
+        #[cfg(target_os = "linux")]
+        if let Some(compression) = &mut self.compression {
+            compression.defer(Instant::now());
+        }
         self.prompt_parser.advance(&mut self.prompt, bytes);
         self.terminal.vt_write(bytes);
         for event in self.terminal.events() {
@@ -86,7 +102,20 @@ impl Ghostty {
         self.viewport = viewport;
         self.surface.take();
         self.projection.get_mut().take();
+        #[cfg(target_os = "linux")]
+        if let Some(compression) = &mut self.compression {
+            compression.defer(Instant::now());
+        }
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn compress_idle(&mut self, now: Instant) {
+        if let Some(scheduler) = &mut self.compression
+            && !scheduler.poll(&mut self.terminal, now)
+        {
+            self.compression = None;
+        }
     }
 
     pub(super) fn alternate_screen(&self) -> bool {
@@ -140,7 +169,11 @@ impl Ghostty {
         Ok(self.surface.get_or_init(|| screen))
     }
 
-    pub(super) fn history(&self) -> Result<TerminalHistory> {
+    pub(super) fn history(&mut self) -> Result<TerminalHistory> {
+        #[cfg(target_os = "linux")]
+        if let Some(compression) = &mut self.compression {
+            compression.defer(Instant::now());
+        }
         let columns = self.viewport.cols.get();
         let rows = self.terminal.total_rows()?;
         let mut history = HistoryBuilder::new(columns);
@@ -184,6 +217,88 @@ impl Ghostty {
     fn mode(&self, mode: Mode) -> bool {
         self.terminal.mode(mode).unwrap_or(false)
     }
+}
+
+#[cfg(target_os = "linux")]
+struct IdleCompression {
+    activity: Option<CompressionActivity>,
+    next: Instant,
+    complete: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl IdleCompression {
+    fn new(now: Instant) -> Self {
+        Self {
+            activity: None,
+            next: now + COMPRESSION_IDLE,
+            complete: false,
+        }
+    }
+
+    fn defer(&mut self, now: Instant) {
+        self.next = now + COMPRESSION_IDLE;
+    }
+
+    fn poll(&mut self, terminal: &mut Terminal, now: Instant) -> bool {
+        if now < self.next {
+            return true;
+        }
+        self.next = now + COMPRESSION_INTERVAL;
+        let Ok(activity) = terminal.compression_activity() else {
+            return false;
+        };
+        if self.activity.replace(activity) != Some(activity) {
+            self.complete = false;
+        }
+        if self.complete {
+            return true;
+        }
+        match terminal.compress(CompressionMode::Incremental) {
+            Ok(CompressionResult::Pending) => true,
+            Ok(CompressionResult::Complete) => {
+                self.complete = true;
+                true
+            }
+            Ok(CompressionResult::Unsupported) | Err(_) => false,
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn idle_compression_preserves_history_and_restarts_after_scroll() -> Result<()> {
+    let mut engine = Ghostty::new(Viewport::new(100, 30).unwrap())?;
+    let text = b"\x1b[36ma repeated line in the scrollback buffer\x1b[0m\r\n".repeat(2600);
+    engine.process(&text, &mut Vec::new())?;
+    let before = engine.history()?;
+    let first_deadline = engine.compression.as_ref().unwrap().next;
+    engine.compress_idle(first_deadline - Duration::from_millis(1));
+    assert!(engine.compression.as_ref().unwrap().activity.is_none());
+    for step in 0..128 {
+        engine.compress_idle(first_deadline + COMPRESSION_INTERVAL * step);
+        let state = engine
+            .compression
+            .as_ref()
+            .expect("Linux supports incremental compression");
+        if state.complete {
+            break;
+        }
+    }
+    assert!(engine.compression.as_ref().unwrap().complete);
+    let activity = engine.compression.as_ref().unwrap().activity;
+    let after = engine.history()?;
+    assert_eq!(after.lines, before.lines);
+    assert_eq!(after.styles, before.styles);
+
+    engine.process(b"\x1b[31mnew row\x1b[0m\r\n", &mut Vec::new())?;
+    let deadline = engine.compression.as_ref().unwrap().next;
+    engine.compress_idle(deadline - Duration::from_millis(1));
+    assert_eq!(engine.compression.as_ref().unwrap().activity, activity);
+    engine.compress_idle(deadline);
+    assert_ne!(engine.compression.as_ref().unwrap().activity, activity);
+    assert!(engine.history()?.lines.contains(&"new row".into()));
+    Ok(())
 }
 
 struct Projection {

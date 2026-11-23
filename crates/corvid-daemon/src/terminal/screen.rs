@@ -209,6 +209,13 @@ impl TerminalScreen {
         self.sgr.take_clipboard()
     }
 
+    #[cfg(all(feature = "ghostty-vt", target_os = "linux"))]
+    pub(super) fn compress_idle(&mut self, now: std::time::Instant) {
+        if let Some(engine) = &mut self.ghostty {
+            engine.compress_idle(now);
+        }
+    }
+
     pub fn resize(&mut self, viewport: Viewport) {
         self.parser.set_size(viewport.rows, viewport.cols);
     }
@@ -291,7 +298,7 @@ impl TerminalScreen {
 
     pub(super) fn history(&mut self) -> Result<TerminalHistory> {
         #[cfg(feature = "ghostty-vt")]
-        if let Some(engine) = &self.ghostty {
+        if let Some(engine) = &mut self.ghostty {
             return engine.history();
         }
         let screen = self.parser.screen_mut();
