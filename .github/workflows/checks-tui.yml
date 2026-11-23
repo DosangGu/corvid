@@ -80,10 +80,19 @@ jobs:
         run: rustup toolchain install --no-self-update
       - name: Read queued terminal and detach events after named-pipe closure
         run: cargo test --locked --release -p corvid-client --lib closed_named_pipe_preserves_the_queued_terminal_status
+      - name: Verify early Windows hook ownership
+        run: cargo test --locked --release -p corvid-daemon --lib early_hooks_wait_for_their_registered_process
+      - name: Repeat release-mode saved agent recovery
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            cargo test --locked --release -p corvid-tui --test agent_restore
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Repeat the release-mode ConPTY lifecycle tests
         shell: pwsh
         run: |
           for ($attempt = 1; $attempt -le 3; $attempt++) {
-            cargo test --locked --release -p corvid-tui --test windows_daemon -- ordinary_attach_resumes tui_reopens_its_last_workspace retains_the_windows_shell
+            cargo test --locked --release -p corvid-tui --test windows_daemon -- ordinary_attach_resumes tui_reopens_its_last_workspace retains_the_windows_shell replies_to_fragmented_conpty_startup_queries
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

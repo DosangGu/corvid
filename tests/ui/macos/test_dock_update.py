@@ -31,6 +31,7 @@ def run(*args, **kwargs):
 
 def launch_dock_tile(dock, app, alias, tile):
     run(dock, "resolve", app, alias, tile)
+    check_dock_tiles(app, dock, alias, expected=1)
     script = """
 on run argv
     set appName to item 1 of argv
@@ -73,6 +74,7 @@ def hide_recent_dock_apps():
     previous = subprocess.run(["defaults", "read", *key], capture_output=True, text=True, timeout=10)
     run("defaults", "write", *key, "-bool", "false")
     try:
+        run("killall", "Dock")
         yield
     finally:
         if previous.returncode == 0:
@@ -152,6 +154,8 @@ def check_managed_update(previous, archive, directory, dock, live_dock):
     bookmark = directory / "managed-bookmark"
     run(dock, "save-bookmark", app, bookmark)
     tile_bookmark = directory / "managed-dock-tile"
+    if live_dock:
+        check_dock_tiles(app, dock, tile_bookmark, expected=0)
     tile = run(dock, "pin", app, tile_bookmark) if live_dock else None
     try:
         original_inode = app.stat().st_ino
@@ -226,32 +230,42 @@ def check_running_relaunch(app, directory, dock, alias, entry, *, fail_first_ope
         raise AssertionError(f"The relaunched Desktop did not reclaim window {window}")
 
 
-def check_single_dock_tile(app):
+def check_dock_tiles(app, dock, alias, *, expected):
     script = """
 set dockEntries to {}
-tell application "System Events" to tell process "Dock"
-    if exists list 1 then
+tell application "System Events"
+    if not (exists process "Dock") then return "waiting for Dock"
+    tell process "Dock"
+        if not (exists list 1) then return "waiting for Dock"
         repeat with entry in UI elements of list 1
             set itemName to name of entry as text
             set itemAddress to ""
+            set itemRole to ""
+            set itemDescription to ""
             try
                 set itemAddress to value of attribute "AXURL" of entry as text
             end try
-            set end of dockEntries to itemName & tab & itemAddress
+            try
+                set itemRole to value of attribute "AXSubrole" of entry as text
+                set itemDescription to description of entry as text
+            end try
+            set end of dockEntries to itemName & tab & itemAddress & tab & itemRole & tab & itemDescription
         end repeat
-    end if
+    end tell
 end tell
+if dockEntries is {} then return "waiting for Dock"
 set AppleScript's text item delimiters to linefeed
 return dockEntries as text
 """
     app = app.resolve()
     deadline = time.monotonic() + 10
-    previous = []
+    previous = None
     while True:
         entries = run("/usr/bin/osascript", "-e", script).splitlines()
         matches = []
         for entry in entries:
-            name, _, address = entry.partition("\t")
+            name, _, details = entry.partition("\t")
+            address, _, _ = details.partition("\t")
             url = urlsplit(address)
             if url.scheme == "file" and url.netloc in ("", "localhost"):
                 matches_app = Path(unquote(url.path)).resolve().is_relative_to(app)
@@ -261,19 +275,24 @@ return dockEntries as text
                 matches.append(entry)
         # The Dock updates independently of the application's startup receipt.
         # Require the same single item on consecutive observations.
-        if len(matches) == 1 and matches == previous:
+        if entries != ["waiting for Dock"] and len(matches) == expected and matches == previous:
             return
-        previous = matches
+        previous = matches if entries != ["waiting for Dock"] else None
         if time.monotonic() >= deadline:
-            raise AssertionError(f"Expected one Dock item for {app}, found {matches!r}; Dock entries: {entries!r}")
+            related = run(dock, "inspect", app, alias)
+            raise AssertionError(
+                f"Expected {expected} Dock items for {app}, found {matches!r}; "
+                f"Dock entries: {entries!r}\n{related}"
+            )
         time.sleep(0.25)
 
 
 def check_relaunch_entries(app, directory, dock, alias, tile):
     for entry in ("Contents/MacOS/corvid-desktop", "Contents/Helpers/corvid-relaunch"):
+        print(f"Checking pinned Desktop relaunch through {entry}", flush=True)
         check_running_relaunch(app, directory, dock, alias, entry)
         run(dock, "resolve", app, alias, tile)
-        check_single_dock_tile(app)
+        check_dock_tiles(app, dock, alias, expected=1)
         print(f"PASS {entry} restored the pinned Desktop with one Dock item")
 
 
@@ -292,12 +311,13 @@ def check_pinned_relaunch(binary):
         alias = directory / "bookmark"
         dock = directory / "dock-test"
         run("swiftc", Path(__file__).with_name("macos_dock_fixture.swift"), "-o", dock)
+        check_dock_tiles(app, dock, alias, expected=0)
         tile = run(dock, "pin", app, alias)
         try:
             launch_dock_tile(dock, app, alias, tile)
             check_running_relaunch(app, directory, dock, alias, "Contents/Helpers/corvid-relaunch",
                                    fail_first_open=True)
-            check_single_dock_tile(app)
+            check_dock_tiles(app, dock, alias, expected=1)
             print("PASS restored the original window after Launch Services rejected the first open")
             for attempt in range(1, 4):
                 print(f"Checking pinned Desktop relaunches ({attempt}/3)", flush=True)
@@ -362,6 +382,7 @@ def check(dmg, archive):
         try:
             old = run(app / CLI, "--version")
             original_inode = app.stat().st_ino
+            check_dock_tiles(app, dock, alias, expected=0)
             tile = run(dock, "pin", app, alias)
             launch_dock_tile(dock, app, alias, tile)
             run(dock, "quit", app, alias, tile)

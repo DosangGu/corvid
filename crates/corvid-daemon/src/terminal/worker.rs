@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::executor::{self, Task};
+#[cfg(windows)]
+use anyhow::Context;
 use anyhow::Result;
 use corvid_async::{mpsc, oneshot, watch};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -712,13 +714,7 @@ impl Worker {
             .registry
             .request({
                 let id = terminal.id;
-                move |registry| {
-                    (
-                        registry.agents.retained_observer_epoch(id),
-                        registry.agents.hook_root(id),
-                        registry.agents.retain_contexts(id),
-                    )
-                }
+                move |registry| registry.agents.observer_handoff(id)
             })
             .unwrap_or_default();
         Ok(live.then_some(RetainedTerminal {
@@ -1343,58 +1339,35 @@ impl Running {
 
     fn spawn(launch: Launch, viewport: Viewport, scope: &LaunchScope) -> Result<Self> {
         let id = Uuid::new_v4();
-        let cwd = launch.cwd.clone();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let (session, process, shell, identity) =
-            TerminalProcess::spawn(launch, viewport, scope, id)?;
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let unmanaged = process.managed.is_none();
+        let (session, process, shell) = {
+            let cwd = launch.cwd.clone();
+            let (session, process, shell, identity) =
+                TerminalProcess::spawn(launch, viewport, scope, id)?;
+            let unmanaged = process.managed.is_none();
+            if unmanaged || cwd.is_some() {
+                let location = scope.location;
+                scope.registry.request(move |registry| {
+                    if unmanaged {
+                        if shell && let Some(root) = identity {
+                            registry.shell_started(id, root);
+                        }
+                        registry.terminal_started(id, location);
+                    }
+                    if let Some(cwd) = cwd {
+                        registry.record_cwd(id, &cwd, CwdSource::LaunchDirectory);
+                    }
+                });
+            }
+            (session, process, shell)
+        };
         #[cfg(windows)]
         let provider = launch.provider;
         #[cfg(windows)]
-        let (session, unmanaged, shell) = {
-            let mut command = launch.into_command()?;
-            scope
-                .hook_environment
-                .configure(&mut command, Some(id), None);
-            (
-                Backend::start(scope.host.as_ref(), id, command, viewport)?,
-                true,
-                provider.is_none(),
-            )
-        };
-        if unmanaged || cwd.is_some() {
-            let location = scope.location;
-            #[cfg(windows)]
-            let process_key = if unmanaged {
-                session.process_key()
-            } else {
-                None
-            };
-            scope.registry.request(move |registry| {
-                if unmanaged {
-                    #[cfg(windows)]
-                    if let Some(provider) = provider {
-                        registry
-                            .agents
-                            .started(id, location, provider, ProcessLiveness::Running);
-                        if let Some(root) = process_key {
-                            registry.agents.track_managed(id, root);
-                        }
-                    } else if let Some(root) = process_key {
-                        registry.agents.track_shell(id, root);
-                    }
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    if shell && let Some(root) = identity {
-                        registry.shell_started(id, root);
-                    }
-                    registry.terminal_started(id, location);
-                }
-                if let Some(cwd) = cwd {
-                    registry.record_cwd(id, &cwd, CwdSource::LaunchDirectory);
-                }
-            });
-        }
+        let (session, shell) = (
+            Self::start_native(launch, viewport, scope, id)?,
+            provider.is_none(),
+        );
         Ok(Self {
             id,
             registry: scope.registry.clone(),
@@ -1409,6 +1382,52 @@ impl Running {
             #[cfg(windows)]
             provider,
         })
+    }
+
+    #[cfg(windows)]
+    fn start_native(
+        launch: Launch,
+        viewport: Viewport,
+        scope: &LaunchScope,
+        id: Uuid,
+    ) -> Result<Backend> {
+        let cwd = launch.cwd.clone();
+        let provider = launch.provider;
+        let mut command = launch.into_command()?;
+        scope
+            .hook_environment
+            .configure(&mut command, Some(id), None);
+
+        // The child can submit its startup hook before ConPTY or the terminal
+        // host returns its process identity to this worker.
+        scope
+            .registry
+            .request(move |registry| registry.agents.expect_hook_root(id))
+            .context("reserving Windows hook ownership")?;
+        let session = Backend::start(scope.host.as_ref(), id, command, viewport);
+        let started = session.is_ok();
+        let key = session.as_ref().ok().and_then(Backend::process_key);
+        let location = scope.location;
+        scope.registry.request(move |registry| {
+            if started {
+                if let Some(provider) = provider {
+                    registry
+                        .agents
+                        .started(id, location, provider, ProcessLiveness::Running);
+                    if let Some(root) = key {
+                        registry.agents.track_managed(id, root);
+                    }
+                } else if let Some(root) = key {
+                    registry.agents.track_shell(id, root);
+                }
+                registry.terminal_started(id, location);
+                if let Some(cwd) = cwd {
+                    registry.record_cwd(id, &cwd, CwdSource::LaunchDirectory);
+                }
+            }
+            registry.agents.finish_hook_root(id);
+        });
+        session
     }
 
     fn resize(&mut self, viewport: Viewport) -> Result<()> {

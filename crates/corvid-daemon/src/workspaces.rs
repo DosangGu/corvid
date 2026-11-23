@@ -435,11 +435,20 @@ impl Workspaces {
         let root = self
             .registry
             .request(move |registry| {
+                registry.agents.validate_observer_epoch(
+                    association,
+                    observer_epoch,
+                    current_epoch,
+                )?;
                 registry
                     .agents
-                    .observer_root(association, observer_epoch, current_epoch)
+                    .hook_binding(association)
+                    .ok_or_else(unauthorized)
             })
-            .await?;
+            .await?
+            .root()
+            .await
+            .ok_or_else(unauthorized)?;
         let provider = hook.provider;
         let owner = blocking(move || crate::native_process::verify_hook(pid, root, provider))
             .await

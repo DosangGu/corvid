@@ -6,7 +6,8 @@ use std::num::NonZeroU16;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::process::{Child as Process, Command, Stdio};
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -1470,12 +1471,60 @@ async fn ensure_daemon_reuses_the_detached_windows_process() -> Result<()> {
     Ok(())
 }
 
+#[compio::test]
+async fn ensure_daemon_waits_for_the_instance_when_the_control_pipe_is_busy() -> Result<()> {
+    use corvid_protocol::windows::StateDirectory;
+    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    let state = fixture.path().join("state");
+    let directory = StateDirectory::create_all(&runtime)?;
+    let instance = directory.lock_instance()?;
+    let listener = DaemonPipe::Control.bind(&directory)?;
+    // Reserve the only listener without accepting it, as a daemon can do while
+    // loading its state before it starts serving requests.
+    let peer = DaemonPipe::Control.connect(&runtime).await?;
+
+    let release_instance = async move {
+        corvid_async::time::timeout(WAIT, async {
+            loop {
+                match directory.lock_startup() {
+                    Ok(lock) => drop(lock),
+                    Err(error)
+                        if error.downcast_ref::<io::Error>().is_some_and(|error| {
+                            error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
+                        }) =>
+                    {
+                        break Ok::<_, anyhow::Error>(());
+                    }
+                    Err(error) => return Err(error),
+                }
+                corvid_async::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .context("waiting for ensure-daemon to take the startup lock while the pipe was busy")??;
+        drop(peer);
+        drop(listener);
+        drop(instance);
+        Ok::<_, anyhow::Error>(())
+    };
+    let (ensured, released) =
+        corvid_async::join!(ensure_daemon(&runtime, &state), release_instance);
+    ensured.context("starting Windows daemon after the previous instance stopped")?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    released?;
+    corvid_client::ping(&runtime).await
+}
+
 async fn ensure_daemon(runtime: &Path, state: &Path) -> Result<()> {
     let status = async_process::Command::new(CORVID)
         .arg("--runtime-dir")
         .arg(runtime)
         .args(["ensure-daemon", "--state-dir"])
         .arg(state)
+        .kill_on_drop(true)
         .status()
         .await?;
     ensure!(status.success(), "ensure-daemon failed ({status})");
@@ -1538,10 +1587,92 @@ impl Drop for Daemon {
 struct Tui {
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
+    console: Arc<Mutex<Console>>,
+    output: Option<Receiver<()>>,
+}
+
+struct Console {
     input: Box<dyn Write + Send>,
-    output: Option<Receiver<Vec<u8>>>,
-    screen: vt100::Parser,
+    screen: vt100::Parser<ConsoleReplies>,
     output_tail: Vec<u8>,
+    error: Option<anyhow::Error>,
+}
+
+impl Console {
+    fn process(&mut self, output: &[u8]) -> Result<()> {
+        self.output_tail.extend_from_slice(output);
+        let excess = self.output_tail.len().saturating_sub(4096);
+        self.output_tail.drain(..excess);
+        self.screen.process(output);
+        let replies = std::mem::take(&mut self.screen.callbacks_mut().bytes);
+        if !replies.is_empty() {
+            self.send(&replies)
+                .context("answering a ConPTY terminal query")?;
+        }
+        Ok(())
+    }
+
+    fn send(&mut self, input: &[u8]) -> Result<()> {
+        self.input.write_all(input)?;
+        self.input.flush()?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ConsoleReplies {
+    bytes: Vec<u8>,
+    attributes: usize,
+    cursor_position: usize,
+}
+
+impl vt100::Callbacks for ConsoleReplies {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        first: Option<u8>,
+        second: Option<u8>,
+        params: &[&[u16]],
+        action: char,
+    ) {
+        if first.is_some() || second.is_some() {
+            return;
+        }
+        match (action, params) {
+            ('c', &[] | &[&[0]]) => {
+                // Some ConPTY versions wait for this reply to finish startup.
+                self.bytes.extend_from_slice(b"\x1b[?61;4c");
+                self.attributes += 1;
+            }
+            ('n', &[&[6]]) => {
+                let (row, col) = screen.cursor_position();
+                let (_, cols) = screen.size();
+                let reply = format!("\x1b[{};{}R", row + 1, (col + 1).min(cols.get()));
+                self.bytes.extend_from_slice(reply.as_bytes());
+                self.cursor_position += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn replies_to_fragmented_conpty_startup_queries() {
+    let mut console = vt100::Parser::new_with_callbacks(
+        NonZeroU16::new(24).unwrap(),
+        NonZeroU16::new(80).unwrap(),
+        0,
+        ConsoleReplies::default(),
+    );
+    console.process(b"\x1b[");
+    assert!(console.callbacks().bytes.is_empty());
+    console.process(b"c\x1b[2;5H\x1b[6");
+    assert_eq!(console.callbacks().bytes, b"\x1b[?61;4c");
+    console.process(b"n\x1b[0c");
+    assert_eq!(
+        console.callbacks().bytes,
+        b"\x1b[?61;4c\x1b[2;5R\x1b[?61;4c"
+    );
 }
 
 impl Tui {
@@ -1572,15 +1703,32 @@ impl Tui {
             pixel_height: 0,
         })?;
         let mut reader = pair.master.try_clone_reader()?;
-        let input = pair.master.take_writer()?;
-        let (sender, output) = sync_channel(16);
+        let console = Arc::new(Mutex::new(Console {
+            input: pair.master.take_writer()?,
+            screen: vt100::Parser::new_with_callbacks(
+                NonZeroU16::new(rows).unwrap(),
+                NonZeroU16::new(cols).unwrap(),
+                0,
+                ConsoleReplies::default(),
+            ),
+            output_tail: Vec::new(),
+            error: None,
+        }));
+        let state = Arc::clone(&console);
+        let (sender, output) = sync_channel(1);
         std::thread::spawn(move || {
             let mut bytes = [0; 4096];
             let mut connected = true;
             while let Ok(count @ 1..) = reader.read(&mut bytes) {
-                if connected {
-                    connected = sender.send(bytes[..count].to_vec()).is_ok();
+                if !connected {
+                    continue;
                 }
+                let mut console = state.lock().unwrap();
+                if console.error.is_none() {
+                    console.error = console.process(&bytes[..count]).err();
+                }
+                // Terminal replies must keep flowing while the test waits on another TUI.
+                connected = !matches!(sender.try_send(()), Err(TrySendError::Disconnected(())));
             }
         });
         let mut command = CommandBuilder::new(CORVID);
@@ -1595,42 +1743,16 @@ impl Tui {
         }
         command.args(args);
         let child = pair.slave.spawn_command(command)?;
-        let mut tui = Self {
+        Ok(Self {
             child,
             master: pair.master,
-            input,
+            console,
             output: Some(output),
-            output_tail: Vec::new(),
-            screen: vt100::Parser::new(
-                NonZeroU16::new(rows).unwrap(),
-                NonZeroU16::new(cols).unwrap(),
-                0,
-            ),
-        };
-        tui.answer_cursor_query()?;
-        Ok(tui)
-    }
-
-    fn answer_cursor_query(&mut self) -> Result<()> {
-        let deadline = Instant::now() + WAIT;
-        let mut tail = Vec::new();
-        loop {
-            let bytes = self
-                .read(deadline)
-                .context("ConPTY did not request cursor position")?;
-            tail.extend_from_slice(&bytes);
-            if tail.windows(4).any(|window| window == b"\x1b[6n") {
-                return self.send(b"\x1b[1;1R");
-            }
-            let discard = tail.len().saturating_sub(3);
-            tail.drain(..discard);
-        }
+        })
     }
 
     fn send(&mut self, input: &[u8]) -> Result<()> {
-        self.input.write_all(input)?;
-        self.input.flush()?;
-        Ok(())
+        self.console.lock().unwrap().send(input)
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
@@ -1640,32 +1762,44 @@ impl Tui {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        self.screen.set_size(
+        self.console.lock().unwrap().screen.set_size(
             NonZeroU16::new(rows).unwrap(),
             NonZeroU16::new(cols).unwrap(),
         );
         Ok(())
     }
 
-    fn read(&mut self, deadline: Instant) -> Result<Vec<u8>> {
+    fn read(&mut self, deadline: Instant) -> Result<()> {
         let time = deadline.saturating_duration_since(Instant::now());
-        let output = self.output.as_ref().unwrap().recv_timeout(time)?;
-        self.output_tail.extend_from_slice(&output);
-        let excess = self.output_tail.len().saturating_sub(4096);
-        self.output_tail.drain(..excess);
-        Ok(output)
+        let event = self.output.as_ref().unwrap().recv_timeout(time);
+        if let Some(error) = self.console.lock().unwrap().error.take() {
+            return Err(error);
+        }
+        Ok(event?)
+    }
+
+    fn screen_contains(&self, marker: &str) -> bool {
+        self.console
+            .lock()
+            .unwrap()
+            .screen
+            .screen()
+            .contents()
+            .contains(marker)
     }
 
     fn wait_for(&mut self, marker: &str) -> Result<()> {
         let deadline = Instant::now() + WAIT;
-        while !self.screen.screen().contents().contains(marker) {
-            let output = self.read(deadline).with_context(|| {
+        while !self.screen_contains(marker) {
+            self.read(deadline).with_context(|| {
+                let console = self.console.lock().unwrap();
+                let queries = console.screen.callbacks();
                 format!(
-                    "waiting for {marker}, test screen was {:?}",
-                    self.screen.screen().contents()
+                    "waiting for {marker}, TUI status: {:?}, ConPTY queries: attributes={}, cursor={}, screen: {:?}",
+                    self.child.try_wait(), queries.attributes, queries.cursor_position,
+                    console.screen.screen().contents(),
                 )
             })?;
-            self.screen.process(&output);
         }
         Ok(())
     }
@@ -1673,21 +1807,26 @@ impl Tui {
     fn wait_for_resized_status_bar(&mut self, cols: u16, rows: u16) -> Result<()> {
         let deadline = Instant::now() + WAIT;
         loop {
-            let screen = self.screen.screen();
-            if screen
-                .rows(0, cols)
-                .nth(usize::from(rows - 1))
-                .is_some_and(|line| line.starts_with("CORVID") && line.ends_with("Ctrl-] commands"))
-            {
+            let resized = {
+                let console = self.console.lock().unwrap();
+                console
+                    .screen
+                    .screen()
+                    .rows(0, cols)
+                    .nth(usize::from(rows - 1))
+                    .is_some_and(|line| {
+                        line.starts_with("CORVID") && line.ends_with("Ctrl-] commands")
+                    })
+            };
+            if resized {
                 return Ok(());
             }
-            let bytes = self.read(deadline).with_context(|| {
+            self.read(deadline).with_context(|| {
                 format!(
                     "waiting for the TUI status bar on row {rows} at width {cols}; screen: {:?}",
-                    self.screen.screen().contents()
+                    self.console.lock().unwrap().screen.screen().contents()
                 )
             })?;
-            self.screen.process(&bytes);
         }
     }
 
@@ -1695,11 +1834,9 @@ impl Tui {
     // Observe the replacement screen before sending another command.
     fn wait_without(&mut self, marker: &str) -> Result<()> {
         let deadline = Instant::now() + WAIT;
-        while self.screen.screen().contents().contains(marker) {
-            let output = self
-                .read(deadline)
+        while self.screen_contains(marker) {
+            self.read(deadline)
                 .with_context(|| format!("waiting for the screen to retire {marker}"))?;
-            self.screen.process(&output);
         }
         Ok(())
     }
@@ -1714,7 +1851,7 @@ impl Tui {
                     while Instant::now() < drain && self.read(drain).is_ok() {}
                     bail!(
                         "unexpected TUI exit status {status}, expected {expected}; console tail: {:?}",
-                        String::from_utf8_lossy(&self.output_tail)
+                        String::from_utf8_lossy(&self.console.lock().unwrap().output_tail)
                     );
                 }
                 return Ok(());

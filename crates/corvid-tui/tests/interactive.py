@@ -81,10 +81,12 @@ def read_exact(length):
 def paste_child():
     tty.setraw(0)
     os.write(1, b"PLAIN-READY")
-    assert read_exact(len(PASTE)) == PASTE
+    plain = read_exact(len(PASTE))
+    assert plain == PASTE, ("plain paste", plain)
     os.write(1, b"\x1b[2;1H\x1b[?2004hBRACKET-READY")
     bracketed = PASTE_START + PASTE + PASTE_END
-    assert read_exact(len(bracketed)) == bracketed
+    received = read_exact(len(bracketed))
+    assert received == bracketed, ("bracketed paste", received)
     os.write(1, b"\x1b[3;1HKEYS-READY")
     assert read_exact(len(KEYS)) == KEYS
     os.write(1, b"\x1b[4;1HINPUT-COMPLETE")
@@ -130,7 +132,7 @@ class OuterTerminal:
         while (match := re.search(pattern, self.output)) is None:
             wait = max(0, deadline - time.monotonic())
             assert select.select([self.master], [], [], wait)[0], (
-                self.output[:700], self.output[-500:]
+                f"outer TTY status: {self.process.poll()}", self.output[:700], self.output[-500:]
             )
             self.output.extend(os.read(self.master, 8192))
             assert len(self.output) <= 1024 * 1024, "unexpected output volume"
@@ -294,8 +296,10 @@ def verify_command_menu(outer, progress, pid):
     wait_for_child_size(progress, "80x23")
 
 
-def send_paste(outer):
-    for chunk in (PASTE_START[:4], PASTE_START[4:], PASTE, PASTE_END[:2], PASTE_END[2:]):
+def send_paste(outer, *, opener_delay=0.01):
+    outer.send(PASTE_START[:4])
+    time.sleep(opener_delay)
+    for chunk in (PASTE_START[4:], PASTE, PASTE_END[:2], PASTE_END[2:]):
         outer.send(chunk)
         time.sleep(0.01)
 
@@ -304,7 +308,8 @@ def verify_paste(command):
     start = [*command, "attach", "--", sys.executable, __file__, "--paste-child"]
     with OuterTerminal(start) as outer:
         outer.expect(b"PLAIN-READY")
-        send_paste(outer)
+        # The opener must survive a gap longer than the 100 ms Esc key delay.
+        send_paste(outer, opener_delay=0.25)
         outer.expect(b"BRACKET-READY")
         send_paste(outer)
         outer.expect(b"KEYS-READY")
@@ -824,6 +829,22 @@ def verify_workspace_ui(command, directory):
         workspace = layout.split(" Workspace UI\n", 1)[1].split("\nworkspace ", 1)[0]
         return re.findall(r"^    pane ([\da-f-]+)$", workspace, re.M)
 
+    def wait_for_writer_mode(terminal, mode):
+        deadline = time.monotonic() + 5
+        while True:
+            clients = subprocess.check_output([*command, "control", "clients"], text=True, timeout=3)
+            writers = []
+            for client in clients.splitlines():
+                identity, *fields = client.split()
+                view = dict(field.split("=", 1) for field in fields)
+                if "pane-writer" in view:
+                    writers.append((identity, view))
+            if len(writers) == 1 and writers[0][1].get("mode") == mode:
+                return writers[0]
+            assert terminal.process.poll() is None, ("TUI exited", terminal.output[-500:], clients)
+            assert time.monotonic() < deadline, (mode, clients)
+            time.sleep(0.02)
+
     pane_hint = rb"\x1b\[30;1H\x1b\[0;7m\x1b\[2KPane "
     cursor_visible = rb"\x1b\[\?25h"
     launch = [*command, "attach", "--new-workspace", "Workspace UI"]
@@ -941,14 +962,6 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.expect(rb"Ctrl\+\] commands")
 
-        terminal.send(b"\x1dw")
-        terminal.expect(b"Workspaces")
-        terminal.send(b"\x1dd")
-        terminal.output.clear()
-        terminal.send(b"\x1b")
-        time.sleep(0.15)
-        terminal.expect(rb"Ctrl\+\] commands")
-
         terminal.output.clear()
         terminal.send(b"\x1dp")
         terminal.expect(pane_hint + b"2")
@@ -984,10 +997,36 @@ def verify_workspace_ui(command, directory):
         terminal.expect(rb"\x1b\[6;1H\x1b\[0;7m\x1b\[2KPane 3")
         terminal.output.clear()
         terminal.send(b"\x1b")
+        client, narrow_view = wait_for_writer_mode(terminal, "Passthrough")
         terminal.expect(cursor_visible)
         terminal.output.clear()
         terminal.resize(100, 30)
-        terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
+        restored_split = (
+            rb"\x1b\[2J\x1b\[1;1H\x1b\[0m(?s:.*?)"
+            rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode()
+            + rb"(?s:.*?)" + cursor_visible
+        )
+        # The narrow viewport cannot draw the right-hand pane at column 51.
+        # A complete restored frame follows the resize's new input route.
+        terminal.expect(restored_split)
+        restored_client, restored_view = wait_for_writer_mode(terminal, "Passthrough")
+        assert restored_client == client
+        assert restored_view["pane-writer"] == narrow_view["pane-writer"]
+        assert restored_view["terminal"] == narrow_view["terminal"]
+        assert int(restored_view["view_revision"]) > int(narrow_view["view_revision"])
+
+        terminal.output.clear()
+        terminal.send(b"\x1dw")
+        terminal.expect(b"Workspaces")
+        terminal.output.clear()
+        terminal.send(b"\x1dd")
+        terminal.expect(b"Search: d")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        wait_for_writer_mode(terminal, "Passthrough")
+        terminal.expect(restored_split)
+        send_line(terminal, 'printf "AFTER-RESIZE-%s\\n" "$CORVID_TEST_PANE"')
+        terminal.expect(b"AFTER-RESIZE-top")
 
         # Closing the highlighted lower pane leaves input on the upper pane.
         left_pane, top_pane, _ = workspace_panes()

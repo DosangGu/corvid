@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use corvid_async::watch;
 use corvid_core::agent::{
     AgentRun, Badge, Collection, Confidence, EndReason, Evidence, Lifecycle, Observation,
     ObservationKind, ProcessLiveness, Provider, RequestStatus, RunIdentity, Source,
@@ -25,12 +26,27 @@ const RETAINED_RUNS: usize = 64;
 const MAX_SHELL_RUNS: usize = 64;
 const MAX_CONTEXTS: usize = 64;
 
+pub(crate) enum HookBinding {
+    Starting(watch::Receiver<Option<ProcessKey>>),
+    Ready(ProcessKey),
+}
+
+impl HookBinding {
+    pub(crate) async fn root(self) -> Option<ProcessKey> {
+        match self {
+            Self::Starting(mut start) => *start.wait_for(Option::is_some).await.ok()?,
+            Self::Ready(root) => Some(root),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Agents {
     runs: BTreeMap<Uuid, Run>,
     active: BTreeMap<Uuid, Uuid>,
     roots: BTreeMap<ProcessKey, Uuid>,
     managed: BTreeMap<Uuid, ProcessKey>,
+    starting: BTreeMap<Uuid, watch::Sender<Option<ProcessKey>>>,
     shell: BTreeMap<ProcessKey, (Uuid, Process)>,
     retained_observers: BTreeMap<Uuid, (ProcessKey, Uuid)>,
     retired: VecDeque<Uuid>,
@@ -130,7 +146,24 @@ impl Agents {
         self.managed.insert(terminal, root);
     }
 
-    pub(crate) fn hook_root(&self, terminal: Uuid) -> Option<ProcessKey> {
+    pub(crate) fn expect_hook_root(&mut self, terminal: Uuid) {
+        self.starting.insert(terminal, watch::channel(None).0);
+    }
+
+    pub(crate) fn finish_hook_root(&mut self, terminal: Uuid) {
+        if let Some(start) = self.starting.remove(&terminal) {
+            start.send_replace(self.hook_root(terminal));
+        }
+    }
+
+    pub(crate) fn hook_binding(&self, terminal: Uuid) -> Option<HookBinding> {
+        if let Some(start) = self.starting.get(&terminal) {
+            return Some(HookBinding::Starting(start.subscribe()));
+        }
+        self.hook_root(terminal).map(HookBinding::Ready)
+    }
+
+    fn hook_root(&self, terminal: Uuid) -> Option<ProcessKey> {
         self.managed.get(&terminal).copied().or_else(|| {
             self.roots
                 .iter()
@@ -138,7 +171,18 @@ impl Agents {
         })
     }
 
-    pub(crate) fn retain_contexts(&self, terminal: Uuid) -> Vec<RetainedContext> {
+    pub(crate) fn observer_handoff(
+        &self,
+        terminal: Uuid,
+    ) -> (Option<Uuid>, Option<ProcessKey>, Vec<RetainedContext>) {
+        (
+            self.retained_observer_epoch(terminal),
+            self.hook_root(terminal),
+            self.retain_contexts(terminal),
+        )
+    }
+
+    fn retain_contexts(&self, terminal: Uuid) -> Vec<RetainedContext> {
         self.managed
             .get(&terminal)
             .zip(self.active.get(&terminal))
@@ -209,17 +253,17 @@ impl Agents {
         }
     }
 
-    pub(crate) fn retained_observer_epoch(&self, terminal: Uuid) -> Option<Uuid> {
+    fn retained_observer_epoch(&self, terminal: Uuid) -> Option<Uuid> {
         let (root, epoch) = *self.retained_observers.get(&terminal)?;
         (self.hook_root(terminal) == Some(root)).then_some(epoch)
     }
 
-    pub(crate) fn observer_root(
+    pub(crate) fn validate_observer_epoch(
         &self,
         terminal: Uuid,
         observer_epoch: Option<Uuid>,
         current_epoch: Uuid,
-    ) -> Result<ProcessKey, ProtocolFault> {
+    ) -> Result<(), ProtocolFault> {
         if let Some(epoch) = observer_epoch
             && epoch != current_epoch
             && self.retained_observer_epoch(terminal) != Some(epoch)
@@ -229,9 +273,7 @@ impl Agents {
                 "observer launch epoch was not retained for this terminal",
             ));
         }
-        self.hook_root(terminal).ok_or_else(|| {
-            ProtocolFault::new("Unauthorized", "hook has no verified Windows agent owner")
-        })
+        Ok(())
     }
 
     pub(crate) fn roots(&self) -> Vec<ProcessKey> {
@@ -304,7 +346,8 @@ impl Agents {
         let terminal = hook.association;
         let process = owner.found.process;
         let key = process.key;
-        if self.observer_root(terminal, hook.observer_epoch, current_epoch)? != owner.found.root
+        self.validate_observer_epoch(terminal, hook.observer_epoch, current_epoch)?;
+        if self.hook_root(terminal) != Some(owner.found.root)
             || process.liveness() != ProcessLiveness::Running
         {
             return Err(unauthorized());
@@ -566,6 +609,7 @@ impl Agents {
     }
 
     pub(crate) fn terminal_unavailable(&mut self, terminal: Uuid) {
+        self.starting.remove(&terminal);
         self.roots.retain(|_, owner| *owner != terminal);
         self.managed.remove(&terminal);
         self.retained_observers.remove(&terminal);
@@ -797,4 +841,44 @@ fn unix_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::FutureExt;
+
+    use super::*;
+
+    #[compio::test]
+    async fn early_hooks_wait_for_their_registered_process() {
+        let mut agents = Agents::default();
+        let terminal = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let root = ProcessKey { pid: 7, created: 1 };
+        assert!(agents.hook_binding(terminal).is_none());
+        agents.expect_hook_root(terminal);
+        agents.expect_hook_root(other);
+
+        let first = agents.hook_binding(terminal).unwrap().root();
+        let second = agents.hook_binding(terminal).unwrap().root();
+        let cancelled = agents.hook_binding(other).unwrap().root();
+        corvid_async::pin!(first, second, cancelled);
+        assert!(first.as_mut().now_or_never().is_none());
+        assert!(cancelled.as_mut().now_or_never().is_none());
+
+        agents.track_managed(terminal, root);
+        agents.finish_hook_root(terminal);
+        agents.finish_hook_root(other);
+        assert_eq!(first.await, Some(root));
+        assert_eq!(second.await, Some(root));
+        assert_eq!(cancelled.await, None);
+        assert!(agents.hook_binding(other).is_none());
+        assert_eq!(
+            agents.hook_binding(terminal).unwrap().root().await,
+            Some(root)
+        );
+
+        agents.terminal_unavailable(terminal);
+        assert!(agents.hook_binding(terminal).is_none());
+    }
 }

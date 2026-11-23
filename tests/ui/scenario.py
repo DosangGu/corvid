@@ -89,7 +89,7 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
                 window = wait_for("Desktop window", lambda: ui.window(app.pid), app)
                 reader, epoch = monitor_fixture.ready(cli, state, env)
                 if case == "desktop-paste":
-                    verify_paste(ui, app, window, root)
+                    verify_paste(ui, app, window, root, cli=cli, env=env)
                 elif case == "deck-window":
                     if os.name == "nt":
                         for shortcut in ui.fixture_shortcuts(state):
