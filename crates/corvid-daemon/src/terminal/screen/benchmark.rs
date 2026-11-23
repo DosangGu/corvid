@@ -1,7 +1,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use anyhow::Context as _;
+use anyhow::{Context as _, ensure};
 use prost::Message as _;
 
 use super::*;
@@ -11,8 +11,7 @@ const FRAGMENT: usize = 79;
 
 #[test]
 #[ignore = "run with spikes/terminal/benchmark_engines.py"]
-fn compare_engines() -> Result<()> {
-    let engine = std::env::var("CORVID_BENCH_ENGINE")?;
+fn measure_engine() -> Result<()> {
     let profile = std::env::var("CORVID_BENCH_PROFILE")?;
     let sessions: usize = std::env::var("CORVID_BENCH_SESSIONS")?.parse()?;
     ensure!(sessions > 0 && sessions <= 128, "invalid session count");
@@ -24,11 +23,7 @@ fn compare_engines() -> Result<()> {
     let mut parse_time = Duration::ZERO;
     let mut parsed_bytes = 0;
     for _ in 0..sessions {
-        let mut terminal = match engine.as_str() {
-            "vt100" => TerminalScreen::live(viewport),
-            "ghostty" => TerminalScreen::with_ghostty(viewport)?,
-            _ => anyhow::bail!("unknown engine {engine}"),
-        };
+        let mut terminal = TerminalScreen::new(viewport)?;
         let start = Instant::now();
         for turn in &trace {
             for fragment in turn.as_bytes().chunks(FRAGMENT) {
@@ -68,7 +63,7 @@ fn compare_engines() -> Result<()> {
     println!(
         "CORVID_BENCH {}",
         serde_json::json!({
-            "engine": engine,
+            "engine": "ghostty",
             "profile": profile,
             "sessions": sessions,
             "parsed_bytes": parsed_bytes,

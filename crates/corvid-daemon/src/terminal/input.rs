@@ -40,7 +40,7 @@ struct Batch {
 }
 
 impl InputQueue {
-    #[cfg(all(feature = "ghostty-vt", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     pub(super) fn is_idle(&self) -> bool {
         self.active.is_none() && self.user.is_empty() && self.replies.is_empty()
     }

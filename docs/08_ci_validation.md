@@ -179,6 +179,6 @@ python deploy/test_wsl.py --rootfs rootfs.tar.gz --desktop-test corvid_desktop_t
 
 Build the Windows test executable with `cargo test --locked --release -p corvid-desktop
 --bin corvid-desktop --no-run`. Supply a release-build Linux musl daemon for
-the distribution architecture with `ghostty-vt` enabled. The harness verifies
+the distribution architecture with libghostty-vt. The harness verifies
 managed install consent, then opens a PTY and checks that the shell survives a
 daemon upgrade. It unregisters the temporary distribution it imported.

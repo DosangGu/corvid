@@ -1,29 +1,33 @@
-//! Screen data used by frame acknowledgements and pane composition.
+//! Screen data and ANSI encoding for acknowledged frames and pane composition.
 
 use std::fmt::Write;
 use std::num::NonZeroU16;
 
+use anyhow::{Result, ensure};
 use corvid_core::Viewport;
+use corvid_protocol::ansi_screen::{Cell, Decoder, Screen};
+
+const RESET_DRAWING: &str = "\x1b[?6l\x1b[r\x1b[?7h\x1b[0m\x1b[2J";
+const MAX_FRAME_BYTES: usize = corvid_protocol::RENDER_LIMIT;
 
 #[derive(Clone)]
-pub(crate) struct ScreenSnapshot(pub(super) vt100::Screen);
+pub(crate) struct ScreenSnapshot(pub(super) Screen);
 
 impl ScreenSnapshot {
-    pub(super) fn from_screen(screen: &vt100::Screen) -> Self {
-        Self(screen.clone())
-    }
-
     pub(crate) fn from_ansi(viewport: Viewport, ansi: &[u8], clip: Option<Viewport>) -> Self {
-        let mut parser = vt100::Parser::new(viewport.rows, viewport.cols, 0);
-        parser.process(ansi);
+        let mut decoder = Decoder::new(viewport.rows, viewport.cols);
+        decoder.process(ansi);
+        let mut screen = decoder.screen().clone();
         if let Some(clip) = clip.filter(|clip| *clip != viewport) {
-            parser.set_size(clip.rows, clip.cols);
+            screen.clip(clip.rows, clip.cols);
         }
-        Self::from_screen(parser.screen())
+        Self(screen)
     }
 
     pub(crate) fn matches(&self, previous: &Self) -> bool {
-        self.0.contents_diff(&previous.0).is_empty()
+        self.0.cursor == previous.0.cursor
+            && self.size() == previous.size()
+            && (0..self.size().0.get()).all(|row| self.0.same_row(&previous.0, row))
     }
 
     #[cfg(all(test, windows))]
@@ -40,107 +44,156 @@ impl ScreenSnapshot {
     }
 
     pub(crate) fn application_cursor(&self) -> bool {
-        self.0.application_cursor()
+        self.0.application_cursor
     }
 
     pub(crate) fn application_keypad(&self) -> bool {
-        self.0.application_keypad()
+        self.0.application_keypad
     }
 
     pub(crate) fn hide_cursor(&self) -> bool {
         self.0.hide_cursor()
     }
 
-    pub(crate) fn cell(&self, row: u16, column: u16) -> Option<ScreenCell<'_>> {
-        self.0.cell(row, column).map(ScreenCell::from)
+    pub(crate) fn cell(&self, row: u16, column: u16) -> Option<&Cell> {
+        self.0.cell(row, column)
     }
-}
 
-pub(crate) struct ScreenCell<'a> {
-    pub(crate) text: &'a str,
-    pub(crate) width: CellWidth,
-    pub(crate) style: CellStyle,
-}
+    pub(super) fn encode(
+        &self,
+        previous: Option<&Self>,
+        outer_paste: bool,
+        outer: Viewport,
+        footer: Option<(u16, &str)>,
+    ) -> Result<String> {
+        let (rows, cols) = self.size();
+        let previous = previous.filter(|screen| screen.size() == self.size());
+        let mut frame = String::new();
+        if previous.is_none() {
+            frame.push_str(RESET_DRAWING);
+            if rows < outer.rows {
+                write!(frame, "\x1b[1;{rows}r")?;
+            }
+        }
+        for row in 0..rows.get() {
+            if previous.is_some_and(|baseline| self.0.same_row(&baseline.0, row)) {
+                continue;
+            }
+            let cells = self.0.row(row).unwrap();
+            let old = previous.and_then(|baseline| baseline.0.row(row));
+            encode_row(&mut frame, row, cells, old, cols == outer.cols)?;
+            ensure!(
+                frame.len() <= MAX_FRAME_BYTES,
+                "terminal redraw exceeds frame limit"
+            );
+        }
 
-impl<'a> From<&'a vt100::Cell> for ScreenCell<'a> {
-    fn from(cell: &'a vt100::Cell) -> Self {
-        let width = if cell.is_wide_continuation() {
-            CellWidth::Continuation
-        } else if cell.is_wide() {
-            CellWidth::Wide
+        if let Some((row, ansi)) = footer {
+            write!(frame, "\x1b[?7l\x1b[{row};1H{ansi}\x1b[0m\x1b[?7h")?;
+        }
+        self.encode_cursor(&mut frame, cols == outer.cols)?;
+        let cursor_keys = if self.application_cursor() { 'h' } else { 'l' };
+        let paste = if outer_paste { 'h' } else { 'l' };
+        let keypad = if self.application_keypad() { '=' } else { '>' };
+        write!(frame, "\x1b[?1{cursor_keys}\x1b[?2004{paste}\x1b{keypad}")?;
+        ensure!(
+            frame.len() <= MAX_FRAME_BYTES,
+            "terminal redraw exceeds frame limit"
+        );
+        Ok(frame)
+    }
+
+    fn encode_cursor(&self, frame: &mut String, outer_wrap: bool) -> Result<()> {
+        let cursor = self.0.cursor;
+        let col = cursor.col.min(self.size().1.get() - 1);
+        if cursor.wrap_pending && outer_wrap {
+            // CUP alone cannot recreate the delayed wrap at the right edge.
+            // Repaint the last glyph from its lead cell if it spans two columns.
+            let start = if self
+                .cell(cursor.row, col)
+                .is_some_and(Cell::is_wide_continuation)
+            {
+                col.saturating_sub(1)
+            } else {
+                col
+            };
+            write!(frame, "\x1b[{};{}H", cursor.row + 1, start + 1)?;
+            if let Some(cell) = self.cell(cursor.row, start) {
+                cell.style.paint(frame);
+                frame.push_str(if cell.has_contents() {
+                    cell.contents()
+                } else {
+                    " "
+                });
+            }
         } else {
-            CellWidth::Single
-        };
-        Self {
-            text: cell.contents(),
-            width,
-            style: CellStyle {
-                fg: cell.fgcolor().into(),
-                bg: cell.bgcolor().into(),
-                flags: [
-                    cell.bold(),
-                    cell.dim(),
-                    cell.italic(),
-                    cell.underline(),
-                    cell.inverse(),
-                ],
-            },
+            write!(frame, "\x1b[{};{}H", cursor.row + 1, col + 1)?;
         }
+        cursor.style.paint(frame);
+        let visibility = if cursor.hidden { 'l' } else { 'h' };
+        write!(frame, "\x1b[?25{visibility}")?;
+        Ok(())
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CellWidth {
-    Single,
-    Wide,
-    Continuation,
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct CellStyle {
-    pub(crate) fg: CellColor,
-    pub(crate) bg: CellColor,
-    pub(crate) flags: [bool; 5],
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum CellColor {
-    #[default]
-    Default,
-    Indexed(u8),
-    Rgb(u8, u8, u8),
-}
-
-impl CellStyle {
-    pub(crate) fn paint(self, ansi: &mut String) {
-        ansi.push_str("\x1b[");
-        self.write_sgr(ansi);
-        ansi.push('m');
+fn encode_row(
+    frame: &mut String,
+    row: u16,
+    cells: &[Cell],
+    previous: Option<&[Cell]>,
+    full_width: bool,
+) -> Result<()> {
+    let empty = Cell::default();
+    let changed = |index: usize| cells[index] != *previous.map_or(&empty, |old| &old[index]);
+    let Some(mut start) = (0..cells.len()).find(|&index| changed(index)) else {
+        return Ok(());
+    };
+    let mut end = (start..cells.len()).rfind(|&index| changed(index)).unwrap() + 1;
+    if cells[start].is_wide_continuation()
+        || previous.is_some_and(|old| old[start].is_wide_continuation())
+    {
+        start = start.saturating_sub(1);
     }
-
-    pub(super) fn write_sgr(self, sgr: &mut String) {
-        sgr.push('0');
-        for (enabled, parameter) in self.flags.into_iter().zip([1, 2, 3, 4, 7]) {
-            if enabled {
-                write!(sgr, ";{parameter}").unwrap();
+    if end < cells.len() && cells[end].is_wide_continuation() {
+        end += 1;
+    }
+    let mut style = None;
+    let mut column = start;
+    write!(frame, "\x1b[{};{}H", row + 1, column + 1)?;
+    while column < end {
+        let cell = &cells[column];
+        if cell.is_wide_continuation() {
+            column += 1;
+            continue;
+        }
+        if style != Some(cell.style) {
+            cell.style.paint(frame);
+            style = Some(cell.style);
+        }
+        if cell.has_contents() {
+            let text = cell.contents();
+            frame.push_str(text);
+            column += 1 + usize::from(cell.is_wide());
+            // An outer terminal can use different Unicode width tables.
+            if !text.is_ascii() && column < end {
+                write!(frame, "\x1b[{};{}H", row + 1, column + 1)?;
             }
+            continue;
         }
-        for (prefix, color) in [(38, self.fg), (48, self.bg)] {
-            match color {
-                CellColor::Default => {}
-                CellColor::Indexed(index) => write!(sgr, ";{prefix};5;{index}").unwrap(),
-                CellColor::Rgb(r, g, b) => write!(sgr, ";{prefix};2;{r};{g};{b}").unwrap(),
-            }
-        }
-    }
-}
 
-impl From<vt100::Color> for CellColor {
-    fn from(color: vt100::Color) -> Self {
-        match color {
-            vt100::Color::Default => Self::Default,
-            vt100::Color::Idx(index) => Self::Indexed(index),
-            vt100::Color::Rgb(r, g, b) => Self::Rgb(r, g, b),
+        let blank_end = (column + 1..end)
+            .find(|&index| cells[index] != *cell)
+            .unwrap_or(end);
+        // EL and ECH erase a cell without inserting a printable space.
+        if full_width && blank_end == cells.len() {
+            frame.push_str("\x1b[K");
+        } else {
+            write!(frame, "\x1b[{}X", blank_end - column)?;
+        }
+        column = blank_end;
+        if column < end {
+            write!(frame, "\x1b[{};{}H", row + 1, column + 1)?;
         }
     }
+    Ok(())
 }

@@ -67,12 +67,10 @@ download before the executable is installed in the private daemon state
 directory. Source builds can use a sibling `corvidd` or set
 `CORVID_DAEMON` to an absolute executable path.
 
-The packaged `corvidd` uses libghostty-vt for new terminals. Set
-`CORVID_VT_ENGINE=vt100` in the daemon's environment before launch to select
-the legacy engine for new terminal hosts. Existing hosts retain the engine
-they started with through daemon handoff. Source users can build `corvidd`
-with `--features ghostty-vt` to enable the same default. Client builds have
-no native Zig requirement.
+Packaged and source-built `corvidd` use libghostty-vt for new terminals.
+Running terminal hosts keep their current emulator through daemon handoff.
+Building the daemon from source requires the [pinned Zig toolchain](01_terminal_qualification.md#libghostty-vt-runtime).
+The Desktop and TUI production builds are independent of Zig and libghostty-vt.
 
 Downloads trust the public repository over HTTPS and verify the expected asset
 identity and checksums. SHA-256 detects changed bytes; it is not a publisher

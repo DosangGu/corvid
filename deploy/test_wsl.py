@@ -52,8 +52,7 @@ def test_session(directory, name, linux, desktop, daemon):
         "size": payload.stat().st_size, "sha256": digest,
     }), encoding="utf-8")
 
-    forwarded = {"CORVID_RUNTIME_DIR": f"{runtime}/run", "XDG_STATE_HOME": f"{runtime}/state",
-                 "CORVID_VT_ENGINE": "ghostty"}
+    forwarded = {"CORVID_RUNTIME_DIR": f"{runtime}/run", "XDG_STATE_HOME": f"{runtime}/state"}
     wslenv = [entry for entry in os.environ.get("WSLENV", "").split(":")
               if entry and entry.split("/", 1)[0] not in forwarded]
     env = os.environ | forwarded | {"WSLENV": ":".join([*wslenv, *forwarded]),

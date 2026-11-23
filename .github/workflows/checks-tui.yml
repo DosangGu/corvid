@@ -40,6 +40,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
       - name: Install Linux build dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
@@ -66,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo tree --locked -p corvid-tui -p corvid-desktop --edges normal,build --prefix none > "$RUNNER_TEMP/corvid-client-graph"
-          if grep -E '^corvid-daemon ' "$RUNNER_TEMP/corvid-client-graph"; then
+          if grep -E '^(corvid-daemon|ghostty-vt(-sys)?|vt100) ' "$RUNNER_TEMP/corvid-client-graph"; then
             echo "A client links the daemon" >&2
             exit 1
           fi
@@ -86,6 +87,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
       - name: Install Linux build tools
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
@@ -114,6 +116,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/install-zig
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - name: Build the standalone daemon

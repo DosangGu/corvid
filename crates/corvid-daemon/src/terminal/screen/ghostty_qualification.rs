@@ -65,7 +65,7 @@ fn kitty_storage_and_placement_follow_replace_screen_switch_and_delete() {
 
 #[test]
 fn text_profile_never_relays_kitty_apc() {
-    let mut terminal = TerminalScreen::with_ghostty(Viewport::new(20, 6).unwrap()).unwrap();
+    let mut terminal = TerminalScreen::new(Viewport::new(20, 6).unwrap()).unwrap();
     assert!(terminal.process(RED_IMAGE).unwrap().is_empty());
     terminal.process(b"visible").unwrap();
     let frame = terminal.redraw(Viewport::new(20, 6).unwrap()).unwrap();
@@ -102,7 +102,7 @@ fn query_replies(terminal: &mut Terminal) -> Vec<u8> {
 fn reads_fragmented_unicode_attributes_and_cursor_from_render_state() {
     let viewport = Viewport::new(12, 4).unwrap();
     let mut terminal = ghostty(viewport);
-    let mut current = TerminalScreen::new(viewport);
+    let mut current = TerminalScreen::new(viewport).unwrap();
     let payload = "\x1b[1;38;2;10;20;30m한e\u{301}\x1b[0m\x1b[?25l";
     for chunk in payload.as_bytes().chunks(2) {
         terminal.vt_write(chunk);
@@ -158,7 +158,7 @@ fn reports_resized_inner_geometry_and_cursor_to_the_child() {
     let viewport = Viewport::new(16, 6).unwrap();
     let resized = Viewport::new(20, 8).unwrap();
     let mut terminal = ghostty(viewport);
-    let mut current = TerminalScreen::new(viewport);
+    let mut current = TerminalScreen::new(viewport).unwrap();
     terminal
         .resize(resized.cols.get(), resized.rows.get(), 0, 0)
         .unwrap();
@@ -207,7 +207,7 @@ fn keeps_pending_wrap_and_distinguishes_it_from_the_last_column() {
 #[test]
 fn adapter_renders_full_frames_and_diffs_against_each_view_baseline() {
     let viewport = Viewport::new(12, 4).unwrap();
-    let mut terminal = TerminalScreen::with_ghostty(viewport).unwrap();
+    let mut terminal = TerminalScreen::new(viewport).unwrap();
     let sequence = "\x1b[1;38;2;10;20;30m한e\u{301}\x1b[0m\x1b[?1h\x1b[?25l";
     for byte in sequence.as_bytes() {
         terminal.process(std::slice::from_ref(byte)).unwrap();
@@ -216,7 +216,14 @@ fn adapter_renders_full_frames_and_diffs_against_each_view_baseline() {
     let mut viewer = vt100::Parser::new(viewport.rows, viewport.cols, 0);
     viewer.process(terminal.redraw(viewport).unwrap().as_bytes());
     let screen = viewer.screen();
-    assert!(ScreenSnapshot::from_screen(screen).matches(&first));
+    assert!(
+        ScreenSnapshot::from_ansi(
+            viewport,
+            &terminal.redraw(viewport).unwrap().into_bytes(),
+            None
+        )
+        .matches(&first)
+    );
     assert_eq!(screen.cell(0, 0).unwrap().contents(), "한");
     assert_eq!(
         screen.cell(0, 0).unwrap().fgcolor(),
@@ -257,7 +264,7 @@ fn adapter_renders_full_frames_and_diffs_against_each_view_baseline() {
 #[test]
 fn adapter_uses_ghostty_reflow_and_keeps_history_with_styles() {
     let viewport = Viewport::new(6, 3).unwrap();
-    let mut terminal = TerminalScreen::with_ghostty(viewport).unwrap();
+    let mut terminal = TerminalScreen::new(viewport).unwrap();
     terminal
         .process(b"\x1b[31mabcdefgh\r\n\x1b[0mnext\r\nlast")
         .unwrap();
@@ -269,9 +276,7 @@ fn adapter_uses_ghostty_reflow_and_keeps_history_with_styles() {
             .iter()
             .any(|style| style.sgr.contains(";38;5;1"))
     );
-    terminal
-        .resize_session(Viewport::new(8, 4).unwrap())
-        .unwrap();
+    terminal.resize(Viewport::new(8, 4).unwrap()).unwrap();
     let history = terminal.history().unwrap();
     assert!(history.lines.iter().any(|line| line == "abcdefgh"));
     terminal.process(b"\x1b[?1049hinner").unwrap();
@@ -292,7 +297,7 @@ fn adapter_uses_ghostty_reflow_and_keeps_history_with_styles() {
 #[test]
 fn dirty_projection_clears_erased_cells_and_restores_the_primary_grid() {
     let viewport = Viewport::new(12, 4).unwrap();
-    let mut terminal = TerminalScreen::with_ghostty(viewport).unwrap();
+    let mut terminal = TerminalScreen::new(viewport).unwrap();
     terminal
         .process(b"\x1b[?1h\x1b[?25lprimary\r\n\x1b[42mabcdef\x1b[0m")
         .unwrap();
@@ -301,23 +306,26 @@ fn dirty_projection_clears_erased_cells_and_restores_the_primary_grid() {
         .process(b"\x1b[2;3H\x1b[K\x1b[?1l\x1b[?25h")
         .unwrap();
     let erased = terminal.snapshot().unwrap();
-    assert_eq!(erased.cell(0, 0).unwrap().text, "p");
-    assert_eq!(erased.cell(1, 1).unwrap().text, "b");
-    assert!(erased.cell(1, 2).unwrap().text.is_empty());
+    assert_eq!(erased.cell(0, 0).unwrap().contents(), "p");
+    assert_eq!(erased.cell(1, 1).unwrap().contents(), "b");
+    assert!(erased.cell(1, 2).unwrap().contents().is_empty());
     assert!(!erased.hide_cursor() && !erased.application_cursor());
     assert!(initial.hide_cursor() && initial.application_cursor());
 
     terminal.process(b"\x1b[?1049h\x1b[Halternate").unwrap();
-    assert_eq!(terminal.snapshot().unwrap().cell(0, 0).unwrap().text, "a");
+    assert_eq!(
+        terminal.snapshot().unwrap().cell(0, 0).unwrap().contents(),
+        "a"
+    );
     terminal.process(b"\x1b[?1049l").unwrap();
     let restored = terminal.snapshot().unwrap();
-    assert_eq!(restored.cell(0, 0).unwrap().text, "p");
-    assert!(restored.cell(1, 2).unwrap().text.is_empty());
+    assert_eq!(restored.cell(0, 0).unwrap().contents(), "p");
+    assert!(restored.cell(1, 2).unwrap().contents().is_empty());
 }
 
 #[test]
 fn adapter_applies_corvid_query_prompt_and_clipboard_policy() {
-    let mut terminal = TerminalScreen::with_ghostty(Viewport::new(20, 6).unwrap()).unwrap();
+    let mut terminal = TerminalScreen::new(Viewport::new(20, 6).unwrap()).unwrap();
     terminal.configure_clipboard(true, false);
     let replies = terminal
         .process(b"\x1b[3;4H\x1b[c\x1b[5n\x1b[6n\x1b[18t\x1b[>q\x1b[14t")
@@ -341,7 +349,7 @@ fn adapter_applies_corvid_query_prompt_and_clipboard_policy() {
 fn adapter_preserves_pending_wrap_across_the_footer_and_next_frame() {
     let inner = Viewport::new(4, 3).unwrap();
     let outer = Viewport::new(4, 4).unwrap();
-    let mut terminal = TerminalScreen::with_ghostty(inner).unwrap();
+    let mut terminal = TerminalScreen::new(inner).unwrap();
     terminal.process(b"\x1b[42m1234").unwrap();
     let previous = terminal.snapshot().unwrap();
     let mut viewer = vt100::Parser::new(outer.rows, outer.cols, 0);
