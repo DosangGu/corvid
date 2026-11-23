@@ -27,5 +27,6 @@ pub(crate) use worker::{
     Action, AttachSpec, Event, Launch, LaunchScope, Render, RetainedTerminal, TerminalHandle,
 };
 
+pub(crate) use host::COMMAND as HOST_COMMAND;
 pub(crate) use host::HostConfig;
 pub use host::run_helper;

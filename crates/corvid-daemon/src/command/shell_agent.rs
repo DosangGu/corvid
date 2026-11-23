@@ -5,14 +5,14 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
+use crate::shell_agent;
 use anyhow::{Context, Result, ensure};
 use corvid_core::agent::Provider;
-use corvid_daemon::shell_agent;
 use corvid_protocol::collector::{HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH, SHELL_TERMINAL};
 use corvid_protocol::wire::RegisterShellAgent;
 use uuid::Uuid;
 
-pub(crate) fn execute(provider: Provider, argv: Vec<OsString>) -> u8 {
+pub(super) fn execute(provider: Provider, argv: Vec<OsString>) -> u8 {
     let name = shell_agent::program(provider);
     let Some(path) = shell_agent::resolve(provider) else {
         eprintln!("{name}: command not found");
@@ -41,7 +41,7 @@ fn register(
 ) -> Result<(Uuid, Vec<OsString>, String)> {
     let terminal_id = env::var(SHELL_TERMINAL)?;
     let host_id = env::var(HOST_ID)?;
-    let runtime = crate::runtime_path(None)?;
+    let runtime = corvid_client::runtime_path(None)?;
     let observer_args = shell_agent::qualified_arguments(provider, path, argv)
         .context("unqualified shell agent")?;
     let registration = RegisterShellAgent {

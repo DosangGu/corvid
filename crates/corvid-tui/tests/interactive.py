@@ -1109,7 +1109,7 @@ def run(binary, *, tty_only=False):
     binary = str(Path(binary).resolve())
     os.environ["TERM"] = "xterm-256color"
     root = Path(__file__).resolve().parents[3]
-    profile = root / "crates/corvid-tui/assets/corvid.terminfo"
+    profile = root / "crates/corvid-daemon/assets/corvid.terminfo"
     # The runtime directory must have private, trusted parents.
     with tempfile.TemporaryDirectory(prefix="corvid-test-", dir=Path.home()) as temporary:
         directory = Path(temporary)

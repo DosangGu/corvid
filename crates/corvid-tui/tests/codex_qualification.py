@@ -645,7 +645,7 @@ def capture(binary, corvid, directory, port, fault, auto_start, parallel, conver
         if corvid is not None:
             runtime = directory / "run"
             terminfo = directory / "terminfo"
-            subprocess.run(["tic", "-x", "-o", terminfo, ROOT / "crates/corvid-tui/assets/corvid.terminfo"],
+            subprocess.run(["tic", "-x", "-o", terminfo, ROOT / "crates/corvid-daemon/assets/corvid.terminfo"],
                            check=True, timeout=3)
             env["TERMINFO"] = str(terminfo)
             command = [corvid, "--runtime-dir", runtime]

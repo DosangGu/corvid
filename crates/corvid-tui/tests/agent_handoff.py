@@ -256,7 +256,7 @@ def run(binary, previous=None):
     with tempfile.TemporaryDirectory(prefix="corvid-agent-handoff-", dir=Path.home()) as temporary:
         directory = Path(temporary)
         terminfo = directory / "terminfo"
-        subprocess.run(["tic", "-x", "-o", terminfo, repository / "crates/corvid-tui/assets/corvid.terminfo"], check=True)
+        subprocess.run(["tic", "-x", "-o", terminfo, repository / "crates/corvid-daemon/assets/corvid.terminfo"], check=True)
         if previous:
             for provider in ("claude", "codex"):
                 verify(binary, directory, terminfo, legacy=True, previous=previous, providers=(provider,))

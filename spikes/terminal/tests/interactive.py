@@ -137,7 +137,7 @@ def verify_session(process, master, slave, cooked):
 
 
 def run(binary):
-    terminfo = Path(__file__).resolve().parents[3] / "crates/corvid-tui/assets/corvid.terminfo"
+    terminfo = Path(__file__).resolve().parents[3] / "crates/corvid-daemon/assets/corvid.terminfo"
     with tempfile.TemporaryDirectory(prefix="corvid-terminfo-") as database:
         subprocess.run(["tic", "-x", "-o", database, terminfo], check=True)
         env = os.environ | {"TERM": "xterm-256color", "TERMINFO": database}

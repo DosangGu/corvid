@@ -157,7 +157,8 @@ pub(super) fn dispatch(
         } => {
             let runtime = runtime_path(runtime)?;
             let state = state_path(state_dir)?;
-            crate::run_compio_daemon(&runtime, &state, autostarted)
+            corvid_daemon::command::run_foreground(&runtime, &state, autostarted)?;
+            Ok(0)
         }
         Command::Control {
             stdio: false,

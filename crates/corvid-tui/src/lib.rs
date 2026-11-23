@@ -1,6 +1,6 @@
 mod companion;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-mod hooks;
+use corvid_daemon::command::hooks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux;
 mod retirement;
@@ -214,44 +214,20 @@ async fn verify_installed_version(executable: &Path, previous_version: &str) -> 
 /// Dispatch daemon subprocesses and Linux agent helpers before opening a GUI.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn run_daemon_helper() -> Option<ExitCode> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if std::env::args_os()
-        .next()
-        .as_deref()
-        .and_then(corvid_daemon::shell_agent::invoked_provider)
-        .is_some()
-    {
-        return Some(run());
+    if let Some(code) = corvid_daemon::command::run_helper() {
+        return Some(code);
     }
 
     match std::env::args_os().nth(1)?.to_str()? {
-        "daemon" | "terminal-host" | "desktop-handoff" | "companion" => Some(run()),
-        "observe" => Some(run()),
+        "daemon" | "desktop-handoff" | "companion" | "observe" => Some(run()),
         _ => None,
     }
 }
 
 pub fn run() -> ExitCode {
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("terminal-host")) {
-        return match corvid_daemon::terminal::run_helper(std::env::args_os().skip(2)) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("corvid: {error:#}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let mut args = std::env::args_os();
-        if let Some(provider) = args
-            .next()
-            .as_deref()
-            .and_then(corvid_daemon::shell_agent::invoked_provider)
-        {
-            return ExitCode::from(linux::shell_agent::execute(provider, args.collect()));
-        }
+    if let Some(code) = corvid_daemon::command::run_helper() {
+        return code;
     }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let started = Instant::now();
@@ -367,40 +343,6 @@ fn compio_ping(runtime_dir: Option<PathBuf>) -> Result<u32> {
     let code = run_compio(corvid_client::compio_ping(&runtime))?;
     println!("pong");
     Ok(code)
-}
-
-fn run_compio_daemon(
-    runtime: &std::path::Path,
-    state: &std::path::Path,
-    autostarted: bool,
-) -> Result<u32> {
-    let executor = compio::runtime::Runtime::new()?;
-    executor.block_on(async {
-        let (stop, stopped) = corvid_async::oneshot::channel::<()>();
-        let daemon = corvid_daemon::run_native(runtime, state, autostarted, async move {
-            let _ = stopped.await;
-        });
-        let mut daemon = std::pin::pin!(daemon);
-        let signal = async {
-            #[cfg(unix)]
-            corvid_async::select! {
-                result = compio::signal::unix::signal(nix::libc::SIGTERM) => result,
-                result = compio::signal::ctrl_c() => result,
-            }
-            #[cfg(windows)]
-            compio::signal::ctrl_c().await
-        };
-        corvid_async::select! {
-            biased;
-            result = signal => {
-                result?;
-                drop(stop);
-                daemon.await?;
-            }
-            result = &mut daemon => result?,
-        }
-        Ok(0)
-    })
 }
 
 fn execute<F, R>(start: F) -> Result<u32>

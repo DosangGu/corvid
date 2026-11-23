@@ -85,6 +85,8 @@ pub(crate) struct HookEnvironment {
     pub(crate) identity: Arc<Identity>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) shell_commands: Option<Commands>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) terminfo: Option<PathBuf>,
 }
 
 impl HookEnvironment {
@@ -95,6 +97,9 @@ impl HookEnvironment {
         association: Option<Uuid>,
         shell_terminal: Option<Uuid>,
     ) {
+        if let Some(terminfo) = &self.terminfo {
+            command.env("TERMINFO", terminfo);
+        }
         for key in [LAUNCH_ASSOCIATION, HOST_ID, SERVER_EPOCH, SHELL_TERMINAL] {
             command.env_remove(key);
         }

@@ -1331,8 +1331,10 @@ version = "0.5.3"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "clap",
  "compio",
  "corvid-async",
+ "corvid-client",
  "corvid-core",
  "corvid-protocol",
  "corvid-update",

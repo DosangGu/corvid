@@ -28,12 +28,12 @@ const SOURCE_TIMEOUT: Duration = Duration::from_millis(30);
 const TOTAL_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, ValueEnum)]
-pub(crate) enum HookProvider {
+pub enum HookProvider {
     Claude,
     Codex,
 }
 
-pub(crate) fn observe(
+pub fn observe(
     provider: HookProvider,
     neutral_json: bool,
     claude_input_batch: bool,
@@ -58,7 +58,7 @@ fn observe_inner(
     for id in [&launch, &host, &epoch] {
         ensure!(Uuid::parse_str(id).is_ok(), "invalid managed launch scope");
     }
-    let runtime = crate::runtime_path(runtime)?;
+    let runtime = corvid_client::runtime_path(runtime)?;
 
     let deadline = started + TOTAL_TIMEOUT;
     let input = read_hook(started + SOURCE_TIMEOUT).ok();
@@ -374,12 +374,12 @@ fn optional_id(value: Option<String>) -> Option<Option<String>> {
     }
 }
 
-pub(crate) fn settings(provider: HookProvider) -> Result<Value> {
+pub fn settings(provider: HookProvider) -> Result<Value> {
     let provider = match provider {
         HookProvider::Claude => Provider::Claude,
         HookProvider::Codex => Provider::Codex,
     };
-    corvid_daemon::observer_settings(provider)
+    crate::observer_settings(provider)
 }
 
 #[cfg(test)]
