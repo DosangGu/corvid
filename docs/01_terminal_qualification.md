@@ -114,3 +114,28 @@ it allows at most one incremental step every 250 ms. It resumes after the
 library reports new compressible activity. The same worker owns parsing,
 rendering, history, and compression. Unsupported kernels and compression
 errors leave the normal bounded scrollback in use for that terminal.
+
+### Kitty graphics qualification and proposed client transport
+
+The linked fixture transmits raw RGBA pixels, inspects the placement geometry,
+and observes image replacement, screen changes, and deletion. Retransmitting an
+image changes its generation and removes its existing placements. Returning
+from the alternate screen restores the primary screen's placements. Consumers
+must copy needed pixel data while the engine owns the snapshot and discard
+cached textures when the image generation or active route changes.
+
+The production text profile disables image storage. A proposed graphics
+capability would carry separately bounded image data and placement changes
+alongside ANSI frames. Image application would share the existing route,
+render generation, and `FrameApplied` boundary. Reattach and route changes
+would resend the visible image set. The first profile would accept direct
+pixel transfers only, with file, temporary-file, and shared-memory media
+disabled at the engine. Bound storage per terminal and bound both the pixel
+count and bytes before decoding or forwarding.
+
+GPUI would layer textures over the text grid using the engine-provided source
+rectangle, cell placement, and draw layer. TUI would advertise the capability
+only after a successful probe of its outer terminal. It would emit newly
+encoded Kitty direct transfers with route-local IDs and delete only its own
+placements. Clients without the capability keep the existing ANSI text
+profile. These client paths and their wire format are proposals.
