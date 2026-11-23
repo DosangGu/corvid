@@ -83,5 +83,9 @@ comparison baseline. Corvid handles clipboard consent and delivery.
 
 The release build still selects `vt100`. The projection supports the existing
 text rendition and input profile. Extended formatting, Kitty graphics and
-keyboard negotiation, resource profiling, and native Windows and macOS runtime
-qualification remain follow-up gates.
+keyboard negotiation, and resource profiling remain follow-up gates.
+
+The `Checks / libghostty-vt` workflow builds the opt-in daemon and TUI for the
+five release targets. It runs the linked VT fixtures on each target, PTY
+routing and handoff on Linux, the terminal relay on Linux and macOS, and a
+ConPTY shell history test on Windows.
