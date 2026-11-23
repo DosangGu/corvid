@@ -1,10 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use corvid_protocol::unix::RuntimeDir;
-use portable_pty::CommandBuilder;
 
 const PROFILE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/corvid.terminfo"));
+
+/// Select how the daemon supplies terminfo to child processes.
+pub enum Mode {
+    Inherit,
+    Bundled,
+}
 
 /// Install the private PTY profile and return the directory used by TERMINFO.
 pub fn install(runtime: &RuntimeDir) -> Result<PathBuf> {
@@ -19,10 +24,4 @@ pub fn install(runtime: &RuntimeDir) -> Result<PathBuf> {
         entries.replace_private_file(name, PROFILE)?;
     }
     Ok(database)
-}
-
-pub(crate) fn configure(command: &mut CommandBuilder, runtime: &Path) {
-    if command.get_env("TERMINFO").is_none() {
-        command.env("TERMINFO", runtime.join("terminfo"));
-    }
 }

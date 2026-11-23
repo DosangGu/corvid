@@ -71,7 +71,13 @@ mod cli {
             None | Some(Command::Daemon) => {
                 let runtime = corvid_client::runtime_path(runtime)?;
                 let state = state_directory(StateRole::Daemon, options.state_dir)?;
-                command::run_foreground(&runtime, &state, options.autostarted)
+                command::run_foreground(
+                    &runtime,
+                    &state,
+                    options.autostarted,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    corvid_daemon::terminfo::Mode::Bundled,
+                )
             }
             Some(Command::Observe {
                 provider,

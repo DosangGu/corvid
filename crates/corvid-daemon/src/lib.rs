@@ -77,7 +77,15 @@ pub async fn run_native(
     autostarted: bool,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> anyhow::Result<()> {
-    serve_daemon(runtime_path, state_path, autostarted, shutdown).await
+    serve_daemon(
+        runtime_path,
+        state_path,
+        autostarted,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        terminfo::Mode::Inherit,
+        shutdown,
+    )
+    .await
 }
 
 /// Read an existing daemon identity without creating state.
@@ -107,13 +115,17 @@ async fn serve_daemon(
     runtime_path: &Path,
     state_path: &Path,
     autostarted: bool,
+    terminfo: terminfo::Mode,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
     let runtime = RuntimeDir::create(runtime_path)?;
     let instance = runtime.lock_instance()?;
-    if std::env::var_os("TERMINFO").is_none() {
-        terminfo::install(&runtime)?;
-    }
+    let terminfo =
+        if matches!(terminfo, terminfo::Mode::Bundled) && std::env::var_os("TERMINFO").is_none() {
+            Some(terminfo::install(&runtime)?)
+        } else {
+            None
+        };
     let state = RuntimeDir::create_all(state_path)?;
     let identity = Arc::new(Identity::load(&state)?);
     let lock = state.lock_storage()?;
@@ -130,6 +142,7 @@ async fn serve_daemon(
         runtime: runtime.path().to_owned(),
         identity: Arc::clone(&identity),
         shell_commands: shell_agent::Commands::install(runtime.path()).ok(),
+        terminfo,
     });
     let workspaces = Workspaces::new(updates, hook_environment);
     let workspaces = if autostarted {

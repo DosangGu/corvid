@@ -235,7 +235,12 @@ pub(super) fn execute(
         } => {
             let runtime = runtime_path(runtime_dir)?;
             let state = state_path(state_dir)?;
-            corvid_daemon::command::run_foreground(&runtime, &state, autostarted)?;
+            corvid_daemon::command::run_foreground(
+                &runtime,
+                &state,
+                autostarted,
+                corvid_daemon::terminfo::Mode::Inherit,
+            )?;
             Ok(0)
         }
         Command::Control {

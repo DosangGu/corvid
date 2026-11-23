@@ -442,6 +442,8 @@ mod tests {
                 identity: Arc::new(identity),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 shell_commands: None,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                terminfo: None,
             }),
         );
         let inspect = RestoreWorkspace {
