@@ -17,7 +17,7 @@ pub(super) struct Composition {
     pub(super) split: bool,
     pub(super) tabs: Vec<TabLabel>,
     workspace: Option<WorkspaceLabel>,
-    tab_mode: bool,
+    pub(super) tab_mode: bool,
 }
 
 pub(super) struct TabLabel {
@@ -100,13 +100,34 @@ impl Composition {
         location: Location,
         selected_tab: Option<Uuid>,
     ) -> Self {
-        let fit = outer.fit_screen();
-        let top = u16::from(fit.rows.get() > 2);
+        let outer = outer.fit_screen();
+        let (panes, split) = Self::pane_layout(outer, layout, location);
+        let (workspace, tabs) = top_row(layout, location, outer.cols.get(), selected_tab);
+        Self {
+            outer,
+            panes,
+            split,
+            tabs,
+            workspace,
+            tab_mode: selected_tab.is_some(),
+        }
+    }
+
+    pub(super) fn show_tab(&mut self, layout: &Layout, location: Location) {
+        (self.panes, self.split) = Self::pane_layout(self.outer, layout, location);
+    }
+
+    fn pane_layout(
+        outer: Viewport,
+        layout: &Layout,
+        location: Location,
+    ) -> (Vec<(Uuid, Rect)>, bool) {
+        let top = u16::from(outer.rows.get() > 2);
         let usable = Rect {
             x: 0,
             y: top,
-            width: fit.cols.get(),
-            height: fit.rows.get() - top,
+            width: outer.cols.get(),
+            height: outer.rows.get() - top,
         };
         let mut panes = navigation::panes(layout, location, usable);
         let split = top != 0
@@ -118,15 +139,7 @@ impl Composition {
         if !split {
             panes = vec![(location.pane, usable)];
         }
-        let (workspace, tabs) = top_row(layout, location, fit.cols.get(), selected_tab);
-        Self {
-            outer: fit,
-            panes,
-            split,
-            tabs,
-            workspace,
-            tab_mode: selected_tab.is_some(),
-        }
+        (panes, split)
     }
 
     pub(super) fn body(&self, region: Rect) -> Rect {

@@ -10,9 +10,9 @@ pub enum Direction {
 
 pub const fn tab_mode_hint(can_close: bool) -> &'static str {
     if can_close {
-        "Tabs · ←/→ h/l · Enter Focus · n New · x Close · Esc Cancel"
+        "Tabs · ←/→ h/l Preview · Enter Focus · n New · x Close · Esc Cancel"
     } else {
-        "Tabs · ←/→ h/l · Enter Focus · n New · Esc Cancel"
+        "Tabs · ←/→ h/l Preview · Enter Focus · n New · Esc Cancel"
     }
 }
 

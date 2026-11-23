@@ -346,6 +346,14 @@ impl WorkspaceView {
         self.tab_bar.render(workspace.tabs.iter().filter_map(|tab| {
             let (target, open) = self.choose(workspace, tab, inventory?)?;
             let active = selected == Some(tab.tab_id.as_str());
+            let previewed = highlighted == Some(tab.tab_id.as_str());
+            let fill = if previewed {
+                BORDER
+            } else if active {
+                ACTIVE_FILL
+            } else {
+                PANEL
+            };
             let attention = ui.connected
                 && ui.inventory_ready
                 && inventory?.agents.iter().any(|agent| {
@@ -364,19 +372,16 @@ impl WorkspaceView {
                     .flex_none()
                     .items_center()
                     .rounded_md()
-                    .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
-                    .border_1()
-                    .border_color(rgb(if highlighted == Some(tab.tab_id.as_str()) {
-                        NAVIGATION_HIGHLIGHT
-                    } else if active {
-                        ACTIVE_FILL
-                    } else {
-                        PANEL
-                    }))
+                    .bg(rgb(fill))
+                    .p(px(1.))
                     .max_w(ui_px(240.))
                     .child(
                         title::button(
-                            button_frame("select-tab", active).min_w_0().flex_shrink(1.),
+                            button_frame("select-tab", active)
+                                .bg(rgb(fill))
+                                .when(previewed && !active, |button| button.text_color(rgb(TEXT)))
+                                .min_w_0()
+                                .flex_shrink(1.),
                             tab.label.clone(),
                             attention.then_some("!"),
                         )
@@ -579,6 +584,12 @@ impl Render for WorkspaceView {
                 .as_ref()?
                 .highlighted_tab(&selected.workspace_id)
         });
+        let preview_tab = selected
+            .zip(highlighted)
+            .and_then(|(selected, tab)| (selected.tab_id != tab).then_some(tab));
+        if let Some(session) = &self.session {
+            session.set_preview_tab(preview_tab);
+        }
         self.tab_bar.select(
             highlighted.or_else(|| selected.map(|selected| selected.tab_id.as_str())),
             highlighted.is_some(),
@@ -599,7 +610,8 @@ impl Render for WorkspaceView {
                 .as_ref()
                 .is_some_and(|ui| ui.ssh_offline || ui.inventory_offline);
         let content = if let Some((ui, inventory)) = ui.as_ref().zip(inventory) {
-            self.terminal_layout(ui, inventory, cx).into_any_element()
+            self.terminal_layout(ui, inventory, preview_tab, cx)
+                .into_any_element()
         } else if ui.as_ref().is_some_and(|ui| ui.connected) {
             div()
                 .flex_1()

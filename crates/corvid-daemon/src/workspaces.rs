@@ -966,11 +966,12 @@ impl Workspaces {
             .registry
             .request(move |registry| {
                 registry.require_route(active.route)?;
-                let location = Location {
-                    pane,
-                    ..active.location
-                };
-                if location == active.location || !registry.metadata.layout().contains(location) {
+                let layout = registry.metadata.layout();
+                if pane == active.location.pane
+                    || !layout.locations().any(|location| {
+                        location.workspace == active.location.workspace && location.pane == pane
+                    })
+                {
                     return Err(target_gone());
                 }
                 registry
@@ -1191,10 +1192,14 @@ fn terminal_host_ended(error: &anyhow::Error) -> bool {
 }
 
 impl Registry {
-    pub(crate) fn preview_handles(&self, location: Location) -> Vec<(Uuid, TerminalHandle)> {
+    pub(crate) fn preview_handles(
+        &self,
+        location: Location,
+        tab: Uuid,
+    ) -> Vec<(Uuid, TerminalHandle)> {
         self.metadata
             .layout()
-            .panes(location.workspace, location.tab)
+            .panes(location.workspace, tab)
             .into_iter()
             .filter(|pane| *pane != location)
             .filter_map(|pane| {

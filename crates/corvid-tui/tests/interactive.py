@@ -809,6 +809,16 @@ def verify_workspace_ui(command, directory):
         # Separate the terminal's input echo from output and wait for the side effect.
         terminal.send(text.encode() + b"\r")
 
+    def show_marker(terminal, label, suffix, *, setup=""):
+        # Keep the marker visible after changing the PTY size. CI hostnames in
+        # the default prompt can wrap across several rows of a split pane.
+        terminal.output.clear()
+        send_line(
+            terminal,
+            f"PS1='$ '; {setup}printf '\\033[2J\\033[H{label}-%s\\n' {suffix}",
+        )
+        terminal.expect(f"{label}-{suffix}".encode())
+
     def workspace_panes():
         layout = subprocess.check_output([*command, "control", "workspaces"], text=True, timeout=3)
         workspace = layout.split(" Workspace UI\n", 1)[1].split("\nworkspace ", 1)[0]
@@ -825,17 +835,14 @@ def verify_workspace_ui(command, directory):
         terminal.send(b"\x1b")
         time.sleep(0.15)
         terminal.expect(rb"Ctrl\+\] commands")
-        send_line(terminal, "export CORVID_TEST_PANE=left; printf 'left-%s\\n' PANE")
-        terminal.expect(b"left-PANE")
+        show_marker(terminal, "left", "PANE", setup="export CORVID_TEST_PANE=left; ")
 
         terminal.send(b"\x1dpr")
         terminal.expect(b"Pane 2")
-        send_line(terminal, "export CORVID_TEST_PANE=top; printf 'top-%s\\n' PANE")
-        terminal.expect(b"top-PANE")
+        show_marker(terminal, "top", "PANE", setup="export CORVID_TEST_PANE=top; ")
         terminal.send(b"\x1dpd")
         terminal.expect(b"Pane 3")
-        send_line(terminal, "export CORVID_TEST_PANE=bottom; printf 'bottom-%s\\n' PANE")
-        terminal.expect(b"bottom-PANE")
+        show_marker(terminal, "bottom", "PANE", setup="export CORVID_TEST_PANE=bottom; ")
 
         # Mouse coordinates are relative to the outer screen. This is inside the left pane.
         terminal.output.clear()
@@ -855,12 +862,13 @@ def verify_workspace_ui(command, directory):
         terminal.send(b"\x1b[<0;55;6M")
         terminal.expect(b"APP-MOUSE-RECEIVED")
         assert mouse_marker.read_bytes() == b"\x1b[<0;5;4M\x1b[<0;5;4m"
+        show_marker(terminal, "top", "PREVIEW")
         terminal.send(b"\x1dd")
         terminal.wait(0)
 
     with OuterTerminal([*command, "attach"], cols=100, rows=30, env=env) as terminal:
         terminal.expect(b"left-PANE")
-        terminal.expect(b"top-PANE")
+        terminal.expect(b"top-PREVIEW")
         terminal.expect(b"bottom-PANE")
         terminal.send(b"\x1d.")
         terminal.expect(b"Rename tab")
@@ -871,26 +879,35 @@ def verify_workspace_ui(command, directory):
         terminal.expect(b"n New")
         terminal.send(b"n")
         terminal.expect(rb"\x1b\[0;1;36m\[2 ")
-        send_line(terminal, "printf 'INPUT-%s\\n' NEW_TAB")
-        terminal.expect(b"INPUT-NEW_TAB")
+        show_marker(terminal, "INPUT", "NEW_TAB")
         terminal.send(b"\x1d.")
         terminal.expect(b"Rename tab")
         terminal.send(b"hello\r")
         terminal.expect(rb"\[2 hello\]")
-        for key, label, tab in (
-            (b"h", b"work", b"1"),
-            (b"\x1bOC", b"hello", b"2"),
-            (b"\x1b[D", b"work", b"1"),
-            (b"l", b"hello", b"2"),
-        ):
+        split_markers = (b"left-PANE", b"top-PREVIEW", b"bottom-PANE")
+        cases = (
+            (b"h", b"work", b"1", split_markers, b"INPUT-NEW_TAB"),
+            (b"\x1bOC", b"hello", b"2", (b"INPUT-NEW_TAB",), b"left-PANE"),
+            (b"\x1b[D", b"work", b"1", split_markers, b"INPUT-NEW_TAB"),
+            (b"l", b"hello", b"2", (b"INPUT-NEW_TAB",), b"left-PANE"),
+        )
+        for index, (key, label, tab, markers, previous) in enumerate(cases):
             active = rb"\x1b\[0;1;36m\[" + tab + b" " + label + rb"\]"
             terminal.output.clear()
             terminal.send(b"\x1dt" + key)
             terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m" + tab + b" " + label)
+            for marker in markers:
+                match = terminal.expect(marker)
+                frame = terminal.output[terminal.output.rfind(b"\x1b[2J", 0, match.start()):]
+                assert previous not in frame, frame
+                assert b"\x1b[?25h" not in frame, frame
             assert not re.search(active, terminal.output), terminal.output
             terminal.output.clear()
-            terminal.send(b"\r")
+            terminal.send(b"q\r")
             terminal.expect(active)
+            terminal.expect(cursor_visible)
+            send_line(terminal, f"printf 'WRITABLE-%s\\n' {index}")
+            terminal.expect(f"WRITABLE-{index}".encode())
         terminal.output.clear()
         terminal.send(b"\x1d[")
         terminal.expect(rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode())
@@ -903,6 +920,7 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.send(b"\x1dtl")
         terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m2 hello")
+        terminal.expect(b"INPUT-NEW_TAB")
         terminal.send(b"\x1b")
         terminal.output.clear()
         terminal.expect(rb"\x1b\[0;1;36m\[1 work\][^\r\n]*Ctrl\+\] commands")

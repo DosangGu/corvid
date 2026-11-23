@@ -277,13 +277,18 @@ for **New workspace**, **Settings**, **Agents**, or window actions. Click a tab
 to return to the pane you last used in it, or click inside a pane to focus it.
 
 The keyboard modes match the TUI. Press `Ctrl+]` then `t` to highlight a tab in
-the tab bar. Browse with the arrow keys or `h`/`l`, press Enter to focus, `n` to
-open a tab, or `x` to close the highlighted tab and its terminals. Press
+the tab bar. Browse with the arrow keys or `h`/`l` to preview each tab's live
+terminal contents. Enter focuses the highlighted tab and enables input. Esc
+restores the original tab and input focus. Press `n` to open a tab or `x` to
+close the highlighted tab and its terminals. Press
 `Ctrl+]` then `p` and use the arrow keys or `h`/`j`/`k`/`l` to browse the pane
 layout. Press Enter to focus, `r` or `d` to split, or `x` to close the
-highlighted pane and its terminal. Esc cancels either mode.
+highlighted pane and its terminal. Esc cancels pane mode.
 
-![Desktop tab mode with Editor highlighted while Tests stays focused](images/workspace-navigation/desktop-tab-mode.png)
+Tab previews over SSH are available when the remote daemon advertises
+`tab_preview.v1`. Enter can still focus the highlighted tab on an older daemon.
+
+![Desktop previewing the Editor terminal while Tests retains input focus](images/workspace-navigation/desktop-tab-mode.png)
 
 ![Desktop pane mode with Editor highlighted while Logs stays focused](images/workspace-navigation/desktop.png)
 

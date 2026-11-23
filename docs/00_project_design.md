@@ -781,7 +781,7 @@ authority for accepted state changes and terminal lifetimes.
 | Area | Shared behavior |
 |---|---|
 | Hierarchy and identity | Workspace → Tab → split tree → Pane → optional Terminal; switching or moving a view preserves the existing terminal/run identity |
-| Tabs | Browse the tab bar with arrows or `h`/`l`, Enter to focus, `n` to open, `x` to close the highlighted tab, and Esc to cancel |
+| Tabs | Preview tab contents with arrows or `h`/`l`, Enter to focus, `n` to open, `x` to close the highlighted tab, and Esc to cancel |
 | Panes | Browse the layout with arrows or `h`/`j`/`k`/`l`, Enter to focus, `r`/`d` to split, `x` to close the highlighted pane, and Esc to cancel |
 | Focus and input | Selection targets an exact pane in one client; writer ownership, route fencing, and literal terminal input follow the same contract |
 | Names | Rename sets the current tab's name. Each pane follows its terminal title, and an unnamed tab with one pane follows that pane's title |
