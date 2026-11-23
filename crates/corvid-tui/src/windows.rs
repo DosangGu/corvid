@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
-use corvid_async::time::sleep;
+use corvid_async::time::{sleep, sleep_until, timeout_at};
 use corvid_client::{AttachOptions, check_tty, daemon_missing, host, ping, runtime_path};
 use corvid_protocol::windows::StateDirectory;
 use corvid_protocol::wire::AgentProvider;
@@ -279,7 +279,7 @@ fn local_app_data() -> Result<PathBuf> {
 pub(super) async fn start_attach(runtime: PathBuf, mut options: AttachOptions) -> Result<u32> {
     options.remember_view = true;
     check_tty()?;
-    if !daemon_running(&runtime).await? {
+    if !probe_daemon(&runtime, Instant::now() + STARTUP_TIMEOUT).await? {
         ensure_daemon(&runtime, &state_path(None)?, false, None).await?;
     }
     crate::attach_monitored(&runtime, options).await
@@ -297,7 +297,7 @@ pub(super) async fn ensure_local_daemon(runtime: &Path) -> Result<()> {
 
 pub(super) async fn upgrade_local_daemon(runtime: &Path, desktop: bool) -> Result<()> {
     let directory = StateDirectory::create_all(runtime)?;
-    let _startup = lock_startup(&directory).await?;
+    let _startup = lock_startup(&directory, Instant::now() + COMMAND_TIMEOUT).await?;
     let target = stop_for_upgrade(runtime, &directory, None).await?;
     let state = target.as_ref().map_or_else(
         || state_path(None),
@@ -309,6 +309,7 @@ pub(super) async fn upgrade_local_daemon(runtime: &Path, desktop: bool) -> Resul
         &state,
         false,
         desktop.then_some("desktop-daemon.exe"),
+        Instant::now() + STARTUP_TIMEOUT,
     )
     .await?;
     verify_replacement(runtime, target.as_ref()).await
@@ -320,7 +321,7 @@ pub(crate) async fn daemon_image(runtime: &Path) -> Result<PathBuf> {
 
 pub(super) async fn desktop_handoff(runtime: &Path, host_id: Uuid, epoch: Uuid) -> Result<()> {
     let directory = StateDirectory::open(runtime)?;
-    let _startup = lock_startup(&directory).await?;
+    let _startup = lock_startup(&directory, Instant::now() + COMMAND_TIMEOUT).await?;
     let executable = crate::local_daemon_executable()?;
     let packaged =
         corvid_update::Installation::at(&executable).is_ok_and(|install| install.root.is_some());
@@ -406,8 +407,8 @@ fn sharing_violation(error: &anyhow::Error) -> bool {
         .is_some_and(|error| error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32))
 }
 
-async fn lock_startup(directory: &StateDirectory) -> Result<std::fs::File> {
-    corvid_async::time::timeout(COMMAND_TIMEOUT, async {
+async fn lock_startup(directory: &StateDirectory, deadline: Instant) -> Result<std::fs::File> {
+    timeout_at(deadline, async {
         loop {
             match directory.lock_startup() {
                 Ok(lock) => return Ok(lock),
@@ -452,7 +453,7 @@ async fn upgrade_managed(
     );
     let installation = StateDirectory::open(&root)?;
     let directory = StateDirectory::create_all(runtime)?;
-    let _startup = lock_startup(&directory).await?;
+    let _startup = lock_startup(&directory, Instant::now() + COMMAND_TIMEOUT).await?;
     crate::verify_installed_version(&root.join("corvid.exe"), previous_version).await?;
     let image = std::fs::read(&staged).context("reading the staged Corvid binary")?;
     let previous = installation
@@ -513,27 +514,28 @@ async fn ensure_daemon(
 ) -> Result<()> {
     let directory = StateDirectory::create_all(runtime)?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
-    let _startup = loop {
-        if daemon_running(runtime).await? {
-            return Ok(());
-        }
-        match directory.lock_startup() {
-            Ok(lock) => break lock,
-            Err(error)
-                if Instant::now() < deadline
-                    && error.downcast_ref::<io::Error>().is_some_and(|error| {
-                        error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
-                    }) =>
-            {
-                sleep(STARTUP_POLL).await;
+    let _startup = lock_startup(&directory, deadline).await?;
+    // The daemon owns its instance lock before publishing the control pipe.
+    // A busy or unavailable pipe while the lock is held means readiness is
+    // still unknown. Keep one deadline for both waiting and starting.
+    while Instant::now() < deadline {
+        match directory.lock_instance() {
+            Ok(instance) => {
+                drop(instance);
+                return start_daemon(runtime, &directory, state, ssh, desktop_image, deadline)
+                    .await;
             }
+            Err(error) if sharing_violation(&error) => {}
             Err(error) => return Err(error),
         }
-    };
-    if daemon_running(runtime).await? {
-        return Ok(());
+        if probe_daemon(runtime, deadline).await? {
+            return Ok(());
+        }
+        sleep_until(deadline.min(Instant::now() + STARTUP_POLL)).await;
     }
-    start_daemon(runtime, &directory, state, ssh, desktop_image).await
+    bail!(
+        "Windows daemon instance held its lock without answering the control pipe before the startup deadline"
+    )
 }
 
 async fn start_daemon(
@@ -542,6 +544,7 @@ async fn start_daemon(
     state: &Path,
     ssh: bool,
     desktop_image: Option<&str>,
+    deadline: Instant,
 ) -> Result<()> {
     let mut executable = crate::local_daemon_executable()?;
     if let Some(name) = desktop_image
@@ -552,39 +555,64 @@ async fn start_daemon(
         directory.replace_private_file(name, &image)?;
         executable = runtime.join(name);
     }
-    start_image(&executable, runtime, state, ssh).await
+    start_image_before(&executable, runtime, state, ssh, deadline).await
 }
 
 async fn start_image(executable: &Path, runtime: &Path, state: &Path, ssh: bool) -> Result<()> {
+    start_image_before(
+        executable,
+        runtime,
+        state,
+        ssh,
+        Instant::now() + STARTUP_TIMEOUT,
+    )
+    .await
+}
+
+async fn start_image_before(
+    executable: &Path,
+    runtime: &Path,
+    state: &Path,
+    ssh: bool,
+    deadline: Instant,
+) -> Result<()> {
+    ensure!(
+        Instant::now() < deadline,
+        "Windows daemon startup deadline elapsed before launch"
+    );
     let child = DaemonProcess::spawn(executable, runtime, state, ssh)
         .context("starting the Windows Corvid daemon")?;
-    let result = wait_for_daemon(runtime, &child).await;
+    let result = wait_for_daemon(runtime, &child, deadline).await;
     if result.is_err() {
         child.terminate();
     }
     result
 }
 
-async fn wait_for_daemon(runtime: &Path, child: &DaemonProcess) -> Result<()> {
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+async fn wait_for_daemon(runtime: &Path, child: &DaemonProcess, deadline: Instant) -> Result<()> {
     loop {
         if let Some(status) = child.exit_code()? {
             bail!(
                 "Corvid daemon exited during startup ({status}); run corvid daemon in the foreground for details"
             );
         }
-        if let Ok(result) = corvid_async::time::timeout(
-            COMMAND_TIMEOUT.min(STARTUP_POLL * 4),
-            daemon_running(runtime),
-        )
-        .await
-            && result?
-        {
+        if probe_daemon(runtime, deadline).await? {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            bail!("Corvid daemon startup timed out");
+            bail!(
+                "the launched Windows daemon did not answer the control pipe before the startup deadline"
+            );
         }
-        sleep(STARTUP_POLL).await;
+        sleep_until(deadline.min(Instant::now() + STARTUP_POLL)).await;
+    }
+}
+
+async fn probe_daemon(runtime: &Path, deadline: Instant) -> Result<bool> {
+    let limit = deadline.min(Instant::now() + STARTUP_POLL * 4);
+    match timeout_at(limit, daemon_running(runtime)).await {
+        Ok(Err(error)) if error.is::<compio::time::Elapsed>() => Ok(false),
+        Ok(result) => result,
+        Err(_) => Ok(false),
     }
 }

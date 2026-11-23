@@ -1335,12 +1335,60 @@ async fn ensure_daemon_reuses_the_detached_windows_process() -> Result<()> {
     Ok(())
 }
 
+#[compio::test]
+async fn ensure_daemon_waits_for_the_instance_when_the_control_pipe_is_busy() -> Result<()> {
+    use corvid_protocol::windows::StateDirectory;
+    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+
+    let fixture = tempfile::tempdir()?;
+    let runtime = fixture.path().join("run");
+    let state = fixture.path().join("state");
+    let directory = StateDirectory::create_all(&runtime)?;
+    let instance = directory.lock_instance()?;
+    let listener = DaemonPipe::Control.bind(&directory)?;
+    // Reserve the only listener without accepting it, as a daemon can do while
+    // loading its state before it starts serving requests.
+    let peer = DaemonPipe::Control.connect(&runtime).await?;
+
+    let release_instance = async move {
+        corvid_async::time::timeout(WAIT, async {
+            loop {
+                match directory.lock_startup() {
+                    Ok(lock) => drop(lock),
+                    Err(error)
+                        if error.downcast_ref::<io::Error>().is_some_and(|error| {
+                            error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
+                        }) =>
+                    {
+                        break Ok::<_, anyhow::Error>(());
+                    }
+                    Err(error) => return Err(error),
+                }
+                corvid_async::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .context("waiting for ensure-daemon to take the startup lock while the pipe was busy")??;
+        drop(peer);
+        drop(listener);
+        drop(instance);
+        Ok::<_, anyhow::Error>(())
+    };
+    let (ensured, released) =
+        corvid_async::join!(ensure_daemon(&runtime, &state), release_instance);
+    ensured.context("starting Windows daemon after the previous instance stopped")?;
+    let _daemon = BackgroundDaemon::open(&runtime).await?;
+    released?;
+    corvid_client::ping(&runtime).await
+}
+
 async fn ensure_daemon(runtime: &Path, state: &Path) -> Result<()> {
     let status = async_process::Command::new(CORVID)
         .arg("--runtime-dir")
         .arg(runtime)
         .args(["ensure-daemon", "--state-dir"])
         .arg(state)
+        .kill_on_drop(true)
         .status()
         .await?;
     ensure!(status.success(), "ensure-daemon failed ({status})");
