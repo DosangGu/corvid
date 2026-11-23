@@ -78,17 +78,19 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
-      - name: Exercise Windows release-mode client process and pipe lifecycle
-        shell: pwsh
-        run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            cargo test --locked --release -p corvid-client --lib
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+      - name: Read queued terminal and detach events after named-pipe closure
+        run: cargo test --locked --release -p corvid-client --lib closed_named_pipe_preserves_the_queued_terminal_status
       - name: Repeat the release-mode ConPTY lifecycle tests
         shell: pwsh
         run: |
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             cargo test --locked --release -p corvid-tui --test windows_daemon -- ordinary_attach_resumes tui_reopens_its_last_workspace retains_the_windows_shell
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Exercise Windows release-mode client process and pipe lifecycle
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            cargo test --locked --release -p corvid-client --lib
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
