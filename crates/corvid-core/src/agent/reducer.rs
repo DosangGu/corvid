@@ -33,6 +33,7 @@ pub(super) struct Correlation {
     interrupted_turns: Recent<String>,
     completed_work: Recent<WorkKey>,
     finished_requests: Recent<RequestKey>,
+    recovered_requests: BTreeSet<RequestKey>,
     batch_finished_inputs: Recent<RequestKey>,
     orphan_results: BTreeMap<RequestKey, OrphanResult>,
     expired_results: Recent<RequestKey>,
@@ -368,6 +369,32 @@ impl AgentRun {
         }
     }
 
+    /// Restore a handoff's input evidence without issuing a new attention event.
+    pub fn recover_input(&mut self, key: RequestKey, kind: RequestKind, evidence: &Evidence) {
+        if self.lifecycle.value != Lifecycle::Live
+            || !self
+                .current_open_turn()
+                .is_some_and(|turn| Some(turn) == key.turn.as_deref())
+            || !valid_id(&key.provider_request_id)
+            || self.requests.len() >= MAX_REQUESTS
+            || self.request_id(&key).is_some()
+        {
+            return;
+        }
+        self.correlation.recovered_requests.insert(key.clone());
+        let id = Uuid::new_v4();
+        let evidence = evidence.uncertain("input outcome was not observed during daemon handoff");
+        self.requests.insert(
+            id,
+            InputRequest {
+                id,
+                key: Some(key),
+                kind,
+                state: Observed::new(RequestStatus::Unverified, &evidence),
+            },
+        );
+    }
+
     fn request_input(
         &mut self,
         key: Option<RequestKey>,
@@ -375,11 +402,27 @@ impl AgentRun {
         evidence: &Evidence,
     ) -> bool {
         if let Some(key) = &key
-            && (self.was_interrupted(&key.turn)
-                || self.correlation.finished_requests.contains(key)
-                || self.request_id(key).is_some())
+            && (self.was_interrupted(&key.turn) || self.correlation.finished_requests.contains(key))
         {
             return false;
+        }
+        if let Some(key) = &key
+            && let Some(id) = self.request_id(key)
+        {
+            if !key
+                .turn
+                .as_deref()
+                .is_some_and(|turn| self.is_current_open_turn(turn))
+                || !self.correlation.recovered_requests.remove(key)
+            {
+                return false;
+            }
+            let state = self.initial_request_state(Some(key), evidence);
+            self.requests
+                .get_mut(&id)
+                .expect("matched request exists")
+                .state = state;
+            return true;
         }
         if self.requests.len() == MAX_REQUESTS {
             self.prune_closed_request();
@@ -462,6 +505,7 @@ impl AgentRun {
                 return false;
             }
             request.state = state;
+            self.correlation.recovered_requests.remove(&key);
             self.correlation.finished_requests.insert(key);
             return true;
         }
@@ -631,6 +675,9 @@ impl AgentRun {
 
     fn interrupt_scopes(&mut self, turn: &str, evidence: &Evidence) {
         self.correlation.interrupted_turns.insert(turn.to_owned());
+        self.correlation
+            .recovered_requests
+            .retain(|key| key.turn.as_deref() != Some(turn));
         self.work.retain(|key, _| key.turn.as_deref() != Some(turn));
         self.correlation
             .orphan_results
@@ -687,6 +734,7 @@ impl AgentRun {
         self.active_turns.clear();
         self.work.clear();
         self.correlation.orphan_results.clear();
+        self.correlation.recovered_requests.clear();
         for request in self
             .requests
             .values_mut()

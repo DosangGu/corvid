@@ -4,6 +4,7 @@ use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 fn main() {
     let argv: Vec<_> = env::args().collect();
@@ -40,17 +41,20 @@ fn main() {
         // Exceed the old TUI test deadline but confirm within the daemon's window.
         std::thread::sleep(std::time::Duration::from_secs(21));
     }
+    let source = if resumed.is_some() {
+        "resume"
+    } else {
+        "startup"
+    };
+    let started = Instant::now();
     observe(
         provider,
         &session,
-        &format!(
-            r#""hook_event_name":"SessionStart","source":"{}""#,
-            if resumed.is_some() {
-                "resume"
-            } else {
-                "startup"
-            }
-        ),
+        &format!(r#""hook_event_name":"SessionStart","source":"{source}""#),
+    );
+    let _ = std::fs::write(
+        format!("observer-{session}-{source}.txt"),
+        format!("observer exited successfully after {:?}", started.elapsed()),
     );
     if let Some(next) = option("--fixture-switch") {
         observe(

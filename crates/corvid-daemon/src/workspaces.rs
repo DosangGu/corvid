@@ -426,21 +426,27 @@ impl Workspaces {
         hook: crate::hook_data::Hook,
         pid: u32,
     ) -> Reply<()> {
-        if hook
-            .observer_epoch
-            .is_some_and(|epoch| epoch.to_string() != self.hook_environment.identity.epoch)
-        {
-            return Err(ProtocolFault::new(
-                "EpochMismatch",
-                "observer launch epoch was not retained",
-            ));
-        }
+        let current_epoch =
+            Uuid::parse_str(&self.hook_environment.identity.epoch).expect("daemon epoch");
         let unauthorized =
             || ProtocolFault::new("Unauthorized", "hook has no verified Windows agent owner");
         let association = hook.association;
+        let observer_epoch = hook.observer_epoch;
         let root = self
             .registry
-            .request(move |registry| registry.agents.hook_root(association))
+            .request(move |registry| {
+                registry.agents.validate_observer_epoch(
+                    association,
+                    observer_epoch,
+                    current_epoch,
+                )?;
+                registry
+                    .agents
+                    .hook_binding(association)
+                    .ok_or_else(unauthorized)
+            })
+            .await?
+            .root()
             .await
             .ok_or_else(unauthorized)?;
         let provider = hook.provider;
@@ -455,7 +461,9 @@ impl Workspaces {
                     .terminals
                     .get(&hook.association)
                     .ok_or_else(unauthorized)?;
-                let result = registry.agents.apply_hook(hook, owner, location);
+                let result = registry
+                    .agents
+                    .apply_hook(hook, owner, location, current_epoch);
                 registry.publish(Vec::new());
                 result
             })

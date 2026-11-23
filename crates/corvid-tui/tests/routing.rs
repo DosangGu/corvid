@@ -40,9 +40,19 @@ use common::{WAIT, command, daemon, start_daemon, wait_for_daemon};
 const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
+fn fixture_directory() -> std::io::Result<tempfile::TempDir> {
+    let directory = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    if common::routing_diagnostics() {
+        let thread = std::thread::current();
+        let test = thread.name().unwrap_or("unknown routing test");
+        eprintln!("starting {test}, fixture={}", directory.path().display());
+    }
+    Ok(directory)
+}
+
 #[compio::test]
 async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::Result<()> {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let fixture = fixture_directory()?;
     let runtime = fixture.path().join("run");
     let state = fixture.path().join("state");
     let mut first = daemon(&runtime, &state).await;
@@ -68,7 +78,7 @@ async fn compio_daemon_terminates_cleanly_and_releases_its_sockets() -> anyhow::
 
 #[compio::test]
 async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let fixture = fixture_directory()?;
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
 
@@ -98,7 +108,7 @@ async fn compio_control_ping_uses_the_existing_daemon() -> anyhow::Result<()> {
 async fn compio_stdio_relay_exits_when_daemon_closes_first() -> anyhow::Result<()> {
     use std::process::Stdio;
 
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let fixture = fixture_directory()?;
     let runtime = fixture.path().join("run");
     let mut daemon = daemon(&runtime, &fixture.path().join("state")).await;
     assert_eq!(control(&runtime, "ping").await, "pong\n");
@@ -138,7 +148,7 @@ async fn compio_stdio_relay_exits_when_daemon_closes_first() -> anyhow::Result<(
 
 #[compio::test]
 async fn automatic_titles_follow_bash_prompts_and_application_updates_on_one_watch() {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let runtime = fixture.path().join("run");
     let rc = fixture.path().join("bashrc");
     // Ubuntu's Bash prompt only sets the title for xterm or rxvt TERM names.
@@ -203,7 +213,7 @@ esac
 
 #[compio::test]
 async fn tab_names_and_terminal_titles_share_state_without_changing_input_routes() {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let runtime = fixture.path().join("run");
     let state = fixture.path().join("state");
     let legacy = serde_json::json!({
@@ -306,7 +316,7 @@ async fn wait_for_names(runtime: &Path, tab_name: &str, pane_name: &str) {
 
 #[compio::test]
 async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_edits() {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     let attach = |new_tab| Attach {
@@ -360,7 +370,7 @@ async fn shared_workspace_keeps_independent_pane_routes_and_blocks_conflicting_e
 
 #[compio::test]
 async fn takeover_checks_the_terminal_identity_and_refuses_a_pending_paste() {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     let mut owner = Tui::attach_target(
@@ -422,7 +432,7 @@ async fn takeover_checks_the_terminal_identity_and_refuses_a_pending_paste() {
 async fn resumes_only_the_previous_writer_of_the_exact_terminal() {
     use corvid_protocol::{PANE_WRITERS_CAPABILITY, WRITER_RESUME_CAPABILITY};
 
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     let capabilities = vec![
@@ -538,7 +548,7 @@ async fn resumes_only_the_previous_writer_of_the_exact_terminal() {
 
 #[compio::test]
 async fn managed_upgrade_preserves_the_installation_until_the_daemon_accepts() {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let home = fixture.path();
     let runtime = home.join("run");
     let state = home.join("state");
@@ -879,7 +889,7 @@ impl Tui {
 
 #[compio::test]
 async fn retired_observer_role_is_rejected_without_disturbing_the_writer() {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     timeout(WAIT, async {
@@ -944,7 +954,7 @@ async fn expect_pane_preview(tui: &mut Tui, target: &ViewSelection, text: &str) 
 
 #[compio::test]
 async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let mut daemon = daemon(&runtime, &state).await;
@@ -1060,7 +1070,7 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
 
 #[compio::test]
 async fn closes_views_and_preserves_other_writers() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let mut daemon = daemon(&runtime, &state).await;
@@ -1163,7 +1173,7 @@ async fn closes_views_and_preserves_other_writers() {
 
 #[compio::test]
 async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let launch_dir = temporary.path().join("launch-directory");
@@ -1231,7 +1241,7 @@ async fn crash_restores_layout_and_cwd_with_a_new_explicit_terminal() {
 
 #[compio::test]
 async fn layout_recovery_preserves_evidence_and_future_schema() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let primary = state.join("state.json");
@@ -1323,7 +1333,7 @@ fn echo_fixture(label: &str) -> LaunchCommand {
 
 #[compio::test]
 async fn managed_pty_runs_keep_distinct_identity_across_exit_and_relaunch() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let fixture = temporary.path().join("claude");
     std::fs::write(
@@ -1489,7 +1499,7 @@ async fn claude_update_restart_resynchronizes_after_a_legacy_handoff() {
 }
 
 async fn verify_claude_update_restart(legacy_handoff: bool) {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let fixture = fixture_directory().unwrap();
     let first = fixture.path().join("first");
     let updated = fixture.path().join("updated");
     std::fs::create_dir(&first).unwrap();
@@ -1647,7 +1657,7 @@ async fn verify_claude_update_restart(legacy_handoff: bool) {
 
 #[compio::test]
 async fn silent_foreground_and_exec_changes_cannot_retarget_a_managed_run() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let fixture = temporary.path().join("claude");
     std::fs::write(
@@ -1800,7 +1810,7 @@ async fn start_companion(
 
 #[compio::test]
 async fn companion_hosts_reports_configured_identity_when_daemon_identity_differs() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let _daemon = daemon(&runtime, &state).await;
@@ -1968,7 +1978,7 @@ async fn focus(
 
 #[compio::test]
 async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2004,7 +2014,7 @@ async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
 
 #[compio::test]
 async fn registered_focus_fences_input_and_changes_only_the_named_client() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let fixture = temporary.path().join("claude");
     std::fs::write(
@@ -2393,7 +2403,7 @@ fn assert_moved_entities(
 
 #[compio::test]
 async fn pairing_code_is_single_use_and_rpc_replay_preserves_the_first_revision() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2516,7 +2526,7 @@ async fn pairing_code_is_single_use_and_rpc_replay_preserves_the_first_revision(
 
 #[compio::test]
 async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2655,7 +2665,7 @@ async fn snapshot_watch_delivers_committed_routes_and_detach_in_order() {
 
 #[compio::test]
 async fn compio_snapshot_watch_uses_the_shared_endpoint() -> anyhow::Result<()> {
-    let fixture = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+    let fixture = fixture_directory()?;
     let runtime = fixture.path().join("run");
     let _daemon = daemon(&runtime, &fixture.path().join("state")).await;
     std::thread::spawn(move || -> anyhow::Result<()> {
@@ -2680,7 +2690,7 @@ async fn compio_snapshot_watch_uses_the_shared_endpoint() -> anyhow::Result<()> 
 
 #[compio::test]
 async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let mut original = daemon(&runtime, &state).await;
@@ -2723,7 +2733,7 @@ async fn snapshot_client_keeps_last_state_offline_and_resyncs_at_new_epoch() {
 
 #[compio::test]
 async fn separate_workspace_writers_and_tab_transitions_preserve_exact_routes() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2874,7 +2884,7 @@ async fn wait_for_text(tui: &mut Tui, output: &mut Vec<u8>, needle: &str) {
 
 #[compio::test]
 async fn incomplete_and_oversized_pastes_cannot_write_across_resize() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2929,7 +2939,7 @@ async fn incomplete_and_oversized_pastes_cannot_write_across_resize() {
 
 #[compio::test]
 async fn accepted_paste_blocks_resize_until_its_full_batch_is_written() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2962,7 +2972,7 @@ async fn accepted_paste_blocks_resize_until_its_full_batch_is_written() {
 
 #[compio::test]
 async fn stalled_partial_paste_reports_failure_and_fences_the_writer() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -2993,7 +3003,7 @@ async fn stalled_partial_paste_reports_failure_and_fences_the_writer() {
 
 #[compio::test]
 async fn resize_fences_previous_route_before_any_pty_write() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
     timeout(WAIT, async {
@@ -3036,7 +3046,7 @@ async fn resize_fences_previous_route_before_any_pty_write() {
 
 #[compio::test]
 async fn malformed_and_stalled_frames_leave_the_existing_pty_usable() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
 
@@ -3150,7 +3160,7 @@ async fn reject_required_capability(runtime: &Path) {
 
 #[compio::test]
 async fn stalled_render_and_snapshot_consumers_release_their_connections() {
-    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let temporary = fixture_directory().unwrap();
     let runtime = temporary.path().join("runtime");
     let state = temporary.path().join("state");
     let layout = PressureLayout::seed(&state);

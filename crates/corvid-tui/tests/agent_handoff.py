@@ -43,7 +43,7 @@ def wait_for_attention(control, **expected):
         )
 
 
-def observe_question(terminal, pid, control, run):
+def observe_question(terminal, pid, control, run, already_observed=False):
     counters = ("accepted_submissions", "rejected_submissions")
     before = fields(control("collector-status"))
     expected = {"run_id": run, "request_kind": "Question"}
@@ -51,6 +51,13 @@ def observe_question(terminal, pid, control, run):
         terminal.output.clear()
         terminal.send(b"question\n")
         terminal.expect(b"OBSERVED-question-PID=" + pid)
+        if already_observed:
+            line = next(line for line in control("agents").splitlines() if line.startswith(run + " "))
+            agent = fields(line)
+            assert agent["collection"] == "Healthy", line
+            assert agent["pending"] == ("1" if agent["provider"] == "Claude" else "0"), line
+            assert not control("attention"), "restored question sent duplicate attention"
+            return
         found, _ = poll_attention(control, expected, 0.25)
         if found:
             return
@@ -222,7 +229,12 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
                     terminal.send(b"wrong-epoch\n")
                     terminal.expect(b"OBSERVED-wrong-epoch-PID=" + pid)
                     assert not control("attention"), "foreign observer epoch accepted"
-                    observe_question(terminal, pid, control, run)
+                    has_input_hints = bool(retained_agent.get("inputs")) and not (
+                        generation == 0 and (legacy or previous)
+                    )
+                    if has_input_hints:
+                        assert "pending=0 unverified=1" in current, current
+                    observe_question(terminal, pid, control, run, already_observed=has_input_hints)
                     terminal.send(b"respond\n")
                     terminal.expect(b"OBSERVED-respond-PID=" + pid)
                     wait_for_attention(control, run_id=run, reason="Response")

@@ -45,7 +45,7 @@ impl Decoder {
     pub(crate) fn deadline(&self) -> Option<Instant> {
         self.key
             .as_ref()
-            .map(|key| key.deadline)
+            .map(Key::deadline)
             .or_else(|| self.paste.as_ref().map(|paste| paste.deadline))
     }
 
@@ -71,6 +71,10 @@ impl Decoder {
             }
             if let Some(key) = self.key.take() {
                 ensure!(!key.discard, "retired key sequence did not finish");
+                ensure!(
+                    key.paste_start_deadline().is_none(),
+                    "paste start marker did not finish"
+                );
                 self.emit_key(key.bytes, &mut output);
             }
         }
@@ -109,6 +113,7 @@ impl Decoder {
                     kind,
                     bytes: vec![byte],
                     deadline: Instant::now() + self.escape_delay,
+                    paste_start_deadline: None,
                     discard: false,
                 };
                 if !accepting {
@@ -176,6 +181,7 @@ struct Key {
     kind: KeyKind,
     bytes: Vec<u8>,
     deadline: Instant,
+    paste_start_deadline: Option<Instant>,
     discard: bool,
 }
 
@@ -186,6 +192,18 @@ enum Step {
 }
 
 impl Key {
+    fn deadline(&self) -> Instant {
+        if self.discard {
+            return self.deadline;
+        }
+        self.paste_start_deadline().unwrap_or(self.deadline)
+    }
+
+    fn paste_start_deadline(&self) -> Option<Instant> {
+        self.paste_start_deadline
+            .filter(|_| PASTE_START.starts_with(&self.bytes))
+    }
+
     fn retire(&mut self) {
         if !self.discard {
             self.discard = true;
@@ -219,6 +237,11 @@ impl Key {
             }
         };
         self.bytes.push(byte);
+        if self.bytes == b"\x1b[2" {
+            // Keep a possible paste opener framed so a delayed suffix cannot
+            // become keystrokes. Esc followed by [ alone can still be Alt+[.
+            self.paste_start_deadline = Some(Instant::now() + PASTE_CAPTURE_TIMEOUT);
+        }
         if self.bytes.len() >= KEY_LIMIT {
             return Step::Complete;
         }
@@ -306,5 +329,33 @@ mod tests {
             panic!("expected paste transaction")
         };
         assert_eq!(bytes, b"paste\x1dd\x1b[20X");
+    }
+
+    #[test]
+    fn finishes_a_fragmented_paste_opener_after_the_escape_deadline() {
+        let mut decoder = Decoder::new(Duration::ZERO);
+        assert!(decoder.feed(b"\x1b[20", true).unwrap().is_empty());
+        assert!(decoder.expire().unwrap().is_empty());
+        let output = decoder.feed(b"0~\x1dd\x1b[201~", true).unwrap();
+        assert!(matches!(&output[..], [Input::Paste(bytes)] if bytes == b"\x1dd"));
+
+        assert!(decoder.feed(b"\x1b[20", true).unwrap().is_empty());
+        let output = decoder.feed(b"~", true).unwrap();
+        assert!(matches!(&output[..], [Input::Keys(bytes)] if bytes == b"\x1b[20~"));
+
+        assert!(decoder.feed(b"\x1b[", true).unwrap().is_empty());
+        let output = decoder.expire().unwrap();
+        assert!(matches!(&output[..], [Input::Keys(bytes)] if bytes == b"\x1b["));
+    }
+
+    #[test]
+    fn expires_an_incomplete_paste_opener_without_forwarding_it() {
+        let mut decoder = decoder();
+        assert!(decoder.feed(b"\x1b[200", true).unwrap().is_empty());
+        decoder.key.as_mut().unwrap().paste_start_deadline = Some(Instant::now());
+        let Err(error) = decoder.expire() else {
+            panic!("expected an incomplete paste error");
+        };
+        assert_eq!(error.to_string(), "paste start marker did not finish");
     }
 }

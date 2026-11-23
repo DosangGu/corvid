@@ -62,13 +62,27 @@ and layout locations. Windows uses a separate executable image for terminal host
 so they can remain alive while the daemon executable is replaced.
 
 Client identities, writer leases, and input routes are freshly established after
-handoff. Queued user input is fenced. Previous agent requests and attention remain
-historical. Qualified Unix agents retain their observer association and process identity
-through planned replacement. The new daemon checks the boot, process birth, executable,
-and retained PTY ownership, then publishes a new run in its own epoch. Collection stays
-degraded until a fresh authenticated hook arrives. Existing observer environments use
-their launch epoch; only that retained association may submit observations across epochs.
-Controller actions and shell registrations still require the current epoch.
+handoff. Queued user input is fenced. Previous agent alerts remain in history.
+Qualified Unix agents retain their observer association and process identity. The
+new daemon checks the boot, process birth, executable, and retained PTY ownership,
+then publishes a new run in its own epoch. Collection stays degraded until a fresh
+authenticated hook arrives. Questions and plan approvals with exact IDs from the
+retained prompt appear as **Check terminal** while their outcome is uncertain. A
+matching result resolves the request, and reobserving the same request produces no
+duplicate alert.
+
+On Windows, the replacement keeps the original observer epoch for each recovered
+ConPTY root. The daemon verifies the hook helper, provider process, and ConPTY
+ancestry on every submission. A verified prompt submission or typed input request
+can establish collection again when the same provider has no new `SessionStart`
+event. When the handoff includes a verified Windows session, the daemon restores
+its input evidence with the same Unverified status as Unix. Controller actions and
+shell registrations require the current epoch on all platforms.
+
+The Deck shows a retained Claude question after a Linux daemon handoff. The
+question stays open in the original terminal until the user answers.
+
+![Agent Deck card showing Check terminal after restoring a Claude question](images/agent-deck/retained-question.png)
 
 Linux also migrates terminal-only handoffs from v0.2.5 and earlier. It checks the saved
 conversation and the surviving foreground provider, reading only Corvid's UUID scope
@@ -239,7 +253,9 @@ manual hook configuration.
 
 The TUI recognizes split legacy VT keys, UTF-8, and bracketed paste. The
 `--escape-delay-ms` option defaults to 100 ms. Network delays above this setting
-can split an Alt key into literal Esc and a subsequent key. The daemon receives
+can split an Alt key into literal Esc and a subsequent key. A partial bracketed
+paste opener starting with `ESC [ 2` uses its own bounded deadline. If it expires
+before the opener completes, the TUI reports an input error. The daemon receives
 paste as a route-scoped transaction with a 1 MiB limit. The outer TTY always
 captures paste and the daemon adds delimiters when the child enables that mode.
 An accepted write holds the input barrier until it finishes or stalls.

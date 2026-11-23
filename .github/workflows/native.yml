@@ -69,6 +69,10 @@ jobs:
         run: cargo build --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-update
       - name: Runtime tests
         if: inputs.qualify
+        env:
+          CORVID_TEST_ROUTING_DIAGNOSTICS: ${{ matrix.runtime == 'aarch64-unknown-linux-musl' && '1' || '0' }}
+          RUST_BACKTRACE: ${{ matrix.runtime == 'aarch64-unknown-linux-musl' && '1' || '0' }}
+          RUST_TEST_NOCAPTURE: ${{ matrix.runtime == 'aarch64-unknown-linux-musl' && '1' || '0' }}
         run: cargo test --locked --release --target ${{ matrix.runtime }} -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update
       - name: Unix PTY qualification
         if: inputs.qualify

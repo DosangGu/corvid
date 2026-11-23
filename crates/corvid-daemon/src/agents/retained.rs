@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{Agents, evidence};
+use crate::handoff::input::{RetainedInput, valid_id};
 use crate::process::{HookProducer, ProcessImage};
 
 /// Private handoff metadata, never terminal content or a live controller address.
@@ -26,6 +27,8 @@ pub(crate) struct RetainedAgent {
     session: String,
     sessions: Vec<String>,
     turn: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    inputs: Vec<RetainedInput>,
     gap: bool,
 }
 
@@ -48,13 +51,12 @@ impl RetainedAgent {
             session: session.provider_session_id.clone(),
             sessions: vec![session.provider_session_id],
             turn: None,
+            inputs: Vec::new(),
             gap: false,
         })
     }
 
     pub(crate) fn valid(&self) -> bool {
-        let valid_id =
-            |id: &str| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control);
         !self.association.is_nil()
             && !self.observer_epoch.is_nil()
             && valid_id(&self.session)
@@ -62,6 +64,7 @@ impl RetainedAgent {
             && self.sessions.iter().all(|id| valid_id(id))
             && self.sessions.contains(&self.session)
             && self.turn.as_deref().is_none_or(valid_id)
+            && RetainedInput::valid_all(self.turn.as_deref(), &self.inputs)
             && self.restart_path.as_ref().is_none_or(|path| {
                 self.provider == Provider::Claude
                     && path.len() <= 4096
@@ -114,6 +117,7 @@ impl Agents {
                 session: record.run.identity.provider_session.clone()?,
                 sessions: launch.sessions.iter().cloned().collect(),
                 turn: record.run.current_open_turn().map(str::to_owned),
+                inputs: RetainedInput::collect(&record.run),
                 gap: launch.gap,
             })
         })
@@ -161,11 +165,18 @@ impl Agents {
         if let Some(turn) = saved.turn {
             record.apply(
                 Uuid::new_v4(),
-                ObservationKind::InteractivePromptSubmitted(turn),
+                ObservationKind::InteractivePromptSubmitted(turn.clone()),
                 evidence(Source::Collector, Confidence::Confirmed),
             );
+            for input in saved.inputs {
+                input.restore(
+                    &mut record.run,
+                    &turn,
+                    &evidence(Source::Collector, Confidence::Confirmed),
+                );
+            }
         }
-        // Previous requests/attention remain historical. A fresh authenticated
+        // Keep historical attention out of the new run. A fresh authenticated
         // observation must confirm collection in this epoch before notifying.
         record.apply(
             Uuid::new_v4(),
