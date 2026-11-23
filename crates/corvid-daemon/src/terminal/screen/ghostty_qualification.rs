@@ -222,6 +222,32 @@ fn adapter_uses_ghostty_reflow_and_keeps_history_with_styles() {
 }
 
 #[test]
+fn dirty_projection_clears_erased_cells_and_restores_the_primary_grid() {
+    let viewport = Viewport::new(12, 4).unwrap();
+    let mut terminal = TerminalScreen::with_ghostty(viewport).unwrap();
+    terminal
+        .process(b"\x1b[?1h\x1b[?25lprimary\r\n\x1b[42mabcdef\x1b[0m")
+        .unwrap();
+    let initial = terminal.snapshot().unwrap();
+    terminal
+        .process(b"\x1b[2;3H\x1b[K\x1b[?1l\x1b[?25h")
+        .unwrap();
+    let erased = terminal.snapshot().unwrap();
+    assert_eq!(erased.cell(0, 0).unwrap().text, "p");
+    assert_eq!(erased.cell(1, 1).unwrap().text, "b");
+    assert!(erased.cell(1, 2).unwrap().text.is_empty());
+    assert!(!erased.hide_cursor() && !erased.application_cursor());
+    assert!(initial.hide_cursor() && initial.application_cursor());
+
+    terminal.process(b"\x1b[?1049h\x1b[Halternate").unwrap();
+    assert_eq!(terminal.snapshot().unwrap().cell(0, 0).unwrap().text, "a");
+    terminal.process(b"\x1b[?1049l").unwrap();
+    let restored = terminal.snapshot().unwrap();
+    assert_eq!(restored.cell(0, 0).unwrap().text, "p");
+    assert!(restored.cell(1, 2).unwrap().text.is_empty());
+}
+
+#[test]
 fn adapter_applies_corvid_query_prompt_and_clipboard_policy() {
     let mut terminal = TerminalScreen::with_ghostty(Viewport::new(20, 6).unwrap()).unwrap();
     terminal.configure_clipboard(true, false);
