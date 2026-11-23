@@ -9,6 +9,8 @@ use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
 #[cfg(test)]
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
+#[cfg(all(test, feature = "ghostty-vt"))]
+mod benchmark;
 #[cfg(feature = "ghostty-vt")]
 mod ghostty;
 #[cfg(all(test, feature = "ghostty-vt"))]
