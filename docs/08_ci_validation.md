@@ -2,10 +2,11 @@
 
 ## Pull requests
 
-Each check uses a GitHub Actions workflow trigger. Every PR runs **Checks /
-Basics** for whitespace, Rust formatting, and workspace version consistency.
-Component workflows start when their source, shared dependencies, or build
-inputs match the paths in their YAML. A documentation-only PR runs Basics.
+PR workflows run automatically when the target branch is `main`. On those
+PRs, **Checks / Basics** verifies whitespace, Rust formatting, and workspace
+version consistency. Component workflows also require a match for their
+source, shared dependencies, or build inputs. A documentation-only PR to
+`main` runs Basics.
 
 | Workflow | Scope on a matching PR |
 | --- | --- |
@@ -18,8 +19,10 @@ inputs match the paths in their YAML. A documentation-only PR runs Basics.
 
 Workspace manifest, lockfile, and Rust toolchain changes run the component
 workflows. GitHub does not create component workflow runs for PRs outside their
-path filters. Only the always-running Basics workflow is suitable as a required
-status check for every PR.
+path filters. Basics runs on every PR to `main` and has a stable job name if
+the repository elects to require it there. Workflows with `workflow_dispatch`
+can be launched manually after they are available on `main`, including on
+branches used by stacked PRs.
 
 ## Release qualification
 
