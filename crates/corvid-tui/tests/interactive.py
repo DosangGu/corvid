@@ -824,15 +824,19 @@ def verify_workspace_ui(command, directory):
         workspace = layout.split(" Workspace UI\n", 1)[1].split("\nworkspace ", 1)[0]
         return re.findall(r"^    pane ([\da-f-]+)$", workspace, re.M)
 
-    def wait_for_writer_mode(mode):
+    def wait_for_writer_mode(terminal, mode):
         deadline = time.monotonic() + 5
         while True:
             clients = subprocess.check_output([*command, "control", "clients"], text=True, timeout=3)
-            client, = clients.splitlines()
-            identity, *fields = client.split()
-            view = dict(field.split("=", 1) for field in fields)
-            if view.get("mode") == mode:
-                return identity, view
+            writers = []
+            for client in clients.splitlines():
+                identity, *fields = client.split()
+                view = dict(field.split("=", 1) for field in fields)
+                if "pane-writer" in view:
+                    writers.append((identity, view))
+            if len(writers) == 1 and writers[0][1].get("mode") == mode:
+                return writers[0]
+            assert terminal.process.poll() is None, ("TUI exited", terminal.output[-500:], clients)
             assert time.monotonic() < deadline, (mode, clients)
             time.sleep(0.02)
 
@@ -988,7 +992,7 @@ def verify_workspace_ui(command, directory):
         terminal.expect(rb"\x1b\[6;1H\x1b\[0;7m\x1b\[2KPane 3")
         terminal.output.clear()
         terminal.send(b"\x1b")
-        client, narrow_view = wait_for_writer_mode("Passthrough")
+        client, narrow_view = wait_for_writer_mode(terminal, "Passthrough")
         terminal.expect(cursor_visible)
         terminal.output.clear()
         terminal.resize(100, 30)
@@ -1000,7 +1004,7 @@ def verify_workspace_ui(command, directory):
         # The narrow viewport cannot draw the right-hand pane at column 51.
         # A complete restored frame follows the resize's new input route.
         terminal.expect(restored_split)
-        restored_client, restored_view = wait_for_writer_mode("Passthrough")
+        restored_client, restored_view = wait_for_writer_mode(terminal, "Passthrough")
         assert restored_client == client
         assert restored_view["pane-writer"] == narrow_view["pane-writer"]
         assert restored_view["terminal"] == narrow_view["terminal"]
@@ -1014,7 +1018,7 @@ def verify_workspace_ui(command, directory):
         terminal.expect(b"Search: d")
         terminal.output.clear()
         terminal.send(b"\x1b")
-        wait_for_writer_mode("Passthrough")
+        wait_for_writer_mode(terminal, "Passthrough")
         terminal.expect(restored_split)
         send_line(terminal, 'printf "AFTER-RESIZE-%s\\n" "$CORVID_TEST_PANE"')
         terminal.expect(b"AFTER-RESIZE-top")
