@@ -47,7 +47,7 @@ def verify(binary, root, cargo_options):
     (root / "home").mkdir(mode=0o700)
     (root / "bin").mkdir(mode=0o700)
     remote = root / "remote.py"
-    script = Path(__file__).resolve().parents[1] / "crates/corvid-client/src/endpoint/bootstrap.sh"
+    script = Path(__file__).resolve().parents[3] / "crates/corvid-client/src/endpoint/bootstrap.sh"
     quoted = script.read_bytes().decode().replace("'", "'\\''")
     bootstrap = f"sh -c '{quoted}' corvid-ssh"
     commands = {

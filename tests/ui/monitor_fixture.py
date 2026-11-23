@@ -1,6 +1,7 @@
 """Read and retire only the automatic monitors belonging to a Desktop fixture."""
 
 import json
+import os
 import subprocess
 import time
 
@@ -12,7 +13,8 @@ def records(state):
 
 def command(binary, record):
     connection = json.loads(record.read_text())
-    return [binary, "companion", "--socket-dir", connection["address"]]
+    option = "--pipe-instance" if os.name == "nt" else "--socket-dir"
+    return [binary, "companion", option, connection["address"]]
 
 
 def ready(binary, state, environment):

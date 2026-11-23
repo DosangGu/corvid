@@ -55,6 +55,10 @@ name = "render-icons"
 path = "tools/render_icons.rs"
 
 [[test]]
+name = "windows_tray"
+path = "tests/ui/windows_tray.rs"
+
+[[test]]
 name = "windows_update"
 harness = false
 

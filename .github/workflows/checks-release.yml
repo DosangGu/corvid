@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   qualify:
-    name: Release qualification
+    name: Release package and UI qualification
     uses: ./.github/workflows/package.yml
 
   source-packages:

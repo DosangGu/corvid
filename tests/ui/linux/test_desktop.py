@@ -9,15 +9,21 @@ import re
 import shlex
 import shutil
 import signal
+import sys
 import subprocess
 import tarfile
 import tempfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import monitor_fixture
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("assets", type=Path, nargs="?", help="directory containing the Desktop archive")
 parser.add_argument("--build", type=Path, help="directory containing built Desktop and runtime binaries")
+selection = parser.add_mutually_exclusive_group()
+selection.add_argument("--paste-only", action="store_true", help="run the tab and Unicode paste smoke test")
+selection.add_argument("--deck-only", action="store_true", help="run the Agent Deck window smoke test")
 args = parser.parse_args()
 if (args.assets is None) == (args.build is None):
     parser.error("provide either an assets directory or --build")
@@ -50,7 +56,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
     manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     desktop = None
     previous = None
-    deck = None
+    decks = []
     try:
         for _ in range(80):
             ping = subprocess.run([str(root / "corvid"), "control", "ping"], env=environment, capture_output=True)
@@ -93,6 +99,49 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
 
         window = wait_for_icon("Corvid Desktop")
         reader, monitor_epoch = monitor_fixture.ready(root / "corvid", monitor_state, environment)
+
+        def open_deck():
+            # Open Deck after the monitor already synchronized. Only this isolated,
+            # empty deck is captured; terminal windows are excluded from the image.
+            deck_binary = root / ("corvid-agent-deck" if args.build else "plugins/agent-deck/corvid-agent-deck")
+            deck = subprocess.Popen([str(deck_binary), "--state-dir", str(monitor_state)],
+                                    env=environment, start_new_session=True)
+            decks.append(deck)
+            for _ in range(80):
+                assert deck.poll() is None, f"Agent Deck exited with {deck.returncode}"
+                windows = subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
+                if match := re.search(r'(0x[0-9a-f]+) "Corvid Agent Deck"', windows):
+                    deck_window = match[1]
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError("Agent Deck did not open")
+            monitor_fixture.assert_same(reader, monitor_epoch, environment)
+            if screenshot := os.environ.get("CORVID_AGENT_DECK_SCREENSHOT"):
+                subprocess.run(["xdotool", "windowactivate", "--sync", deck_window], check=True, timeout=10)
+                time.sleep(1)
+                subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
+
+            if screenshot := os.environ.get("CORVID_AGENT_DECK_SETTINGS_SCREENSHOT"):
+                geometry = subprocess.check_output(
+                    ["xdotool", "getwindowgeometry", "--shell", deck_window], text=True
+                )
+                width = int(re.search(r"^WIDTH=(\d+)$", geometry, re.M)[1])
+                subprocess.run(["xdotool", "windowactivate", "--sync", deck_window,
+                                "mousemove", "--window", deck_window, str(width - 53), "18", "click", "1"],
+                               check=True, timeout=10)
+                time.sleep(0.5)
+                subprocess.run(["xdotool", "mousemove", "--window", deck_window, "95", "60", "click", "1",
+                                "mousemove", "--window", deck_window, "390", "370"],
+                               check=True, timeout=10)
+                time.sleep(0.5)
+                subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
+
+        if args.deck_only:
+            open_deck()
+            print("PASS deck-window")
+            sys.exit(0)
+
         def writers():
             clients = subprocess.check_output(
                 [str(root / "corvid"), "control", "clients"], env=environment, text=True, timeout=5,
@@ -216,6 +265,17 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                 assert time.monotonic() < deadline, layout
                 time.sleep(0.05)
 
+        def paste_unicode(*, tab_isolation=False):
+            pasted = "한글 e\u0301 🐦"
+            paste_marker = root / "pasted"
+            value = shlex.quote(pasted)
+            assignment = f"kept={value}; " if tab_isolation else ""
+            paste_command = f"{assignment}printf %s {value} > {shlex.quote(str(paste_marker))}"
+            subprocess.run(["xclip", "-selection", "clipboard"], input=paste_command.encode("utf-8"),
+                           check=True, timeout=10)
+            key(window, "ctrl+shift+v", "Return")
+            wait_for_marker(paste_marker, pasted)
+
         retired = wait_for_writer()
         first_probe = wait_for_keyboard(window, retired)
         first_marker = root / "first"
@@ -226,6 +286,18 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             raise AssertionError(
                 f"{error} ({input_status(window, retired, first_probe)})"
             ) from error
+        if args.paste_only:
+            first_terminal = wait_for_terminal()
+            new_tab(window)
+            wait_for_terminal(previous=first_terminal)
+            paste_unicode(tab_isolation=True)
+            key(window, "ctrl+bracketright", "bracketleft")
+            wait_for_terminal(expected=first_terminal)
+            marker = root / "isolated"
+            write_marker(window, marker, f'printf %s "$kept" > {shlex.quote(str(marker))}')
+            print("PASS desktop-paste")
+            sys.exit(0)
+
         # Scrollback must release the keyboard at the bottom, and an ordinary
         # foreground program that never enabled mouse reporting must keep it.
         def wheel(button, count):
@@ -366,15 +438,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             f"unexpected terminal chords: {chords!r}"
         )
 
-        # Use the real clipboard and keyboard path, with synthetic Unicode data.
-        pasted = "한글 e\u0301 🐦"
-        paste_marker = root / "pasted"
-        paste_command = f"printf %s {shlex.quote(pasted)} > {shlex.quote(str(paste_marker))}"
-        subprocess.run(["xclip", "-selection", "clipboard"], input=paste_command.encode("utf-8"),
-                       check=True, timeout=10)
-        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"], check=True, timeout=10)
-        subprocess.run(["xdotool", "key", "Return"], check=True, timeout=10)
-        wait_for_marker(paste_marker, pasted)
+        paste_unicode()
         search_ready = root / "search-ready"
         type_command(f"seq -f 'search-item-%03g' 1 75; printf ready > {shlex.quote(str(search_ready))}")
         wait_for_marker(search_ready, "ready")
@@ -469,10 +533,14 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         time.sleep(0.5)
         assert wait_for_writer() == retired, "A new window displaced the existing writer"
 
-        # The overflow menu is in the top-right of the 1080px client area.
         key(window, "Escape")  # Dismiss the picker before opening the menu.
         time.sleep(0.1)
-        subprocess.run(["xdotool", "mousemove", "--window", window, "1055", "20", "click", "1"], check=True, timeout=10)
+        geometry = subprocess.check_output(
+            ["xdotool", "getwindowgeometry", "--shell", window], text=True, timeout=5
+        )
+        width = int(re.search(r"^WIDTH=(\d+)$", geometry, re.M)[1])
+        subprocess.run(["xdotool", "mousemove", "--window", window, str(width - 25), "20",
+                        "click", "1"], check=True, timeout=10)
         time.sleep(0.3)
         if screenshot := os.environ.get("CORVID_DESKTOP_SCREENSHOT"):
             # Capture the empty window's menu, never a user's terminal content.
@@ -544,44 +612,19 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             marker = shlex.quote(str(workspace_marker))
             write_marker(window, workspace_marker, f'test "$(pwd -P)" = {cwd} && printf preserved > {marker}')
 
-        # Open Deck after the monitor already synchronized. Only this isolated,
-        # empty deck is captured; terminal windows are excluded from the image.
-        deck_binary = root / ("corvid-agent-deck" if args.build else "plugins/agent-deck/corvid-agent-deck")
-        deck = subprocess.Popen([str(deck_binary), "--state-dir", str(monitor_state)],
-                                env=environment, start_new_session=True)
-        for _ in range(80):
-            assert deck.poll() is None, f"Agent Deck exited with {deck.returncode}"
-            windows = subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
-            if match := re.search(r'(0x[0-9a-f]+) "Corvid Agent Deck"', windows):
-                deck_window = match[1]
-                break
-            time.sleep(0.1)
-        else:
-            raise AssertionError("Agent Deck did not open")
-        monitor_fixture.assert_same(reader, monitor_epoch, environment)
-        if screenshot := os.environ.get("CORVID_AGENT_DECK_SCREENSHOT"):
-            subprocess.run(["xdotool", "windowactivate", "--sync", deck_window], check=True, timeout=10)
-            time.sleep(1)
-            subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
-
-        if screenshot := os.environ.get("CORVID_AGENT_DECK_SETTINGS_SCREENSHOT"):
-            geometry = subprocess.check_output(
-                ["xdotool", "getwindowgeometry", "--shell", deck_window], text=True
-            )
-            width = int(re.search(r"^WIDTH=(\d+)$", geometry, re.M)[1])
-            subprocess.run(["xdotool", "windowactivate", "--sync", deck_window,
-                            "mousemove", "--window", deck_window, str(width - 53), "18", "click", "1"],
-                           check=True, timeout=10)
-            time.sleep(0.5)
-            subprocess.run(["xdotool", "mousemove", "--window", deck_window, "95", "60", "click", "1",
-                            "mousemove", "--window", deck_window, "390", "370"],
-                           check=True, timeout=10)
-            time.sleep(0.5)
-            subprocess.run(["scrot", "--overwrite", "--focused", screenshot], check=True, timeout=10)
+        open_deck()
 
         print("PASS Desktop keyboard input, Unicode clipboard paste, tab creation/switching, independent windows, new-window menu, close/quit/relaunch, shell continuity, settings, and X11 icons")
+    except Exception:
+        if screenshot := os.environ.get("CORVID_UI_FAILURE_SCREENSHOT"):
+            try:
+                subprocess.run(["scrot", "--overwrite", "--focused", screenshot],
+                               check=True, timeout=10)
+            except (OSError, subprocess.SubprocessError) as error:
+                print(f"Could not capture fixture window: {error}", file=sys.stderr)
+        raise
     finally:
-        for process in [deck, desktop, previous, daemon, manager]:
+        for process in [*decks, desktop, previous, daemon, manager]:
             if process is not None and process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
                 process.wait(timeout=15)
