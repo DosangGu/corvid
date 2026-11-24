@@ -4,6 +4,8 @@ mod composition;
 mod host;
 mod input;
 mod keys;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod locale;
 mod navigation;
 mod paste;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
