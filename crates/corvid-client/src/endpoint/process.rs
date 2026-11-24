@@ -231,25 +231,33 @@ impl AsyncRead for ReadPipe {
 mod tests {
     use super::*;
 
+    const CHILD_FIXTURE: &str = "endpoint::process::tests::native_process_child_fixture";
+
+    #[test]
+    #[ignore = "run as a subprocess by the native process test"]
+    fn native_process_child_fixture() -> Result<()> {
+        use std::io::{Read, Write};
+
+        let mut payload = Vec::new();
+        std::io::stdin().read_to_end(&mut payload)?;
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&payload)?;
+        stdout.flush()?;
+        std::io::stderr().write_all(b"diagnostic")?;
+        // Skip libtest's summary after the raw payload.
+        std::process::exit(0);
+    }
+
     #[compio::test]
     async fn native_process_transfers_payload_until_eof_and_reaps_the_child() -> Result<()> {
-        #[cfg(unix)]
-        let command = {
-            let mut command = Command::new("/bin/sh");
-            command.args(["-c", "cat; printf diagnostic >&2"]);
-            command
-        };
-        #[cfg(windows)]
-        let command = {
-            let mut command = Command::new("powershell.exe");
-            command.args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "[Console]::Out.Write([Console]::In.ReadToEnd()); [Console]::Error.Write('diagnostic')",
-            ]);
-            command
-        };
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args([
+            "--exact",
+            CHILD_FIXTURE,
+            "--ignored",
+            "--nocapture",
+            "--quiet",
+        ]);
         let reply = super::super::native::command_output(
             command,
             Some((b"header ", b"body")),
@@ -259,7 +267,13 @@ mod tests {
         )
         .await?;
         assert!(reply.status.success(), "{:?}", reply.diagnostic);
-        assert_eq!(reply.stdout, b"header body");
+        // Libtest prints its announcement before the fixture writes the payload.
+        assert_eq!(
+            reply.stdout.rsplit(|&byte| byte == b'\n').next(),
+            Some(b"header body".as_slice()),
+            "{:?}",
+            String::from_utf8_lossy(&reply.stdout),
+        );
         assert_eq!(reply.diagnostic, b"diagnostic");
         Ok(())
     }
