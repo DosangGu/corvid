@@ -102,8 +102,7 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
                     deck_command = [deck, "--state-dir", state]
                     panel = processes.enter_context(running(
                         [*deck_command, "--background"], env, root, log))
-                    backdrop = processes.enter_context(running([ui.helper, "backdrop"], env, root, log))
-                    verify_focus(ui, app, window, panel, backdrop, deck_command, root,
+                    verify_focus(ui, app, window, panel, deck_command, root,
                                  cli=cli, env=env, reader=reader)
                 elif case == "deck-window":
                     if os.name == "nt":

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
@@ -10,21 +11,9 @@ func fail(_ message: String) -> Never {
 let arguments = CommandLine.arguments
 let command = arguments[1]
 
-if command == "backdrop" {
-    let app = NSApplication.shared
-    app.setActivationPolicy(.regular)
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
-                          styleMask: [.titled], backing: .buffered, defer: false)
-    window.title = "Corvid UI Test Backdrop"
-    window.center()
-    window.makeKeyAndOrderFront(nil)
-    withExtendedLifetime(window) { app.run() }
-    exit(0)
-}
-
 if command == "frontmost" {
     if let app = NSWorkspace.shared.frontmostApplication {
-        print(app.processIdentifier)
+        print("\(app.processIdentifier) \(app.bundleIdentifier ?? "-")")
     }
     exit(0)
 }

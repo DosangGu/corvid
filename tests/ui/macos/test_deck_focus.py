@@ -2,7 +2,7 @@
 import subprocess
 
 from .test_desktop_paste import wait_for_route
-from scenario import running, wait_for
+from scenario import wait_for
 
 
 def fields(line):
@@ -23,8 +23,7 @@ def occupied_cards(cli, env, reader):
         return [by_run[run] for run in runs]
 
 
-def verify_focus(ui, desktop, window, panel, backdrop, deck_command, root, *, cli, env, reader):
-    cover = wait_for("backdrop window", lambda: ui.window(backdrop.pid), backdrop)
+def verify_focus(ui, desktop, window, panel, deck_command, root, *, cli, env, reader):
     cards = wait_for("two occupied Agent Deck slots",
                      lambda: occupied_cards(cli, env, reader), panel)
     initial = wait_for_route(cli, env, desktop, "initial Desktop writer", lambda route: True)
@@ -37,13 +36,14 @@ def verify_focus(ui, desktop, window, panel, backdrop, deck_command, root, *, cl
             ui.minimize(window)
             wait_for("Desktop to minimize", lambda: ui.window(desktop.pid) is None, desktop)
 
-        ui.click(cover, 160, 100)
-        wait_for("the backdrop app to enter the foreground",
-                 lambda: ui.frontmost() == cover[0], backdrop)
-        wait_for("the previous Deck panel to close", lambda: ui.window(panel.pid) is None, panel)
+        # Switch away from Desktop as setup. The test driver never switches
+        # back to Desktop after a slot click.
+        subprocess.run(["open", "-b", "com.apple.finder"], check=True, timeout=10)
+        wait_for("Finder to enter the foreground",
+                 lambda: ui.frontmost()[1] == "com.apple.finder", desktop)
         subprocess.run(deck_command, cwd=root, env=env, check=True, timeout=15)
         deck = wait_for("the Deck menu bar panel", lambda: ui.window(panel.pid), panel)
-        assert ui.frontmost() != window[0], "Opening the Deck activated Desktop before the click"
+        assert ui.frontmost()[0] != window[0], "Opening the Deck activated Desktop before the click"
 
         # Default eight-key layout: 12pt padding, 86pt cards, and 8pt gaps.
         # The first row sits below the 36pt header and 8pt top padding.
@@ -53,11 +53,11 @@ def verify_focus(ui, desktop, window, panel, backdrop, deck_command, root, *, cl
 
         try:
             wait_for(f"the Desktop window to enter the foreground for {name}",
-                     lambda: ui.frontmost() == window[0] and ui.window(desktop.pid) == window,
+                     lambda: ui.frontmost()[0] == window[0] and ui.window(desktop.pid) == window,
                      desktop, timeout=6)
         except AssertionError as error:
             raise AssertionError(
-                f"{error}; selected {name}'s pane, but foreground PID was {ui.frontmost()}"
+                f"{error}; selected {name}'s pane; foreground app was {ui.frontmost()}"
             ) from error
 
         token = f"macos-deck-focus-{name}"

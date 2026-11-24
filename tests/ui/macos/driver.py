@@ -30,7 +30,9 @@ class Desktop:
             return str(pid), window.decode("ascii")
 
     def frontmost(self):
-        return subprocess.check_output([self.helper, "frontmost"], text=True, timeout=5).strip()
+        app = subprocess.check_output([self.helper, "frontmost"], text=True, timeout=5).strip()
+        pid, _, bundle_id = app.partition(" ")
+        return pid, bundle_id
 
     def click(self, window, x, y):
         subprocess.run([self.helper, "click", *window, str(x), str(y)], check=True, timeout=5)
