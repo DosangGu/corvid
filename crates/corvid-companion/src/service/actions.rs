@@ -46,7 +46,12 @@ impl Service {
             }
             Body::FocusSlot(focus) => self.focus(focus).await,
             Body::AckPresentedAttention(ack) => self.acknowledge(ack).await,
-            Body::EditSlotLayout(edit) => self.edit(edit.action.ok_or_else(invalid)?),
+            Body::EditSlotLayout(edit) => {
+                if let Some(generation) = edit.control_generation {
+                    self.require_generation(&generation)?;
+                }
+                self.edit(edit.action.ok_or_else(invalid)?)
+            }
             _ => Err(invalid()),
         }
     }

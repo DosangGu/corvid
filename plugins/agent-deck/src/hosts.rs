@@ -19,6 +19,18 @@ pub struct Profile {
 pub use corvid_agent_deck::scope::profile_root as root;
 
 pub fn discover(state: &Path, current: Uuid) -> Result<BTreeMap<Uuid, Profile>> {
+    discover_with_limit(state, current, MAX_HOSTS)
+}
+
+pub fn discover_all(state: &Path, current: Uuid) -> Result<BTreeMap<Uuid, Profile>> {
+    discover_with_limit(state, current, usize::MAX)
+}
+
+fn discover_with_limit(
+    state: &Path,
+    current: Uuid,
+    limit: usize,
+) -> Result<BTreeMap<Uuid, Profile>> {
     let main = Config::read_if_present(state)?.context("Agent Deck configuration is missing")?;
     ensure!(main.host_id == current, "Agent Deck configuration changed");
     let root = root(state, current);
@@ -39,7 +51,7 @@ pub fn discover(state: &Path, current: Uuid) -> Result<BTreeMap<Uuid, Profile>> 
             .collect();
         candidates.sort_unstable_by_key(|(id, _)| *id);
         for (id, path) in candidates {
-            if profiles.len() == MAX_HOSTS {
+            if profiles.len() == limit {
                 break;
             }
             if let Ok(Some(profile)) = Config::read_if_present(&path)

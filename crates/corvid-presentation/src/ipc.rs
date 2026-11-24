@@ -228,54 +228,21 @@ impl Worker {
         client: &mut PresentationClient,
         command: Command,
     ) -> Result<Completion> {
-        let expected = Expected::for_request(&command.body)?;
-        let result = match client.request(command.body).await {
-            Ok(reply) => {
-                let paired = match &reply {
-                    Body::ClientBindingRegistered(binding) => Some(PresentedBinding {
-                        client_id: binding.client_id.clone(),
-                        revision: binding.binding_revision,
-                        wezterm: None,
-                    }),
-                    _ => None,
-                };
-                expected
-                    .summarize(reply)
-                    .map(|message| (message.to_owned(), paired))
-            }
-            Err(error)
-                if error.is::<ProtocolFault>() && failed_link(&error) != Link::Incompatible =>
-            {
-                let fault = error.downcast::<ProtocolFault>()?;
-                return Ok(Completion {
+        let result = execute_presentation_command(client, command.id, command.body).await;
+        if let Err(error) = &result {
+            self.publish(|display| {
+                display.link = failed_link(error);
+                display.completion = Some(Completion {
                     id: command.id,
-                    message: expected.fault_message(&fault),
+                    message:
+                        "Action result unavailable. Check the refreshed slots before trying again."
+                            .to_owned(),
                     failed: true,
                     paired: None,
                 });
-            }
-            Err(error) => Err(error),
-        };
-        match result {
-            Ok((message, paired)) => Ok(Completion {
-                id: command.id,
-                message,
-                failed: false,
-                paired,
-            }),
-            Err(error) => {
-                self.publish(|display| {
-                    display.link = failed_link(&error);
-                    display.completion = Some(Completion {
-                        id: command.id,
-                        message: "Action result unavailable. Check the refreshed slots before trying again.".to_owned(),
-                        failed: true,
-                        paired: None,
-                    });
-                });
-                Err(error)
-            }
+            });
         }
+        result
     }
 
     fn publish(&self, update: impl FnOnce(&mut Display)) {
@@ -284,7 +251,47 @@ impl Worker {
     }
 }
 
-fn failed_link(error: &anyhow::Error) -> Link {
+pub async fn execute_presentation_command(
+    client: &mut PresentationClient,
+    id: Uuid,
+    body: Body,
+) -> Result<Completion> {
+    let expected = Expected::for_request(&body)?;
+    let result = match client.request(body).await {
+        Ok(reply) => {
+            let paired = match &reply {
+                Body::ClientBindingRegistered(binding) => Some(PresentedBinding {
+                    client_id: binding.client_id.clone(),
+                    revision: binding.binding_revision,
+                    wezterm: None,
+                }),
+                _ => None,
+            };
+            expected
+                .summarize(reply)
+                .map(|message| (message.to_owned(), paired))
+        }
+        Err(error) if error.is::<ProtocolFault>() && failed_link(&error) != Link::Incompatible => {
+            let fault = error.downcast::<ProtocolFault>()?;
+            return Ok(Completion {
+                id,
+                message: expected.fault_message(&fault),
+                failed: true,
+                paired: None,
+            });
+        }
+        Err(error) => Err(error),
+    };
+    let (message, paired) = result?;
+    Ok(Completion {
+        id,
+        message,
+        failed: false,
+        paired,
+    })
+}
+
+pub fn failed_link(error: &anyhow::Error) -> Link {
     match error
         .downcast_ref::<ProtocolFault>()
         .map(|fault| fault.code.as_str())

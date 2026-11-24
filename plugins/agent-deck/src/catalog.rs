@@ -3,27 +3,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, Result, ensure};
+use corvid_async::{Semaphore, mpsc, watch};
+use corvid_companion::{
+    MAX_TRACKED, PRESENTATION_RUNS_CAPABILITY, PresentationAddress, PresentationClient, RunKey,
+};
+use corvid_presentation::desktop_focus::{self, EndpointUnavailable};
+use corvid_presentation::ipc::{Completion, Link, execute_presentation_command, failed_link};
+use corvid_presentation::model::Snapshot;
+use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{GetPresentationRuns, PresentationRuns, PresentedRun, PresentedRunKey};
+use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
+use uuid::Uuid;
+
 use crate::hosts::{self, Profile, Subscriptions};
 use crate::parent::DesktopLink;
 use crate::ui_signal::UiSignal;
-use anyhow::Result;
-use corvid_agent_deck::connection::Client;
-use corvid_async::{mpsc, watch};
-use corvid_companion::{
-    MAX_TRACKED, PRESENTATION_PAGE_SIZE, PresentationAddress, PresentationClient, RunKey,
-};
-use corvid_presentation::desktop_focus::{self, EndpointUnavailable};
-use corvid_presentation::ipc::{Completion, Display, Link};
-use corvid_presentation::model::Snapshot;
-use corvid_protocol::ProtocolFault;
-use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{
-    CompanionConnection, GetPresentationSlots, PresentationSlots, PresentedRun, PresentedRunKey,
-    RunAvailability,
-};
-use uuid::Uuid;
 
 pub(crate) const HOST_PREVIEW_LIMIT: usize = 64;
+const REFRESH: Duration = Duration::from_secs(1);
+const MAX_CONCURRENT_POLLS: usize = 8;
 
 pub(crate) struct Catalog {
     pub views: watch::Receiver<View>,
@@ -34,99 +33,101 @@ pub(crate) struct Catalog {
 #[derive(Clone, Default)]
 pub(crate) struct View {
     pub hosts: BTreeMap<Uuid, Arc<Host>>,
-    pub message: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct Host {
-    controller: Uuid,
-    remote_epoch: Option<Uuid>,
     pub label: String,
-    pub online: bool,
-    pub loaded: bool,
-    pub runs: Vec<PresentedRun>,
-    pub pins: BTreeSet<RunKey>,
-}
-
-enum Request {
-    Open(Uuid),
-    Focus {
-        id: Uuid,
-        controller: Uuid,
-        run: PresentedRunKey,
-    },
-    FocusCurrent {
-        id: Uuid,
-        snapshot: Arc<Snapshot>,
-        run: PresentedRunKey,
-    },
-}
-
-struct CurrentDesktop {
-    view: watch::Receiver<Display>,
-    legacy: DesktopLink,
+    pub link: Link,
+    pub pages: Vec<Arc<Snapshot>>,
 }
 
 impl Host {
-    pub(crate) fn new(profile: &Profile) -> Self {
+    fn new(profile: &Profile) -> Self {
         Self {
-            controller: profile.controller,
             label: profile.label.clone(),
-            remote_epoch: None,
-            online: false,
-            loaded: false,
-            runs: Vec::new(),
-            pins: BTreeSet::new(),
+            link: Link::Connecting,
+            pages: Vec::new(),
         }
     }
 
-    pub fn matches_epoch(&self, epoch: Option<&str>) -> bool {
-        self.remote_epoch == epoch.and_then(|epoch| Uuid::parse_str(epoch).ok())
+    pub fn accepts(&self, shown: &Snapshot) -> bool {
+        self.link == Link::Online
+            && shown.generation().is_some()
+            && self.pages.first().is_some_and(|latest| {
+                latest.link == shown.link && latest.generation() == shown.generation()
+            })
     }
 
-    pub fn focus_target<'a>(
-        &self,
-        id: Uuid,
-        run: &'a PresentedRun,
-    ) -> Option<(Uuid, &'a PresentedRunKey)> {
-        let key = run.key.as_ref()?;
-        (self.online
-            && run.availability == RunAvailability::Available as i32
-            && Uuid::parse_str(&key.host_id).ok()? == id
-            && Uuid::parse_str(&key.remote_epoch).ok()? == self.remote_epoch?
-            && Uuid::parse_str(&key.agent_run_id).is_ok())
-        .then_some((self.controller, key))
+    pub fn runs(&self) -> impl Iterator<Item = (&Arc<Snapshot>, &PresentedRun)> {
+        self.pages
+            .first()
+            .into_iter()
+            .flat_map(|snapshot| {
+                snapshot
+                    .data
+                    .slots
+                    .iter()
+                    .filter_map(move |slot| Some((snapshot, slot.run.as_ref()?)))
+            })
+            .chain(self.pages.iter().flat_map(|snapshot| {
+                snapshot
+                    .data
+                    .overflow
+                    .iter()
+                    .map(move |run| (snapshot, run))
+            }))
     }
+
+    pub fn focus_snapshot(&self, key: &PresentedRunKey) -> Option<&Arc<Snapshot>> {
+        self.runs()
+            .find(|(snapshot, run)| snapshot.live_key(run) == Some(key))
+            .map(|(snapshot, _)| snapshot)
+    }
+}
+
+enum Action {
+    Focus {
+        run: PresentedRunKey,
+        require_card: bool,
+    },
+    Companion(Box<Body>),
+}
+
+struct Request {
+    id: Uuid,
+    snapshot: Arc<Snapshot>,
+    action: Action,
 }
 
 impl Catalog {
     pub fn start(
         state: PathBuf,
         current: Uuid,
+        address: <PresentationAddress as ToOwned>::Owned,
         ctx: UiSignal,
-        view: watch::Receiver<Display>,
         legacy: DesktopLink,
     ) -> Result<Self> {
-        let profiles = hosts::discover(&state, current)?;
+        let mut profiles = hosts::discover_all(&state, current)?;
+        if let Some(profile) = profiles.get_mut(&current) {
+            profile.address = address.clone();
+        }
         let hosts = profiles
             .iter()
             .map(|(&id, profile)| (id, Arc::new(Host::new(profile))))
             .collect();
-        let (publish, views) = watch::channel(View {
-            hosts,
-            message: None,
-        });
+        let (publish, views) = watch::channel(View { hosts });
         let (requests, incoming) = mpsc::channel(4);
         let (completions, completed) = mpsc::channel(4);
         corvid_async::task::worker("corvid-agent-deck-hosts", move |runtime| {
             runtime.block_on(run(
-                (state, current),
+                (state, current, address),
                 profiles,
                 publish,
                 incoming,
                 completions,
                 ctx,
-                CurrentDesktop { view, legacy },
+                legacy,
             ));
         })?;
         Ok(Self {
@@ -136,287 +137,314 @@ impl Catalog {
         })
     }
 
-    pub fn open(&self, host: Uuid) {
-        let _ = self.requests.try_send(Request::Open(host));
-    }
-    pub fn focus(&self, id: Uuid, controller: Uuid, run: PresentedRunKey) -> bool {
-        self.requests
-            .try_send(Request::Focus {
-                id,
-                controller,
-                run,
-            })
-            .is_ok()
+    pub fn focus(
+        &self,
+        id: Uuid,
+        snapshot: Arc<Snapshot>,
+        run: PresentedRunKey,
+        require_card: bool,
+    ) -> bool {
+        self.enqueue(id, snapshot, Action::Focus { run, require_card })
     }
 
-    pub fn focus_current(&self, id: Uuid, snapshot: Arc<Snapshot>, run: PresentedRunKey) -> bool {
+    pub fn submit(&self, id: Uuid, snapshot: Arc<Snapshot>, body: Body) -> bool {
+        self.enqueue(id, snapshot, Action::Companion(Box::new(body)))
+    }
+
+    fn enqueue(&self, id: Uuid, snapshot: Arc<Snapshot>, action: Action) -> bool {
         self.requests
-            .try_send(Request::FocusCurrent { id, snapshot, run })
+            .try_send(Request {
+                id,
+                snapshot,
+                action,
+            })
             .is_ok()
     }
 }
 
 async fn run(
-    (state, current): (PathBuf, Uuid),
+    (state, current, address): (PathBuf, Uuid, <PresentationAddress as ToOwned>::Owned),
     mut profiles: BTreeMap<Uuid, Profile>,
     publish: watch::Sender<View>,
     mut requests: mpsc::Receiver<Request>,
     completions: mpsc::Sender<Completion>,
     ctx: UiSignal,
-    desktop: CurrentDesktop,
+    legacy: DesktopLink,
 ) {
     let mut subscriptions = Subscriptions::default();
-    let mut refresh = corvid_async::time::interval(Duration::from_secs(1));
+    let mut refresh = corvid_async::time::interval(REFRESH);
+    let polls = Arc::new(Semaphore::new(MAX_CONCURRENT_POLLS));
     loop {
         corvid_async::select! {
             _ = publish.closed() => break,
             _ = refresh.tick() => {
-                if let Ok(next) = hosts::discover(&state, current)
-                    && next != profiles
-                {
-                    publish.send_modify(|view| {
-                        view.hosts.retain(|id, _| next.contains_key(id));
-                        for (&id, profile) in &next {
-                            if profiles.get(&id) != Some(profile) {
-                                view.hosts.insert(id, Arc::new(Host::new(profile)));
+                if let Ok(mut next) = hosts::discover_all(&state, current) {
+                    if let Some(profile) = next.get_mut(&current) {
+                        profile.address = address.clone();
+                    }
+                    if next != profiles {
+                        publish.send_modify(|view| {
+                            view.hosts.retain(|id, _| next.contains_key(id));
+                            for (&id, profile) in &next {
+                                if profiles.get(&id) != Some(profile) {
+                                    view.hosts.insert(id, Arc::new(Host::new(profile)));
+                                }
                             }
-                        }
-                    });
-                    profiles = next;
-                    ctx.notify();
+                        });
+                        profiles = next;
+                        ctx.notify();
+                    }
                 }
                 subscriptions.refresh(&profiles, |id, profile| {
-                    monitor(id, profile.controller, profile.address, publish.clone(), ctx.clone())
+                    monitor(id, profile, publish.clone(), ctx.clone(), polls.clone())
                 });
             }
             request = requests.recv() => {
                 let Some(request) = request else { break };
-                match request {
-                    Request::Open(host) => {
-                        if let Some(profile) = profiles.get(&host) {
-                            let message = match Client::connect(host, profile.controller, false).await {
-                                Ok(_) => None,
-                                Err(_) => Some("Open that host's Agent Deck from Corvid Desktop first.".into()),
-                            };
-                            publish.send_modify(|view| view.message = message);
-                        }
-                    }
-                    Request::Focus { id, controller, run } => {
-                        let result = focus_captured_run(&publish, controller, run).await;
-                        complete_focus(&completions, id, result);
-                    }
-                    Request::FocusCurrent { id, snapshot, run } => {
-                        let target = current_target(&desktop.view.borrow(), &snapshot, &run);
-                        let result = match target {
-                            Some(controller) => desktop_focus::request(controller, run.clone()).await,
-                            None => Err(anyhow::anyhow!("The displayed agent changed. Review the slots and try again.")),
-                        };
-                        // An older Desktop, or the window that explicitly
-                        // opened Deck when another window owns the endpoint,
-                        // can still receive the exact request on this connection.
-                        if result.as_ref().is_err_and(|error| {
-                            error.is::<EndpointUnavailable>()
-                                || error.downcast_ref::<ProtocolFault>().is_some_and(|fault| {
-                                    matches!(fault.code.as_str(), "WriterRequired" | "WorkspaceBusy")
-                                })
-                        })
-                            && desktop.legacy.focus(id, run)
-                        {
-                            continue;
-                        }
-                        complete_focus(&completions, id, result);
-                    }
+                let id = request.id;
+                if let Some(result) = execute(request, &profiles, &publish, current, &legacy).await {
+                    let completion = result.unwrap_or_else(|error| Completion {
+                        id,
+                        message: error.to_string(),
+                        failed: true,
+                        paired: None,
+                    });
+                    let _ = completions.try_send(completion);
+                    ctx.notify();
                 }
-                ctx.notify();
             }
         }
     }
 }
 
-fn complete_focus(completions: &mpsc::Sender<Completion>, id: Uuid, result: Result<()>) {
-    let (message, failed) = match result {
-        Ok(()) => ("Focused in Corvid Desktop.".into(), false),
-        Err(error) => (error.to_string(), true),
-    };
-    let _ = completions.try_send(Completion {
-        id,
-        message,
-        failed,
-        paired: None,
-    });
-}
-
-fn current_target(display: &Display, shown: &Snapshot, run: &PresentedRunKey) -> Option<Uuid> {
-    let latest = display.snapshot.as_ref()?;
-    if display.link != Link::Online
-        || latest.link != shown.link
-        || latest.page != shown.page
-        || latest.generation() != shown.generation()
-    {
-        return None;
-    }
-    let controller = shown.desktop_run_target(run)?;
-    if latest.desktop_run_target(run)? != controller {
-        return None;
-    }
-    // Desktop validates the captured run in the matching epoch. Slot commands
-    // still use revisions, but a run can move while an exact focus is in flight.
-    Some(controller)
-}
-
-async fn focus_captured_run(
+async fn execute(
+    request: Request,
+    profiles: &BTreeMap<Uuid, Profile>,
     publish: &watch::Sender<View>,
-    controller: Uuid,
-    run: PresentedRunKey,
-) -> Result<()> {
-    let id = Uuid::parse_str(&run.host_id)?;
-    let allowed = publish.borrow().hosts.get(&id).is_some_and(|host| {
-        host.runs
-            .iter()
-            .any(|candidate| host.focus_target(id, candidate) == Some((controller, &run)))
-    });
-    anyhow::ensure!(allowed, "The agent is no longer available on this host.");
-    desktop_focus::request(controller, run).await
+    current: Uuid,
+    legacy: &DesktopLink,
+) -> Option<Result<Completion>> {
+    let Request {
+        id,
+        snapshot,
+        action,
+    } = request;
+    let host = publish.borrow().hosts.get(&snapshot.host).cloned();
+    let result = async {
+        let host = host
+            .filter(|host| host.accepts(&snapshot))
+            .context("The host connection changed. Review the updated agents and try again.")?;
+        match action {
+            Action::Focus { run, require_card } => {
+                ensure!(
+                    !require_card || host.focus_snapshot(&run).is_some(),
+                    "The agent is no longer available."
+                );
+                let controller = snapshot
+                    .desktop_run_target(&run)
+                    .context("Invalid focus target")?;
+                let result = desktop_focus::request(controller, run.clone()).await;
+                if snapshot.host == current
+                    && result.as_ref().is_err_and(allows_focus_fallback)
+                    && legacy.focus(id, run)
+                {
+                    return Ok(None);
+                }
+                result?;
+                Ok(Some(Completion {
+                    id,
+                    message: "Focused in Corvid Desktop.".into(),
+                    failed: false,
+                    paired: None,
+                }))
+            }
+            Action::Companion(body) => {
+                let profile = profiles
+                    .get(&snapshot.host)
+                    .context("The host was removed.")?;
+                let mut client = PresentationClient::connect(&profile.address).await?;
+                ensure!(
+                    client.session().host_id == snapshot.host.to_string()
+                        && client.session().server_epoch == snapshot.link.to_string(),
+                    "The companion changed. Review the updated agents and try again.",
+                );
+                execute_presentation_command(&mut client, id, *body)
+                    .await
+                    .map(Some)
+            }
+        }
+    }
+    .await;
+    result.transpose()
+}
+
+fn allows_focus_fallback(error: &anyhow::Error) -> bool {
+    error.is::<EndpointUnavailable>()
+        || error
+            .downcast_ref::<ProtocolFault>()
+            .is_some_and(|fault| matches!(fault.code.as_str(), "WriterRequired" | "WorkspaceBusy"))
 }
 
 async fn monitor(
     id: Uuid,
-    controller: Uuid,
-    address: <PresentationAddress as ToOwned>::Owned,
+    profile: Profile,
     publish: watch::Sender<View>,
     ctx: UiSignal,
+    polls: Arc<Semaphore>,
 ) {
     loop {
-        let _ = poll_host(id, controller, &address, &publish, &ctx).await;
+        let result = {
+            let _permit = polls.acquire().await;
+            corvid_async::time::timeout(COMMAND_TIMEOUT, poll_host(id, &profile)).await
+        };
+        let (link, pages) = match result {
+            Ok(Ok(Some(pages))) => (Link::Online, pages),
+            Ok(Ok(None)) => (Link::Connecting, Vec::new()),
+            Ok(Err(error)) => (failed_link(&error), Vec::new()),
+            Err(_) => (Link::Unavailable, Vec::new()),
+        };
         if publish.send_if_modified(|view| {
-            let host = Arc::make_mut(view.hosts.get_mut(&id).expect("configured host"));
-            std::mem::replace(&mut host.online, false)
+            let Some(host) = view.hosts.get_mut(&id) else {
+                return false;
+            };
+            if host.link == link && host.pages == pages {
+                return false;
+            }
+            let host = Arc::make_mut(host);
+            host.link = link;
+            host.pages = pages;
+            true
         }) {
             ctx.notify();
         }
-        corvid_async::select! {
-            _ = publish.closed() => return,
-            _ = corvid_async::time::sleep(Duration::from_secs(1)) => {}
-        }
+        corvid_async::time::sleep(REFRESH).await;
     }
 }
 
-async fn poll_host(
-    id: Uuid,
-    controller: Uuid,
-    address: &PresentationAddress,
-    publish: &watch::Sender<View>,
-    ctx: &UiSignal,
-) -> Result<()> {
-    let mut client = PresentationClient::connect(address).await?;
-    anyhow::ensure!(
+async fn poll_host(id: Uuid, profile: &Profile) -> Result<Option<Vec<Arc<Snapshot>>>> {
+    let mut client = PresentationClient::connect(&profile.address).await?;
+    ensure!(
         client.session().host_id == id.to_string(),
         "unexpected monitor host"
     );
-    let mut previous = None;
-    loop {
-        let slots = get_page(&mut client, 0).await?;
-        anyhow::ensure!(
-            slots.controller_id == controller.to_string(),
-            "unexpected monitor controller"
-        );
-        if previous.as_ref() != Some(&slots)
-            && let Some(runs) = collect_runs(&mut client, &slots).await?
-        {
-            let pins: BTreeSet<_> = slots
-                .slots
-                .iter()
-                .filter(|slot| slot.pinned)
-                .filter_map(|slot| slot.run.as_ref()?.key.as_ref())
-                .filter_map(|key| RunKey::try_from(key).ok())
-                .collect();
-            let epoch = slots
-                .remote_epoch
-                .as_deref()
-                .and_then(|id| Uuid::parse_str(id).ok());
-            let online = slots.connection == CompanionConnection::Ready as i32
-                && slots
-                    .control_generation
-                    .as_deref()
-                    .is_some_and(|id| Uuid::parse_str(id).is_ok());
-            if publish.send_if_modified(|view| {
-                let host = view.hosts.get_mut(&id).expect("configured host");
-                if host.loaded
-                    && host.remote_epoch == epoch
-                    && host.online == online
-                    && host.runs == runs
-                    && host.pins == pins
-                {
-                    return false;
-                }
-                let host = Arc::make_mut(host);
-                host.loaded = true;
-                host.remote_epoch = epoch;
-                host.online = online;
-                host.runs = runs;
-                host.pins = pins;
-                true
-            }) {
-                ctx.notify();
-            }
-            previous = Some(slots);
+    ensure!(
+        client
+            .session()
+            .capabilities
+            .iter()
+            .any(|cap| cap == PRESENTATION_RUNS_CAPABILITY),
+        ProtocolFault::new(
+            "UnsupportedCapability",
+            "current agent lists require a newer companion"
+        ),
+    );
+    let link = Uuid::parse_str(&client.session().server_epoch)?;
+    let (first, revision) = get_page(&mut client, profile.controller, link, 0).await?;
+    ensure!(
+        first.data.overflow_count as usize <= MAX_TRACKED
+            && first.data.suppressed_count as usize <= MAX_TRACKED,
+        "monitor returned too many runs",
+    );
+    let first = Arc::new(first);
+    let mut pages = vec![first.clone()];
+    for index in 1..first.page_count() {
+        let (page, version) = get_page(&mut client, profile.controller, link, index).await?;
+        if version != revision || !matches_snapshot(&first, &page) {
+            return Ok(None);
         }
-        corvid_async::time::sleep(Duration::from_secs(1)).await;
+        pages.push(Arc::new(page));
     }
+    validate_pages(&pages)?;
+    Ok(Some(pages))
 }
 
 async fn get_page(
     client: &mut PresentationClient,
-    overflow_page: u32,
-) -> Result<PresentationSlots> {
-    let query = GetPresentationSlots {
-        count: None,
-        overflow_page,
+    controller: Uuid,
+    link: Uuid,
+    page: u32,
+) -> Result<(Snapshot, u64)> {
+    let query = Body::GetPresentationRuns(GetPresentationRuns { page });
+    let Body::PresentationRuns(PresentationRuns {
+        page: data,
+        layout_revision,
+    }) = client.request(query).await?
+    else {
+        anyhow::bail!("unexpected current agent list response");
     };
-    let body = corvid_async::time::timeout(
-        corvid_protocol::COMMAND_TIMEOUT,
-        client.request(Body::GetPresentationSlots(query)),
-    )
-    .await??;
-    let Body::PresentationSlots(slots) = body else {
-        anyhow::bail!("unexpected slot response");
-    };
-    Ok(slots)
+    let data = data.context("missing current agent list")?;
+    ensure!(
+        layout_revision > 0 && data.controller_id == controller.to_string(),
+        "invalid current agent list identity",
+    );
+    let snapshot = Snapshot::new(link, client.session(), page, data)?;
+    ensure!(
+        (snapshot.generation().is_some()
+            && snapshot
+                .data
+                .remote_epoch
+                .as_deref()
+                .and_then(|epoch| Uuid::parse_str(epoch).ok())
+                .is_some()
+            && snapshot.data.remote_sequence.is_some())
+            || (snapshot.data.slots.iter().all(|slot| slot.run.is_none())
+                && snapshot.data.overflow_count == 0
+                && snapshot.data.suppressed_count == 0),
+        "disconnected host returned current agent runs",
+    );
+    Ok((snapshot, layout_revision))
 }
 
-async fn collect_runs(
-    client: &mut PresentationClient,
-    first: &PresentationSlots,
-) -> Result<Option<Vec<PresentedRun>>> {
-    anyhow::ensure!(
-        first.overflow_count as usize <= MAX_TRACKED
-            && first.slots.len() <= corvid_companion::MAX_SLOTS as usize,
-        "monitor returned too many runs"
+fn matches_snapshot(first: &Snapshot, page: &Snapshot) -> bool {
+    let first = &first.data;
+    let page = &page.data;
+    first.connection == page.connection
+        && first.remote_epoch == page.remote_epoch
+        && first.remote_sequence == page.remote_sequence
+        && first.control_generation == page.control_generation
+        && first.overflow_count == page.overflow_count
+        && first.suppressed_count == page.suppressed_count
+        && first.slots == page.slots
+        && first.bindings == page.bindings
+}
+
+fn validate_pages(pages: &[Arc<Snapshot>]) -> Result<()> {
+    let first = &pages[0];
+    ensure!(
+        pages
+            .iter()
+            .map(|page| page.data.overflow.len())
+            .sum::<usize>()
+            == first.data.overflow_count as usize
+            && pages
+                .iter()
+                .map(|page| page.data.suppressed.len())
+                .sum::<usize>()
+                == first.data.suppressed_count as usize,
+        "incomplete current agent list",
     );
-    let mut runs: Vec<_> = first
+    let mut seen = BTreeSet::new();
+    for key in first
+        .data
         .slots
         .iter()
-        .filter_map(|slot| slot.run.clone())
-        .collect();
-    let assigned = runs.len();
-    runs.extend(first.overflow.iter().cloned());
-    for index in 1..first.overflow_count.div_ceil(PRESENTATION_PAGE_SIZE) {
-        let page = get_page(client, index).await?;
-        if page.controller_id != first.controller_id
-            || page.remote_epoch != first.remote_epoch
-            || page.control_generation != first.control_generation
-            || page.remote_sequence != first.remote_sequence
-            || page.overflow_count != first.overflow_count
-            || page.slots != first.slots
-        {
-            // Retry on the next poll rather than publish a mixed queue.
-            return Ok(None);
-        }
-        runs.extend(page.overflow);
+        .filter_map(|slot| slot.run.as_ref())
+        .chain(pages.iter().flat_map(|page| &page.data.overflow))
+        .map(|run| run.key.as_ref())
+        .chain(
+            pages
+                .iter()
+                .flat_map(|page| page.data.suppressed.iter().map(Some)),
+        )
+    {
+        let key = key.context("missing current agent run key")?;
+        let parsed = RunKey::try_from(key)?;
+        ensure!(
+            parsed.host == first.host
+                && first.data.remote_epoch.as_deref() == Some(&key.remote_epoch)
+                && seen.insert(parsed),
+            "unexpected current agent run key",
+        );
     }
-    anyhow::ensure!(
-        runs.len() == assigned + first.overflow_count as usize,
-        "incomplete monitor queue"
-    );
-    Ok(Some(runs))
+    Ok(())
 }

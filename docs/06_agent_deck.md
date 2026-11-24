@@ -198,9 +198,10 @@ same cross-host queue, including cards beyond its first page.
 
 ## Slots and queue
 
-The **Deck** view uses dark cards with a light selection outline. The
-mini deck uses the selected grid of compact keys; the expanded view adjusts its larger
-square keys from one to six columns when resized. Each occupied key shows a
+The mini and expanded **Deck** views show the same current agents in the same
+order. The selected grid size sets their capacity and the remaining agents
+appear in **Queue**. The expanded view adjusts its larger square keys from one
+to six columns when resized. Each occupied key shows a
 provider mark: Claude, OpenAI for Codex, or a generic terminal for an
 unknown provider. A tinted gradient and two-pixel inner border carry its status.
 Selection adds a separate light outer outline, preserving the status color.
@@ -217,10 +218,9 @@ slot snapshot stays fixed throughout a mouse or keyboard press and an open
 context menu, so compaction cannot change the action's captured target.
 
 Status colors are blue for working, amber for input or interruption, mint green
-for an observed response, and red for errors. Ready, ended, unknown, offline,
-cached, and historical observations use gray with a muted logo. A green key means
-a response was observed, not that the whole task succeeded. Availability takes
-precedence over the last activity color, so stale observations never appear live.
+for an observed response, and red for errors. Ready and uncertain agent states
+use gray with a muted logo. The response color indicates that an agent response
+was observed. Availability takes precedence over the last activity color.
 Tooltips and the action menu show the terminal pane title, or the custom tab
 name for a single-pane tab. Unverified input requests use amber and say
 **Check terminal**.
@@ -308,13 +308,14 @@ event times and are recalculated as events arrive and as time passes.
 Retiring a run compacts the slots and fills the freed space from the queue.
 Pins protect a card from reprioritization and follow it during compaction.
 
-Pane ownership is saved with each tracked run. During a disconnect, Deck shows
-cached cards. Companion reconciles confirmed process exits and pane closures
-after synchronization. If the same host starts a new daemon epoch, Companion
-moves the previous epoch's runs into **Run history** as part of synchronization.
-Rediscovered agents get new cards and fresh pins. The queue is bounded to 4,096
-tracked runs and run history to 256 entries. Legacy CLI layout-editing commands
-remain available for compatibility.
+Each host contributes cards after its Companion synchronizes with the daemon.
+On disconnect or resynchronization, that host's cards leave the grid and queue.
+**Hosts** shows its connection state while the other cards stay available.
+Reconnection uses the daemon's current runs. Pins and hidden settings follow the
+same execution within an epoch. When the host starts a new daemon epoch,
+Companion moves the previous epoch's runs into **Run history**. The queue is
+bounded to 4,096 tracked runs per host and run history to 256 entries per host.
+The Companion CLI can still inspect saved layouts.
 
 Updated Desktop replaces an older Companion the next time it connects to the
 monitored host. The replacement reuses that host's saved controller state while
@@ -441,23 +442,20 @@ Desktop provides [terminal selection, scrollback, and search](04_companion.md#de
 Windows observes [native agent processes](04_companion.md#windows-quick-start)
 launched directly by Corvid or from a Corvid shell.
 Desktop's workspace picker watches verified hosts while their terminal views are
-detached. In Agent Deck, **Hosts** lists the agents on up to eight hosts
-configured by Desktop or companion setup. Newly connected hosts appear automatically,
-including their existing agents. The overview checks the expected host identity before using a snapshot
-and marks previously seen observations as cached when a host goes offline.
-**Show host Deck** opens that host's running Deck for slot management. A card
-in the combined grid requests the exact run from Desktop through its private,
-controller-scoped focus endpoint. If the pane is already open in a Desktop
-window, that window is activated. Otherwise Desktop opens the pane and
-connects to the registered host if needed. Switching
-hosts releases the previous pane's writer and keeps its connection ready for
-reuse on daemons that support parking. The current host also uses it for queued runs and the
-notification history's Desktop action. If that endpoint is absent or rejects
-the request because another window owns the writer, Deck can pass the same
-request to the Desktop window that opened it. Cached cards show
-their last observation and cannot request focus. If Desktop is detached from
-the host, connect it before trying focus again. Notifications and history cover all discovered
-hosts; notification preferences still belong to the individual Deck window.
+detached. In Agent Deck, **Hosts** lists configured monitors and their connection
+states. The Deck checks the host identity and limits concurrent inventory
+requests to eight. Newly connected hosts contribute their existing agents as
+soon as the initial snapshot is ready.
+
+![Agent Deck with synthetic runs on a local host and two SSH hosts](images/agent-deck/current-runs-multi-host.png)
+
+A card requests the exact run from Desktop through its private, controller-scoped
+focus endpoint. If the pane is already open in a Desktop window, that window is
+activated. Otherwise Desktop opens the pane and connects to the registered host
+if needed. Switching hosts releases the previous pane's writer and keeps its
+connection ready for reuse on daemons that support parking. If the focus
+endpoint is unavailable or reports a writer conflict on the opening host, Deck
+can pass the same request to the Desktop window that opened it.
 
 Windows supports [opt-in provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage).
 Desktop and the TUI support read-only attach and explicit writer handoff.

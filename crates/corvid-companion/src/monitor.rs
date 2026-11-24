@@ -310,6 +310,7 @@ fn supports_current_layout(client: &PresentationClient) -> bool {
         EPOCH_RETIREMENT_CAPABILITY,
         DECK_PRIORITY_CAPABILITY,
         PROCESS_EXIT_RETIREMENT_CAPABILITY,
+        crate::PRESENTATION_RUNS_CAPABILITY,
     ]
     .into_iter()
     .all(|required| {

@@ -602,6 +602,7 @@ message EditSlotLayout {
     PlaceSlot place = 4;
     PresentedRunKey remove_overflow = 5;
   }
+  optional string control_generation = 6;
 }
 
 message PinSlot {

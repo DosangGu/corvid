@@ -49,7 +49,8 @@ impl DeckView {
             return None;
         }
         let run = run?;
-        if !self.session.background.desktop.connected()
+        if snapshot.host == self.session.catalog.1
+            && !self.session.background.desktop.connected()
             && let (Some(slot), Some(binding)) = (slot, &self.binding)
             && let Some(body) = snapshot.focus(slot, binding)
         {
@@ -57,7 +58,7 @@ impl DeckView {
         }
         let key = snapshot.live_key(run)?;
         snapshot.desktop_run_target(key)?;
-        Some(FocusAction::Desktop(key.clone()))
+        Some(FocusAction::Desktop(snapshot.clone(), key.clone()))
     }
 
     pub(super) fn card(
@@ -81,14 +82,14 @@ impl DeckView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let colors = self.colors;
-        let cached = self.view.link != Link::Online || snapshot.generation().is_none();
+        let cached = snapshot.generation().is_none();
         let action = self.focus_action(snapshot, slot, run);
         let height = if self.window.expanded {
             width
         } else {
             crate::shell::KEY_HEIGHT
         };
-        let host = (!self.window.expanded && self.catalog_view.hosts.len() > 1)
+        let host = (self.catalog_view.hosts.len() > 1)
             .then(|| self.catalog_view.hosts.get(&snapshot.host))
             .flatten()
             .map(|host| host.label.as_str());
@@ -152,33 +153,6 @@ impl DeckView {
         card
     }
 
-    pub(super) fn host_card(
-        &self,
-        host: &crate::catalog::Host,
-        run: &PresentedRun,
-        index: usize,
-        width: f32,
-        action: Option<FocusAction>,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let colors = self.colors;
-        let cached = !host.online;
-        let face = colors.card_face(
-            Some(run),
-            cached,
-            self.selected == index,
-            width,
-            if self.window.expanded {
-                width
-            } else {
-                crate::shell::KEY_HEIGHT
-            },
-            Some(&host.label),
-        );
-        let card = self.attach_card_action(face, index, action, cx);
-        RunDetails::attach(card, run, cx)
-    }
-
     fn action_button(
         &self,
         id: impl Into<ElementId>,
@@ -205,7 +179,7 @@ impl DeckView {
         let colors = self.colors;
         let (snapshot, slot) = self.menu.as_ref()?;
         let run = slot.run.as_ref()?;
-        let cached = self.view.link != Link::Online || snapshot.generation().is_none();
+        let cached = snapshot.generation().is_none();
         let mut menu = column()
             .id("agent-actions")
             .p(px(16.))
@@ -285,11 +259,8 @@ impl DeckView {
                 },
             )));
             content = content.child(match self.section {
-                Section::Slots => snapshot.as_ref().map_or_else(
-                    || column().child(colors.muted("Connecting to companion…")),
-                    |snapshot| self.board(snapshot, window, cx),
-                ),
-                Section::Overflow => self.overflow(snapshot.as_ref(), cx),
+                Section::Slots => self.board(window, cx),
+                Section::Overflow => self.overflow(cx),
                 Section::History => column()
                     .children(
                         snapshot
@@ -411,21 +382,19 @@ impl DeckView {
             .filter(|code| safe_code(code))
     }
 
-    fn board(&self, snapshot: &Arc<Snapshot>, window: &Window, cx: &mut Context<Self>) -> Div {
+    fn board(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let width = f32::from(window.viewport_size().width) - 32.;
         let columns = ((width + 12.) / 164.).floor().clamp(1., 6.) as usize;
         let edge = ((width - 12. * (columns - 1) as f32) / columns as f32).clamp(100., 212.);
         row().flex_wrap().gap(px(12.)).children(
-            snapshot
-                .data
-                .slots
+            self.mini_tiles()
                 .iter()
                 .enumerate()
-                .map(|(index, slot)| self.card(snapshot, slot, index, edge, cx)),
+                .map(|(index, tile)| self.tile_card(*tile, index, edge, cx)),
         )
     }
 
-    fn overflow(&self, snapshot: Option<&Arc<Snapshot>>, cx: &mut Context<Self>) -> Div {
+    fn overflow(&self, cx: &mut Context<Self>) -> Div {
         let colors = self.colors;
         let mut view = column().child(
             row()
@@ -460,18 +429,22 @@ impl DeckView {
                     .map(|(index, tile)| self.tile_card(*tile, index, 150., cx)),
             ),
         );
+        let page_size = corvid_companion::PRESENTATION_PAGE_SIZE as usize;
         let mut suppressed = false;
-        if let Some(snapshot) = snapshot.filter(|snapshot| snapshot.page == self.page) {
-            suppressed = !snapshot.data.suppressed.is_empty();
-            for (index, run) in snapshot.data.suppressed.iter().enumerate() {
-                view = view.child(self.action_button(
-                    ("readd", index),
-                    format!("Re-add {}", short_id(&run.agent_run_id)),
-                    snapshot,
-                    snapshot.readd(run),
-                    cx,
-                ));
-            }
+        for (index, (snapshot, run)) in self
+            .hidden_runs()
+            .skip(self.page as usize * page_size)
+            .take(page_size)
+            .enumerate()
+        {
+            suppressed = true;
+            view = view.child(self.action_button(
+                ("readd", index),
+                format!("Re-add {}", short_id(&run.agent_run_id)),
+                snapshot,
+                snapshot.readd(run),
+                cx,
+            ));
         }
         if tiles.is_empty() && !suppressed {
             view = view.child(colors.muted("No queued agents on this page."));
@@ -490,47 +463,21 @@ impl DeckView {
                     cx.notify();
                 })),
         );
-        let current = self.session.catalog.1;
         if let Some(Err(error)) = &self.catalog {
             return content.child(colors.muted(error.clone()));
         }
-        let data = self.catalog_view.clone();
-        if let Some(message) = data.message {
-            content = content.child(colors.muted(message));
-        }
-        for (index, (id, host)) in data.hosts.into_iter().enumerate() {
+        for host in self.catalog_view.hosts.values() {
+            let display = Display {
+                link: host.link,
+                snapshot: host.pages.first().cloned(),
+                ..Default::default()
+            };
             let mut entry = column().p(px(12.)).bg(colors.panel).rounded_lg().child(
                 row()
                     .child(host.label.clone())
-                    .child(colors.muted(if host.online {
-                        "Live"
-                    } else if host.runs.is_empty() {
-                        "Offline"
-                    } else {
-                        "Cached"
-                    }))
-                    .child(
-                        colors
-                            .button(
-                                ("open-host", index),
-                                if id == current {
-                                    "This Deck's slots"
-                                } else {
-                                    "Show host Deck"
-                                },
-                                true,
-                            )
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                if id == view.session.catalog.1 {
-                                    view.section = Section::Slots;
-                                } else if let Some(Ok(catalog)) = &view.catalog {
-                                    catalog.open(id);
-                                }
-                                cx.notify();
-                            })),
-                    ),
+                    .child(colors.muted(connection_text(&display).unwrap_or("Live"))),
             );
-            for run in host.runs.iter().take(crate::catalog::HOST_PREVIEW_LIMIT) {
+            for (_, run) in host.runs().take(crate::catalog::HOST_PREVIEW_LIMIT) {
                 entry = entry.child(colors.muted(format!(
                     "{} · {} · {} pending",
                     run.key
@@ -541,8 +488,8 @@ impl DeckView {
                 )));
             }
             let omitted = host
-                .runs
-                .len()
+                .runs()
+                .count()
                 .saturating_sub(crate::catalog::HOST_PREVIEW_LIMIT);
             if omitted > 0 {
                 entry = entry.child(colors.muted(format!("{omitted} additional runs in the Deck")));
@@ -669,11 +616,10 @@ impl DeckView {
                 .find(|entry| !notice.summary && entry.key == notice.key)
                 .and_then(|entry| entry.focus_error.clone());
             let key = notice.key.run();
-            let enabled = self.view.snapshot.as_ref().is_some_and(|snapshot| {
-                !notice.summary
-                    && self.ready(snapshot)
-                    && snapshot.desktop_run_target(&key).is_some()
-            });
+            let snapshot = self
+                .notification_target(&key)
+                .filter(|_| !notice.summary)
+                .cloned();
             view = view.child(
                 column()
                     .child(notice.title.clone())
@@ -686,11 +632,11 @@ impl DeckView {
                             .button(
                                 "focus-notification",
                                 "Open existing terminal in Desktop",
-                                enabled,
+                                snapshot.is_some(),
                             )
-                            .when(enabled, |button| {
+                            .when_some(snapshot, |button, snapshot| {
                                 button.on_click(cx.listener(move |view, _, _, cx| {
-                                    view.focus_run(key.clone());
+                                    view.focus_run(snapshot.clone(), key.clone(), false);
                                     cx.notify();
                                 }))
                             }),
@@ -859,42 +805,23 @@ impl RunDetails {
     }
 
     fn content(&self, deck: &DeckView) -> Option<Div> {
-        let host_id = Uuid::parse_str(&self.key.host_id).ok()?;
-        if let Some(snapshot) = deck
-            .view
-            .snapshot
-            .as_ref()
-            .filter(|view| view.host == host_id)
-        {
-            let slot =
-                snapshot.data.slots.iter().find(|slot| {
-                    slot.run.as_ref().and_then(|run| run.key.as_ref()) == Some(&self.key)
-                });
-            let run = slot.and_then(|slot| slot.run.as_ref()).or_else(|| {
-                snapshot
-                    .data
-                    .overflow
-                    .iter()
-                    .find(|run| run.key.as_ref() == Some(&self.key))
-            });
-            if let Some(run) = run {
-                let cached = deck.view.link != Link::Online || snapshot.generation().is_none();
-                return Some(
-                    deck.colors
-                        .describe(run, cached)
-                        .child(deck.colors.muted(placement_label(slot))),
-                );
-            }
-        }
-        let host = deck.catalog_view.hosts.get(&host_id)?;
-        let run = host
-            .runs
+        let host = deck
+            .catalog_view
+            .hosts
+            .get(&Uuid::parse_str(&self.key.host_id).ok()?)?;
+        let (snapshot, run) = host
+            .runs()
+            .find(|(_, run)| run.key.as_ref() == Some(&self.key))?;
+        let slot = snapshot
+            .data
+            .slots
             .iter()
-            .find(|run| run.key.as_ref() == Some(&self.key))?;
+            .find(|slot| slot.run.as_ref() == Some(run));
         Some(
             deck.colors
-                .describe(run, !host.online)
-                .child(deck.colors.muted(host.label.clone())),
+                .describe(run, false)
+                .child(deck.colors.muted(host.label.clone()))
+                .child(deck.colors.muted(placement_label(slot))),
         )
     }
 }
