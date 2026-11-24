@@ -23,6 +23,8 @@ mod remote_bootstrap;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use corvid_agent_deck::desktop as agent_deck;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod shortcuts;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod ssh_hosts;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod terminal_fonts;

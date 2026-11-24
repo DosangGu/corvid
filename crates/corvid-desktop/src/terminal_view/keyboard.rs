@@ -149,6 +149,8 @@ mod tests {
             "shift-a",
             "space",
             "한",
+            "ㅅ",
+            "t->ㅅ",
             "dead_acute",
             "ctrl-alt-q->@",
             "alt-s->ß",

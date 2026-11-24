@@ -352,7 +352,7 @@ impl Draft {
         }
         let edit = self.text_mut();
         let mut changed = false;
-        match key.key.as_str() {
+        match shortcuts::key(key) {
             "a" if command => {
                 edit.anchor = 0;
                 edit.cursor = edit.value.len();

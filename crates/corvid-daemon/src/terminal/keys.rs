@@ -1,4 +1,5 @@
 use corvid_core::layout::{Axis, CloseTarget, Location};
+use corvid_core::shortcuts::dubeolsik_key;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Default)]
@@ -69,6 +70,7 @@ impl CloseKind {
 
 impl Keymap {
     pub(super) fn command(self, bytes: &[u8]) -> Option<KeyCommand> {
+        let bytes = shortcut_keys(bytes);
         if self.workspace_ui {
             use super::navigation::Kind;
             use corvid_core::navigation::WorkspaceCommand as Cmd;
@@ -112,4 +114,11 @@ impl Keymap {
             _ => None,
         }
     }
+}
+
+pub(super) fn shortcut_keys(bytes: &[u8]) -> &[u8] {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(dubeolsik_key)
+        .map_or(bytes, str::as_bytes)
 }

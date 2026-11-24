@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use crate::appearance::{Appearance, ui_px};
+use crate::shortcuts;
 use crate::terminal_fonts::TerminalFonts;
 use crate::terminal_paint::{self as paint, Frame, Metrics};
 use crate::terminal_session::{Grid, MAX_INPUT, Session, WheelTarget};
@@ -643,7 +644,7 @@ impl TerminalView {
         };
         let command = cfg!(target_os = "macos") && key.modifiers.platform;
         match (
-            key.key.as_str(),
+            shortcuts::key(key),
             key.modifiers.control || command,
             key.modifiers.shift || command,
         ) {
@@ -674,6 +675,7 @@ impl TerminalView {
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.cancel_link();
         let key = &event.keystroke;
+        let name = shortcuts::key(key);
         let modifiers = key.modifiers;
         let edit_shortcut = modifiers == gpui::Modifiers::control_shift()
             || (cfg!(target_os = "macos") && modifiers == gpui::Modifiers::command());
@@ -684,7 +686,7 @@ impl TerminalView {
                 cx.stop_propagation();
                 return;
             }
-            if key.key == "c" && edit_shortcut {
+            if name == "c" && edit_shortcut {
                 self.pending_wheel_copy = true;
                 cx.stop_propagation();
                 return;
@@ -706,11 +708,11 @@ impl TerminalView {
             self.selection = None;
             cx.notify();
         }
-        if edit_shortcut && key.key == "v" {
+        if edit_shortcut && name == "v" {
             self.selection = None;
             self.paste(cx);
             cx.notify();
-        } else if edit_shortcut && key.key == "c" {
+        } else if edit_shortcut && name == "c" {
             self.copy_visible(cx);
         } else if key.key == "escape" && !modifiers.modified() && self.selection.take().is_some() {
             cx.notify();

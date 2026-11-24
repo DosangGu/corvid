@@ -334,7 +334,7 @@ impl WorkspaceView {
         let rows = self.picker_rows();
         let index = self.switcher.selected_index(&rows);
         let row = index.and_then(|index| rows.get(index));
-        match key.key.as_str() {
+        match shortcuts::key(key) {
             key_name
                 if key_name.eq_ignore_ascii_case("n")
                     && key.modifiers.control

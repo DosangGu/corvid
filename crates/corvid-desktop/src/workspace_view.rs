@@ -33,6 +33,7 @@ use gpui::{
 use crate::agent_deck;
 use crate::appearance::{self, Appearance, ui_px};
 use crate::desktop_windows::{DesktopWindows, WindowLaunch};
+use crate::shortcuts;
 use crate::ssh_hosts;
 use crate::terminal_session::{
     AttachTarget, Connection, Destination, Inventory, Job, ParkedConnections, Session, Ui,
