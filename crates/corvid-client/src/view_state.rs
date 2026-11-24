@@ -297,6 +297,12 @@ impl ViewStore {
             .and_then(|stored| stored.views.into_iter().find(|view| &view.target == target))
     }
 
+    /// Read the most recent selection for a connection across Desktop windows.
+    pub fn shared_for_target(&self, target: &Target) -> Option<SavedView> {
+        let path = self.shared_workspace_path.as_ref()?;
+        Self::new(path.clone()).for_target(target)
+    }
+
     pub fn for_workspace(&self, target: &Target, host: &str, workspace: &str) -> Option<SavedView> {
         let host = Uuid::parse_str(host).ok()?;
         let workspace = Uuid::parse_str(workspace).ok()?;
