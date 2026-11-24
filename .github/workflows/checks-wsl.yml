@@ -25,14 +25,15 @@ env:
 jobs:
   probe:
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     outputs:
-      available: ${{ steps.probe.outcome == 'success' }}
+      available: ${{ steps.probe.outcome == 'success' || steps.retry.outcome == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Download Alpine fixture
+        timeout-minutes: 2
         shell: pwsh
         run: |
           $image = 'alpine-minirootfs-3.22.8-x86_64.tar.gz'
@@ -43,10 +44,17 @@ jobs:
           }
       - name: Boot a disposable WSL 2 distribution
         id: probe
+        timeout-minutes: 4
+        continue-on-error: true
+        run: python deploy/test_wsl.py --rootfs rootfs.tar.gz --probe
+      - name: Retry with a fresh WSL 2 distribution
+        id: retry
+        if: steps.probe.outcome == 'failure'
+        timeout-minutes: 4
         continue-on-error: true
         run: python deploy/test_wsl.py --rootfs rootfs.tar.gz --probe
       - name: Record unavailable WSL 2 environment
-        if: steps.probe.outcome != 'success'
+        if: steps.probe.outcome != 'success' && steps.retry.outcome != 'success'
         shell: pwsh
         env:
           CORVID_REQUIRE_WSL: ${{ inputs.require_runtime || github.event_name == 'workflow_dispatch' }}
@@ -54,7 +62,7 @@ jobs:
           'WSL 2 did not boot on this runner. Lifecycle qualification was skipped.' >> $env:GITHUB_STEP_SUMMARY
           if ($env:CORVID_REQUIRE_WSL -eq 'true') { throw 'WSL 2 did not boot' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: steps.probe.outcome == 'success'
+        if: steps.probe.outcome == 'success' || steps.retry.outcome == 'success'
         with:
           name: wsl-rootfs
           path: rootfs.tar.gz

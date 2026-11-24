@@ -186,9 +186,11 @@ Unicode input does not validate an OS input method editor.
 ## WSL 2 lifecycle check
 
 `Checks / WSL 2` first boots an isolated Alpine distribution on a Windows
-runner. A runner without a bootable WSL 2 environment reports a skipped
-lifecycle in the workflow summary. On a WSL 2 Windows host, the same check
-can reuse a trusted Linux rootfs archive and matching built artifacts.
+runner. The probe logs import, boot, and cleanup, and retries once with a
+fresh distribution if the first attempt fails or times out. If both attempts
+fail, the PR workflow records a skipped lifecycle in the summary. Explicit
+qualification runs fail. On a WSL 2 Windows host, the same check can reuse
+a trusted Linux rootfs archive and matching built artifacts.
 
 For a stacked branch, dispatch `checks-release.yml` with `scope=wsl` to run
 only WSL qualification. That invocation requires a bootable WSL 2 runner.
