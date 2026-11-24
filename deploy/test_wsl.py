@@ -18,16 +18,34 @@ ROOT = Path(__file__).resolve().parent.parent
 TEST = "terminal_session::wsl_test::wsl_session_installs_and_reconnects_to_the_same_shell"
 
 
+def run_wsl_phase(name, phase, command, *, timeout):
+    print(f"WSL {name}: {phase} ({timeout}s timeout)", flush=True)
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL)
+    try:
+        status = process.wait(timeout=timeout)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+        # subprocess.run() waits without a deadline after killing a Windows child.
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as termination_error:
+            error.add_note(f"Could not stop WSL {phase} process: {termination_error}")
+        raise
+    if status:
+        raise subprocess.CalledProcessError(status, command)
+
+
 @contextmanager
 def imported_distro(wsl, directory, rootfs):
     name = f"corvid-wsl-test-{uuid.uuid4().hex[:10]}"
-    subprocess.run([wsl, "--import", name, directory / "linux", rootfs, "--version", "2"],
-                   timeout=120, check=True)
     try:
+        run_wsl_phase(name, "importing distribution",
+                      [wsl, "--import", name, directory / "linux", rootfs, "--version", "2"],
+                      timeout=120)
         yield name, [wsl, "--distribution", name, "--user", "root", "--exec"]
     finally:
-        # The generated name belongs only to this invocation.
-        subprocess.run([wsl, "--unregister", name], timeout=60, check=True)
+        # A failed import can leave a registered distribution under this name.
+        run_wsl_phase(name, "unregistering distribution", [wsl, "--unregister", name], timeout=60)
 
 
 def test_session(directory, name, linux, desktop, daemon):
@@ -81,7 +99,7 @@ def main():
         directory = Path(temporary)
         with imported_distro(wsl, directory, args.rootfs.resolve(strict=True)) as (name, linux):
             if args.probe:
-                subprocess.run([*linux, "uname", "-sr"], timeout=30, check=True)
+                run_wsl_phase(name, "booting distribution", [*linux, "uname", "-sr"], timeout=30)
             else:
                 test_session(directory, name, linux, args.desktop_test, args.daemon)
 
