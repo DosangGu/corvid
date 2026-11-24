@@ -29,6 +29,20 @@ stack's trunk for every entry. To run CI only as each PR reaches `main`,
 keep each PR based on the preceding branch and retarget it after that PR merges.
 See [GitHub's stack CI documentation](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/optimizing-ci-for-stacked-pull-requests).
 
+### Hosted macOS runner cancellations
+
+If GitHub cancels a `macos-latest` job before assigning a runner, check the
+job annotation for limited Apple Silicon capacity. Once the workflow attempt
+has completed, set `JOB_ID` to the number at the end of the job URL and rerun
+that job. GitHub retains the completed matrix results and also reruns any jobs
+that depend on the selected job. [GitHub Actions rerun documentation](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+
+```sh
+gh run rerun --repo DosangGu/corvid --job "$JOB_ID"
+```
+
+Record the job link, runner label, and queue duration in [issue #399](https://github.com/DosangGu/corvid/issues/399).
+
 ## Release qualification
 
 Update `deploy/release-notes.md` in the version preparation PR to `main` to
