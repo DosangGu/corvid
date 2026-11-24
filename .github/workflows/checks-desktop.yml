@@ -12,6 +12,7 @@ on:
       - 'LICENSE'
       - 'assets/icons/**'
       - 'assets/fonts/**'
+      - 'crates/corvid-async/**'
       - 'crates/corvid-core/**'
       - 'crates/corvid-protocol/**'
       - 'crates/corvid-daemon/**'

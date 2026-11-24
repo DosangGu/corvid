@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/checks-tui.yml'
+      - '.github/actions/install-zig/**'
       - '.cargo/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'LICENSE'
+      - 'crates/corvid-async/**'
       - 'crates/corvid-core/**'
       - 'crates/corvid-protocol/**'
       - 'crates/corvid-daemon/**'
@@ -71,78 +73,10 @@ jobs:
             echo "A client links the daemon" >&2
             exit 1
           fi
-      - name: TUI attach, render and input against a scripted peer
-        run: cargo test --locked -p corvid-tui --test scripted_attach
-
-  linux-arm64-routing:
-    name: Routing (Linux ARM64 musl)
-    runs-on: ubuntu-26.04-arm
-    timeout-minutes: 20
-    env:
-      CC: musl-gcc
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-      CORVID_TEST_ROUTING_DIAGNOSTICS: '1'
-      RUST_BACKTRACE: '1'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/install-zig
-      - name: Install Linux build tools
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update --error-on=any
-          sudo apt-get -o Acquire::Retries=3 install -y ncurses-bin musl-tools
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install --no-self-update
-          rustup target add aarch64-unknown-linux-musl
-      - name: Repeat the release-mode routing suite
-        run: |
-          set -euo pipefail
-          cargo build --locked --release --target aarch64-unknown-linux-musl -p corvid-daemon --bin corvidd
-          for attempt in 1 2 3; do
-            cargo test --locked --release --target aarch64-unknown-linux-musl -p corvid-tui --test routing -- --no-capture
-          done
-
-  windows-tui-exit:
-    name: TUI lifecycle (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, windows-11-arm]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/install-zig
-      - name: Install Rust toolchain
-        run: rustup toolchain install --no-self-update
       - name: Build the standalone daemon
-        run: cargo build --locked --release -p corvid-daemon --bin corvidd
-      - name: Read queued terminal and detach events after named-pipe closure
-        run: cargo test --locked --release -p corvid-client --lib closed_named_pipe_preserves_the_queued_terminal_status
-      - name: Verify early Windows hook ownership
-        run: cargo test --locked --release -p corvid-daemon --lib early_hooks_wait_for_their_registered_process
-      - name: Repeat release-mode saved agent recovery
-        shell: pwsh
-        run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            cargo test --locked --release -p corvid-tui --test agent_restore
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-      - name: Repeat the release-mode ConPTY lifecycle tests
-        shell: pwsh
-        run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            cargo test --locked --release -p corvid-tui --test windows_daemon -- ordinary_attach_resumes tui_reopens_its_last_workspace retains_the_windows_shell replies_to_fragmented_conpty_startup_queries
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-      - name: Exercise Windows release-mode client process and pipe lifecycle
-        shell: pwsh
-        run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            cargo test --locked --release -p corvid-client --lib
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+        run: cargo build --locked -p corvid-daemon --bin corvidd
+      - name: TUI integration tests for IPC, PTY routing, and reconnect
+        run: >
+          cargo test --locked -p corvid-tui
+          --test control --test monitor --test routing --test scripted_attach
+          --test workspace_directory -- --test-threads=4

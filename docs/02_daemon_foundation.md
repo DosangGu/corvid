@@ -575,8 +575,9 @@ inventory reconnects, and focus requests. Agent Deck uses Compio for its
 background worker, presentation clients, and refresh and reconnect deadlines.
 These paths are enabled in standard builds on Linux, macOS, and Windows.
 
-The Compio IPC workflow checks the native workspace dependency graph on all
-three platforms and rejects Tokio in normal, build, and test dependencies.
+**Checks / Core and daemon** verifies the Compio-only protocol build and checks
+the Linux workspace dependency graph for Tokio in normal, build, and test
+dependencies. Release qualification runs those checks on Windows and macOS.
 
 ### Linux workload qualification
 
