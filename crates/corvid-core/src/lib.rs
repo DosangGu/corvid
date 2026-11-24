@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub mod agent;
 pub mod layout;
 pub mod navigation;
+pub mod shortcuts;
 
 pub const KEY_LEADER: u8 = 0x1d;
 pub const PASTE_START: &[u8; 6] = b"\x1b[200~";

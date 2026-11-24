@@ -6,7 +6,7 @@ use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint,
 use corvid_protocol::wire::WheelEncoding;
 use uuid::Uuid;
 
-use super::keys::{KeyCommand, Keymap, TabCommand};
+use super::keys::{KeyCommand, Keymap, TabCommand, shortcut_keys};
 use super::title_motion::{TitleMotion, TitleTarget, window};
 
 #[derive(Clone, Copy)]
@@ -87,8 +87,8 @@ impl Overlay {
         }
         let unfocused = |command| (None, Some(command));
         match self {
-            Self::Tabs(tab) => tab_keys(bytes, layout, location, keymap, tab),
-            Self::Panes(pane) => pane_keys(bytes, layout, location, keymap, pane),
+            Self::Tabs(tab) => tab_keys(shortcut_keys(bytes), layout, location, keymap, tab),
+            Self::Panes(pane) => pane_keys(shortcut_keys(bytes), layout, location, keymap, pane),
             Self::ConfirmWorkspace(workspace) if matches!(bytes, b"\r" | b"\n") => {
                 unfocused(KeyCommand::End(CloseTarget::Workspace(workspace)))
             }

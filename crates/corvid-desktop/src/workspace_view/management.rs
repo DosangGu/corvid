@@ -138,7 +138,7 @@ impl WorkspaceView {
             self.connect_host(self.alias.clone(), window, cx);
         } else if key.key == "backspace" {
             self.alias.pop();
-        } else if key.modifiers.control && key.key == "v" {
+        } else if key.modifiers.control && shortcuts::key(key) == "v" {
             if let Some(value) = cx.read_from_clipboard().and_then(|item| item.text()) {
                 let value = value.trim();
                 if value.len() <= 253 && value.bytes().all(alias_byte) {

@@ -285,6 +285,9 @@ close the highlighted tab and its terminals. Press
 layout. Press Enter to focus, `r` or `d` to split, or `x` to close the
 highlighted pane and its terminal. Esc cancels pane mode.
 
+On the Korean Dubeolsik layout, use the same key positions for these commands.
+The shortcut hints use English labels.
+
 Tab previews over SSH are available when the remote daemon advertises
 `tab_preview.v1`. Enter can still focus the highlighted tab on an older daemon.
 

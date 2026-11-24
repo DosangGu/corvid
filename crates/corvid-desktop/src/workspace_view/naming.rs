@@ -87,7 +87,7 @@ impl WorkspaceView {
         let Some(draft) = &mut self.naming else {
             return;
         };
-        match key.key.as_str() {
+        match shortcuts::key(key) {
             "escape" => self.dismiss_overlay(window, cx),
             "enter" if draft.marked.is_empty() => self.save_name(false, window, cx),
             "backspace" if draft.marked.is_empty() => {

@@ -1,6 +1,7 @@
 use super::*;
 use corvid_core::layout::Axis;
 use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint, tab_mode_hint};
+use corvid_core::shortcuts::dubeolsik_key;
 use corvid_protocol::wire::SplitPane;
 
 pub(super) enum Overlay {
@@ -216,20 +217,18 @@ impl WorkspaceView {
             return;
         }
         cx.stop_propagation();
+        let name = shortcuts::key(key);
         if event.is_held
+            && !matches!(name, "left" | "right" | "up" | "down" | "backspace")
             && !matches!(
-                key.key.as_str(),
-                "left" | "right" | "up" | "down" | "backspace"
-            )
-            && !matches!(
-                (&self.navigation, key.key.as_str()),
+                (&self.navigation, name),
                 (Some(Overlay::Tabs { .. }), "h" | "l")
                     | (Some(Overlay::Panes(_)), "h" | "j" | "k" | "l")
             )
         {
             return;
         }
-        if key.key == "escape" {
+        if name == "escape" {
             self.dismiss_overlay(window, cx);
             return;
         }
@@ -240,21 +239,13 @@ impl WorkspaceView {
                         session.send(&view.pane_id, vec![corvid_core::KEY_LEADER], false);
                     }
                 }
-            } else if let Some(direction) = direction(&key.key) {
+            } else if let Some(direction) = direction(name) {
                 if let Some((view, _)) = self.navigation_target()
                     && let Some(target) = self.neighbor(&view, direction)
                 {
                     self.select(target, false, window, cx);
                 }
-            } else if let Some(command) = key_text(key).and_then(|text| {
-                let mut chars = text.chars();
-                let suffix = chars.next()?;
-                chars
-                    .next()
-                    .is_none()
-                    .then(|| WorkspaceCommand::from_key(suffix))
-                    .flatten()
-            }) {
+            } else if let Some(command) = workspace_command(key) {
                 self.run_command(Command::Workspace(command), window, cx);
             }
             cx.notify();
@@ -287,10 +278,10 @@ impl WorkspaceView {
                 workspace_id,
                 tab_id,
             } => {
-                self.tab_mode_key(key.key.as_str(), workspace_id, tab_id, window, cx);
+                self.tab_mode_key(name, workspace_id, tab_id, window, cx);
             }
             Overlay::Panes(mut target) => {
-                match key.key.as_str() {
+                match name {
                     "enter" => {
                         self.dismiss_overlay(window, cx);
                         self.select(target, false, window, cx);
@@ -298,7 +289,7 @@ impl WorkspaceView {
                     }
                     "r" | "d" => {
                         self.dismiss_overlay(window, cx);
-                        let axis = if key.key == "r" {
+                        let axis = if name == "r" {
                             SplitAxis::Horizontal
                         } else {
                             SplitAxis::Vertical
@@ -562,6 +553,20 @@ fn matching<'a, T: 'a>(
         .collect()
 }
 
+fn workspace_command(key: &gpui::Keystroke) -> Option<WorkspaceCommand> {
+    let text = key_text(key)?;
+    let name = match (dubeolsik_key(text), key.key.as_bytes()) {
+        (Some(_), _) if key.modifiers.shift => return None,
+        (Some(_), [b'a'..=b'z']) => key.key.as_str(),
+        (Some(mapped), _) => mapped,
+        (None, _) => text,
+    };
+    let [suffix] = name.as_bytes() else {
+        return None;
+    };
+    WorkspaceCommand::from_key(char::from(*suffix))
+}
+
 fn key_text(key: &gpui::Keystroke) -> Option<&str> {
     if key.modifiers.control || key.modifiers.platform || key.modifiers.alt {
         return None;
@@ -627,5 +632,45 @@ fn pane_rects<'a>(tab: &'a TabState, index: usize, region: Rect, panes: &mut Vec
             }
         }
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::Keystroke;
+
+    #[test]
+    fn leader_commands_match_korean_key_positions() {
+        for (stroke, command) in [
+            ("w->ㅈ", WorkspaceCommand::Workspaces),
+            ("ㅅ", WorkspaceCommand::Tabs),
+            ("p->ᅦ", WorkspaceCommand::Panes),
+            ("ㅇ", WorkspaceCommand::Detach),
+            ("shift-/->?", WorkspaceCommand::Commands),
+        ] {
+            assert_eq!(
+                workspace_command(&Keystroke::parse(stroke).unwrap()),
+                Some(command)
+            );
+        }
+        for stroke in ["shift-t->ㅆ", "ctrl-ㅅ", "t->한글"] {
+            assert_eq!(workspace_command(&Keystroke::parse(stroke).unwrap()), None);
+        }
+    }
+
+    #[test]
+    fn command_search_keeps_korean_text() {
+        let mut query = String::new();
+        let mut index = 0;
+        for stroke in ["t->ㅅ", "g->한글"] {
+            edit_list(
+                &Keystroke::parse(stroke).unwrap(),
+                &mut query,
+                &mut index,
+                1,
+            );
+        }
+        assert_eq!(query, "ㅅ한글");
     }
 }

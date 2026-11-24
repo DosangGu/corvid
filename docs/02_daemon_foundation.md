@@ -282,6 +282,11 @@ paste as a route-scoped transaction with a 1 MiB limit. The outer TTY always
 captures paste and the daemon adds delimiters when the child enables that mode.
 An accepted write holds the input barrier until it finishes or stalls.
 
+Corvid command keys also match their equivalent positions on the Korean
+Dubeolsik layout when the outer terminal delivers individual jamo as keystrokes.
+An input method can hold a keystroke in composition until commit. Shortcut
+hints use English labels.
+
 Run `target/debug/corvid control host` to read the stable HostId and current
 ServerEpoch. Run `corvid control workspaces` for workspace, tab, and pane IDs and
 `corvid control status` for live terminal and save status. The binary stdio relay

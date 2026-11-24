@@ -27,8 +27,9 @@ use corvid_protocol::wire::{
     RouteToken, SelectView, SnapshotWatch, SplitAxis, TuiInputMode, ViewSelection, Viewport,
 };
 use corvid_protocol::{
-    COMMAND_TIMEOUT, CONTROL_LIMIT, FRAME_PREAMBLE, Frame, FrameError, FrameReader, FrameRole,
-    FrameWriter, PeerRole, ProtocolFault, Session, check_hello_result, decode_envelope, hello,
+    COMMAND_TIMEOUT, CONTROL_LIMIT, CREATE_VIEW_CAPABILITY, FRAME_PREAMBLE, Frame, FrameError,
+    FrameReader, FrameRole, FrameWriter, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault, Session,
+    WORKSPACE_UI_CAPABILITY, check_hello_result, decode_envelope, hello,
 };
 type Socket = corvid_async::io::Native<compio::net::UnixStream>;
 type OwnedReadHalf = corvid_async::io::ReadHalf<Socket>;
@@ -2068,6 +2069,60 @@ async fn expired_and_unmapped_command_prefixes_reach_the_original_terminal() {
             tui.client_state(&runtime).await.input_mode,
             Some(TuiInputMode::Passthrough as i32)
         );
+    })
+    .await
+    .unwrap();
+}
+
+#[compio::test]
+async fn dubeolsik_keys_drive_workspace_commands_and_keep_terminal_text() {
+    let temporary = fixture_directory().unwrap();
+    let runtime = temporary.path().join("runtime");
+    let _daemon = daemon(&runtime, &temporary.path().join("state")).await;
+    timeout(WAIT, async {
+        let mut tui = Tui::attach_target(
+            &runtime,
+            Attach {
+                launch: Some(echo_fixture("SOURCE")),
+                terminal_capabilities: [
+                    PANE_WRITERS_CAPABILITY,
+                    WORKSPACE_UI_CAPABILITY,
+                    "tabs.v1",
+                    CREATE_VIEW_CAPABILITY,
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut output = Vec::new();
+        wait_for_text(&mut tui, &mut output, "SOURCE-READY").await;
+        tui.input(tui.route.clone(), 1, "ㅅㅔ한글\n".as_bytes())
+            .await;
+        wait_for_text(&mut tui, &mut output, "SOURCE=ㅅㅔ한글").await;
+
+        tui.enter_command_mode(2, &mut output).await;
+        tui.input(tui.route.clone(), 3, "ㅅ".as_bytes()).await;
+        wait_for_text(&mut tui, &mut output, "Preview").await;
+        tui.input(tui.route.clone(), 4, "ㅜ".as_bytes()).await;
+        let Body::ViewChanged(view) = tui.next_body(&mut output).await else {
+            panic!("expected a new tab")
+        };
+        let tab = view.selection.unwrap();
+        assert_ne!(tab.tab_id, tui.selection.tab_id);
+        tui.route = view.route_token.unwrap();
+
+        tui.enter_command_mode(5, &mut output).await;
+        tui.input(tui.route.clone(), 6, "ㅔ".as_bytes()).await;
+        wait_for_text(&mut tui, &mut output, "r Right").await;
+        tui.input(tui.route.clone(), 7, "ㄱ".as_bytes()).await;
+        let Body::ViewChanged(view) = tui.next_body(&mut output).await else {
+            panic!("expected a split pane")
+        };
+        let split = view.selection.unwrap();
+        assert_eq!(split.tab_id, tab.tab_id);
+        assert_ne!(split.pane_id, tab.pane_id);
     })
     .await
     .unwrap();

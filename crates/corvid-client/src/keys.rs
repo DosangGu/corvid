@@ -303,6 +303,17 @@ mod tests {
             [b"\x1d".as_slice(), b"d", b"tail"]
         );
 
+        let jamo = "ㅅ".as_bytes();
+        assert_eq!(decoder.feed(b"\x1d", true).unwrap()[0].bytes(), b"\x1d");
+        assert!(decoder.feed(&jamo[..1], true).unwrap().is_empty());
+        let mut suffix = jamo[1..].to_vec();
+        suffix.extend_from_slice(b"tail");
+        let command = decoder.feed(&suffix, true).unwrap();
+        assert_eq!(
+            command.iter().map(Input::bytes).collect::<Vec<_>>(),
+            [jamo, b"tail"]
+        );
+
         assert!(decoder.feed(b"\x1b", true).unwrap().is_empty());
         decoder.key.as_mut().unwrap().deadline = Instant::now();
         assert_eq!(decoder.expire().unwrap()[0].bytes(), b"\x1b");
