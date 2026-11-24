@@ -610,9 +610,11 @@ setting before writing. Events are transient and tied to the view in which the
 daemon read the request. Each PTY keeps at most the latest request between polls.
 Clipboard read and window-control requests remain disabled.
 
-The [OSC integration proposal](09_terminal_osc.md) describes how Desktop and the
-TUI could show progress reported by a terminal application, followed by shell
-phase hints and optional pane notices.
+The [OSC integration proposal](09_terminal_osc.md) covers application progress,
+OSC 7501 program status, shell phase hints and optional pane notices in Desktop
+and the TUI. A program can report that it is waiting for approval. The provider
+adapter tracks the corresponding agent request and its outcome when it has
+correlated hook evidence.
 
 ### 7.2 Rendering and recovery
 

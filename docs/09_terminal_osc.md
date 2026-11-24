@@ -15,6 +15,7 @@ and input ownership continue to follow the daemon's existing evidence and lease 
 | OSC 52, clipboard | The daemon sends a bounded text write on the negotiated interactive writer route. Desktop checks its local setting and focused pane. The TUI checks its setting and route, then emits a fresh OSC 52 to the outer terminal. Both default to off. |
 | OSC 133/633, shell markers | The daemon's prompt parser treats A/B as prompt, C as executing and D as unknown. This helps decide shell-history behavior alongside terminal modes and platform process checks. There is no shared shell-phase indicator. |
 | OSC 9;4, progress | The pinned Ghostty binding emits `ProgressReport`. Corvid's event loop currently consumes title changes and supported PTY replies and drops the progress report. Neither client can recover it from rendered cells. |
+| OSC 7501, program status | Corvid has no end-to-end support today. Desktop's Agents window gets observed Claude and Codex activity and requests from provider hooks. A CLI that only emits OSC 7501 cannot surface its status through that route. |
 | Notifications | A provider response can produce an `AgentResponded` message. The TUI can turn it into a bell or an outer-terminal OSC 9. A child application's OSC 9/777 notification has a separate origin and currently has no delivery path to either client. |
 
 See the [terminal engine adapter](../crates/corvid-daemon/src/terminal/screen/ghostty.rs),
@@ -83,12 +84,62 @@ and a report never resizes the PTY or changes the pane receiving input.
    titles. Daemon-composed TUI chrome on a negotiated workspace view needs no
    new client-side OSC interpreter.
 
+## Second slice — OSC 7501 program status and provider hooks
+
+A deploy script waiting for a login and a managed Claude session waiting for
+tool permission should each be identifiable from a background pane. OSC 7501
+gives any CLI a way to describe its work. A provider hook can additionally
+identify the specific question or permission request and its outcome.
+This proposed slice shares the terminal projection and reconnect path above.
+[Tracking issue #413](https://github.com/DosangGu/corvid/issues/413) ·
+[Provider hook coverage](03_provider_qualification.md#corvid-collector)
+
+| Evidence available | What both clients show | Who can change it |
+| --- | --- | --- |
+| Program report only | A pane indicator such as `App waiting for login`. Pane details identify the reported task and wait reason. | A new report, clear or protocol lifecycle event updates the terminal's records. |
+| Provider hook only | The existing agent activity, request count and configured alerts. | The daemon applies the adapter's correlation and evidence rules to each request. |
+| Both in the same pane | A pending provider request takes the summary position. App reports remain visible in pane details with their source. | The two records update independently. Only the provider path emits agent alerts or changes the request count. |
+
+For example, a program reports `state=blocked:kind=permission` while Claude
+has two open permission requests. Show one pane summary and keep the two request
+IDs. Neither the program's `id`, its `app` name nor arrival order identifies a
+provider request. An OSC `clear` removes the app report. A matching hook can
+settle one request while the other remains pending. This rule works in either
+arrival order and keeps app-only indications passive even when hooks are absent.
+
+### Terminal records and recovery
+
+- Parse revision 0.4 in the PTY host. Accept reports without a prior handshake.
+  Answer the feature query on the originating PTY with a fixed reply describing
+  the supported states and kinds. Qualify the pinned engine's report and reply
+  behavior first to avoid a duplicate reply. Negotiate program status separately
+  from progress so clients can fall back when a daemon or retained host lacks
+  support. [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
+- Keep a bounded set of current records per terminal. Each report replaces the
+  root or its named record. A named clear removes that subtree and a root clear
+  removes all records. A new shell prompt (OSC 133 A) or attached process exit
+  expires working and blocked records. Done and error remain available while
+  the terminal exists. A full terminal reset clears everything. Screen switches
+  and client detach preserve the records. Use the limits and eviction rule in
+  the specification, and check the aggregate projection against existing IPC
+  budgets before advertising support.
+- Give the terminal host's 7501 records precedence over OSC 9;4 in the shared
+  status indicator from the first accepted 7501 report until a full reset.
+  A late percentage cannot erase a blocked reason or resurrect a cleared task.
+  A blocked child is visible even when the root reports idle.
+- Project a bounded, source-labelled summary to Desktop's inventory watch and
+  the daemon-composed TUI. Keep record details available to the owning pane.
+  On reconnect, restore only current records from the same live terminal.
+  Discard records when the terminal is retired. Rebuilding a view is silent.
+  Treat titles and messages as untrusted plain text, validate limits and text
+  before mutation, and keep payloads out of routine logs and disk state.
+
 ## Subsequent slices
 
 | Order | User-visible change | Design and delivery |
 | --- | --- | --- |
-| 2. OSC 133/633 shell phases | Show `At prompt` or `Command running` in pane details on both clients. | Extend the existing incremental prompt parser to share its A/B and C hints. D clears the running hint. Start empty, tolerate repeated markers, and clear on terminal loss or reset. Use an optional terminal-state field and its own capability. Preserve the current foreground checks for shell-history input. Discard command-line, nonce and user-variable payloads. |
-| 3. Application notices | With local opt-in, show a short `Terminal app` notice for the active pane in both clients. | Negotiate a separate interactive capability. Consume Ghostty's notification event for the qualified OSC 9/777 forms. Deliver a typed one-shot to the current writer using its full `RouteToken`. Check the route and local setting again at display time. Drop notices during switches, detach, reconnect and queue overflow. Keep them out of snapshots, agent attention, notification history and OS toasts. |
+| 3. OSC 133/633 shell phases | Show `At prompt` or `Command running` in pane details on both clients. | Extend the existing incremental prompt parser to share its A/B and C hints. D clears the running hint. Start empty, tolerate repeated markers, and clear on terminal loss or reset. Use an optional terminal-state field and its own capability. Preserve the current foreground checks for shell-history input. Discard command-line, nonce and user-variable payloads. |
+| 4. Application notices | With local opt-in, show a short `Terminal app` notice for the active pane in both clients. | Negotiate a separate interactive capability. Consume Ghostty's notification event for the qualified OSC 9/777 forms. Deliver a typed one-shot to the current writer using its full `RouteToken`. Check the route and local setting again at display time. Drop notices during switches, detach, reconnect and queue overflow. Keep them out of snapshots, agent attention, notification history and OS toasts. |
 
 For notices, use a single pending slot per live writer, a maximum of one display
 per second and at most 256 UTF-8 bytes of sanitized text overall. Strip control
@@ -123,6 +174,8 @@ qualification is pending.
 | Two clients and two panes (A14, A18, A32) | A background pane reports 42% next to its own title. Compare Desktop and composed TUI output through a move, split, manual rename, narrow viewport and focus change. The other pane, selected writer, agent requests and activity are unaffected. Sending only an OSC clear removes the indicator on both clients. |
 | Recovery and skew (A8, A15, A23, A29) | Detach at 42%, update to 75%, then attach from the other client. See 75% on the first synchronized view. Cover watch gaps, retained hosts on replacement, a lost PTY, old/new host and client pairs, and an unknown enum. Closing a pane before a pending flush cannot decorate its replacement. |
 | Bounded load (A13) | Flood one PTY with varying percentages while another accepts input. Measure publication rate against the 100 ms budget, pending memory per terminal and second-pane input latency against the same run without reports. Include a slow watcher. After the flood, both clients converge on the final value or clear. |
+| Generic CLI status (A8, A18, A19, A32) | With no adapter, report a blocked child under an idle root. Both clients identify the source pane and wait reason. Exercise OSC 9;4 interleaving, subtree and root clear, prompt, exit, full reset and reattach. Fragmented or malformed reports give no partial updates. A feature query gets exactly one reply on the originating PTY. |
+| Mixed evidence (A4, A5, A18) | Deliver an OSC wait before and after a matching hook wait in separate runs. Check one summary, at most one alert for that wait and no double counting. With two pending requests, OSC clear, done and error leave both intact. The exact hook outcome settles only its matching request. Repeat with hooks alone. |
 | Later slices (A18, A20, A24) | Test incomplete A/B/C/D cycles with ConPTY and a foreground child. Test opted-out, background, stale-route and repeated app notices, including clipboard and provider-event interleaving. No clipboard content, notice text, command line or raw OSC enters routine logs or persisted layout. |
 
 Extend the existing daemon screen fixtures, TUI routing and scripted attach
