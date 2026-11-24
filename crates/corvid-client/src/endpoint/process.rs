@@ -232,11 +232,16 @@ mod tests {
     use super::*;
 
     const CHILD_FIXTURE: &str = "endpoint::process::tests::native_process_child_fixture";
+    const CHILD_FIXTURE_MODE: &str = "CORVID_TEST_NATIVE_PROCESS_CHILD";
 
     #[test]
     #[ignore = "run as a subprocess by the native process test"]
     fn native_process_child_fixture() -> Result<()> {
         use std::io::{Read, Write};
+
+        if !std::env::var_os(CHILD_FIXTURE_MODE).is_some_and(|value| value == "1") {
+            return Ok(());
+        }
 
         let mut payload = Vec::new();
         std::io::stdin().read_to_end(&mut payload)?;
@@ -251,7 +256,7 @@ mod tests {
     #[compio::test]
     async fn native_process_transfers_payload_until_eof_and_reaps_the_child() -> Result<()> {
         let mut command = Command::new(std::env::current_exe()?);
-        command.args([
+        command.env(CHILD_FIXTURE_MODE, "1").args([
             "--exact",
             CHILD_FIXTURE,
             "--ignored",
