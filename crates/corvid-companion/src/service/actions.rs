@@ -22,6 +22,7 @@ impl Service {
     pub(super) async fn execute(&mut self, body: Body) -> Outcome {
         match body {
             Body::GetPresentationSlots(query) => self.presentation(query),
+            Body::GetPresentationRuns(query) => Ok(self.current_runs(query.page)),
             Body::GetPresentationAttention(_) => Ok(self.attention()),
             Body::ListHosts(_) => Ok(self.list_hosts()),
             Body::ReconnectAgentMonitor(_) => Ok(Body::Pong(Pong {})),

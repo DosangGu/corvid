@@ -181,6 +181,7 @@ impl Session {
             | (
                 PeerRole::Presentation,
                 Body::GetPresentationSlots(_)
+                | Body::GetPresentationRuns(_)
                 | Body::StopAgentMonitor(_)
                 | Body::ReconnectAgentMonitor(_)
                 | Body::GetPresentationAttention(_)

@@ -1,8 +1,9 @@
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     Attach, AttachRole, CollectHook, FocusAgentRequest, FocusSlot, GetCapabilities,
-    GetPresentationAttention, GetPresentationSlots, InputChunk, ListHosts, OpenAgentDeck, Ping,
-    ProviderAdapter, ProviderExecutionMode, ProviderProfile, StopAgentMonitor, UpgradeDaemon,
+    GetPresentationAttention, GetPresentationRuns, GetPresentationSlots, InputChunk, ListHosts,
+    OpenAgentDeck, Ping, ProviderAdapter, ProviderExecutionMode, ProviderProfile, StopAgentMonitor,
+    UpgradeDaemon,
 };
 use corvid_protocol::{
     PeerRole, accept_hello, accept_hello_with_profiles, check_hello_result, decode_envelope, hello,
@@ -318,6 +319,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
     for body in [
         Body::ListHosts(ListHosts {}),
         Body::GetPresentationSlots(GetPresentationSlots::default()),
+        Body::GetPresentationRuns(GetPresentationRuns::default()),
         Body::GetPresentationAttention(GetPresentationAttention {}),
         Body::FocusSlot(FocusSlot::default()),
         Body::StopAgentMonitor(StopAgentMonitor {}),
@@ -350,6 +352,25 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
         Body::OpenAgentDeck(OpenAgentDeck::default()),
     ] {
         let request = session.envelope(Some("presentation".into()), body);
+        assert_eq!(
+            session.validate_request(&request).unwrap_err().code,
+            "UnsupportedCapability"
+        );
+    }
+}
+
+#[test]
+fn current_run_pages_are_only_available_to_presentation_peers() {
+    for role in [
+        PeerRole::Tui,
+        PeerRole::Control,
+        PeerRole::Collector,
+        PeerRole::Upgrade,
+    ] {
+        let greeting = hello("hello".into(), Some("controller".into()), vec![]);
+        let (session, _) = accept_hello(&greeting, role, "host", "epoch", &[]).unwrap();
+        let body = Body::GetPresentationRuns(GetPresentationRuns::default());
+        let request = session.envelope(Some("runs".into()), body);
         assert_eq!(
             session.validate_request(&request).unwrap_err().code,
             "UnsupportedCapability"

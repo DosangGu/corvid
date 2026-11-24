@@ -18,7 +18,8 @@ pub use doctor::{Check, CheckStatus, diagnose};
 pub use ipc::run_native;
 pub use ipc::{
     PRESENTATION_ATTENTION_CAPABILITY, PRESENTATION_ATTENTION_LIMIT, PRESENTATION_CAPABILITY,
-    PRESENTATION_PAGE_SIZE, PresentationAddress, PresentationClient, run, run_for_endpoint,
+    PRESENTATION_PAGE_SIZE, PRESENTATION_RUNS_CAPABILITY, PresentationAddress, PresentationClient,
+    run, run_for_endpoint,
 };
 #[cfg(windows)]
 pub use ipc::{WEZTERM_CAPABILITY, WEZTERM_SELECTION_CAPABILITY};

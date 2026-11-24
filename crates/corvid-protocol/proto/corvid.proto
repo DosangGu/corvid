@@ -97,6 +97,8 @@ message Envelope {
     AgentDeckRetired agent_deck_retired = 136;
     ReconnectAgentMonitor reconnect_agent_monitor = 137;
     ClipboardWrite clipboard_write = 138;
+    GetPresentationRuns get_presentation_runs = 139;
+    PresentationRuns presentation_runs = 140;
     ReadTerminalHistory read_terminal_history = 122;
     TerminalHistory terminal_history = 123;
     DisconnectWorkspaceClients disconnect_workspace_clients = 125;
@@ -376,6 +378,17 @@ message FocusApplied {
 message GetPresentationSlots {
   optional uint32 count = 1;
   uint32 overflow_page = 2;
+}
+
+// Pages of a host's current runs, with the corresponding slot and action metadata.
+message GetPresentationRuns {
+  uint32 page = 1;
+}
+
+message PresentationRuns {
+  PresentationSlots page = 1;
+  // Compare with the connection generation and remote sequence across pages.
+  uint64 layout_revision = 2;
 }
 
 enum CompanionConnection {

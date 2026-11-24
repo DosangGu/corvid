@@ -21,6 +21,7 @@ use crate::service::{Call, Service};
 mod native;
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
+pub const PRESENTATION_RUNS_CAPABILITY: &str = "presentation_runs.v1";
 pub const PRESENTATION_PAGE_SIZE: u32 = 32;
 pub const PRESENTATION_ATTENTION_CAPABILITY: &str = "presentation_attention.v1";
 pub const PRESENTATION_ATTENTION_LIMIT: usize = 512;
@@ -36,6 +37,7 @@ const CAPABILITIES: &[&str] = &[
     crate::monitor::DECK_PRIORITY_CAPABILITY,
     crate::monitor::PROCESS_EXIT_RETIREMENT_CAPABILITY,
     PRESENTATION_CAPABILITY,
+    PRESENTATION_RUNS_CAPABILITY,
     PRESENTATION_ATTENTION_CAPABILITY,
     LIST_HOSTS_CAPABILITY,
     MONITOR_RECONNECT_CAPABILITY,
