@@ -773,8 +773,10 @@ impl Session {
         let ssh = matches!(destination, Destination::Ssh(_));
         let thread = corvid_async::task::worker("corvid-desktop-client", move |runtime| {
             let target = if matches!(target, AttachTarget::Default) {
+                let saved_target = destination.saved_target();
                 store
-                    .for_target(&destination.saved_target())
+                    .for_target(&saved_target)
+                    .or_else(|| store.shared_for_target(&saved_target))
                     .map(AttachTarget::Restore)
                     .unwrap_or(target)
             } else {

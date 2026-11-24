@@ -4,15 +4,17 @@ use corvid_protocol::wire::Detach;
 #[cfg(target_os = "linux")]
 #[compio::test]
 #[ignore = "requires the isolated tests/ui/linux/test_title_ssh.py fixture"]
-async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -> Result<()> {
+async fn ssh_workspace_restores_the_selected_pane_on_reconnect_and_reopen() -> Result<()> {
     let root = PathBuf::from(std::env::var_os("CORVID_SSH_TEST_ROOT").context("SSH fixture root")?);
     let alias = SshAlias::new(std::env::var("CORVID_TITLE_TEST_SSH_ALIAS")?)?;
     let state = root.join("desktop");
-    let start = |target, explicit| {
+    let windows = corvid_client::view_state::windows::WindowRegistry::new(state.join("views"));
+    let first_window = windows.create()?;
+    let start = |store, target, explicit| {
         Session::start(
             Destination::Ssh(alias.clone()),
             state.clone(),
-            ViewStore::new(state.join("views")),
+            store,
             target,
             explicit,
             ParkedConnections::default(),
@@ -29,8 +31,35 @@ async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -
         );
         Ok(())
     };
-    let (session, job, _prompts, _activations) = start(AttachTarget::Default, false)?;
-    let original = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
+    let (session, job, _prompts, _activations) =
+        start(first_window.store.clone(), AttachTarget::Default, false)?;
+    let initial = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready)
+        .await?
+        .selected
+        .context("missing initial selection")?;
+    session.create(Target::TabLabel("SSH focus".into()));
+    let tab = wait_for_ssh_ui(&session, |ui| {
+        ui.selected
+            .as_ref()
+            .is_some_and(|view| view.tab_id != initial.tab_id)
+            && !ui.changing
+    })
+    .await?
+    .selected
+    .context("missing new tab selection")?;
+    session.create(Target::SplitAxis(
+        corvid_protocol::wire::SplitAxis::Horizontal as i32,
+    ));
+    let original = wait_for_ssh_ui(&session, |ui| {
+        ui.connected
+            && ui.inventory_ready
+            && !ui.changing
+            && ui
+                .selected
+                .as_ref()
+                .is_some_and(|view| view.tab_id == tab.tab_id && view.pane_id != tab.pane_id)
+    })
+    .await?;
     let recovered = {
         // Keep the daemon-side transport open while the local SSH process exits.
         let _relay = StoppedRelay::stop(&root)?;
@@ -54,12 +83,24 @@ async fn ssh_workspace_stops_retrying_and_manually_reopens_the_same_terminal() -
     let target = offline
         .reconnect_target
         .context("missing manual reconnect target")?;
-    let (session, mut job, _prompts, _activations) = start(target, true)?;
+    let (session, mut job, _prompts, _activations) =
+        start(first_window.store.clone(), target, true)?;
     let recovered = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
     assert_eq!(recovered.terminal_id, original.terminal_id);
     assert_eq!(recovered.selected, original.selected);
     job.stop(false);
     job.join();
+    windows.close(first_window)?;
+
+    let new_window = windows.create()?;
+    assert!(new_window.store.last().is_none());
+    let (session, mut job, _prompts, _activations) =
+        start(new_window.store.clone(), AttachTarget::Default, true)?;
+    let reopened = wait_for_ssh_ui(&session, |ui| ui.connected && ui.inventory_ready).await?;
+    job.stop(false);
+    job.join();
+    assert_eq!(reopened.terminal_id, original.terminal_id);
+    assert_eq!(reopened.selected, original.selected);
     Ok(())
 }
 

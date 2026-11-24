@@ -227,6 +227,9 @@ Desktop process and preserves all its terminal windows. Closing an individual wi
 removes it from restoration; closing the last terminal window exits and preserves it.
 Settings windows are not restored. No named profile or extra workspace concept is needed.
 
+Opening a connection in a window with no saved view for it tries to restore the
+selection last saved for that connection across Desktop windows.
+
 Opening a workspace from the picker prefers its last focused live pane. If that
 pane is unavailable, Desktop tries another eligible pane in the same tab, then
 uses the usual workspace selection. This history is shared across Desktop windows,

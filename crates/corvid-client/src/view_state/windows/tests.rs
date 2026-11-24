@@ -55,6 +55,10 @@ fn closing_one_window_keeps_other_windows_and_does_not_repeat_legacy_import() ->
     assert_eq!(second.store.last(), None);
     registry.close(first)?;
     assert_eq!(
+        second.store.shared_for_target(&old.target),
+        Some(old.clone())
+    );
+    assert_eq!(
         second.store.for_workspace(
             &old.target,
             &old.host_id.to_string(),
