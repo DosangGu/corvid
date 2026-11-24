@@ -86,6 +86,217 @@ fn workspace(location: &ViewSelection) -> Body {
     })
 }
 
+#[cfg(unix)]
+#[test]
+fn explicit_reconnect_imports_the_current_observation_for_the_same_run() -> anyhow::Result<()> {
+    corvid_async::task::worker("corvid-reconnect-test", |runtime| {
+        runtime
+            .block_on(check_observation_after_reconnect())
+            .unwrap();
+    })?
+    .join()
+    .expect("agent reconnect fixture panicked");
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn check_observation_after_reconnect() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    use anyhow::Context;
+    use corvid_async::time::{sleep, timeout};
+    use corvid_client::ControlEndpoint;
+    use corvid_protocol::unix::{RuntimeDir, SocketRole};
+
+    use crate::{HostEndpoint, PresentationClient, initialize, run_native};
+
+    let root = tempfile::tempdir_in(std::env::home_dir().context("home")?)?;
+    let runtime = root.path().join("daemon");
+    let state = root.path().join("state");
+    let address = root.path().join("ipc");
+    let directory = RuntimeDir::create_all(&runtime)?;
+    let instance = directory.lock_instance()?;
+    let listener = instance.bind_compio(SocketRole::Control).await?;
+    let host = Uuid::new_v4();
+    let epoch = Uuid::new_v4();
+    let run = Uuid::new_v4();
+    initialize(
+        &state,
+        host,
+        HostEndpoint::from(&ControlEndpoint::Local(runtime)),
+        8,
+    )?;
+
+    let location = ViewSelection {
+        workspace_id: Uuid::new_v4().to_string(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let daemon = Box::pin(async {
+        for (sequence, observation) in [
+            (1, PromptObservation::Submitted),
+            (2, PromptObservation::Responded),
+        ] {
+            let mut agent = agent(run, &location, 1);
+            agent.lifecycle = AgentLifecycle::Live as i32;
+            let summary = agent.summary.as_mut().unwrap();
+            summary.badge = AgentBadge::Unknown as i32;
+            summary.prompt_observed_unix_ms = Some(sequence * 100);
+            agent.prompt_observation = observation as i32;
+            let entities = [workspace(&location), Body::Agent(Box::new(agent))]
+                .into_iter()
+                .map(|body| SnapshotEntity { body: Some(body) })
+                .collect();
+            let stream = listener.accept().await?.context("missing control peer")?;
+            serve_run_watch(stream, host, epoch, sequence, entities).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    });
+    let consumer = Box::pin(async {
+        let mut client = loop {
+            if let Some(client) = PresentationClient::connect_if_present(&address).await? {
+                break client;
+            }
+            sleep(Duration::from_millis(10)).await;
+        };
+        let first = current_runs(&mut client, 1).await?;
+        let key = first.slots[0].run.as_ref().unwrap().key.clone();
+        assert_eq!(
+            first.slots[0].run.as_ref().unwrap().prompt_observation,
+            PromptObservation::Submitted as i32
+        );
+        client.reconnect_monitor().await?;
+        let latest = current_runs(&mut client, 2).await?;
+        let current = latest.slots[0].run.as_ref().unwrap();
+        assert_eq!(current.key, key);
+        assert_eq!(
+            current.prompt_observation,
+            PromptObservation::Responded as i32
+        );
+        assert_eq!(current.prompt_observed_unix_ms, Some(200));
+        assert_eq!(first.remote_epoch, latest.remote_epoch);
+        assert_ne!(first.control_generation, latest.control_generation);
+        let stale = client
+            .request(Message::FocusSlot(FocusSlot {
+                control_generation: first.control_generation.context("initial generation")?,
+                ..Default::default()
+            }))
+            .await
+            .expect_err("pre-reconnect focus was accepted");
+        assert_eq!(
+            stale.downcast_ref::<ProtocolFault>().unwrap().code,
+            "StaleBinding"
+        );
+        Ok(())
+    });
+    let companion = Box::pin(run_native(&address, &state, std::future::pending()));
+    timeout(Duration::from_secs(10), async {
+        corvid_async::select! {
+            result = consumer => result,
+            result = daemon => result.and(Err(anyhow::anyhow!("test daemon stopped early"))),
+            result = companion => {
+                result.and(Err(anyhow::anyhow!("test companion stopped early")))
+            }
+        }
+    })
+    .await?
+}
+
+#[cfg(unix)]
+async fn current_runs(
+    client: &mut crate::PresentationClient,
+    sequence: u64,
+) -> anyhow::Result<PresentationSlots> {
+    loop {
+        let reply = client
+            .request(Message::GetPresentationRuns(GetPresentationRuns {
+                page: 0,
+            }))
+            .await?;
+        if let Message::PresentationRuns(PresentationRuns {
+            page: Some(page), ..
+        }) = reply
+            && page.connection == CompanionConnection::Ready as i32
+            && page.remote_sequence == Some(sequence)
+        {
+            return Ok(page);
+        }
+        corvid_async::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn serve_run_watch(
+    stream: compio::net::UnixStream,
+    host: Uuid,
+    epoch: Uuid,
+    sequence: u64,
+    entities: Vec<SnapshotEntity>,
+) -> anyhow::Result<()> {
+    use anyhow::{Context, ensure};
+    use compio::io::util::Splittable;
+    use corvid_protocol::snapshot::WATCH_CAPABILITY;
+    use corvid_protocol::{CompioFrameReader, CompioFrameWriter, FrameRole};
+
+    let (input, output) = stream.split();
+    let role = FrameRole::StructuredOnly;
+    let mut writer = CompioFrameWriter::start(output, role).await?;
+    let mut reader = CompioFrameReader::start(input, role).await?;
+    let hello = reader
+        .next_envelope()
+        .await?
+        .context("missing control Hello")?;
+    let (session, reply) = accept_hello(
+        &hello,
+        PeerRole::Control,
+        &host.to_string(),
+        &epoch.to_string(),
+        &[WATCH_CAPABILITY],
+    )?;
+    writer.envelope(&reply).await?;
+    let request = reader
+        .next_envelope()
+        .await?
+        .context("missing watch request")?;
+    ensure!(matches!(
+        session.validate_request(&request)?,
+        Message::SnapshotWatch(_)
+    ));
+    let subscription = Uuid::new_v4().to_string();
+    let frame = |id, body| {
+        let mut frame = session.envelope(id, body);
+        frame.subscription_id = Some(subscription.clone());
+        frame.sequence = Some(sequence);
+        frame
+    };
+    for body in [
+        Message::SnapshotBegin(SnapshotBegin {
+            chunks: 1,
+            capabilities: session.capabilities.clone(),
+        }),
+        Message::SnapshotChunk(SnapshotChunk {
+            entities,
+            ..Default::default()
+        }),
+        Message::SnapshotEnd(SnapshotEnd {}),
+    ] {
+        writer
+            .envelope(&frame(request.request_id.clone(), body))
+            .await?;
+    }
+    writer
+        .envelope(&frame(None, Message::WatchReady(WatchReady {})))
+        .await?;
+    // Hold the first watch open until Companion abandons it for the explicit refresh.
+    while let Some(ping) = reader.next_envelope().await? {
+        ensure!(matches!(session.validate_request(&ping)?, Message::Ping(_)));
+        writer
+            .envelope(&session.envelope(ping.request_id, Message::Pong(Pong {})))
+            .await?;
+    }
+    Ok(())
+}
+
 #[test]
 fn run_titles_follow_the_owning_pane_or_its_custom_single_pane_tab_name() {
     let location = ViewSelection {

@@ -1877,7 +1877,8 @@ async fn run(
     let monitor_settings = monitor.clone();
     let monitor_endpoint = endpoint.clone();
     let monitor_host = Uuid::parse_str(&host)?;
-    let wake_monitor = std::mem::take(wake_monitor);
+    let wake_monitor = std::mem::take(wake_monitor)
+        || (reconnect_attempt && matches!(endpoint, ControlEndpoint::Ssh(_)));
     let (focus_scope, focus_controller) = oneshot::channel();
     let mut monitor_tasks = corvid_async::task::JoinSet::new();
     monitor_tasks.spawn(async move {

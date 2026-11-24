@@ -31,6 +31,18 @@ pub(crate) struct Call {
     pub(crate) reply: oneshot::Sender<Outcome>,
 }
 
+impl Call {
+    fn requests_reconnect(&self) -> bool {
+        matches!(self.body, Body::ReconnectAgentMonitor(_)) && !self.reply.is_closed()
+    }
+}
+
+enum Reconnect {
+    Retry,
+    Requested,
+    Closed,
+}
+
 pub(crate) struct Service {
     store: Store,
     endpoint: ControlEndpoint,
@@ -90,8 +102,8 @@ impl Service {
                     .unwrap_or_else(|_| Err(SshRetry::exhausted().into())),
                 None => self.connect(&mut calls).await,
             };
-            let fault = match link {
-                Ok(mut watch) => match self.synchronize(&watch, false) {
+            let result = match link {
+                Ok(mut watch) => match self.synchronize(&watch) {
                     Ok(()) => {
                         failures = 0;
                         retry = None;
@@ -100,13 +112,19 @@ impl Service {
                         self.issue = None;
                         self.follow(&mut watch, &mut calls).await
                     }
-                    Err(fault) => fault.into(),
+                    Err(fault) => Err(fault.into()),
                 },
-                Err(error) => error,
+                Err(error) => Err(error),
             };
             self.generation = None;
             let fault = match self.flush_status() {
-                Ok(()) => fault,
+                Ok(()) => match result {
+                    Err(fault) => fault,
+                    Ok(()) => {
+                        retry = ssh.then(SshRetry::default);
+                        continue;
+                    }
+                },
                 Err(error) => store_fault(error).into(),
             };
             (self.connection, self.issue) = disconnected(&fault);
@@ -119,14 +137,20 @@ impl Service {
             };
             failures = (failures + 1).min(6);
             if let Some(next) = next {
-                if !self.wait_to_reconnect(Some(next), &mut calls).await {
-                    return Ok(());
-                }
-                if retry
-                    .as_ref()
-                    .is_none_or(|retry| Instant::now() < retry.deadline())
-                {
-                    continue;
+                match self.wait_to_reconnect(Some(next), &mut calls).await {
+                    Reconnect::Requested => {
+                        retry = ssh.then(SshRetry::default);
+                        continue;
+                    }
+                    Reconnect::Retry
+                        if retry
+                            .as_ref()
+                            .is_none_or(|retry| Instant::now() < retry.deadline()) =>
+                    {
+                        continue;
+                    }
+                    Reconnect::Retry => {}
+                    Reconnect::Closed => return Ok(()),
                 }
             }
             if retry
@@ -136,10 +160,13 @@ impl Service {
                 self.connection = CompanionConnection::Offline;
                 self.issue = Some("SshRetryExhausted");
             }
-            if !self.wait_to_reconnect(None, &mut calls).await {
+            if matches!(
+                self.wait_to_reconnect(None, &mut calls).await,
+                Reconnect::Closed
+            ) {
                 return Ok(());
             }
-            retry = Some(SshRetry::default());
+            retry = ssh.then(SshRetry::default);
         }
     }
 
@@ -147,7 +174,7 @@ impl Service {
         &mut self,
         next: Option<Instant>,
         calls: &mut mpsc::Receiver<Call>,
-    ) -> bool {
+    ) -> Reconnect {
         let delay = async {
             match next {
                 Some(next) => sleep_until(next).await,
@@ -157,15 +184,13 @@ impl Service {
         corvid_async::pin!(delay);
         loop {
             corvid_async::select! {
-                _ = &mut delay => return true,
+                _ = &mut delay => return Reconnect::Retry,
                 call = calls.recv() => {
-                    let Some(call) = call else { return false };
-                    let reconnect = next.is_none()
-                        && !call.reply.is_closed()
-                        && matches!(call.body, Body::ReconnectAgentMonitor(_));
+                    let Some(call) = call else { return Reconnect::Closed };
+                    let reconnect = call.requests_reconnect();
                     self.handle(call).await;
                     if reconnect {
-                        return true;
+                        return Reconnect::Requested;
                     }
                 }
             }
@@ -240,7 +265,7 @@ impl Service {
         &mut self,
         watch: &mut SnapshotWatch,
         calls: &mut mpsc::Receiver<Call>,
-    ) -> anyhow::Error {
+    ) -> Result<()> {
         let now = Instant::now();
         let mut refresh = interval_at(now, Duration::from_secs(1));
         let mut priority_refresh = interval_at(now + PRIORITY_REFRESH, PRIORITY_REFRESH);
@@ -250,15 +275,17 @@ impl Service {
                 _ = refresh.tick() => {
                     match self.store.monitor_endpoint() {
                         Ok(Some(endpoint)) if endpoint != self.endpoint => {
-                            return ProtocolFault::new("ConnectionRequired", "agent monitor connection changed").into();
+                            return Err(ProtocolFault::new(
+                                "ConnectionRequired", "agent monitor connection changed"
+                            ).into());
                         }
-                        Err(error) => return error,
+                        Err(error) => return Err(error),
                         _ => {}
                     }
                 }
                 _ = sleep_until(self.save_status_at.unwrap_or_else(Instant::now)) if self.save_status_at.is_some() => {
                     if let Err(error) = self.flush_status() {
-                        return store_fault(error).into();
+                        return Err(store_fault(error).into());
                     }
                 }
                 _ = priority_refresh.tick() => {
@@ -268,39 +295,35 @@ impl Service {
                             Ok(layout.reorder(now, |key| priority(remote, key, now))?)
                         })
                     {
-                        return store_fault(error).into();
+                        return Err(store_fault(error).into());
                     }
                 }
                 update = watch.next_change() => {
-                    if let Err(error) = update {
-                        return error;
-                    }
-                    if let Err(fault) = self.synchronize(watch, true) {
-                        return fault.into();
-                    }
+                    update?;
+                    self.synchronize(watch)?;
                 }
                 call = calls.recv() => {
-                    let Some(call) = call else { return anyhow::anyhow!("presentation endpoint closed") };
+                    let Some(call) = call else { anyhow::bail!("presentation endpoint closed") };
+                    if call.requests_reconnect() {
+                        self.handle(call).await;
+                        return Ok(());
+                    }
                     if !watch.is_ready() {
                         let fault = ProtocolFault::new("ConnectionRequired", "control watch is unavailable");
                         self.generation = None;
                         (self.connection, self.issue) = disconnected(&anyhow::Error::from(fault.clone()));
                         self.handle(call).await;
-                        return fault.into();
+                        return Err(fault.into());
                     }
                     if let Some(fault) = self.handle(call).await {
-                        return fault.into();
+                        return Err(fault.into());
                     }
                 }
             }
         }
     }
 
-    fn synchronize(
-        &mut self,
-        watch: &SnapshotWatch,
-        _contiguous: bool,
-    ) -> Result<(), ProtocolFault> {
+    fn synchronize(&mut self, watch: &SnapshotWatch) -> Result<(), ProtocolFault> {
         if !watch.is_ready() {
             return Err(ProtocolFault::new(
                 "Offline",

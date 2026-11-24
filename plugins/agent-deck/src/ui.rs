@@ -429,8 +429,10 @@ fn availability_label(availability: Option<RunAvailability>, cached: bool) -> Op
 }
 
 fn prompt_detail(run: &PresentedRun) -> Option<PromptObservation> {
-    if run.last_badge == AgentBadge::Unknown as i32
-        && run.collection == AgentCollection::Healthy as i32
+    if matches!(
+        AgentBadge::try_from(run.last_badge),
+        Ok(AgentBadge::Unknown | AgentBadge::Unspecified)
+    ) && run.collection == AgentCollection::Healthy as i32
         && run.pending_requests == 0
         && run.unverified_requests == 0
     {
