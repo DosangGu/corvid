@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     ops::Range,
+    rc::Rc,
     sync::{Arc, Weak},
     time::Instant,
 };
@@ -8,10 +9,10 @@ use std::{
 use corvid_async::oneshot;
 use corvid_protocol::ansi_screen::{Cell as ScreenCell, Screen};
 use gpui::{
-    App, Bounds, ClipboardItem, Context, FocusHandle, HitboxBehavior, InputHandler, IntoElement,
-    KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollEvent, Task, UTF16Selection, WeakEntity, Window, canvas, div, prelude::*,
-    rgb,
+    App, Bounds, ClipboardItem, Context, Div, FocusHandle, HitboxBehavior, InputHandler,
+    IntoElement, KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollEvent, Task, UTF16Selection, WeakEntity, Window, canvas,
+    div, prelude::*, rgb,
 };
 
 use crate::appearance::{Appearance, ui_px};
@@ -28,6 +29,7 @@ use wheel::WheelGesture;
 
 type CellPosition = (u16, u16);
 type CellRange = Range<CellPosition>;
+pub(crate) type SurfaceGeometry = (Bounds<Pixels>, Metrics);
 
 pub struct TerminalView {
     focus: FocusHandle,
@@ -35,7 +37,7 @@ pub struct TerminalView {
     pane: String,
     marked: String,
     pending_pane_click: Option<(u16, u16)>,
-    surface: Cell<Option<(Bounds<Pixels>, Metrics)>>,
+    surface: Cell<Option<SurfaceGeometry>>,
     displayed: RefCell<Option<DisplayedScreen>>,
     link_hover: RefCell<Option<LinkHover>>,
     selection: Option<Selection>,
@@ -817,7 +819,7 @@ impl Render for TerminalView {
         )
         .size_full();
 
-        div()
+        terminal_surface()
             .id("daemon-terminal")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
@@ -834,13 +836,6 @@ impl Render for TerminalView {
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.end_selection(None, cx)),
             )
-            .size_full()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .p(ui_px(10.))
-            .overflow_hidden()
-            .bg(rgb(paint::BACKGROUND))
             .when_some(self.history.as_ref(), |this, history| {
                 this.child(
                     div()
@@ -856,28 +851,30 @@ impl Render for TerminalView {
     }
 }
 
-pub(crate) fn preview_cell(
-    bounds: Bounds<Pixels>,
-    point: Point<Pixels>,
-    window: &mut Window,
-    cx: &mut App,
-) -> CellPosition {
-    let family = cx.global::<TerminalFonts>().current().clone();
-    let font_size = cx.global::<Appearance>().terminal_size();
-    Metrics::measure(window, &family, font_size).position(bounds, point)
+fn terminal_surface() -> Div {
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .min_h_0()
+        .p(ui_px(10.))
+        .overflow_hidden()
+        .bg(rgb(paint::BACKGROUND))
 }
 
-pub fn preview(
+pub(crate) fn preview(
     session: Session,
     pane: String,
-    surface: std::rc::Rc<Cell<Option<Bounds<Pixels>>>>,
+    surface: Option<Rc<Cell<Option<SurfaceGeometry>>>>,
 ) -> impl IntoElement {
-    canvas(
+    let canvas = canvas(
         move |bounds, window, cx| {
-            surface.set(Some(bounds));
             let family = cx.global::<TerminalFonts>().current().clone();
             let font_size = cx.global::<Appearance>().terminal_size();
             let metrics = Metrics::measure(window, &family, font_size);
+            if let Some(surface) = &surface {
+                surface.set(Some((bounds, metrics)));
+            }
             let grid = metrics.grid(bounds);
             let frame = session
                 .preview(&pane, |screen| Frame::new(screen, grid))
@@ -888,7 +885,8 @@ pub fn preview(
             frame.paint(bounds, metrics, None, &family, window, cx);
         },
     )
-    .size_full()
+    .size_full();
+    terminal_surface().child(div().flex_1().min_h_0().child(canvas))
 }
 
 // X11 can retain the platform input handler while closing its window asynchronously.
