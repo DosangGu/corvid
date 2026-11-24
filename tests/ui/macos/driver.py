@@ -29,9 +29,19 @@ class Desktop:
         if window:
             return str(pid), window.decode("ascii")
 
-    def submit(self, window, text, *, clear=False):
+    def frontmost(self):
+        return subprocess.check_output([self.helper, "frontmost"], text=True, timeout=5).strip()
+
+    def click(self, window, x, y):
+        subprocess.run([self.helper, "click", *window, str(x), str(y)], check=True, timeout=5)
+
+    def minimize(self, window):
+        subprocess.run([self.helper, "minimize", window[0]], check=True, timeout=5)
+
+    def submit(self, window, text, *, clear=False, activate=True):
         keys = ("clear", "paste", "return") if clear else ("paste", "return")
-        subprocess.run([self.helper, "submit", window[0], *keys], input=text.encode("utf-8"),
+        command = "submit" if activate else "submit-focused"
+        subprocess.run([self.helper, command, window[0], *keys], input=text.encode("utf-8"),
                        check=True, timeout=10)
 
     def keys(self, window, *keys):

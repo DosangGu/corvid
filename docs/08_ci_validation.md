@@ -136,7 +136,8 @@ python tests/ui/run.py --assets target/dist --suite smoke
 `--assets` takes a release asset directory containing the Linux Desktop archive,
 Windows Desktop ZIP, or macOS DMG for the current platform. `--suite full`
 includes Linux window and Deck focus tests for a build, the Windows Deck tray
-test, and the macOS DMG verification when a DMG is supplied. The Windows tray
+test, and the macOS Deck focus and DMG verification cases. The DMG verification
+requires a DMG. The Windows tray
 case compiles the Rust integration test and uses the selected Deck executable.
 Run it in a session with a Windows notification area to verify hiding, reopening,
 and pinning the Deck. The hosted ARM64 runner did not expose the Deck tray window.
@@ -149,10 +150,13 @@ and pinning the Deck. The hosted ARM64 runner did not expose the Deck tray windo
   interactive ARM64 desktop with a US input source for the same input check.
   The hosted ARM64 runner refused foreground activation during qualification.
 - macOS needs a logged-in GUI session, Xcode command line tools, and
-  Accessibility permission to post key events. The runner wraps a local Deck
+  Accessibility permission to post input events. The runner wraps a local Deck
   build in a temporary signed app bundle. Paste tests use the system
-  clipboard and foreground window. Use a dedicated session if other
-  applications need those resources.
+  clipboard and foreground window. The opt-in `--case deck-focus` clicks real
+  slots with Desktop behind another app and minimized. It verifies pane
+  selection and checks that keyboard input reaches the pane without activating
+  Desktop from the test driver. Use a dedicated session if other applications
+  need these resources.
 
 In GitHub Actions, run **Checks / UI** to select a platform and optional case.
 Failures report the scenario in the job log and save available screenshots and

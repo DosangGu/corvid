@@ -2,21 +2,18 @@
 """Click Agent Deck cards and verify Desktop focus on an isolated X11 display."""
 import argparse
 from contextlib import ExitStack
-import fcntl
 import os
 from pathlib import Path
-import pty
 import signal
-import struct
 import subprocess
 import sys
-import termios
 import tempfile
 import time
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPOSITORY / "tests/ui"))
 import monitor_fixture
+from deck_focus_fixture import agent_environment, launch_agent
 
 WAIT = 15
 
@@ -118,36 +115,6 @@ def open_deck(desktop):
     return until("Agent Deck opened from Desktop", lambda: window("Corvid Agent Deck"))
 
 
-def launch_agent(corvid, env, root, name):
-    title = {"first": "SSH reconnect review", "second": "Release checklist"}[name]
-    pid, master = pty.fork()
-    if pid == 0:
-        os.chdir(root)
-        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
-        os.execve(corvid, [corvid, "attach", "--new-tab", title, "--agent", "claude", "--", name], env)
-    os.set_blocking(master, False)
-    output = bytearray()
-
-    def ready():
-        try:
-            output.extend(os.read(master, 16384))
-        except BlockingIOError:
-            pass
-        except OSError as error:
-            raise AssertionError(f"Agent {name} did not attach: {output[-1500:]!r}") from error
-        return (root / f"ready-{name}").exists()
-
-    try:
-        until(f"agent {name}", ready)
-    finally:
-        os.close(master)
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        os.waitpid(pid, 0)
-
-
 def fields(line):
     return dict(field.split("=", 1) for field in line.split() if "=" in field)
 
@@ -207,12 +174,8 @@ def main(build, screenshot, history_screenshot, tooltip_screenshot, failure_scre
         corvid = str(build / "corvid")
         env = dict(os.environ, HOME=str(root), CORVID_RUNTIME_DIR=str(runtime / "corvid"),
                    CORVID_VIEW_STATE_DIR=str(root / "views"), XDG_STATE_HOME=str(root / "state"),
-                   SHELL="/bin/sh", TERM="xterm-256color", XDG_RUNTIME_DIR=str(runtime),
-                   CORVID_FIXTURE_BINARY=corvid,
-                   CORVID_FIXTURE_DIR=str(root), PATH=str(root) + os.pathsep + os.environ["PATH"])
-        provider = root / "claude"
-        fixture = Path(__file__).with_name("fixtures") / "deck_focus_agent.rs"
-        run("rustc", "--edition=2024", str(fixture), "-o", str(provider))
+                   SHELL="/bin/sh", TERM="xterm-256color", XDG_RUNTIME_DIR=str(runtime))
+        env = agent_environment(corvid, root, env)
         state = root / "state/corvid/companion"
         daemon = processes(stack, corvid, "daemon", "--autostarted", env=env)
         processes(stack, "openbox", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
