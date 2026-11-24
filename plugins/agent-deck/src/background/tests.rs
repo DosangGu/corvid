@@ -36,12 +36,12 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
     ))?;
     let (updates, mut received) = mpsc::channel(8);
     let mut jobs = corvid_async::task::JoinSet::new();
-    jobs.spawn(poll_hosts(state.clone(), absent, current, updates));
+    jobs.spawn(poll_hosts(state.clone(), absent.clone(), current, updates));
     let catalog = crate::catalog::Catalog::start(
         state.clone(),
         current,
+        absent,
         UiSignal::default(),
-        watch::channel(Default::default()).1,
         DesktopLink::default(),
     )?;
     timeout(Duration::from_secs(5), async {
@@ -86,9 +86,10 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
     ))?;
     let controller = scope.config.controller_id;
     let fixture_key = key.clone();
+    let first_address = address.clone();
     jobs.spawn(async move {
         let run = fixture_run(fixture_key);
-        let result = serve(address, controller, run, receiver).await;
+        let result = serve(first_address, controller, run, receiver).await;
         if let Err(error) = &result {
             eprintln!("fixture server: {error:#}");
         }
@@ -98,19 +99,7 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
     let first = next_snapshot(&mut received, remote).await?;
     assert_eq!(first.attention.len(), 1);
     assert_eq!(ledger.observe(remote, &first, now_ms())?.notices.len(), 1);
-    timeout(Duration::from_secs(10), async {
-        loop {
-            let view = catalog.views.borrow().clone();
-            if let Some(host) = view.hosts.get(&remote)
-                && host.online
-                && host.runs.first().and_then(|run| run.key.as_ref()) == Some(&key)
-            {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await?;
+    let captured = wait_for_run(&catalog, remote, &key).await?;
     let again = next_snapshot(&mut received, remote).await?;
     assert!(ledger.observe(remote, &again, now_ms())?.notices.is_empty());
     feed.send_modify(|alerts| {
@@ -131,10 +120,68 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
         }
     })
     .await??;
+    jobs.abort_all();
+    while jobs.join_next().await.is_some() {}
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if catalog
+                .views
+                .borrow()
+                .hosts
+                .get(&remote)
+                .is_some_and(|host| {
+                    host.link == corvid_presentation::ipc::Link::Unavailable
+                        && host.runs().next().is_none()
+                })
+            {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await?;
+
+    let replacement = PresentedRunKey {
+        remote_epoch: Uuid::new_v4().to_string(),
+        ..key.clone()
+    };
+    let (_feed, receiver) = watch::channel(Vec::new());
+    jobs.spawn(serve(
+        address,
+        controller,
+        fixture_run(replacement.clone()),
+        receiver,
+    ));
+    wait_for_run(&catalog, remote, &replacement).await?;
+    let latest = catalog.views.borrow().hosts.get(&remote).unwrap().clone();
+    assert!(latest.focus_snapshot(&key).is_none());
+    assert!(!latest.accepts(&captured));
     drop(catalog);
     jobs.abort_all();
     while jobs.join_next().await.is_some() {}
     Ok(())
+}
+
+async fn wait_for_run(
+    catalog: &crate::catalog::Catalog,
+    host: Uuid,
+    key: &PresentedRunKey,
+) -> Result<std::sync::Arc<corvid_presentation::model::Snapshot>> {
+    Ok(timeout(Duration::from_secs(10), async {
+        loop {
+            let current = catalog
+                .views
+                .borrow()
+                .hosts
+                .get(&host)
+                .and_then(|view| view.focus_snapshot(key).cloned());
+            if let Some(snapshot) = current {
+                break snapshot;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await?)
 }
 
 async fn next_snapshot(
@@ -218,9 +265,10 @@ async fn peer(
         &hello,
         PeerRole::Presentation,
         &key.host_id,
-        &Uuid::new_v4().to_string(),
+        &key.remote_epoch,
         &[
             corvid_companion::PRESENTATION_CAPABILITY,
+            corvid_companion::PRESENTATION_RUNS_CAPABILITY,
             PRESENTATION_ATTENTION_CAPABILITY,
         ],
     )?;
@@ -237,19 +285,25 @@ async fn peer(
                     ..Default::default()
                 })
             }
-            Some(Body::GetPresentationSlots(_)) => Body::PresentationSlots(PresentationSlots {
-                controller_id: controller.to_string(),
-                connection: CompanionConnection::Ready as i32,
-                control_generation: Some(controller.to_string()),
-                remote_epoch: Some(key.remote_epoch.clone()),
-                slots: vec![PresentedSlot {
-                    slot_id: 1,
-                    revision: 1,
-                    run: Some(run.clone()),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }),
+            Some(Body::GetPresentationRuns(_)) => {
+                Body::PresentationRuns(corvid_protocol::wire::PresentationRuns {
+                    layout_revision: 1,
+                    page: Some(PresentationSlots {
+                        controller_id: controller.to_string(),
+                        connection: CompanionConnection::Ready as i32,
+                        control_generation: Some(controller.to_string()),
+                        remote_epoch: Some(key.remote_epoch.clone()),
+                        remote_sequence: Some(1),
+                        slots: vec![PresentedSlot {
+                            slot_id: 1,
+                            revision: 1,
+                            run: Some(run.clone()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                })
+            }
             _ => anyhow::bail!("unexpected request"),
         };
         writer

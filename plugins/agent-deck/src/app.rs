@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use corvid_presentation::ipc::DesktopClient;
+use corvid_companion::PresentationAddress;
 use gpui::AppContext;
 use uuid::Uuid;
 
@@ -12,10 +12,9 @@ use crate::ui::{DeckAssets, DeckView};
 use crate::ui_signal::UiSignal;
 
 pub(crate) struct Session {
-    pub client: DesktopClient,
     pub background: Background,
     pub signal: UiSignal,
-    pub catalog: (PathBuf, Uuid),
+    pub catalog: (PathBuf, Uuid, <PresentationAddress as ToOwned>::Owned),
 }
 
 pub(crate) fn run(session: Session, preferences: shell::Window) {

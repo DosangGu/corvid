@@ -401,6 +401,7 @@ impl Command {
 fn edit(action: Action) -> Body {
     Body::EditSlotLayout(EditSlotLayout {
         action: Some(action),
+        control_generation: None,
     })
 }
 

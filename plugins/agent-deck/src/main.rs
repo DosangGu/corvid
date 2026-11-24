@@ -14,7 +14,6 @@ mod ui_signal;
 use anyhow::{Context, Result};
 use clap::Parser;
 use corvid_companion::monitor::{self, Scope};
-use corvid_presentation::ipc::DesktopClient;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -147,8 +146,7 @@ fn main() -> Result<()> {
     );
     let signal = ui_signal::UiSignal::default();
     let preferences = shell::Window::load(&state, options.background)?;
-    let identity = Some((config.host_id, config.controller_id));
-    let catalog = (state.clone(), config.host_id);
+    let catalog = (state.clone(), config.host_id, address.clone());
     let background = background::Background::start(
         state,
         address.clone(),
@@ -156,11 +154,8 @@ fn main() -> Result<()> {
         signal.clone(),
         platform::start,
     )?;
-    let notify = signal.clone();
-    let client = DesktopClient::start_scoped(address, identity, move || notify.notify())?;
     app::run(
         app::Session {
-            client,
             background,
             signal,
             catalog,

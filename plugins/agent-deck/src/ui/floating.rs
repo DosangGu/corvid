@@ -20,16 +20,9 @@ impl DeckView {
         }
         match self.section {
             Section::Slots => self
-                .view
-                .snapshot
+                .mini_tiles()
                 .iter()
-                .flat_map(|snapshot| {
-                    snapshot
-                        .data
-                        .slots
-                        .iter()
-                        .map(|slot| self.focus_action(snapshot, Some(slot), slot.run.as_ref()))
-                })
+                .map(|tile| self.tile_action(*tile))
                 .collect(),
             Section::Overflow => self
                 .queue_tiles()
@@ -70,7 +63,7 @@ impl DeckView {
             })
     }
 
-    fn mini_tiles(&self) -> Vec<Tile<'_>> {
+    pub(super) fn mini_tiles(&self) -> Vec<Tile<'_>> {
         let capacity = self.window.layout().capacity();
         let mut tiles = self.ordered_tiles(0, capacity);
         tiles.resize(capacity, Tile::Empty);
@@ -92,13 +85,8 @@ impl DeckView {
     }
 
     pub(super) fn queue_pages(&self) -> u32 {
-        let suppressed = self
-            .view
-            .snapshot
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.data.suppressed_count);
-        (self.queue_len() as u32)
-            .max(suppressed)
+        let suppressed = self.hidden_runs().count();
+        (self.queue_len().max(suppressed) as u32)
             .div_ceil(PRESENTATION_PAGE_SIZE)
             .max(1)
     }
@@ -113,12 +101,22 @@ impl DeckView {
             .collect()
     }
 
+    pub(super) fn hidden_runs(&self) -> impl Iterator<Item = (&Arc<Snapshot>, &PresentedRunKey)> {
+        self.catalog_view
+            .hosts
+            .values()
+            .flat_map(|host| host.pages.iter())
+            .flat_map(|snapshot| {
+                snapshot
+                    .data
+                    .suppressed
+                    .iter()
+                    .map(move |key| (snapshot, key))
+            })
+    }
+
     fn available_tiles(&self) -> Vec<(RunKey, Tile<'_>)> {
-        tiles(
-            self.view.snapshot.as_ref(),
-            &self.catalog_view,
-            self.session.catalog.1,
-        )
+        tiles(&self.catalog_view)
     }
 
     pub(super) fn refresh_deck_order(&mut self) {
@@ -126,12 +124,11 @@ impl DeckView {
         let by_key: BTreeMap<_, _> = tiles.iter().copied().collect();
         let capacity = self.window.layout().capacity();
         let now = now_ms();
-        let online = self.view.link == Link::Online;
-        let order = project_deck(&self.deck_order, &tiles, &by_key, capacity, now, online);
+        let order = project_deck(&self.deck_order, &tiles, &by_key, capacity, now);
         self.queue_waiting = order
             .iter()
             .skip(capacity)
-            .filter(|key| by_key[key].waiting(online))
+            .filter(|key| by_key[key].waiting())
             .count();
         self.deck_order = order;
     }
@@ -145,13 +142,6 @@ impl DeckView {
                 self.focus_action(snapshot, Some(slot), slot.run.as_ref())
             }
             Tile::Queued(snapshot, run) => self.focus_action(snapshot, None, Some(run)),
-            Tile::Host(id, host, run) => {
-                let (controller, run) = host.focus_target(id, run)?;
-                Some(FocusAction::HostDesktop {
-                    controller,
-                    run: run.clone(),
-                })
-            }
             Tile::Empty => None,
         }
     }
@@ -169,11 +159,19 @@ impl DeckView {
             Tile::Queued(snapshot, run) => {
                 self.run_card(snapshot, Some(run), None, index, width, cx)
             }
-            Tile::Host(_, host, run) => {
-                self.host_card(host, run, index, width, self.tile_action(tile), cx)
-            }
             Tile::Empty => self.attach_card_action(
-                colors.card_face(None, false, false, width, crate::shell::KEY_HEIGHT, None),
+                colors.card_face(
+                    None,
+                    false,
+                    false,
+                    width,
+                    if self.window.expanded {
+                        width
+                    } else {
+                        crate::shell::KEY_HEIGHT
+                    },
+                    None,
+                ),
                 index,
                 None,
                 cx,
@@ -262,7 +260,6 @@ impl DeckView {
 pub(super) enum Tile<'a> {
     Slot(&'a Arc<Snapshot>, &'a PresentedSlot),
     Queued(&'a Arc<Snapshot>, &'a PresentedRun),
-    Host(Uuid, &'a crate::catalog::Host, &'a PresentedRun),
     Empty,
 }
 
@@ -270,34 +267,22 @@ impl<'a> Tile<'a> {
     fn run(self) -> Option<&'a PresentedRun> {
         match self {
             Self::Slot(_, slot) => slot.run.as_ref(),
-            Self::Queued(_, run) | Self::Host(_, _, run) => Some(run),
+            Self::Queued(_, run) => Some(run),
             Self::Empty => None,
         }
     }
 
-    fn online(self, local_online: bool) -> bool {
-        match self {
-            Self::Slot(snapshot, _) | Self::Queued(snapshot, _) => {
-                local_online && snapshot.generation().is_some()
-            }
-            Self::Host(_, host, _) => host.online,
-            Self::Empty => false,
-        }
-    }
-
-    fn pinned(self, key: &RunKey) -> bool {
+    fn pinned(self) -> bool {
         match self {
             Self::Slot(_, slot) => slot.pinned,
-            Self::Host(_, host, _) => host.pins.contains(key),
             _ => false,
         }
     }
 
-    fn waiting(self, local_online: bool) -> bool {
-        self.online(local_online)
-            && self.run().is_some_and(|run| {
-                run.availability == RunAvailability::Available as i32 && run.pending_requests > 0
-            })
+    fn waiting(self) -> bool {
+        self.run().is_some_and(|run| {
+            run.availability == RunAvailability::Available as i32 && run.pending_requests > 0
+        })
     }
 }
 
@@ -307,7 +292,6 @@ fn project_deck(
     by_key: &BTreeMap<RunKey, Tile<'_>>,
     capacity: usize,
     now: u64,
-    online: bool,
 ) -> Vec<RunKey> {
     let mut seen = BTreeSet::new();
     let mut order: Vec<_> = previous
@@ -319,77 +303,38 @@ fn project_deck(
         .collect();
     prioritize(&mut order, capacity, now, |key, now| {
         let tile = by_key[key];
-        let priority = tile.run().map_or_else(Priority::default, |run| {
-            Priority::for_run(run, tile.online(online), now)
-        });
-        (tile.pinned(key), priority)
+        let priority = tile
+            .run()
+            .map_or_else(Priority::default, |run| Priority::for_run(run, true, now));
+        (tile.pinned(), priority)
     });
     order
 }
 
-fn tiles<'a>(
-    current: Option<&'a Arc<Snapshot>>,
-    catalog: &'a crate::catalog::View,
-    current_host: Uuid,
-) -> Vec<(RunKey, Tile<'a>)> {
+fn tiles(catalog: &crate::catalog::View) -> Vec<(RunKey, Tile<'_>)> {
+    let keyed = |tile: Tile<'_>| RunKey::try_from(tile.run()?.key.as_ref()?).ok();
     let mut tiles = Vec::new();
-    let collect = |tile: Tile<'a>| Some((RunKey::try_from(tile.run()?.key.as_ref()?).ok()?, tile));
-    let current_catalog = catalog.hosts.get(&current_host).filter(|host| {
-        host.loaded
-            && current
-                .is_none_or(|snapshot| host.matches_epoch(snapshot.data.remote_epoch.as_deref()))
-    });
-    let mut local = Vec::new();
-    if let Some(snapshot) = current {
-        local.extend(
-            snapshot
-                .data
-                .slots
-                .iter()
-                .map(|slot| Tile::Slot(snapshot, slot))
-                .filter_map(collect),
-        );
-        local.extend(
-            snapshot
-                .data
-                .overflow
-                .iter()
-                .map(|run| Tile::Queued(snapshot, run))
-                .filter_map(collect),
-        );
-    }
-    local.retain(|(key, _)| key.host == current_host);
-    if let Some(host) = current_catalog {
-        let local: BTreeMap<_, _> = local.into_iter().collect();
-        tiles.extend(host.runs.iter().filter_map(|run| {
-            let (key, catalog_tile) = collect(Tile::Host(current_host, host, run))?;
-            if key.host != current_host {
-                return None;
-            }
-            // Keep exact slot actions when the local poll has the same card.
-            let tile = local
-                .get(&key)
-                .copied()
-                .filter(|tile| {
-                    tile.run() == Some(run) && tile.pinned(&key) == host.pins.contains(&key)
+    for host in catalog
+        .hosts
+        .values()
+        .filter(|host| host.link == Link::Online)
+    {
+        if let Some(snapshot) = host
+            .pages
+            .first()
+            .filter(|snapshot| snapshot.generation().is_some())
+        {
+            tiles.extend(snapshot.data.slots.iter().filter_map(|slot| {
+                let tile = Tile::Slot(snapshot, slot);
+                Some((keyed(tile)?, tile))
+            }));
+            tiles.extend(host.pages.iter().flat_map(|page| {
+                page.data.overflow.iter().filter_map(|run| {
+                    let tile = Tile::Queued(page, run);
+                    Some((keyed(tile)?, tile))
                 })
-                .unwrap_or(catalog_tile);
-            Some((key, tile))
-        }));
-    } else {
-        tiles.extend(local);
-    }
-    for (&id, host) in &catalog.hosts {
-        if id == current_host {
-            continue;
+            }));
         }
-        tiles.extend(
-            host.runs
-                .iter()
-                .map(|run| Tile::Host(id, host, run))
-                .filter_map(collect)
-                .filter(|(key, _)| key.host == id),
-        );
     }
     tiles
 }
@@ -398,125 +343,126 @@ fn tiles<'a>(
 mod tests {
     use super::*;
     use crate::catalog::{Host, View};
-    use crate::hosts::Profile;
 
-    #[test]
-    fn the_main_grid_combines_hosts_without_repeating_its_own_slots() {
-        let local = Uuid::new_v4();
-        let first = Uuid::new_v4();
-        let second = Uuid::new_v4();
-        let repeated_run = Uuid::new_v4().to_string();
-        let repeated_epoch = Uuid::new_v4().to_string();
-        let agent = |id: Uuid| PresentedRun {
-            key: Some(PresentedRunKey {
-                host_id: id.to_string(),
-                remote_epoch: repeated_epoch.clone(),
-                agent_run_id: repeated_run.clone(),
-            }),
+    fn run(host: Uuid, epoch: u128, id: u128) -> PresentedRun {
+        PresentedRun {
+            key: Some(
+                RunKey {
+                    host,
+                    epoch: Uuid::from_u128(epoch),
+                    run: Uuid::from_u128(id),
+                }
+                .into(),
+            ),
+            availability: RunAvailability::Available as i32,
             ..Default::default()
-        };
-        let current = Arc::new(Snapshot {
-            link: Uuid::new_v4(),
-            host: local,
-            page: 0,
+        }
+    }
+
+    fn page(host: Uuid, page: u32, epoch: u128) -> Snapshot {
+        Snapshot {
+            link: Uuid::from_u128(1),
+            host,
+            page,
             data: corvid_protocol::wire::PresentationSlots {
-                slots: vec![PresentedSlot {
-                    slot_id: 1,
-                    revision: 42,
-                    pinned: true,
-                    run: Some(agent(local)),
-                }],
-                overflow: (1..=7)
-                    .map(|run_id| {
-                        let mut run = agent(local);
-                        run.key.as_mut().unwrap().agent_run_id =
-                            Uuid::from_u128(run_id).to_string();
-                        run
-                    })
-                    .collect(),
+                connection: CompanionConnection::Ready as i32,
+                control_generation: Some(Uuid::new_v4().to_string()),
+                remote_epoch: Some(Uuid::from_u128(epoch).to_string()),
                 ..Default::default()
             },
             #[cfg(windows)]
             can_pair_wezterm: false,
-        });
-        let catalog_host = |id, label: &str| {
-            let mut host = Host::new(&Profile {
-                controller: Uuid::new_v4(),
-                address: Default::default(),
-                label: label.into(),
-            });
-            host.runs.push(agent(id));
-            Arc::new(host)
-        };
-        let mut catalog = View::default();
-        catalog.hosts.insert(local, catalog_host(local, "Local"));
-        catalog
-            .hosts
-            .insert(first, catalog_host(first, "SSH · first"));
-        let before = tiles(Some(&current), &catalog, local);
-        assert_eq!(before.len(), 9, "the current host must not repeat");
-        assert!(matches!(before[0].1, Tile::Slot(_, slot) if slot.pinned));
-        assert!(matches!(before[7].1, Tile::Queued(_, _)));
-        assert!(matches!(before[8].1, Tile::Host(id, _, _) if id == first));
-
-        catalog
-            .hosts
-            .insert(second, catalog_host(second, "SSH · second"));
-        let after = tiles(Some(&current), &catalog, local);
-        let mut rendered = after
-            .iter()
-            .filter_map(|(_, tile)| match tile {
-                Tile::Host(id, _, run) => Some((*id, run.key.as_ref().unwrap().host_id.clone())),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        rendered.sort();
-        let mut expected = vec![(first, first.to_string()), (second, second.to_string())];
-        expected.sort();
-        assert_eq!(rendered, expected);
-        assert_eq!(after.len(), 10);
+        }
     }
 
     #[test]
-    fn a_remote_request_displaces_the_last_worker_and_the_queue_counts_runs() {
-        let local = Uuid::new_v4();
-        let remote = Uuid::new_v4();
-        let epoch = Uuid::new_v4();
-        let mut catalog = View::default();
-        let run = |host: Uuid, id: u128, pending: u32| PresentedRun {
-            key: Some(PresentedRunKey {
-                host_id: host.to_string(),
-                remote_epoch: epoch.to_string(),
-                agent_run_id: Uuid::from_u128(id).to_string(),
-            }),
-            availability: RunAvailability::Available as i32,
-            pending_requests: pending,
-            pending_since_unix_ms: (pending > 0).then_some(1),
+    fn the_grid_uses_all_ready_host_pages_and_drops_disconnected_cards() {
+        let local = Uuid::from_u128(1);
+        let remote = Uuid::from_u128(2);
+        let mut local_page = page(local, 0, 1);
+        local_page.data.slots.push(PresentedSlot {
+            run: Some(run(local, 1, 1)),
             ..Default::default()
-        };
-        for (id, runs) in [
-            (
-                local,
-                vec![run(local, 1, 0), run(local, 2, 0), run(local, 3, 0)],
-            ),
-            (
-                remote,
-                vec![run(remote, 1, 2), run(remote, 2, 1), run(remote, 3, 1)],
-            ),
-        ] {
-            let mut host = Host::new(&Profile {
-                controller: Uuid::new_v4(),
-                address: Default::default(),
-                label: id.to_string(),
-            });
-            host.online = true;
-            host.loaded = true;
-            host.runs = runs;
-            catalog.hosts.insert(id, Arc::new(host));
+        });
+        let mut remote_page = page(remote, 0, 1);
+        remote_page.data.slots.push(PresentedSlot {
+            pinned: true,
+            run: Some(run(remote, 1, 1)),
+            ..Default::default()
+        });
+        let mut overflow = page(remote, 1, 1);
+        overflow.data.slots = remote_page.data.slots.clone();
+        overflow.data.control_generation = remote_page.data.control_generation.clone();
+        overflow.data.overflow.push(run(remote, 1, 2));
+        let mut catalog = View::default();
+        catalog.hosts.insert(
+            local,
+            Arc::new(Host {
+                label: "Local".into(),
+                link: Link::Online,
+                pages: vec![Arc::new(local_page)],
+            }),
+        );
+        catalog.hosts.insert(
+            remote,
+            Arc::new(Host {
+                label: "SSH".into(),
+                link: Link::Online,
+                pages: vec![Arc::new(remote_page), Arc::new(overflow)],
+            }),
+        );
+        let (keys, values): (Vec<_>, Vec<_>) = tiles(&catalog).into_iter().unzip();
+        assert_eq!(
+            keys.iter().map(|key| key.host).collect::<Vec<_>>(),
+            [local, remote, remote]
+        );
+        assert!(values[1].pinned());
+
+        let host = Arc::make_mut(catalog.hosts.get_mut(&remote).unwrap());
+        let old = host.pages[0].clone();
+        host.link = Link::Unavailable;
+        assert_eq!(tiles(&catalog).len(), 1);
+
+        let mut replacement = page(remote, 0, 2);
+        replacement.data.overflow.push(run(remote, 2, 1));
+        let host = Arc::make_mut(catalog.hosts.get_mut(&remote).unwrap());
+        host.link = Link::Online;
+        host.pages = vec![Arc::new(replacement)];
+        assert!(!host.accepts(&old));
+        let ready = tiles(&catalog);
+        let by_key = ready.iter().copied().collect();
+        let order = project_deck(&keys, &ready, &by_key, 1, 0);
+        assert_eq!(order.len(), 2);
+        assert_eq!(order[1].epoch, Uuid::from_u128(2));
+    }
+
+    #[test]
+    fn an_input_request_on_a_remote_host_promotes_the_card_into_the_grid() {
+        let local = Uuid::from_u128(1);
+        let remote = Uuid::from_u128(2);
+        let mut catalog = View::default();
+        for host in [local, remote] {
+            let mut ready = page(host, 0, 1);
+            for id in 1..=3 {
+                let mut run = run(host, 1, id);
+                if host == remote {
+                    run.pending_requests = 1;
+                    run.pending_since_unix_ms = Some(1);
+                }
+                ready.data.overflow.push(run);
+            }
+            catalog.hosts.insert(
+                host,
+                Arc::new(Host {
+                    label: host.to_string(),
+                    link: Link::Online,
+                    pages: vec![Arc::new(ready)],
+                }),
+            );
         }
-        let tiles = tiles(None, &catalog, local);
+        let tiles = tiles(&catalog);
         let by_key: BTreeMap<_, _> = tiles.iter().copied().collect();
-        let order = project_deck(&[], &tiles, &by_key, 2, 1, true);
+        let order = project_deck(&[], &tiles, &by_key, 2, 1);
         assert_eq!(order[0].host, remote);
         assert_eq!(order[1].host, remote);
         assert_eq!(order[2], tiles[2].0);
@@ -524,7 +470,7 @@ mod tests {
         assert_eq!(
             order[2..]
                 .iter()
-                .filter(|key| by_key[key].waiting(true))
+                .filter(|key| by_key[key].waiting())
                 .count(),
             1
         );

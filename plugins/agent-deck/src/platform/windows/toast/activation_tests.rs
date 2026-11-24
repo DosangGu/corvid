@@ -6,7 +6,6 @@ use corvid_agent_deck_core::native::{
     Availability, Capabilities, NativeError, NativeServices, Status,
 };
 use corvid_companion::{Config, HostEndpoint};
-use corvid_presentation::ipc::DesktopClient;
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -66,10 +65,6 @@ fn summary_toast_opens_settings_when_visible_and_when_hidden() -> Result<()> {
         },
     )?;
     let callbacks = callbacks_rx.try_recv()?;
-    let update_signal = signal.clone();
-    let client = DesktopClient::start_scoped(address, Some((host, controller)), move || {
-        update_signal.notify()
-    })?;
     let preferences = shell::Window::load(&state, false)?;
     let quit = signal.clone();
     let probe = thread::spawn(move || {
@@ -79,10 +74,9 @@ fn summary_toast_opens_settings_when_visible_and_when_hidden() -> Result<()> {
     });
     app::run(
         app::Session {
-            client,
             background,
             signal,
-            catalog: (state, host),
+            catalog: (state, host, address),
         },
         preferences,
     );

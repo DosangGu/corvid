@@ -20,6 +20,7 @@ use gpui::{
     Render, SharedString, Stateful, Window, div, prelude::*, px, rgba,
 };
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -151,13 +152,13 @@ impl DeckView {
     }
 
     fn refresh_view(&mut self) {
-        let (state, host) = &self.session.catalog;
+        let (state, host, address) = &self.session.catalog;
         if let Ok(catalog) = self.catalog.get_or_insert_with(|| {
             Catalog::start(
                 state.clone(),
                 *host,
+                address.clone(),
                 self.session.signal.clone(),
-                self.session.client.display.clone(),
                 self.session.background.desktop.clone(),
             )
             .map_err(|error| error.to_string())
@@ -169,10 +170,15 @@ impl DeckView {
         } else {
             self.catalog_view = Default::default();
         }
-        let next = self.session.client.display.borrow().clone();
-        if let Some(completion) = &next.completion {
-            self.actions.complete(completion.clone());
-        }
+        let next = self
+            .catalog_view
+            .hosts
+            .get(host)
+            .map_or_else(Display::default, |host| Display {
+                link: host.link,
+                snapshot: host.pages.first().cloned(),
+                ..Default::default()
+            });
         if let Some(completion) = self.session.background.try_completion() {
             self.actions.complete(completion);
         }
@@ -206,29 +212,35 @@ impl DeckView {
         }
     }
 
-    fn submit(&mut self, snapshot: &Snapshot, body: Body) {
-        self.actions
-            .submit(&self.session.client, self.page, snapshot, body);
+    fn submit(&mut self, snapshot: &Arc<Snapshot>, body: Body) {
+        self.actions.send(|id| {
+            matches!(&self.catalog, Some(Ok(catalog)) if catalog.submit(id, snapshot.clone(), body))
+        });
     }
 
     fn set_page(&mut self, page: u32) {
         self.page = page;
-        self.session.client.page.send_replace(page);
     }
 
     fn ready(&self, snapshot: &Snapshot) -> bool {
         !self.actions.is_pending()
-            && self.view.link == Link::Online
-            && snapshot.page == self.page
-            && snapshot.generation().is_some()
+            && self
+                .catalog_view
+                .hosts
+                .get(&snapshot.host)
+                .is_some_and(|host| host.accepts(snapshot))
     }
 
-    fn focus_run(&mut self, key: PresentedRunKey) {
-        let Some(snapshot) = self.view.snapshot.clone() else {
-            return;
-        };
-        self.actions.focus(key, |id, run| {
-            matches!(&self.catalog, Some(Ok(catalog)) if catalog.focus_current(id, snapshot, run))
+    fn notification_target(&self, key: &PresentedRunKey) -> Option<&Arc<Snapshot>> {
+        let host = Uuid::parse_str(&key.host_id).ok()?;
+        let snapshot = self.catalog_view.hosts.get(&host)?.pages.first()?;
+        snapshot.desktop_run_target(key)?;
+        self.ready(snapshot).then_some(snapshot)
+    }
+
+    fn focus_run(&mut self, snapshot: Arc<Snapshot>, key: PresentedRunKey, require_card: bool) {
+        self.actions.send(|id| {
+            matches!(&self.catalog, Some(Ok(catalog)) if catalog.focus(id, snapshot, key, require_card))
         });
     }
 
@@ -276,12 +288,7 @@ impl DeckView {
             return;
         }
         match action {
-            FocusAction::Desktop(key) => self.focus_run(key),
-            FocusAction::HostDesktop { controller, run } => {
-                self.actions.focus(run, |id, run| {
-                    matches!(&self.catalog, Some(Ok(catalog)) if catalog.focus(id, controller, run))
-                });
-            }
+            FocusAction::Desktop(snapshot, key) => self.focus_run(snapshot, key, true),
             FocusAction::Companion(snapshot, body) => {
                 self.submit(&snapshot, *body);
             }

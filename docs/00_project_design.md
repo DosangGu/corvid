@@ -1366,16 +1366,18 @@ epoch change. Control-channel loss alone does not destroy a still-live TUI bindi
 Desktop and TUI start a headless companion as soon as they verify an execution
 host. Each companion watches every workspace on that host, independently of
 Agent Deck visibility or attached terminal views. It remains running after the
-launching client exits. Starting Agent Deck later reads the existing snapshot
-and persistent slots; it does not start observation or open its own SSH watch.
-Deck continues discovering verified host scopes while open, imports their existing
-runs and unread attention on attachment, and polls each local companion feed.
-Notification attempts are deduplicated across Deck windows sharing the same root.
+launching client exits. Agent Deck discovers verified host scopes and queries each
+local companion for the runs in its synchronized daemon snapshot. Companion
+applies saved slot order, pins, and suppression to those runs. Deck accepts a
+complete set of pages only when their connection generation, daemon epoch,
+snapshot sequence, and layout revision agree. The grid and queue share this
+per-host view. Hosts that are disconnected or synchronizing contribute no cards.
+Deck also polls a separate feed of unread attention. Notification attempts are
+deduplicated across Deck windows sharing the same root.
 
 The companion owns host connections, caches, resynchronization, terminal bindings,
-and persistent slot layouts. Initially enable one host and retain the same
-identity model for later hosts. The desktop app displays slot state and submits
-user actions through the companion.
+and persistent slot layouts. The Deck submits slot actions through the companion
+that supplied the displayed run.
 
 Expose a private local IPC endpoint (Unix socket or Windows named pipe restricted to the
 current user) for controller presentation, using the same bounded Protobuf framing
@@ -1444,12 +1446,13 @@ PaneId or a provider session that might be resumed in another execution.
   not reserved. Increment each changed slot's revision and retain run history.
 - Persist pane ownership so history pruning and reconnects cannot lose that association.
   Offline/Syncing/Unknown and missing agent records within the same epoch retain
-  cards. After synchronization with a new epoch for the same host, retire the
-  previous epoch's runs before admitting the current runs. Pins and focus captures
-  belong to the original run.
+  saved slots for the Companion CLI. Agent Deck displays only runs present in the
+  synchronized snapshot. After synchronization with a new epoch for the same host,
+  retire the previous epoch's runs before admitting the current runs. Pins and
+  focus captures belong to the original run.
 - On a full deck, a higher-priority queued run takes the lowest-priority unpinned
   slot and sends its former occupant to the queue tail. Recent input requests
-  appear oldest-first across their unpinned slots. The mini deck applies the same
+  appear oldest-first across their unpinned slots. Agent Deck applies the same
   policy across its selected grid and available hosts. See [Agent Deck](06_agent_deck.md)
   for the scoring rules.
 - Persist after allocation/removal/pin changes, atomically. On restart load placements as

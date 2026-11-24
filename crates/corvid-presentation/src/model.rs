@@ -176,9 +176,9 @@ impl Snapshot {
     }
 
     fn edit(&self, action: Action) -> Option<Body> {
-        self.generation()?;
         Some(Body::EditSlotLayout(EditSlotLayout {
             action: Some(action),
+            control_generation: Some(self.generation()?.to_string()),
         }))
     }
 

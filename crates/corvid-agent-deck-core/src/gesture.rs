@@ -36,14 +36,28 @@ impl Gesture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use corvid_presentation::model::Snapshot;
     use corvid_protocol::wire::PresentedRunKey;
+    use uuid::Uuid;
 
     fn action(run: &str) -> FocusAction {
-        FocusAction::Desktop(PresentedRunKey {
-            host_id: "host".into(),
-            remote_epoch: "epoch".into(),
-            agent_run_id: run.into(),
-        })
+        FocusAction::Desktop(
+            Arc::new(Snapshot {
+                link: Uuid::nil(),
+                host: Uuid::nil(),
+                page: 0,
+                data: Default::default(),
+                #[cfg(windows)]
+                can_pair_wezterm: false,
+            }),
+            PresentedRunKey {
+                host_id: "host".into(),
+                remote_epoch: "epoch".into(),
+                agent_run_id: run.into(),
+            },
+        )
     }
 
     #[test]
@@ -51,7 +65,7 @@ mod tests {
         let mut gesture = Gesture::default();
         gesture.press(Input::Keyboard, 0, action("original"));
         gesture.press(Input::Keyboard, 0, action("replacement"));
-        let Some(FocusAction::Desktop(key)) = gesture.release(Input::Keyboard, 0) else {
+        let Some(FocusAction::Desktop(_, key)) = gesture.release(Input::Keyboard, 0) else {
             panic!("the original press should activate");
         };
         assert_eq!(key.agent_run_id, "original");
