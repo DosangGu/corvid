@@ -1367,7 +1367,12 @@ Desktop and TUI start a headless companion as soon as they verify an execution
 host. Each companion watches every workspace on that host, independently of
 Agent Deck visibility or attached terminal views. It remains running after the
 launching client exits. Agent Deck discovers verified host scopes and queries each
-local companion for the runs in its synchronized daemon snapshot. Companion
+local companion for the runs in its synchronized daemon snapshot. An SSH
+terminal reattach and Desktop's manual control reconnect both request a fresh
+Companion watch. Companion publishes the new connection generation with the
+complete verified snapshot. Live runs, attention, and generation-scoped actions
+share this state. A previous snapshot can still supply cached status to the
+Companion CLI while the watch synchronizes. Companion
 applies saved slot order, pins, and suppression to those runs. Deck accepts a
 complete set of pages only when their connection generation, daemon epoch,
 snapshot sequence, and layout revision agree. The grid and queue share this

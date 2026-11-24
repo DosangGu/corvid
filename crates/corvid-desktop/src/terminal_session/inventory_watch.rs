@@ -51,7 +51,7 @@ async fn monitor(endpoint: ControlEndpoint, host: String, epoch: String, shared:
     let controller = Uuid::new_v4().to_string();
     let ssh = matches!(endpoint, ControlEndpoint::Ssh(_));
     let mut ssh_retry = ssh.then(SshRetry::default);
-    let mut manual = shared.inventory_reconnect.subscribe();
+    let mut manual = shared.ssh_control_reconnect.subscribe();
     let mut retry = RETRY_MIN;
     let mut last_failure = None;
     loop {

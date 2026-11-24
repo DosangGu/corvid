@@ -59,7 +59,7 @@ impl Service {
     async fn pair(&mut self, pair: PairTerminal) -> Outcome {
         let remote = match &pair.control_generation {
             Some(generation) => self.require_generation(generation)?,
-            None => self.require_ready()?,
+            None => &self.require_ready()?.remote,
         };
         let code = parse_id(&pair.code)?;
         #[cfg(not(windows))]
@@ -212,7 +212,10 @@ impl Service {
     }
 
     fn edit(&mut self, action: Action) -> Outcome {
-        let runs = self.require_ready().ok().map(observations);
+        let runs = self
+            .connection
+            .ready()
+            .map(|snapshot| observations(&snapshot.remote));
         let edited = self
             .store
             .update(|layout| {
@@ -271,24 +274,22 @@ impl Service {
                 Ok(Body::SlotLayoutEdited(SlotLayoutEdited {}))
             })
             .map_err(store_fault)?;
-        if self.generation.is_some() {
+        if self.connection.ready().is_some() {
             self.schedule_status_save();
         }
         Ok(edited)
     }
 
-    fn require_ready(&self) -> Result<&Remote, ProtocolFault> {
-        self.generation
-            .and(self.remote.as_ref())
-            .ok_or_else(connection_required)
+    fn require_ready(&self) -> Result<&super::ReadySnapshot, ProtocolFault> {
+        self.connection.ready().ok_or_else(connection_required)
     }
 
     fn require_generation(&self, generation: &str) -> Result<&Remote, ProtocolFault> {
-        let remote = self.require_ready()?;
-        if self.generation != Some(parse_id(generation)?) {
+        let snapshot = self.require_ready()?;
+        if snapshot.generation != parse_id(generation)? {
             return Err(stale());
         }
-        Ok(remote)
+        Ok(&snapshot.remote)
     }
 }
 

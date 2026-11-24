@@ -477,13 +477,13 @@ impl DeckView {
                     .child(host.label.clone())
                     .child(colors.muted(connection_text(&display).unwrap_or("Live"))),
             );
-            for (_, run) in host.runs().take(crate::catalog::HOST_PREVIEW_LIMIT) {
+            for (snapshot, run) in host.runs().take(crate::catalog::HOST_PREVIEW_LIMIT) {
                 entry = entry.child(colors.muted(format!(
                     "{} · {} · {} pending",
                     run.key
                         .as_ref()
                         .map_or_else(|| "unknown".into(), |key| short_id(&key.agent_run_id)),
-                    badge(run.last_badge).0,
+                    status(run, snapshot.generation().is_none()).0,
                     run.pending_requests
                 )));
             }
@@ -895,6 +895,7 @@ fn status(run: &PresentedRun, cached: bool) -> (&'static str, StatusColor) {
     match prompt_detail(run) {
         Some(PromptObservation::Submitted) => ("Working (inferred)", StatusColor::Working),
         Some(PromptObservation::Responded) => badge(AgentBadge::ResponseObserved as i32),
+        Some(observation) if observation.confirms_execution() => badge(AgentBadge::Working as i32),
         _ => badge(run.last_badge),
     }
 }
@@ -952,6 +953,14 @@ mod tests {
             status(&run, false),
             ("Working (inferred)", StatusColor::Working)
         );
+        for observation in [
+            PromptObservation::ModelRequested,
+            PromptObservation::ModelAttemptFinished,
+            PromptObservation::ToolExecuted,
+        ] {
+            run.prompt_observation = observation as i32;
+            assert_eq!(status(&run, false), ("Working", StatusColor::Working));
+        }
         run.prompt_observation = PromptObservation::Responded as i32;
         assert_eq!(status(&run, false), ("New response", StatusColor::Response));
         assert_eq!(status(&run, true), ("Cached", StatusColor::Muted));

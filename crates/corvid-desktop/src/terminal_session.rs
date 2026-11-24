@@ -375,7 +375,7 @@ struct Shared {
     preview_tab: watch::Sender<Option<String>>,
     clipboard: watch::Sender<Option<ClipboardWrite>>,
     ui_changed: watch::Sender<()>,
-    inventory_reconnect: watch::Sender<()>,
+    ssh_control_reconnect: watch::Sender<()>,
     view_change: Arc<AtomicBool>,
 }
 
@@ -449,7 +449,7 @@ impl Shared {
             preview_tab: watch::channel(None).0,
             clipboard: watch::channel(None).0,
             ui_changed,
-            inventory_reconnect: watch::channel(()).0,
+            ssh_control_reconnect: watch::channel(()).0,
             view_change: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -889,8 +889,8 @@ impl Session {
         self.ui_with_revision().0
     }
 
-    pub fn reconnect_inventory(&self) {
-        self.shared.inventory_reconnect.send_replace(());
+    pub fn reconnect_ssh_controls(&self) {
+        self.shared.ssh_control_reconnect.send_replace(());
     }
 
     pub fn ui_with_revision(&self) -> (Ui, u64) {
@@ -1876,30 +1876,26 @@ async fn run(
         ui.split_target_supported = split_target_supported;
         ui.session_clients_supported = session_clients_supported;
     });
-    let monitor_settings = monitor.clone();
-    let monitor_endpoint = endpoint.clone();
     let monitor_host = Uuid::parse_str(&host)?;
-    let wake_monitor = std::mem::take(wake_monitor);
-    let (focus_scope, focus_controller) = oneshot::channel();
+    let wake_monitor = std::mem::take(wake_monitor)
+        || (reconnect_attempt && matches!(endpoint, ControlEndpoint::Ssh(_)));
+    let mut monitor_reconnect = shared.ssh_control_reconnect.subscribe();
+    let (focus_scope, mut focus_controller) = mpsc::channel(1);
     let mut monitor_tasks = corvid_async::task::JoinSet::new();
-    monitor_tasks.spawn(async move {
-        let scope = monitor_settings.scope(&monitor_endpoint, monitor_host)?;
-        scope.configure(&monitor_endpoint)?;
-        let _ = focus_scope.send(scope.config.controller_id);
-        scope
-            .ensure_running(&corvid_tui::monitor_executable()?)
-            .await?;
-        if wake_monitor {
-            scope.reconnect().await?;
-        }
-        Ok::<_, anyhow::Error>(())
-    });
+    monitor_tasks.spawn(refresh_agent_monitor(
+        monitor.clone(),
+        endpoint.clone(),
+        monitor_host,
+        wake_monitor,
+        focus_scope.clone(),
+    ));
     let (deck_requests, mut deck_focus) = mpsc::channel(1);
     let focus_epoch = Uuid::parse_str(&epoch)?;
     let focus_requests = deck_requests.clone();
     let mut focus_service = corvid_async::task::JoinSet::new();
     focus_service.spawn(async move {
-        if let Ok(controller) = focus_controller.await {
+        if let Some(controller) = focus_controller.recv().await {
+            drop(focus_controller);
             // Another window may already own the host's private listener.
             // If it closes, a remaining attached window can take over.
             while !focus_requests.is_closed() {
@@ -1949,6 +1945,15 @@ async fn run(
     let keep_connection = loop {
         corvid_async::select! {
             close = &mut *closing => break close.unwrap_or(false),
+            Ok(()) = monitor_reconnect.changed() if monitor_tasks.is_empty() => {
+                monitor_tasks.spawn(refresh_agent_monitor(
+                    monitor.clone(),
+                    endpoint.clone(),
+                    monitor_host,
+                    true,
+                    focus_scope.clone(),
+                ));
+            }
             Some(result) = monitor_tasks.join_next() if !monitor_tasks.is_empty() => {
                 if let Err(error) = result.unwrap_or_else(|error| Err(error.into())) {
                     shared.update_ui(move |ui| ui.message = format!("Agent monitor unavailable: {error:#}"));
@@ -1995,6 +2000,25 @@ async fn run(
         Err(_) => eprintln!("Timed out waiting for Desktop detach"),
     }
     Ok("Detached from Corvid.".into())
+}
+
+async fn refresh_agent_monitor(
+    settings: agent_deck::Settings,
+    endpoint: ControlEndpoint,
+    host: Uuid,
+    reconnect: bool,
+    focus_scope: mpsc::Sender<Uuid>,
+) -> Result<()> {
+    let scope = settings.scope(&endpoint, host)?;
+    scope.configure(&endpoint)?;
+    let _ = focus_scope.try_send(scope.config.controller_id);
+    scope
+        .ensure_running(&corvid_tui::monitor_executable()?)
+        .await?;
+    if reconnect {
+        scope.reconnect().await?;
+    }
+    Ok(())
 }
 
 async fn attach_agent(

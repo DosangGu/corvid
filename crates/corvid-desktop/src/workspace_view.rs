@@ -424,7 +424,7 @@ impl WorkspaceView {
         let Some(session) = &self.session else { return };
         let ui = session.ui();
         if ui.connected && ui.inventory_offline {
-            session.reconnect_inventory();
+            session.reconnect_ssh_controls();
         } else if ui.ssh_offline
             && let Some(destination) = self.destination.clone()
         {

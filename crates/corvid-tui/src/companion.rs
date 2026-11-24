@@ -15,7 +15,8 @@ use corvid_protocol::wire::{
     AckPresentedAttention, AgentBadge, AgentCollection, CompanionConnection, EditSlotLayout,
     EvidenceConfidence, FocusSlot, GetPresentationSlots, HostList, LayoutRecovery, ListHosts,
     LocalActivation, PairTerminal, PinSlot, PlaceSlot, PresentationSlots, PresentedBinding,
-    PresentedRun, PresentedRunKey, PresentedSlotToken, RunAvailability, UnpairTerminal,
+    PresentedRun, PresentedRunKey, PresentedSlotToken, PromptObservation, RunAvailability,
+    UnpairTerminal,
 };
 #[cfg(windows)]
 use corvid_protocol::wire::{WezTermLocation, WezTermTarget};
@@ -641,6 +642,10 @@ fn show_run(run: &PresentedRun) -> Result<()> {
     }
     if let Some(time) = run.last_observed_unix_ms {
         print!(" last_observed_unix_ms={time}");
+    }
+    if let Some(time) = run.prompt_observed_unix_ms {
+        let observation = PromptObservation::try_from(run.prompt_observation).unwrap_or_default();
+        print!(" prompt_observation={observation:?} prompt_observed_unix_ms={time}");
     }
     Ok(())
 }

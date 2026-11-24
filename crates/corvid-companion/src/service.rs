@@ -1,4 +1,5 @@
 mod actions;
+mod connection;
 mod presentation;
 
 use std::collections::BTreeMap;
@@ -8,10 +9,10 @@ use anyhow::Result;
 use corvid_async::{mpsc, oneshot};
 use corvid_client::{ControlEndpoint, SnapshotWatch, SshRetry};
 use corvid_protocol::ProtocolFault;
-use corvid_protocol::wire::CompanionConnection;
 use corvid_protocol::wire::envelope::Body;
 use uuid::Uuid;
 
+use self::connection::{Connection, ReadySnapshot};
 use crate::executor::{Instant, interval_at, sleep_until, timeout_at};
 use crate::last_known::LastKnown;
 #[cfg(windows)]
@@ -31,15 +32,25 @@ pub(crate) struct Call {
     pub(crate) reply: oneshot::Sender<Outcome>,
 }
 
+impl Call {
+    fn requests_reconnect(&self) -> bool {
+        matches!(self.body, Body::ReconnectAgentMonitor(_)) && !self.reply.is_closed()
+    }
+}
+
+enum Reconnect {
+    Retry,
+    Requested,
+    Closed,
+}
+
 pub(crate) struct Service {
     store: Store,
     endpoint: ControlEndpoint,
     controller: String,
     host: String,
-    connection: CompanionConnection,
-    issue: Option<&'static str>,
-    generation: Option<Uuid>,
-    remote: Option<Remote>,
+    connection: Connection,
+    last_snapshot: Option<Remote>,
     save_status_at: Option<Instant>,
     #[cfg(windows)]
     terminals: BTreeMap<Uuid, TerminalRecord>,
@@ -66,10 +77,8 @@ impl Service {
             controller: config.controller_id.to_string(),
             host: config.host_id.to_string(),
             store,
-            connection: CompanionConnection::Connecting,
-            issue: None,
-            generation: None,
-            remote: None,
+            connection: Connection::Connecting(None),
+            last_snapshot: None,
             save_status_at: None,
             #[cfg(windows)]
             terminals,
@@ -83,33 +92,38 @@ impl Service {
         let ssh = matches!(self.endpoint, ControlEndpoint::Ssh(_));
         let mut retry = ssh.then(SshRetry::default);
         loop {
-            self.connection = CompanionConnection::Connecting;
+            self.connection = Connection::Connecting(self.connection.issue());
             let link = match &retry {
                 Some(retry) => timeout_at(retry.deadline(), self.connect(&mut calls))
                     .await
                     .unwrap_or_else(|_| Err(SshRetry::exhausted().into())),
                 None => self.connect(&mut calls).await,
             };
-            let fault = match link {
-                Ok(mut watch) => match self.synchronize(&watch, false) {
-                    Ok(()) => {
+            let result = match link {
+                Ok(mut watch) => match self.synchronize(&watch) {
+                    Ok(remote) => {
                         failures = 0;
                         retry = None;
-                        self.generation = Some(Uuid::new_v4());
-                        self.connection = CompanionConnection::Ready;
-                        self.issue = None;
+                        self.publish_ready(remote);
                         self.follow(&mut watch, &mut calls).await
                     }
-                    Err(fault) => fault.into(),
+                    Err(fault) => Err(fault.into()),
                 },
+                Err(error) => Err(error),
+            };
+            self.retire_snapshot(Connection::Connecting(None));
+            let fault = match self
+                .flush_status()
+                .map_err(|error| store_fault(error).into())
+                .and(result)
+            {
+                Ok(()) => {
+                    retry = ssh.then(SshRetry::default);
+                    continue;
+                }
                 Err(error) => error,
             };
-            self.generation = None;
-            let fault = match self.flush_status() {
-                Ok(()) => fault,
-                Err(error) => store_fault(error).into(),
-            };
-            (self.connection, self.issue) = disconnected(&fault);
+            self.connection = Connection::disconnected(&fault);
             let next = if ssh {
                 retry
                     .get_or_insert_with(SshRetry::default)
@@ -119,35 +133,64 @@ impl Service {
             };
             failures = (failures + 1).min(6);
             if let Some(next) = next {
-                if !self.wait_to_reconnect(Some(next), &mut calls).await {
-                    return Ok(());
-                }
-                if retry
-                    .as_ref()
-                    .is_none_or(|retry| Instant::now() < retry.deadline())
-                {
-                    continue;
+                match self.wait_to_reconnect(Some(next), &mut calls).await {
+                    Reconnect::Requested => {
+                        retry = ssh.then(SshRetry::default);
+                        continue;
+                    }
+                    Reconnect::Retry
+                        if retry
+                            .as_ref()
+                            .is_none_or(|retry| Instant::now() < retry.deadline()) =>
+                    {
+                        continue;
+                    }
+                    Reconnect::Retry => {}
+                    Reconnect::Closed => return Ok(()),
                 }
             }
             if retry
                 .as_ref()
                 .is_some_and(|retry| Instant::now() >= retry.deadline())
             {
-                self.connection = CompanionConnection::Offline;
-                self.issue = Some("SshRetryExhausted");
+                self.connection = Connection::Offline("SshRetryExhausted");
             }
-            if !self.wait_to_reconnect(None, &mut calls).await {
+            if matches!(
+                self.wait_to_reconnect(None, &mut calls).await,
+                Reconnect::Closed
+            ) {
                 return Ok(());
             }
-            retry = Some(SshRetry::default());
+            retry = ssh.then(SshRetry::default);
         }
+    }
+
+    fn publish_ready(&mut self, remote: Remote) {
+        self.last_snapshot = None;
+        self.connection = Connection::Ready(ReadySnapshot {
+            generation: Uuid::new_v4(),
+            remote,
+        });
+    }
+
+    fn retire_snapshot(&mut self, connection: Connection) {
+        if let Connection::Ready(snapshot) = std::mem::replace(&mut self.connection, connection) {
+            self.last_snapshot = Some(snapshot.remote);
+        }
+    }
+
+    fn latest_snapshot(&self) -> Option<&Remote> {
+        self.connection
+            .ready()
+            .map(|snapshot| &snapshot.remote)
+            .or(self.last_snapshot.as_ref())
     }
 
     async fn wait_to_reconnect(
         &mut self,
         next: Option<Instant>,
         calls: &mut mpsc::Receiver<Call>,
-    ) -> bool {
+    ) -> Reconnect {
         let delay = async {
             match next {
                 Some(next) => sleep_until(next).await,
@@ -157,15 +200,13 @@ impl Service {
         corvid_async::pin!(delay);
         loop {
             corvid_async::select! {
-                _ = &mut delay => return true,
+                _ = &mut delay => return Reconnect::Retry,
                 call = calls.recv() => {
-                    let Some(call) = call else { return false };
-                    let reconnect = next.is_none()
-                        && !call.reply.is_closed()
-                        && matches!(call.body, Body::ReconnectAgentMonitor(_));
+                    let Some(call) = call else { return Reconnect::Closed };
+                    let reconnect = call.requests_reconnect();
                     self.handle(call).await;
                     if reconnect {
-                        return true;
+                        return Reconnect::Requested;
                     }
                 }
             }
@@ -225,7 +266,7 @@ impl Service {
                 started = &mut started if waiting => {
                     waiting = false;
                     if started.is_ok() {
-                        self.connection = CompanionConnection::Syncing;
+                        self.connection = Connection::Syncing(self.connection.issue());
                     }
                 }
                 call = calls.recv() => {
@@ -240,7 +281,7 @@ impl Service {
         &mut self,
         watch: &mut SnapshotWatch,
         calls: &mut mpsc::Receiver<Call>,
-    ) -> anyhow::Error {
+    ) -> Result<()> {
         let now = Instant::now();
         let mut refresh = interval_at(now, Duration::from_secs(1));
         let mut priority_refresh = interval_at(now + PRIORITY_REFRESH, PRIORITY_REFRESH);
@@ -250,57 +291,58 @@ impl Service {
                 _ = refresh.tick() => {
                     match self.store.monitor_endpoint() {
                         Ok(Some(endpoint)) if endpoint != self.endpoint => {
-                            return ProtocolFault::new("ConnectionRequired", "agent monitor connection changed").into();
+                            return Err(ProtocolFault::new(
+                                "ConnectionRequired", "agent monitor connection changed"
+                            ).into());
                         }
-                        Err(error) => return error,
+                        Err(error) => return Err(error),
                         _ => {}
                     }
                 }
                 _ = sleep_until(self.save_status_at.unwrap_or_else(Instant::now)) if self.save_status_at.is_some() => {
                     if let Err(error) = self.flush_status() {
-                        return store_fault(error).into();
+                        return Err(store_fault(error).into());
                     }
                 }
                 _ = priority_refresh.tick() => {
                     let now = now_ms();
-                    if let Some(remote) = &self.remote
+                    if let Some(snapshot) = self.connection.ready()
                         && let Err(error) = self.store.update(|layout| {
-                            Ok(layout.reorder(now, |key| priority(remote, key, now))?)
+                            Ok(layout.reorder(now, |key| priority(&snapshot.remote, key, now))?)
                         })
                     {
-                        return store_fault(error).into();
+                        return Err(store_fault(error).into());
                     }
                 }
                 update = watch.next_change() => {
-                    if let Err(error) = update {
-                        return error;
-                    }
-                    if let Err(fault) = self.synchronize(watch, true) {
-                        return fault.into();
-                    }
+                    update?;
+                    let remote = self.synchronize(watch)?;
+                    let Connection::Ready(snapshot) = &mut self.connection else {
+                        unreachable!("following a synchronized watch");
+                    };
+                    snapshot.remote = remote;
                 }
                 call = calls.recv() => {
-                    let Some(call) = call else { return anyhow::anyhow!("presentation endpoint closed") };
+                    let Some(call) = call else { anyhow::bail!("presentation endpoint closed") };
+                    if call.requests_reconnect() {
+                        self.handle(call).await;
+                        return Ok(());
+                    }
                     if !watch.is_ready() {
                         let fault = ProtocolFault::new("ConnectionRequired", "control watch is unavailable");
-                        self.generation = None;
-                        (self.connection, self.issue) = disconnected(&anyhow::Error::from(fault.clone()));
+                        self.retire_snapshot(Connection::Offline("ConnectionRequired"));
                         self.handle(call).await;
-                        return fault.into();
+                        return Err(fault.into());
                     }
                     if let Some(fault) = self.handle(call).await {
-                        return fault.into();
+                        return Err(fault.into());
                     }
                 }
             }
         }
     }
 
-    fn synchronize(
-        &mut self,
-        watch: &SnapshotWatch,
-        _contiguous: bool,
-    ) -> Result<(), ProtocolFault> {
+    fn synchronize(&mut self, watch: &SnapshotWatch) -> Result<Remote, ProtocolFault> {
         if !watch.is_ready() {
             return Err(ProtocolFault::new(
                 "Offline",
@@ -329,9 +371,8 @@ impl Service {
             .map_err(store_fault)?;
         #[cfg(windows)]
         self.reconcile_terminals(&remote);
-        self.remote = Some(remote);
         self.schedule_status_save();
-        Ok(())
+        Ok(remote)
     }
 
     fn schedule_status_save(&mut self) {
@@ -341,7 +382,11 @@ impl Service {
 
     pub(crate) fn flush_status(&mut self) -> Result<()> {
         if self.save_status_at.take().is_some()
-            && let Some(remote) = &self.remote
+            && let Some(remote) = self
+                .connection
+                .ready()
+                .map(|snapshot| &snapshot.remote)
+                .or(self.last_snapshot.as_ref())
         {
             self.store.save_status(|key| {
                 remote
@@ -396,28 +441,6 @@ fn store_fault(error: anyhow::Error) -> ProtocolFault {
     error.downcast::<ProtocolFault>().unwrap_or_else(|_| {
         ProtocolFault::new("PersistenceFailed", "companion could not save slot state")
     })
-}
-
-fn disconnected(error: &anyhow::Error) -> (CompanionConnection, Option<&'static str>) {
-    let (state, issue) = match error
-        .downcast_ref::<ProtocolFault>()
-        .map(|fault| fault.code.as_str())
-    {
-        Some("HostMismatch") => (CompanionConnection::Incompatible, "HostMismatch"),
-        Some("ProtocolMismatch" | "UnsupportedCapability") => {
-            (CompanionConnection::Incompatible, "ProtocolMismatch")
-        }
-        Some("AuthenticationRequired") => (CompanionConnection::Error, "AuthenticationRequired"),
-        Some("HostKeyRequired") => (CompanionConnection::Error, "HostKeyRequired"),
-        Some("RelayUnavailable") => (CompanionConnection::Error, "RelayUnavailable"),
-        Some("InvalidMessage") => (CompanionConnection::Error, "InvalidMessage"),
-        Some("PersistenceFailed") => (CompanionConnection::Error, "PersistenceFailed"),
-        Some("LimitExceeded") => (CompanionConnection::Error, "LimitExceeded"),
-        Some("DaemonUnavailable") => (CompanionConnection::Offline, "DaemonUnavailable"),
-        Some("ResyncRequired") => (CompanionConnection::Syncing, "ResyncRequired"),
-        _ => (CompanionConnection::Offline, "ConnectionRequired"),
-    };
-    (state, Some(issue))
 }
 
 fn backoff(failures: u32) -> Duration {

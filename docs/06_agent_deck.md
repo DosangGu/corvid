@@ -236,9 +236,10 @@ attempts keep the working indication through retries and tool calls.
 A confirmed pending request keeps the amber **Needs input** indication. When
 the outcome of a request is uncertain and current execution is confirmed,
 the card shows an amber **Check terminal** border and a blue dot. Hover for
-the last prompt event and its age. Process-only sessions stay gray. On Linux
-and macOS, `corvid control agents` also shows `prompt_observation` and
-`prompt_observed_unix_ms` when present.
+the last prompt event and its age. The **Hosts** list and cards use the same
+status for each run. Process-only sessions stay gray. `corvid companion slots`
+also shows the last prompt observation and its timestamp when available. On Linux
+and macOS they are also available from `corvid control agents`.
 
 ![Agent Deck showing Working, Check terminal with a blue working dot, and an observed response](images/agent-deck/working-with-unverified-input.png)
 
@@ -311,11 +312,17 @@ Pins protect a card from reprioritization and follow it during compaction.
 Each host contributes cards after its Companion synchronizes with the daemon.
 On disconnect or resynchronization, that host's cards leave the grid and queue.
 **Hosts** shows its connection state while the other cards stay available.
-Reconnection uses the daemon's current runs. Pins and hidden settings follow the
-same execution within an epoch. When the host starts a new daemon epoch,
+When a Desktop SSH terminal reconnects, Companion takes a fresh daemon snapshot
+before publishing the host's current runs and their latest observed status.
+If the terminal stays open and workspace synchronization stops, Desktop's
+**Reconnect** button refreshes both the workspace inventory and Companion.
+Pins and hidden settings follow the same execution within an epoch. When the
+host starts a new daemon epoch,
 Companion moves the previous epoch's runs into **Run history**. The queue is
 bounded to 4,096 tracked runs per host and run history to 256 entries per host.
 The Companion CLI can still inspect saved layouts.
+
+![Hosts showing New response for an SSH run after Desktop reconnects](images/agent-deck/ssh-reconnected-host-status.png)
 
 Updated Desktop replaces an older Companion the next time it connects to the
 monitored host. The replacement reuses that host's saved controller state while
