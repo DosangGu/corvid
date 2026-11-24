@@ -5,9 +5,9 @@ use corvid_protocol::wire::LocalHostEndpoint;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::presented_host::Endpoint;
 use corvid_protocol::wire::{
-    AgentBadge, CompanionConnection, GetPresentationSlots, HostList, LayoutRecovery,
-    PresentationRuns, PresentationSlots, PresentedBinding, PresentedHost, PresentedRun,
-    PresentedSlot, RunAvailability,
+    AgentBadge, GetPresentationSlots, HostList, LayoutRecovery, PresentationRuns,
+    PresentationSlots, PresentedBinding, PresentedHost, PresentedRun, PresentedSlot,
+    RunAvailability,
 };
 
 use super::{Outcome, Service};
@@ -16,11 +16,12 @@ use crate::{MAX_SLOTS, PRESENTATION_PAGE_SIZE, Recovery, RunKey};
 
 impl Service {
     pub(super) fn attention(&self) -> Body {
-        let remote = self.remote.as_ref().filter(|_| self.generation.is_some());
+        let ready = self.connection.ready();
+        let remote = ready.map(|snapshot| &snapshot.remote);
         Body::PresentationAttention(corvid_protocol::wire::PresentationAttention {
             controller_id: self.controller.clone(),
-            connection: self.connection as i32,
-            control_generation: self.generation.map(|generation| generation.to_string()),
+            connection: self.connection.status(),
+            control_generation: ready.map(|snapshot| snapshot.generation.to_string()),
             remote_epoch: remote.map(|remote| remote.epoch.to_string()),
             remote_sequence: remote.map(|remote| remote.sequence),
             attention: remote.map_or_else(Vec::new, |remote| remote.attention.clone()),
@@ -36,14 +37,14 @@ impl Service {
                 Endpoint::WslDistribution(distribution.as_str().to_owned())
             }
         };
-        let remote = self.remote.as_ref().filter(|_| self.generation.is_some());
+        let remote = self.connection.ready().map(|snapshot| &snapshot.remote);
 
         Body::HostList(HostList {
             hosts: vec![PresentedHost {
                 host_id: self.host.clone(),
                 endpoint: Some(endpoint),
-                connection: self.connection as i32,
-                issue_code: self.issue.map(str::to_owned),
+                connection: self.connection.status(),
+                issue_code: self.connection.issue().map(str::to_owned),
                 remote_epoch: remote.map(|remote| remote.epoch.to_string()),
                 remote_sequence: remote.map(|remote| remote.sequence),
             }],
@@ -64,12 +65,10 @@ impl Service {
 
     pub(super) fn current_runs(&self, page: u32) -> Body {
         let mut current = BTreeSet::new();
-        if self.connection == CompanionConnection::Ready
-            && self.generation.is_some()
-            && let Some(remote) = &self.remote
-        {
+        if let Some(snapshot) = self.connection.ready() {
             current.extend(
-                remote
+                snapshot
+                    .remote
                     .runs
                     .iter()
                     .filter_map(|(&key, run)| run.observation.eligible.then_some(key)),
@@ -114,7 +113,7 @@ impl Service {
             .filter(|key| current.as_mut().is_none_or(|runs| runs.remove(key)))
             .collect();
         if let Some(unassigned) = current {
-            let remote = self.remote.as_ref();
+            let remote = self.connection.ready().map(|snapshot| &snapshot.remote);
             let mut remaining: Vec<_> = unassigned.into_iter().collect();
             remaining.sort_by_key(|key| {
                 let sequence = remote
@@ -125,27 +124,26 @@ impl Service {
             overflow.extend(remaining);
         }
         let overflow_count = overflow.len() as u32;
-        let bindings = self
-            .remote
-            .as_ref()
-            .filter(|_| self.generation.is_some())
-            .map_or_else(Vec::new, |remote| {
-                remote
-                    .bindings
-                    .iter()
-                    .map(|(client, revision)| PresentedBinding {
-                        client_id: client.to_string(),
-                        revision: *revision,
-                        #[cfg(windows)]
-                        wezterm: self
-                            .local_registration(remote, *client, *revision)
-                            .and_then(|registration| registration.pane.as_ref())
-                            .map(|pane| pane.location()),
-                        #[cfg(not(windows))]
-                        wezterm: None,
-                    })
-                    .collect()
-            });
+        let ready = self.connection.ready();
+        let latest = self.latest_snapshot();
+        let bindings = ready.map_or_else(Vec::new, |snapshot| {
+            let remote = &snapshot.remote;
+            remote
+                .bindings
+                .iter()
+                .map(|(client, revision)| PresentedBinding {
+                    client_id: client.to_string(),
+                    revision: *revision,
+                    #[cfg(windows)]
+                    wezterm: self
+                        .local_registration(remote, *client, *revision)
+                        .and_then(|registration| registration.pane.as_ref())
+                        .map(|pane| pane.location()),
+                    #[cfg(not(windows))]
+                    wezterm: None,
+                })
+                .collect()
+        });
         let layout_recovery = match self.store.recovery() {
             Recovery::Normal => LayoutRecovery::Normal,
             Recovery::Backup => LayoutRecovery::Backup,
@@ -153,11 +151,11 @@ impl Service {
         };
         PresentationSlots {
             controller_id: self.controller.clone(),
-            connection: self.connection as i32,
-            issue_code: self.issue.map(str::to_owned),
-            remote_epoch: self.remote.as_ref().map(|remote| remote.epoch.to_string()),
-            remote_sequence: self.remote.as_ref().map(|remote| remote.sequence),
-            control_generation: self.generation.map(|generation| generation.to_string()),
+            connection: self.connection.status(),
+            issue_code: self.connection.issue().map(str::to_owned),
+            remote_epoch: latest.map(|remote| remote.epoch.to_string()),
+            remote_sequence: latest.map(|remote| remote.sequence),
+            control_generation: ready.map(|snapshot| snapshot.generation.to_string()),
             slots,
             overflow: overflow
                 .into_iter()
@@ -180,9 +178,9 @@ impl Service {
     }
 
     fn display_run(&self, key: RunKey) -> PresentedRun {
-        let mut display = self
-            .remote
-            .as_ref()
+        let latest = self.latest_snapshot();
+        let ready = self.connection.ready().is_some();
+        let mut display = latest
             .and_then(|remote| remote.runs.get(&key))
             .map(|run| run.display.clone())
             .or_else(|| self.store.last_known(key).map(|cached| cached.display(key)))
@@ -193,16 +191,12 @@ impl Service {
                 ..Default::default()
             });
 
-        if self
-            .remote
-            .as_ref()
-            .is_some_and(|remote| key.epoch != remote.epoch)
-        {
+        if latest.is_some_and(|remote| key.epoch != remote.epoch) {
             display.availability = RunAvailability::Historical as i32;
-        } else if self.generation.is_none() {
+        } else if !ready {
             display.availability = RunAvailability::Offline as i32;
         }
-        if self.generation.is_none() {
+        if !ready {
             display.latest_unseen_attention_id = None;
         }
         display
@@ -216,6 +210,7 @@ mod tests {
     use anyhow::Result;
     use uuid::Uuid;
 
+    use super::super::Connection;
     use super::*;
     use crate::remote::ObservedRun;
     use crate::{HostEndpoint, RunObservation, Store, initialize};
@@ -275,7 +270,7 @@ mod tests {
         for id in 5..=count + 5 {
             runs.insert(key(id), current(key(id), true));
         }
-        service.remote = Some(crate::remote::Remote {
+        service.publish_ready(crate::remote::Remote {
             epoch,
             sequence: 42,
             bindings: BTreeMap::new(),
@@ -284,8 +279,6 @@ mod tests {
             attention: Vec::new(),
             omitted_attention: 0,
         });
-        service.connection = CompanionConnection::Ready;
-        service.generation = Some(Uuid::new_v4());
 
         let read = |service: &Service, index| {
             let Body::PresentationRuns(page) = service.current_runs(index) else {
@@ -314,8 +307,7 @@ mod tests {
             Ok(())
         })?;
         assert_ne!(read(&service, 0).0, revision);
-        service.connection = CompanionConnection::Offline;
-        service.generation = None;
+        service.retire_snapshot(Connection::Offline("ConnectionRequired"));
         let (_, offline) = read(&service, 0);
         assert!(offline.slots.iter().all(|slot| slot.run.is_none()));
         assert_eq!(offline.overflow_count, 0);

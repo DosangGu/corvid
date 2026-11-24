@@ -314,6 +314,8 @@ On disconnect or resynchronization, that host's cards leave the grid and queue.
 **Hosts** shows its connection state while the other cards stay available.
 When a Desktop SSH terminal reconnects, Companion takes a fresh daemon snapshot
 before publishing the host's current runs and their latest observed status.
+If the terminal stays open and workspace synchronization stops, Desktop's
+**Reconnect** button refreshes both the workspace inventory and Companion.
 Pins and hidden settings follow the same execution within an epoch. When the
 host starts a new daemon epoch,
 Companion moves the previous epoch's runs into **Run history**. The queue is

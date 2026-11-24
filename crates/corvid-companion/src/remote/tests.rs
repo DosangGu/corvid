@@ -88,7 +88,7 @@ fn workspace(location: &ViewSelection) -> Body {
 
 #[cfg(unix)]
 #[test]
-fn explicit_reconnect_imports_the_current_observation_for_the_same_run() -> anyhow::Result<()> {
+fn reconnect_imports_the_current_observation_after_the_watch_is_ready() -> anyhow::Result<()> {
     corvid_async::task::worker("corvid-reconnect-test", |runtime| {
         runtime
             .block_on(check_observation_after_reconnect())
@@ -104,6 +104,7 @@ async fn check_observation_after_reconnect() -> anyhow::Result<()> {
     use std::time::Duration;
 
     use anyhow::Context;
+    use corvid_async::oneshot;
     use corvid_async::time::{sleep, timeout};
     use corvid_client::ControlEndpoint;
     use corvid_protocol::unix::{RuntimeDir, SocketRole};
@@ -132,10 +133,14 @@ async fn check_observation_after_reconnect() -> anyhow::Result<()> {
         tab_id: Uuid::new_v4().to_string(),
         pane_id: Uuid::new_v4().to_string(),
     };
+    let (finish_sync, finish_requested) = oneshot::channel();
+    let (disconnect, mut disconnect_requested) = oneshot::channel();
     let daemon = Box::pin(async {
+        let mut finish_requested = Some(finish_requested);
         for (sequence, observation) in [
             (1, PromptObservation::Submitted),
             (2, PromptObservation::Responded),
+            (3, PromptObservation::ToolExecuted),
         ] {
             let mut agent = agent(run, &location, 1);
             agent.lifecycle = AgentLifecycle::Live as i32;
@@ -148,7 +153,22 @@ async fn check_observation_after_reconnect() -> anyhow::Result<()> {
                 .map(|body| SnapshotEntity { body: Some(body) })
                 .collect();
             let stream = listener.accept().await?.context("missing control peer")?;
-            serve_run_watch(stream, host, epoch, sequence, entities).await?;
+            let watch = serve_run_watch(
+                stream,
+                host,
+                epoch,
+                sequence,
+                entities,
+                (sequence == 2).then(|| finish_requested.take().unwrap()),
+            );
+            if sequence == 2 {
+                corvid_async::select! {
+                    _ = &mut disconnect_requested => {}
+                    result = watch => result?,
+                }
+            } else {
+                watch.await?;
+            }
         }
         Ok::<_, anyhow::Error>(())
     });
@@ -159,14 +179,59 @@ async fn check_observation_after_reconnect() -> anyhow::Result<()> {
             }
             sleep(Duration::from_millis(10)).await;
         };
-        let first = current_runs(&mut client, 1).await?;
+        let first = wait_for_runs(&mut client, |page| {
+            page.connection == CompanionConnection::Ready as i32 && page.remote_sequence == Some(1)
+        })
+        .await?;
         let key = first.slots[0].run.as_ref().unwrap().key.clone();
         assert_eq!(
             first.slots[0].run.as_ref().unwrap().prompt_observation,
             PromptObservation::Submitted as i32
         );
+        let prior_generation = first.control_generation.context("initial generation")?;
+        let focus = || {
+            Message::FocusSlot(FocusSlot {
+                control_generation: prior_generation.clone(),
+                ..Default::default()
+            })
+        };
         client.reconnect_monitor().await?;
-        let latest = current_runs(&mut client, 2).await?;
+        let syncing = wait_for_runs(&mut client, |page| {
+            page.connection == CompanionConnection::Syncing as i32
+        })
+        .await?;
+        assert!(syncing.control_generation.is_none());
+        assert!(syncing.slots.iter().all(|slot| slot.run.is_none()));
+        let cached = client.slots(None).await?;
+        let cached = cached.slots[0].run.as_ref().unwrap();
+        assert_eq!(cached.key, key);
+        assert_eq!(cached.availability, RunAvailability::Offline as i32);
+        let Message::PresentationAttention(attention) = client
+            .request(Message::GetPresentationAttention(
+                GetPresentationAttention {},
+            ))
+            .await?
+        else {
+            anyhow::bail!("missing attention during synchronization");
+        };
+        assert!(attention.control_generation.is_none());
+        assert!(attention.remote_epoch.is_none());
+        let unavailable = client
+            .request(focus())
+            .await
+            .expect_err("focus was accepted during synchronization");
+        assert_eq!(
+            unavailable.downcast_ref::<ProtocolFault>().unwrap().code,
+            "ConnectionRequired"
+        );
+        finish_sync
+            .send(())
+            .expect("daemon did not wait for synchronization");
+
+        let latest = wait_for_runs(&mut client, |page| {
+            page.connection == CompanionConnection::Ready as i32 && page.remote_sequence == Some(2)
+        })
+        .await?;
         let current = latest.slots[0].run.as_ref().unwrap();
         assert_eq!(current.key, key);
         assert_eq!(
@@ -175,18 +240,32 @@ async fn check_observation_after_reconnect() -> anyhow::Result<()> {
         );
         assert_eq!(current.prompt_observed_unix_ms, Some(200));
         assert_eq!(first.remote_epoch, latest.remote_epoch);
-        assert_ne!(first.control_generation, latest.control_generation);
+        assert_ne!(Some(prior_generation.clone()), latest.control_generation);
         let stale = client
-            .request(Message::FocusSlot(FocusSlot {
-                control_generation: first.control_generation.context("initial generation")?,
-                ..Default::default()
-            }))
+            .request(focus())
             .await
             .expect_err("pre-reconnect focus was accepted");
         assert_eq!(
             stale.downcast_ref::<ProtocolFault>().unwrap().code,
             "StaleBinding"
         );
+
+        disconnect
+            .send(())
+            .expect("daemon watch was already closed");
+        let recovered = wait_for_runs(&mut client, |page| {
+            page.connection == CompanionConnection::Ready as i32 && page.remote_sequence == Some(3)
+        })
+        .await?;
+        let current = recovered.slots[0].run.as_ref().unwrap();
+        assert_eq!(current.key, key);
+        assert_eq!(
+            current.prompt_observation,
+            PromptObservation::ToolExecuted as i32
+        );
+        assert_eq!(current.prompt_observed_unix_ms, Some(300));
+        assert_eq!(recovered.remote_epoch, latest.remote_epoch);
+        assert_ne!(recovered.control_generation, latest.control_generation);
         Ok(())
     });
     let companion = Box::pin(run_native(&address, &state, std::future::pending()));
@@ -203,9 +282,9 @@ async fn check_observation_after_reconnect() -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
-async fn current_runs(
+async fn wait_for_runs(
     client: &mut crate::PresentationClient,
-    sequence: u64,
+    matches: impl Fn(&PresentationSlots) -> bool,
 ) -> anyhow::Result<PresentationSlots> {
     loop {
         let reply = client
@@ -216,8 +295,7 @@ async fn current_runs(
         if let Message::PresentationRuns(PresentationRuns {
             page: Some(page), ..
         }) = reply
-            && page.connection == CompanionConnection::Ready as i32
-            && page.remote_sequence == Some(sequence)
+            && matches(&page)
         {
             return Ok(page);
         }
@@ -232,6 +310,7 @@ async fn serve_run_watch(
     epoch: Uuid,
     sequence: u64,
     entities: Vec<SnapshotEntity>,
+    finish_sync: Option<corvid_async::oneshot::Receiver<()>>,
 ) -> anyhow::Result<()> {
     use anyhow::{Context, ensure};
     use compio::io::util::Splittable;
@@ -283,6 +362,9 @@ async fn serve_run_watch(
         writer
             .envelope(&frame(request.request_id.clone(), body))
             .await?;
+    }
+    if let Some(finish_sync) = finish_sync {
+        finish_sync.await?;
     }
     writer
         .envelope(&frame(None, Message::WatchReady(WatchReady {})))
