@@ -610,6 +610,10 @@ setting before writing. Events are transient and tied to the view in which the
 daemon read the request. Each PTY keeps at most the latest request between polls.
 Clipboard read and window-control requests remain disabled.
 
+The [OSC integration proposal](09_terminal_osc.md) describes how Desktop and the
+TUI could show progress reported by a terminal application, followed by shell
+phase hints and optional pane notices.
+
 ### 7.2 Rendering and recovery
 
 Each ClientId has its own renderer, viewport, previous frame, cursor/mode tracking,
