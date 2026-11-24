@@ -1,10 +1,13 @@
+use std::collections::BTreeSet;
+
 use corvid_client::ControlEndpoint;
 use corvid_protocol::wire::LocalHostEndpoint;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::presented_host::Endpoint;
 use corvid_protocol::wire::{
-    AgentBadge, GetPresentationSlots, HostList, LayoutRecovery, PresentationSlots,
-    PresentedBinding, PresentedHost, PresentedRun, PresentedSlot, RunAvailability,
+    AgentBadge, CompanionConnection, GetPresentationSlots, HostList, LayoutRecovery,
+    PresentationRuns, PresentationSlots, PresentedBinding, PresentedHost, PresentedRun,
+    PresentedSlot, RunAvailability,
 };
 
 use super::{Outcome, Service};
@@ -52,9 +55,45 @@ impl Service {
         if !(1..=MAX_SLOTS).contains(&count) {
             return Err(invalid());
         }
+        Ok(Body::PresentationSlots(self.present_slots(
+            count,
+            query.overflow_page,
+            None,
+        )))
+    }
+
+    pub(super) fn current_runs(&self, page: u32) -> Body {
+        let mut current = BTreeSet::new();
+        if self.connection == CompanionConnection::Ready
+            && self.generation.is_some()
+            && let Some(remote) = &self.remote
+        {
+            current.extend(
+                remote
+                    .runs
+                    .iter()
+                    .filter_map(|(&key, run)| run.observation.eligible.then_some(key)),
+            );
+        }
+        Body::PresentationRuns(PresentationRuns {
+            page: Some(self.present_slots(self.store.config().slot_count, page, Some(current))),
+            layout_revision: self.store.layout_revision(),
+        })
+    }
+
+    fn present_slots(
+        &self,
+        count: u32,
+        page: u32,
+        mut current: Option<BTreeSet<RunKey>>,
+    ) -> PresentationSlots {
         let page_size = PRESENTATION_PAGE_SIZE as usize;
-        let offset = (query.overflow_page as usize).saturating_mul(page_size);
+        let offset = (page as usize).saturating_mul(page_size);
         let layout = self.store.layout();
+        let suppressed: Vec<_> = layout
+            .suppressed()
+            .filter(|key| current.as_mut().is_none_or(|runs| runs.remove(key)))
+            .collect();
         let slots = layout
             .slots()
             .iter()
@@ -64,9 +103,28 @@ impl Service {
                 slot_id: index as u32 + 1,
                 revision: slot.revision,
                 pinned: slot.pinned,
-                run: slot.run.map(|run| self.display_run(run)),
+                run: slot
+                    .run
+                    .filter(|key| current.as_mut().is_none_or(|runs| runs.remove(key)))
+                    .map(|run| self.display_run(run)),
             })
             .collect();
+        let mut overflow: Vec<_> = layout
+            .overflow()
+            .filter(|key| current.as_mut().is_none_or(|runs| runs.remove(key)))
+            .collect();
+        if let Some(unassigned) = current {
+            let remote = self.remote.as_ref();
+            let mut remaining: Vec<_> = unassigned.into_iter().collect();
+            remaining.sort_by_key(|key| {
+                let sequence = remote
+                    .and_then(|remote| remote.runs.get(key))
+                    .and_then(|run| run.observation.created_sequence);
+                (sequence.unwrap_or(u64::MAX), *key)
+            });
+            overflow.extend(remaining);
+        }
+        let overflow_count = overflow.len() as u32;
         let bindings = self
             .remote
             .as_ref()
@@ -93,7 +151,7 @@ impl Service {
             Recovery::Backup => LayoutRecovery::Backup,
             Recovery::Fresh => LayoutRecovery::Fresh,
         };
-        Ok(Body::PresentationSlots(PresentationSlots {
+        PresentationSlots {
             controller_id: self.controller.clone(),
             connection: self.connection as i32,
             issue_code: self.issue.map(str::to_owned),
@@ -101,24 +159,24 @@ impl Service {
             remote_sequence: self.remote.as_ref().map(|remote| remote.sequence),
             control_generation: self.generation.map(|generation| generation.to_string()),
             slots,
-            overflow: layout
-                .overflow()
+            overflow: overflow
+                .into_iter()
                 .skip(offset)
                 .take(page_size)
                 .map(|run| self.display_run(run))
                 .collect(),
-            overflow_count: layout.overflow().count() as u32,
+            overflow_count,
             bindings,
             recent_ended: layout.ended().take(page_size).map(Into::into).collect(),
-            suppressed: layout
-                .suppressed()
+            suppressed_count: suppressed.len() as u32,
+            suppressed: suppressed
+                .into_iter()
                 .skip(offset)
                 .take(page_size)
                 .map(Into::into)
                 .collect(),
-            suppressed_count: layout.suppressed().count() as u32,
             layout_recovery: layout_recovery as i32,
-        }))
+        }
     }
 
     fn display_run(&self, key: RunKey) -> PresentedRun {
@@ -148,5 +206,129 @@ impl Service {
             display.latest_unseen_attention_id = None;
         }
         display
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use anyhow::Result;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::remote::ObservedRun;
+    use crate::{HostEndpoint, RunObservation, Store, initialize};
+
+    #[test]
+    fn current_pages_follow_the_daemon_and_apply_saved_preferences() -> Result<()> {
+        #[cfg(unix)]
+        let root = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
+        #[cfg(not(unix))]
+        let root = tempfile::tempdir()?;
+        let state = root.path().join("companion");
+        let endpoint = ControlEndpoint::Local(root.path().join("daemon"));
+        let host = Uuid::new_v4();
+        let epoch = Uuid::new_v4();
+        let key = |id: u128| RunKey {
+            host,
+            epoch,
+            run: Uuid::from_u128(id),
+        };
+        let observation = RunObservation {
+            created_sequence: Some(1),
+            pane: Some(Uuid::new_v4()),
+            navigable: true,
+            eligible: true,
+            ended: false,
+        };
+        initialize(&state, host, HostEndpoint::from(&endpoint), 2)?;
+        let mut store = Store::open(&state)?;
+        let (missing, pinned, hidden) = (key(1), key(2), key(3));
+        store.update(|layout| {
+            let saved = [missing, pinned, hidden].map(|key| (key, observation));
+            layout.reconcile(&BTreeMap::from(saved), &BTreeSet::new())?;
+            layout.pin(2, layout.slots()[1].revision, Some(pinned), true)?;
+            layout.remove(hidden)?;
+            Ok(())
+        })?;
+        let mut service = Service::new(store, endpoint);
+        let current = |key: RunKey, eligible| {
+            ObservedRun::for_test(
+                RunObservation {
+                    eligible,
+                    ..observation
+                },
+                PresentedRun {
+                    key: Some(key.into()),
+                    availability: RunAvailability::Available as i32,
+                    ..Default::default()
+                },
+            )
+        };
+        let count = u128::from(PRESENTATION_PAGE_SIZE);
+        let mut runs = BTreeMap::from([
+            (pinned, current(pinned, true)),
+            (hidden, current(hidden, true)),
+            (key(4), current(key(4), false)),
+        ]);
+        for id in 5..=count + 5 {
+            runs.insert(key(id), current(key(id), true));
+        }
+        service.remote = Some(crate::remote::Remote {
+            epoch,
+            sequence: 42,
+            bindings: BTreeMap::new(),
+            runs,
+            panes: BTreeSet::new(),
+            attention: Vec::new(),
+            omitted_attention: 0,
+        });
+        service.connection = CompanionConnection::Ready;
+        service.generation = Some(Uuid::new_v4());
+
+        let read = |service: &Service, index| {
+            let Body::PresentationRuns(page) = service.current_runs(index) else {
+                unreachable!()
+            };
+            (page.layout_revision, page.page.unwrap())
+        };
+        let (revision, first) = read(&service, 0);
+        let (second_revision, second) = read(&service, 1);
+        assert_eq!(revision, second_revision);
+        assert_eq!(first.remote_sequence, Some(42));
+        assert!(first.slots[0].run.is_none());
+        assert!(first.slots[1].pinned);
+        assert_eq!(
+            first.slots[1].run.as_ref().unwrap().key,
+            Some(pinned.into())
+        );
+        assert_eq!(first.suppressed, [hidden.into()]);
+        assert_eq!(first.overflow_count, PRESENTATION_PAGE_SIZE + 1);
+        assert_eq!(first.overflow.len(), PRESENTATION_PAGE_SIZE as usize);
+        assert_eq!(second.overflow.len(), 1);
+        assert_eq!(second.overflow[0].key, Some(key(count + 5).into()));
+
+        service.store.update(|layout| {
+            layout.pin(2, first.slots[1].revision, Some(pinned), false)?;
+            Ok(())
+        })?;
+        assert_ne!(read(&service, 0).0, revision);
+        service.connection = CompanionConnection::Offline;
+        service.generation = None;
+        let (_, offline) = read(&service, 0);
+        assert!(offline.slots.iter().all(|slot| slot.run.is_none()));
+        assert_eq!(offline.overflow_count, 0);
+        assert_eq!(offline.suppressed_count, 0);
+        let Body::PresentationSlots(legacy) =
+            service.presentation(GetPresentationSlots::default())?
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            legacy.slots[0].run.as_ref().unwrap().key,
+            Some(missing.into())
+        );
+        Ok(())
     }
 }

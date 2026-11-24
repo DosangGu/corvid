@@ -167,6 +167,7 @@ pub struct Store {
     _lock: StateLock,
     config: Config,
     slots: LoadedSlots,
+    layout_revision: u64,
     recovery: Recovery,
 }
 
@@ -210,6 +211,7 @@ impl Store {
             _lock: lock,
             config,
             slots,
+            layout_revision: 1,
             recovery,
         })
     }
@@ -224,6 +226,10 @@ impl Store {
 
     pub fn layout(&self) -> &SlotLayout {
         &self.slots.layout
+    }
+
+    pub(crate) fn layout_revision(&self) -> u64 {
+        self.layout_revision
     }
 
     pub fn recovery(&self) -> Recovery {
@@ -241,7 +247,12 @@ impl Store {
             "invalid slot update"
         );
         let last_known = collect_status(&next, |key| self.last_known(key));
+        let revision = self
+            .layout_revision
+            .checked_add(1)
+            .context("slot layout revision exhausted")?;
         let bytes = self.write_slots(&next, &last_known)?;
+        self.layout_revision = revision;
         self.slots = LoadedSlots {
             layout: next,
             last_known,

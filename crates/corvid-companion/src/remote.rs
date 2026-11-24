@@ -219,6 +219,17 @@ fn pending(request: &RequestState) -> bool {
 }
 
 impl ObservedRun {
+    #[cfg(test)]
+    pub(crate) fn for_test(observation: RunObservation, display: PresentedRun) -> Self {
+        Self {
+            observation,
+            display,
+            process_exited: false,
+            latest_alert: None,
+            latest_result: None,
+        }
+    }
+
     fn note_pending_since(&mut self, time: u64) {
         if time != 0 {
             let since = &mut self.display.pending_since_unix_ms;
