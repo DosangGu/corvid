@@ -1258,17 +1258,17 @@ impl WorkspaceView {
                                 .min_h_0()
                                 .overflow_hidden()
                                 .cursor_pointer()
-                                .child(preview(session, pane.clone(), Rc::clone(&surface)))
+                                .child(preview(session, pane.clone(), Some(Rc::clone(&surface))))
                                 .on_click(cx.listener(
                                     move |view, event: &gpui::ClickEvent, window, cx| {
                                         let cell = if event.modifiers().modified() {
                                             None
                                         } else {
-                                            event.mouse_position().zip(surface.get()).map(
-                                                |(point, bounds)| {
-                                                    crate::terminal_view::preview_cell(
-                                                        bounds, point, window, cx,
-                                                    )
+                                            event.mouse_position().zip(surface.get()).and_then(
+                                                |(point, (bounds, metrics))| {
+                                                    bounds
+                                                        .contains(&point)
+                                                        .then(|| metrics.position(bounds, point))
                                                 },
                                             )
                                         };
@@ -1357,7 +1357,7 @@ impl WorkspaceView {
             div().flex_1().min_h_0().overflow_hidden().child(preview(
                 session,
                 pane.to_owned(),
-                Rc::default(),
+                None,
             ))
         } else {
             self.preview_status("No running terminal")

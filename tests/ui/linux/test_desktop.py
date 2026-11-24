@@ -282,9 +282,14 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                     ["scrot", "--overwrite", "--format", "ppm", "--window", window, str(screenshot)],
                     check=True, timeout=5,
                 )
-                pixels = screenshot.read_bytes().partition(b"\n255\n")[2]
-                if all(bytes(color) * 8 in pixels for color in colors):
-                    return
+                header, _, pixels = screenshot.read_bytes().partition(b"\n255\n")
+                offsets = [pixels.find(bytes(color) * 8) for color in colors]
+                if all(offset >= 0 for offset in offsets):
+                    width, height = map(int, header.splitlines()[-1].split())
+                    positions = tuple(divmod(offset // 3, width) for offset in offsets)
+                    # Sample the blank area well below the shell prompt.
+                    blank = 3 * (height * 3 // 4 * width + width // 2)
+                    return positions, tuple(pixels[blank:blank + 3])
                 time.sleep(0.05)
             raise AssertionError(f"Desktop did not render terminal backgrounds {colors}")
 
@@ -559,6 +564,9 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         tests_color = (20, 82, 102)
         if args.build or tab_screenshot:
             prepare_preview("Editor", "Editing scratch.txt", editor_color)
+        if args.build:
+            editor_focused = wait_for_terminal_colors(editor_color)
+            assert editor_focused[1] == (32, 36, 43), editor_focused
         new_tab(window)
         second_terminal = wait_for_terminal(previous=first_terminal)
         second_tab_marker = root / "second-tab"
@@ -579,12 +587,17 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             assert writers() == focused, "Cancelling tab preview changed the input route"
         key(window, "ctrl+bracketright", "t", "Left")
         if args.build:
-            wait_for_terminal_colors(editor_color)
+            editor_preview = wait_for_terminal_colors(editor_color)
+            assert editor_preview == editor_focused, (editor_preview, editor_focused)
             assert writers() == focused, "Arrow key preview changed the input route"
         if tab_screenshot:
+            wait_for_terminal_colors(editor_color)
             subprocess.run(["scrot", "--overwrite", "--focused", tab_screenshot], check=True, timeout=10)
         key(window, "Return")
         wait_for_terminal(expected=first_terminal)
+        if args.build:
+            editor_selected = wait_for_terminal_colors(editor_color)
+            assert editor_selected == editor_focused, (editor_selected, editor_focused)
         key(window, "ctrl+bracketright", "t", "Right", "Return")
         wait_for_terminal(expected=second_terminal)
         if args.build:
