@@ -1781,7 +1781,9 @@ impl Launch {
             command.args(argv);
             command
         } else {
-            CommandBuilder::new_default_prog()
+            let mut command = CommandBuilder::new_default_prog();
+            super::locale::configure_shell(&mut command);
+            command
         };
         if let Some(cwd) = self.cwd {
             command.cwd(cwd);

@@ -163,8 +163,8 @@ impl SshAlias {
             self.as_str(),
             remote,
         ]);
+        // OpenSSH can forward locale variables from its process environment.
         command
-            .env("LC_ALL", "C")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -413,6 +413,17 @@ mod tests {
         );
         assert!(args.contains(&"-oBatchMode=yes".as_ref()));
         assert!(args.contains(&"-oStrictHostKeyChecking=yes".as_ref()));
+    }
+
+    #[test]
+    fn leaves_locale_inherited_by_openssh() {
+        let alias = SshAlias::new("work.remote-1".to_owned()).unwrap();
+        let command = alias.command(PeerRole::Tui).unwrap();
+        assert!(
+            command
+                .get_envs()
+                .all(|(name, _)| name != "LANG" && !name.to_string_lossy().starts_with("LC_"))
+        );
     }
 
     #[test]
