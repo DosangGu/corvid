@@ -81,10 +81,11 @@ delivery. The TUI forwards the ANSI to its outer terminal. Desktop decodes
 the same bounded text frame profile in Rust and can read older daemon frames.
 The clients can build without Zig or the Ghostty library.
 
-The `Checks / libghostty-vt` workflow builds the Ghostty daemon and TUI for the
-five release targets. It runs the linked VT fixtures on each target, PTY
-routing and handoff on Linux, the terminal relay on Linux and macOS, and a
-ConPTY shell history test on Windows.
+**Checks / Core and daemon** runs the linked VT fixtures on Linux PRs, and
+**Checks / TUI** exercises the standalone daemon through PTY routing, handoff,
+and the terminal relay. Release qualification runs the linked VT fixtures on
+all five targets, the relay on Linux and macOS, and the ConPTY shell history
+test on Windows.
 
 ### Measuring engine costs
 

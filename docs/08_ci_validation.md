@@ -10,8 +10,8 @@ source, shared dependencies, or build inputs. A documentation-only PR to
 
 | Workflow | Scope on a matching PR |
 | --- | --- |
-| **Checks / Core and daemon** | Linux Clippy and tests for core, wire protocol, daemon, and updater crates. |
-| **Checks / TUI** | Linux client and companion tests, TUI crate tests, and a real TUI process exchanging IPC messages with a scripted peer in a PTY. |
+| **Checks / Core and daemon** | Linux Clippy and tests for async, core, wire protocol, daemon, and updater crates. Includes libghostty VT and history fixtures, the Compio-only protocol build, and a dependency graph check for Tokio. |
+| **Checks / TUI** | Linux client and companion tests, scripted peer attach, and integration tests using one standalone daemon build for IPC, PTY routing and relay, reconnect, and workspace and monitor endpoints. |
 | **Checks / Desktop** | Linux Desktop unit tests and scripted IPC tests for inventory, render state, and attach negotiation. |
 | **Checks / Agent Deck** | Linux Agent Deck, Deck core, and presentation tests. |
 | **Checks / UI** | Desktop and Agent Deck smoke tests on all five release targets when the UI test harness changes. Also supports manual runs by platform and case. |
@@ -46,7 +46,8 @@ before GitHub Release publication. See [build and publish](05_release_distributi
 | Platform | Automated behavior |
 | --- | --- |
 | All five targets | Runtime and workspace Rust tests, Clippy, and native builds. Tests cover protocol framing, identities, input fencing, and restoration through the daemon/client boundary. |
-| Windows | `windows_daemon.rs` runs real ConPTY sessions and private named pipes, including input/paste isolation, tab naming, detach/resume, multiple writers, provider observations, and daemon handoff. |
+| Windows | `windows_daemon.rs` runs real ConPTY sessions and private named pipes, including input/paste isolation, tab naming, detach/resume, multiple writers, provider observations, and daemon handoff. Daemon and client tests cover PowerShell history and delivery of queued events after pipe closure. |
+| Windows and macOS | The runtime jobs verify the Compio-only protocol build and check the native workspace dependency graph for Tokio. The macOS runtime tests exercise agent recovery with a delayed Claude confirmation. |
 | Linux and macOS | The terminal spike and `interactive.py --tty-only` exercise real PTYs: fragmented UTF-8, escape sequences, bracketed paste, terminal queries, resize, Ctrl-C, exit status, TTY restoration, pairing, tabs, and reattachment to the same child. Linux runs the full interactive suite instead of the TTY-only subset. |
 | Linux | The full interactive suite also checks automatic daemon startup, shell continuity across replacement, and synthetic agent notifications. The loopback OpenSSH fixture checks abrupt disconnects, companion resynchronization, and same-PTY reattachment under a transient systemd user service. |
 | All five Desktop targets | The packaged UI smoke suite opens Desktop, connects to the fixture daemon, and opens an Agent Deck window. |

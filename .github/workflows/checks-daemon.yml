@@ -5,11 +5,14 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/checks-daemon.yml'
+      - '.github/actions/install-zig/**'
       - '.cargo/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'LICENSE'
+      - 'crates/corvid-async/**'
+      - 'crates/corvid-client/**'
       - 'crates/corvid-core/**'
       - 'crates/corvid-protocol/**'
       - 'crates/corvid-daemon/**'
@@ -55,26 +58,16 @@ jobs:
             target/debug
           key: checks-daemon-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/checks-daemon.yml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: checks-daemon-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/checks-daemon.yml') }}-
-      - run: cargo clippy --locked -p corvid-core -p corvid-protocol -p corvid-daemon -p corvid-update --all-targets -- -D warnings
-      - run: cargo test --locked -p corvid-core -p corvid-protocol -p corvid-daemon -p corvid-update
-
-  windows-shell-history:
-    name: PowerShell terminal history (Windows ARM64)
-    runs-on: windows-11-arm
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/install-zig
-      - name: Install Rust toolchain
-        run: rustup toolchain install --no-self-update
-      - name: Build the standalone daemon
-        run: cargo build --locked --bin corvidd
-      - name: Repeat the release-mode ConPTY history test
-        shell: pwsh
+      - name: Reject Tokio in the Linux dependency graph
+        shell: bash
         run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            cargo test --locked --release -p corvid-daemon --lib wheel_history_stays_live_while_powershell_runs_a_console_program
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+          cargo tree --locked --workspace --all-features --edges normal,build,dev \
+            --prefix none --format '{p}' > "$RUNNER_TEMP/corvid-native-deps.txt"
+          if grep -E '^tokio( |[-_])' "$RUNNER_TEMP/corvid-native-deps.txt"; then
+            echo "Tokio is present in the native dependency graph" >&2
+            exit 1
+          fi
+      - name: Compile the protocol library with only the Compio backend
+        run: cargo check --locked -p corvid-protocol --no-default-features --features compio --lib
+      - run: cargo clippy --locked -p corvid-async -p corvid-core -p corvid-protocol -p corvid-daemon -p corvid-update --all-targets -- -D warnings
+      - run: cargo test --locked -p corvid-async -p corvid-core -p corvid-protocol -p corvid-daemon -p corvid-update
