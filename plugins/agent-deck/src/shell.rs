@@ -32,7 +32,9 @@ pub(crate) fn options(window: &Window, cx: &App) -> WindowOptions {
         ..Default::default()
     };
     if cfg!(target_os = "macos") {
-        options.kind = gpui::WindowKind::PopUp;
+        // A card click needs to activate Deck before it can yield to Desktop.
+        // GPUI's PopUp uses a nonactivating AppKit panel.
+        options.kind = gpui::WindowKind::Floating;
         options.window_background = gpui::WindowBackgroundAppearance::Transparent;
         options.is_movable = false;
         options.is_resizable = false;

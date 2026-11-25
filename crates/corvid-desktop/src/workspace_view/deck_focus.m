@@ -39,7 +39,7 @@ void corvid_desktop_activate_window(void *view, void *reply) {
     __weak NSWindow *window = [(__bridge NSView *)view window];
     dispatch_async(dispatch_get_main_queue(), ^{
         if (window && corvid_desktop_activation_pending(reply) && !isFrontmost()) {
-            [NSRunningApplication.currentApplication activateWithOptions:0];
+            [NSApp activate];
         }
         confirmActivation(window, reply, false, 20);
     });

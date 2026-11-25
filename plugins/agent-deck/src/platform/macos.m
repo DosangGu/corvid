@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <UserNotifications/UserNotifications.h>
 #include <stdatomic.h>
+#include <unistd.h>
 
 extern void corvid_native_ready(bool status_icon, bool notifications);
 extern void corvid_native_submitted(unsigned long long high, unsigned long long low, bool accepted);
@@ -86,13 +87,33 @@ static NSImage *statusIcon(bool attention) {
     return image;
 }
 
-void corvid_native_yield_activation(unsigned int pid, void *completion) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!atomic_load(&stopping) && NSApp.isActive) {
-            NSRunningApplication *desktop = [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)pid];
+static bool deckIsFrontmost(void) {
+    return NSApp.isActive &&
+        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == getpid();
+}
+
+static void yieldActivation(unsigned int pid, bool card, void *completion, unsigned int attempts) {
+    if (!atomic_load(&stopping)) {
+        bool active = card ? deckIsFrontmost() : NSApp.isActive;
+        if (active) {
+            NSRunningApplication *desktop =
+                [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)pid];
             if (desktop) [NSApp yieldActivationToApplication:desktop];
+        } else if (attempts > 0) {
+            // WindowServer can finish activating the clicked panel asynchronously.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC),
+                dispatch_get_main_queue(), ^{
+                    yieldActivation(pid, card, completion, attempts - 1);
+                });
+            return;
         }
-        corvid_native_activation_yielded(completion);
+    }
+    corvid_native_activation_yielded(completion);
+}
+
+void corvid_native_yield_activation(unsigned int pid, bool card, void *completion) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        yieldActivation(pid, card, completion, card ? 10 : 0);
     });
 }
 

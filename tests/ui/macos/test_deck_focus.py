@@ -56,6 +56,12 @@ def open_deck(ui, panel, command, root, env, expanded):
     return deck
 
 
+def activate_finder(ui, desktop):
+    subprocess.run(["open", "-b", "com.apple.finder"], check=True, timeout=10)
+    wait_for("Finder to enter the foreground",
+             lambda: ui.frontmost()[1] == "com.apple.finder", desktop)
+
+
 def verify_focus(ui, desktop, window, panel, deck_command, root, *, cli, env, reader, names):
     layouts = ((False, False), (True, False), (True, True), (False, True))
     for scenario, (expanded, minimized) in enumerate(layouts):
@@ -75,11 +81,12 @@ def verify_focus(ui, desktop, window, panel, deck_command, root, *, cli, env, re
 
         # Switch away from Desktop as setup. The test driver never switches
         # back to Desktop after a slot click.
-        subprocess.run(["open", "-b", "com.apple.finder"], check=True, timeout=10)
-        wait_for("Finder to enter the foreground",
-                 lambda: ui.frontmost()[1] == "com.apple.finder", desktop)
+        activate_finder(ui, desktop)
         deck = open_deck(ui, panel, deck_command, root, env, expanded)
-        assert ui.frontmost()[1] == "com.apple.finder", "Finder must be frontmost before clicking"
+        assert ui.frontmost()[0] != window[0], "Opening the Deck activated Desktop before the click"
+        # Toggling the layout is itself a click on the Deck panel.
+        if ui.frontmost()[1] != "com.apple.finder":
+            activate_finder(ui, desktop)
 
         # Center of an occupied card in the first row of the default 4x2 Deck.
         x, y = (108 + 194 * index, 297) if expanded else (55 + 94 * index, 84)
