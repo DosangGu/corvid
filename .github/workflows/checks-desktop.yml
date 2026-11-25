@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/checks-desktop.yml'
+      - '.github/actions/install-zig/**'
       - '.cargo/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -57,6 +58,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/install-zig
+        timeout-minutes: 7
       - name: Install Linux build dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update --error-on=any
@@ -104,6 +106,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/install-zig
+        timeout-minutes: 7
       - run: rustup toolchain install --no-self-update
       - name: macOS build environment
         if: runner.os == 'macOS'
