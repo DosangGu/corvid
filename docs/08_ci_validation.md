@@ -32,10 +32,14 @@ See [GitHub's stack CI documentation](https://docs.github.com/en/pull-requests/h
 ### Hosted macOS runner cancellations
 
 If GitHub cancels a `macos-latest` job before assigning a runner, check the
-job annotation for limited Apple Silicon capacity. Once the workflow attempt
-has completed, set `JOB_ID` to the number at the end of the job URL and rerun
-that job. GitHub retains the completed matrix results and also reruns any jobs
-that depend on the selected job. [GitHub Actions rerun documentation](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+job annotation for limited Apple Silicon capacity. **Retry macOS runner
+assignment** retries one confirmed pre-assignment cancellation in a first
+attempt of Desktop, UI, release qualification, or release publication from
+this repository. If multiple jobs lost their runner or the retry also loses
+its runner, use the job links to select which work to resume. Once the
+workflow attempt has completed, set `JOB_ID` to the number at the end of the
+job URL and rerun that job. GitHub retains the completed matrix results and
+reruns jobs that depend on the selected job. [GitHub Actions rerun documentation](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
 
 ```sh
 gh run rerun --repo DosangGu/corvid --job "$JOB_ID"
