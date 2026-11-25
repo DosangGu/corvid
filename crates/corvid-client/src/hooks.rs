@@ -293,7 +293,7 @@ impl ClaudeInput {
             "PostToolUse" if self.tool_name.as_deref() == Some("Agent") => {
                 HookEvent::SubagentLinked
             }
-            "PermissionRequest" => HookEvent::PermissionRequested,
+            "PermissionRequest" if !question && !plan => HookEvent::PermissionRequested,
             "Stop" => HookEvent::ResponseObserved,
             "SubagentStart" => HookEvent::SubagentStarted,
             "SubagentStop" if self.stop_hook_active == Some(false) => {
@@ -401,6 +401,35 @@ mod tests {
         }"#;
         assert!(claude_fields(Some(unknown)).is_none());
         assert!(claude_fields(Some(child)).is_none());
+    }
+
+    #[test]
+    fn claude_permission_request_skips_question_and_plan_tools() {
+        for tool in ["AskUserQuestion", "ExitPlanMode"] {
+            let payload = json!({
+                "hook_event_name": "PermissionRequest",
+                "session_id": "session",
+                "prompt_id": "turn",
+                "tool_name": tool,
+            });
+            assert!(
+                claude_fields(Some(payload.to_string().as_bytes())).is_none(),
+                "expected PermissionRequest for {tool} to be ignored"
+            );
+        }
+
+        for tool in [Some("Bash"), None] {
+            let mut payload = json!({
+                "hook_event_name": "PermissionRequest",
+                "session_id": "session",
+                "prompt_id": "turn",
+            });
+            if let Some(tool) = tool {
+                payload["tool_name"] = json!(tool);
+            }
+            let observation = claude_fields(Some(payload.to_string().as_bytes())).unwrap();
+            assert_eq!(observation.event, HookEvent::PermissionRequested as i32);
+        }
     }
 
     #[test]

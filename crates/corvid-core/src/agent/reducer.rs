@@ -15,6 +15,7 @@ const MAX_ATTENTION: usize = 256;
 const MAX_RECENT_KEYS: usize = 1024;
 const MAX_ORPHANS: usize = 256;
 const ORPHAN_WINDOW_MS: u64 = 5_000;
+const UNKEYED_PERMISSION_COALESCE_MS: u64 = 1_000;
 const MAX_ID_BYTES: usize = 256;
 const MAX_EVIDENCE_TEXT_BYTES: usize = 1024;
 
@@ -38,6 +39,7 @@ pub(super) struct Correlation {
     batch_finished_inputs: Recent<RequestKey>,
     orphan_results: BTreeMap<RequestKey, OrphanResult>,
     expired_results: Recent<RequestKey>,
+    last_unkeyed_permission_ms: Option<u64>,
 }
 
 #[derive(Default)]
@@ -188,7 +190,7 @@ impl AgentRun {
             ObservationKind::WorkStarted(key) => self.start_work(key, evidence),
             ObservationKind::WorkFinished(key) => self.finish_work(key, evidence),
             ObservationKind::InputRequested { key, kind } => {
-                self.request_input(key, kind, evidence)
+                self.request_input(key, kind, evidence, monotonic_ms)
             }
             ObservationKind::InputResolved { key, resolution } => {
                 self.resolve_input(key, resolution, evidence, monotonic_ms)
@@ -254,6 +256,7 @@ impl AgentRun {
             }
         }
         self.correlation.response_for_prompt = false;
+        self.correlation.last_unkeyed_permission_ms = None;
         self.prompt_observation = (evidence.source == Source::ProviderHook
             && evidence.confidence != Confidence::Unknown
             && self.lifecycle.value == Lifecycle::Live
@@ -314,6 +317,7 @@ impl AgentRun {
         }
         self.correlation.current_turn = Some(turn);
         self.correlation.response_for_prompt = false;
+        self.correlation.last_unkeyed_permission_ms = None;
         self.prompt_observation = Some(Observed::new(signal, evidence));
         self.activity = Observed::new(Activity::Working, evidence);
         true
@@ -362,6 +366,9 @@ impl AgentRun {
         }
         let closed = self.work.remove(&key).is_some();
         let first = self.correlation.completed_work.insert(key);
+        if first || closed {
+            self.correlation.last_unkeyed_permission_ms = None;
+        }
         if closed {
             self.refresh_work_activity(evidence);
         }
@@ -426,7 +433,19 @@ impl AgentRun {
         key: Option<RequestKey>,
         kind: RequestKind,
         evidence: &Evidence,
+        monotonic_ms: u64,
     ) -> bool {
+        if key.is_none()
+            && kind == RequestKind::Permission
+            && self
+                .correlation
+                .last_unkeyed_permission_ms
+                .is_some_and(|last| {
+                    monotonic_ms.saturating_sub(last) < UNKEYED_PERMISSION_COALESCE_MS
+                })
+        {
+            return false;
+        }
         if let Some(key) = &key
             && (self.was_interrupted(&key.turn) || self.correlation.finished_requests.contains(key))
         {
@@ -458,6 +477,9 @@ impl AgentRun {
             }
         }
 
+        if key.is_none() && kind == RequestKind::Permission {
+            self.correlation.last_unkeyed_permission_ms = Some(monotonic_ms);
+        }
         let state = self.initial_request_state(key.as_ref(), evidence);
         let id = Uuid::new_v4();
         if is_open(state.value) {
@@ -533,6 +555,7 @@ impl AgentRun {
             request.state = state;
             self.correlation.recovered_requests.remove(&key);
             self.correlation.finished_requests.insert(key);
+            self.correlation.last_unkeyed_permission_ms = None;
             return true;
         }
         if self.correlation.orphan_results.len() == MAX_ORPHANS {
@@ -666,6 +689,7 @@ impl AgentRun {
             self.refresh_work_activity(evidence);
         }
 
+        self.correlation.last_unkeyed_permission_ms = None;
         let cause = match response.outcome {
             ResponseOutcome::Observed => AttentionCause::Response,
             ResponseOutcome::Interrupted | ResponseOutcome::Failed => AttentionCause::Failure,
@@ -768,6 +792,7 @@ impl AgentRun {
         self.work.clear();
         self.correlation.orphan_results.clear();
         self.correlation.recovered_requests.clear();
+        self.correlation.last_unkeyed_permission_ms = None;
         for request in self
             .requests
             .values_mut()

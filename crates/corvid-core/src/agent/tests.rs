@@ -586,8 +586,45 @@ fn delivery_and_provider_event_retries_are_idempotent() {
     let mut provider_retry = fixture.observation(kind.clone());
     provider_retry.evidence.provider_event_id = Some("event".to_owned());
     assert!(!fixture.run.apply(provider_retry, fixture.now));
+    fixture.now += 1_000;
     assert!(fixture.push(kind));
     assert_eq!(fixture.run.attention.len(), 2);
+}
+
+#[test]
+fn burst_unkeyed_permissions_coalesce_within_window() {
+    let mut fixture = Fixture::new();
+    let permission = || ObservationKind::InputRequested {
+        key: None,
+        kind: RequestKind::Permission,
+    };
+
+    assert!(fixture.push(permission()));
+    assert!(!fixture.push(permission()));
+    fixture.now += 997;
+    assert!(!fixture.push(permission()));
+    assert_eq!(fixture.run.requests.len(), 1);
+    assert_eq!(fixture.run.attention.len(), 1);
+}
+
+#[test]
+fn unkeyed_permissions_emit_again_after_window_or_progress() {
+    let mut fixture = Fixture::new();
+    let permission = || ObservationKind::InputRequested {
+        key: None,
+        kind: RequestKind::Permission,
+    };
+
+    assert!(fixture.push(permission()));
+    fixture.now += 1_000;
+    assert!(fixture.push(permission()));
+    assert_eq!(fixture.run.requests.len(), 2);
+    assert_eq!(fixture.run.attention.len(), 2);
+
+    assert!(fixture.push(ObservationKind::ModelRequested("turn".to_owned())));
+    assert!(fixture.push(permission()));
+    assert_eq!(fixture.run.requests.len(), 3);
+    assert_eq!(fixture.run.attention.len(), 3);
 }
 
 #[test]

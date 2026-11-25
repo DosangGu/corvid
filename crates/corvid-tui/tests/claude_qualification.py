@@ -417,7 +417,7 @@ def exercise(terminal, scenario, managed, fault):
         assert collector["healthy_runs"] == "1" and collector["gap_detected_runs"] == "0"
         assert int(collector["accepted_submissions"]) > 0
         question = managed.expect(terminal, run=initial["run"], pending="1", badge="NeedsInput")
-        assert question["unverified"] == "1"
+        assert question["unverified"] == "0"
     if child_start:
         child = exercise_child(terminal, managed, initial, child_start, background=scenario == "child")
         if managed:
@@ -426,11 +426,11 @@ def exercise(terminal, scenario, managed, fault):
                 children.append(exercise_child(terminal, managed, child, nested_start, background=False))
             managed.expect(terminal, run=initial["run"], pending="1", process="Running", response="false")
             snapshot = managed.snapshot()
-            assert int(snapshot["agents"]) == len(children) + 1 and snapshot["requests"] == "2"
+            assert int(snapshot["agents"]) == len(children) + 1 and snapshot["requests"] == "1"
     elif managed:
         snapshot = managed.snapshot()
         assert snapshot["agents"] == "1"
-        assert snapshot["requests"] == snapshot["attention"] == "2"
+        assert snapshot["requests"] == snapshot["attention"] == "1"
     if managed:
         managed.focus_question(terminal, question, offline_restart=scenario == "offline-restart")
         if scenario == "forged-output":
@@ -457,7 +457,7 @@ def exercise(terminal, scenario, managed, fault):
     elif managed:
         resolved = managed.expect(terminal, run=initial["run"], pending="0", resolved="1", response="true")
         assert resolved["process"] == "Running"
-        assert resolved["unverified"] == "1"
+        assert resolved["unverified"] == "0"
     if fault == "timeout":
         wait_for_hook_timeout(terminal)
     if scenario == "resume":
@@ -626,7 +626,7 @@ def exercise_plan(terminal, managed, initial, *, rejected):
     terminal.expect(b"Would you like to proceed?")
     approval = None
     if managed:
-        managed.expect(terminal, run=initial["run"], pending="1", unverified="1", badge="NeedsInput")
+        managed.expect(terminal, run=initial["run"], pending="1", unverified="0", badge="NeedsInput")
         approval = request_for(managed.command, initial["run"], "PlanApproval")
         assert approval["request_status"] == "Pending"
     if rejected:
@@ -637,7 +637,7 @@ def exercise_plan(terminal, managed, initial, *, rejected):
         terminal.event(hook_event_name="Stop")
         if managed:
             managed.expect(
-                terminal, run=initial["run"], pending="0", resolved="1", unverified="1", process="Running",
+                terminal, run=initial["run"], pending="0", resolved="1", unverified="0", process="Running",
             )
     terminal.send(b"/exit\r")
     assert terminal.process.wait(timeout=5) == 0
@@ -661,7 +661,7 @@ def reject_plan(terminal, managed, initial, approval):
     if managed:
         managed.expect(
             terminal, run=initial["run"], process="Running", response="true",
-            pending="0", unverified="2", resolved="0", cancelled="0",
+            pending="0", unverified="1", resolved="0", cancelled="0",
         )
         current = request_for(managed.command, initial["run"], "PlanApproval")
         assert current["request_id"] == approval["request_id"]
@@ -670,7 +670,7 @@ def reject_plan(terminal, managed, initial, approval):
 
         def approval_uncertain(view):
             slot = assigned_slots(view).get(initial["run"])
-            return slot and slot["pending"] == "0" and slot["unverified"] == "2"
+            return slot and slot["pending"] == "0" and slot["unverified"] == "1"
 
         view = managed.companion.wait(approval_uncertain)
         after = assigned_slots(view)[initial["run"]]
@@ -685,7 +685,7 @@ def reject_plan(terminal, managed, initial, approval):
 
 def exercise_cancel(terminal, managed, initial):
     if managed:
-        managed.expect(terminal, run=initial["run"], pending="1", unverified="1", badge="NeedsInput")
+        managed.expect(terminal, run=initial["run"], pending="1", unverified="0", badge="NeedsInput")
     offset = len(terminal.events())
     terminal.send(b"\x1b")
     time.sleep(0.5)
@@ -694,7 +694,7 @@ def exercise_cancel(terminal, managed, initial):
     terminal.event(hook_event_name="Stop", prompt_id=followup["prompt_id"])
     if managed:
         managed.expect(
-            terminal, run=initial["run"], pending="0", unverified="2", cancelled="0", resolved="0",
+            terminal, run=initial["run"], pending="0", unverified="1", cancelled="0", resolved="0",
         )
     terminal.send(b"/exit\r")
     assert terminal.process.wait(timeout=5) == 0
@@ -739,7 +739,7 @@ def run_snapshot_race(agent_args, managed, trace, layout):
         with paused_watch(managed.command, managed.directory) as watch:
             terminal.send(b"Corvid hook schema fixture\r")
             terminal.expect(prompt)
-            managed.expect(terminal, run=initial["run"], pending="1", unverified="1")
+            managed.expect(terminal, run=initial["run"], pending="1", unverified="0")
             question = request_for(managed.command, initial["run"])
             assert question["request_status"] == "Pending"
             terminal.send(b"\x1dd")
@@ -756,7 +756,7 @@ def run_snapshot_race(agent_args, managed, trace, layout):
                     "the agent tab to move",
                 )
                 expected = managed.snapshot()
-                assert expected["requests"] == expected["attention"] == "2"
+                assert expected["requests"] == expected["attention"] == "1"
                 assert expected["terminals"] == "2" and expected["clients"] == expected["agents"] == "1"
                 watch.finish(agent_pane, destination, initial, question, expected)
                 mover.send(b"q\r")
@@ -794,7 +794,7 @@ def collect_offline_questions(managed, agents):
     for (terminal, agent), prompt in zip(agents, OFFLINE_PROMPTS, strict=True):
         terminal.send(prompt + b"\r")
         terminal.expect(b"Enter to submit or Escape to cancel:")
-        managed.expect(terminal, run=agent["run"], pending="1", unverified="1", collection="Healthy")
+        managed.expect(terminal, run=agent["run"], pending="1", unverified="0", collection="Healthy")
         question = request_for(managed.command, agent["run"])
         assert question["request_status"] == "Pending"
         questions.append(question)
@@ -823,11 +823,9 @@ def collect_offline_questions(managed, agents):
 def answer_offline_question(terminal, agent, question, managed):
     terminal.send(b"1\r")
     terminal.event(hook_event_name="PostToolUse", session_id=agent["session"], tool_name="AskUserQuestion")
-    managed.expect(terminal, run=agent["run"], pending="0", resolved="1", response="true", unverified="1")
+    managed.expect(terminal, run=agent["run"], pending="0", resolved="1", response="true", unverified="0")
     resolved = request_for(managed.command, agent["run"])
     assert resolved["request_id"] == question["request_id"] and resolved["request_status"] == "Resolved"
-    permission = request_for(managed.command, agent["run"], "Permission")
-    assert permission["request_status"] == "Unverified"
 
 
 class CorvidFixture:
@@ -939,7 +937,7 @@ class CorvidFixture:
     def verify_gap_resync(self, terminal, question, before_view, before_slot):
         self.expect(
             terminal, run=question["run"], collection="GapDetected", badge="Unknown",
-            process="Running", pending="0", resolved="0", unverified="2",
+            process="Running", pending="0", resolved="0", unverified="1",
         )
         collector = self.collector_status()
         assert collector["healthy_runs"] == "0" and collector["gap_detected_runs"] == "1"
@@ -948,7 +946,7 @@ class CorvidFixture:
         slot = next(item for item in view["slots"] if item.get("run") == before_slot["run"])
         assert slot["slot"] == before_slot["slot"] and slot["revision"] == before_slot["revision"]
         assert slot["last_badge"] == "Unknown" and slot["collection"] == "GapDetected"
-        assert slot["pending"] == "0" and slot["unverified"] == "2"
+        assert slot["pending"] == "0" and slot["unverified"] == "1"
         assert view["header"]["remote_epoch"] == before_view["header"]["remote_epoch"]
         assert view["header"]["control_capture"] != before_view["header"]["control_capture"]
 
@@ -1085,7 +1083,7 @@ class CorvidFixture:
         assert result["attention_id"] == repeated["attention_id"] == first["attention_id"]
         assert result["acknowledged_unix_ms"] == repeated["acknowledged_unix_ms"]
         actual = next(agent for agent in self.agents() if agent["run"] == question["run"])
-        assert actual["pending"] == "1" and actual["unverified"] == "1"
+        assert actual["pending"] == "1" and actual["unverified"] == "0"
         output = subprocess.check_output([*self.command, "control", "attention"], text=True, timeout=3)
         assert output.count("acknowledged=true") == 1
 
