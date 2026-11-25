@@ -1,0 +1,73 @@
+name: Retry macOS runner assignment
+
+on:
+  workflow_run:
+    workflows: [Checks / Desktop, Checks / UI, Checks / Release, Publish Corvid Release]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  retry:
+    if: >-
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.conclusion == 'cancelled' || github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: retry-macos-runner-${{ github.event.workflow_run.id }}
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      checks: read
+    steps:
+      # This job uses the GitHub API only. It does not run source from the triggering workflow.
+      - name: Retry a macOS job canceled before assignment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          run_id=$(jq -er '.workflow_run.id' "$GITHUB_EVENT_PATH")
+          run_path="repos/$GH_REPO/actions/runs/$run_id"
+          candidates=$(gh api --paginate "$run_path/attempts/1/jobs?per_page=100" --jq '
+            .jobs[]
+            | select(.conclusion == "cancelled" and .runner_id == 0 and (.steps | length) == 0)
+            | select(.labels | index("macos-latest"))
+            | .id')
+
+          matches=()
+          while IFS= read -r job_id; do
+            [[ -n "$job_id" ]] || continue
+            messages=$(gh api --paginate "repos/$GH_REPO/check-runs/$job_id/annotations?per_page=100" --jq '
+              .[] | select(.annotation_level == "failure") | .message')
+            if grep -Fxq 'The job was not acquired by Runner of type hosted even after multiple attempts' <<< "$messages"; then
+              matches+=("$job_id")
+            fi
+          done <<< "$candidates"
+
+          if (( ${#matches[@]} != 1 )); then
+            echo "Found ${#matches[@]} macOS runner assignment failures. A single confirmed job is required for automatic retry."
+            exit 0
+          fi
+
+          event=$(jq -er '.workflow_run.event' "$GITHUB_EVENT_PATH")
+          if [[ "$event" == pull_request || "$event" == workflow_dispatch ]]; then
+            workflow_id=$(jq -er '.workflow_run.workflow_id' "$GITHUB_EVENT_PATH")
+            branch=$(jq -er '.workflow_run.head_branch' "$GITHUB_EVENT_PATH")
+            latest=$(gh api --method GET "repos/$GH_REPO/actions/workflows/$workflow_id/runs" \
+              -f branch="$branch" -f event="$event" -f per_page=1 --jq '.workflow_runs[0].id')
+            if [[ "$latest" != "$run_id" ]]; then
+              echo "A newer workflow run exists for this branch."
+              exit 0
+            fi
+          fi
+
+          state=$(gh api "$run_path" --jq '[.status, .run_attempt] | @tsv')
+          if [[ "$state" != $'completed\t1' ]]; then
+            echo "This run has already been retried."
+            exit 0
+          fi
+          gh api --method POST "repos/$GH_REPO/actions/jobs/${matches[0]}/rerun"
+          echo "Requested one retry for job ${matches[0]}."
