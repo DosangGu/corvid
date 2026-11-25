@@ -60,6 +60,34 @@ async fn ssh_workspace_restores_the_selected_pane_on_reconnect_and_reopen() -> R
                 .is_some_and(|view| view.tab_id == tab.tab_id && view.pane_id != tab.pane_id)
     })
     .await?;
+    let view = session
+        .tab_reorder_view()
+        .context("SSH tab reorder unavailable")?;
+    session.reorder_tab(
+        &view,
+        tab.workspace_id.clone(),
+        tab.tab_id.clone(),
+        Placement::BeforeTabId(initial.tab_id.clone()),
+    );
+    let tabs_reordered = |ui: &Ui| {
+        ui.inventory
+            .as_ref()
+            .and_then(|inventory| {
+                inventory
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == tab.workspace_id)
+            })
+            .is_some_and(|workspace| {
+                workspace
+                    .tabs
+                    .windows(2)
+                    .any(|pair| pair[0].tab_id == tab.tab_id && pair[1].tab_id == initial.tab_id)
+            })
+    };
+    let reordered = wait_for_ssh_ui(&session, tabs_reordered).await?;
+    assert_eq!(reordered.selected, original.selected);
+    assert_eq!(reordered.terminal_id, original.terminal_id);
     let recovered = {
         // Keep the daemon-side transport open while the local SSH process exits.
         let _relay = StoppedRelay::stop(&root)?;
@@ -70,6 +98,7 @@ async fn ssh_workspace_restores_the_selected_pane_on_reconnect_and_reopen() -> R
     };
     assert_eq!(recovered.terminal_id, original.terminal_id);
     assert_eq!(recovered.selected, original.selected);
+    assert!(tabs_reordered(&recovered));
 
     disconnect()?;
     let offline = wait_for_ssh_ui(&session, |ui| ui.ssh_offline).await?;
@@ -101,6 +130,7 @@ async fn ssh_workspace_restores_the_selected_pane_on_reconnect_and_reopen() -> R
     job.join();
     assert_eq!(reopened.terminal_id, original.terminal_id);
     assert_eq!(reopened.selected, original.selected);
+    assert!(tabs_reordered(&reopened));
     Ok(())
 }
 

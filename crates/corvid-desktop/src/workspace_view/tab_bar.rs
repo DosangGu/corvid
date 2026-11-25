@@ -1,13 +1,18 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{Bounds, Div, Pixels, ScrollHandle, Stateful, div, point, prelude::*, px, rgb};
+use corvid_protocol::wire::reorder_tab::Placement;
+use gpui::{
+    AnyWindowHandle, Bounds, Context, Div, Pixels, ScrollHandle, Stateful, Window, div, point,
+    prelude::*, px, rgb,
+};
 
 #[cfg(windows)]
 use super::window_controls::window_drag_region;
-use super::{MUTED, PANEL, TEXT, ui_px};
+use super::{MUTED, NAVIGATION_HIGHLIGHT, PANEL, TEXT, WorkspaceView, ui_px};
 #[cfg(target_os = "macos")]
 use crate::macos::window_drag_region;
+use crate::terminal_session::TabReorderView;
 
 const SCROLL_EPSILON: Pixels = px(0.01);
 const TABS_IN_TITLEBAR: bool = cfg!(any(windows, target_os = "macos"));
@@ -47,12 +52,86 @@ enum Direction {
     Right,
 }
 
+pub(super) struct TabDrag {
+    pub(super) window: AnyWindowHandle,
+    pub(super) view: TabReorderView,
+    pub(super) workspace: String,
+    pub(super) tab: String,
+}
+
+struct TabDragPreview(String);
+
+impl Render for TabDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().pt(ui_px(24.)).child(
+            div()
+                .rounded_md()
+                .bg(rgb(PANEL))
+                .px(ui_px(8.))
+                .py(ui_px(3.))
+                .text_size(ui_px(12.))
+                .text_color(rgb(TEXT))
+                .max_w(ui_px(240.))
+                .truncate()
+                .child(self.0.clone()),
+        )
+    }
+}
+
+impl TabDrag {
+    pub(super) fn title_button(self, button: Stateful<Div>, title: String) -> Stateful<Div> {
+        button.on_drag(self, move |_: &Self, _, _, cx| {
+            cx.new(|_| TabDragPreview(title.clone()))
+        })
+    }
+}
+
+pub(super) fn drop_zones(workspace: &str, tab: &str, cx: &Context<WorkspaceView>) -> [Div; 2] {
+    [Direction::Left, Direction::Right].map(|side| {
+        let workspace = workspace.to_owned();
+        let target = tab.to_owned();
+        let placement = match side {
+            Direction::Left => Placement::BeforeTabId(target.clone()),
+            Direction::Right => Placement::AfterTabId(target.clone()),
+        };
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w_1_2()
+            .border_color(gpui::transparent_black())
+            .map(|zone| match side {
+                Direction::Left => zone.left_0().border_l_2(),
+                Direction::Right => zone.right_0().border_r_2(),
+            })
+            .can_drop(move |drag, window, _| {
+                drag.downcast_ref::<TabDrag>().is_some_and(|drag| {
+                    drag.window == window.window_handle()
+                        && drag.workspace == workspace
+                        && drag.tab != target
+                })
+            })
+            .drag_over::<TabDrag>(|style, _, _, _| style.border_color(rgb(NAVIGATION_HIGHLIGHT)))
+            .on_drop(cx.listener(move |view, drag: &TabDrag, _, _| {
+                if let Some(session) = &view.session {
+                    session.reorder_tab(
+                        &drag.view,
+                        drag.workspace.clone(),
+                        drag.tab.clone(),
+                        placement.clone(),
+                    );
+                }
+            }))
+    })
+}
+
 #[derive(Default)]
 pub(super) struct TabBar {
     scroll: ScrollHandle,
     arrows: Rc<Cell<Arrows>>,
     selection: Option<String>,
     follow_selection: Rc<Cell<bool>>,
+    drag_scroll_pending: Rc<Cell<bool>>,
 }
 
 impl TabBar {
@@ -74,6 +153,9 @@ impl TabBar {
             .filter(|_| self.follow_selection.get());
         let scroll = self.scroll.clone();
         let follow_selection = self.follow_selection.clone();
+        let drag_scroll = scroll.clone();
+        let drag_follow = follow_selection.clone();
+        let drag_pending = self.drag_scroll_pending.clone();
         let strip = div()
             .id("daemon-tabs")
             .flex()
@@ -82,6 +164,14 @@ impl TabBar {
             .when(!TABS_IN_TITLEBAR, |strip| strip.gap(ui_px(3.)))
             .overflow_x_scroll()
             .track_scroll(&self.scroll)
+            .on_drag_move::<TabDrag>(move |event, window, cx| {
+                if event.drag(cx).window == window.window_handle()
+                    && drag_scroll.bounds().contains(&event.event.position)
+                    && !drag_pending.replace(true)
+                {
+                    step_drag_scroll(window, &drag_scroll, &drag_follow, &drag_pending);
+                }
+            })
             .on_scroll(move |_, _, _| {
                 if scroll.max_offset().x > SCROLL_EPSILON {
                     follow_selection.set(false);
@@ -185,6 +275,43 @@ impl TabBar {
                     })
             })
     }
+}
+
+fn step_drag_scroll(
+    window: &mut Window,
+    scroll: &ScrollHandle,
+    follow: &Rc<Cell<bool>>,
+    pending: &Rc<Cell<bool>>,
+) {
+    let viewport = scroll.bounds();
+    let mouse = window.mouse_position();
+    let edge = ui_px(24.)
+        .to_pixels(window.rem_size())
+        .min(viewport.size.width / 3.);
+    let speed = ui_px(9.).to_pixels(window.rem_size());
+    let delta = if mouse.x < viewport.left() + edge {
+        speed
+    } else if mouse.x > viewport.right() - edge {
+        -speed
+    } else {
+        px(0.)
+    };
+    if !viewport.contains(&mouse) || !set_scroll_x(scroll, scroll.offset().x + delta) {
+        pending.set(false);
+        return;
+    }
+    follow.set(false);
+    let scroll = scroll.clone();
+    let follow = follow.clone();
+    let pending = pending.clone();
+    window.on_next_frame(move |window, cx| {
+        if cx.has_active_drag() {
+            step_drag_scroll(window, &scroll, &follow, &pending);
+        } else {
+            pending.set(false);
+        }
+    });
+    window.refresh();
 }
 
 fn hidden_tab_edge(

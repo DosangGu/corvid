@@ -16,6 +16,7 @@ use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::FocusViewAgent;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::reorder_tab::Placement;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentBadge, AgentCollection, AgentEndReason, AgentInfo, AgentProcessState, AgentProvider,
@@ -23,8 +24,9 @@ use corvid_protocol::wire::{
     CompanionConnection, CreateView, EntityKind, Envelope, FocusAgentRequest, FocusApplied,
     FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode,
     LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin, PasteChunk, PasteEnd, Ping,
-    PresentationSlots, PresentedSlot, PresentedSlotToken, ReadPanePreview, ResizeViewport,
-    RouteToken, SelectView, SnapshotWatch, SplitAxis, TuiInputMode, ViewSelection, Viewport,
+    PresentationSlots, PresentedSlot, PresentedSlotToken, ReadPanePreview, ReorderTab,
+    ResizeViewport, RouteToken, SelectView, SnapshotWatch, SplitAxis, TabStep, TuiInputMode,
+    ViewSelection, Viewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, CREATE_VIEW_CAPABILITY, FRAME_PREAMBLE, Frame, FrameError,
@@ -1068,6 +1070,176 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
     .unwrap();
     daemon.kill().unwrap();
     daemon.status().await.unwrap();
+}
+
+#[compio::test]
+async fn reorders_tabs_for_watchers_and_closes_into_the_nearest_available_tab() -> anyhow::Result<()>
+{
+    let fixture = fixture_directory()?;
+    let runtime = fixture.path().join("run");
+    let state = fixture.path().join("state");
+    let mut first = daemon(&runtime, &state).await;
+    let writer_capabilities = || {
+        [PANE_WRITERS_CAPABILITY, WORKSPACE_UI_CAPABILITY, "tabs.v1"]
+            .map(str::to_owned)
+            .to_vec()
+    };
+
+    let (workspace, expected_order) = timeout(WAIT, async {
+        let mut tui = Tui::attach_target(&runtime, Attach {
+            terminal_capabilities: writer_capabilities(),
+            launch: Some(echo_fixture("FIRST")),
+            ..Default::default()
+        }).await;
+        let workspace = tui.selection.workspace_id.clone();
+        let mut tabs = vec![tui.selection.clone()];
+        let mut output = Vec::new();
+        for label in ["Left", "Current", "Right", "Last"] {
+            tui.send(Body::CreateView(CreateView {
+                expected_view_revision: Some(tui.route.view_revision),
+                target: Some(Target::TabLabel(label.into())),
+            })).await;
+            let Body::ViewChanged(view) = tui.next_body(&mut output).await else {
+                panic!("expected a new tab");
+            };
+            tui.route = view.route_token.unwrap();
+            tui.selection = view.selection.unwrap();
+            tabs.push(tui.selection.clone());
+        }
+        let [first, left, current, right, last] = tabs.as_slice() else { unreachable!() };
+        let order = |tabs: [&ViewSelection; 5]| {
+            tabs.map(|tab| tab.tab_id.clone())
+        };
+        let mut watch = corvid_client::watch_snapshot(&runtime).await.unwrap();
+        let route = tui.route.clone();
+        tui.input(route.clone(), 1, b"\x1d").await;
+        tui.input(route.clone(), 2, b"t").await;
+        tui.input(route.clone(), 3, b"[[").await;
+        while workspace_tab_order(watch.state(), &workspace) != order([first, left, last, current, right]) {
+            watch.next_change().await.unwrap();
+        }
+        tui.input(route.clone(), 4, b"\x1b").await;
+
+        let command = ReorderTab {
+            expected_view_revision: Some(route.view_revision),
+            workspace_id: workspace.clone(),
+            tab_id: left.tab_id.clone(),
+            placement: Some(Placement::AfterTabId(last.tab_id.clone())),
+        };
+        tui.send(Body::ReorderTab(command.clone())).await;
+        let Body::TabReordered(reply) = tui.next_body(&mut output).await else {
+            panic!("expected tab reorder acknowledgement");
+        };
+        while watch.state().snapshot().sequence() < reply.commit_sequence {
+            watch.next_change().await.unwrap();
+        }
+        assert_eq!(workspace_tab_order(watch.state(), &workspace), order([first, last, left, current, right]));
+        let view = tui.client_state(&runtime).await.pane_writer_view.unwrap();
+        assert_eq!(view.selection.as_ref(), Some(last));
+        assert_eq!(view.terminal_id, route.terminal_id);
+        assert_eq!(view.view_revision, route.view_revision);
+        assert_eq!(view.lease_generation, route.writer_lease_generation);
+
+        tui.send(Body::ReorderTab(ReorderTab {
+            expected_view_revision: None,
+            ..command.clone()
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "StaleRoute"));
+        tui.send(Body::ReorderTab(ReorderTab {
+            placement: Some(Placement::Step(TabStep::Unspecified as i32)),
+            ..command
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "InvalidMessage"));
+
+        let other = Tui::attach_target(&runtime, Attach {
+            workspace_id: Some(workspace.clone()),
+            tab_id: Some(right.tab_id.clone()),
+            pane_id: Some(right.pane_id.clone()),
+            terminal_capabilities: writer_capabilities(),
+            ..Default::default()
+        }).await;
+        let other_before = other.client_state(&runtime).await;
+        tui.select(current).await;
+        tui.moved(&mut output, current).await;
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(tui.route.view_revision),
+            workspace_id: workspace.clone(),
+            tab_id: Some(current.tab_id.clone()),
+            ..Default::default()
+        })).await;
+        tui.moved(&mut output, left).await;
+        assert_eq!(other.client_state(&runtime).await, other_before);
+
+        tui.send(Body::ReorderTab(ReorderTab {
+            expected_view_revision: Some(tui.route.view_revision),
+            workspace_id: workspace.clone(),
+            tab_id: last.tab_id.clone(),
+            placement: Some(Placement::BeforeTabId(current.tab_id.clone())),
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Error(error) if error.code == "TargetGone"));
+        drop(other);
+        loop {
+            let clients = corvid_client::clients(&runtime).await.unwrap();
+            if clients.clients.len() == 1 { break; }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(tui.route.view_revision),
+            workspace_id: workspace.clone(),
+            tab_id: Some(left.tab_id.clone()),
+            ..Default::default()
+        })).await;
+        tui.moved(&mut output, right).await;
+        tui.send(Body::CloseView(CloseView {
+            expected_view_revision: Some(tui.route.view_revision),
+            workspace_id: workspace.clone(),
+            tab_id: Some(right.tab_id.clone()),
+            ..Default::default()
+        })).await;
+        tui.moved(&mut output, last).await;
+
+        tui.send(Body::ReorderTab(ReorderTab {
+            expected_view_revision: Some(tui.route.view_revision),
+            workspace_id: workspace.clone(),
+            tab_id: last.tab_id.clone(),
+            placement: Some(Placement::BeforeTabId(first.tab_id.clone())),
+        })).await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::TabReordered(_)));
+        (workspace, [last.tab_id.clone(), first.tab_id.clone()])
+    }).await?;
+
+    // The PID belongs to this test's live daemon child.
+    let pid = i32::try_from(first.id())?;
+    let signalled = unsafe { nix::libc::kill(pid, nix::libc::SIGTERM) };
+    if signalled == -1 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    assert!(timeout(WAIT, first.status()).await??.success());
+    let _second = daemon(&runtime, &state).await;
+    let snapshot = corvid_client::snapshot(&runtime).await?;
+    assert_eq!(workspace_tab_order(&snapshot, &workspace), expected_order);
+    Ok(())
+}
+
+fn workspace_tab_order(
+    state: &corvid_protocol::snapshot::SynchronizedSnapshot,
+    id: &str,
+) -> Vec<String> {
+    state
+        .snapshot()
+        .entities()
+        .find_map(|entity| match &entity.body {
+            Some(EntityBody::Workspace(workspace)) if workspace.workspace_id == id => Some(
+                workspace
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.tab_id.clone())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .expect("workspace in snapshot")
 }
 
 #[compio::test]

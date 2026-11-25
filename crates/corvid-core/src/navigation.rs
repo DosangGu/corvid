@@ -8,11 +8,14 @@ pub enum Direction {
     Down,
 }
 
-pub const fn tab_mode_hint(can_close: bool) -> &'static str {
-    if can_close {
-        "Tabs · ←/→ h/l Preview · Enter Focus · n New · x Close · Esc Cancel"
-    } else {
-        "Tabs · ←/→ h/l Preview · Enter Focus · n New · Esc Cancel"
+pub const fn tab_mode_hint(can_close: bool, can_reorder: bool) -> &'static str {
+    match (can_close, can_reorder) {
+        (true, true) => {
+            "Tabs · [/] Move · ←/→ h/l Preview · Enter Focus · n New · x Close · Esc Exit"
+        }
+        (false, true) => "Tabs · [/] Move · ←/→ h/l Preview · Enter Focus · n New · Esc Exit",
+        (true, false) => "Tabs · ←/→ h/l Preview · Enter Focus · n New · x Close · Esc Cancel",
+        (false, false) => "Tabs · ←/→ h/l Preview · Enter Focus · n New · Esc Cancel",
     }
 }
 

@@ -2,7 +2,8 @@ use super::*;
 use corvid_core::layout::Axis;
 use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint, tab_mode_hint};
 use corvid_core::shortcuts::dubeolsik_key;
-use corvid_protocol::wire::SplitPane;
+use corvid_protocol::wire::reorder_tab::Placement;
+use corvid_protocol::wire::{SplitPane, TabStep};
 
 pub(super) enum Overlay {
     Commands {
@@ -222,7 +223,7 @@ impl WorkspaceView {
             && !matches!(name, "left" | "right" | "up" | "down" | "backspace")
             && !matches!(
                 (&self.navigation, name),
-                (Some(Overlay::Tabs { .. }), "h" | "l")
+                (Some(Overlay::Tabs { .. }), "h" | "l" | "[" | "]")
                     | (Some(Overlay::Panes(_)), "h" | "j" | "k" | "l")
             )
         {
@@ -389,6 +390,23 @@ impl WorkspaceView {
                     return;
                 }
             }
+            "[" | "]" if index.is_some() => {
+                if let Some(session) = &self.session
+                    && let Some(view) = session.tab_reorder_view()
+                {
+                    let step = if key == "[" {
+                        TabStep::Left
+                    } else {
+                        TabStep::Right
+                    };
+                    session.reorder_tab(
+                        &view,
+                        workspace_id.clone(),
+                        tab_id.clone(),
+                        Placement::Step(step as i32),
+                    );
+                }
+            }
             "h" | "left" | "up" | "l" | "right" | "down" => {
                 if let Some(index) = index.or_else(|| {
                     workspace
@@ -454,12 +472,11 @@ impl WorkspaceView {
     }
 
     pub(super) fn navigation_panel(&self) -> Option<Div> {
-        let can_close = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.ui().can_close());
+        let ui = self.session.as_ref().map(Session::ui);
+        let can_close = ui.as_ref().is_some_and(Ui::can_close);
+        let can_reorder = ui.as_ref().is_some_and(Ui::can_reorder_tabs);
         let mode_hint = match self.navigation.as_ref() {
-            Some(Overlay::Tabs { .. }) => Some(tab_mode_hint(can_close).to_owned()),
+            Some(Overlay::Tabs { .. }) => Some(tab_mode_hint(can_close, can_reorder).to_owned()),
             Some(Overlay::Panes(target)) => {
                 let label = self
                     .pane_ordinal(target)

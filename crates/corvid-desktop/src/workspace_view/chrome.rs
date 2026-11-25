@@ -258,7 +258,7 @@ impl WorkspaceView {
             .min_w_0()
             .items_center()
             .when_some(ui.zip(workspace), |bar, (ui, workspace)| {
-                bar.child(self.tabs(workspace, ui, cx))
+                bar.child(self.tabs(workspace, ui, window, cx))
             });
         #[cfg(any(windows, target_os = "macos"))]
         let tabs = tabs
@@ -336,13 +336,20 @@ impl WorkspaceView {
         bar
     }
 
-    fn tabs(&self, workspace: &WorkspaceState, ui: &Ui, cx: &mut Context<Self>) -> Div {
+    fn tabs(
+        &self,
+        workspace: &WorkspaceState,
+        ui: &Ui,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let selected = ui.selected.as_ref().map(|view| view.tab_id.as_str());
         let highlighted = self
             .navigation
             .as_ref()
             .and_then(|mode| mode.highlighted_tab(&workspace.workspace_id));
         let inventory = ui.inventory.as_ref();
+        let reorder_view = self.session.as_ref().and_then(Session::tab_reorder_view);
         self.tab_bar.render(workspace.tabs.iter().filter_map(|tab| {
             let (target, open) = self.choose(workspace, tab, inventory?)?;
             let active = selected == Some(tab.tab_id.as_str());
@@ -384,10 +391,33 @@ impl WorkspaceView {
                 || tab.label.clone(),
                 |summary| format!("{} · {summary}", tab.label),
             );
+            let button = title::button(
+                button_frame("select-tab", active)
+                    .bg(rgb(fill))
+                    .when(previewed && !active, |button| button.text_color(rgb(TEXT)))
+                    .min_w_0()
+                    .flex_shrink(1.),
+                title.clone(),
+                attention.then_some("!"),
+            )
+            .on_click(cx.listener(move |view, _, window, cx| {
+                view.dismiss_overlay(window, cx);
+                view.open_pane(target.clone(), open, window, cx);
+            }))
+            .when_some(reorder_view.clone(), |button, view| {
+                tab_bar::TabDrag {
+                    window: window.window_handle(),
+                    view,
+                    workspace: workspace.workspace_id.clone(),
+                    tab: tab.tab_id.clone(),
+                }
+                .title_button(button, title)
+            });
             Some((
                 tab.tab_id.as_str(),
                 div()
                     .id(SharedString::from(tab.tab_id.clone()))
+                    .relative()
                     .flex()
                     .flex_none()
                     .items_center()
@@ -395,23 +425,7 @@ impl WorkspaceView {
                     .bg(rgb(fill))
                     .p(px(1.))
                     .max_w(ui_px(240.))
-                    .child(
-                        title::button(
-                            button_frame("select-tab", active)
-                                .bg(rgb(fill))
-                                .when(previewed && !active, |button| button.text_color(rgb(TEXT)))
-                                .min_w_0()
-                                .flex_shrink(1.),
-                            title,
-                            attention.then_some("!"),
-                        )
-                        .on_click(cx.listener(
-                            move |view, _, window, cx| {
-                                view.dismiss_overlay(window, cx);
-                                view.open_pane(target.clone(), open, window, cx);
-                            },
-                        )),
-                    )
+                    .child(button)
                     .when(ui.can_close(), |row| {
                         row.child(Self::close_button(
                             "close-tab",
@@ -421,6 +435,13 @@ impl WorkspaceView {
                                 tab_id: Some(tab.tab_id.clone()),
                                 ..Default::default()
                             },
+                            cx,
+                        ))
+                    })
+                    .when(reorder_view.is_some(), |row| {
+                        row.children(tab_bar::drop_zones(
+                            &workspace.workspace_id,
+                            &tab.tab_id,
                             cx,
                         ))
                     }),
@@ -610,10 +631,12 @@ impl Render for WorkspaceView {
         if let Some(session) = &self.session {
             session.set_preview_tab(preview_tab);
         }
-        self.tab_bar.select(
-            highlighted.or_else(|| selected.map(|selected| selected.tab_id.as_str())),
-            highlighted.is_some(),
-        );
+        if !cx.has_active_drag() {
+            self.tab_bar.select(
+                highlighted.or_else(|| selected.map(|selected| selected.tab_id.as_str())),
+                highlighted.is_some(),
+            );
+        }
         let inventory = ui.as_ref().and_then(|ui| ui.inventory.as_ref());
         let workspace = ui
             .as_ref()

@@ -19,7 +19,9 @@ use corvid_async::{mpsc, oneshot};
 use corvid_core::agent::ProcessLiveness;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::Provider;
-use corvid_core::layout::{Axis, CloseTarget, CwdObservation, CwdSource, Layout, Location};
+use corvid_core::layout::{
+    Axis, CloseTarget, CwdObservation, CwdSource, Layout, Location, TabPlacement,
+};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
@@ -968,6 +970,18 @@ impl Workspaces {
             .await
     }
 
+    pub(crate) async fn reorder_tab(
+        &self,
+        route: InputRoute,
+        workspace: Uuid,
+        tab: Uuid,
+        placement: TabPlacement,
+    ) -> Reply<u64> {
+        self.registry
+            .request(move |registry| registry.reorder_tab(route, workspace, tab, placement))
+            .await
+    }
+
     pub(crate) async fn resize_hidden(&self, active: &Active) {
         let active = active.view();
         self.registry
@@ -1237,6 +1251,51 @@ impl Registry {
         self.slots
             .get(&location.pane)
             .is_some_and(|slot| slot.terminal.has_live_terminal())
+    }
+
+    pub(crate) fn reorder_tab(
+        &mut self,
+        route: InputRoute,
+        workspace: Uuid,
+        tab: Uuid,
+        placement: TabPlacement,
+    ) -> Reply<u64> {
+        self.require_route(route)?;
+        let active = self.clients[&route.client_id]
+            .view
+            .as_ref()
+            .expect("validated route");
+        if workspace != active.location.workspace {
+            return Err(writer_required());
+        }
+        self.require_pane_writer(route.client_id, active.location)?;
+        self.require_publication()?;
+
+        let affects_reorder = |id| id == tab || placement.anchor() == Some(id);
+        if self.closing.iter().any(|target| {
+            target.workspace() == workspace
+                && match target {
+                    CloseTarget::Workspace(_) => true,
+                    CloseTarget::Tab { tab, .. } => affects_reorder(*tab),
+                    CloseTarget::Pane(location) => affects_reorder(location.tab),
+                }
+        }) {
+            return Err(input_busy());
+        }
+
+        let mut layout = self.metadata.layout();
+        let current = Arc::make_mut(&mut layout)
+            .workspaces
+            .iter_mut()
+            .find(|item| item.id == workspace)
+            .ok_or_else(target_gone)?;
+        if current
+            .reorder_tab(tab, placement)
+            .map_err(|_| target_gone())?
+        {
+            self.publish_layout(layout, Vec::new());
+        }
+        self.publication.sequence()
     }
 
     pub(crate) fn publish(&mut self, projections: Vec<Projection>) {

@@ -44,7 +44,8 @@ impl Workspaces {
                 if !shared {
                     registry.require_writer(client, target.workspace())?;
                 }
-                let mut layout = registry.metadata.layout();
+                let previous = registry.metadata.layout();
+                let mut layout = Arc::clone(&previous);
                 let removed = Arc::make_mut(&mut layout)
                     .close(target)
                     .map_err(|_| target_gone())?;
@@ -63,7 +64,7 @@ impl Workspaces {
                     return Ok(None);
                 }
                 let reserved = registry
-                    .close_destination(&layout, old)
+                    .close_destination(&previous, &layout, old)
                     .map(|location| {
                         let generation = if shared {
                             old.route.writer_lease_generation
@@ -147,48 +148,50 @@ impl Workspaces {
 }
 
 impl Registry {
-    fn close_destination(&self, layout: &Layout, old: &super::View) -> Option<Location> {
+    fn close_destination(
+        &self,
+        previous: &Layout,
+        layout: &Layout,
+        old: &super::View,
+    ) -> Option<Location> {
         let here = old.location;
         let client = old.route.client_id;
-        if self.clients[&client].keymap.pane_writer {
-            let workspace = layout
-                .workspaces
-                .iter()
-                .find(|item| item.id == here.workspace)?;
-            return layout
-                .panes(here.workspace, here.tab)
-                .into_iter()
-                .chain(
-                    workspace
-                        .tabs
-                        .iter()
-                        .filter(|tab| tab.id != here.tab)
-                        .flat_map(|tab| layout.panes(here.workspace, tab.id)),
-                )
-                .find(|location| {
-                    self.has_live_at(*location)
-                        && self.check_pane_available(client, *location).is_ok()
-                });
+        let available_pane = |workspace, tab| {
+            layout.panes(workspace, tab).into_iter().find(|location| {
+                self.slots
+                    .get(&location.pane)
+                    .is_some_and(|slot| !slot.reserved && slot.terminal.has_live_terminal())
+                    && self.check_pane_available(client, *location).is_ok()
+            })
+        };
+        if let Some(location) = available_pane(here.workspace, here.tab) {
+            return Some(location);
         }
-        let current = layout
+        let workspace = previous
             .workspaces
             .iter()
-            .find(|workspace| workspace.id == here.workspace);
-        let other = layout
+            .find(|workspace| workspace.id == here.workspace)?;
+        let index = workspace.tabs.iter().position(|tab| tab.id == here.tab)?;
+        let neighbor = (1..workspace.tabs.len())
+            .flat_map(|distance| [Some(index + distance), index.checked_sub(distance)])
+            .flatten()
+            .filter_map(|index| workspace.tabs.get(index))
+            .find_map(|tab| available_pane(here.workspace, tab.id));
+        if neighbor.is_some() || self.clients[&client].keymap.pane_writer {
+            return neighbor;
+        }
+        layout
             .workspaces
             .iter()
-            .filter(|workspace| workspace.id != here.workspace);
-        self.live_tab(layout, here.workspace, here.tab).or_else(|| {
-            current
-                .into_iter()
-                .chain(other)
-                .filter(|workspace| {
-                    self.require_writer(old.route.client_id, workspace.id)
-                        .is_ok()
-                })
-                .flat_map(|workspace| workspace.tabs.iter().map(move |tab| (workspace.id, tab.id)))
-                .find_map(|(workspace, tab)| self.live_tab(layout, workspace, tab))
-        })
+            .filter(|workspace| {
+                workspace.id != here.workspace && self.require_writer(client, workspace.id).is_ok()
+            })
+            .find_map(|workspace| {
+                workspace
+                    .tabs
+                    .iter()
+                    .find_map(|tab| available_pane(workspace.id, tab.id))
+            })
     }
 
     fn commit_close(

@@ -161,6 +161,20 @@ impl Session {
 
         let body = known_body(request)?;
         match (self.role, body) {
+            (PeerRole::Tui, Body::ReorderTab(_)) => {
+                if self
+                    .capabilities
+                    .iter()
+                    .any(|cap| cap == crate::REORDER_TAB_CAPABILITY)
+                {
+                    Ok(body)
+                } else {
+                    Err(ProtocolFault::new(
+                        "UnsupportedCapability",
+                        "tab reordering was not negotiated",
+                    ))
+                }
+            }
             (PeerRole::Tui, Body::RestoreWorkspace(_)) => {
                 if self
                     .capabilities

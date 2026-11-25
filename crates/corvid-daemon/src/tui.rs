@@ -6,15 +6,16 @@ use crate::platform::{self, FrameWriter, Stream, WriteHalf, decode_os_string};
 use anyhow::Result;
 use corvid_async::{Semaphore, SemaphoreGuard, mpsc, oneshot};
 use corvid_core::agent::Provider;
-use corvid_core::layout::{Axis, CloseTarget, Location};
+use corvid_core::layout::{Axis, CloseTarget, Location, TabPlacement};
 use corvid_core::{InputRoute, Viewport};
 use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentResponded, Attach, AttachRole, Attached, ClipboardWrite, CloseView, CreateView, Envelope,
     FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader,
-    RouteToken, SplitAxis, TabMoved, TerminalExited, ViewChanged, Viewport as WireViewport,
-    WorkspaceClientsDisconnected, WorkspaceRestored, WriterClaimed,
+    ReorderTab, RouteToken, SplitAxis, TabMoved, TabReordered, TabStep, TerminalExited,
+    ViewChanged, Viewport as WireViewport, WorkspaceClientsDisconnected, WorkspaceRestored,
+    WriterClaimed,
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLIPBOARD_WRITE_CAPABILITY,
@@ -61,6 +62,7 @@ const CAPABILITIES: &[&str] = &[
     TERMINAL_HISTORY_CAPABILITY,
     CLIPBOARD_WRITE_CAPABILITY,
     MOVE_TAB_CAPABILITY,
+    corvid_protocol::REORDER_TAB_CAPABILITY,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     PAIR_CAPABILITY,
     STATUS_BAR_CAPABILITY,
@@ -469,6 +471,13 @@ impl TuiConnection<'_> {
                 Ok(moved) => self.send(request.request_id, Body::TabMoved(moved)).await?,
                 Err(fault) => self.fault(request.request_id, fault).await?,
             },
+            Body::ReorderTab(command) => match self.reorder_tab(command).await {
+                Ok(reordered) => {
+                    self.send(request.request_id, Body::TabReordered(reordered))
+                        .await?
+                }
+                Err(fault) => self.fault(request.request_id, fault).await?,
+            },
             body => {
                 let action = command(client, body).unwrap_or_else(Action::Rejected);
                 self.active
@@ -488,6 +497,30 @@ impl TuiConnection<'_> {
         let tab = parse_id(&command.tab_id)?;
         let workspace = parse_id(&command.destination_workspace_id)?;
         self.workspaces.move_tab(&self.active, tab, workspace).await
+    }
+
+    async fn reorder_tab(&self, command: &ReorderTab) -> Result<TabReordered, ProtocolFault> {
+        use corvid_protocol::wire::reorder_tab::Placement;
+
+        let route = self.active.route;
+        require_view(command.expected_view_revision, route.view_revision)?;
+        let workspace = parse_id(&command.workspace_id)?;
+        let tab = parse_id(&command.tab_id)?;
+        let placement = match &command.placement {
+            Some(Placement::Step(step)) => match TabStep::try_from(*step) {
+                Ok(TabStep::Left) => TabPlacement::Left,
+                Ok(TabStep::Right) => TabPlacement::Right,
+                _ => return Err(invalid("invalid tab step")),
+            },
+            Some(Placement::BeforeTabId(anchor)) => TabPlacement::Before(parse_id(anchor)?),
+            Some(Placement::AfterTabId(anchor)) => TabPlacement::After(parse_id(anchor)?),
+            None => return Err(invalid("missing tab placement")),
+        };
+        let commit_sequence = self
+            .workspaces
+            .reorder_tab(route, workspace, tab, placement)
+            .await?;
+        Ok(TabReordered { commit_sequence })
     }
 
     async fn event(&mut self, event: Event) -> Result<bool> {
