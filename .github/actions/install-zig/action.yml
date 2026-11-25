@@ -21,13 +21,23 @@ runs:
         $filename = "$stem.$suffix"
         $archive = Join-Path $env:RUNNER_TEMP $filename
 
-        $timer = [System.Diagnostics.Stopwatch]::StartNew()
         $curl = if ($env:RUNNER_OS -eq 'Windows') { 'curl.exe' } else { 'curl' }
-        & $curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' `
-          --connect-timeout 15 --max-time 90 --retry 2 --retry-connrefused --retry-max-time 180 `
-          --remove-on-error --output $archive "https://ziglang.org/download/$version/$filename"
-        $downloadStatus = $LASTEXITCODE
-        Write-Host "Zig download took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s (curl exit $downloadStatus)"
+        # Zig lists the fallback at https://ziglang.org/download/community-mirrors.txt.
+        $urls = @(
+          "https://ziglang.org/download/$version/$filename",
+          "https://pkg.hexops.org/zig/${filename}?source=corvid-ci"
+        )
+        $timer = [System.Diagnostics.Stopwatch]::new()
+        foreach ($url in $urls) {
+          $timer.Restart()
+          & $curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' `
+            --connect-timeout 15 --max-time 75 --speed-limit 262144 --speed-time 20 `
+            --retry 1 --retry-connrefused --retry-max-time 90 --remove-on-error --output $archive $url
+          $downloadStatus = $LASTEXITCODE
+          $sourceHost = ([Uri]$url).Host
+          Write-Host "Zig download from $sourceHost took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s (curl exit $downloadStatus)"
+          if ($downloadStatus -eq 0) { break }
+        }
         if ($downloadStatus -ne 0) { exit $downloadStatus }
 
         $timer.Restart()
