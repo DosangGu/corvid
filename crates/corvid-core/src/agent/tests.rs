@@ -102,11 +102,11 @@ fn delivery_gap_recovers_on_a_confirmed_new_turn_without_resolving_old_inputs() 
     assert!(fixture.push(ObservationKind::HookDeliveryGap));
     assert_eq!(fixture.request_state(request), RequestStatus::Unverified);
     assert!(fixture.turn("next"));
-    fixture.response(Some("old"), ResponseOutcome::Observed, true);
+    fixture.response(Some("old"), ResponseOutcome::Observed, false);
     assert_eq!(fixture.run.collection.value, Collection::GapDetected);
     assert_eq!(fixture.run.prompt_observation(), None);
 
-    assert!(fixture.response(Some("next"), ResponseOutcome::Observed, true));
+    assert!(fixture.response(Some("next"), ResponseOutcome::Observed, false));
     assert_eq!(fixture.run.collection.value, Collection::Healthy);
     assert_eq!(
         fixture.run.prompt_observation(),

@@ -69,27 +69,34 @@ def observe_question(terminal, pid, control, run, already_observed=False):
     wait_for_attention(control, **expected)
 
 
-def verify_gap_recovery(terminal, pid, control, run):
+def verify_gap_recovery(terminal, owner_pid, control, run):
+    def current():
+        return next(line for line in control("agents").splitlines() if line.startswith(run + " "))
+
+    def wait_for(predicate, description):
+        deadline = time.monotonic() + 5
+        while not predicate():
+            assert time.monotonic() < deadline, (description, current(), control("collector-status"))
+            terminal.read_output(0.05)
+
     for app_report in (False, True):
-        terminal.output.clear()
         terminal.send(b"gap\n")
-        terminal.expect(b"OBSERVED-gap-PID=" + pid)
-        assert "collection=GapDetected" in control("agents")
+        wait_for(lambda: "collection=GapDetected" in current(), "delivery gap")
         if app_report:
-            previous = int(fields(control("collector-status"))["verified_observer_checks"])
+            def checks():
+                return int(fields(control("collector-status"))["verified_observer_checks"])
+            previous = checks()
             terminal.send(b"report\n")
-            terminal.expect(b"OBSERVED-report-PID=" + pid)
-            deadline = time.monotonic() + 3
-            while int(fields(control("collector-status"))["verified_observer_checks"]) == previous:
-                assert time.monotonic() < deadline, "OSC did not prompt observer verification"
-                time.sleep(0.05)
-            assert int(fields(control("collector-status"))["verified_observer_checks"]) == previous + 1
-            assert "collection=GapDetected" in control("agents")
-        terminal.output.clear()
+            wait_for(lambda: checks() > previous, "OSC observer check")
+            assert checks() == previous + 1
+            assert "collection=GapDetected" in current()
         terminal.send(b"fresh-turn\n")
-        terminal.expect(b"OBSERVED-fresh-turn-PID=" + pid)
-        current = next(line for line in control("agents").splitlines() if line.startswith(run + " "))
-        assert "collection=Healthy" in current and "prompt_observation=Responded" in current, current
+        def recovered():
+            status = current()
+            return "collection=Healthy" in status and "prompt_observation=Responded" in status
+        wait_for(recovered, "fresh turn response")
+        assert fields(current())["pid"] == owner_pid
+
 
 def prepare(command, runtime, schema):
     def transcode(operation, payload):
@@ -267,7 +274,7 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
                     wait_for_attention(control, run_id=run, reason="Response")
                     assert "collection=Healthy" in control("agents")
                     old_run = run
-                verify_gap_recovery(terminal, pid, control, old_run)
+                verify_gap_recovery(terminal, owner_pid, control, old_run)
                 terminal.send(b"exit\n")
                 if not managed:
                     terminal.expect(b"HANDOFF-SHELL>")

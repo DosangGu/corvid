@@ -377,7 +377,7 @@ impl WorkspaceView {
                         })
                         .filter_map(|terminal| terminal.program_status.as_ref())
                         .max_by_key(|status| status.summary_priority())
-                        .map(|status| status.summary())
+                        .map(|status| status.label())
                 })
                 .flatten();
             let title = program_summary.map_or_else(

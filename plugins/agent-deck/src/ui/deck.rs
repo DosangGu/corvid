@@ -1017,7 +1017,7 @@ mod tests {
         run.unverified_requests = 1;
         assert_eq!(
             status(&run, false),
-            ("Check terminal", StatusColor::Attention)
+            ("Check terminal · New response", StatusColor::Attention)
         );
         run.pending_requests = 1;
         run.last_badge = AgentBadge::NeedsInput as i32;

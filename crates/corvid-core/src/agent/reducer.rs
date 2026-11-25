@@ -610,10 +610,11 @@ impl AgentRun {
         final_boundary: bool,
         evidence: &Evidence,
     ) -> bool {
-        if final_boundary
-            && response.outcome == ResponseOutcome::Observed
+        if response.outcome == ResponseOutcome::Observed
             && let Some(turn) = response.turn.as_deref()
         {
+            // Stop proves a response for this prompt even when the provider
+            // can continue the turn after all of its hooks return.
             self.confirm_gap_recovery(turn, evidence);
         }
         let mut current_boundary = false;
