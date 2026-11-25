@@ -108,6 +108,8 @@ pub(super) struct Response {
     alternate_screen: Option<bool>,
     #[prost(string, optional, tag = "18")]
     pub(super) clipboard: Option<String>,
+    #[prost(message, optional, tag = "19")]
+    pub(super) program_status: Option<corvid_protocol::wire::ProgramStatus>,
 }
 
 impl Response {
@@ -605,6 +607,9 @@ impl Host {
             self.changed |= output;
             if !matches!(state, ReadState::BudgetUsed) {
                 self.exit = self.session.try_wait()?;
+                if self.exit.is_some() {
+                    self.session.screen.expire_program_status();
+                }
             }
             if self.failure.is_none() {
                 self.failure = if self.exit.is_some() {
@@ -653,6 +658,7 @@ impl Host {
                     .screen
                     .configure_clipboard(request.clipboard_enabled, request.clipboard_reset);
                 response.clipboard = self.session.screen.take_clipboard();
+                response.program_status = self.session.screen.program_status();
                 response.changed = std::mem::take(&mut self.changed);
                 if let Some(failure) = self.failure.take() {
                     response.failure = match failure.kind {

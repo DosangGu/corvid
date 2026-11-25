@@ -213,6 +213,25 @@ pub struct Inventory {
 }
 
 impl Inventory {
+    pub fn program_status(
+        &self,
+        selection: &ViewSelection,
+    ) -> Option<&corvid_protocol::wire::ProgramStatus> {
+        self.terminals
+            .iter()
+            .find(|terminal| terminal.location.as_ref() == Some(selection))?
+            .program_status
+            .as_ref()
+    }
+
+    pub fn pending_input_at(&self, selection: &ViewSelection) -> bool {
+        self.agents.iter().any(|agent| {
+            agent.terminal_available
+                && agent.badge == corvid_protocol::wire::AgentBadge::NeedsInput as i32
+                && agent.location.as_ref() == Some(selection)
+        })
+    }
+
     pub fn read(state: &SynchronizedSnapshot) -> Self {
         let mut inventory = Self::default();
         for entity in state.snapshot().entities() {

@@ -23,6 +23,7 @@ pub(super) struct Correlation {
     current_turn: Option<String>,
     pub(super) response_for_prompt: bool,
     generation: u64,
+    gap_recovery: GapRecovery,
     deliveries: Recent<Uuid>,
     provider_events: Recent<(Source, String)>,
     tentative_turns: Recent<String>,
@@ -37,6 +38,17 @@ pub(super) struct Correlation {
     batch_finished_inputs: Recent<RequestKey>,
     orphan_results: BTreeMap<RequestKey, OrphanResult>,
     expired_results: Recent<RequestKey>,
+}
+
+#[derive(Default)]
+enum GapRecovery {
+    #[default]
+    None,
+    AwaitingPrompt,
+    AwaitingTurn {
+        id: String,
+        submission: Evidence,
+    },
 }
 
 struct OrphanResult {
@@ -202,6 +214,7 @@ impl AgentRun {
                 true
             }
             ObservationKind::Collection(health) => self.observe_collection(health, evidence),
+            ObservationKind::HookDeliveryGap => self.observe_hook_gap(evidence),
             _ => false,
         }
     }
@@ -222,6 +235,16 @@ impl AgentRun {
         }
         if !confirmed && !self.correlation.tentative_turns.insert(turn.clone()) {
             return false;
+        }
+        if !matches!(self.correlation.gap_recovery, GapRecovery::None)
+            && evidence.source == Source::ProviderHook
+            && evidence.confidence != Confidence::Unknown
+            && self.correlation.current_turn.as_ref() != Some(&turn)
+        {
+            self.correlation.gap_recovery = GapRecovery::AwaitingTurn {
+                id: turn.clone(),
+                submission: evidence.clone(),
+            };
         }
         let previous = self.correlation.current_turn.replace(turn.clone());
         if let Some(previous) = previous.filter(|previous| previous != &turn) {
@@ -254,10 +277,13 @@ impl AgentRun {
         if evidence.source != Source::ProviderHook
             || evidence.confidence != Confidence::Confirmed
             || self.lifecycle.value != Lifecycle::Live
-            || self.collection.value != Collection::Healthy
             || self.correlation.completed_turns.contains(&turn)
             || self.correlation.superseded_turns.contains(&turn)
         {
+            return false;
+        }
+        self.confirm_gap_recovery(&turn, evidence);
+        if self.collection.value != Collection::Healthy {
             return false;
         }
 
@@ -584,6 +610,12 @@ impl AgentRun {
         final_boundary: bool,
         evidence: &Evidence,
     ) -> bool {
+        if final_boundary
+            && response.outcome == ResponseOutcome::Observed
+            && let Some(turn) = response.turn.as_deref()
+        {
+            self.confirm_gap_recovery(turn, evidence);
+        }
         let mut current_boundary = false;
         let execution_observed = self
             .prompt_observation()
@@ -748,6 +780,7 @@ impl AgentRun {
         if health == Collection::Healthy && evidence.confidence != Confidence::Confirmed {
             return false;
         }
+        self.correlation.gap_recovery = GapRecovery::None;
         let mut evidence = evidence.clone();
         if health != Collection::Healthy {
             self.prompt_observation = None;
@@ -763,6 +796,42 @@ impl AgentRun {
             }
         }
         replace(&mut self.collection, health, &evidence)
+    }
+
+    pub fn has_hook_delivery_gap(&self) -> bool {
+        !matches!(self.correlation.gap_recovery, GapRecovery::None)
+    }
+
+    fn observe_hook_gap(&mut self, evidence: &Evidence) -> bool {
+        // An identity or correlation failure already recorded for this context
+        // requires a verified context boundary, even if delivery also fails.
+        if self.collection.value == Collection::GapDetected && !self.has_hook_delivery_gap() {
+            return false;
+        }
+        let changed = self.observe_collection(Collection::GapDetected, evidence);
+        if self.lifecycle.value == Lifecycle::Live {
+            self.correlation.gap_recovery = GapRecovery::AwaitingPrompt;
+        }
+        changed
+    }
+
+    fn confirm_gap_recovery(&mut self, turn: &str, evidence: &Evidence) {
+        let GapRecovery::AwaitingTurn { id, submission } = &self.correlation.gap_recovery else {
+            return;
+        };
+        if id != turn
+            || self.correlation.current_turn.as_deref() != Some(turn)
+            || self.correlation.completed_turns.contains(id)
+            || evidence.source != Source::ProviderHook
+            || evidence.confidence != Confidence::Confirmed
+        {
+            return;
+        }
+        let submission = Observed::new(PromptObservation::Submitted, submission);
+        self.observe_collection(Collection::Healthy, evidence);
+        self.prompt_observation = Some(submission);
+        self.active_turns.retain(|key, _| key == turn);
+        self.work.retain(|key, _| key.turn.as_deref() == Some(turn));
     }
 
     fn record_gap(&mut self, unix_ms: u64, reason: &str) {

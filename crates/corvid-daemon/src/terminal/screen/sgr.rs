@@ -1,12 +1,15 @@
 use std::fmt::Write as _;
 
 mod clipboard;
+mod program_status;
 use clipboard::Clipboard;
+use program_status::{Event, Programs};
 
 #[derive(Default)]
 pub(super) struct Normalizer {
     parser: vte::Parser,
     clipboard: Option<Clipboard>,
+    programs: Programs,
 }
 
 impl Normalizer {
@@ -21,6 +24,7 @@ impl Normalizer {
             if let Some(clipboard) = &mut self.clipboard {
                 clipboard.advance(chunk, std::mem::take(&mut sgr.clipboard_dispatched));
             }
+            self.programs.advance(chunk, sgr.program_event.take());
             if let Some(replacement) = sgr.replacement.take() {
                 // Feed the prefix without the final 'm'. The replacement's ESC
                 // cancels the pending CSI, even when it began in an earlier chunk.
@@ -44,6 +48,18 @@ impl Normalizer {
     pub(super) fn take_clipboard(&mut self) -> Option<String> {
         self.clipboard.as_mut()?.take()
     }
+
+    pub(super) fn program_status(&self) -> Option<corvid_protocol::wire::ProgramStatus> {
+        self.programs.summary()
+    }
+
+    pub(super) fn expire_program_status(&mut self) {
+        self.programs.expire_active();
+    }
+
+    pub(super) fn take_program_replies(&mut self) -> Vec<u8> {
+        self.programs.take_replies()
+    }
 }
 
 #[derive(Default)]
@@ -51,6 +67,7 @@ struct Sgr {
     replacement: Option<String>,
     capture_clipboard: bool,
     clipboard_dispatched: bool,
+    program_event: Option<Event>,
 }
 
 impl vte::Perform for Sgr {
@@ -88,10 +105,21 @@ impl vte::Perform for Sgr {
     fn osc_dispatch(&mut self, params: &[&[u8]], _: bool) {
         self.clipboard_dispatched =
             self.capture_clipboard && params.first() == Some(&b"52".as_slice());
+        self.program_event = match params {
+            [b"7501", ..] | [b"9", b"4", ..] => Some(Event::Osc),
+            [b"133" | b"633", b"A", ..] => Some(Event::Prompt),
+            _ => None,
+        };
+    }
+
+    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
+        if !ignore && intermediates.is_empty() && byte == b'c' {
+            self.program_event = Some(Event::Reset);
+        }
     }
 
     fn terminated(&self) -> bool {
-        self.replacement.is_some() || self.clipboard_dispatched
+        self.replacement.is_some() || self.clipboard_dispatched || self.program_event.is_some()
     }
 }
 

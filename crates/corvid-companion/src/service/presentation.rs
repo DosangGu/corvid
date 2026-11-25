@@ -198,6 +198,7 @@ impl Service {
         }
         if !ready {
             display.latest_unseen_attention_id = None;
+            display.program_status = None;
         }
         display
     }

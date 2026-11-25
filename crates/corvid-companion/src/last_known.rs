@@ -52,6 +52,7 @@ impl LastKnown {
             pending_since_unix_ms: None,
             new_result_unix_ms: None,
             session_title: None,
+            program_status: None,
         }
     }
 

@@ -68,6 +68,29 @@ def observe_question(terminal, pid, control, run, already_observed=False):
         # Retry only this unchanged fixture event, and only if no submission was recorded.
     wait_for_attention(control, **expected)
 
+
+def verify_gap_recovery(terminal, pid, control, run):
+    for app_report in (False, True):
+        terminal.output.clear()
+        terminal.send(b"gap\n")
+        terminal.expect(b"OBSERVED-gap-PID=" + pid)
+        assert "collection=GapDetected" in control("agents")
+        if app_report:
+            previous = int(fields(control("collector-status"))["verified_observer_checks"])
+            terminal.send(b"report\n")
+            terminal.expect(b"OBSERVED-report-PID=" + pid)
+            deadline = time.monotonic() + 3
+            while int(fields(control("collector-status"))["verified_observer_checks"]) == previous:
+                assert time.monotonic() < deadline, "OSC did not prompt observer verification"
+                time.sleep(0.05)
+            assert int(fields(control("collector-status"))["verified_observer_checks"]) == previous + 1
+            assert "collection=GapDetected" in control("agents")
+        terminal.output.clear()
+        terminal.send(b"fresh-turn\n")
+        terminal.expect(b"OBSERVED-fresh-turn-PID=" + pid)
+        current = next(line for line in control("agents").splitlines() if line.startswith(run + " "))
+        assert "collection=Healthy" in current and "prompt_observation=Responded" in current, current
+
 def prepare(command, runtime, schema):
     def transcode(operation, payload):
         return subprocess.check_output(
@@ -244,6 +267,7 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
                     wait_for_attention(control, run_id=run, reason="Response")
                     assert "collection=Healthy" in control("agents")
                     old_run = run
+                verify_gap_recovery(terminal, pid, control, old_run)
                 terminal.send(b"exit\n")
                 if not managed:
                     terminal.expect(b"HANDOFF-SHELL>")

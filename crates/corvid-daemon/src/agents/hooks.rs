@@ -76,7 +76,7 @@ impl Agents {
         launch.resume_turns.clear();
         launch.gap = false;
         launch.ambiguous = false;
-        launch.retained = false;
+        launch.retained = None;
         launch.notified_turn = None;
 
         let mut next = launch.replace_context(current, &hook, session);
@@ -155,7 +155,8 @@ impl Agents {
         }
         launch.producer = Some(producer);
         let Some(session) = hook.session.as_deref() else {
-            launch.record_gap(current, "hook input was malformed or exceeded its deadline");
+            launch
+                .record_delivery_gap(current, "hook input was malformed or exceeded its deadline");
             return Ok(None);
         };
         if matches!(
@@ -195,16 +196,10 @@ impl Agents {
         if launch.ambiguous || launch.resume.is_some() {
             return Ok(None);
         }
-        if launch.retained {
-            launch.retained = false;
-            let health = if launch.gap {
-                Collection::GapDetected
-            } else {
-                Collection::Healthy
-            };
+        if let Some(coverage) = launch.retained.take() {
             current.apply(
                 Uuid::new_v4(),
-                ObservationKind::Collection(health),
+                coverage.observation(),
                 hook.evidence(Confidence::Confirmed),
             );
         }
@@ -213,7 +208,14 @@ impl Agents {
             let ends_context = matches!(kind, ObservationKind::ContextEnded(_));
             let notify_turn = response_notification_turn(&current.run, &kind, confidence)
                 .filter(|turn| launch.notified_turn.as_ref() != Some(turn));
+            let recovering = current.run.has_hook_delivery_gap();
             if current.apply(hook.delivery, kind, evidence) {
+                if recovering && current.run.collection.value == Collection::Healthy {
+                    launch.resume_key = Some(corvid_core::agent::AgentSessionKey {
+                        provider: hook.provider,
+                        provider_session_id: session.to_owned(),
+                    });
+                }
                 if ends_context {
                     self.end_children(current_id);
                 } else if let Some(turn) = notify_turn
@@ -227,7 +229,7 @@ impl Agents {
             hook.event,
             HookEvent::PromptSubmitted | HookEvent::QuestionResult | HookEvent::PlanApprovalResult
         ) {
-            launch.record_gap(current, "correlation fields are missing");
+            launch.record_delivery_gap(current, "correlation fields are missing");
         }
         Ok(None)
     }
@@ -245,7 +247,7 @@ fn response_notification_turn(
     (confidence == Confidence::Confirmed
         && response.outcome == ResponseOutcome::Observed
         && run.lifecycle.value == Lifecycle::Live
-        && run.collection.value == Collection::Healthy
+        && (run.collection.value == Collection::Healthy || run.has_hook_delivery_gap())
         && run.is_current_open_turn(turn))
     .then(|| turn.to_owned())
 }
@@ -438,8 +440,21 @@ impl Launch {
 
     fn record_gap(&mut self, record: &mut ManagedRun, reason: &str) {
         self.resume_key = None;
+        self.retained = None;
         self.gap = true;
         mark_gap(record, reason);
+    }
+
+    fn record_delivery_gap(&mut self, record: &mut ManagedRun, reason: &str) {
+        if self.gap || self.ambiguous || self.resume.is_some() {
+            self.record_gap(record, reason);
+            return;
+        }
+        self.resume_key = None;
+        self.retained = None;
+        let mut evidence = evidence(Source::Collector, Confidence::Confirmed);
+        evidence.uncertainty = Some(reason.to_owned());
+        record.apply(Uuid::new_v4(), ObservationKind::HookDeliveryGap, evidence);
     }
 }
 

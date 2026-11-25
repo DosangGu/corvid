@@ -511,6 +511,11 @@ fn print_collector_status(collector: CollectorStatus) {
         println!("rejected_submissions={}", traffic.rejected_submissions);
         println!("connection_failures={}", traffic.connection_failures);
         println!("saturated_connections={}", traffic.saturated_connections);
+        println!(
+            "verified_observer_checks={}",
+            traffic.verified_observer_checks
+        );
+        println!("failed_observer_checks={}", traffic.failed_observer_checks);
     }
 }
 

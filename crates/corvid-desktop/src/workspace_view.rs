@@ -1216,6 +1216,12 @@ impl WorkspaceView {
                             .text_color(rgb(if active { ACTIVE } else { MUTED }))
                             .text_size(ui_px(12.))
                             .child(div().flex_1().min_w_0().truncate().child(title))
+                            .when(ui.connected && ui.inventory_ready, |header| {
+                                header.children(program_status_line(
+                                    inventory.program_status(&target),
+                                    inventory.pending_input_at(&target),
+                                ))
+                            })
                             .when(
                                 !preview_only && ui.connected && ui.close_supported,
                                 |header| {
@@ -1372,16 +1378,23 @@ impl WorkspaceView {
         preview_tab: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Div {
-        if self.zoom_pane && ui.connected && preview_tab.is_none() {
-            return div()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .children(self.terminal.iter().cloned());
-        }
         let Some(selected) = &ui.selected else {
             return self.terminal_placeholder(Some(ui), cx);
         };
+        if self.zoom_pane && ui.connected && preview_tab.is_none() {
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .when(ui.inventory_ready, |body| {
+                    body.children(program_status_line(
+                        inventory.program_status(selected),
+                        inventory.pending_input_at(selected),
+                    ))
+                })
+                .children(self.terminal.iter().cloned());
+        }
         let workspace = inventory
             .workspaces
             .iter()
@@ -1400,7 +1413,18 @@ impl WorkspaceView {
                     pane_id: pane.clone(),
                     ..selected.clone()
                 };
-                return self.read_only_pane(pane, ui, inventory.live(&target));
+                return div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .when(ui.connected && ui.inventory_ready, |body| {
+                        body.children(program_status_line(
+                            inventory.program_status(&target),
+                            inventory.pending_input_at(&target),
+                        ))
+                    })
+                    .child(self.read_only_pane(pane, ui, inventory.live(&target)));
             }
             return self.panes(tab, 0, ui, inventory, &mut 0, cx);
         }
@@ -1420,8 +1444,15 @@ impl WorkspaceView {
         {
             return div()
                 .flex()
+                .flex_col()
                 .flex_1()
                 .min_h_0()
+                .when(ui.inventory_ready, |body| {
+                    body.children(program_status_line(
+                        inventory.program_status(selected),
+                        inventory.pending_input_at(selected),
+                    ))
+                })
                 .children(self.terminal.iter().cloned());
         }
         let body = match tab {
@@ -1436,6 +1467,30 @@ impl WorkspaceView {
             .min_h_0()
             .child(div().flex().flex_1().min_h_0().child(body))
     }
+}
+
+fn program_status_line(
+    status: Option<&corvid_protocol::wire::ProgramStatus>,
+    pending_input: bool,
+) -> Option<Div> {
+    let status = status?;
+    let detail = status.detail();
+    let text = if pending_input {
+        format!("Needs input · {detail}")
+    } else {
+        detail
+    };
+    Some(
+        div()
+            .flex_none()
+            .min_w_0()
+            .truncate()
+            .px(ui_px(8.))
+            .py(ui_px(3.))
+            .text_color(rgb(MUTED))
+            .text_size(ui_px(12.))
+            .child(text),
+    )
 }
 
 fn button(

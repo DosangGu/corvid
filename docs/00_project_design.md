@@ -545,6 +545,14 @@ is documented in the [Claude Hook guide](https://code.claude.com/docs/en/hooks-g
 and [Codex Hook contract](https://learn.chatgpt.com/docs/hooks), checked 2026-11-07;
 fault-injection qualification remains required.
 
+A delivery gap for an authenticated launch permits collection to recover in the same
+context. A new provider submission and matching confirmed execution or response
+establish coverage for that prompt. Requests from the gap remain unverified until an
+exact outcome resolves them. Ambiguous ownership and context transitions retain their
+existing verification requirements. A planned daemon replacement preserves the
+distinction between delivery and context gaps. Older handoff records with a gap
+continue to require context verification.
+
 ### 6.5 Foreground detection is a different signal
 
 AgentMonitor contains an observation collector and a process-identity probe. Foreground
@@ -552,6 +560,17 @@ identity can guide later keymap suggestions; it does not establish activity or c
 OSC shell markers, user variables, process names, and output patterns are hints from
 untrusted terminal content. They cannot create a trusted control command, resolve a
 request, establish AgentSessionKey, or auto-remap keys in the initial release.
+
+The terminal host retains bounded OSC 7501 program status records on each live PTY
+and publishes the highest-priority report with the terminal state. It uses OSC 9;4
+progress until the first valid OSC 7501 report and restores that fallback after a full
+terminal reset. Reattach and retained-host recovery republish status silently. Desktop,
+the composed TUI, and Agent Deck display these as application reports. Confirmed
+provider requests take the summary position and retain their request IDs and alerts.
+A new app report can schedule a rate-limited process identity check for a registered
+agent with a known delivery gap. Collection recovery still requires provider evidence.
+See [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
+and [#413](https://github.com/DosangGu/corvid/issues/413).
 
 PTY output/SIGCHLD-only probing misses silent foreground changes, shell `exec`, resumed
 jobs, grandchildren whose exit the daemon does not reap, and broken shell integration.

@@ -9,7 +9,7 @@ mod shell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::executor::time::timeout;
 use crate::executor::{Task, blocking};
@@ -160,6 +160,8 @@ pub(crate) struct Workspaces {
 
 pub(crate) struct Registry {
     pub(crate) agents: Agents,
+    collector: Arc<CollectorDiagnostics>,
+    observer_checks: HashMap<Uuid, (Uuid, Instant)>,
     metadata: MetadataUpdates,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     epoch: Uuid,
@@ -242,10 +244,13 @@ impl Workspaces {
         let publication = Publication::seed(projection::layout(&metadata.layout()));
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let epoch = Uuid::parse_str(&hook_environment.identity.epoch).expect("valid daemon epoch");
+        let collector = Arc::new(CollectorDiagnostics::default());
         Self {
-            collector: Arc::default(),
+            collector: Arc::clone(&collector),
             registry: RegistryActor::start(Registry {
                 agents: Agents::default(),
+                collector,
+                observer_checks: HashMap::new(),
                 metadata: metadata.clone(),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 epoch,
@@ -945,7 +950,16 @@ impl Workspaces {
                     .workspace = destination;
                 registry.terminals.insert(terminal, location);
                 registry.agents.relocate_terminal(terminal, location);
-                registry.publish_layout(layout, vec![terminal_projection(terminal, location)]);
+                let status = registry
+                    .metadata
+                    .display()
+                    .program_statuses
+                    .get(&location.pane)
+                    .cloned();
+                registry.publish_layout(
+                    layout,
+                    vec![terminal_projection(terminal, location, status)],
+                );
                 Ok(TabMoved {
                     location: Some(projection::selection(location)),
                     commit_sequence: registry.publication.sequence()?,
@@ -1256,13 +1270,18 @@ impl Registry {
         if layout_changed {
             self.metadata.publish_display(&self.titles);
         }
+        let previous = projections.len();
         projections.extend(self.agents.take_projections());
+        if projections.len() != previous {
+            self.metadata
+                .publish_pending_input_panes(self.agents.pending_input_panes());
+        }
         self.publication.commit(projections);
     }
 
     pub(crate) fn terminal_started(&mut self, id: Uuid, location: Location) {
         self.terminals.insert(id, location);
-        self.publish(vec![terminal_projection(id, location)]);
+        self.publish(vec![terminal_projection(id, location, None)]);
     }
 
     pub(crate) fn record_title(&mut self, id: Uuid, title: String) {
@@ -1280,6 +1299,45 @@ impl Registry {
             &self.metadata.layout(),
             &self.titles,
         )]);
+    }
+
+    pub(crate) fn record_program_status(
+        &mut self,
+        id: Uuid,
+        status: Option<corvid_protocol::wire::ProgramStatus>,
+    ) {
+        let Some(&location) = self.terminals.get(&id) else {
+            return;
+        };
+        let check_observer = status.as_ref().is_some_and(|status| status.osc_7501);
+        self.metadata
+            .publish_program_status(location.pane, status.clone());
+        self.publish(vec![terminal_projection(id, location, status)]);
+        if check_observer {
+            self.check_observer(id);
+        }
+    }
+
+    fn check_observer(&mut self, terminal: Uuid) {
+        let Some(check) = self.agents.observer_check(terminal) else {
+            return;
+        };
+        let now = Instant::now();
+        if self
+            .observer_checks
+            .get(&terminal)
+            .is_some_and(|(run, next)| *run == check.run && now < *next)
+        {
+            return;
+        }
+        self.observer_checks
+            .insert(terminal, (check.run, now + Duration::from_secs(5)));
+        let collector = Arc::clone(&self.collector);
+        crate::executor::spawn(async move {
+            let valid = blocking(move || check.verify()).await.unwrap_or(false);
+            collector.observer_checked(valid);
+        })
+        .detach();
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1318,6 +1376,7 @@ impl Registry {
     }
 
     pub(crate) fn terminal_closed(&mut self, id: Uuid, association: Option<Uuid>) {
+        self.observer_checks.remove(&id);
         #[cfg(windows)]
         {
             let _ = association;
@@ -1331,11 +1390,12 @@ impl Registry {
         if let Some(agent) = self.shells.remove(id) {
             self.agents.retire_shell(agent, ProcessLiveness::Unknown);
         }
-        if let Some(location) = self.terminals.remove(&id)
-            && self.titles.contains_key(&location.pane)
-        {
-            Arc::make_mut(&mut self.titles).remove(&location.pane);
-            self.metadata.publish_display(&self.titles);
+        if let Some(location) = self.terminals.remove(&id) {
+            self.metadata.publish_program_status(location.pane, None);
+            if self.titles.contains_key(&location.pane) {
+                Arc::make_mut(&mut self.titles).remove(&location.pane);
+                self.metadata.publish_display(&self.titles);
+            }
         }
         let mut projections = vec![
             (Group::Terminal(id), Vec::new()),
@@ -1678,10 +1738,15 @@ impl Registry {
     }
 }
 
-fn terminal_projection(id: Uuid, location: Location) -> Projection {
+fn terminal_projection(
+    id: Uuid,
+    location: Location,
+    program_status: Option<corvid_protocol::wire::ProgramStatus>,
+) -> Projection {
     let state = TerminalState {
         terminal_id: id.to_string(),
         location: Some(projection::selection(location)),
+        program_status,
     };
     (
         Group::Terminal(id),

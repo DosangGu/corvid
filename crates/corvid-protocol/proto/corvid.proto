@@ -237,6 +237,8 @@ message CollectorTraffic {
   uint64 rejected_submissions = 2;
   uint64 connection_failures = 3;
   uint64 saturated_connections = 4;
+  uint64 verified_observer_checks = 5;
+  uint64 failed_observer_checks = 6;
 }
 
 message ListWorkspaces {}
@@ -503,6 +505,7 @@ message PresentedRun {
   // Display title of the run's pane, or the custom name of its single-pane tab.
   optional string session_title = 16;
   optional uint64 prompt_observed_unix_ms = 17;
+  ProgramStatus program_status = 18;
 }
 
 message PresentedSlot {
@@ -748,6 +751,34 @@ enum SplitAxis {
 message TerminalState {
   string terminal_id = 1;
   ViewSelection location = 2;
+  ProgramStatus program_status = 3;
+}
+
+// Passive status reported by an application on this PTY.
+message ProgramStatus {
+  ProgramPhase phase = 1;
+  ProgramWaitKind wait_kind = 2;
+  optional uint32 progress = 3;
+  string app = 4;
+  string title = 5;
+  string message = 6;
+  bool osc_7501 = 7;
+}
+
+enum ProgramPhase {
+  PROGRAM_PHASE_UNSPECIFIED = 0;
+  PROGRAM_PHASE_IDLE = 1;
+  PROGRAM_PHASE_WORKING = 2;
+  PROGRAM_PHASE_BLOCKED = 3;
+  PROGRAM_PHASE_DONE = 4;
+  PROGRAM_PHASE_ERROR = 5;
+}
+
+enum ProgramWaitKind {
+  PROGRAM_WAIT_KIND_UNSPECIFIED = 0;
+  PROGRAM_WAIT_KIND_PERMISSION = 1;
+  PROGRAM_WAIT_KIND_QUESTION = 2;
+  PROGRAM_WAIT_KIND_AUTH = 3;
 }
 
 message AgentState {

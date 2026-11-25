@@ -364,6 +364,26 @@ impl WorkspaceView {
                             .as_ref()
                             .is_some_and(|location| location.tab_id == tab.tab_id)
                 });
+            let program_summary = (ui.connected && ui.inventory_ready && !attention)
+                .then(|| {
+                    inventory?
+                        .terminals
+                        .iter()
+                        .filter(|terminal| {
+                            terminal.location.as_ref().is_some_and(|location| {
+                                location.workspace_id == workspace.workspace_id
+                                    && location.tab_id == tab.tab_id
+                            })
+                        })
+                        .filter_map(|terminal| terminal.program_status.as_ref())
+                        .max_by_key(|status| status.summary_priority())
+                        .map(|status| status.summary())
+                })
+                .flatten();
+            let title = program_summary.map_or_else(
+                || tab.label.clone(),
+                |summary| format!("{} · {summary}", tab.label),
+            );
             Some((
                 tab.tab_id.as_str(),
                 div()
@@ -382,7 +402,7 @@ impl WorkspaceView {
                                 .when(previewed && !active, |button| button.text_color(rgb(TEXT)))
                                 .min_w_0()
                                 .flex_shrink(1.),
-                            tab.label.clone(),
+                            title,
                             attention.then_some("!"),
                         )
                         .on_click(cx.listener(

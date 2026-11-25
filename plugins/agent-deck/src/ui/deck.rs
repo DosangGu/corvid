@@ -890,12 +890,27 @@ fn status(run: &PresentedRun, cached: bool) -> (&'static str, StatusColor) {
         return ("Check terminal · Working", StatusColor::Attention);
     }
     if run.pending_requests == 0 && run.unverified_requests > 0 {
+        if run.collection == AgentCollection::Healthy as i32
+            && run.prompt_observation == PromptObservation::Responded as i32
+        {
+            return ("Check terminal · New response", StatusColor::Attention);
+        }
         return ("Check terminal", StatusColor::Attention);
     }
     match prompt_detail(run) {
         Some(PromptObservation::Submitted) => ("Working (inferred)", StatusColor::Working),
         Some(PromptObservation::Responded) => badge(AgentBadge::ResponseObserved as i32),
         Some(observation) if observation.confirms_execution() => badge(AgentBadge::Working as i32),
+        _ if matches!(
+            AgentBadge::try_from(run.last_badge),
+            Ok(AgentBadge::Unknown | AgentBadge::Unspecified)
+        ) =>
+        {
+            run.program_status.as_ref().map_or_else(
+                || badge(run.last_badge),
+                |status| (status.label(), StatusColor::Muted),
+            )
+        }
         _ => badge(run.last_badge),
     }
 }
@@ -922,6 +937,9 @@ impl Colors {
                 "{} pending · {} unverified · {} unseen",
                 run.pending_requests, run.unverified_requests, run.unseen_attention
             )));
+        if let Some(status) = &run.program_status {
+            view = view.child(self.muted(status.detail()));
+        }
         if let Some(age) = run.prompt_observed_unix_ms.and_then(observation_age) {
             view = view.child(self.muted(format!("Prompt activity observed {age} ago")));
         } else if let Some(age) = run.last_observed_unix_ms.and_then(observation_age) {
@@ -941,6 +959,35 @@ mod tests {
             last_badge: badge as i32,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn app_status_is_passive_and_a_recovered_prompt_updates_an_uncertain_card() {
+        use corvid_protocol::wire::{ProgramPhase, ProgramStatus, ProgramWaitKind};
+
+        let mut run = available(AgentBadge::Unknown);
+        run.collection = AgentCollection::GapDetected as i32;
+        run.program_status = Some(ProgramStatus {
+            phase: ProgramPhase::Blocked as i32,
+            wait_kind: ProgramWaitKind::Auth as i32,
+            ..Default::default()
+        });
+        assert_eq!(
+            status(&run, false),
+            ("App waiting for login", StatusColor::Muted)
+        );
+        run.last_badge = AgentBadge::NeedsInput as i32;
+        run.pending_requests = 1;
+        assert_eq!(status(&run, false), ("Needs input", StatusColor::Attention));
+        run.pending_requests = 0;
+        run.last_badge = AgentBadge::Unknown as i32;
+        run.unverified_requests = 1;
+        run.collection = AgentCollection::Healthy as i32;
+        run.prompt_observation = PromptObservation::Responded as i32;
+        assert_eq!(
+            status(&run, false),
+            ("Check terminal · New response", StatusColor::Attention)
+        );
     }
 
     #[test]

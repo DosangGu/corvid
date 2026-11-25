@@ -18,6 +18,7 @@ pub(super) enum Backend {
 
 pub(super) struct Tick {
     pub(super) title: String,
+    pub(super) program_status: Option<corvid_protocol::wire::ProgramStatus>,
     pub(super) output: bool,
     pub(super) exit: Option<ExitStatus>,
     pub(super) failure: Option<WriteFailure>,
@@ -56,6 +57,9 @@ impl Backend {
                     session.try_wait()?
                 };
                 let eof = matches!(state, ReadState::Eof);
+                if exit.is_some() {
+                    session.screen.expire_program_status();
+                }
                 let failure = if exit.is_some() {
                     session.input.interrupted_paste()
                 } else if eof {
@@ -65,6 +69,7 @@ impl Backend {
                 };
                 Ok(Tick {
                     title: session.screen.title().to_owned(),
+                    program_status: session.screen.program_status(),
                     output,
                     exit,
                     failure,
@@ -75,11 +80,13 @@ impl Backend {
                 let response = client.poll(clipboard_enabled, clipboard_reset)?;
                 ensure!(!response.rejected, "terminal host poll failed");
                 let exit = response.status();
+                let failure = response.write_failure();
                 Ok(Tick {
                     title: response.title.clone(),
+                    program_status: response.program_status,
                     output: response.changed,
                     exit,
-                    failure: response.write_failure(),
+                    failure,
                     clipboard: response.clipboard,
                 })
             }
