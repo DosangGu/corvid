@@ -16,6 +16,7 @@ use corvid_protocol::wire::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::handoff::RetainedCoverage;
 use crate::handoff::input::{RetainedInput, valid_id};
 use crate::hook_data::Hook;
 use crate::native_process::{Found, HookOwner, Process, ProcessKey};
@@ -59,7 +60,7 @@ struct Run {
     available: bool,
     producer: Option<ProcessKey>,
     sessions: BTreeSet<String>,
-    retained_collection: Option<Collection>,
+    retained_collection: Option<RetainedCoverage>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -72,6 +73,8 @@ pub(crate) struct RetainedContext {
     turn: Option<String>,
     inputs: Vec<RetainedInput>,
     gap: bool,
+    #[serde(default)]
+    delivery_gap: bool,
 }
 
 impl RetainedContext {
@@ -93,6 +96,39 @@ impl RetainedContext {
 }
 
 impl Agents {
+    pub(crate) fn observer_check(&self, terminal: Uuid) -> Option<crate::collector::ObserverCheck> {
+        let managed = self.active.get(&terminal).zip(self.managed.get(&terminal));
+        managed
+            .into_iter()
+            .chain(self.shell.iter().map(|(owner, (id, _))| (id, owner)))
+            .find_map(|(&id, &owner)| {
+                let run = self.runs.get(&id)?;
+                if run.state.identity.terminal_id != terminal
+                    || !run.live()
+                    || run.producer.is_none()
+                    || !(run.state.has_hook_delivery_gap()
+                        || matches!(run.retained_collection, Some(RetainedCoverage::DeliveryGap)))
+                {
+                    return None;
+                }
+                Some(crate::collector::ObserverCheck {
+                    run: id,
+                    owner,
+                    provider: run.state.identity.provider,
+                })
+            })
+    }
+
+    pub(crate) fn pending_input_panes(&self) -> BTreeSet<Uuid> {
+        self.runs
+            .values()
+            .filter(|run| {
+                run.live() && matches!(run.state.badge(), corvid_core::agent::Badge::NeedsInput(_))
+            })
+            .map(|run| run.location.pane)
+            .collect()
+    }
+
     pub(crate) fn resume_observations(
         &self,
     ) -> Vec<(Location, Option<corvid_core::agent::AgentSessionKey>)> {
@@ -196,6 +232,10 @@ impl Agents {
                 {
                     return None;
                 }
+                let (gap, delivery_gap) = run
+                    .retained_collection
+                    .unwrap_or_else(|| RetainedCoverage::from_run(&run.state))
+                    .record();
                 Some(RetainedContext {
                     owner,
                     producer: run.producer?,
@@ -204,10 +244,8 @@ impl Agents {
                     sessions: run.sessions.clone(),
                     turn: run.state.current_open_turn().map(str::to_owned),
                     inputs: RetainedInput::collect(&run.state),
-                    gap: run
-                        .retained_collection
-                        .unwrap_or(run.state.collection.value)
-                        == Collection::GapDetected,
+                    gap,
+                    delivery_gap,
                 })
             })
             .take(MAX_SHELL_RUNS)
@@ -394,12 +432,22 @@ impl Agents {
             .producer
             .is_some_and(|producer| producer != owner.producer)
         {
-            self.gap(id, &hook, "hook producer changed");
+            self.gap(
+                id,
+                &hook,
+                RetainedCoverage::ContextGap,
+                "hook producer changed",
+            );
             return Err(unauthorized());
         }
         let Some(session) = hook.session.as_deref() else {
             if run.producer.is_some() {
-                self.gap(id, &hook, "hook input unavailable");
+                self.gap(
+                    id,
+                    &hook,
+                    RetainedCoverage::DeliveryGap,
+                    "hook input unavailable",
+                );
             }
             return Ok(());
         };
@@ -437,7 +485,17 @@ impl Agents {
                 | HookEvent::PlanApprovalResult
                 | HookEvent::ResumeContextEnded
         ) {
-            self.gap(id, &hook, "hook context or correlation is incomplete");
+            let coverage = if hook.event == HookEvent::ResumeContextEnded {
+                RetainedCoverage::ContextGap
+            } else {
+                RetainedCoverage::DeliveryGap
+            };
+            self.gap(
+                id,
+                &hook,
+                coverage,
+                "hook context or correlation is incomplete",
+            );
         }
         Ok(())
     }
@@ -463,14 +521,24 @@ impl Agents {
             return Ok(());
         }
         if run.sessions.contains(session) {
-            self.gap(id, &hook, "session switch reused an uncorrelated context");
+            self.gap(
+                id,
+                &hook,
+                RetainedCoverage::ContextGap,
+                "session switch reused an uncorrelated context",
+            );
             return Ok(());
         }
         if hook.event == HookEvent::Compact
             || run.sessions.len() >= MAX_CONTEXTS
             || (run.producer.is_some() && hook.event == HookEvent::Startup)
         {
-            self.gap(id, &hook, "hook context could not be associated");
+            self.gap(
+                id,
+                &hook,
+                RetainedCoverage::ContextGap,
+                "hook context could not be associated",
+            );
             return Ok(());
         }
         let id = if run.producer.is_some() {
@@ -526,16 +594,19 @@ impl Agents {
         );
     }
 
-    fn gap(&mut self, id: Uuid, hook: &Hook, reason: &str) {
+    fn gap(&mut self, id: Uuid, hook: &Hook, coverage: RetainedCoverage, reason: &str) {
         let run = self.runs.get_mut(&id).expect("tracked context");
-        run.retained_collection = None;
+        let coverage = if matches!(
+            run.retained_collection.take(),
+            Some(RetainedCoverage::ContextGap)
+        ) {
+            RetainedCoverage::ContextGap
+        } else {
+            coverage
+        };
         let mut evidence = hook.evidence(Confidence::Confirmed);
         evidence.uncertainty = Some(reason.into());
-        if run.apply(
-            hook.delivery,
-            ObservationKind::Collection(Collection::GapDetected),
-            evidence,
-        ) {
+        if run.apply(hook.delivery, coverage.observation(), evidence) {
             self.dirty.insert(id);
         }
     }
@@ -713,11 +784,10 @@ impl Run {
             ObservationKind::Collection(Collection::Degraded),
             evidence,
         );
-        self.retained_collection = Some(if context.gap {
-            Collection::GapDetected
-        } else {
-            Collection::Healthy
-        });
+        self.retained_collection = Some(RetainedCoverage::from_record(
+            context.gap,
+            context.delivery_gap,
+        ));
     }
 
     fn confirm_collection(&mut self, hook: &Hook) -> bool {
@@ -726,7 +796,7 @@ impl Run {
         };
         self.apply(
             Uuid::new_v4(),
-            ObservationKind::Collection(collection),
+            collection.observation(),
             hook.evidence(Confidence::Confirmed),
         )
     }

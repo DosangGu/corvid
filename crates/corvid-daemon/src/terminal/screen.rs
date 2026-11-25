@@ -45,6 +45,12 @@ impl TerminalScreen {
             }
         });
         result?;
+        let program_replies = self.sgr.take_program_replies();
+        anyhow::ensure!(
+            replies.len() + program_replies.len() <= MAX_REPLY_BYTES,
+            "terminal query reply limit exceeded"
+        );
+        replies.extend(program_replies);
         Ok(replies)
     }
 
@@ -54,6 +60,14 @@ impl TerminalScreen {
 
     pub(super) fn take_clipboard(&mut self) -> Option<String> {
         self.sgr.take_clipboard()
+    }
+
+    pub(super) fn program_status(&self) -> Option<corvid_protocol::wire::ProgramStatus> {
+        self.sgr.program_status()
+    }
+
+    pub(super) fn expire_program_status(&mut self) {
+        self.sgr.expire_program_status();
     }
 
     #[cfg(target_os = "linux")]
@@ -129,6 +143,59 @@ mod tests {
         sequence.extend(STANDARD.encode(text).bytes());
         sequence.extend(terminator);
         sequence
+    }
+
+    #[test]
+    fn program_status_prefers_a_blocked_child_and_restores_progress_after_reset() {
+        let mut terminal = terminal(80, 24);
+        terminal.process(b"\x1b]9;4;1;35\x07").unwrap();
+        assert_eq!(terminal.program_status().unwrap().progress, Some(35));
+        terminal
+            .process(b"\x1b]7501;state=idle:app=build\x07")
+            .unwrap();
+        for bytes in
+            b"\x1b]7501;state=blocked:id=check/tests:kind=auth:msg=c2lnbiBpbg\x1b\\".chunks(3)
+        {
+            terminal.process(bytes).unwrap();
+        }
+        let blocked = terminal.program_status().unwrap();
+        assert_eq!(blocked.label(), "App waiting for login");
+        assert_eq!(blocked.message, "sign in");
+        assert_eq!(blocked.app, "build");
+        terminal
+            .process(b"\x1b]9;4;1;80\x07\x1b]7501;state=clear:id=check\x07")
+            .unwrap();
+        assert_eq!(terminal.program_status().unwrap().label(), "App idle");
+
+        terminal
+            .process(b"\x1b]7501;state=working:id=test\x07\x1b]133;A\x07")
+            .unwrap();
+        assert_eq!(terminal.program_status().unwrap().label(), "App idle");
+        terminal
+            .process(b"\x1b]7501;state=done:id=test\x07\x1b]133;A\x07")
+            .unwrap();
+        assert_eq!(terminal.program_status().unwrap().label(), "App finished");
+        terminal.process(b"\x1bc\x1b]9;4;1;80\x07").unwrap();
+        assert_eq!(terminal.program_status().unwrap().progress, Some(80));
+    }
+
+    #[test]
+    fn program_status_rejects_invalid_reports_and_replies_once_on_complete_queries() {
+        let mut terminal = terminal(80, 24);
+        assert!(terminal.process(b"\x1b]7501;?\x1b").unwrap().is_empty());
+        let reply = terminal.process(b"\\").unwrap();
+        assert_eq!(reply, b"\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\");
+        terminal.process(b"\x1b]7501;state=done\x07").unwrap();
+        terminal
+            .process(b"\x1b]7501;state=blocked:id=/bad\x07")
+            .unwrap();
+        terminal
+            .process(b"\x1b]7501;state=blocked:msg=AA==\x07")
+            .unwrap();
+        terminal.process(b"\x1b]7501;state=blocked\x1b[0m").unwrap();
+        let oversized = format!("\x1b]7501;state=blocked:msg={}\x07", "A".repeat(4096));
+        terminal.process(oversized.as_bytes()).unwrap();
+        assert_eq!(terminal.program_status().unwrap().label(), "App finished");
     }
 
     #[test]

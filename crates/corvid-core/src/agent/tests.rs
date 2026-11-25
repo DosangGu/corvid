@@ -94,6 +94,43 @@ impl Fixture {
     }
 }
 
+#[test]
+fn delivery_gap_recovers_on_a_confirmed_new_turn_without_resolving_old_inputs() {
+    let mut fixture = Fixture::new();
+    assert!(fixture.turn("old"));
+    let request = fixture.request("old", "permission");
+    assert!(fixture.push(ObservationKind::HookDeliveryGap));
+    assert_eq!(fixture.request_state(request), RequestStatus::Unverified);
+    assert!(fixture.turn("next"));
+    fixture.response(Some("old"), ResponseOutcome::Observed, false);
+    assert_eq!(fixture.run.collection.value, Collection::GapDetected);
+    assert_eq!(fixture.run.prompt_observation(), None);
+
+    assert!(fixture.response(Some("next"), ResponseOutcome::Observed, false));
+    assert_eq!(fixture.run.collection.value, Collection::Healthy);
+    assert_eq!(
+        fixture.run.prompt_observation(),
+        Some(PromptObservation::Responded)
+    );
+    assert_eq!(fixture.request_state(request), RequestStatus::Unverified);
+    assert!(!fixture.turn("old"));
+    assert_eq!(
+        fixture.run.prompt_observation(),
+        Some(PromptObservation::Responded)
+    );
+}
+
+#[test]
+fn a_delivery_gap_does_not_make_an_ambiguous_context_recoverable() {
+    let mut fixture = Fixture::new();
+    assert!(fixture.push(ObservationKind::Collection(Collection::GapDetected)));
+    assert!(!fixture.push(ObservationKind::HookDeliveryGap));
+    assert!(fixture.turn("next"));
+    assert!(!fixture.push(ObservationKind::ModelRequested("next".into())));
+    assert_eq!(fixture.run.collection.value, Collection::GapDetected);
+    assert_eq!(fixture.run.prompt_observation(), None);
+}
+
 fn evidence(source: Source, unix_ms: u64) -> Evidence {
     Evidence {
         source,

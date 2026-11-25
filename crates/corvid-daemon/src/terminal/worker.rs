@@ -100,8 +100,14 @@ pub(crate) struct RetainedTerminal {
 impl LaunchScope {
     fn content(&self, viewport: TuiViewport, location: Location, keymap: Keymap) -> Viewport {
         if keymap.workspace_ui {
-            Composition::new(viewport.outer, &self.metadata.layout(), location, None)
-                .active_size(location)
+            Composition::new(
+                viewport.outer,
+                &self.metadata.layout(),
+                location,
+                None,
+                None,
+            )
+            .active_size(location)
         } else {
             viewport.content()
         }
@@ -1335,6 +1341,7 @@ struct Running {
     shell: bool,
     dirty: bool,
     reported_title: String,
+    reported_program_status: Option<corvid_protocol::wire::ProgramStatus>,
     clipboard_route: Option<InputRoute>,
     exit: Option<ExitStatus>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1392,6 +1399,7 @@ impl Running {
             shell,
             dirty: true,
             reported_title: String::new(),
+            reported_program_status: None,
             clipboard_route: None,
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1547,6 +1555,7 @@ impl Running {
             shell: saved.shell,
             dirty: true,
             reported_title: String::new(),
+            reported_program_status: None,
             clipboard_route: None,
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1574,6 +1583,13 @@ impl Running {
             let title = self.reported_title.clone();
             self.registry
                 .request(move |registry| registry.record_title(id, title));
+        }
+        if tick.program_status != self.reported_program_status {
+            self.reported_program_status = tick.program_status;
+            let id = self.id;
+            let status = self.reported_program_status.clone();
+            self.registry
+                .request(move |registry| registry.record_program_status(id, status));
         }
         self.dirty |= tick.output;
         if let Some(status) = tick.exit {
@@ -1886,6 +1902,7 @@ struct Status {
     layout: Arc<Layout>,
     mode: InputMode,
     cols: u16,
+    program: Option<String>,
     ansi: String,
 }
 
@@ -2188,11 +2205,15 @@ impl Lease {
             return self.status.take().is_some();
         }
         let display = metadata.display();
-        let layout = display.layout;
+        let layout = Arc::clone(&display.layout);
+        let program = super::composition::pane_status(&display, self.location.pane);
         let cols = self.viewport.outer.cols.get();
         let mode = self.input_mode();
         if self.status.as_ref().is_some_and(|previous| {
-            Arc::ptr_eq(&previous.layout, &layout) && previous.mode == mode && previous.cols == cols
+            Arc::ptr_eq(&previous.layout, &layout)
+                && previous.mode == mode
+                && previous.cols == cols
+                && previous.program == program
         }) {
             return false;
         }
@@ -2204,9 +2225,11 @@ impl Lease {
                 tab.id == self.location.tab
                     && matches!(tab.root, corvid_core::layout::Node::Split { .. })
             });
-        let pane = split
-            .then(|| layout.pane_title(self.location, &display.titles))
-            .flatten();
+        let pane = program.clone().or_else(|| {
+            split
+                .then(|| layout.pane_title(self.location, &display.titles))
+                .flatten()
+        });
         let ansi = status::line(&layout, self.location, cols, mode, pane.as_deref());
         let changed = self
             .status
@@ -2216,6 +2239,7 @@ impl Lease {
             layout,
             mode,
             cols,
+            program,
             ansi,
         });
         changed
@@ -2287,6 +2311,7 @@ impl Lease {
             &display.layout,
             self.location,
             selected_tab,
+            Some(&display),
         );
         let size = view.active_size(self.location);
         let preview = selected_tab
@@ -2299,10 +2324,11 @@ impl Lease {
         if let Some(location) = preview {
             view.show_tab(&display.layout, location);
         }
-        let layout_changed = cache
-            .layout
-            .as_ref()
-            .is_none_or(|old| !Arc::ptr_eq(old, &display.layout));
+        let layout_changed = cache.layout.as_ref().is_none_or(|old| {
+            !Arc::ptr_eq(&old.layout, &display.layout)
+                || !Arc::ptr_eq(&old.program_statuses, &display.program_statuses)
+                || !Arc::ptr_eq(&old.pending_input_panes, &display.pending_input_panes)
+        });
         if cache.size != Some(size) && !terminal.session.paste_pending() && self.paste.is_none() {
             terminal.resize(size)?;
             cache.size = Some(size);
@@ -2353,7 +2379,7 @@ impl Lease {
         let mut ansi = view.paint(
             self.location,
             selected,
-            &display.titles,
+            &display,
             &cache.header_motion,
             |pane| {
                 if pane == self.location.pane {
@@ -2380,7 +2406,7 @@ impl Lease {
                 &["w Workspaces · t Tabs · p Panes · ? Search · Esc Cancel".into()],
             ));
         }
-        cache.layout = Some(display.layout);
+        cache.layout = Some(display);
         cache.pending_layout = Some(view);
         self.navigation_dirty = false;
         Ok(Some((ansi, LastFrame::Composition)))
@@ -2467,7 +2493,7 @@ type PreviewReply = oneshot::Receiver<Reply<(Viewport, Vec<u8>)>>;
 struct CompositionCache {
     header_motion: HeaderMotion,
     picker_motion: TitleMotion,
-    layout: Option<Arc<Layout>>,
+    layout: Option<crate::metadata::DisplayLayout>,
     visible: Option<Composition>,
     pending_layout: Option<Composition>,
     size: Option<Viewport>,

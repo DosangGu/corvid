@@ -80,6 +80,7 @@ fn terminal() -> SnapshotEntity {
         body: Some(EntityBody::Terminal(TerminalState {
             terminal_id: "terminal".into(),
             location: Some(location()),
+            ..Default::default()
         })),
     }
 }

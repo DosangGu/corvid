@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -9,7 +9,7 @@ use corvid_async::watch;
 use corvid_core::agent::AgentSessionKey;
 use corvid_core::layout::Layout;
 use corvid_core::layout::{CwdObservation, Location};
-use corvid_protocol::wire::HistoricalRun;
+use corvid_protocol::wire::{HistoricalRun, ProgramStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::history::{History, RunRecord};
@@ -133,6 +133,8 @@ impl MetadataView {
 pub(crate) struct DisplayLayout {
     pub(crate) layout: Arc<Layout>,
     pub(crate) titles: Arc<HashMap<Uuid, String>>,
+    pub(crate) program_statuses: Arc<HashMap<Uuid, ProgramStatus>>,
+    pub(crate) pending_input_panes: Arc<BTreeSet<Uuid>>,
 }
 
 #[derive(Clone)]
@@ -178,14 +180,41 @@ impl MetadataUpdates {
     fn new(updates: watch::Sender<Stored>) -> Self {
         let titles = Arc::new(HashMap::new());
         let layout = Arc::new(updates.borrow().layout.display(&titles));
-        Self(updates, watch::channel(DisplayLayout { layout, titles }).0)
+        let display = DisplayLayout {
+            layout,
+            titles,
+            program_statuses: Arc::default(),
+            pending_input_panes: Arc::default(),
+        };
+        Self(updates, watch::channel(display).0)
     }
 
     pub(crate) fn publish_display(&self, titles: &Arc<HashMap<Uuid, String>>) {
         let layout = Arc::new(self.layout().display(titles));
-        self.1.send_replace(DisplayLayout {
-            layout,
-            titles: Arc::clone(titles),
+        self.1.send_modify(|display| {
+            display.layout = layout;
+            display.titles = Arc::clone(titles);
+        });
+    }
+
+    pub(crate) fn publish_program_status(&self, pane: Uuid, status: Option<ProgramStatus>) {
+        self.1.send_modify(|display| {
+            let statuses = Arc::make_mut(&mut display.program_statuses);
+            if let Some(status) = status {
+                statuses.insert(pane, status);
+            } else {
+                statuses.remove(&pane);
+            }
+        });
+    }
+
+    pub(crate) fn publish_pending_input_panes(&self, panes: BTreeSet<Uuid>) {
+        self.1.send_if_modified(|display| {
+            if *display.pending_input_panes == panes {
+                return false;
+            }
+            display.pending_input_panes = Arc::new(panes);
+            true
         });
     }
 

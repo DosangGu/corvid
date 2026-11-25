@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{Agents, evidence};
+use crate::handoff::RetainedCoverage;
 use crate::handoff::input::{RetainedInput, valid_id};
 use crate::process::{HookProducer, ProcessImage};
 
@@ -30,6 +31,8 @@ pub(crate) struct RetainedAgent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     inputs: Vec<RetainedInput>,
     gap: bool,
+    #[serde(default)]
+    delivery_gap: bool,
 }
 
 impl RetainedAgent {
@@ -53,6 +56,7 @@ impl RetainedAgent {
             turn: None,
             inputs: Vec::new(),
             gap: false,
+            delivery_gap: false,
         })
     }
 
@@ -104,6 +108,10 @@ impl Agents {
             {
                 return None;
             }
+            let (gap, delivery_gap) = launch
+                .retained
+                .unwrap_or_else(|| RetainedCoverage::from_run(&record.run))
+                .record();
             Some(RetainedAgent {
                 association: *association,
                 observer_epoch: launch.observer_epoch.unwrap_or(epoch),
@@ -118,7 +126,8 @@ impl Agents {
                 sessions: launch.sessions.iter().cloned().collect(),
                 turn: record.run.current_open_turn().map(str::to_owned),
                 inputs: RetainedInput::collect(&record.run),
-                gap: launch.gap,
+                gap,
+                delivery_gap,
             })
         })
     }
@@ -158,9 +167,9 @@ impl Agents {
         launch.restart_path = saved.restart_path();
         launch.producer = saved.producer;
         launch.observer_epoch = Some(saved.observer_epoch);
-        launch.retained = true;
+        launch.retained = Some(RetainedCoverage::from_record(saved.gap, saved.delivery_gap));
         launch.sessions = saved.sessions.into_iter().collect();
-        launch.gap = saved.gap;
+        launch.gap = saved.gap && !saved.delivery_gap;
         launch.establish_context(record, Uuid::new_v4(), &saved.session);
         if let Some(turn) = saved.turn {
             record.apply(

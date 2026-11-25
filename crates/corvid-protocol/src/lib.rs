@@ -10,6 +10,7 @@ pub mod macos;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod paths;
 mod preflight;
+pub mod program_status;
 mod provider;
 mod session;
 pub mod snapshot;

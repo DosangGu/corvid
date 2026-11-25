@@ -42,7 +42,7 @@ pub(crate) struct Agents {
 
 struct Launch {
     observer_epoch: Option<Uuid>,
-    retained: bool,
+    retained: Option<crate::handoff::RetainedCoverage>,
     resume_key: Option<corvid_core::agent::AgentSessionKey>,
     current: Uuid,
     qualified: bool,
@@ -81,6 +81,41 @@ struct ManagedRun {
 }
 
 impl Agents {
+    pub(crate) fn observer_check(&self, terminal: Uuid) -> Option<crate::collector::ObserverCheck> {
+        self.launches.values().find_map(|launch| {
+            let record = self.runs.get(&launch.current)?;
+            if record.run.identity.terminal_id != terminal
+                || !record.terminal_available
+                || !launch.qualified
+                || launch.ambiguous
+                || launch.producer.is_none()
+                || launch.resume.is_some()
+                || !(record.run.has_hook_delivery_gap()
+                    || matches!(
+                        launch.retained,
+                        Some(crate::handoff::RetainedCoverage::DeliveryGap)
+                    ))
+            {
+                return None;
+            }
+            Some(crate::collector::ObserverCheck {
+                run: launch.current,
+                owner: launch.owner?,
+            })
+        })
+    }
+
+    pub(crate) fn pending_input_panes(&self) -> BTreeSet<Uuid> {
+        self.runs
+            .values()
+            .filter(|record| {
+                record.terminal_available
+                    && matches!(record.run.badge(), corvid_core::agent::Badge::NeedsInput(_))
+            })
+            .map(|record| record.location.pane)
+            .collect()
+    }
+
     pub(crate) fn resume_observations(
         &self,
     ) -> Vec<(Location, Option<corvid_core::agent::AgentSessionKey>)> {
@@ -184,7 +219,7 @@ impl Agents {
             association,
             Launch {
                 observer_epoch: None,
-                retained: false,
+                retained: None,
                 resume_key: None,
                 current: id,
                 qualified,

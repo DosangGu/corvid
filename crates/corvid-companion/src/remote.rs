@@ -52,6 +52,8 @@ impl Remote {
             omitted_attention: 0,
         };
         let mut pane_titles = BTreeMap::new();
+        let mut program_statuses = BTreeMap::new();
+        let mut run_terminals = BTreeMap::new();
         for entry in snapshot.entities() {
             match &entry.body {
                 Some(Body::Workspace(workspace)) => {
@@ -75,7 +77,13 @@ impl Remote {
                         epoch,
                         run: parse_id(&summary.agent_run_id)?,
                     };
+                    run_terminals.insert(key, summary.terminal_id.as_str());
                     remote.runs.insert(key, ObservedRun::new(key, agent));
+                }
+                Some(Body::Terminal(terminal)) => {
+                    if let Some(status) = &terminal.program_status {
+                        program_statuses.insert(terminal.terminal_id.as_str(), status);
+                    }
                 }
                 Some(Body::Client(client)) if client.active_selection().is_some() => {
                     if let Some(binding) = client
@@ -92,13 +100,19 @@ impl Remote {
             }
         }
         remote.panes.extend(pane_titles.keys().copied());
-        for run in remote.runs.values_mut() {
+        for (key, run) in &mut remote.runs {
             let title = run
                 .observation
                 .pane
                 .and_then(|pane| pane_titles.get(&pane).copied());
             run.observation.eligible = title.is_some() && !run.process_exited;
             run.display.session_title = title.filter(|title| !title.is_empty()).map(str::to_owned);
+            if run.observation.navigable && title.is_some() {
+                run.display.program_status = run_terminals
+                    .get(key)
+                    .and_then(|id| program_statuses.get(id))
+                    .map(|status| (*status).clone());
+            }
         }
         let requests: BTreeMap<_, _> = snapshot
             .entities()

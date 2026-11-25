@@ -3,6 +3,7 @@ pub(crate) mod input;
 use std::path::Path;
 
 use anyhow::{Result, ensure};
+use corvid_core::agent::{AgentRun, Collection, ObservationKind};
 use corvid_core::layout::Location;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,45 @@ use crate::workspaces::{MAX_PTY_WORKERS, Workspaces};
 
 const FILE: &str = "handoff.json";
 const LIMIT: u64 = 4 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+pub(crate) enum RetainedCoverage {
+    Healthy,
+    DeliveryGap,
+    ContextGap,
+}
+
+impl RetainedCoverage {
+    pub(crate) fn from_run(run: &AgentRun) -> Self {
+        Self::from_record(
+            run.collection.value == Collection::GapDetected,
+            run.has_hook_delivery_gap(),
+        )
+    }
+
+    pub(crate) fn from_record(gap: bool, delivery_gap: bool) -> Self {
+        match (gap, delivery_gap) {
+            (true, true) => Self::DeliveryGap,
+            (true, false) => Self::ContextGap,
+            _ => Self::Healthy,
+        }
+    }
+
+    pub(crate) fn record(self) -> (bool, bool) {
+        (
+            !matches!(self, Self::Healthy),
+            matches!(self, Self::DeliveryGap),
+        )
+    }
+
+    pub(crate) fn observation(self) -> ObservationKind {
+        match self {
+            Self::Healthy => ObservationKind::Collection(Collection::Healthy),
+            Self::DeliveryGap => ObservationKind::HookDeliveryGap,
+            Self::ContextGap => ObservationKind::Collection(Collection::GapDetected),
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 struct Handoff {

@@ -45,6 +45,8 @@ pub(crate) struct CollectorDiagnostics {
     rejected: AtomicU64,
     failed: AtomicU64,
     saturated: AtomicU64,
+    verified_observers: AtomicU64,
+    failed_observers: AtomicU64,
 }
 
 impl CollectorDiagnostics {
@@ -54,6 +56,8 @@ impl CollectorDiagnostics {
             rejected_submissions: self.rejected.load(Ordering::Relaxed),
             connection_failures: self.failed.load(Ordering::Relaxed),
             saturated_connections: self.saturated.load(Ordering::Relaxed),
+            verified_observer_checks: self.verified_observers.load(Ordering::Relaxed),
+            failed_observer_checks: self.failed_observers.load(Ordering::Relaxed),
         }
     }
 
@@ -71,6 +75,33 @@ impl CollectorDiagnostics {
 
     pub(crate) fn admission_refused(&self) {
         increment(&self.saturated);
+    }
+
+    pub(crate) fn observer_checked(&self, valid: bool) {
+        increment(if valid {
+            &self.verified_observers
+        } else {
+            &self.failed_observers
+        });
+    }
+}
+
+pub(crate) struct ObserverCheck {
+    pub(crate) run: Uuid,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) owner: ProcessImage,
+    #[cfg(windows)]
+    pub(crate) owner: crate::native_process::ProcessKey,
+    #[cfg(windows)]
+    pub(crate) provider: corvid_core::agent::Provider,
+}
+
+impl ObserverCheck {
+    pub(crate) fn verify(self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        return self.owner.is_current();
+        #[cfg(windows)]
+        return crate::native_process::Process::reopen(self.owner, self.provider).is_some();
     }
 }
 

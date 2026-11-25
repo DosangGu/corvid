@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::title_motion::{TitleMotion, window};
 use super::{navigation, status::clip};
+use crate::metadata::DisplayLayout;
 
 pub(super) struct Composition {
     outer: Viewport,
@@ -99,10 +100,11 @@ impl Composition {
         layout: &Layout,
         location: Location,
         selected_tab: Option<Uuid>,
+        display: Option<&DisplayLayout>,
     ) -> Self {
         let outer = outer.fit_screen();
         let (panes, split) = Self::pane_layout(outer, layout, location);
-        let (workspace, tabs) = top_row(layout, location, outer.cols.get(), selected_tab);
+        let (workspace, tabs) = top_row(layout, location, outer.cols.get(), selected_tab, display);
         Self {
             outer,
             panes,
@@ -234,7 +236,7 @@ impl Composition {
         &self,
         location: Location,
         selected: Option<Uuid>,
-        titles: &std::collections::HashMap<Uuid, String>,
+        display: &DisplayLayout,
         header: &HeaderMotion,
         mut screen: impl FnMut(Uuid) -> Option<std::sync::Arc<ScreenSnapshot>>,
     ) -> String {
@@ -255,8 +257,16 @@ impl Composition {
                     ("  ", "\x1b[0;2m")
                 };
                 let fallback = format!("Pane {}", ordinal + 1);
-                let title = titles.get(&id).map_or(fallback.as_str(), String::as_str);
-                let label = clip(&format!("{marker}{title}"), usize::from(region.width));
+                let title = display
+                    .titles
+                    .get(&id)
+                    .map_or(fallback.as_str(), String::as_str);
+                let status = pane_status(display, id);
+                let label = status.map_or_else(
+                    || format!("{marker}{title}"),
+                    |status| format!("{marker}{status} · {title}"),
+                );
+                let label = clip(&label, usize::from(region.width));
                 let _ = write!(
                     ansi,
                     "\x1b[{};{}H{color}{label}",
@@ -317,6 +327,7 @@ fn top_row(
     location: Location,
     width: u16,
     selected_tab: Option<Uuid>,
+    display: Option<&DisplayLayout>,
 ) -> (Option<WorkspaceLabel>, Vec<TabLabel>) {
     let Some(workspace) = layout
         .workspaces
@@ -359,8 +370,40 @@ fn top_row(
         .enumerate()
         .map(|(index, tab)| {
             let number = (index + 1).to_string();
-            let title = corvid_core::layout::clean_title(&tab.label);
+            let mut title = corvid_core::layout::clean_title(&tab.label);
             let active = tab.id == location.tab;
+            if let Some(display) = display {
+                let panes = || {
+                    display
+                        .layout
+                        .locations()
+                        .filter(|location| location.tab == tab.id)
+                };
+                let focused = active || Some(tab.id) == selected_tab;
+                let pending =
+                    panes().find(|location| display.pending_input_panes.contains(&location.pane));
+                let status = if let Some(pending) = pending {
+                    if focused {
+                        pane_status(display, pending.pane)
+                    } else {
+                        Some("Needs input".to_owned())
+                    }
+                } else {
+                    panes()
+                        .filter_map(|location| display.program_statuses.get(&location.pane))
+                        .max_by_key(|status| status.summary_priority())
+                        .map(|status| {
+                            if focused {
+                                status.detail()
+                            } else {
+                                status.summary()
+                            }
+                        })
+                };
+                if let Some(status) = status {
+                    title = format!("{status} · {title}");
+                }
+            }
             let size = number.len() + usize::from(active) * 2 + 1 + title.width();
             TabLabel {
                 id: tab.id,
@@ -405,6 +448,17 @@ fn top_row(
         true
     });
     (workspace_label, tabs)
+}
+
+pub(super) fn pane_status(display: &DisplayLayout, pane: Uuid) -> Option<String> {
+    let status = display.program_statuses.get(&pane);
+    if display.pending_input_panes.contains(&pane) {
+        return Some(status.map_or_else(
+            || "Needs input".to_owned(),
+            |status| format!("Needs input · {}", status.detail()),
+        ));
+    }
+    status.map(|status| status.detail())
 }
 
 fn host_name() -> Option<&'static str> {
@@ -466,7 +520,7 @@ mod tests {
         layout.workspaces[0].label = "workspace-review-WEST".into();
         layout.workspaces[0].tabs[0].label = "shared-prefix-한글-TAIL".into();
         layout.add_tab(location.workspace, "Run".into()).unwrap();
-        let view = Composition::new(outer, &layout, location, None);
+        let view = Composition::new(outer, &layout, location, None, None);
         let start = Instant::now();
         let mut motion = HeaderMotion::default();
         assert!(view.update_header(&mut motion, start));

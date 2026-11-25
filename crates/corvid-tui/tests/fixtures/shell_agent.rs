@@ -129,6 +129,27 @@ fn retained(provider: &str) {
             fields(turn)
         );
         match line.trim() {
+            "gap" => observe(provider, r#""hook_event_name":"UserPromptSubmit","prompt_id":"""#),
+            "report" => {
+                for progress in 1..=12 {
+                    print!("\x1b]7501;state=working:progress={progress}\x07");
+                }
+                io::stdout().flush().unwrap();
+            }
+            "fresh-turn" => {
+                turn += 1;
+                observe(
+                    provider,
+                    &format!(r#""hook_event_name":"UserPromptSubmit",{}"#, fields(turn)),
+                );
+                observe(
+                    provider,
+                    &format!(
+                        r#""hook_event_name":"Stop","stop_hook_active":false,{}"#,
+                        fields(turn)
+                    ),
+                );
+            }
             "question" => observe(
                 provider,
                 &format!(r#""hook_event_name":"PreToolUse",{question}"#),

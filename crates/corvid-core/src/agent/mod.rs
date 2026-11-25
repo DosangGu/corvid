@@ -272,6 +272,8 @@ pub enum ObservationKind {
     ContextEnded(EndReason),
     Process(ProcessLiveness),
     Collection(Collection),
+    /// Delivery failed while ownership of the registered context remained verifiable.
+    HookDeliveryGap,
 }
 
 pub struct Observation {
