@@ -264,7 +264,7 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 | PR changes component or packaging inputs | Matching workflows run the [component or packaging checks](08_ci_validation.md#pull-requests). |
 | PR to `main` updates `deploy/release-notes.md` | **Checks / Release** builds the five release targets and runs live runtime and installer tests. |
 | Manual **Run workflow** on **Checks / Release** | The same release qualification runs for the selected ref. |
-| Push of a `v*` tag | **Publish Corvid Release** builds and publishes the assets for the tagged revision. |
+| Push of a `v*` tag | **Publish Corvid Release** publishes the GitHub release and then the Cargo source packages to crates.io. |
 
 Release qualification and publication share **Package Corvid**, which calls
 the native build workflow. Desktop packages bundle all five standalone daemon targets for SSH and WSL.
@@ -299,27 +299,30 @@ marked by `publish = ["crates-io"]` in their manifests. Cargo packages these
 crates in dependency order. Verify the set locally with
 `python deploy/crates_io.py verify`.
 
-For the first publication through GitHub Actions, store a token with the
-`publish-new` scope as `CARGO_REGISTRY_TOKEN` in the `crates.io` environment.
-Push a tag such as `crates-io-v0.3.6` on a commit containing the
-**Publish Corvid to crates.io** workflow. The job checks out the existing `v0.3.6`
-release and verifies a Cargo installation after uploading the crates. If
-crates.io reaches its new-crate publishing limit, the job waits until the
-registry's retry time and resumes with the remaining crates. To resume after
-another failure, rerun the job.
+On `DosangGu/corvid`, the crates.io job runs after the GitHub release publishes.
+By default it uses `CARGO_REGISTRY_TOKEN` from the `crates.io` environment. The
+token needs the `publish-new` scope for new crates and permission to publish new
+versions of existing crates. The job installs the published version with Cargo
+and verifies `corvid --version`.
 
-For a local first publication, check out the release tag on Linux,
-authenticate with `cargo login`, and run `python deploy/crates_io.py publish`.
+To publish crates separately for an existing GitHub release, push a tag such as
+`crates-io-v0.3.6` on a commit containing the **Publish Corvid to crates.io**
+workflow. It checks out the corresponding `v0.3.6` release and uses the
+`crates.io` environment token.
 
-After the first publication, configure
+To use a short-lived token for automatic publication, configure
 [Trusted Publishing](https://crates.io/docs/trusted-publishing) on each published
 crate for `DosangGu/corvid`, workflow `release.yml`, and environment
 `crates-io`. Set the GitHub repository variable `PUBLISH_CRATES_IO` to `true`
-after all the publishers are configured.
+after all the publishers are configured. This variable selects the authentication
+method for automatic publication.
 
-On subsequent tags, the crates.io job runs after the GitHub release publishes.
-It uses a short-lived token. If some crates were uploaded before a failure,
-rerun the failed job to publish the remaining versions.
+If crates.io reaches its new-crate publishing limit, the job waits until the
+registry's retry time and resumes with the remaining crates. For other failures,
+rerun the failed crates.io job.
+
+For local publication, check out the release tag on Linux, authenticate with
+`cargo login`, and run `python deploy/crates_io.py publish`.
 
 For Windows source packaging, `cargo build-desktop` builds the Linux runtime in
 WSL and assembles the Windows packages. `Package-Corvid.ps1` also accepts prebuilt
