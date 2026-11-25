@@ -124,7 +124,7 @@ pub(super) fn legacy_helper() -> Option<ExitCode> {
     #[cfg(unix)]
     let provider = Path::new(&invoked_as)
         .file_name()
-        .is_some_and(|name| name == "claude" || name == "codex");
+        .is_some_and(|name| name == "claude" || name == "codex" || name == "agy");
     #[cfg(windows)]
     let provider = {
         let _ = invoked_as;

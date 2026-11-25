@@ -14,4 +14,6 @@ pub const SHELL_TERMINAL: &str = "CORVID_SHELL_TERMINAL";
 // Captured adapter baselines, not version admission requirements.
 pub const CLAUDE_VERSION: &str = "2.1.318";
 pub const CODEX_VERSION: &str = "0.167.0";
+pub const ANTIGRAVITY_VERSION: &str = "1.5.17";
 pub const CODEX_LAUNCH_CAPABILITY: &str = "agent_launch.codex.v1";
+pub const ANTIGRAVITY_LAUNCH_CAPABILITY: &str = "agent_launch.antigravity.v1";

@@ -11,8 +11,8 @@ use std::time::Duration;
 use corvid_async::io::{AsyncReadExt, AsyncWriteExt};
 use corvid_async::time::{sleep, timeout};
 use corvid_protocol::collector::{
-    CAPABILITY as COLLECTOR_CAPABILITY, CLAUDE_VERSION, CODEX_VERSION, HOST_ID, LAUNCH_ASSOCIATION,
-    SERVER_EPOCH,
+    ANTIGRAVITY_VERSION, CAPABILITY as COLLECTOR_CAPABILITY, CLAUDE_VERSION, CODEX_VERSION,
+    HOST_ID, LAUNCH_ASSOCIATION, SERVER_EPOCH,
 };
 use corvid_protocol::snapshot::{SnapshotAssembler, WATCH_CAPABILITY};
 use corvid_protocol::unix::{RuntimeDir, SocketRole};
@@ -284,6 +284,9 @@ async fn relays_real_control_session_over_binary_stdio() {
             "provider=Claude qualified_version={CLAUDE_VERSION}"
         )));
         assert!(output.contains(&format!("provider=Codex qualified_version={CODEX_VERSION}")));
+        assert!(output.contains(&format!(
+            "provider=Antigravity qualified_version={ANTIGRAVITY_VERSION}"
+        )));
         assert!(output.contains("observation=ExplicitQuestion qualification=Partial"));
         assert!(
             corvid_client::agents(&runtime)
@@ -302,10 +305,11 @@ async fn relays_real_control_session_over_binary_stdio() {
 }
 
 fn verify_qualified_profiles(profiles: &[corvid_protocol::wire::ProviderProfile]) {
-    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles.len(), 3);
     for (provider, version) in [
         (AgentProvider::Claude, CLAUDE_VERSION),
         (AgentProvider::Codex, CODEX_VERSION),
+        (AgentProvider::Antigravity, ANTIGRAVITY_VERSION),
     ] {
         let profile = profiles
             .iter()
@@ -314,9 +318,14 @@ fn verify_qualified_profiles(profiles: &[corvid_protocol::wire::ProviderProfile]
         assert_eq!(profile.version, version);
         let adapter = profile.adapter.as_ref().unwrap();
         assert_eq!(adapter.mode, ProviderExecutionMode::InteractiveCli as i32);
+        let expected_question = if provider == AgentProvider::Antigravity {
+            ProviderQualification::Unavailable
+        } else {
+            ProviderQualification::Partial
+        };
         assert!(adapter.capabilities.iter().any(|capability| {
             capability.kind == ProviderCapabilityKind::ExplicitQuestion as i32
-                && capability.qualification == ProviderQualification::Partial as i32
+                && capability.qualification == expected_question as i32
         }));
     }
 }

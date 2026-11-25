@@ -14,31 +14,47 @@ use corvid_core::agent::Provider;
 
 pub(crate) struct Config {
     build: fn(&str) -> Map<String, Value>,
+    format_settings: fn(Map<String, Value>) -> Value,
     arguments: fn(&str, Map<String, Value>) -> Vec<OsString>,
-    installed_settings: (&'static str, &'static str, &'static str),
+    installed_settings: Option<(&'static str, &'static str, &'static str)>,
     accepts_settings_override: bool,
+    supports_session_injection: bool,
 }
 
 pub(super) const CLAUDE: Config = Config {
     build: claude_hooks,
+    format_settings: |hooks| json!({ "hooks": hooks }),
     arguments: |_, hooks| {
         vec![
             "--settings".into(),
             json!({ "hooks": hooks }).to_string().into(),
         ]
     },
-    installed_settings: ("CLAUDE_CONFIG_DIR", ".claude", "settings.json"),
+    installed_settings: Some(("CLAUDE_CONFIG_DIR", ".claude", "settings.json")),
     accepts_settings_override: true,
+    supports_session_injection: true,
 };
 
 pub(super) const CODEX: Config = Config {
     build: codex_hooks,
+    format_settings: |hooks| json!({ "hooks": hooks }),
     arguments: |executable, hooks| vec!["-c".into(), codex_override(executable, &hooks).into()],
-    installed_settings: ("CODEX_HOME", ".codex", "hooks.json"),
+    installed_settings: Some(("CODEX_HOME", ".codex", "hooks.json")),
     accepts_settings_override: false,
+    supports_session_injection: true,
+};
+
+pub(super) const ANTIGRAVITY: Config = Config {
+    build: antigravity_hooks,
+    format_settings: |hooks| json!({ "corvid-observer": hooks }),
+    arguments: |_, _| Vec::new(),
+    installed_settings: None,
+    accepts_settings_override: false,
+    supports_session_injection: false,
 };
 
 const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
+const ANTIGRAVITY_EVENTS: [&str; 4] = ["SessionStart", "PreInvocation", "PostInvocation", "Stop"];
 const CODEX_EVENTS: [(&str, Option<&str>); 9] = [
     ("SessionStart", Some("startup|resume|compact")),
     ("UserPromptSubmit", None),
@@ -53,11 +69,18 @@ const CODEX_EVENTS: [(&str, Option<&str>); 9] = [
 
 pub fn observer_settings(provider: Provider) -> Result<Value> {
     let executable = observer_executable()?;
-    Ok(json!({ "hooks": observer_hooks(provider, &executable) }))
+    let config = &super::contract(provider).unix.hooks;
+    Ok((config.format_settings)(observer_hooks(
+        provider,
+        &executable,
+    )))
 }
 
 pub(super) fn arguments(provider: Provider, version: &Version, argv: &[OsString]) -> Vec<OsString> {
     let config = &super::contract(provider).unix.hooks;
+    if !config.supports_session_injection {
+        return Vec::new();
+    }
     if config.accepts_settings_override
         && argv
             .iter()
@@ -75,7 +98,9 @@ pub(super) fn arguments(provider: Provider, version: &Version, argv: &[OsString]
         hooks.remove("PreModelRequest");
         hooks.remove("PostModelRequest");
     }
-    if let Some(settings) = installed_settings(config.installed_settings) {
+    if let Some(installed_location) = config.installed_settings
+        && let Some(settings) = installed_settings(installed_location)
+    {
         retain_missing_hooks(&mut hooks, &settings);
     }
     if hooks.is_empty() {
@@ -210,6 +235,20 @@ fn codex_command(executable: &str, event: &str) -> String {
     command
 }
 
+fn antigravity_hooks(executable: &str) -> Map<String, Value> {
+    let path = executable.replace('\'', "'\"'\"'");
+    let handler = json!({
+        "type": "command",
+        "command": format!("exec '{path}' observe --provider antigravity"),
+        "timeout": 1,
+    });
+    let mut hooks = Map::new();
+    for event in ANTIGRAVITY_EVENTS {
+        hooks.insert(event.to_owned(), json!([handler.clone()]));
+    }
+    hooks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +268,24 @@ mod tests {
             assert!(hooks.contains_key("UserPromptSubmit"));
             assert!(hooks.contains_key("Stop"));
         }
+    }
+
+    #[test]
+    fn antigravity_hooks_use_flat_handler_arrays_without_pre_tool_use() {
+        let formatted = (ANTIGRAVITY.format_settings)(antigravity_hooks("/opt/corvid"));
+        let entry = formatted["corvid-observer"].as_object().unwrap();
+        assert!(!entry.contains_key("PreToolUse"));
+        assert!(!entry.contains_key("PostToolUse"));
+        for event in ANTIGRAVITY_EVENTS {
+            let handlers = entry[event].as_array().unwrap();
+            assert_eq!(handlers.len(), 1);
+            assert!(handlers[0].get("hooks").is_none());
+            assert_eq!(
+                handlers[0]["command"].as_str().unwrap(),
+                "exec '/opt/corvid' observe --provider antigravity"
+            );
+            assert_eq!(handlers[0]["timeout"].as_u64(), Some(1));
+        }
+        assert!(arguments(Provider::Antigravity, &Version::new(1, 5, 17), &[]).is_empty());
     }
 }

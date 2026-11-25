@@ -135,6 +135,7 @@ mod tests {
         for (provider, banner) in [
             (Provider::Claude, "1.2.3 (Claude Code)\n"),
             (Provider::Codex, "codex-cli 1.2.3\n"),
+            (Provider::Antigravity, "1.5.17\n"),
         ] {
             let (reader, mut writer) = io::pipe()?;
             writer.write_all(banner.as_bytes())?;

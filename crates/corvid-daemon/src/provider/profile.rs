@@ -1,3 +1,4 @@
+use super::contracts::TurnCorrelation;
 use corvid_core::agent::Provider;
 use corvid_protocol::wire::{
     ProviderAdapter, ProviderCapability, ProviderCapabilityKind as Kind,
@@ -28,10 +29,10 @@ pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
     };
     let mut correlation = vec![Field::ProcessIncarnation as i32];
     if qualified {
-        correlation.extend(
-            [Field::DirectChild, Field::Session, Field::Turn, Field::Tool]
-                .map(|field| field as i32),
-        );
+        correlation.extend([Field::DirectChild, Field::Session].map(|field| field as i32));
+        if contract.turn_correlation == TurnCorrelation::ProviderTurnId {
+            correlation.extend([Field::Turn, Field::Tool].map(|field| field as i32));
+        }
         correlation.extend(contract.unix.extra_correlation.map(|field| field as i32));
     }
     ProviderAdapter {
@@ -62,18 +63,9 @@ pub(crate) fn adapter(provider: Provider, qualified: bool) -> ProviderAdapter {
 
 fn qualification(contract: &super::contracts::Contract, kind: Kind) -> (Level, &'static str) {
     match kind {
-        Kind::TurnStart => (
-            Level::Partial,
-            "prompt submission can precede rejection by another hook",
-        ),
-        Kind::ResponseBoundary => (
-            Level::Partial,
-            "Stop gives response evidence before finality is known",
-        ),
-        Kind::PermissionRequest => (
-            Level::Partial,
-            "the permission hook lacks an exact request ID",
-        ),
+        Kind::TurnStart => contract.unix.turn_start,
+        Kind::ResponseBoundary => contract.unix.response_boundary,
+        Kind::PermissionRequest => contract.unix.permission_request,
         Kind::RevalidateCurrentState => (
             Level::Unavailable,
             "the interactive hook feed cannot recover missed events",

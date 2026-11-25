@@ -78,6 +78,8 @@ const CAPABILITIES: &[&str] = &[
     corvid_protocol::PROCESS_AGENT_LAUNCH_CAPABILITY,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    corvid_protocol::collector::ANTIGRAVITY_LAUNCH_CAPABILITY,
 ];
 const MAX_INPUT_CHUNK: usize = 8192;
 // Leave room for new interactive clients even if several Desktop windows park.

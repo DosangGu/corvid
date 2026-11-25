@@ -31,7 +31,7 @@
 
 ## 1. Product and support boundary
 
-Corvid is a Rust terminal multiplexer with integrations for Claude Code and Codex.
+Corvid is a Rust terminal multiplexer with integrations for Claude Code, Codex, and Antigravity CLI.
 The desktop GUI on Windows and Linux and the Linux TUI attach to the same Corvid
 multiplexer and aim to provide the same user experience wherever practical.
 They share workspace, tab, pane, and focus rules. The Linux TUI runs inside an
@@ -347,7 +347,7 @@ complete T1 or clear R2.
 
 ### 6.1 Adapter contract and qualification
 
-Claude Code and Codex have separate adapters. Each adapter reports provider version,
+Claude Code, Codex, and Antigravity CLI have separate adapters. Each adapter reports provider version,
 execution mode (`interactive_cli`, `notify_only`, or a future `app_server`), adapter
 schema revision, supported event kinds, ownership/correlation fields, and capabilities
 such as `turn_start`, `response_boundary`, `explicit_question`, `permission_request`,
@@ -365,7 +365,7 @@ fixture baselines, and schema revisions. New agents add an explicit adapter that
 normalizes observations into the shared collector and attention feed, without
 provider-specific notification policy in Deck.
 See [provider qualification](03_provider_qualification.md) for captured traces
-from Claude Code 2.1.318 and Codex CLI 0.167.0. The agent projection includes the
+from Claude Code 2.1.318, Codex CLI 0.167.0, and Antigravity CLI 1.5.17. The agent projection includes the
 adapter schema, qualified event and correlation fields, and capability levels.
 
 The proposed adapter produces observations, not mutations:
@@ -473,6 +473,17 @@ coverage is unavailable. Do not scrape undocumented transcript formats as the de
 integration. App Server's request IDs and resolution events cannot be silently attributed
 to ordinary CLI Hooks, `notify`, terminal OSC 9, or BEL notifications.
 
+Antigravity CLI (`agy`) evidence: [Hooks](https://antigravity.google/docs/hooks) and
+[CLI reference](https://antigravity.google/docs/cli/reference), checked 2026-11-25, plus
+local `agy 1.5.17` qualification. `agy` loads hooks only from `~/.gemini/config/hooks.json`,
+`.agents/hooks.json`, or installed plugins (`--settings` does not accept `hooks`). `SessionStart`,
+`PreInvocation`, `PostInvocation`, and `Stop` fail open with empty stdout and exit 0, whereas
+`PreToolUse` in `1.5.17` fails closed when a hook is missing, crashes, or prints `{}`. Per
+§6.4.6-7, Corvid registers only the four fail-open lifecycle events via explicit
+`corvid hooks antigravity` (or `--install`), uses daemon-local turn generations because
+`agy` hooks omit a shared turn ID, filters empty-`lastUserInput` subagent hooks, and relies
+on `agy`'s native OSC 7501 `ProgramStatus` for passive permission/question wait visibility.
+
 ### 6.3 Correlation and ordering rules
 
 - Key work/request transitions by `(epoch, run, actor, provider turn, provider request/tool)`
@@ -509,7 +520,9 @@ epoch, provider process incarnation, and the exec-form hook's parent PID.
 `corvid observe --provider codex` uses the same collector. It also recognizes the
 launcher's direct internal app-server child by its version-independent release
 directory layout, installed executable, fixed local-server arguments, and process
-incarnation. A change in verified producer invalidates navigation for that run.
+incarnation. `corvid observe --provider antigravity` submits allowlisted observations
+from `agy` (`conversationId`, `fullyIdle`, `terminationReason`, and non-empty `error`
+indicator) without retaining `lastUserInput` or `transcriptPath`. A change in verified producer invalidates navigation for that run.
 See [provider qualification](03_provider_qualification.md) for the enabled scope.
 
 1. Use a fixed installed executable path and fixed arguments. Never interpolate prompt,
