@@ -245,6 +245,10 @@ void corvid_panel_update(void *view, double width, double height, uint8_t presen
         }
 
         installBackdrop(content);
+        panel.level = NSPopUpMenuWindowLevel;
+        panel.animationBehavior = NSWindowAnimationBehaviorUtilityWindow;
+        panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+            NSWindowCollectionBehaviorFullScreenAuxiliary;
         panel.hidesOnDeactivate = NO;
         panel.movable = NO;
         panel.titleVisibility = NSWindowTitleHidden;

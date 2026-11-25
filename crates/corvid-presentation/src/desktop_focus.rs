@@ -30,7 +30,38 @@ pub struct FocusRequest {
     pub result: FocusReply,
 }
 
-pub type FocusReply = oneshot::Sender<Result<(), FocusFailure>>;
+pub struct FocusReply {
+    sender: oneshot::Sender<Result<(), FocusFailure>>,
+    peer_pid: Option<u32>,
+}
+
+impl From<oneshot::Sender<Result<(), FocusFailure>>> for FocusReply {
+    fn from(sender: oneshot::Sender<Result<(), FocusFailure>>) -> Self {
+        Self {
+            sender,
+            peer_pid: None,
+        }
+    }
+}
+
+impl FocusReply {
+    /// The requesting process as authenticated by the local transport.
+    pub fn peer_pid(&self) -> Option<u32> {
+        self.peer_pid
+    }
+
+    pub fn send(self, result: Result<(), FocusFailure>) -> Result<(), Result<(), FocusFailure>> {
+        self.sender.send(result)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+
+    pub fn closed(&mut self) -> impl Future<Output = ()> + '_ {
+        self.sender.closed()
+    }
+}
 
 #[derive(Debug)]
 pub struct FocusFailure(ProtocolFault);
@@ -294,11 +325,16 @@ async fn serve_scope(
                 let stream = connected?;
                 #[cfg(not(windows))]
                 let Some(stream) = connected? else { continue };
+                #[cfg(target_os = "macos")]
+                let peer_pid = corvid_protocol::unix::peer_pid(&stream).ok();
+                #[cfg(not(target_os = "macos"))]
+                let peer_pid = None;
                 let focus = focus.clone();
                 peers.spawn(async move {
                     let wait = if routed { ROUTED_TIMEOUT } else { COMMAND_TIMEOUT };
                     let _ = timeout(wait, exchange(
                         Box::new(corvid_async::io::adapt(stream)), host, controller, epoch, routed, focus,
+                        peer_pid,
                     )).await;
                 });
             }
@@ -313,6 +349,7 @@ async fn exchange(
     epoch: Uuid,
     routed: bool,
     focus: mpsc::Sender<FocusRequest>,
+    peer_pid: Option<u32>,
 ) -> Result<()> {
     let (mut reader, mut writer) = frames(stream).await?;
     let greeting = reader
@@ -362,7 +399,8 @@ async fn exchange(
             && Uuid::parse_str(&run.agent_run_id).is_ok_and(|run| !run.is_nil()),
         "invalid Desktop focus scope"
     );
-    let (result, completed) = oneshot::channel();
+    let (sender, completed) = oneshot::channel();
+    let result = FocusReply { sender, peer_pid };
     let outcome = match focus.try_send(FocusRequest { run, result }) {
         Ok(()) => corvid_async::select! {
             result = completed => result.context("Desktop focus result unavailable")?,
@@ -405,11 +443,13 @@ mod tests {
             controller,
             true,
             send,
+            Some(123),
         ));
         let request = request_on_stream(Box::new(client), controller, run.clone(), true, async {});
         let confirm = async {
             let request = received.recv().await.expect("missing routed request");
             assert_eq!(request.run, run);
+            assert_eq!(request.result.peer_pid(), Some(123));
             request
                 .result
                 .send(Err(ProtocolFault::new(
@@ -448,6 +488,7 @@ mod tests {
             epoch,
             false,
             send,
+            None,
         ));
         let request = request_on_stream(Box::new(client), controller, run.clone(), false, async {});
         let confirm = async {
@@ -471,6 +512,7 @@ mod tests {
             epoch,
             false,
             send,
+            None,
         ));
         let mismatched = PresentedRunKey {
             host_id: Uuid::new_v4().to_string(),

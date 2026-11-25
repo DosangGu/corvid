@@ -25,7 +25,7 @@ SMOKE = {
 CASES = {
     "Linux": (*SMOKE["Linux"], "desktop-lifecycle", "deck-focus"),
     "Windows": (*SMOKE["Windows"], "desktop-paste", "deck-tray"),
-    "Darwin": (*SMOKE["Darwin"], "dmg-windows"),
+    "Darwin": (*SMOKE["Darwin"], "deck-focus", "dmg-windows"),
 }
 
 
@@ -116,7 +116,7 @@ def native(system, cases, build, assets, artifacts):
     from scenario import run_case
 
     if system == "Darwin":
-        from macos.driver import Desktop, bundle_deck
+        from macos.driver import Desktop, bundle_deck, bundle_desktop
         from macos.test_desktop_paste import verify_paste
     else:
         from windows.driver import Desktop
@@ -133,8 +133,10 @@ def native(system, cases, build, assets, artifacts):
         with ExitStack() as stack:
             root = stack.enter_context(fixture_directory(parent))
             paths = binaries(stack, system, build, assets, root)
-            if build and system == "Darwin" and case == "deck-window":
+            if build and system == "Darwin" and case in ("deck-window", "deck-focus"):
                 cli, desktop, deck = paths
+                if case == "deck-focus":
+                    cli, desktop = bundle_desktop(cli, desktop, root)
                 paths = (cli, desktop, bundle_deck(deck, root))
             if case == "deck-tray":
                 env = dict(os.environ, CORVID_UI_DECK_BINARY=str(paths[2]))
@@ -167,7 +169,7 @@ def main():
         parser.error("provide --build or --assets")
     if args.case and args.case not in CASES[system]:
         parser.error(f"unknown case for {system}: {args.case}; available: {', '.join(CASES[system])}")
-    if args.case == "deck-focus" and not args.build:
+    if args.case == "deck-focus" and system == "Linux" and not args.build:
         parser.error("deck-focus requires --build")
     if args.case == "dmg-windows" and not args.assets:
         parser.error("dmg-windows requires --assets")
@@ -181,7 +183,8 @@ def main():
     # The full suite expands with the checks supported by the selected input.
     if not args.case:
         cases = tuple(case for case in cases
-                      if (case != "deck-focus" or build) and (case != "dmg-windows" or assets))
+                      if (case != "deck-focus" or system != "Linux" or build)
+                      and (case != "dmg-windows" or assets))
     artifacts = args.artifacts.resolve()
     if system != "Linux":
         native(system, cases, build, assets, artifacts)

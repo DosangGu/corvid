@@ -30,7 +30,7 @@ static BRIDGE: Mutex<Option<Bridge>> = Mutex::new(None);
 unsafe extern "C" {
     fn corvid_native_start();
     fn corvid_native_stop();
-    fn corvid_native_yield_activation(pid: u32, completion: *mut std::ffi::c_void);
+    fn corvid_native_yield_activation(pid: u32, card: bool, completion: *mut std::ffi::c_void);
     fn corvid_native_status(text: *const std::ffi::c_char, attention: bool);
     fn corvid_native_notice(
         high: u64,
@@ -42,12 +42,22 @@ unsafe extern "C" {
 }
 
 pub(crate) async fn yield_activation(pid: u32) {
+    handoff(pid, false).await;
+}
+
+pub(crate) async fn yield_card_activation(pid: u32) {
+    handoff(pid, true).await;
+}
+
+async fn handoff(pid: u32, card: bool) {
     if !BRIDGE.lock().is_ok_and(|bridge| bridge.is_some()) {
         return;
     }
     let (completion, done) = oneshot::channel::<()>();
     // The main-queue callback takes ownership, even if the request is cancelled.
-    unsafe { corvid_native_yield_activation(pid, Box::into_raw(Box::new(completion)).cast()) };
+    unsafe {
+        corvid_native_yield_activation(pid, card, Box::into_raw(Box::new(completion)).cast())
+    };
     let _ = done.await;
 }
 

@@ -144,7 +144,10 @@ async fn forward_focus(
                 let (result, done) = oneshot::channel();
                 let outcome = timeout(COMMAND_TIMEOUT, async {
                     focus
-                        .send(FocusRequest { run, result })
+                        .send(FocusRequest {
+                            run,
+                            result: result.into(),
+                        })
                         .await
                         .context("Desktop focus channel closed")?;
                     done.await.context("Desktop focus result unavailable")
