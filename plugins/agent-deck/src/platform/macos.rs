@@ -121,6 +121,7 @@ extern "C" fn corvid_native_submitted(high: u64, low: u64, accepted: bool) {
         return;
     };
     let result = if accepted {
+        bridge.active.retain(|(existing, _)| *existing != id);
         bridge.active.push_back((id, pending.notice));
         if bridge.active.len() > 128 {
             bridge.active.pop_front();
@@ -285,7 +286,11 @@ impl NativeServices for Macos {
             if bridge.pending.is_some() {
                 return Err(NativeError::QueueFull);
             }
-            let id = Uuid::new_v4();
+            let id = if notice.summary {
+                Uuid::new_v4()
+            } else {
+                notice.key.attention
+            };
             bridge.pending = Some(Pending { id, notice, reply });
             unsafe {
                 corvid_native_notice(
