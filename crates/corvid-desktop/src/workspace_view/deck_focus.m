@@ -1,20 +1,27 @@
 #import <AppKit/AppKit.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 extern bool corvid_desktop_activation_pending(const void *reply);
 extern void corvid_desktop_activation_finished(void *reply, bool active);
+
+static bool isFrontmost(void) {
+    return NSApp.isActive &&
+        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == getpid();
+}
 
 static void confirmActivation(NSWindow *window, void *reply, bool raised, unsigned int attempts) {
     if (!window || !corvid_desktop_activation_pending(reply)) {
         corvid_desktop_activation_finished(reply, false);
         return;
     }
-    if (!raised && NSApp.isActive) {
+    bool active = isFrontmost();
+    if (!raised && active) {
         if (window.isMiniaturized) [window deminiaturize:nil];
         [window makeKeyAndOrderFront:nil];
         raised = true;
     }
-    if (raised && NSApp.isActive && window.isKeyWindow && !window.isMiniaturized) {
+    if (raised && active && window.isKeyWindow && !window.isMiniaturized) {
         corvid_desktop_activation_finished(reply, true);
     } else if (attempts == 0) {
         corvid_desktop_activation_finished(reply, false);
@@ -31,7 +38,9 @@ static void confirmActivation(NSWindow *window, void *reply, bool raised, unsign
 void corvid_desktop_activate_window(void *view, void *reply) {
     __weak NSWindow *window = [(__bridge NSView *)view window];
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (window && corvid_desktop_activation_pending(reply)) [NSApp activate];
+        if (window && corvid_desktop_activation_pending(reply) && !isFrontmost()) {
+            [NSRunningApplication.currentApplication activateWithOptions:0];
+        }
         confirmActivation(window, reply, false, 20);
     });
 }

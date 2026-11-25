@@ -29,10 +29,28 @@ class Desktop:
         if window:
             return str(pid), window.decode("ascii")
 
+    def frontmost(self):
+        app = subprocess.check_output([self.helper, "frontmost"], text=True, timeout=5).strip()
+        pid, _, bundle_id = app.partition(" ")
+        return pid, bundle_id
+
+    def click(self, window, x, y):
+        subprocess.run([self.helper, "click", *window, str(x), str(y)], check=True, timeout=5)
+
+    def window_size(self, window):
+        dimensions = subprocess.check_output([self.helper, "size", *window], text=True, timeout=5)
+        return tuple(map(int, dimensions.split()))
+
+    def minimize(self, window):
+        subprocess.run([self.helper, "minimize", window[0]], check=True, timeout=5)
+
     def submit(self, window, text, *, clear=False):
         keys = ("clear", "paste", "return") if clear else ("paste", "return")
         subprocess.run([self.helper, "submit", window[0], *keys], input=text.encode("utf-8"),
                        check=True, timeout=10)
+
+    def keys_focused(self, window, *keys):
+        subprocess.run([self.helper, "keys-focused", window[0], *keys], check=True, timeout=10)
 
     def keys(self, window, *keys):
         subprocess.run([self.helper, "keys", window[0], *keys], check=True, timeout=10)

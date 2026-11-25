@@ -70,6 +70,11 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
                CORVID_VIEW_STATE_DIR=str(root / "v"), CORVID_UI_ROOT=str(root))
     if os.name != "nt":
         env.update(SHELL="/bin/sh", ENV="/dev/null", LC_ALL="en_US.UTF-8")
+    if case == "deck-focus":
+        from deck_focus_fixture import agent_environment
+        from macos.test_deck_focus import launch_agents, verify_focus
+
+        env = agent_environment(cli, root, env)
     log_path = artifacts / "process.log"
     screenshot = artifacts / "failure.png"
     screenshot.unlink(missing_ok=True)
@@ -82,6 +87,10 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
             # The automatic monitor is detached from the Desktop process.
             processes.callback(monitor_fixture.stop, cli, state, env)
             try:
+                if case == "deck-focus":
+                    home_companion = root / "Library/Application Support/Corvid/companion"
+                    processes.callback(monitor_fixture.stop, cli, home_companion, env)
+                    names = launch_agents(cli, env, root, daemon)
                 command = [desktop, "--state-dir", state]
                 if os.name == "nt":
                     command += ["--pipe-instance", uuid4().hex]
@@ -90,6 +99,12 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
                 reader, epoch = monitor_fixture.ready(cli, state, env)
                 if case == "desktop-paste":
                     verify_paste(ui, app, window, root, cli=cli, env=env)
+                elif case == "deck-focus":
+                    deck_command = [deck, "--state-dir", state]
+                    panel = processes.enter_context(running(
+                        [*deck_command, "--background"], env, root, log))
+                    verify_focus(ui, app, window, panel, deck_command, root,
+                                 cli=cli, env=env, reader=reader, names=names)
                 elif case == "deck-window":
                     if os.name == "nt":
                         for shortcut in ui.fixture_shortcuts(state):
