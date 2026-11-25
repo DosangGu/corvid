@@ -3,8 +3,9 @@
 ## Provider compatibility and extension
 
 Linux and macOS recognize each registered provider's version banner without an
-exact-version allowlist or a minimum version. Claude uses `<version> (Claude Code)`
-and Codex uses `codex-cli <version>`, with a valid semantic version. Older and
+exact-version allowlist or a minimum version. Claude uses `<version> (Claude Code)`,
+Codex uses `codex-cli <version>`, and Antigravity uses `<version>` (bare semantic
+version from `agy --version`), with a valid semantic version. Older and
 newer releases can use the existing observer contract; malformed or unrelated
 version output is rejected. Ordinary provider commands in Corvid shells and
 `corvid attach --agent` use this policy. Windows observation does not use this
@@ -13,7 +14,8 @@ version gate.
 The captured releases remain each adapter's qualification baseline, not a
 claim that every accepted release has been exercised. `ProviderProfile.version` and
 `AgentInfo.qualified_provider_version` identify that baseline; hook evidence
-identifies the parser contract as `claude-hooks.v4` or `codex-hooks.v2`. The collector enforces bounded payloads,
+identifies the parser contract as `claude-hooks.v4`, `codex-hooks.v2`, or
+`agy-hooks.v1`. The collector enforces bounded payloads,
 correlation requirements, and process ownership checks. Linux and macOS register
 Codex model request observers for 0.165.0 and later. Earlier releases receive the
 existing prompt, tool, and response groups.
@@ -393,3 +395,44 @@ compaction, and resume still completed. The daemon reported zero hook
 submissions and left collection NotRegistered.
 The standalone helper tests cover malformed, oversized, and stalled input with
 neutral output.
+
+## Antigravity CLI 1.5.17 on Linux
+
+Recorded on Linux with `/home/dosang/.local/bin/agy` (`1.5.17`) running in Corvid
+PTYs against a synthetic loopback Gemini API (`modelProvider: "gemini"`,
+`GOOGLE_GEMINI_BASE_URL`).
+
+| Event | Observed fields and Corvid behavior |
+|---|---|
+| `SessionStart` | Fires on the first user prompt (not at idle TUI startup) with `conversationId` and non-empty `lastUserInput`. Corvid establishes the session context. |
+| `PreInvocation` | Fires before each model call with `conversationId`, `invocationNum`, `initialNumSteps`, and `lastUserInput` (no `turn_id`). Corvid maps this to `ModelRequested` and assigns a daemon-local turn key (`local-1`, `local-2`, ...). On `--conversation <id>` resumes, `SessionStart` is omitted and the first `PreInvocation` establishes the session context. |
+| `PostInvocation` | Fires after each model call completes. Maps to `ModelAttemptFinished` under the current local turn. |
+| `Stop` | Fires on loop termination with `conversationId`, `terminationReason`, `error`, `fullyIdle`, and `continuationActive`. When `fullyIdle` is `false`, Corvid ignores the boundary. When `fullyIdle` is `true`, `ERROR` / `MAX_STEPS_EXCEEDED` / non-empty `error` maps to `ResponseFailed`, `CANCELLED` / `INTERRUPTED` / `USER_CANCELLED` maps to `TurnInterrupted`, and normal completion (`NO_TOOL_CALL`, etc.) maps to `ResponseObserved`. |
+| Subagent (`invoke_subagent`) | Fires `SessionStart`, `PreInvocation`, `PostInvocation`, and `Stop` with a distinct `conversationId` and `lastUserInput: ""`. `corvid observe --provider antigravity` discards hooks with empty `lastUserInput` without transmitting prompt text so subagents do not quarantine the parent run. |
+| `PreToolUse` (excluded) | Empirically fails closed in `agy 1.5.17` when the hook binary is missing, crashes, or emits `{}`. Excluded per §6.4.6-7; passive permission and question waits use `agy`'s built-in OSC 7501 `ProgramStatus` reports instead. |
+
+### Install the observer
+
+`agy` does not accept `hooks` via `--settings`, so Corvid never edits configuration files
+automatically during launch. Print the flat-array `corvid-observer` entry with
+`corvid hooks antigravity` (or alias `agy`), or install/remove only the `"corvid-observer"`
+key in `~/.gemini/config/hooks.json` explicitly:
+
+```sh
+corvid hooks antigravity
+corvid hooks antigravity --install
+corvid hooks antigravity --uninstall
+corvid attach --agent antigravity
+corvid attach --agent agy
+```
+
+Without hooks installed, `agy` running inside a Corvid PTY still reports `working`,
+`blocked` (`permission` / `question` / `auth`), `done`, and `error` via OSC 7501
+`ProgramStatus`.
+
+### Reproduce
+
+```sh
+cargo build --locked -p corvid-tui -p corvid-daemon
+PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/antigravity_qualification.py --corvid target/debug/corvid
+```

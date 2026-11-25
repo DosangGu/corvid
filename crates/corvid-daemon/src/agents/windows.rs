@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::handoff::RetainedCoverage;
 use crate::handoff::input::{RetainedInput, valid_id};
-use crate::hook_data::Hook;
+use crate::hook_data::{Hook, assign_local_turn};
 use crate::native_process::{Found, HookOwner, Process, ProcessKey};
 use crate::projection;
 use crate::publication::{Group, Projection};
@@ -60,6 +60,7 @@ struct Run {
     available: bool,
     producer: Option<ProcessKey>,
     sessions: BTreeSet<String>,
+    local_turn_seq: u64,
     retained_collection: Option<RetainedCoverage>,
 }
 
@@ -374,7 +375,7 @@ impl Agents {
 
     pub(crate) fn apply_hook(
         &mut self,
-        hook: Hook,
+        mut hook: Hook,
         owner: HookOwner,
         location: Location,
         current_epoch: Uuid,
@@ -393,6 +394,10 @@ impl Agents {
         if hook.actor.is_some() || hook.parent_actor.is_some() {
             return Ok(());
         }
+        let contract = crate::provider::contract(hook.provider);
+        let allow_model_start = contract.establish_on_model_request
+            && hook.event == HookEvent::ModelRequested
+            && hook.session.is_some();
         // A retained process can continue its existing session without sending
         // SessionStart again. The first typed event binds only this verified owner.
         let bind_observer = self.retained_observer_epoch(terminal).is_some()
@@ -413,7 +418,9 @@ impl Agents {
         } else if let Some((id, _)) = self.shell.get(&key) {
             *id
         } else if self.shell.len() < MAX_SHELL_RUNS
-            && (bind_observer || matches!(hook.event, HookEvent::Startup | HookEvent::Resume))
+            && (bind_observer
+                || allow_model_start
+                || matches!(hook.event, HookEvent::Startup | HookEvent::Resume))
         {
             let id = self.start_run(terminal, location, hook.provider, ProcessLiveness::Running);
             self.shell.insert(key, (id, process));
@@ -466,11 +473,26 @@ impl Agents {
                 run.apply(Uuid::new_v4(), kind, hook.evidence(confidence));
             }
             self.dirty.insert(id);
+        } else if allow_model_start && run.producer.is_none() {
+            let run = self.runs.get_mut(&id).expect("active run");
+            Self::establish_context(run, session, owner.producer, Uuid::new_v4(), &hook);
+            self.dirty.insert(id);
         }
         let run = &self.runs[&id];
         if run.producer.is_none() || run.state.identity.provider_session.as_deref() != Some(session)
         {
             return Err(unauthorized());
+        }
+        if contract.turn_correlation == crate::provider::TurnCorrelation::LocalGeneration
+            && hook.turn.is_none()
+        {
+            let run = self.runs.get_mut(&id).expect("active run");
+            assign_local_turn(
+                &mut run.local_turn_seq,
+                &run.state,
+                &mut hook.turn,
+                hook.event,
+            );
         }
         if let Some((kind, confidence)) = hook.observation() {
             let run = self.runs.get_mut(&id).expect("active run");
@@ -648,6 +670,7 @@ impl Agents {
                 available: true,
                 producer: None,
                 sessions: BTreeSet::new(),
+                local_turn_seq: 0,
                 retained_collection: None,
             },
         );

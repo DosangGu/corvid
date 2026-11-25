@@ -1,3 +1,4 @@
+mod antigravity;
 mod codex;
 
 use std::collections::BTreeSet;
@@ -30,6 +31,8 @@ const TOTAL_TIMEOUT: Duration = Duration::from_millis(100);
 pub enum HookProvider {
     Claude,
     Codex,
+    #[value(alias = "agy")]
+    Antigravity,
 }
 
 impl HookProvider {
@@ -37,6 +40,7 @@ impl HookProvider {
         match self {
             Self::Claude => Provider::Claude,
             Self::Codex => Provider::Codex,
+            Self::Antigravity => Provider::Antigravity,
         }
     }
 }
@@ -75,6 +79,7 @@ fn observe_inner(
         HookProvider::Claude if claude_input_batch => input.as_deref().and_then(claude_batch),
         HookProvider::Claude => claude_fields(input.as_deref()),
         HookProvider::Codex => codex::fields(input.as_deref()),
+        HookProvider::Antigravity => antigravity::fields(input.as_deref()),
     };
     let Some(mut fields) = fields else {
         return Ok(());

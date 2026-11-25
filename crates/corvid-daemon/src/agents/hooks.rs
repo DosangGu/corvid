@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::children::{ChildEvent, ChildOwner};
 use super::{Agents, ChildKey, Launch, ManagedRun, PendingResume, evidence, monotonic_ms};
-use crate::hook_data::{Hook, hook_evidence};
+use crate::hook_data::{Hook, assign_local_turn, hook_evidence};
 use crate::process::{HookProducer, ProcessImage};
 use crate::provider::{self, InProcessResume};
 
@@ -78,6 +78,7 @@ impl Agents {
         launch.ambiguous = false;
         launch.retained = None;
         launch.notified_turn = None;
+        launch.local_turn_seq = 0;
 
         let mut next = launch.replace_context(current, &hook, session);
         next.observe_process(
@@ -95,7 +96,7 @@ impl Agents {
 
     pub(crate) fn apply_hook(
         &mut self,
-        hook: Hook,
+        mut hook: Hook,
         owner: ProcessImage,
         producer: HookProducer,
     ) -> Result<Option<(Location, Provider)>, ProtocolFault> {
@@ -115,8 +116,14 @@ impl Agents {
         if matches!(current.run.process.value, ProcessLiveness::Exited { .. }) {
             return Ok(None);
         }
+        let contract = provider::contract(hook.provider);
         if !current.published {
-            if hook.actor.is_some() || !matches!(hook.event, HookEvent::Startup | HookEvent::Resume)
+            let initial_execution = contract.establish_on_model_request
+                && hook.event == HookEvent::ModelRequested
+                && hook.session.is_some();
+            if hook.actor.is_some()
+                || !(matches!(hook.event, HookEvent::Startup | HookEvent::Resume)
+                    || initial_execution)
             {
                 return Err(unauthorized());
             }
@@ -166,11 +173,18 @@ impl Agents {
             if let Some(next) = launch.start_context(current, &hook, session) {
                 launch.current = next.run.identity.id;
                 launch.notified_turn = None;
+                launch.local_turn_seq = 0;
                 self.dirty.insert(launch.current);
                 self.runs.insert(launch.current, next);
                 self.retire(current_id);
             }
             return Ok(None);
+        }
+        if current.run.identity.provider_session.is_none()
+            && contract.establish_on_model_request
+            && hook.event == HookEvent::ModelRequested
+        {
+            launch.establish_initial_context(current, session);
         }
         if current.run.identity.provider_session.as_deref() != Some(session) {
             if !launch.sessions.contains(session) {
@@ -201,6 +215,16 @@ impl Agents {
                 Uuid::new_v4(),
                 coverage.observation(),
                 hook.evidence(Confidence::Confirmed),
+            );
+        }
+        if contract.turn_correlation == provider::TurnCorrelation::LocalGeneration
+            && hook.turn.is_none()
+        {
+            assign_local_turn(
+                &mut launch.local_turn_seq,
+                &current.run,
+                &mut hook.turn,
+                hook.event,
             );
         }
         if let Some((kind, confidence)) = hook.observation() {
@@ -384,6 +408,7 @@ impl Launch {
         hook: &Hook,
         session: &str,
     ) -> ManagedRun {
+        self.local_turn_seq = 0;
         if !matches!(current.run.lifecycle.value, Lifecycle::Ended(_)) {
             current.apply(
                 hook.delivery,
@@ -410,6 +435,18 @@ impl Launch {
         };
         self.establish_context(&mut next, hook.delivery, session);
         next
+    }
+
+    pub(super) fn establish_initial_context(&mut self, current: &mut ManagedRun, session: &str) {
+        if self.sessions.len() == MAX_CONTEXTS_PER_LAUNCH {
+            self.record_gap(current, "context identity history is full");
+            return;
+        }
+        self.sessions.insert(session.to_owned());
+        self.ambiguous = false;
+        // Use a fresh delivery ID so the triggering observation (e.g. ModelRequested)
+        // is not deduplicated when applied right after context establishment.
+        self.establish_context(current, Uuid::new_v4(), session);
     }
 
     pub(super) fn establish_context(
@@ -1218,6 +1255,109 @@ mod tests {
                 .agents
                 .focus_terminal(resumed.run.identity.id)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn antigravity_local_turn_generation_and_resumed_start_work_across_turns() {
+        use corvid_core::agent::Activity;
+
+        let mut fixture = Fixture::new(Provider::Antigravity);
+        fixture.apply("conv-1", HookEvent::Startup);
+        assert_eq!(fixture.current().run.collection.value, Collection::Healthy);
+
+        // First turn with two model invocations (e.g., tool loop).
+        let mut pre1 = fixture.hook("conv-1", HookEvent::ModelRequested);
+        pre1.turn = None;
+        fixture.submit(pre1).unwrap();
+        assert_eq!(fixture.current().run.activity.value, Activity::Working);
+        let first_turn = fixture
+            .current()
+            .run
+            .current_open_turn()
+            .unwrap()
+            .to_owned();
+        assert_eq!(first_turn, "local-1");
+
+        let mut post1 = fixture.hook("conv-1", HookEvent::ModelAttemptFinished);
+        post1.turn = None;
+        fixture.submit(post1).unwrap();
+
+        let mut pre2 = fixture.hook("conv-1", HookEvent::ModelRequested);
+        pre2.turn = None;
+        fixture.submit(pre2).unwrap();
+        assert_eq!(fixture.current().run.current_open_turn(), Some("local-1"));
+
+        let mut stop1 = fixture.hook("conv-1", HookEvent::ResponseObserved);
+        stop1.turn = None;
+        assert_eq!(
+            fixture.submit_notice(stop1).unwrap(),
+            Some((fixture.current().location, Provider::Antigravity))
+        );
+        // Repeated Stop for the same turn does not notify twice.
+        let mut stop1_repeat = fixture.hook("conv-1", HookEvent::ResponseObserved);
+        stop1_repeat.turn = None;
+        assert_eq!(fixture.submit_notice(stop1_repeat).unwrap(), None);
+
+        // Second user turn allocates a new local turn generation and notifies once.
+        let mut next_pre = fixture.hook("conv-1", HookEvent::ModelRequested);
+        next_pre.turn = None;
+        fixture.submit(next_pre).unwrap();
+        assert_eq!(fixture.current().run.current_open_turn(), Some("local-2"));
+
+        let mut stop2 = fixture.hook("conv-1", HookEvent::ResponseObserved);
+        stop2.turn = None;
+        assert_eq!(
+            fixture.submit_notice(stop2).unwrap(),
+            Some((fixture.current().location, Provider::Antigravity))
+        );
+
+        // Error Stop closes the turn with Error activity.
+        let mut err_pre = fixture.hook("conv-1", HookEvent::ModelRequested);
+        err_pre.turn = None;
+        fixture.submit(err_pre).unwrap();
+        let mut err_stop = fixture.hook("conv-1", HookEvent::ResponseFailed);
+        err_stop.turn = None;
+        fixture.submit(err_stop).unwrap();
+        assert_eq!(fixture.current().run.activity.value, Activity::Error);
+        assert!(fixture.current().run.current_open_turn().is_none());
+
+        // Unknown conversation mid-run quarantines the launch.
+        fixture.apply("other-conv", HookEvent::Startup);
+        assert_eq!(
+            fixture.current().run.collection.value,
+            Collection::GapDetected
+        );
+        assert!(
+            fixture
+                .agents
+                .focus_terminal(fixture.current().run.identity.id)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn antigravity_resumed_launch_binds_on_first_model_request() {
+        let mut fixture = Fixture::new(Provider::Antigravity);
+        let run_id = fixture.current().run.identity.id;
+        fixture.agents.runs.get_mut(&run_id).unwrap().published = false;
+
+        let mut pre = fixture.hook("resumed-conv", HookEvent::ModelRequested);
+        pre.turn = None;
+        fixture.submit(pre).unwrap();
+        assert!(fixture.current().published);
+        assert_eq!(
+            fixture.current().run.identity.provider_session.as_deref(),
+            Some("resumed-conv")
+        );
+        assert_eq!(fixture.current().run.collection.value, Collection::Healthy);
+        assert_eq!(fixture.current().run.current_open_turn(), Some("local-1"));
+
+        let mut stop = fixture.hook("resumed-conv", HookEvent::ResponseObserved);
+        stop.turn = None;
+        assert_eq!(
+            fixture.submit_notice(stop).unwrap(),
+            Some((fixture.current().location, Provider::Antigravity))
         );
     }
 }

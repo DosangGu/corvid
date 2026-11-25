@@ -63,6 +63,12 @@ mod cli {
         Hooks {
             #[arg(value_enum)]
             provider: hooks::HookProvider,
+            /// Install the Corvid observer hooks into the provider's global config.
+            #[arg(long, conflicts_with = "uninstall")]
+            install: bool,
+            /// Remove the Corvid observer hooks from the provider's global config.
+            #[arg(long, conflicts_with = "install")]
+            uninstall: bool,
         },
         #[command(hide = true)]
         Observe {
@@ -163,11 +169,27 @@ mod cli {
                     ssh,
                 ))
             }
-            Some(Command::Hooks { provider }) => {
-                println!(
-                    "{:#}",
-                    corvid_daemon::observer_settings(provider.provider())?
-                );
+            Some(Command::Hooks {
+                provider,
+                install,
+                uninstall,
+            }) => {
+                if install {
+                    let path = corvid_daemon::install_hooks(provider.provider())?;
+                    println!("Installed corvid-observer hooks in {}", path.display());
+                } else if uninstall {
+                    match corvid_daemon::uninstall_hooks(provider.provider())? {
+                        Some(path) => {
+                            println!("Removed corvid-observer hooks from {}", path.display());
+                        }
+                        None => println!("corvid-observer hooks are not installed"),
+                    }
+                } else {
+                    println!(
+                        "{:#}",
+                        corvid_daemon::observer_settings(provider.provider())?
+                    );
+                }
                 Ok(())
             }
             Some(Command::Observe {

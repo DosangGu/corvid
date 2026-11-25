@@ -152,8 +152,14 @@ async fn attach_terminal(runtime: &Path, mut options: AttachOptions) -> Result<u
         required.push(corvid_protocol::PROCESS_AGENT_LAUNCH_CAPABILITY.into());
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if options.agent == Some(AgentProvider::Codex) {
-        required.push(corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY.into());
+    match options.agent {
+        Some(AgentProvider::Codex) => {
+            required.push(corvid_protocol::collector::CODEX_LAUNCH_CAPABILITY.into());
+        }
+        Some(AgentProvider::Antigravity) => {
+            required.push(corvid_protocol::collector::ANTIGRAVITY_LAUNCH_CAPABILITY.into());
+        }
+        _ => {}
     }
     let store = options.remember_view.then(view_state::tui_store).flatten();
     let saved_target = view_state::tui_target(runtime)?;
@@ -728,12 +734,18 @@ impl ResponseNotification {
     fn signal(self, provider: i32) -> Option<&'static [u8]> {
         let provider = AgentProvider::try_from(provider).ok()?;
         match (self, provider) {
-            (Self::Bell, AgentProvider::Claude | AgentProvider::Codex) => Some(b"\x07"),
+            (
+                Self::Bell,
+                AgentProvider::Claude | AgentProvider::Codex | AgentProvider::Antigravity,
+            ) => Some(b"\x07"),
             (Self::Osc9, AgentProvider::Claude) => {
                 Some(b"\x1b]9;Corvid: Claude response observed\x1b\\")
             }
             (Self::Osc9, AgentProvider::Codex) => {
                 Some(b"\x1b]9;Corvid: Codex response observed\x1b\\")
+            }
+            (Self::Osc9, AgentProvider::Antigravity) => {
+                Some(b"\x1b]9;Corvid: Antigravity response observed\x1b\\")
             }
             (_, AgentProvider::Unspecified) => None,
         }

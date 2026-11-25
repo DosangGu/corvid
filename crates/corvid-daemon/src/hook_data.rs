@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use corvid_core::agent::{
-    Confidence, EndReason, Evidence, ObservationKind, Provider, RequestKey, RequestKind,
-    Resolution, Response, ResponseOutcome, Source, WorkKey,
+    AgentRun, Confidence, EndReason, Evidence, ObservationKind, PromptObservation, Provider,
+    RequestKey, RequestKind, Resolution, Response, ResponseOutcome, Source, WorkKey,
 };
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::collector::MAX_BATCH_INPUTS;
@@ -168,6 +168,13 @@ impl Hook {
                 },
                 final_boundary: true,
             },
+            HookEvent::ResponseFailed => ObservationKind::Response {
+                response: Response {
+                    turn: self.turn.clone(),
+                    outcome: ResponseOutcome::Failed,
+                },
+                final_boundary: self.turn.is_some(),
+            },
             HookEvent::ResponseObserved => ObservationKind::Response {
                 response: Response {
                     turn: self.turn.clone(),
@@ -224,4 +231,34 @@ pub(crate) fn hook_evidence(provider: Provider, confidence: Confidence) -> Evide
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+}
+
+/// Assign a daemon-scoped local turn key for providers without a shared turn ID.
+pub(crate) fn assign_local_turn(
+    seq: &mut u64,
+    run: &AgentRun,
+    turn: &mut Option<String>,
+    event: HookEvent,
+) {
+    if event == HookEvent::ModelRequested {
+        let reuse = run
+            .current_open_turn()
+            .filter(|_| run.prompt_observation() != Some(PromptObservation::Responded))
+            .map(str::to_owned);
+        *turn = Some(match reuse {
+            Some(existing) => existing,
+            None => {
+                *seq = seq.saturating_add(1);
+                format!("local-{seq}")
+            }
+        });
+    } else if matches!(
+        event,
+        HookEvent::ModelAttemptFinished
+            | HookEvent::ResponseObserved
+            | HookEvent::TurnInterrupted
+            | HookEvent::ResponseFailed
+    ) {
+        *turn = run.current_open_turn().map(str::to_owned);
+    }
 }

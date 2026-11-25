@@ -242,6 +242,7 @@ fn notice(host: Uuid, epoch: Uuid, item: &PresentedAttention) -> Result<Notice> 
     let provider = match AgentProvider::try_from(item.provider)? {
         AgentProvider::Claude => "Claude",
         AgentProvider::Codex => "Codex",
+        AgentProvider::Antigravity => "Antigravity",
         _ => anyhow::bail!("unknown notification provider"),
     };
     let title = match AttentionReason::try_from(item.reason)? {
@@ -348,6 +349,23 @@ mod tests {
         ledger.validate().unwrap();
         assert!(ledger.record_focus(notice, None));
         assert!(ledger.history[0].focus_error.is_none());
+    }
+
+    #[test]
+    fn formats_antigravity_notifications() {
+        let (host, mut snapshot) = snapshot();
+        let mut notice = alert(host, &snapshot, 1000);
+        notice.provider = AgentProvider::Antigravity as i32;
+        snapshot.attention.push(notice);
+        let mut ledger = Ledger::default();
+        ledger.observe(host, &snapshot, 1000).unwrap();
+
+        let mut next = alert(host, &snapshot, 2000);
+        next.provider = AgentProvider::Antigravity as i32;
+        snapshot.attention.push(next);
+        let notices = ledger.observe(host, &snapshot, 2000).unwrap().notices;
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].title, "Antigravity has a new response");
     }
 
     #[test]

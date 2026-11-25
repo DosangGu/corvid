@@ -1,6 +1,8 @@
 mod contracts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod hooks;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub(crate) mod hooks_install;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod profile;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -16,7 +18,7 @@ use corvid_core::agent::Provider;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use contracts::InProcessResume;
-pub(crate) use contracts::{CONTRACTS, contract, from_wire};
+pub(crate) use contracts::{CONTRACTS, TurnCorrelation, contract, from_wire};
 pub(crate) use contracts::{Resume, ResumeConfirmation};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use profile::adapter;

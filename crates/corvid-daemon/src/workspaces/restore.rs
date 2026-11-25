@@ -496,6 +496,10 @@ mod tests {
                 .request(|registry| registry.slots.is_empty())
                 .await
         );
+        let Err(error) = resume_contract(Provider::Antigravity) else {
+            panic!("expected ResumeUnconfirmed");
+        };
+        assert_eq!(error.code, "ResumeUnconfirmed");
         Ok(())
     }
 }

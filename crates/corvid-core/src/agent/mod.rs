@@ -16,6 +16,7 @@ use reducer::Correlation;
 pub enum Provider {
     Claude,
     Codex,
+    Antigravity,
     #[cfg(feature = "test-provider")]
     Fixture,
     #[cfg(feature = "test-provider")]

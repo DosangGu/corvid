@@ -138,6 +138,12 @@ pub(super) enum Command {
     Hooks {
         #[arg(value_enum)]
         provider: HookProvider,
+        /// Install the Corvid observer hooks into the provider's global config.
+        #[arg(long, conflicts_with = "uninstall")]
+        install: bool,
+        /// Remove the Corvid observer hooks from the provider's global config.
+        #[arg(long, conflicts_with = "install")]
+        uninstall: bool,
     },
     /// Submit one provider observation from stdin.
     #[command(hide = true)]
@@ -176,6 +182,8 @@ pub(super) enum ControlRequest {
 pub(super) enum ManagedAgent {
     Claude,
     Codex,
+    #[value(alias = "agy")]
+    Antigravity,
 }
 
 #[derive(Subcommand)]
@@ -225,13 +233,27 @@ pub(super) fn execute(
             );
             Ok(0)
         }
-        Command::Hooks { provider } => crate::daemon_bootstrap::forward_cli([
-            "hooks",
-            match provider {
-                HookProvider::Claude => "claude",
-                HookProvider::Codex => "codex",
-            },
-        ]),
+        Command::Hooks {
+            provider,
+            install,
+            uninstall,
+        } => {
+            let mut args = vec![
+                "hooks",
+                match provider {
+                    HookProvider::Claude => "claude",
+                    HookProvider::Codex => "codex",
+                    HookProvider::Antigravity => "antigravity",
+                },
+            ];
+            if install {
+                args.push("--install");
+            }
+            if uninstall {
+                args.push("--uninstall");
+            }
+            crate::daemon_bootstrap::forward_cli(args)
+        }
         Command::Daemon {
             state_dir,
             autostarted,
@@ -325,6 +347,7 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
                 agent: agent.map(|agent| match agent {
                     ManagedAgent::Claude => AgentProvider::Claude,
                     ManagedAgent::Codex => AgentProvider::Codex,
+                    ManagedAgent::Antigravity => AgentProvider::Antigravity,
                 }),
                 restore_cwd,
                 escape_delay: Duration::from_millis(escape_delay_ms),

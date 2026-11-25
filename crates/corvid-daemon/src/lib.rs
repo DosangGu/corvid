@@ -59,6 +59,8 @@ use crate::workspaces::Workspaces;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use provider::hooks::observer_settings;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub use provider::hooks_install::{install_hooks, uninstall_hooks};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use provider::shell as shell_agent;
 #[cfg(windows)]

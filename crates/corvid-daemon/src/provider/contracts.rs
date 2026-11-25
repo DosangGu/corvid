@@ -2,12 +2,18 @@ use std::ffi::OsString;
 
 use corvid_core::agent::{Confidence, ObservationKind, Provider};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use corvid_protocol::collector::{CLAUDE_VERSION, CODEX_VERSION};
+use corvid_protocol::collector::{ANTIGRAVITY_VERSION, CLAUDE_VERSION, CODEX_VERSION};
 use corvid_protocol::wire::{AgentProvider, CollectHook, HookEvent};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_protocol::wire::{ProviderCorrelation as Field, ProviderQualification as Level};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use semver::Version;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnCorrelation {
+    ProviderTurnId,
+    LocalGeneration,
+}
 
 pub(crate) struct Resume {
     pub(crate) arguments: fn(&str) -> Vec<OsString>,
@@ -32,6 +38,8 @@ pub(crate) struct Contract {
     pub(crate) wire_id: i32,
     pub(crate) events: &'static [HookEvent],
     pub(crate) valid_hook_fields: fn(HookEvent, &CollectHook) -> bool,
+    pub(crate) turn_correlation: TurnCorrelation,
+    pub(crate) establish_on_model_request: bool,
     pub(crate) prompt: fn(String) -> (ObservationKind, Confidence),
     pub(crate) question_confidence: Confidence,
     pub(crate) valid_session_id: fn(&str) -> bool,
@@ -55,6 +63,9 @@ pub(crate) struct UnixIntegration {
     pub(crate) quarantine_unknown_session: bool,
     pub(crate) in_process_resume: InProcessResume,
     pub(crate) extra_correlation: Option<Field>,
+    pub(crate) turn_start: (Level, &'static str),
+    pub(crate) response_boundary: (Level, &'static str),
+    pub(crate) permission_request: (Level, &'static str),
     pub(crate) subagent_identity: (Level, &'static str),
     pub(crate) explicit_question: (Level, &'static str),
     pub(crate) request_resolution: (Level, &'static str),
@@ -109,7 +120,16 @@ const CODEX_EVENTS: &[HookEvent] = &[
     HookEvent::ModelAttemptFinished,
 ];
 
-pub(crate) const CONTRACTS: &[Contract] = &[CLAUDE, CODEX];
+const ANTIGRAVITY_EVENTS: &[HookEvent] = &[
+    HookEvent::Startup,
+    HookEvent::ModelRequested,
+    HookEvent::ModelAttemptFinished,
+    HookEvent::ResponseObserved,
+    HookEvent::TurnInterrupted,
+    HookEvent::ResponseFailed,
+];
+
+pub(crate) const CONTRACTS: &[Contract] = &[CLAUDE, CODEX, ANTIGRAVITY];
 
 const CLAUDE: Contract = Contract {
     provider: Provider::Claude,
@@ -121,6 +141,8 @@ const CLAUDE: Contract = Contract {
                 && request.tool_id.is_some()
                 && request.actor_id.is_none())
     },
+    turn_correlation: TurnCorrelation::ProviderTurnId,
+    establish_on_model_request: false,
     prompt: |turn| {
         (
             ObservationKind::InteractivePromptSubmitted(turn),
@@ -146,6 +168,18 @@ const CLAUDE: Contract = Contract {
         quarantine_unknown_session: false,
         in_process_resume: InProcessResume::CorrelatedEnd,
         extra_correlation: Some(Field::Actor),
+        turn_start: (
+            Level::Partial,
+            "prompt submission can precede rejection by another hook",
+        ),
+        response_boundary: (
+            Level::Partial,
+            "Stop gives response evidence before finality is known",
+        ),
+        permission_request: (
+            Level::Partial,
+            "the permission hook lacks an exact request ID",
+        ),
         subagent_identity: (
             Level::Partial,
             "child work requires a linked parent actor chain; process liveness is unknown",
@@ -177,6 +211,8 @@ const CODEX: Contract = Contract {
     wire_id: AgentProvider::Codex as i32,
     events: CODEX_EVENTS,
     valid_hook_fields: codex_hook_fields,
+    turn_correlation: TurnCorrelation::ProviderTurnId,
+    establish_on_model_request: false,
     prompt: |turn| (ObservationKind::TurnStarted(turn), Confidence::Inferred),
     question_confidence: Confidence::Inferred,
     valid_session_id: legacy_session_id,
@@ -200,6 +236,18 @@ const CODEX: Contract = Contract {
             "in-process Codex resume lacks a qualified boundary",
         ),
         extra_correlation: Some(Field::ManagedCodexBroker),
+        turn_start: (
+            Level::Partial,
+            "prompt submission can precede rejection by another hook",
+        ),
+        response_boundary: (
+            Level::Partial,
+            "Stop gives response evidence before finality is known",
+        ),
+        permission_request: (
+            Level::Partial,
+            "the permission hook lacks an exact request ID",
+        ),
         subagent_identity: (Level::Unavailable, "child ownership is unqualified"),
         explicit_question: (
             Level::Partial,
@@ -220,6 +268,86 @@ const CODEX: Contract = Contract {
         program: "codex.exe",
         allows_hook_shell: true,
         hooks: super::windows_hooks::CODEX,
+    },
+};
+
+const ANTIGRAVITY: Contract = Contract {
+    provider: Provider::Antigravity,
+    wire_id: AgentProvider::Antigravity as i32,
+    events: ANTIGRAVITY_EVENTS,
+    valid_hook_fields: |_, request| {
+        request.turn_id.is_none() && request.tool_id.is_none() && request.actor_id.is_none()
+    },
+    turn_correlation: TurnCorrelation::LocalGeneration,
+    establish_on_model_request: true,
+    prompt: |turn| (ObservationKind::TurnStarted(turn), Confidence::Inferred),
+    question_confidence: Confidence::Inferred,
+    valid_session_id: legacy_session_id,
+    resume: Some(Resume {
+        arguments: |id| vec!["--conversation".into(), id.into()],
+        confirmation: None,
+    }),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix: UnixIntegration {
+        program: "agy",
+        fixture_version: ANTIGRAVITY_VERSION,
+        schema_revision: 1,
+        version_prefix: "",
+        version_suffix: "",
+        noninteractive_arguments: &[
+            "-p",
+            "--print",
+            "--prompt",
+            "acp",
+            "agent",
+            "agents",
+            "changelog",
+            "help",
+            "install",
+            "mcp",
+            "mic-serve",
+            "models",
+            "plugin",
+            "plugins",
+            "remote-control",
+            "update",
+        ],
+        managed_broker: false,
+        launch_prefix: &[],
+        quarantine_unknown_session: true,
+        in_process_resume: InProcessResume::Ambiguous(
+            "in-process Antigravity conversation switches lack a qualified boundary",
+        ),
+        extra_correlation: None,
+        turn_start: (
+            Level::Partial,
+            "PreInvocation establishes a daemon-local turn generation without a provider turn ID",
+        ),
+        response_boundary: (
+            Level::Partial,
+            "Stop reports loop termination; continuation hooks or background work can extend a turn",
+        ),
+        permission_request: (
+            Level::Unavailable,
+            "Antigravity has no PermissionRequest hook; use passive OSC 7501 status",
+        ),
+        subagent_identity: (Level::Unavailable, "subagent ownership is unqualified"),
+        explicit_question: (
+            Level::Unavailable,
+            "PreToolUse fails closed in Antigravity 1.5.17; use passive OSC 7501 status",
+        ),
+        request_resolution: (Level::Unavailable, "no hook-tracked input requests"),
+        context_replacement: (
+            Level::Partial,
+            "a fresh process starts or resumes a conversation; in-process switches are quarantined",
+        ),
+        hooks: super::hooks::ANTIGRAVITY,
+    },
+    #[cfg(windows)]
+    windows: WindowsIntegration {
+        program: "agy.exe",
+        allows_hook_shell: true,
+        hooks: super::windows_hooks::ANTIGRAVITY,
     },
 };
 
@@ -395,8 +523,39 @@ mod tests {
                     other.unix.fixture_version,
                     other.unix.version_suffix
                 );
+                if contract.unix.version_prefix.is_empty()
+                    && contract.unix.version_suffix.is_empty()
+                {
+                    assert!(!contract.version(&banner).is_some(), "{banner}");
+                    continue;
+                }
                 assert!(!contract.version(&banner).is_some(), "{banner}");
             }
+        }
+    }
+
+    #[test]
+    fn antigravity_interactive_invocation_filters_print_and_subcommands() {
+        let contract = contract(Provider::Antigravity);
+        assert!(contract.interactive_invocation(&[]));
+        assert!(
+            contract
+                .interactive_invocation(&[OsString::from("--conversation"), OsString::from("id")])
+        );
+        assert!(contract.interactive_invocation(&[OsString::from("-i"), OsString::from("hi")]));
+        for arg in [
+            "-p",
+            "--print",
+            "--prompt",
+            "acp",
+            "mcp",
+            "plugin",
+            "--version",
+        ] {
+            assert!(
+                !contract.interactive_invocation(&[OsString::from(arg)]),
+                "{arg} should be non-interactive"
+            );
         }
     }
 }
