@@ -113,6 +113,10 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
                     window = wait_for("Agent Deck window", lambda: ui.window(panel.pid), panel)
                     monitor_fixture.assert_same(reader, epoch, env)
             except Exception:
+                if case == "deck-focus":
+                    for line in log_path.read_text(errors="replace").splitlines():
+                        if line.startswith("focus trace:"):
+                            print(line, flush=True)
                 if window:
                     try:
                         ui.screenshot(window, screenshot)

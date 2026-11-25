@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import <UserNotifications/UserNotifications.h>
 #include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 extern void corvid_native_ready(bool status_icon, bool notifications);
@@ -98,6 +100,12 @@ static void yieldActivation(unsigned int pid, bool card, void *completion, unsig
         if (active) {
             NSRunningApplication *desktop =
                 [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)pid];
+            if (getenv("CORVID_UI_ROOT")) {
+                fprintf(stderr, "focus trace: Deck pid=%d target=%u front=%d willYield=%d\n",
+                    getpid(), pid,
+                    NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
+                    desktop != nil);
+            }
             if (desktop) [NSApp yieldActivationToApplication:desktop];
         } else if (attempts > 0) {
             // WindowServer can finish activating the clicked panel asynchronously.
@@ -106,6 +114,9 @@ static void yieldActivation(unsigned int pid, bool card, void *completion, unsig
                     yieldActivation(pid, card, completion, attempts - 1);
                 });
             return;
+        } else if (getenv("CORVID_UI_ROOT")) {
+            fprintf(stderr, "focus trace: Deck pid=%d target=%u front=%d inactive\n",
+                getpid(), pid, NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);
         }
     }
     corvid_native_activation_yielded(completion);

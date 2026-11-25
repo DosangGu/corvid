@@ -248,6 +248,7 @@ fn activate(window: &Window, _: &Context<WorkspaceView>, reply: FocusReply) {
     unsafe {
         corvid_desktop_activate_window(
             handle.ns_view.as_ptr(),
+            reply.peer_pid().unwrap_or(0),
             Box::into_raw(Box::new(reply)).cast(),
         );
     }
@@ -255,7 +256,11 @@ fn activate(window: &Window, _: &Context<WorkspaceView>, reply: FocusReply) {
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
-    fn corvid_desktop_activate_window(view: *mut std::ffi::c_void, reply: *mut std::ffi::c_void);
+    fn corvid_desktop_activate_window(
+        view: *mut std::ffi::c_void,
+        peer_pid: u32,
+        reply: *mut std::ffi::c_void,
+    );
 }
 
 #[cfg(target_os = "macos")]

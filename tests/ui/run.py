@@ -116,7 +116,7 @@ def native(system, cases, build, assets, artifacts):
     from scenario import run_case
 
     if system == "Darwin":
-        from macos.driver import Desktop, bundle_deck
+        from macos.driver import Desktop, bundle_deck, bundle_desktop
         from macos.test_desktop_paste import verify_paste
     else:
         from windows.driver import Desktop
@@ -135,6 +135,8 @@ def native(system, cases, build, assets, artifacts):
             paths = binaries(stack, system, build, assets, root)
             if build and system == "Darwin" and case in ("deck-window", "deck-focus"):
                 cli, desktop, deck = paths
+                if case == "deck-focus":
+                    cli, desktop = bundle_desktop(cli, desktop, root)
                 paths = (cli, desktop, bundle_deck(deck, root))
             if case == "deck-tray":
                 env = dict(os.environ, CORVID_UI_DECK_BINARY=str(paths[2]))

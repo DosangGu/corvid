@@ -1,5 +1,7 @@
 #import <AppKit/AppKit.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 extern bool corvid_desktop_activation_pending(const void *reply);
@@ -24,6 +26,11 @@ static void confirmActivation(NSWindow *window, void *reply, bool raised, unsign
     if (raised && active && window.isKeyWindow && !window.isMiniaturized) {
         corvid_desktop_activation_finished(reply, true);
     } else if (attempts == 0) {
+        if (getenv("CORVID_UI_ROOT")) {
+            fprintf(stderr, "focus trace: Desktop pid=%d front=%d active=%d raised=%d key=%d mini=%d\n",
+                getpid(), NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
+                active, raised, window.isKeyWindow, window.isMiniaturized);
+        }
         corvid_desktop_activation_finished(reply, false);
     } else {
         // AppKit may activate the app or finish restoring the window asynchronously.
@@ -35,11 +42,22 @@ static void confirmActivation(NSWindow *window, void *reply, bool raised, unsign
     }
 }
 
-void corvid_desktop_activate_window(void *view, void *reply) {
+static void activateDesktop(unsigned int peerPid) {
+    NSRunningApplication *source = NSWorkspace.sharedWorkspace.frontmostApplication;
+    bool requested = peerPid != 0 && source.processIdentifier == (pid_t)peerPid
+        && [NSRunningApplication.currentApplication activateFromApplication:source options:0];
+    if (getenv("CORVID_UI_ROOT")) {
+        fprintf(stderr, "focus trace: Desktop pid=%d peer=%u front=%d accepted=%d\n",
+            getpid(), peerPid, source.processIdentifier, requested);
+    }
+    if (!requested) [NSApp activate];
+}
+
+void corvid_desktop_activate_window(void *view, unsigned int peerPid, void *reply) {
     __weak NSWindow *window = [(__bridge NSView *)view window];
     dispatch_async(dispatch_get_main_queue(), ^{
         if (window && corvid_desktop_activation_pending(reply) && !isFrontmost()) {
-            [NSApp activate];
+            activateDesktop(peerPid);
         }
         confirmActivation(window, reply, false, 20);
     });

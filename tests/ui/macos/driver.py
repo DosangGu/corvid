@@ -6,6 +6,17 @@ import subprocess
 from macos_package import plist, sign
 
 
+def bundle_desktop(cli, desktop, root):
+    app = root / "Corvid.app"
+    binaries = app / "Contents/MacOS"
+    binaries.mkdir(parents=True)
+    for source in (cli, desktop, cli.with_name("corvidd")):
+        shutil.copy2(source, binaries / source.name)
+    plist(app, "Corvid", desktop.name, "org.corvid.desktop.ui-test", "0.0.0")
+    sign(app)
+    return binaries / cli.name, binaries / desktop.name
+
+
 def bundle_deck(source, root):
     # UserNotifications requires a bundle even when testing a local Cargo build.
     app = root / "Corvid Agent Deck.app"
