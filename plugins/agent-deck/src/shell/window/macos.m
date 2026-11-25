@@ -223,7 +223,7 @@ static void presentPanel(NSWindow *panel, NSUInteger generation, NSUInteger retr
         anchor = NSZeroRect;
     }
     placePanel(panel, screen.visibleFrame, anchor);
-    [panel orderFrontRegardless];
+    [panel makeKeyAndOrderFront:nil];
     dismissOnOutsideClick(panel);
 }
 

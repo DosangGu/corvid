@@ -62,9 +62,11 @@ def activate_finder(ui, desktop):
              lambda: ui.frontmost()[1] == "com.apple.finder", desktop)
 
 
-def verify_focus(ui, desktop, window, panel, deck_command, root, *, cli, env, reader, names):
+def verify_focus(ui, desktop, window, panel, deck_command, root, *, cli, env, reader, names,
+                 other=None):
     layouts = ((False, False), (True, False), (True, True), (False, True))
-    for scenario, (expanded, minimized) in enumerate(layouts):
+    numbered_layouts = enumerate(layouts) if other is None else [(len(layouts), layouts[0])]
+    for scenario, (expanded, minimized) in numbered_layouts:
         cards = wait_for("two occupied Agent Deck slots",
                          lambda: occupied_cards(cli, env, reader), panel)
         initial = wait_for_route(cli, env, desktop, "initial Desktop writer", lambda route: True)
@@ -74,6 +76,8 @@ def verify_focus(ui, desktop, window, panel, deck_command, root, *, cli, env, re
         layout = "expanded" if expanded else "compact"
         state = "minimized" if minimized else "behind Finder"
         description = f"{layout} Deck, Desktop {state}, agent {name}"
+        if other is not None:
+            description += ", second Desktop running"
         print(f"CHECK {description}", flush=True)
         if minimized and ui.window(desktop.pid):
             ui.minimize(window)
@@ -94,10 +98,15 @@ def verify_focus(ui, desktop, window, panel, deck_command, root, *, cli, env, re
         wait_for_route(cli, env, desktop, f"slot click to select {name}'s pane",
                        lambda route: route[1] == terminal)
 
+        def target_is_frontmost():
+            pid, _ = ui.frontmost()
+            if other is not None:
+                assert pid != str(other.pid), "The competing Desktop received foreground focus"
+            return pid == window[0] and ui.window(desktop.pid) == window
+
         try:
             wait_for(f"the Desktop window to enter the foreground for {name}",
-                     lambda: ui.frontmost()[0] == window[0] and ui.window(desktop.pid) == window,
-                     desktop, timeout=6)
+                     target_is_frontmost, desktop, timeout=6)
         except AssertionError as error:
             raise AssertionError(
                 f"{error}; selected {name}'s pane; foreground app was {ui.frontmost()}"

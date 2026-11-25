@@ -59,6 +59,24 @@ def expect_shell_output(ui, desktop, window, marker, command, expected, *, probe
     wait_for(f"keyboard acknowledgement for {marker.name}", ready, desktop)
 
 
+@contextmanager
+def competing_desktop(ui, cli, desktop, root, env, log):
+    root.mkdir()
+    state = root / "c"
+    env = dict(env, HOME=str(root), CORVID_RUNTIME_DIR=str(root / "r"),
+               CORVID_VIEW_STATE_DIR=str(root / "v"))
+    with ExitStack() as processes:
+        daemon = processes.enter_context(running([cli, "daemon", "--state-dir", root / "d"],
+                                                 env, root, log))
+        wait_for("competing Desktop daemon", lambda: subprocess.run(
+            [cli, "control", "ping"], env=env, capture_output=True, timeout=5
+        ).returncode == 0, daemon)
+        processes.callback(monitor_fixture.stop, cli, state, env)
+        other = processes.enter_context(running([desktop, "--state-dir", state], env, root, log))
+        wait_for("competing Desktop window", lambda: ui.window(other.pid), other)
+        yield other
+
+
 def run_case(case, root, artifacts, paths, ui, verify_paste):
     cli, desktop, deck = paths
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -105,6 +123,9 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
                         [*deck_command, "--background"], env, root, log))
                     verify_focus(ui, app, window, panel, deck_command, root,
                                  cli=cli, env=env, reader=reader, names=names)
+                    with competing_desktop(ui, cli, desktop, root / "other", env, log) as other:
+                        verify_focus(ui, app, window, panel, deck_command, root,
+                                     cli=cli, env=env, reader=reader, names=names, other=other)
                 elif case == "deck-window":
                     if os.name == "nt":
                         for shortcut in ui.fixture_shortcuts(state):
@@ -113,10 +134,6 @@ def run_case(case, root, artifacts, paths, ui, verify_paste):
                     window = wait_for("Agent Deck window", lambda: ui.window(panel.pid), panel)
                     monitor_fixture.assert_same(reader, epoch, env)
             except Exception:
-                if case == "deck-focus":
-                    for line in log_path.read_text(errors="replace").splitlines():
-                        if line.startswith("focus trace:"):
-                            print(line, flush=True)
                 if window:
                     try:
                         ui.screenshot(window, screenshot)

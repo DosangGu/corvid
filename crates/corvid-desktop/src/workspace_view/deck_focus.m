@@ -1,7 +1,5 @@
 #import <AppKit/AppKit.h>
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 
 extern bool corvid_desktop_activation_pending(const void *reply);
@@ -26,11 +24,6 @@ static void confirmActivation(NSWindow *window, void *reply, bool raised, unsign
     if (raised && active && window.isKeyWindow && !window.isMiniaturized) {
         corvid_desktop_activation_finished(reply, true);
     } else if (attempts == 0) {
-        if (getenv("CORVID_UI_ROOT")) {
-            fprintf(stderr, "focus trace: Desktop pid=%d front=%d active=%d raised=%d key=%d mini=%d\n",
-                getpid(), NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier,
-                active, raised, window.isKeyWindow, window.isMiniaturized);
-        }
         corvid_desktop_activation_finished(reply, false);
     } else {
         // AppKit may activate the app or finish restoring the window asynchronously.
@@ -44,12 +37,9 @@ static void confirmActivation(NSWindow *window, void *reply, bool raised, unsign
 
 static void activateDesktop(unsigned int peerPid) {
     NSRunningApplication *source = NSWorkspace.sharedWorkspace.frontmostApplication;
+    // The local socket identifies the Deck process that can yield activation.
     bool requested = peerPid != 0 && source.processIdentifier == (pid_t)peerPid
         && [NSRunningApplication.currentApplication activateFromApplication:source options:0];
-    if (getenv("CORVID_UI_ROOT")) {
-        fprintf(stderr, "focus trace: Desktop pid=%d peer=%u front=%d accepted=%d\n",
-            getpid(), peerPid, source.processIdentifier, requested);
-    }
     if (!requested) [NSApp activate];
 }
 

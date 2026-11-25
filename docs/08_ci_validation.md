@@ -150,13 +150,14 @@ and pinning the Deck. The hosted ARM64 runner did not expose the Deck tray windo
   interactive ARM64 desktop with a US input source for the same input check.
   The hosted ARM64 runner refused foreground activation during qualification.
 - macOS needs a logged-in GUI session, Xcode command line tools, and
-  Accessibility permission to post input events. The runner wraps a local Deck
-  build in a temporary signed app bundle. Paste tests use the system
-  clipboard and foreground window. The opt-in `--case deck-focus` clicks cards
+  Accessibility permission to post input events. The runner wraps local Desktop
+  and Deck builds in temporary signed app bundles for the opt-in
+  `--case deck-focus`. Paste tests use the system clipboard and foreground
+  window. The Deck focus case clicks cards
   in the compact and expanded Deck with Desktop behind Finder and minimized.
   The driver checks pane selection, the foreground process, window restoration,
-  and keyboard input while leaving activation to the apps. Use a dedicated
-  session if other applications need these resources.
+  and keyboard input, including with two Desktop processes. Use a dedicated
+  GUI session for these tests.
 
 In GitHub Actions, run **Checks / UI** to select a platform and optional case.
 Failures report the scenario in the job log and save available screenshots and
