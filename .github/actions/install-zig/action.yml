@@ -3,7 +3,8 @@ description: Install the verified Zig toolchain for libghostty-vt
 runs:
   using: composite
   steps:
-    - shell: pwsh
+    - name: Download, verify, and extract Zig
+      shell: pwsh
       run: |
         $version = '0.17.1'
         $archives = @{
@@ -19,14 +20,39 @@ runs:
         $stem = "zig-$platform-$version"
         $filename = "$stem.$suffix"
         $archive = Join-Path $env:RUNNER_TEMP $filename
-        Invoke-WebRequest "https://ziglang.org/download/$version/$filename" -OutFile $archive -MaximumRetryCount 3
-        if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne $sha256) {
+
+        $curl = if ($env:RUNNER_OS -eq 'Windows') { 'curl.exe' } else { 'curl' }
+        # Zig lists the fallback at https://ziglang.org/download/community-mirrors.txt.
+        $urls = @(
+          "https://ziglang.org/download/$version/$filename",
+          "https://pkg.hexops.org/zig/${filename}?source=corvid-ci"
+        )
+        $timer = [System.Diagnostics.Stopwatch]::new()
+        foreach ($url in $urls) {
+          $timer.Restart()
+          & $curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' `
+            --connect-timeout 15 --max-time 75 --speed-limit 262144 --speed-time 20 `
+            --retry 1 --retry-connrefused --retry-max-time 90 --remove-on-error --output $archive $url
+          $downloadStatus = $LASTEXITCODE
+          $sourceHost = ([Uri]$url).Host
+          Write-Host "Zig download from $sourceHost took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s (curl exit $downloadStatus)"
+          if ($downloadStatus -eq 0) { break }
+        }
+        if ($downloadStatus -ne 0) { exit $downloadStatus }
+
+        $timer.Restart()
+        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+        Write-Host "Zig checksum took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s"
+        if ($actual -ne $sha256) {
           throw 'Zig download checksum mismatch'
         }
+
+        $timer.Restart()
         if ($suffix -eq 'zip') {
-          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $env:RUNNER_TEMP, $true)
         } else {
           tar -xJf $archive -C $env:RUNNER_TEMP
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         }
+        Write-Host "Zig extraction took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s"
         (Join-Path $env:RUNNER_TEMP $stem) >> $env:GITHUB_PATH
