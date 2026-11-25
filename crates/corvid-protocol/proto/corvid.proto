@@ -99,6 +99,8 @@ message Envelope {
     ClipboardWrite clipboard_write = 138;
     GetPresentationRuns get_presentation_runs = 139;
     PresentationRuns presentation_runs = 140;
+    ReorderTab reorder_tab = 141;
+    TabReordered tab_reordered = 142;
     ReadTerminalHistory read_terminal_history = 122;
     TerminalHistory terminal_history = 123;
     DisconnectWorkspaceClients disconnect_workspace_clients = 125;
@@ -1318,6 +1320,28 @@ message MoveTab {
 message TabMoved {
   ViewSelection location = 1;
   uint64 commit_sequence = 2;
+}
+
+// Reorder one tab within its workspace on the interactive writer connection.
+message ReorderTab {
+  optional uint64 expected_view_revision = 1;
+  string workspace_id = 2;
+  string tab_id = 3;
+  oneof placement {
+    TabStep step = 4;
+    string before_tab_id = 5;
+    string after_tab_id = 6;
+  }
+}
+
+enum TabStep {
+  TAB_STEP_UNSPECIFIED = 0;
+  TAB_STEP_LEFT = 1;
+  TAB_STEP_RIGHT = 2;
+}
+
+message TabReordered {
+  uint64 commit_sequence = 1;
 }
 
 message FrameApplied {

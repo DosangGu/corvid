@@ -293,18 +293,54 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                 time.sleep(0.05)
             raise AssertionError(f"Desktop did not render terminal backgrounds {colors}")
 
+        def read_layout():
+            return subprocess.check_output(
+                [str(root / "corvid"), "control", "workspaces"], env=environment,
+                text=True, timeout=5,
+            )
+
         def wait_for_layout(*, tabs, panes):
             deadline = time.monotonic() + 5
             while True:
-                layout = subprocess.check_output(
-                    [str(root / "corvid"), "control", "workspaces"], env=environment,
-                    text=True, timeout=5,
-                )
+                layout = read_layout()
                 if (len(re.findall(r"^  tab ", layout, re.M)) == tabs
                         and len(re.findall(r"^    pane ", layout, re.M)) == panes):
                     return
                 assert time.monotonic() < deadline, layout
                 time.sleep(0.05)
+
+        def tab_order():
+            return re.findall(r"^  tab ([\da-f-]+)", read_layout(), re.M)
+
+        def wait_for_tab_order(expected):
+            deadline = time.monotonic() + 5
+            while (actual := tab_order()) != expected:
+                assert time.monotonic() < deadline, (actual, expected)
+                time.sleep(0.05)
+
+        def tab_drag_points():
+            screenshot = root / "tab-drag-targets.ppm"
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                subprocess.run(
+                    ["scrot", "--overwrite", "--format", "ppm", "--window", window, str(screenshot)],
+                    check=True, timeout=5,
+                )
+                header, _, pixels = screenshot.read_bytes().partition(b"\n255\n")
+                width, _ = map(int, header.splitlines()[-1].split())
+                points = []
+                for y in range(40):
+                    row = pixels[3 * y * width:3 * (y + 1) * width]
+                    active = row.find(bytes((32, 51, 47)) * 8)
+                    preview = row.rfind(bytes((48, 52, 63)) * 8)
+                    if 0 <= active < preview:
+                        points.append((active // 3 + 4, preview // 3 + 4, y))
+                if points:
+                    return points[len(points) // 2]
+                # The watch can deliver the reordered tabs after the first key press.
+                key(window, "Right")
+                time.sleep(0.05)
+            raise AssertionError("Desktop did not render the active and previewed tabs for a drag")
 
         def paste_unicode(*, tab_isolation=False):
             pasted = "한글 e\u0301 🐦"
@@ -601,6 +637,29 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
         key(window, "ctrl+bracketright", "t", "Right", "Return")
         wait_for_terminal(expected=second_terminal)
         if args.build:
+            order = tab_order()
+            assert len(order) == 2, order
+            focused = writers()
+            key(window, "ctrl+bracketright", "t", "bracketleft", "Escape")
+            wait_for_tab_order(order[::-1])
+            assert writers() == focused, "Keyboard reorder changed the input route"
+
+            key(window, "ctrl+bracketright", "t", "Right")
+            source, target, y = tab_drag_points()
+            key(window, "Escape")
+            subprocess.run(
+                ["xdotool", "mousemove", "--window", window, str(source), str(y),
+                 "mousedown", "1", "sleep", "0.1",
+                 "mousemove", "--window", window, str(source + 12), str(y), "sleep", "0.1",
+                 "mousemove", "--window", window, str(target), str(y), "sleep", "0.2"],
+                check=True, timeout=10,
+            )
+            if preview := os.environ.get("CORVID_TAB_REORDER_SCREENSHOT"):
+                subprocess.run(["scrot", "--overwrite", "--focused", preview], check=True, timeout=10)
+            subprocess.run(["xdotool", "mouseup", "1"], check=True, timeout=10)
+            wait_for_tab_order(order)
+            assert writers() == focused, "Dragging a tab changed the input route"
+
             new_tab(window)
             added_tab = wait_for_terminal(previous=second_terminal)
             left_color = (96, 52, 20)

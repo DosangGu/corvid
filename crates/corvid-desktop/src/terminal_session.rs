@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as blocking;
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Duration;
 
@@ -25,20 +25,21 @@ use corvid_protocol::snapshot::SynchronizedSnapshot;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::layout_node_state::Body as Node;
+use corvid_protocol::wire::reorder_tab::Placement;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, ClientState, CloseView,
     CreateView, DisconnectWorkspaceClients, FocusViewAgent, FrameApplied, InputChunk,
     LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview, ReadTerminalHistory,
-    ResizeViewport, RouteToken, SelectView, TerminalHistory, TerminalState, ViewSelection,
-    Viewport, WheelEncoding, WorkspaceState,
+    ReorderTab, ResizeViewport, RouteToken, SelectView, TerminalHistory, TerminalState,
+    ViewSelection, Viewport, WheelEncoding, WorkspaceState,
 };
 use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLIPBOARD_WRITE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT,
     CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, GRACEFUL_DETACH_CAPABILITY,
-    PANE_PREVIEW_CAPABILITY, ProtocolFault, RenderFrame, SESSION_CLIENTS_CAPABILITY,
-    TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS,
-    WRITER_RESUME_CAPABILITY, decode_envelope,
+    PANE_PREVIEW_CAPABILITY, ProtocolFault, REORDER_TAB_CAPABILITY, RenderFrame,
+    SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES,
+    TERMINAL_HISTORY_MAX_ROWS, WRITER_RESUME_CAPABILITY, decode_envelope,
 };
 use uuid::Uuid;
 
@@ -49,6 +50,7 @@ pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
 const DETACH_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_PENDING_TAB_REORDERS: usize = 32;
 type HistoryReply = std::result::Result<TerminalHistory, String>;
 
 mod inventory_watch;
@@ -309,6 +311,7 @@ pub struct Ui {
     pub connected: bool,
     pub changing: bool,
     pub close_supported: bool,
+    pub reorder_supported: bool,
     pub tab_preview_supported: bool,
     pub session_clients_supported: bool,
     pub closed_view: bool,
@@ -324,6 +327,10 @@ impl Ui {
 
     pub fn can_close(&self) -> bool {
         self.can_write() && self.close_supported && !self.changing
+    }
+
+    pub fn can_reorder_tabs(&self) -> bool {
+        self.can_write() && self.reorder_supported && self.inventory_ready && !self.changing
     }
 }
 
@@ -422,6 +429,7 @@ impl Shared {
                 connected: false,
                 changing: true,
                 close_supported: false,
+                reorder_supported: false,
                 tab_preview_supported: false,
                 session_clients_supported: false,
                 closed_view: false,
@@ -558,6 +566,13 @@ pub struct Session {
     shared: Arc<Shared>,
     actions: mpsc::Sender<Action>,
     size: watch::Sender<(u64, u64, Grid)>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TabReorderView {
+    session: Weak<Shared>,
+    view_epoch: u64,
+    revision: u64,
 }
 
 // The reader and SSH relay tasks must outlive any one attached session.
@@ -729,6 +744,10 @@ impl Job {
 
 enum Action {
     Rename(corvid_protocol::wire::RenameView),
+    ReorderTab {
+        view_epoch: u64,
+        command: ReorderTab,
+    },
     Input {
         view_epoch: u64,
         revision: u64,
@@ -1119,6 +1138,47 @@ impl Session {
         self.change(Action::Close(target));
     }
 
+    pub(crate) fn tab_reorder_view(&self) -> Option<TabReorderView> {
+        let snapshot = self.shared.snapshot();
+        (snapshot.ui.can_reorder_tabs() && !self.changing(&snapshot)).then(|| TabReorderView {
+            session: Arc::downgrade(&self.shared),
+            view_epoch: snapshot.view_epoch,
+            revision: snapshot.revision,
+        })
+    }
+
+    pub(crate) fn reorder_tab(
+        &self,
+        view: &TabReorderView,
+        workspace_id: String,
+        tab_id: String,
+        placement: Placement,
+    ) {
+        let snapshot = self.shared.snapshot();
+        if !view.session.ptr_eq(&Arc::downgrade(&self.shared))
+            || view.view_epoch != snapshot.view_epoch
+            || view.revision != snapshot.revision
+            || !snapshot.ui.can_reorder_tabs()
+            || self.changing(&snapshot)
+            || snapshot
+                .ui
+                .selected
+                .as_ref()
+                .is_none_or(|active| active.workspace_id != workspace_id)
+        {
+            return;
+        }
+        let _ = self.actions.try_send(Action::ReorderTab {
+            view_epoch: view.view_epoch,
+            command: ReorderTab {
+                expected_view_revision: Some(view.revision),
+                workspace_id,
+                tab_id,
+                placement: Some(placement),
+            },
+        });
+    }
+
     pub fn rename_tab(&self, name: String, revision: u64) {
         self.change(Action::Rename(corvid_protocol::wire::RenameView {
             expected_view_revision: Some(revision),
@@ -1202,6 +1262,7 @@ struct Client<'a> {
     applied: Option<(u64, u64)>,
     sequence: u64,
     pending: Option<Pending>,
+    pending_tab_reorders: VecDeque<(String, Instant)>,
     view_change: Option<ViewChange>,
     activation: mpsc::Sender<DeckActivation>,
     preview: Option<(String, Pending)>,
@@ -1868,6 +1929,11 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == CLOSE_VIEW_CAPABILITY);
+    let reorder_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == REORDER_TAB_CAPABILITY);
     let session_clients_supported = link
         .session()
         .capabilities
@@ -1891,6 +1957,7 @@ async fn run(
     shared.update_ui(move |ui| {
         ui.tab_preview_supported = tab_preview_supported;
         ui.close_supported = close_supported;
+        ui.reorder_supported = reorder_supported;
         ui.naming_supported = naming_supported;
         ui.split_target_supported = split_target_supported;
         ui.session_clients_supported = session_clients_supported;
@@ -1946,6 +2013,7 @@ async fn run(
         applied: None,
         sequence: 0,
         pending: None,
+        pending_tab_reorders: VecDeque::new(),
         view_change: None,
         activation: activation.clone(),
         preview: None,
@@ -2323,6 +2391,9 @@ impl Client<'_> {
         if let Some(history) = &self.history {
             ensure!(now < history.deadline, "daemon terminal history timed out");
         }
+        if let Some((_, deadline)) = self.pending_tab_reorders.front() {
+            ensure!(now < *deadline, "daemon tab reorder timed out");
+        }
         if self.history.is_none()
             && now >= self.next_history
             && let Some(read) = self.queued_history.take()
@@ -2414,6 +2485,19 @@ impl Client<'_> {
             Action::Rename(target) => {
                 self.request(Body::RenameView(target), Operation::Rename)
                     .await?;
+            }
+            Action::ReorderTab {
+                view_epoch,
+                command,
+            } => {
+                if command.expected_view_revision == Some(self.route.view_revision)
+                    && self.matches_view(view_epoch, self.route.view_revision)
+                    && self.pending_tab_reorders.len() < MAX_PENDING_TAB_REORDERS
+                {
+                    let id = self.link.send(Body::ReorderTab(command)).await?;
+                    self.pending_tab_reorders
+                        .push_back((id, Instant::now() + COMMAND_TIMEOUT));
+                }
             }
             Action::DisconnectOthers(revision) => {
                 self.request(
@@ -2740,6 +2824,23 @@ impl Client<'_> {
             frame => frame,
         };
         let (id, body) = envelope(&self.link, frame)?;
+        if self
+            .pending_tab_reorders
+            .front()
+            .is_some_and(|(expected, _)| id.as_ref() == Some(expected))
+        {
+            self.pending_tab_reorders.pop_front();
+            match body {
+                Body::TabReordered(_) => {}
+                Body::Error(error) => {
+                    self.shared.update_ui(move |ui| {
+                        ui.message = ProtocolFault::from_wire(&error).to_string()
+                    });
+                }
+                _ => bail!("unexpected tab reorder reply"),
+            }
+            return Ok(None);
+        }
         if self
             .history
             .as_ref()

@@ -800,7 +800,7 @@ authority for accepted state changes and terminal lifetimes.
 | Area | Shared behavior |
 |---|---|
 | Hierarchy and identity | Workspace → Tab → split tree → Pane → optional Terminal; switching or moving a view preserves the existing terminal/run identity |
-| Tabs | Preview tab contents with arrows or `h`/`l`, Enter to focus, `n` to open, `x` to close the highlighted tab, and Esc to cancel |
+| Tabs | Preview tab contents with arrows or `h`/`l`, Enter to focus, `[`/`]` to move the highlighted tab one position, `n` to open, `x` to close, and Esc to exit tab mode. Desktop also supports dragging a tab title to either side of another tab |
 | Panes | Browse the layout with arrows or `h`/`j`/`k`/`l`, Enter to focus, `r`/`d` to split, `x` to close the highlighted pane, and Esc to cancel |
 | Focus and input | Selection targets an exact pane in one client; writer ownership, route fencing, and literal terminal input follow the same contract |
 | Names | Rename sets the current tab's name. Each pane follows its terminal title, and an unnamed tab with one pane follows that pane's title |
@@ -817,12 +817,19 @@ writer can close views in its workspace when the target contains no pane
 owned by another writer. The daemon removes the
 target and stops its PTYs. Removing the last pane removes its tab, and removing
 the last tab removes its workspace. When the active pane closes, the daemon
-prefers an available live pane in the same tab and then the same workspace.
+prefers an available live pane in the same tab. It then searches nearby tabs
+in the same workspace, using the order before removal and preferring the
+right tab at equal distance. Closing a background tab preserves focus.
 A legacy writer can also fall back to another workspace it claimed.
 If none is available, the client detaches.
 Closing the final workspace leaves a fresh layout without a running shell.
 Closing the GUI window releases its writer lease while the daemon keeps its PTYs
 alive. Operation-by-operation parity remains subject to A32.
+
+Tab reordering updates the daemon's persisted layout and is published through the
+existing workspace watch. Both gestures keep the same tab, pane, terminal, and
+input-route identities. Each move applies immediately, and leaving tab mode ends
+the preview. Desktop negotiates `reorder_tab.v1` on the interactive connection.
 
 ## 8. IPC and external control contract
 

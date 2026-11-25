@@ -987,6 +987,7 @@ impl Worker {
                     bytes,
                     &mut terminal.session,
                     display.as_ref().map(|display| display.layout.as_ref()),
+                    &self.scope,
                 )? {
                     Some(KeyCommand::BeginRename) => {
                         lease.naming = Some(super::rename::NameEditor::new());
@@ -1976,15 +1977,34 @@ impl Lease {
         mut bytes: Vec<u8>,
         queue: &mut Backend,
         layout: Option<&Layout>,
+        scope: &LaunchScope,
     ) -> Reply<Option<KeyCommand>> {
         if let Some(layout) = layout {
             self.navigation_dirty |=
                 self.input_mode() == InputMode::Command || bytes == [KEY_LEADER];
             if let Some(overlay) = self.overlay.take() {
                 self.input_sequence = sequence;
-                let (next, command) = overlay.key(&bytes, layout, self.location, self.keymap);
+                let route = self.route;
+                let workspace = self.location.workspace;
+                let mut result = Ok(());
+                let (next, command) = overlay.key(
+                    &bytes,
+                    layout,
+                    self.location,
+                    self.keymap,
+                    |tab, placement| {
+                        result = scope
+                            .registry
+                            .request(move |registry| {
+                                registry.reorder_tab(route, workspace, tab, placement)
+                            })
+                            .ok_or_else(terminal_fault)
+                            .and_then(|result| result.map(|_| ()));
+                        result.as_ref().ok().map(|()| scope.metadata.layout())
+                    },
+                );
                 self.overlay = next;
-                return Ok(command);
+                return result.map(|()| command);
             }
             if let Some(mouse) = Mouse::parse(&bytes) {
                 self.input_sequence = sequence;
@@ -2437,7 +2457,7 @@ impl Lease {
                 .iter()
                 .find(|workspace| workspace.id == self.location.workspace)
             {
-                picker.refresh_names(workspace);
+                picker.refresh(workspace);
             }
             if !picker.dirty && matches!(self.previous, Some(LastFrame::Picker)) {
                 return Ok(None);

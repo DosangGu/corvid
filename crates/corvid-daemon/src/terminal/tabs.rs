@@ -9,7 +9,7 @@ use super::status::clip;
 pub(super) struct TabPicker {
     workspace: String,
     tabs: Vec<Choice>,
-    active: usize,
+    active: Uuid,
     selected: usize,
     query: String,
     pub(super) dirty: bool,
@@ -52,14 +52,26 @@ impl TabPicker {
         Some(Self {
             workspace: workspace.label.clone(),
             tabs,
-            active,
+            active: current,
             selected: active,
             query: String::new(),
             dirty: true,
         })
     }
 
-    pub(super) fn refresh_names(&mut self, workspace: &Workspace) {
+    pub(super) fn refresh(&mut self, workspace: &Workspace) {
+        let selected = self
+            .filtered()
+            .get(self.selected)
+            .map(|index| self.tabs[*index].id);
+        let position = |id| workspace.tabs.iter().position(|tab| tab.id == id);
+        let count = self.tabs.len();
+        self.tabs.retain(|choice| position(choice.id).is_some());
+        self.dirty |= self.tabs.len() != count;
+        if !self.tabs.is_sorted_by_key(|choice| position(choice.id)) {
+            self.tabs.sort_by_key(|choice| position(choice.id));
+            self.dirty = true;
+        }
         for choice in &mut self.tabs {
             if let Some(tab) = workspace.tabs.iter().find(|tab| tab.id == choice.id)
                 && choice.label != tab.label
@@ -68,7 +80,11 @@ impl TabPicker {
                 self.dirty = true;
             }
         }
-        self.selected = self.selected.min(self.filtered().len().saturating_sub(1));
+        let filtered = self.filtered();
+        self.selected = filtered
+            .iter()
+            .position(|index| Some(self.tabs[*index].id) == selected)
+            .unwrap_or_else(|| self.selected.min(filtered.len().saturating_sub(1)));
     }
 
     pub(super) fn key(&mut self, bytes: &[u8]) -> PickerAction {
@@ -143,7 +159,7 @@ impl TabPicker {
         for (position, &index) in filtered.iter().enumerate().take(end).skip(start) {
             let choice = &self.tabs[index];
             let cursor = if position == self.selected { '>' } else { ' ' };
-            let current = if index == self.active { '*' } else { ' ' };
+            let current = if choice.id == self.active { '*' } else { ' ' };
             let closed = if choice.live { "" } else { " (closed)" };
             let label = format!(
                 "{cursor}{current} {}{closed}: {} · {} pane(s)",

@@ -65,6 +65,29 @@ fn agent_restore_requires_interactive_role_capability_and_current_epoch() {
 }
 
 #[test]
+fn tab_reorder_requires_a_capable_interactive_connection() {
+    use corvid_protocol::REORDER_TAB_CAPABILITY;
+    use corvid_protocol::wire::ReorderTab;
+
+    let greeting = hello("hello".into(), Some("controller".into()), vec![]);
+    for (role, capabilities) in [
+        (PeerRole::Control, &[REORDER_TAB_CAPABILITY][..]),
+        (PeerRole::Tui, &[]),
+        (PeerRole::Tui, &[REORDER_TAB_CAPABILITY]),
+    ] {
+        let (session, _) = accept_hello(&greeting, role, "host", "epoch", capabilities).unwrap();
+        let request = session.envelope(
+            Some("reorder".into()),
+            Body::ReorderTab(ReorderTab::default()),
+        );
+        assert_eq!(
+            session.validate_request(&request).is_ok(),
+            role == PeerRole::Tui && !capabilities.is_empty()
+        );
+    }
+}
+
+#[test]
 fn newer_client_negotiates_supported_version_and_capabilities() {
     let mut request = hello(
         "req".into(),

@@ -957,6 +957,17 @@ def verify_workspace_ui(command, directory):
         terminal.expect(b"STILL-top")
 
         terminal.output.clear()
+        terminal.send(b"\x1dtl[")
+        terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m1 hello")
+        terminal.expect(b"INPUT-NEW_TAB")
+        terminal.output.clear()
+        terminal.send(b"]")
+        terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m2 hello")
+        terminal.output.clear()
+        terminal.send(b"\x1b")
+        terminal.expect(rb"\x1b\[0;1;36m\[1 work\][^\r\n]*Ctrl\+\] commands")
+
+        terminal.output.clear()
         terminal.send(b"\x1dtlx")
         terminal.expect(rb"\x1b\[0;1;36m\[1 work\][^\r\n]*Ctrl\+\] commands")
         send_line(terminal, 'printf "AFTER-CLOSE-%s\\n" "$CORVID_TEST_PANE"')

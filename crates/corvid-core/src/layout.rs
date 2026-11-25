@@ -34,6 +34,58 @@ pub struct Tab {
     pub root: Node,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum TabPlacement {
+    Left,
+    Right,
+    Before(Uuid),
+    After(Uuid),
+}
+
+impl TabPlacement {
+    pub fn anchor(self) -> Option<Uuid> {
+        match self {
+            Self::Before(tab) | Self::After(tab) => Some(tab),
+            Self::Left | Self::Right => None,
+        }
+    }
+}
+
+impl Workspace {
+    pub fn reorder_tab(
+        &mut self,
+        tab: Uuid,
+        placement: TabPlacement,
+    ) -> Result<bool, InvalidLayout> {
+        let index = self.tab_index(tab)?;
+        let destination = match placement {
+            TabPlacement::Left => index.saturating_sub(1),
+            TabPlacement::Right => (index + 1).min(self.tabs.len() - 1),
+            TabPlacement::Before(anchor) | TabPlacement::After(anchor) => {
+                let anchor = self.tab_index(anchor)?;
+                if anchor == index {
+                    return Ok(false);
+                }
+                let after = matches!(placement, TabPlacement::After(_));
+                anchor + usize::from(after) - usize::from(index < anchor)
+            }
+        };
+        if destination == index {
+            return Ok(false);
+        }
+        let tab = self.tabs.remove(index);
+        self.tabs.insert(destination, tab);
+        Ok(true)
+    }
+
+    fn tab_index(&self, tab: Uuid) -> Result<usize, InvalidLayout> {
+        self.tabs
+            .iter()
+            .position(|item| item.id == tab)
+            .ok_or(InvalidLayout)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Node {

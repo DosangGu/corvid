@@ -1,7 +1,8 @@
 use std::fmt::Write;
+use std::sync::Arc;
 
 use corvid_core::Viewport;
-use corvid_core::layout::{Axis, CloseTarget, Layout, Location, Node};
+use corvid_core::layout::{Axis, CloseTarget, Layout, Location, Node, TabPlacement};
 use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint, tab_mode_hint};
 use corvid_protocol::wire::WheelEncoding;
 use uuid::Uuid;
@@ -81,13 +82,16 @@ impl Overlay {
         layout: &Layout,
         location: Location,
         keymap: Keymap,
+        reorder: impl FnMut(Uuid, TabPlacement) -> Option<Arc<Layout>>,
     ) -> (Option<Self>, Option<KeyCommand>) {
         if matches!(bytes, b"\x1b" | b"\x03") {
             return (None, None);
         }
         let unfocused = |command| (None, Some(command));
         match self {
-            Self::Tabs(tab) => tab_keys(shortcut_keys(bytes), layout, location, keymap, tab),
+            Self::Tabs(tab) => {
+                tab_keys(shortcut_keys(bytes), layout, location, keymap, tab, reorder)
+            }
             Self::Panes(pane) => pane_keys(shortcut_keys(bytes), layout, location, keymap, pane),
             Self::ConfirmWorkspace(workspace) if matches!(bytes, b"\r" | b"\n") => {
                 unfocused(KeyCommand::End(CloseTarget::Workspace(workspace)))
@@ -242,7 +246,7 @@ impl Overlay {
                     },
                 ));
             }
-            Self::Tabs(_) => lines.push(tab_mode_hint(keymap.close).into()),
+            Self::Tabs(_) => lines.push(tab_mode_hint(keymap.close, true).into()),
             Self::Panes(pane) => {
                 let label = layout
                     .panes(location.workspace, location.tab)
@@ -312,6 +316,7 @@ fn tab_keys(
     location: Location,
     keymap: Keymap,
     mut tab: Uuid,
+    mut reorder: impl FnMut(Uuid, TabPlacement) -> Option<Arc<Layout>>,
 ) -> (Option<Overlay>, Option<KeyCommand>) {
     if matches!(bytes, b"\r" | b"\n") {
         return (None, Some(KeyCommand::Tab(TabCommand::Select(tab))));
@@ -323,9 +328,28 @@ fn tab_keys(
         None => return (Some(Overlay::Tabs(tab)), None),
     };
     // The client may send consecutive printable keys in one input chunk.
+    let mut updated = None;
     for key in keys {
         match key {
-            b'h' | b'l' => tab = step_tab(layout, location, tab, *key == b'h'),
+            b'h' | b'l' => {
+                tab = step_tab(
+                    updated.as_deref().unwrap_or(layout),
+                    location,
+                    tab,
+                    *key == b'h',
+                );
+            }
+            b'[' | b']' => {
+                let step = if *key == b'[' {
+                    TabPlacement::Left
+                } else {
+                    TabPlacement::Right
+                };
+                let Some(layout) = reorder(tab, step) else {
+                    break;
+                };
+                updated = Some(layout);
+            }
             b'n' => return (None, Some(KeyCommand::Tab(TabCommand::Create))),
             b'x' if keymap.close => {
                 return (
