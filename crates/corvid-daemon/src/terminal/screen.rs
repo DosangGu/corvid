@@ -58,6 +58,13 @@ impl TerminalScreen {
         self.sgr.configure_clipboard(enabled, reset);
     }
 
+    pub(super) fn set_colors(
+        &mut self,
+        colors: &corvid_protocol::wire::TerminalColors,
+    ) -> Result<()> {
+        self.engine.set_colors(colors)
+    }
+
     pub(super) fn take_clipboard(&mut self) -> Option<String> {
         self.sgr.take_clipboard()
     }
@@ -775,5 +782,45 @@ mod tests {
             Some("https://example.test/live")
         );
         assert_eq!(decoded.cell(0, 5).unwrap().hyperlink(), None);
+    }
+
+    #[test]
+    fn answers_osc_10_11_and_4_color_queries_and_updates_with_client_colors() {
+        let mut terminal = terminal(80, 24);
+        let reply = terminal
+            .process(b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]4;0;?\x07\x1b]4;196;?\x1b\\")
+            .unwrap();
+        let text = String::from_utf8(reply).unwrap();
+        assert!(text.contains("\x1b]10;rgb:cdcd/d3d3/dcdc"), "{text:?}");
+        assert!(text.contains("\x1b]11;rgb:2020/2424/2b2b"), "{text:?}");
+        assert!(text.contains("\x1b]4;0;rgb:0000/0000/0000"), "{text:?}");
+        assert!(text.contains("\x1b]4;196;rgb:ffff/0000/0000"), "{text:?}");
+
+        let mut palette = corvid_protocol::DEFAULT_ANSI_PALETTE_16.to_vec();
+        palette[0] = 0x11_22_33;
+        terminal
+            .set_colors(&corvid_protocol::wire::TerminalColors {
+                foreground_rgb: Some(0x10_20_30),
+                background_rgb: Some(0xf5_f6_f7),
+                ansi_palette: palette,
+            })
+            .unwrap();
+
+        let updated = terminal
+            .process(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]4;0;?\x07")
+            .unwrap();
+        let updated_text = String::from_utf8(updated).unwrap();
+        assert!(
+            updated_text.contains("\x1b]10;rgb:1010/2020/3030"),
+            "{updated_text:?}"
+        );
+        assert!(
+            updated_text.contains("\x1b]11;rgb:f5f5/f6f6/f7f7"),
+            "{updated_text:?}"
+        );
+        assert!(
+            updated_text.contains("\x1b]4;0;rgb:1111/2222/3333"),
+            "{updated_text:?}"
+        );
     }
 }

@@ -1168,6 +1168,11 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
     {
         return Err(invalid("agent attach requires a run and a writer role"));
     }
+    if let Some(colors) = &attach.terminal_colors
+        && !corvid_protocol::valid_terminal_colors(colors)
+    {
+        return Err(invalid("invalid terminal colors"));
+    }
     Ok(AttachTarget {
         agent_run: parse_optional_id(attach.agent_run_id.as_deref())?,
         workspace: parse_optional_id(attach.workspace_id.as_deref())?,
@@ -1208,6 +1213,7 @@ async fn attach_target(attach: &Attach) -> Result<AttachTarget, ProtocolFault> {
         expected_terminal: parse_optional_id(attach.expected_terminal_id.as_deref())?,
         resume_token,
         issue_resume_token,
+        terminal_colors: attach.terminal_colors.clone().map(Box::new),
         keymap: Keymap {
             clipboard_write: attach
                 .terminal_capabilities

@@ -93,6 +93,21 @@ pub const LEGACY_DEFAULT_LAUNCH_CAPABILITY: &str = "default_launch.v1";
 pub const DAEMON_UPGRADE_CAPABILITY: &str = "daemon_upgrade.v1";
 pub const DAEMON_HANDOFF_CAPABILITY: &str = "daemon_handoff.v1";
 
+pub const DEFAULT_TERMINAL_BACKGROUND_RGB: u32 = 0x20242b;
+pub const DEFAULT_TERMINAL_FOREGROUND_RGB: u32 = 0xcdd3dc;
+pub const DEFAULT_ANSI_PALETTE_16: [u32; 16] = [
+    0x000000, 0xeb777d, 0x0dbc79, 0xe5e510, 0x6ca9ec, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
+    0xffa0a5, 0x23d18b, 0xf5f543, 0x9ccbff, 0xd670d6, 0x29b8db, 0xffffff,
+];
+
+pub fn valid_terminal_colors(colors: &wire::TerminalColors) -> bool {
+    colors.foreground_rgb.is_none_or(|rgb| rgb <= 0x00ff_ffff)
+        && colors.background_rgb.is_none_or(|rgb| rgb <= 0x00ff_ffff)
+        && (colors.ansi_palette.is_empty()
+            || (colors.ansi_palette.len() == 16
+                && colors.ansi_palette.iter().all(|&rgb| rgb <= 0x00ff_ffff)))
+}
+
 pub const MAX_HYPERLINK_URI_BYTES: usize = 2048;
 pub const MAX_HYPERLINK_ID_BYTES: usize = 256;
 
@@ -131,4 +146,31 @@ fn is_unsafe_char(ch: char) -> bool {
             ch,
             '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_terminal_colors_bounds_and_palette_length() {
+        let valid = wire::TerminalColors {
+            foreground_rgb: Some(DEFAULT_TERMINAL_FOREGROUND_RGB),
+            background_rgb: Some(DEFAULT_TERMINAL_BACKGROUND_RGB),
+            ansi_palette: DEFAULT_ANSI_PALETTE_16.to_vec(),
+        };
+        assert!(valid_terminal_colors(&valid));
+
+        let bad_rgb = wire::TerminalColors {
+            foreground_rgb: Some(0x0100_0000),
+            ..Default::default()
+        };
+        assert!(!valid_terminal_colors(&bad_rgb));
+
+        let bad_palette_len = wire::TerminalColors {
+            ansi_palette: vec![0x112233; 8],
+            ..Default::default()
+        };
+        assert!(!valid_terminal_colors(&bad_palette_len));
+    }
 }

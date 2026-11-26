@@ -32,6 +32,8 @@ mod tty;
 #[path = "tty/windows.rs"]
 mod tty;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod tty_colors;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod upgrade;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod view_state;

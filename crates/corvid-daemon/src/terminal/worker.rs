@@ -141,6 +141,7 @@ pub(crate) struct AttachSpec {
     pub(crate) keymap: Keymap,
     pub(crate) viewport: TuiViewport,
     pub(crate) launch: Option<Launch>,
+    pub(crate) terminal_colors: Option<Box<corvid_protocol::wire::TerminalColors>>,
     pub(crate) events: mpsc::Sender<Event>,
 }
 
@@ -804,6 +805,9 @@ impl Worker {
             }
         }
         let terminal = self.terminal.as_mut().ok_or_else(terminal_fault)?;
+        if let Some(colors) = spec.terminal_colors {
+            let _ = terminal.session.set_colors(*colors);
+        }
         terminal.dirty = true;
         let route = InputRoute {
             client_id: spec.client_id,
