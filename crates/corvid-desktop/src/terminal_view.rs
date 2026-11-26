@@ -19,7 +19,9 @@ use crate::appearance::{Appearance, ui_px};
 use crate::shortcuts;
 use crate::terminal_fonts::TerminalFonts;
 use crate::terminal_paint::{self as paint, Frame, Metrics};
-use crate::terminal_session::{Grid, MAX_INPUT, Session, WheelTarget};
+use crate::terminal_session::{
+    Grid, MAX_INPUT, MouseAction, MouseButtonCode, MouseEventReport, Session, WheelTarget,
+};
 
 mod history;
 mod keyboard;
@@ -42,6 +44,7 @@ pub struct TerminalView {
     displayed: RefCell<Option<DisplayedScreen>>,
     link_hover: RefCell<Option<LinkHover>>,
     selection: Option<Selection>,
+    mouse_capture: Option<MouseCapture>,
     history: Option<History>,
     history_request: Option<Task<()>>,
     copy_request: Option<Task<()>>,
@@ -177,9 +180,47 @@ impl Selection {
     }
 }
 
+#[derive(Clone, Copy)]
+struct MouseCapture {
+    route: (u64, WheelTarget),
+    button: MouseButton,
+    code: MouseButtonCode,
+    cell: CellPosition,
+}
+
 fn link_modifier(modifiers: Modifiers) -> bool {
     modifiers == Modifiers::control()
         || (cfg!(target_os = "macos") && modifiers == Modifiers::command())
+}
+
+fn mouse_modifiers(modifiers: Modifiers) -> u8 {
+    u8::from(modifiers.shift) * 4 + u8::from(modifiers.alt) * 8 + u8::from(modifiers.control) * 16
+}
+
+fn mouse_button_code(button: MouseButton) -> Option<MouseButtonCode> {
+    match button {
+        MouseButton::Left => Some(MouseButtonCode::Left),
+        MouseButton::Middle => Some(MouseButtonCode::Middle),
+        MouseButton::Right => Some(MouseButtonCode::Right),
+        _ => None,
+    }
+}
+
+fn mouse_forward_target(
+    history_open: bool,
+    button: MouseButton,
+    modifiers: Modifiers,
+    target: Option<(u64, WheelTarget)>,
+) -> Option<((u64, WheelTarget), MouseButtonCode)> {
+    if history_open || modifiers.shift || (button == MouseButton::Left && link_modifier(modifiers))
+    {
+        return None;
+    }
+    let code = mouse_button_code(button)?;
+    let route @ (_, WheelTarget::Mouse(_)) = target? else {
+        return None;
+    };
+    Some((route, code))
 }
 
 fn hit_cell(
@@ -228,6 +269,13 @@ impl TerminalView {
                     changes.borrow_and_update();
                     if view
                         .update(cx, |view, cx| {
+                            if view.mouse_capture.is_some_and(|capture| {
+                                view.session
+                                    .wheel_target(&view.pane)
+                                    .is_none_or(|route| route.0 != capture.route.0)
+                            }) {
+                                view.mouse_capture = None;
+                            }
                             if let Some(epoch) = view.history_epoch
                                 && view
                                     .session
@@ -262,6 +310,7 @@ impl TerminalView {
             displayed: RefCell::new(None),
             link_hover: RefCell::new(None),
             selection: None,
+            mouse_capture: None,
             history: None,
             history_request: None,
             copy_request: None,
@@ -284,8 +333,9 @@ impl TerminalView {
         &self.focus
     }
 
-    fn start_selection(
+    fn mouse_down(
         &mut self,
+        button: MouseButton,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -301,12 +351,34 @@ impl TerminalView {
         }
         self.marked.clear();
         let anchor = metrics.position(bounds, event.position);
-        if self.history.is_none()
-            && !event.modifiers.modified()
-            && self.session.send_pane_click(&self.pane, anchor)
-        {
+        if let Some((route, code)) = mouse_forward_target(
+            self.history.is_some(),
+            button,
+            event.modifiers,
+            self.session.wheel_target(&self.pane),
+        ) {
+            self.session.send_mouse(
+                &self.pane,
+                route,
+                MouseEventReport {
+                    button: code,
+                    action: MouseAction::Press,
+                    cell: anchor,
+                    modifiers: mouse_modifiers(event.modifiers),
+                },
+            );
             self.selection = None;
+            self.mouse_capture = Some(MouseCapture {
+                route,
+                button,
+                code,
+                cell: anchor,
+            });
             cx.notify();
+            return;
+        }
+        self.mouse_capture = None;
+        if button != MouseButton::Left {
             return;
         }
         let displayed = self.displayed.borrow().clone();
@@ -341,6 +413,31 @@ impl TerminalView {
         let Some((bounds, metrics)) = self.surface.get() else {
             return;
         };
+        if let Some(capture) = self.mouse_capture {
+            if event.pressed_button == Some(capture.button) {
+                let cell = metrics.position(bounds, event.position);
+                if cell != capture.cell {
+                    // TODO: Distinguish mouse tracking modes (?9h/?1000h/?1002h/?1003h) in RenderHeader
+                    // Currently drag motion is sent whenever WheelTarget::Mouse is active; propagating the exact mode lets us avoid sending drag motion to click-only apps and support any-motion hover.
+                    if let Some(active) = self.mouse_capture.as_mut() {
+                        active.cell = cell;
+                    }
+                    self.session.send_mouse(
+                        &self.pane,
+                        capture.route,
+                        MouseEventReport {
+                            button: capture.code,
+                            action: MouseAction::Drag,
+                            cell,
+                            modifiers: mouse_modifiers(event.modifiers),
+                        },
+                    );
+                }
+                self.clear_link_hover(cx);
+                return;
+            }
+            self.mouse_capture = None;
+        }
         if let Some(selection) = self
             .selection
             .as_mut()
@@ -412,13 +509,47 @@ impl TerminalView {
         Some(hover.as_ref()?.link.as_ref()?.spans.clone())
     }
 
-    fn release_selection(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let release = self
-            .surface
-            .get()
-            .filter(|_| link_modifier(event.modifiers))
-            .and_then(|(bounds, metrics)| hit_cell(bounds, metrics, event.position));
-        self.end_selection(release, cx);
+    fn mouse_up(
+        &mut self,
+        button: MouseButton,
+        event: &MouseUpEvent,
+        inside: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .mouse_capture
+            .is_some_and(|capture| capture.button == button)
+        {
+            let capture = self.mouse_capture.take().unwrap();
+            let cell = self
+                .surface
+                .get()
+                .map_or(capture.cell, |(bounds, metrics)| {
+                    metrics.position(bounds, event.position)
+                });
+            self.session.send_mouse(
+                &self.pane,
+                capture.route,
+                MouseEventReport {
+                    button: capture.code,
+                    action: MouseAction::Release,
+                    cell,
+                    modifiers: mouse_modifiers(event.modifiers),
+                },
+            );
+            return;
+        }
+        if button == MouseButton::Left {
+            let release = if inside {
+                self.surface
+                    .get()
+                    .filter(|_| link_modifier(event.modifiers))
+                    .and_then(|(bounds, metrics)| hit_cell(bounds, metrics, event.position))
+            } else {
+                None
+            };
+            self.end_selection(release, cx);
+        }
     }
 
     fn end_selection(&mut self, release: Option<CellPosition>, cx: &mut Context<Self>) {
@@ -601,6 +732,7 @@ impl TerminalView {
         } else {
             self.pending_wheel_back = 0;
             self.selection = None;
+            self.mouse_capture = None;
             self.marked.clear();
             let mut history = History::new(mode == HistoryOpen::Search);
             history.scroll(-back, height);
@@ -630,6 +762,7 @@ impl TerminalView {
                         && let Some(history) = History::from_wheel(result, back, height, shell_only)
                     {
                         view.selection = None;
+                        view.mouse_capture = None;
                         view.marked.clear();
                         view.history = Some(history);
                     } else {
@@ -741,9 +874,7 @@ impl TerminalView {
             }
         } else if matches!(live, WheelTarget::Mouse(_) | WheelTarget::Cursor { .. }) {
             self.cancel_pending_wheel();
-            let modifiers = u8::from(event.modifiers.shift) * 4
-                + u8::from(event.modifiers.alt) * 8
-                + u8::from(event.modifiers.control) * 16;
+            let modifiers = mouse_modifiers(event.modifiers);
             self.session.send_wheel(
                 &self.pane,
                 (epoch, live),
@@ -1030,7 +1161,24 @@ impl Render for TerminalView {
             .id("daemon-terminal")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::start_selection))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, event, window, cx| {
+                    view.mouse_down(MouseButton::Left, event, window, cx);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|view, event, window, cx| {
+                    view.mouse_down(MouseButton::Middle, event, window, cx);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|view, event, window, cx| {
+                    view.mouse_down(MouseButton::Right, event, window, cx);
+                }),
+            )
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
                 if !*hovered {
@@ -1038,10 +1186,39 @@ impl Render for TerminalView {
                 }
             }))
             .on_scroll(cx.listener(Self::scroll_history))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::release_selection))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, event, _, cx| view.mouse_up(MouseButton::Left, event, true, cx)),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|view, event, _, cx| {
+                    view.mouse_up(MouseButton::Middle, event, true, cx);
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|view, event, _, cx| {
+                    view.mouse_up(MouseButton::Right, event, true, cx);
+                }),
+            )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.end_selection(None, cx)),
+                cx.listener(|view, event, _, cx| {
+                    view.mouse_up(MouseButton::Left, event, false, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Middle,
+                cx.listener(|view, event, _, cx| {
+                    view.mouse_up(MouseButton::Middle, event, false, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Right,
+                cx.listener(|view, event, _, cx| {
+                    view.mouse_up(MouseButton::Right, event, false, cx);
+                }),
             )
             .when_some(self.history.as_ref(), |this, history| {
                 this.child(
@@ -1357,6 +1534,88 @@ mod tests {
         };
         assert!(LinkHover::update(&mut hover, &updated, grid, None, (0, 2)));
         assert!(hover.as_ref().unwrap().link.is_none());
+    }
+
+    #[test]
+    fn mouse_modifiers_encodes_shift_alt_and_control_bits() {
+        assert_eq!(mouse_modifiers(Modifiers::none()), 0);
+        assert_eq!(mouse_modifiers(Modifiers::shift()), 4);
+        assert_eq!(mouse_modifiers(Modifiers::alt()), 8);
+        assert_eq!(mouse_modifiers(Modifiers::control()), 16);
+        assert_eq!(
+            mouse_modifiers(Modifiers {
+                control: true,
+                alt: true,
+                shift: true,
+                ..Modifiers::none()
+            }),
+            28
+        );
+    }
+
+    #[test]
+    fn mouse_forward_target_respects_shift_links_and_history() {
+        let mouse_route = Some((
+            7,
+            WheelTarget::Mouse(corvid_protocol::wire::WheelEncoding::Sgr),
+        ));
+        assert_eq!(
+            mouse_forward_target(false, MouseButton::Left, Modifiers::none(), mouse_route),
+            Some((
+                (
+                    7,
+                    WheelTarget::Mouse(corvid_protocol::wire::WheelEncoding::Sgr)
+                ),
+                MouseButtonCode::Left,
+            ))
+        );
+        assert_eq!(
+            mouse_forward_target(false, MouseButton::Middle, Modifiers::alt(), mouse_route),
+            Some((
+                (
+                    7,
+                    WheelTarget::Mouse(corvid_protocol::wire::WheelEncoding::Sgr)
+                ),
+                MouseButtonCode::Middle,
+            ))
+        );
+        assert_eq!(
+            mouse_forward_target(false, MouseButton::Right, Modifiers::control(), mouse_route),
+            Some((
+                (
+                    7,
+                    WheelTarget::Mouse(corvid_protocol::wire::WheelEncoding::Sgr)
+                ),
+                MouseButtonCode::Right,
+            ))
+        );
+        assert_eq!(
+            mouse_forward_target(false, MouseButton::Left, Modifiers::shift(), mouse_route),
+            None
+        );
+        assert_eq!(
+            mouse_forward_target(false, MouseButton::Left, Modifiers::control(), mouse_route),
+            None
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                mouse_forward_target(false, MouseButton::Left, Modifiers::command(), mouse_route),
+                None
+            );
+        }
+        assert_eq!(
+            mouse_forward_target(true, MouseButton::Left, Modifiers::none(), mouse_route),
+            None
+        );
+        assert_eq!(
+            mouse_forward_target(
+                false,
+                MouseButton::Left,
+                Modifiers::none(),
+                Some((7, WheelTarget::Scrollback)),
+            ),
+            None
+        );
     }
 
     #[cfg(windows)]

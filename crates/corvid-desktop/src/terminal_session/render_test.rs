@@ -319,3 +319,206 @@ fn history_rejects_non_sgr_payloads_and_broken_character_offsets() {
     history.commands[0].output_start_offset = Some(3);
     assert!(validate_history(&history).is_ok());
 }
+
+#[test]
+fn mouse_reports_encode_press_drag_and_release_across_protocols() {
+    let cell = (1, 4);
+    let report = |button, action, cell, modifiers| MouseEventReport {
+        button,
+        action,
+        cell,
+        modifiers,
+    };
+
+    assert!(
+        mouse_report(
+            WheelEncoding::Disabled,
+            report(MouseButtonCode::Left, MouseAction::Press, cell, 0),
+        )
+        .is_none()
+    );
+
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Sgr,
+            report(MouseButtonCode::Left, MouseAction::Press, cell, 0),
+        )
+        .unwrap(),
+        b"\x1b[<0;5;2M"
+    );
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Sgr,
+            report(MouseButtonCode::Middle, MouseAction::Drag, cell, 8),
+        )
+        .unwrap(),
+        b"\x1b[<41;5;2M"
+    );
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Sgr,
+            report(MouseButtonCode::Right, MouseAction::Release, cell, 16),
+        )
+        .unwrap(),
+        b"\x1b[<18;5;2m"
+    );
+
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Legacy,
+            report(MouseButtonCode::Left, MouseAction::Press, cell, 0),
+        )
+        .unwrap(),
+        b"\x1b[M \x25\x22"
+    );
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Legacy,
+            report(MouseButtonCode::Right, MouseAction::Drag, cell, 8),
+        )
+        .unwrap(),
+        b"\x1b[MJ\x25\x22"
+    );
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Legacy,
+            report(MouseButtonCode::Middle, MouseAction::Release, cell, 16),
+        )
+        .unwrap(),
+        b"\x1b[M3\x25\x22"
+    );
+    assert!(
+        mouse_report(
+            WheelEncoding::Legacy,
+            report(MouseButtonCode::Left, MouseAction::Press, (0, 223), 0),
+        )
+        .is_none()
+    );
+    assert!(
+        mouse_report(
+            WheelEncoding::Legacy,
+            report(MouseButtonCode::Left, MouseAction::Press, (223, 0), 0),
+        )
+        .is_none()
+    );
+
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Utf8,
+            report(MouseButtonCode::Left, MouseAction::Press, (1, 254), 0),
+        )
+        .unwrap(),
+        "\x1b[M \u{11f}\u{22}".as_bytes()
+    );
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Utf8,
+            report(MouseButtonCode::Left, MouseAction::Drag, (1, 254), 0),
+        )
+        .unwrap(),
+        "\x1b[M@\u{11f}\u{22}".as_bytes()
+    );
+    assert_eq!(
+        mouse_report(
+            WheelEncoding::Utf8,
+            report(MouseButtonCode::Left, MouseAction::Release, (1, 254), 0),
+        )
+        .unwrap(),
+        "\x1b[M#\u{11f}\u{22}".as_bytes()
+    );
+    assert!(
+        mouse_report(
+            WheelEncoding::Utf8,
+            report(MouseButtonCode::Left, MouseAction::Press, (0, 2015), 0),
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn send_mouse_requires_matching_epoch_and_mouse_target() {
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
+    let (actions, mut incoming) = mpsc::channel(4);
+    let grid = Grid::new(4, 20);
+    let (size, _) = watch::channel((0, 3, grid));
+    let session = Session {
+        shared: Arc::clone(&shared),
+        actions,
+        size,
+    };
+    shared.edit(|state| {
+        let ui = Arc::make_mut(&mut state.ui);
+        ui.selected = Some(ViewSelection {
+            pane_id: "pane".into(),
+            ..Default::default()
+        });
+        ui.connected = true;
+        ui.changing = false;
+        Changed::View
+    });
+    let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
+    shared.apply_ansi(&mut parser, b"ready", WheelEncoding::Sgr, Some(true));
+
+    let route = session.wheel_target("pane").unwrap();
+    assert_eq!(route.1, WheelTarget::Mouse(WheelEncoding::Sgr));
+
+    assert!(session.send_mouse(
+        "pane",
+        route,
+        MouseEventReport {
+            button: MouseButtonCode::Left,
+            action: MouseAction::Press,
+            cell: (1, 2),
+            modifiers: 0,
+        },
+    ));
+    assert!(session.send_mouse(
+        "pane",
+        route,
+        MouseEventReport {
+            button: MouseButtonCode::Left,
+            action: MouseAction::Drag,
+            cell: (2, 4),
+            modifiers: 0,
+        },
+    ));
+    assert!(session.send_mouse(
+        "pane",
+        route,
+        MouseEventReport {
+            button: MouseButtonCode::Left,
+            action: MouseAction::Release,
+            cell: (2, 4),
+            modifiers: 0,
+        },
+    ));
+
+    for expected in [&b"\x1b[<0;3;2M"[..], b"\x1b[<32;5;3M", b"\x1b[<0;5;3m"] {
+        assert!(matches!(
+            incoming.try_recv().unwrap(),
+            Action::Input { bytes, paste: false, .. } if bytes == expected
+        ));
+    }
+
+    assert!(!session.send_mouse(
+        "pane",
+        (route.0 + 1, route.1),
+        MouseEventReport {
+            button: MouseButtonCode::Left,
+            action: MouseAction::Press,
+            cell: (0, 0),
+            modifiers: 0,
+        },
+    ));
+    assert!(!session.send_mouse(
+        "pane",
+        (route.0, WheelTarget::Scrollback),
+        MouseEventReport {
+            button: MouseButtonCode::Left,
+            action: MouseAction::Press,
+            cell: (0, 0),
+            modifiers: 0,
+        },
+    ));
+    assert!(incoming.try_recv().is_err());
+}
