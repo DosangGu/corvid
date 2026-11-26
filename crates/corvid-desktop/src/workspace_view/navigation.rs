@@ -41,6 +41,8 @@ enum Command {
     Reconnect,
     OpenTerminal,
     History(bool),
+    PreviousPrompt,
+    CopyLastOutput,
     Zoom,
 }
 
@@ -58,6 +60,8 @@ impl Command {
             Self::OpenTerminal => "Open terminal",
             Self::History(false) => "Browse terminal history",
             Self::History(true) => "Search terminal history",
+            Self::PreviousPrompt => "Previous command",
+            Self::CopyLastOutput => "Copy last command output",
             Self::Zoom => "Expand or restore active pane",
         }
     }
@@ -106,6 +110,8 @@ impl WorkspaceView {
                 Agents,
                 History(false),
                 History(true),
+                PreviousPrompt,
+                CopyLastOutput,
                 Zoom,
                 Workspace(WorkspaceCommand::Detach),
             ]);
@@ -121,8 +127,6 @@ impl WorkspaceView {
                                 | WorkspaceCommand::Panes
                                 | WorkspaceCommand::PreviousTab
                                 | WorkspaceCommand::NextTab
-                                | WorkspaceCommand::PreviousCommand
-                                | WorkspaceCommand::CopyLastOutput
                                 | WorkspaceCommand::RenameTab
                         )
                     })
@@ -157,7 +161,7 @@ impl WorkspaceView {
             }
             Workspace(WorkspaceCommand::PreviousTab) => self.cycle_tab(true, window, cx),
             Workspace(WorkspaceCommand::NextTab) => self.cycle_tab(false, window, cx),
-            Workspace(WorkspaceCommand::PreviousCommand) => {
+            PreviousPrompt => {
                 if !self
                     .session
                     .as_ref()
@@ -168,7 +172,7 @@ impl WorkspaceView {
                     terminal.update(cx, |view, cx| view.jump_previous_command(cx));
                 }
             }
-            Workspace(WorkspaceCommand::CopyLastOutput) => {
+            CopyLastOutput => {
                 if !self
                     .session
                     .as_ref()
@@ -687,8 +691,6 @@ mod tests {
             ("w->ㅈ", WorkspaceCommand::Workspaces),
             ("ㅅ", WorkspaceCommand::Tabs),
             ("p->ᅦ", WorkspaceCommand::Panes),
-            ("k->ㅏ", WorkspaceCommand::PreviousCommand),
-            ("c->ㅊ", WorkspaceCommand::CopyLastOutput),
             ("ㅇ", WorkspaceCommand::Detach),
             ("shift-/->?", WorkspaceCommand::Commands),
         ] {
@@ -697,7 +699,7 @@ mod tests {
                 Some(command)
             );
         }
-        for stroke in ["shift-t->ㅆ", "ctrl-ㅅ", "t->한글"] {
+        for stroke in ["k->ㅏ", "c->ㅊ", "shift-t->ㅆ", "ctrl-ㅅ", "t->한글"] {
             assert_eq!(workspace_command(&Keystroke::parse(stroke).unwrap()), None);
         }
     }

@@ -190,13 +190,17 @@ async fn live_pty_tracks_osc_133_commands_across_reflow_reattach_and_tui_copy() 
             .await?;
         let _ = relay.status().await;
 
-        // 2. Attach real TUI with CORVID_ALLOW_CLIPBOARD_WRITE=0 and exercise Ctrl+] k and Ctrl+] c.
+        // 2. Attach real TUI with CORVID_ALLOW_CLIPBOARD_WRITE=0 and exercise Ctrl+] ? palette actions.
         let (mut tui, mut pty) = spawn_tui(&runtime, &temporary.path().join("views"))?;
         timeout(Duration::from_secs(4), read_until(&mut pty, b"READY"))
             .await
             .context("waiting for READY on TUI PTY")??;
 
-        pty.write_all(b"\x1dk")?;
+        pty.write_all(b"\x1d?")?;
+        timeout(Duration::from_secs(4), read_until(&mut pty, b"CORVID COMMANDS"))
+            .await
+            .context("waiting for command palette on TUI PTY")??;
+        pty.write_all(b"Previous command\r")?;
         timeout(Duration::from_secs(4), read_until(&mut pty, b"Command 2/2"))
             .await
             .context("waiting for Command 2/2 on TUI PTY")??;
@@ -211,7 +215,11 @@ async fn live_pty_tracks_osc_133_commands_across_reflow_reattach_and_tui_copy() 
             .await
             .context("waiting for live READY after closing history")??;
 
-        pty.write_all(b"\x1dc")?;
+        pty.write_all(b"\x1d?")?;
+        timeout(Duration::from_secs(4), read_until(&mut pty, b"CORVID COMMANDS"))
+            .await
+            .context("waiting for command palette for copy on TUI PTY")??;
+        pty.write_all(b"Copy last command output\r")?;
         // Base64 of "line1\nline2" is "bGluZTEKbGluZTI=".
         timeout(
             Duration::from_secs(4),

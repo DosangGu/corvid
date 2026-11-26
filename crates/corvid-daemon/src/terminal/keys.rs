@@ -86,10 +86,6 @@ impl Keymap {
                     Cmd::Panes if self.panes => Some(KeyCommand::Browse(Kind::Panes)),
                     Cmd::PreviousTab if self.tabs => Some(KeyCommand::Tab(TabCommand::Previous)),
                     Cmd::NextTab if self.tabs => Some(KeyCommand::Tab(TabCommand::Next)),
-                    Cmd::PreviousCommand if self.command_history => {
-                        Some(KeyCommand::PreviousCommand)
-                    }
-                    Cmd::CopyLastOutput if self.command_history => Some(KeyCommand::CopyLastOutput),
                     Cmd::RenameTab if self.naming => Some(KeyCommand::BeginRename),
                     Cmd::Detach => Some(KeyCommand::Detach),
                     _ => None,
@@ -116,8 +112,6 @@ impl Keymap {
                 usize::from(digit - b'1'),
             ))),
             b"w" if self.tabs => Some(KeyCommand::PickTab),
-            b"k" if self.command_history => Some(KeyCommand::PreviousCommand),
-            b"c" if self.command_history => Some(KeyCommand::CopyLastOutput),
             b"r" if self.pairing => Some(KeyCommand::PairController),
             b"D" if self.disconnect => Some(KeyCommand::DisconnectOthers),
             _ => None,

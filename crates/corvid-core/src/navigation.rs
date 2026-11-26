@@ -34,22 +34,18 @@ pub enum WorkspaceCommand {
     Panes,
     PreviousTab,
     NextTab,
-    PreviousCommand,
-    CopyLastOutput,
     RenameTab,
     Commands,
     Detach,
 }
 
 impl WorkspaceCommand {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 8] = [
         Self::Workspaces,
         Self::Tabs,
         Self::Panes,
         Self::PreviousTab,
         Self::NextTab,
-        Self::PreviousCommand,
-        Self::CopyLastOutput,
         Self::RenameTab,
         Self::Commands,
         Self::Detach,
@@ -62,8 +58,6 @@ impl WorkspaceCommand {
             Self::Panes => 'p',
             Self::PreviousTab => '[',
             Self::NextTab => ']',
-            Self::PreviousCommand => 'k',
-            Self::CopyLastOutput => 'c',
             Self::RenameTab => '.',
             Self::Commands => '?',
             Self::Detach => 'd',
@@ -77,8 +71,6 @@ impl WorkspaceCommand {
             Self::Panes => "Panes",
             Self::PreviousTab => "Previous tab",
             Self::NextTab => "Next tab",
-            Self::PreviousCommand => "Previous command",
-            Self::CopyLastOutput => "Copy last command output",
             Self::RenameTab => "Rename tab",
             Self::Commands => "Search commands",
             Self::Detach => "Detach (keep terminals running)",
