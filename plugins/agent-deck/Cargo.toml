@@ -12,6 +12,9 @@ publish.workspace = true
 name = "corvid-agent-deck"
 path = "src/main.rs"
 
+[features]
+ui-tests = []
+
 [dependencies]
 compio.workspace = true
 corvid-async.workspace = true
@@ -57,6 +60,12 @@ path = "tools/render_icons.rs"
 [[test]]
 name = "windows_tray"
 path = "tests/ui/windows_tray.rs"
+required-features = ["ui-tests"]
+
+[[test]]
+name = "linux_deck"
+path = "tests/ui/linux_deck.rs"
+required-features = ["ui-tests"]
 
 [[test]]
 name = "windows_update"

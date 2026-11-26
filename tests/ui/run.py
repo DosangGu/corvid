@@ -23,7 +23,7 @@ SMOKE = {
     "Darwin": ("desktop-paste", "deck-window"),
 }
 CASES = {
-    "Linux": (*SMOKE["Linux"], "desktop-lifecycle", "deck-focus"),
+    "Linux": (*SMOKE["Linux"], "desktop-lifecycle", "deck-focus", "deck-ui"),
     "Windows": (*SMOKE["Windows"], "desktop-paste", "deck-tray"),
     "Darwin": (*SMOKE["Darwin"], "deck-focus", "dmg-windows"),
 }
@@ -34,6 +34,20 @@ def linux(case, build, assets, artifacts):
     screenshot.unlink(missing_ok=True)
     env = dict(os.environ, CORVID_UI_FAILURE_SCREENSHOT=str(screenshot), XDG_SESSION_TYPE="x11")
     env.pop("WAYLAND_DISPLAY", None)
+    if case == "deck-ui":
+        with tempfile.TemporaryDirectory(prefix="cv-grid-", dir=Path.home()) as runtime:
+            os.chmod(runtime, 0o700)
+            env["XDG_RUNTIME_DIR"] = runtime
+            if build:
+                env["CORVID_UI_DECK_BINARY"] = str(build / "corvid-agent-deck")
+            subprocess.run(
+                ["xvfb-run", "-a", "-s", "-screen 0 1280x1024x24",
+                 "cargo", "test", "--locked", "-p", "corvid-agent-deck-ui",
+                 "--features", "ui-tests", "--test", "linux_deck",
+                 "--", "--nocapture", "--test-threads=1"],
+                cwd=ROOT, env=env, check=True,
+            )
+        return
     if case == "deck-focus":
         args = [HERE / "linux/test_deck_focus.py", "--build", build,
                 "--failure-screenshot", screenshot]
@@ -141,7 +155,7 @@ def native(system, cases, build, assets, artifacts):
             if case == "deck-tray":
                 env = dict(os.environ, CORVID_UI_DECK_BINARY=str(paths[2]))
                 subprocess.run(["cargo", "test", "--locked", "--release", "-p", "corvid-agent-deck-ui",
-                                "--test", "windows_tray", "--", "--ignored", "--nocapture"],
+                                "--features", "ui-tests", "--test", "windows_tray", "--", "--nocapture"],
                                cwd=ROOT, env=env, check=True)
                 continue
             ui = Desktop(root) if system == "Darwin" else Desktop()
@@ -169,8 +183,8 @@ def main():
         parser.error("provide --build or --assets")
     if args.case and args.case not in CASES[system]:
         parser.error(f"unknown case for {system}: {args.case}; available: {', '.join(CASES[system])}")
-    if args.case == "deck-focus" and system == "Linux" and not args.build:
-        parser.error("deck-focus requires --build")
+    if args.case in ("deck-focus", "deck-ui") and system == "Linux" and not args.build:
+        parser.error(f"{args.case} requires --build")
     if args.case == "dmg-windows" and not args.assets:
         parser.error("dmg-windows requires --assets")
     if system == "Linux" and not shutil.which("xvfb-run"):
@@ -183,7 +197,7 @@ def main():
     # The full suite expands with the checks supported by the selected input.
     if not args.case:
         cases = tuple(case for case in cases
-                      if (case != "deck-focus" or system != "Linux" or build)
+                      if (case not in ("deck-focus", "deck-ui") or system != "Linux" or build)
                       and (case != "dmg-windows" or assets))
     artifacts = args.artifacts.resolve()
     if system != "Linux":

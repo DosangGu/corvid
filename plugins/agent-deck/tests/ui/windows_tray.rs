@@ -17,7 +17,6 @@ use windows_sys::Win32::UI::Shell::NIN_SELECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 #[test]
-#[ignore = "opens a temporary Deck and exercises the Windows notification area"]
 fn tray_reopen_preserves_view_bounds_and_pin() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let state = directory.path().join("state");

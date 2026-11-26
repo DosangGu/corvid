@@ -6,9 +6,6 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{FrameReader, FrameRole, FrameWriter, PeerRole, accept_hello};
 
-#[cfg(target_os = "linux")]
-mod multi_host_grid;
-
 #[compio::test]
 async fn late_host_imports_existing_work_and_attention_then_continues_polling() -> Result<()> {
     #[cfg(not(windows))]
