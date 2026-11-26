@@ -10,7 +10,9 @@ use corvid_protocol::ansi_screen::{
     Cell as FrameCell, Color, Cursor, Hyperlink, MAX_HYPERLINK_URI_BYTES, Screen,
     Style as FrameStyle, Width, sanitize_hyperlink,
 };
-use corvid_protocol::wire::{HistoryCommand, TerminalColors, TerminalHistory, WheelEncoding};
+use corvid_protocol::wire::{
+    HistoryCommand, ReportedDirectory, TerminalColors, TerminalHistory, WheelEncoding,
+};
 use corvid_protocol::{
     DEFAULT_ANSI_PALETTE_16, DEFAULT_TERMINAL_BACKGROUND_RGB, DEFAULT_TERMINAL_FOREGROUND_RGB,
     TERMINAL_HISTORY_MAX_COMMANDS, TERMINAL_HISTORY_MAX_ROWS,
@@ -47,6 +49,7 @@ pub(super) struct Ghostty {
     pending_st_marker: Option<ShellMarker>,
     pub(super) viewport: Viewport,
     pub(super) title: String,
+    pub(super) reported_directory: Option<ReportedDirectory>,
 }
 
 struct TrackedAnchor {
@@ -89,6 +92,8 @@ impl Ghostty {
         if cfg!(windows) {
             terminal.set_resize_pull_scrollback(false)?;
         }
+        // TODO: Combine OSC 7 reported directory with OSC 3008 execution context stacks (#413)
+        // Tracked as a follow-up in https://github.com/DosangGu/corvid/issues/413.
         // TODO: Synchronize dynamic runtime OSC 10/11/4 color writes and mid-session theme changes across attached clients
         // Tracked alongside Desktop light appearance (#193) and the general OSC roadmap (#413).
         terminal.set_default_fg_color(Some(rgb_color(DEFAULT_TERMINAL_FOREGROUND_RGB)))?;
@@ -107,6 +112,7 @@ impl Ghostty {
             pending_st_marker: None,
             viewport,
             title: String::new(),
+            reported_directory: None,
         })
     }
 
@@ -149,6 +155,9 @@ impl Ghostty {
             let (chunk, rest) = remaining.split_at(consumed);
             self.terminal.vt_write(chunk);
             self.drain_events(replies)?;
+            if let Some(dir) = self.prompt.pending_directory.take() {
+                self.reported_directory = Some(dir);
+            }
             if let Some(marker) = self.prompt.terminated.take() {
                 if self.prompt.awaiting_st {
                     self.prompt.awaiting_st = false;
@@ -166,6 +175,15 @@ impl Ghostty {
         for event in self.terminal.events() {
             match event {
                 Event::TitleChanged(title) => self.title = corvid_core::layout::clean_title(&title),
+                Event::PwdChanged(pwd) => {
+                    if pwd.is_empty() {
+                        self.reported_directory = None;
+                    } else if let Some(dir) =
+                        corvid_protocol::reported_directory::parse_osc7_or_pwd(&pwd)
+                    {
+                        self.reported_directory = Some(dir);
+                    }
+                }
                 Event::PtyWrite(bytes) => {
                     if let Some(reply) = profile_reply(&bytes) {
                         ensure!(
@@ -195,6 +213,7 @@ impl Ghostty {
         }
         if matches!(marker, ShellMarker::Reset) {
             self.commands.clear();
+            self.reported_directory = None;
             return;
         }
         if self.alternate_screen() {
@@ -984,10 +1003,20 @@ struct Prompt {
     phase: Option<bool>,
     terminated: Option<ShellMarker>,
     awaiting_st: bool,
+    pending_directory: Option<ReportedDirectory>,
 }
 
 impl vte::Perform for Prompt {
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        if let [b"633", b"P", prop, ..] = params
+            && let Some(raw) = prop.strip_prefix(b"Cwd=")
+        {
+            if let Ok(value) = std::str::from_utf8(raw) {
+                self.pending_directory =
+                    corvid_protocol::reported_directory::parse_osc7_or_pwd(value);
+            }
+            return;
+        }
         let marker = match params {
             [b"133" | b"633", b"A", rest @ ..] => ShellMarker::PromptStart {
                 continuation: is_continuation_prompt(rest),

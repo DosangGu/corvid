@@ -755,6 +755,14 @@ message TerminalState {
   string terminal_id = 1;
   ViewSelection location = 2;
   ProgramStatus program_status = 3;
+  ReportedDirectory reported_directory = 4;
+}
+
+// Application-reported working directory for display only (OSC 7 / OSC 9;9 / OSC 633 Cwd).
+// Launch and crash recovery continue to use daemon-verified directories.
+message ReportedDirectory {
+  optional string host = 1;
+  string path = 2;
 }
 
 // Passive status reported by an application on this PTY.

@@ -13,6 +13,7 @@ pub mod paths;
 mod preflight;
 pub mod program_status;
 mod provider;
+pub mod reported_directory;
 mod session;
 pub mod snapshot;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
