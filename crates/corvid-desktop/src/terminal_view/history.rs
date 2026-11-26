@@ -203,22 +203,86 @@ impl History {
         let cols = NonZeroU16::new(snapshot.columns as u16)?;
         let mut parser = Decoder::new(grid.rows, cols);
         for (row, line) in snapshot.lines.iter().skip(top).take(rows).enumerate() {
-            parser.process(format!("\x1b[0m\x1b[{};1H", row + 1).as_bytes());
+            parser.process(format!("\x1b]8;;\x1b\\\x1b[0m\x1b[{};1H", row + 1).as_bytes());
             let index = (top + row) as u32;
-            let first = snapshot.styles.partition_point(|change| change.row < index);
+            let mut style_idx = snapshot.styles.partition_point(|change| change.row < index);
+            let mut link_idx = snapshot.hyperlinks.partition_point(|link| link.row < index);
+            let mut active_link_end: Option<usize> = None;
             let mut from = 0;
-            for change in snapshot.styles[first..]
-                .iter()
-                .take_while(|change| change.row == index)
-            {
-                let offset = change.offset as usize;
-                parser.process(&line.as_bytes()[from..offset]);
-                parser.process(format!("\x1b[{}m", change.sgr).as_bytes());
-                from = offset;
+            loop {
+                let next_style = snapshot
+                    .styles
+                    .get(style_idx)
+                    .filter(|change| change.row == index)
+                    .map(|change| change.offset as usize);
+                let next_link_start = if active_link_end.is_none() {
+                    snapshot
+                        .hyperlinks
+                        .get(link_idx)
+                        .filter(|link| link.row == index)
+                        .map(|link| link.start_offset as usize)
+                } else {
+                    None
+                };
+                let next_offset = [next_style, next_link_start, active_link_end]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                let Some(offset) = next_offset else {
+                    break;
+                };
+                if offset > from {
+                    parser.process(&line.as_bytes()[from..offset]);
+                    from = offset;
+                }
+                if active_link_end == Some(offset) {
+                    parser.process(b"\x1b]8;;\x1b\\");
+                    active_link_end = None;
+                    link_idx += 1;
+                }
+                while let Some(change) = snapshot
+                    .styles
+                    .get(style_idx)
+                    .filter(|change| change.row == index && change.offset as usize == offset)
+                {
+                    parser.process(format!("\x1b[{}m", change.sgr).as_bytes());
+                    style_idx += 1;
+                }
+                if active_link_end.is_none()
+                    && let Some(link) = snapshot
+                        .hyperlinks
+                        .get(link_idx)
+                        .filter(|link| link.row == index && link.start_offset as usize == offset)
+                {
+                    let mut osc = String::from("\x1b]8;");
+                    if let Some(id) = &link.id {
+                        osc.push_str("id=");
+                        osc.push_str(id);
+                    }
+                    osc.push(';');
+                    osc.push_str(&link.uri);
+                    osc.push_str("\x1b\\");
+                    parser.process(osc.as_bytes());
+                    active_link_end = Some(link.end_offset as usize);
+                }
             }
             parser.process(&line.as_bytes()[from..]);
+            if active_link_end.is_some() {
+                parser.process(b"\x1b]8;;\x1b\\");
+            }
         }
         parser.process(b"\x1b[?25l");
+        let mut screen = parser.screen().clone();
+        let visible_rows = rows.min(snapshot.lines.len().saturating_sub(top));
+        for row in 0..visible_rows {
+            if snapshot
+                .wrapped_rows
+                .binary_search(&((top + row) as u32))
+                .is_ok()
+            {
+                screen.set_row_wrapped(row as u16, true);
+            }
+        }
         let hit = self.search.as_ref().and_then(|search| {
             let (row, byte) = search.hit?;
             let visible = row.checked_sub(top).filter(|row| *row < rows)? as u16;
@@ -227,7 +291,7 @@ impl History {
             let end = start.saturating_add(columns(&search.query).max(1));
             Some((visible, start)..(visible, end))
         });
-        Some((parser.screen().clone(), hit))
+        Some((screen, hit))
     }
 
     pub(super) fn edit_query(&mut self, text: Option<&str>) {
@@ -437,5 +501,53 @@ mod tests {
 
         assert!(!history.jump_command(true, 2));
         assert_eq!(history.notice.as_deref(), Some("At oldest command"));
+    }
+
+    #[test]
+    fn screen_replays_hyperlinks_and_wrapped_rows() {
+        let mut history = History::new(false);
+        history.loaded(
+            Ok(TerminalHistory {
+                columns: 16,
+                lines: vec!["https://example.".into(), "test/path".into()],
+                wrapped_rows: vec![0],
+                hyperlinks: vec![
+                    corvid_protocol::wire::HistoryHyperlink {
+                        row: 0,
+                        start_offset: 0,
+                        end_offset: 16,
+                        uri: "https://example.test/path".into(),
+                        id: None,
+                    },
+                    corvid_protocol::wire::HistoryHyperlink {
+                        row: 1,
+                        start_offset: 0,
+                        end_offset: 9,
+                        uri: "https://example.test/path".into(),
+                        id: None,
+                    },
+                ],
+                ..Default::default()
+            }),
+            2,
+        );
+        let (screen, _) = history.screen(Grid::new(2, 16)).unwrap();
+        assert!(screen.row_wrapped(0));
+        assert_eq!(
+            screen
+                .cell(0, 0)
+                .unwrap()
+                .hyperlink()
+                .map(|l| l.uri.as_str()),
+            Some("https://example.test/path")
+        );
+        assert_eq!(
+            screen
+                .cell(1, 3)
+                .unwrap()
+                .hyperlink()
+                .map(|l| l.uri.as_str()),
+            Some("https://example.test/path")
+        );
     }
 }

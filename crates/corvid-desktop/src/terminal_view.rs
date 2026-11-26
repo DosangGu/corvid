@@ -72,8 +72,9 @@ struct DisplayedScreen {
 struct LinkHover {
     screen: Weak<Screen>,
     grid: Grid,
+    remote_host: Option<String>,
     cell: CellPosition,
-    range: Option<CellRange>,
+    link: Option<links::Link>,
 }
 
 impl LinkHover {
@@ -81,26 +82,35 @@ impl LinkHover {
         cache: &mut Option<Self>,
         displayed: &DisplayedScreen,
         grid: Grid,
+        remote_host: Option<&str>,
         cell: CellPosition,
     ) -> bool {
         if cache.as_ref().is_some_and(|hover| {
             std::ptr::eq(hover.screen.as_ptr(), Arc::as_ptr(&displayed.screen))
                 && hover.grid == grid
+                && hover.remote_host.as_deref() == remote_host
                 && (hover.cell == cell
-                    || hover.range.as_ref().is_some_and(|range| {
-                        cell.1 < displayed.screen.size().1.get() && range.contains(&cell)
+                    || hover.link.as_ref().is_some_and(|link| {
+                        cell.1 < displayed.screen.size().1.get()
+                            && link.spans.iter().any(|range| range.contains(&cell))
                     }))
         }) {
             return false;
         }
-        let range =
-            links::at(&displayed.screen, grid, displayed.history, cell).map(|link| link.cells);
-        let changed = cache.as_ref().and_then(|hover| hover.range.as_ref()) != range.as_ref();
+        let link = links::at(
+            &displayed.screen,
+            grid,
+            displayed.history,
+            remote_host,
+            cell,
+        );
+        let changed = cache.as_ref().and_then(|hover| hover.link.as_ref()) != link.as_ref();
         *cache = Some(Self {
             screen: Arc::downgrade(&displayed.screen),
             grid,
+            remote_host: remote_host.map(str::to_owned),
             cell,
-            range,
+            link,
         });
         changed
     }
@@ -111,7 +121,7 @@ struct Selection {
     anchor: CellPosition,
     head: CellPosition,
     dragging: bool,
-    link: Option<String>,
+    link: Option<links::LinkTarget>,
 }
 
 impl Selection {
@@ -159,7 +169,7 @@ impl Selection {
         self.head = head;
     }
 
-    fn finish(&mut self, release: Option<CellPosition>) -> Option<String> {
+    fn finish(&mut self, release: Option<CellPosition>) -> Option<links::LinkTarget> {
         self.dragging = false;
         self.link
             .take()
@@ -300,6 +310,7 @@ impl TerminalView {
             return;
         }
         let displayed = self.displayed.borrow().clone();
+        let remote_host = self.session.remote_host_label();
         self.selection = displayed.map(|displayed| {
             let link = if link_modifier(event.modifiers) {
                 hit_cell(bounds, metrics, event.position).and_then(|cell| {
@@ -307,9 +318,10 @@ impl TerminalView {
                         &displayed.screen,
                         metrics.grid(bounds),
                         displayed.history,
+                        remote_host.as_deref(),
                         cell,
                     )
-                    .map(|link| link.url)
+                    .map(|link| link.target)
                 })
             } else {
                 None
@@ -343,10 +355,12 @@ impl TerminalView {
             && let Some(cell) = hit_cell(bounds, metrics, event.position)
             && let Some(displayed) = self.displayed.borrow().as_ref()
         {
+            let remote_host = self.session.remote_host_label();
             if LinkHover::update(
                 &mut self.link_hover.borrow_mut(),
                 displayed,
                 metrics.grid(bounds),
+                remote_host.as_deref(),
                 cell,
             ) {
                 cx.notify();
@@ -361,7 +375,7 @@ impl TerminalView {
             .link_hover
             .borrow_mut()
             .take()
-            .is_some_and(|hover| hover.range.is_some())
+            .is_some_and(|hover| hover.link.is_some())
         {
             cx.notify();
         }
@@ -372,7 +386,7 @@ impl TerminalView {
         bounds: Bounds<Pixels>,
         metrics: Metrics,
         position: Point<Pixels>,
-    ) -> Option<(CellRange, u16)> {
+    ) -> Option<Vec<CellRange>> {
         if self
             .selection
             .as_ref()
@@ -385,16 +399,17 @@ impl TerminalView {
         let mut hover = self.link_hover.borrow_mut();
         // Output can replace a hovered link. Refresh that location without
         // scanning output when the pointer has not found a link.
-        hover.as_ref()?.range.as_ref()?;
+        hover.as_ref()?.link.as_ref()?;
         let grid = metrics.grid(bounds);
+        let remote_host = self.session.remote_host_label();
         LinkHover::update(
             &mut hover,
             displayed,
             grid,
+            remote_host.as_deref(),
             hit_cell(bounds, metrics, position)?,
         );
-        let columns = displayed.screen.size().1.min(grid.cols).get();
-        Some((hover.as_ref()?.range.clone()?, columns))
+        Some(hover.as_ref()?.link.as_ref()?.spans.clone())
     }
 
     fn release_selection(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -419,8 +434,17 @@ impl TerminalView {
             self.selection = None;
         }
         cx.notify();
-        if let Some(url) = link {
-            cx.open_url(&url);
+        if let Some(target) = link {
+            match target {
+                links::LinkTarget::External(url)
+                | links::LinkTarget::LocalFile { uri: url, .. } => {
+                    cx.open_url(&url);
+                }
+                links::LinkTarget::RemoteFile { path, .. } => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(path));
+                    self.set_notice("Copied remote file path (not opened locally).", cx);
+                }
+            }
         }
     }
 
@@ -970,12 +994,37 @@ impl Render for TerminalView {
                     window,
                     cx,
                 );
-                if let Some((range, columns)) = link {
-                    paint::link_underline(bounds, metrics, range, columns, window);
+                if let Some(spans) = link {
+                    paint::link_underline(bounds, metrics, &spans, window);
                 }
             },
         )
         .size_full();
+        let link_preview = self
+            .selection
+            .as_ref()
+            .is_none_or(|selection| !selection.dragging)
+            .then(|| {
+                self.link_hover
+                    .borrow()
+                    .as_ref()
+                    .and_then(|hover| hover.link.as_ref())
+                    .map(|link| {
+                        let action = if link.target.is_remote_file() {
+                            if cfg!(target_os = "macos") {
+                                "Cmd+Click to copy path"
+                            } else {
+                                "Ctrl+Click to copy path"
+                            }
+                        } else if cfg!(target_os = "macos") {
+                            "Cmd+Click"
+                        } else {
+                            "Ctrl+Click"
+                        };
+                        format!("{} · {action}", link.target.preview_label())
+                    })
+            })
+            .flatten();
 
         terminal_surface()
             .id("daemon-terminal")
@@ -1018,7 +1067,33 @@ impl Render for TerminalView {
                     )
                 })
             })
-            .child(div().flex_1().min_h_0().child(surface))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(surface)
+                    .when_some(link_preview, |this, preview| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left(ui_px(4.))
+                                .bottom(ui_px(4.))
+                                .max_w_full()
+                                .px(ui_px(8.))
+                                .py(ui_px(3.))
+                                .rounded(ui_px(4.))
+                                .bg(rgb(0x16202a))
+                                .border_1()
+                                .border_color(rgb(0x2d4356))
+                                .text_xs()
+                                .text_color(rgb(0xa6c8db))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(preview),
+                        )
+                    }),
+            )
     }
 }
 
@@ -1213,13 +1288,13 @@ mod tests {
             anchor: (0, 0),
             head: (0, 0),
             dragging: true,
-            link: Some("https://example.test/".into()),
+            link: Some(links::LinkTarget::External("https://example.test/".into())),
         };
 
         let mut click = make_selection();
         assert_eq!(
-            click.finish(Some((0, 0))).as_deref(),
-            Some("https://example.test/")
+            click.finish(Some((0, 0))),
+            Some(links::LinkTarget::External("https://example.test/".into()))
         );
         assert_eq!(click.finish(Some((0, 0))), None);
         assert_eq!(make_selection().finish(None), None);
@@ -1242,8 +1317,20 @@ mod tests {
             history: false,
         };
         let mut hover = None;
-        assert!(LinkHover::update(&mut hover, &displayed, grid, (0, 2)));
-        assert!(!LinkHover::update(&mut hover, &displayed, grid, (1, 3)));
+        assert!(LinkHover::update(
+            &mut hover,
+            &displayed,
+            grid,
+            None,
+            (0, 2)
+        ));
+        assert!(!LinkHover::update(
+            &mut hover,
+            &displayed,
+            grid,
+            None,
+            (1, 3)
+        ));
         assert_eq!(hover.as_ref().unwrap().cell, (0, 2));
 
         let wider_grid = Grid::new(4, 20);
@@ -1251,18 +1338,25 @@ mod tests {
             &mut hover,
             &displayed,
             wider_grid,
+            None,
             (0, 17)
         ));
-        assert!(hover.as_ref().unwrap().range.is_none());
-        assert!(LinkHover::update(&mut hover, &displayed, grid, (0, 2)));
+        assert!(hover.as_ref().unwrap().link.is_none());
+        assert!(LinkHover::update(
+            &mut hover,
+            &displayed,
+            grid,
+            None,
+            (0, 2)
+        ));
 
         parser.process(b"\x1b[2J\x1b[Hreplacement");
         let updated = DisplayedScreen {
             screen: Arc::new(parser.screen().clone()),
             history: false,
         };
-        assert!(LinkHover::update(&mut hover, &updated, grid, (0, 2)));
-        assert!(hover.as_ref().unwrap().range.is_none());
+        assert!(LinkHover::update(&mut hover, &updated, grid, None, (0, 2)));
+        assert!(hover.as_ref().unwrap().link.is_none());
     }
 
     #[cfg(windows)]

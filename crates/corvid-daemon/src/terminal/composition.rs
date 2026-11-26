@@ -481,6 +481,7 @@ fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
     let width = cols.get().min(body.width);
     for row in 0..rows.get().min(body.height) {
         let mut style = None;
+        let mut active_link = None;
         let _ = write!(ansi, "\x1b[{};{}H\x1b[0m", body.y + row + 1, body.x + 1);
         for col in 0..width {
             let Some(cell) = screen.cell(row, col) else {
@@ -488,6 +489,11 @@ fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
             };
             if cell.width == CellWidth::Continuation {
                 continue;
+            }
+            let next_link = cell.hyperlink();
+            if next_link != active_link {
+                write_osc8(ansi, next_link);
+                active_link = next_link;
             }
             let attrs = cell.style;
             if style != Some(attrs) {
@@ -503,6 +509,25 @@ fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
             } else {
                 ansi.push(' ');
             }
+        }
+        if active_link.is_some() {
+            write_osc8(ansi, None);
+        }
+    }
+}
+
+fn write_osc8(out: &mut String, link: Option<&corvid_protocol::ansi_screen::Hyperlink>) {
+    match link {
+        None => out.push_str("\x1b]8;;\x1b\\"),
+        Some(link) => {
+            out.push_str("\x1b]8;");
+            if let Some(id) = &link.id {
+                out.push_str("id=");
+                out.push_str(id);
+            }
+            out.push(';');
+            out.push_str(&link.uri);
+            out.push_str("\x1b\\");
         }
     }
 }
@@ -550,6 +575,30 @@ mod tests {
                 .iter()
                 .map(|tab| (tab.id, tab.rect))
                 .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn draw_emits_and_closes_osc8_hyperlinks_at_row_boundaries() {
+        let viewport = Viewport::new(8, 2).unwrap();
+        let screen = ScreenSnapshot::from_ansi(
+            viewport,
+            b"\x1b]8;id=p1;https://example.test\x1b\\linktext\r\nplain",
+            None,
+        );
+        let mut ansi = String::new();
+        draw(
+            &mut ansi,
+            &screen,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 6,
+                height: 2,
+            },
+        );
+        assert!(
+            ansi.contains("\x1b]8;id=p1;https://example.test\x1b\\\x1b[0mlinkte\x1b]8;;\x1b\\")
         );
     }
 }

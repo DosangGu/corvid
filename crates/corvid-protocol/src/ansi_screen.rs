@@ -67,11 +67,14 @@ pub enum Width {
     Continuation,
 }
 
+pub use crate::{Hyperlink, MAX_HYPERLINK_ID_BYTES, MAX_HYPERLINK_URI_BYTES, sanitize_hyperlink};
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
     text: SmolStr,
     pub width: Width,
     pub style: Style,
+    hyperlink: Option<Arc<Hyperlink>>,
 }
 
 impl Cell {
@@ -80,7 +83,21 @@ impl Cell {
             text: SmolStr::new(text),
             width,
             style,
+            hyperlink: None,
         }
+    }
+
+    pub fn with_hyperlink(mut self, hyperlink: Option<Arc<Hyperlink>>) -> Self {
+        self.hyperlink = hyperlink;
+        self
+    }
+
+    pub fn hyperlink(&self) -> Option<&Hyperlink> {
+        self.hyperlink.as_deref()
+    }
+
+    pub fn hyperlink_arc(&self) -> Option<&Arc<Hyperlink>> {
+        self.hyperlink.as_ref()
     }
 
     pub fn contents(&self) -> &str {
@@ -170,6 +187,12 @@ impl Screen {
         self.rows
             .get(usize::from(row))
             .is_some_and(|row| row.wrapped)
+    }
+
+    pub fn set_row_wrapped(&mut self, row: u16, wrapped: bool) {
+        if let Some(row) = self.rows.get_mut(usize::from(row)) {
+            Arc::make_mut(row).wrapped = wrapped;
+        }
     }
 
     pub fn cursor_position(&self) -> (u16, u16) {

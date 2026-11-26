@@ -111,6 +111,27 @@ pub fn validate_history(history: &TerminalHistory) -> Result<(), &'static str> {
         }
     }
 
+    let mut previous_link: Option<(u32, u32)> = None;
+    for link in &history.hyperlinks {
+        size += 24 + link.uri.len() + link.id.as_deref().map_or(0, str::len);
+        if size > TERMINAL_HISTORY_MAX_BYTES {
+            return Err("invalid terminal history");
+        }
+        let Some(line) = history.lines.get(link.row as usize) else {
+            return Err("invalid terminal history hyperlink");
+        };
+        if link.start_offset >= link.end_offset
+            || (link.end_offset as usize) > line.len()
+            || !line.is_char_boundary(link.start_offset as usize)
+            || !line.is_char_boundary(link.end_offset as usize)
+            || previous_link.is_some_and(|prev| (link.row, link.start_offset) < prev)
+            || crate::sanitize_hyperlink(&link.uri, link.id.as_deref()).is_none()
+        {
+            return Err("invalid terminal history hyperlink");
+        }
+        previous_link = Some((link.row, link.end_offset));
+    }
+
     Ok(())
 }
 
@@ -469,6 +490,45 @@ mod tests {
         assert_eq!(
             last_command_output(&history(&["hello"], &[], vec![])),
             Err(CommandOutputError::NoCommands)
+        );
+    }
+
+    #[test]
+    fn validates_and_rejects_history_hyperlinks() {
+        let mut valid = history(&["open link here"], &[], vec![]);
+        valid.hyperlinks.push(crate::wire::HistoryHyperlink {
+            row: 0,
+            start_offset: 5,
+            end_offset: 9,
+            uri: "https://example.test".into(),
+            id: Some("id1".into()),
+        });
+        assert_eq!(validate_history(&valid), Ok(()));
+
+        let mut overlapping = valid.clone();
+        overlapping.hyperlinks.push(crate::wire::HistoryHyperlink {
+            row: 0,
+            start_offset: 8,
+            end_offset: 12,
+            uri: "https://other.test".into(),
+            id: None,
+        });
+        assert_eq!(
+            validate_history(&overlapping),
+            Err("invalid terminal history hyperlink")
+        );
+
+        let mut bad_uri = history(&["open link"], &[], vec![]);
+        bad_uri.hyperlinks.push(crate::wire::HistoryHyperlink {
+            row: 0,
+            start_offset: 0,
+            end_offset: 4,
+            uri: "https://bad\x07".into(),
+            id: None,
+        });
+        assert_eq!(
+            validate_history(&bad_uri),
+            Err("invalid terminal history hyperlink")
         );
     }
 }

@@ -740,4 +740,40 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn preserves_osc8_hyperlinks_in_live_frames_and_scrollback_history() {
+        let mut terminal = TerminalScreen::new(Viewport::new(24, 3).unwrap()).unwrap();
+        terminal
+            .process(
+                b"\x1b]8;;https://example.test/doc\x1b\\open docs\x1b]8;;\x1b\\ plain\r\nsecond\r\nthird\r\nfourth",
+            )
+            .unwrap();
+
+        let history = terminal.history().unwrap();
+        assert_eq!(history.hyperlinks.len(), 1);
+        assert_eq!(history.hyperlinks[0].row, 0);
+        assert_eq!(history.hyperlinks[0].start_offset, 0);
+        assert_eq!(history.hyperlinks[0].end_offset, 9);
+        assert_eq!(history.hyperlinks[0].uri, "https://example.test/doc");
+
+        let mut live = TerminalScreen::new(Viewport::new(24, 3).unwrap()).unwrap();
+        live.process(b"\x1b]8;;https://example.test/live\x1b\\click\x1b]8;;\x1b\\")
+            .unwrap();
+        let frame = live.redraw(Viewport::new(24, 3).unwrap()).unwrap();
+        assert!(frame.contains("\x1b]8;;https://example.test/live\x1b\\"));
+        assert!(frame.contains("\x1b]8;;\x1b\\"));
+
+        let decoded =
+            ScreenSnapshot::from_ansi(Viewport::new(24, 3).unwrap(), frame.as_bytes(), None);
+        assert_eq!(
+            decoded
+                .cell(0, 0)
+                .unwrap()
+                .hyperlink()
+                .map(|l| l.uri.as_str()),
+            Some("https://example.test/live")
+        );
+        assert_eq!(decoded.cell(0, 5).unwrap().hyperlink(), None);
+    }
 }

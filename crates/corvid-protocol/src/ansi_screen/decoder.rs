@@ -6,14 +6,14 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Parser, Perform};
 
-use super::{Cell, Color, Cursor, Row, Screen, Style, Width};
+use super::{Cell, Color, Cursor, Hyperlink, Row, Screen, Style, Width, sanitize_hyperlink};
 
 const MAX_GRAPHEME_BYTES: usize = 96;
 
 /// Apply the text commands emitted by the current and legacy ANSI frame encoders.
-/// OSC, DCS, and queries have no side effects in a client frame.
+/// OSC 8 hyperlinks are recorded on cells; other OSC, DCS, and queries have no side effects.
 pub struct Decoder {
-    parser: Parser<128>,
+    parser: Parser<4096>,
     state: DecodeState,
 }
 
@@ -27,6 +27,7 @@ impl Decoder {
                 margins: 0..rows.get(),
                 wrap: true,
                 origin: false,
+                active_hyperlink: None,
             },
         }
     }
@@ -46,6 +47,7 @@ struct DecodeState {
     margins: Range<u16>,
     wrap: bool,
     origin: bool,
+    active_hyperlink: Option<Arc<Hyperlink>>,
 }
 
 impl DecodeState {
@@ -172,6 +174,7 @@ impl DecodeState {
         let next_wide = combined.width() == 2 && col + 1 < self.cols();
         let was_wide = cell.is_wide();
         let style = cell.style;
+        let hyperlink = cell.hyperlink_arc().cloned();
         if next_wide && !was_wide {
             self.clear(cursor.row, col + 1..col + 2);
         }
@@ -181,9 +184,11 @@ impl DecodeState {
         } else {
             Width::Single
         };
-        cells[usize::from(col)] = Cell::new(&combined, width, style);
+        cells[usize::from(col)] =
+            Cell::new(&combined, width, style).with_hyperlink(hyperlink.clone());
         if next_wide {
-            cells[usize::from(col + 1)] = Cell::new("", Width::Continuation, style);
+            cells[usize::from(col + 1)] =
+                Cell::new("", Width::Continuation, style).with_hyperlink(hyperlink);
         } else if was_wide {
             cells[usize::from(col + 1)] = Cell::default();
         }
@@ -256,15 +261,18 @@ impl Perform for DecodeState {
             return;
         }
         self.clear(cursor.row, cursor.col..end);
+        let hyperlink = self.active_hyperlink.clone();
         let cells = &mut self.row(cursor.row).cells;
         let kind = if width == 2 {
             Width::Wide
         } else {
             Width::Single
         };
-        cells[usize::from(cursor.col)] = Cell::new(ch.encode_utf8(&mut [0; 4]), kind, cursor.style);
+        cells[usize::from(cursor.col)] = Cell::new(ch.encode_utf8(&mut [0; 4]), kind, cursor.style)
+            .with_hyperlink(hyperlink.clone());
         if width == 2 {
-            cells[usize::from(cursor.col + 1)] = Cell::new("", Width::Continuation, cursor.style);
+            cells[usize::from(cursor.col + 1)] =
+                Cell::new("", Width::Continuation, cursor.style).with_hyperlink(hyperlink);
         }
         self.set_cursor_after(end);
     }
@@ -346,6 +354,28 @@ impl Perform for DecodeState {
             b'>' => self.screen.application_keypad = false,
             _ => {}
         }
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], _: bool) {
+        if params.first() != Some(&b"8".as_slice()) {
+            return;
+        }
+        let meta = params.get(1).copied().unwrap_or(b"");
+        let uri = params.get(2).copied().unwrap_or(b"");
+        if uri.is_empty() {
+            self.active_hyperlink = None;
+            return;
+        }
+        let Ok(uri) = std::str::from_utf8(uri) else {
+            self.active_hyperlink = None;
+            return;
+        };
+        let id = meta
+            .split(|&byte| byte == b':')
+            .find_map(|part| part.strip_prefix(b"id="))
+            .and_then(|val| std::str::from_utf8(val).ok())
+            .filter(|id| !id.is_empty());
+        self.active_hyperlink = sanitize_hyperlink(uri, id).map(Arc::new);
     }
 }
 
@@ -454,5 +484,23 @@ mod tests {
         decoder.process(b"\x1b[1;3H\x1b[K");
         assert!(!decoder.screen().row_wrapped(0));
         assert_eq!(decoder.screen().contents(), "ab\ne");
+    }
+
+    #[test]
+    fn decodes_osc8_hyperlinks_including_long_uris_and_ids() {
+        let mut decoder = decoder(2, 20);
+        let long_uri = format!("https://example.test/{}", "a".repeat(180));
+        let seq = format!("\x1b]8;id=grp1:foo=bar;{long_uri}\x07link\x1b]8;;\x1b\\ plain");
+        decoder.process(seq.as_bytes());
+        let screen = decoder.screen();
+        let expected = super::Hyperlink {
+            uri: long_uri,
+            id: Some("grp1".into()),
+        };
+        for col in 0..4 {
+            assert_eq!(screen.cell(0, col).unwrap().hyperlink(), Some(&expected));
+        }
+        assert_eq!(screen.cell(0, 4).unwrap().hyperlink(), None);
+        assert_eq!(screen.cell(0, 5).unwrap().hyperlink(), None);
     }
 }

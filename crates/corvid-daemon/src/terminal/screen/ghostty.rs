@@ -1,12 +1,14 @@
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
 use corvid_protocol::ansi_screen::{
-    Cell as FrameCell, Color, Cursor, Screen, Style as FrameStyle, Width,
+    Cell as FrameCell, Color, Cursor, Hyperlink, MAX_HYPERLINK_URI_BYTES, Screen,
+    Style as FrameStyle, Width, sanitize_hyperlink,
 };
 use corvid_protocol::wire::{HistoryCommand, TerminalHistory, WheelEncoding};
 use corvid_protocol::{TERMINAL_HISTORY_MAX_COMMANDS, TERMINAL_HISTORY_MAX_ROWS};
@@ -393,9 +395,11 @@ impl Ghostty {
         let reserved_bytes = resolved_commands.len() * 32;
         let mut history = HistoryBuilder::new(columns, reserved_bytes);
         let mut cells = Vec::with_capacity(usize::from(columns));
+        let mut link_buf = Vec::new();
         for y in (0..rows).rev() {
             cells.clear();
             let mut wrapped = false;
+            let mut last_link: Option<Arc<Hyperlink>> = None;
             for x in 0..columns {
                 let reference = self
                     .terminal
@@ -404,6 +408,12 @@ impl Ghostty {
                     wrapped = reference.row()?.is_wrapped()?;
                 }
                 let cell = reference.cell()?;
+                let hyperlink = if cell.has_hyperlink()? {
+                    read_hyperlink(&reference, &mut link_buf, &mut last_link)?
+                } else {
+                    last_link = None;
+                    None
+                };
                 let raw_style = reference.style()?;
                 let style = cell_style(cell, cell.content_tag()?, raw_style)?;
                 let width = match cell.wide()? {
@@ -423,7 +433,7 @@ impl Ghostty {
                         Err(error) => return Err(error.into()),
                     }
                 };
-                cells.push(FrameCell::new(&text, width, style));
+                cells.push(FrameCell::new(&text, width, style).with_hyperlink(hyperlink));
             }
             let track = needed_rows.contains_key(&y);
             let (line, offsets) = HistoryLine::from_cells(&cells, wrapped, track);
@@ -556,12 +566,17 @@ impl Projection {
         let mut rows = self.rows.update(&snapshot)?;
         let columns = usize::from(self.screen.size().1.get());
         let mut text = String::new();
+        let mut link_buf = Vec::new();
         while let Some((index, row)) = rows.next_dirty() {
             let wrapped = row.raw_row()?.is_wrapped()?;
+            let row_has_hyperlink = row.raw_row()?.has_hyperlink()?;
             let mut cells = self.cells.update(row)?;
             let mut line: Vec<FrameCell> = Vec::with_capacity(columns);
+            let mut last_link: Option<Arc<Hyperlink>> = None;
             while let Some(cell) = cells.next() {
+                let col = line.len() as u16;
                 let raw = cell.raw_cell()?;
+                let has_hyperlink = row_has_hyperlink && raw.has_hyperlink()?;
                 let tag = raw.content_tag()?;
                 let codepoint = raw.codepoint()?;
                 let styled = raw.has_styling()?
@@ -569,7 +584,8 @@ impl Projection {
                         tag,
                         CellContentTag::BgColorRgb | CellContentTag::BgColorPalette
                     );
-                if codepoint == 0 && !styled {
+                if codepoint == 0 && !styled && !has_hyperlink {
+                    last_link = None;
                     // Only the cell immediately after a wide glyph can be an
                     // unstyled continuation. Other empty cells share defaults.
                     let cell = if line.last().is_some_and(FrameCell::is_wide) {
@@ -580,7 +596,12 @@ impl Projection {
                     line.push(cell);
                     continue;
                 }
-                if !styled && tag == CellContentTag::Codepoint && (32..=126).contains(&codepoint) {
+                if !styled
+                    && !has_hyperlink
+                    && tag == CellContentTag::Codepoint
+                    && (32..=126).contains(&codepoint)
+                {
+                    last_link = None;
                     let ascii = [codepoint as u8];
                     line.push(FrameCell::new(
                         std::str::from_utf8(&ascii).unwrap(),
@@ -589,6 +610,16 @@ impl Projection {
                     ));
                     continue;
                 }
+                let hyperlink = if has_hyperlink {
+                    let reference = terminal.grid_ref(Point::Viewport(PointCoordinate {
+                        x: col,
+                        y: u32::from(index),
+                    }))?;
+                    read_hyperlink(&reference, &mut link_buf, &mut last_link)?
+                } else {
+                    last_link = None;
+                    None
+                };
                 let (style, invisible) = if styled {
                     let attributes = cell.style()?;
                     (cell_style(raw, tag, attributes)?, attributes.invisible)
@@ -606,7 +637,7 @@ impl Projection {
                     }
                 }
                 text.retain(|ch| !ch.is_control() && !is_bidi_control(ch));
-                line.push(FrameCell::new(&text, cell_width(raw)?, style));
+                line.push(FrameCell::new(&text, cell_width(raw)?, style).with_hyperlink(hyperlink));
             }
             self.screen.replace_row(index, line, wrapped);
         }
@@ -623,6 +654,42 @@ impl Projection {
         self.screen.application_keypad = terminal.mode(Mode::KEYPAD_KEYS)?;
         Ok(self.screen.clone())
     }
+}
+
+fn read_hyperlink(
+    reference: &ghostty_vt::screen::GridRef<'_>,
+    buf: &mut Vec<u8>,
+    last_link: &mut Option<Arc<Hyperlink>>,
+) -> Result<Option<Arc<Hyperlink>>> {
+    if buf.is_empty() {
+        buf.resize(256, 0);
+    }
+    let len = match reference.hyperlink_uri(buf) {
+        Ok(0) => {
+            *last_link = None;
+            return Ok(None);
+        }
+        Ok(len) => len,
+        Err(ghostty_vt::Error::OutOfSpace { required }) => {
+            if required > MAX_HYPERLINK_URI_BYTES {
+                *last_link = None;
+                return Ok(None);
+            }
+            buf.resize(required, 0);
+            reference.hyperlink_uri(buf)?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let Ok(uri) = std::str::from_utf8(&buf[..len]) else {
+        *last_link = None;
+        return Ok(None);
+    };
+    if let Some(prev) = last_link.as_ref().filter(|prev| prev.uri == uri) {
+        return Ok(Some(Arc::clone(prev)));
+    }
+    let link = sanitize_hyperlink(uri, None).map(Arc::new);
+    *last_link = link.clone();
+    Ok(link)
 }
 
 fn cell_style(cell: Cell, tag: CellContentTag, style: Style) -> Result<FrameStyle> {
