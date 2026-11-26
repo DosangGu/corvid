@@ -803,6 +803,38 @@ struct Requests {
     wake_monitor: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseButtonCode {
+    Left,
+    Middle,
+    Right,
+}
+
+impl MouseButtonCode {
+    fn code(self) -> u8 {
+        match self {
+            Self::Left => 0,
+            Self::Middle => 1,
+            Self::Right => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Drag,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MouseEventReport {
+    pub button: MouseButtonCode,
+    pub action: MouseAction,
+    pub cell: (u16, u16),
+    pub modifiers: u8,
+}
+
 impl Session {
     pub fn start(
         destination: Destination,
@@ -1095,27 +1127,53 @@ impl Session {
         }
     }
 
-    pub fn send_pane_click(&self, pane: &str, (row, col): (u16, u16)) -> bool {
+    pub fn send_mouse(
+        &self,
+        pane: &str,
+        route: (u64, WheelTarget),
+        report: MouseEventReport,
+    ) -> bool {
+        let snapshot = self.shared.snapshot();
+        if snapshot.view_epoch != route.0 || snapshot.wheel_target(pane) != Some(route.1) {
+            return false;
+        }
+        let WheelTarget::Mouse(encoding) = route.1 else {
+            return false;
+        };
+        let Some(bytes) = mouse_report(encoding, report) else {
+            return false;
+        };
+        self.queue_input(&snapshot, pane, bytes, false)
+    }
+
+    pub fn send_pane_click(&self, pane: &str, cell: (u16, u16)) -> bool {
         let snapshot = self.shared.snapshot();
         let Some(WheelTarget::Mouse(encoding)) = snapshot.wheel_target(pane) else {
             return false;
         };
-        let x = u32::from(col) + 1;
-        let y = u32::from(row) + 1;
-        let click = match encoding {
-            WheelEncoding::Sgr => format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m").into_bytes(),
-            WheelEncoding::Legacy if x <= 223 && y <= 223 => {
-                let x = (x + 32) as u8;
-                let y = (y + 32) as u8;
-                vec![27, b'[', b'M', 32, x, y, 27, b'[', b'M', 35, x, y]
-            }
-            WheelEncoding::Utf8 if x <= 2015 && y <= 2015 => {
-                let x = char::from_u32(x + 32).expect("bounded mouse column");
-                let y = char::from_u32(y + 32).expect("bounded mouse row");
-                format!("\x1b[M {x}{y}\x1b[M#{x}{y}").into_bytes()
-            }
-            _ => return false,
+        let Some(mut click) = mouse_report(
+            encoding,
+            MouseEventReport {
+                button: MouseButtonCode::Left,
+                action: MouseAction::Press,
+                cell,
+                modifiers: 0,
+            },
+        ) else {
+            return false;
         };
+        let Some(release) = mouse_report(
+            encoding,
+            MouseEventReport {
+                button: MouseButtonCode::Left,
+                action: MouseAction::Release,
+                cell,
+                modifiers: 0,
+            },
+        ) else {
+            return false;
+        };
+        click.extend(release);
         self.queue_input(&snapshot, pane, click, false)
     }
 
@@ -3143,6 +3201,55 @@ impl Client<'_> {
             }))
             .await?;
         Ok(())
+    }
+}
+
+fn mouse_report(encoding: WheelEncoding, report: MouseEventReport) -> Option<Vec<u8>> {
+    let x = u32::from(report.cell.1) + 1;
+    let y = u32::from(report.cell.0) + 1;
+    let mods = report.modifiers & (4 | 8 | 16);
+    match encoding {
+        WheelEncoding::Disabled => None,
+        WheelEncoding::Sgr => {
+            let (cb, suffix) = match report.action {
+                MouseAction::Press => (report.button.code() | mods, 'M'),
+                MouseAction::Drag => (report.button.code() | 32 | mods, 'M'),
+                MouseAction::Release => (report.button.code() | mods, 'm'),
+            };
+            Some(format!("\x1b[<{cb};{x};{y}{suffix}").into_bytes())
+        }
+        WheelEncoding::Legacy => {
+            if x > 223 || y > 223 {
+                return None;
+            }
+            let cb = match report.action {
+                MouseAction::Press => report.button.code() | mods,
+                MouseAction::Drag => report.button.code() | 32 | mods,
+                MouseAction::Release => 3 | mods,
+            };
+            Some(vec![
+                0x1b,
+                b'[',
+                b'M',
+                cb + 32,
+                (x + 32) as u8,
+                (y + 32) as u8,
+            ])
+        }
+        WheelEncoding::Utf8 => {
+            if x > 2015 || y > 2015 {
+                return None;
+            }
+            let cb = match report.action {
+                MouseAction::Press => report.button.code() | mods,
+                MouseAction::Drag => report.button.code() | 32 | mods,
+                MouseAction::Release => 3 | mods,
+            };
+            let cb = char::from(cb + 32);
+            let x = char::from_u32(x + 32).expect("bounded mouse column");
+            let y = char::from_u32(y + 32).expect("bounded mouse row");
+            Some(format!("\x1b[M{cb}{x}{y}").into_bytes())
+        }
     }
 }
 
