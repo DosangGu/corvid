@@ -835,13 +835,7 @@ impl WorkspaceView {
             return;
         }
         if let Some(destination) = self.destination.clone() {
-            self.connect(
-                destination,
-                AttachTarget::Pane(target, open),
-                false,
-                window,
-                cx,
-            );
+            self.switch_to(destination, AttachTarget::Pane(target, open), window, cx);
         }
     }
 

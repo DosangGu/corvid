@@ -44,6 +44,12 @@ enum Reconnect {
     Closed,
 }
 
+enum ConnectOutcome {
+    Connected(Box<Result<SnapshotWatch>>),
+    ReconnectRequested,
+    Closed,
+}
+
 pub(crate) struct Service {
     store: Store,
     endpoint: ControlEndpoint,
@@ -96,8 +102,19 @@ impl Service {
             let link = match &retry {
                 Some(retry) => timeout_at(retry.deadline(), self.connect(&mut calls))
                     .await
-                    .unwrap_or_else(|_| Err(SshRetry::exhausted().into())),
+                    .unwrap_or_else(|_| {
+                        ConnectOutcome::Connected(Box::new(Err(SshRetry::exhausted().into())))
+                    }),
                 None => self.connect(&mut calls).await,
+            };
+            let link = match link {
+                ConnectOutcome::Connected(result) => *result,
+                ConnectOutcome::ReconnectRequested => {
+                    failures = 0;
+                    retry = ssh.then(SshRetry::default);
+                    continue;
+                }
+                ConnectOutcome::Closed => return Ok(()),
             };
             let result = match link {
                 Ok(mut watch) => match self.synchronize(&watch) {
@@ -118,6 +135,7 @@ impl Service {
                 .and(result)
             {
                 Ok(()) => {
+                    failures = 0;
                     retry = ssh.then(SshRetry::default);
                     continue;
                 }
@@ -135,6 +153,7 @@ impl Service {
             if let Some(next) = next {
                 match self.wait_to_reconnect(Some(next), &mut calls).await {
                     Reconnect::Requested => {
+                        failures = 0;
                         retry = ssh.then(SshRetry::default);
                         continue;
                     }
@@ -161,6 +180,7 @@ impl Service {
             ) {
                 return Ok(());
             }
+            failures = 0;
             retry = ssh.then(SshRetry::default);
         }
     }
@@ -247,9 +267,11 @@ impl Service {
         }
     }
 
-    async fn connect(&mut self, calls: &mut mpsc::Receiver<Call>) -> Result<SnapshotWatch> {
-        if let Some(endpoint) = self.store.monitor_endpoint()? {
-            self.endpoint = endpoint;
+    async fn connect(&mut self, calls: &mut mpsc::Receiver<Call>) -> ConnectOutcome {
+        match self.store.monitor_endpoint() {
+            Ok(Some(endpoint)) => self.endpoint = endpoint,
+            Ok(None) => {}
+            Err(error) => return ConnectOutcome::Connected(Box::new(Err(error))),
         }
         let (syncing, mut started) = oneshot::channel();
         let endpoint = self.endpoint.clone();
@@ -262,7 +284,7 @@ impl Service {
         let mut waiting = true;
         loop {
             corvid_async::select! {
-                result = &mut connection => return result,
+                result = &mut connection => return ConnectOutcome::Connected(Box::new(result)),
                 started = &mut started if waiting => {
                     waiting = false;
                     if started.is_ok() {
@@ -270,8 +292,12 @@ impl Service {
                     }
                 }
                 call = calls.recv() => {
-                    let Some(call) = call else { anyhow::bail!("presentation endpoint closed") };
+                    let Some(call) = call else { return ConnectOutcome::Closed };
+                    let reconnect = call.requests_reconnect();
                     self.handle(call).await;
+                    if reconnect {
+                        return ConnectOutcome::ReconnectRequested;
+                    }
                 }
             }
         }

@@ -282,6 +282,107 @@ async fn check_observation_after_reconnect() -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
+#[test]
+fn reconnect_interrupts_an_in_flight_connect_attempt() -> anyhow::Result<()> {
+    corvid_async::task::worker("corvid-reconnect-in-flight-test", |runtime| {
+        runtime
+            .block_on(check_reconnect_interrupts_connect())
+            .unwrap();
+    })?
+    .join()
+    .expect("in-flight reconnect fixture panicked");
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn check_reconnect_interrupts_connect() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    use anyhow::Context;
+    use corvid_async::oneshot;
+    use corvid_async::time::{sleep, timeout};
+    use corvid_client::ControlEndpoint;
+    use corvid_protocol::unix::{RuntimeDir, SocketRole};
+
+    use crate::{HostEndpoint, PresentationClient, initialize, run_native};
+
+    let root = tempfile::tempdir_in(std::env::home_dir().context("home")?)?;
+    let runtime = root.path().join("daemon");
+    let state = root.path().join("state");
+    let address = root.path().join("ipc");
+    let directory = RuntimeDir::create_all(&runtime)?;
+    let instance = directory.lock_instance()?;
+    let listener = instance.bind_compio(SocketRole::Control).await?;
+    let host = Uuid::new_v4();
+    let epoch = Uuid::new_v4();
+    let run = Uuid::new_v4();
+    initialize(
+        &state,
+        host,
+        HostEndpoint::from(&ControlEndpoint::Local(runtime)),
+        8,
+    )?;
+
+    let location = ViewSelection {
+        workspace_id: Uuid::new_v4().to_string(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let (release_hung, mut hung_released) = oneshot::channel();
+    let daemon = Box::pin(async {
+        // Hold the first control connection open without completing hello so connect() stays pending.
+        let _hung = listener
+            .accept()
+            .await?
+            .context("missing hung control peer")?;
+        let stream = listener
+            .accept()
+            .await?
+            .context("missing recovered control peer")?;
+        let mut agent = agent(run, &location, 1);
+        agent.lifecycle = AgentLifecycle::Live as i32;
+        let entities = [workspace(&location), Body::Agent(Box::new(agent))]
+            .into_iter()
+            .map(|body| SnapshotEntity { body: Some(body) })
+            .collect();
+        serve_run_watch(stream, host, epoch, 1, entities, None).await?;
+        let _ = (&mut hung_released).await;
+        Ok::<_, anyhow::Error>(())
+    });
+    let consumer = Box::pin(async {
+        let mut client = loop {
+            if let Some(client) = PresentationClient::connect_if_present(&address).await? {
+                break client;
+            }
+            sleep(Duration::from_millis(10)).await;
+        };
+        wait_for_runs(&mut client, |page| {
+            page.connection == CompanionConnection::Connecting as i32
+        })
+        .await?;
+        client.reconnect_monitor().await?;
+        let ready = wait_for_runs(&mut client, |page| {
+            page.connection == CompanionConnection::Ready as i32 && page.remote_sequence == Some(1)
+        })
+        .await?;
+        assert!(ready.control_generation.is_some());
+        let _ = release_hung.send(());
+        Ok(())
+    });
+    let companion = Box::pin(run_native(&address, &state, std::future::pending()));
+    timeout(Duration::from_secs(10), async {
+        corvid_async::select! {
+            result = consumer => result,
+            result = daemon => result.and(Err(anyhow::anyhow!("test daemon stopped early"))),
+            result = companion => {
+                result.and(Err(anyhow::anyhow!("test companion stopped early")))
+            }
+        }
+    })
+    .await?
+}
+
+#[cfg(unix)]
 async fn wait_for_runs(
     client: &mut crate::PresentationClient,
     matches: impl Fn(&PresentationSlots) -> bool,
