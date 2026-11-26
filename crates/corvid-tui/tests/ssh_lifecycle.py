@@ -253,7 +253,6 @@ def check_companion_ssh(ssh, command, directory):
         assert attempts.read_text() == paused
 
         companion.run("reconnect")
-        companion.run("reconnect")
         resumed = companion.wait(
             lambda view: view["header"]["connection"] == "Ready"
         )["header"]
