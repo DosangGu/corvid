@@ -33,7 +33,7 @@ impl DeckView {
         }
     }
 
-    pub(super) fn floating(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn floating(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let mut grid = column().px(px(12.)).py(px(8.)).gap(px(GAP));
         let layout = self.window.layout();
         let (columns, _) = layout.dimensions();
@@ -42,7 +42,7 @@ impl DeckView {
             let mut line = row().gap(px(GAP));
             for (column, tile) in cells.iter().enumerate() {
                 let index = row_index * columns + column;
-                line = line.child(self.tile_card(*tile, index, KEY_WIDTH, cx));
+                line = line.child(self.tile_card(*tile, index, KEY_WIDTH, window, cx));
             }
             grid = grid.child(line);
         }
@@ -151,26 +151,28 @@ impl DeckView {
         tile: Tile<'_>,
         index: usize,
         width: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let colors = self.colors;
         match tile {
-            Tile::Slot(snapshot, slot) => self.card(snapshot, slot, index, width, cx),
+            Tile::Slot(snapshot, slot) => self.card(snapshot, slot, index, width, window, cx),
             Tile::Queued(snapshot, run) => {
-                self.run_card(snapshot, Some(run), None, index, width, cx)
+                self.run_card(snapshot, Some(run), None, index, width, window, cx)
             }
             Tile::Empty => self.attach_card_action(
                 colors.card_face(
                     None,
                     false,
                     false,
+                    index,
                     width,
                     if self.window.expanded {
                         width
                     } else {
                         crate::shell::KEY_HEIGHT
                     },
-                    None,
+                    window,
                 ),
                 index,
                 None,

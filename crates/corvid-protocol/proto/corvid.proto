@@ -466,6 +466,7 @@ message PresentedAttention {
   AgentProvider provider = 5;
   optional InputRequestStatus request_status = 6;
   optional InputRequestKind request_kind = 7;
+  optional string session_title = 8;
 }
 
 message PresentationAttention {

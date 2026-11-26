@@ -12,6 +12,9 @@ use uuid::Uuid;
 const MAX_SEEN: usize = 4096;
 const MAX_HISTORY: usize = 128;
 const MAX_AGE_MS: u64 = 5 * 60 * 1000;
+const MAX_TITLE: usize = 160;
+const MAX_BODY: usize = 256;
+const MAX_HOST_LABEL: usize = 64;
 const MAX_FOCUS_ERROR: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -95,8 +98,8 @@ impl Ledger {
             "unsupported or damaged Agent Deck notification storage"
         );
         ensure!(
-            self.history.iter().all(|item| item.title.len() <= 160
-                && item.body.len() <= 256
+            self.history.iter().all(|item| item.title.len() <= MAX_TITLE
+                && item.body.len() <= MAX_BODY
                 && item
                     .focus_error
                     .as_ref()
@@ -109,6 +112,16 @@ impl Ledger {
     pub fn observe(
         &mut self,
         host: Uuid,
+        snapshot: &PresentationAttention,
+        now: u64,
+    ) -> Result<Observation> {
+        self.observe_with_host(host, None, snapshot, now)
+    }
+
+    pub fn observe_with_host(
+        &mut self,
+        host: Uuid,
+        host_label: Option<&str>,
         snapshot: &PresentationAttention,
         now: u64,
     ) -> Result<Observation> {
@@ -129,7 +142,7 @@ impl Ledger {
         let entries: Vec<_> = snapshot
             .attention
             .iter()
-            .map(|item| notice(host, epoch, item))
+            .map(|item| notice(host, host_label, epoch, item))
             .collect::<Result<_>>()?;
         if baseline {
             if self.epochs.len() == 8 {
@@ -212,7 +225,12 @@ impl Ledger {
     }
 }
 
-fn notice(host: Uuid, epoch: Uuid, item: &PresentedAttention) -> Result<Notice> {
+fn notice(
+    host: Uuid,
+    host_label: Option<&str>,
+    epoch: Uuid,
+    item: &PresentedAttention,
+) -> Result<Notice> {
     if let Some(status) = item.request_status {
         ensure!(
             InputRequestStatus::try_from(status)? != InputRequestStatus::Unspecified,
@@ -266,16 +284,80 @@ fn notice(host: Uuid, epoch: Uuid, item: &PresentedAttention) -> Result<Notice> 
     };
     Ok(Notice {
         summary: false,
-        body: format!(
-            "Host {} · Agent {}",
-            &host.simple().to_string()[..8],
-            &key.run.simple().to_string()[..8]
-        ),
+        body: format_notice_body(host, key.run, item.session_title.as_deref(), host_label),
         key,
         title,
         created_ms: item.created_unix_ms,
         focus_error: None,
     })
+}
+
+fn sanitize_text(text: &str) -> Option<String> {
+    let cleaned: String = text
+        .chars()
+        .filter(|ch| {
+            !ch.is_control()
+                && !matches!(
+                    *ch,
+                    '\u{061c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+        })
+        .collect();
+    let trimmed = cleaned.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn truncate_bytes_with_ellipsis(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    const ELLIPSIS: &str = "…";
+    if max_bytes < ELLIPSIS.len() {
+        return String::new();
+    }
+    let end = text.floor_char_boundary(max_bytes - ELLIPSIS.len());
+    format!("{}{ELLIPSIS}", &text[..end])
+}
+
+fn format_notice_body(
+    host: Uuid,
+    run: Uuid,
+    session_title: Option<&str>,
+    host_label: Option<&str>,
+) -> String {
+    let title = session_title.and_then(sanitize_text);
+    let host_label = host_label.and_then(sanitize_text);
+    match (title, host_label) {
+        (Some(title), Some(host_label)) => {
+            let suffix = format!(
+                " · {}",
+                truncate_bytes_with_ellipsis(&host_label, MAX_HOST_LABEL)
+            );
+            let max_title = MAX_BODY.saturating_sub(suffix.len());
+            format!(
+                "{}{suffix}",
+                truncate_bytes_with_ellipsis(&title, max_title)
+            )
+        }
+        (Some(title), None) => truncate_bytes_with_ellipsis(&title, MAX_BODY),
+        (None, Some(host_label)) => {
+            let suffix = format!(" · Agent {}", &run.simple().to_string()[..8]);
+            let max_host = MAX_BODY.saturating_sub(suffix.len());
+            format!(
+                "{}{suffix}",
+                truncate_bytes_with_ellipsis(&host_label, max_host)
+            )
+        }
+        (None, None) => format!(
+            "Host {} · Agent {}",
+            &host.simple().to_string()[..8],
+            &run.simple().to_string()[..8]
+        ),
+    }
 }
 
 fn id(value: &str) -> Result<Uuid> {
@@ -466,5 +548,38 @@ mod tests {
         snapshot.attention[0].reason = 999;
         assert!(ledger.observe(host, &snapshot, 1000).is_err());
         assert!(ledger.history.is_empty());
+    }
+
+    #[test]
+    fn uses_sanitized_thread_title_and_host_label_in_notification_body() {
+        let (host, mut attention) = snapshot();
+        let mut titled = alert(host, &attention, 1000);
+        titled.session_title = Some("  \u{202e}Fix login\n bug  ".into());
+        let mut blank = alert(host, &attention, 1001);
+        blank.session_title = Some(" \t\u{200e} ".into());
+        let mut long_korean = alert(host, &attention, 1002);
+        long_korean.session_title = Some("스레드제목".repeat(40));
+
+        attention.attention = vec![long_korean, blank, titled];
+        let mut ledger = Ledger::default();
+        let observed = ledger
+            .observe_with_host(host, Some("SSH · prod"), &attention, 1002)
+            .unwrap();
+        assert_eq!(observed.notices.len(), 3);
+        assert_eq!(observed.notices[0].body, "Fix login bug · SSH · prod");
+        assert!(observed.notices[1].body.starts_with("SSH · prod · Agent "));
+        assert!(observed.notices[2].body.ends_with("… · SSH · prod"));
+        assert!(observed.notices[2].body.len() <= MAX_BODY);
+        ledger.validate().unwrap();
+
+        let (local_host, mut local_snapshot) = snapshot();
+        let mut local_alert = alert(local_host, &local_snapshot, 1000);
+        local_alert.session_title = Some("Refactor auth".into());
+        local_snapshot.attention = vec![local_alert];
+        let local_notices = ledger
+            .observe_with_host(local_host, None, &local_snapshot, 1000)
+            .unwrap()
+            .notices;
+        assert_eq!(local_notices[0].body, "Refactor auth");
     }
 }

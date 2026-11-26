@@ -220,6 +220,7 @@ async fn run<N: NativeServices>(
         storage,
         delivery,
         hosts: BTreeMap::new(),
+        host_labels: BTreeMap::new(),
         ledger,
         native,
         capabilities,
@@ -314,6 +315,7 @@ struct Monitor<N> {
     storage: StateDirectory,
     delivery: Delivery,
     hosts: BTreeMap<Uuid, HostStatus>,
+    host_labels: BTreeMap<Uuid, String>,
     ledger: Ledger,
     native: Option<N>,
     capabilities: Capabilities,
@@ -331,7 +333,7 @@ struct HostStatus {
 }
 
 enum Update {
-    Hosts(Vec<Uuid>),
+    Hosts(BTreeMap<Uuid, String>),
     Snapshot(Uuid, Result<PresentationAttention, String>),
 }
 
@@ -339,7 +341,8 @@ impl<N: NativeServices> Monitor<N> {
     async fn snapshot(&mut self, update: Update) -> Result<()> {
         let (host, result) = match update {
             Update::Hosts(hosts) => {
-                self.hosts.retain(|id, _| hosts.contains(id));
+                self.hosts.retain(|id, _| hosts.contains_key(id));
+                self.host_labels = hosts;
                 self.publish();
                 return Ok(());
             }
@@ -359,7 +362,15 @@ impl<N: NativeServices> Monitor<N> {
                 return Ok(());
             }
         };
-        let observation = match self.ledger.observe(host, &snapshot, now_ms()) {
+        let host_label = self
+            .host_labels
+            .get(&host)
+            .map(String::as_str)
+            .filter(|label| self.host_labels.len() > 1 || *label != "Local");
+        let observation = match self
+            .ledger
+            .observe_with_host(host, host_label, &snapshot, now_ms())
+        {
             Ok(observation) => observation,
             Err(error) => {
                 self.hosts.insert(
@@ -636,9 +647,11 @@ async fn poll_hosts(
                 if let Some(profile) = profiles.get_mut(&current) {
                     profile.address = address.clone();
                 }
-                snapshots
-                    .send(Update::Hosts(profiles.keys().copied().collect()))
-                    .await?;
+                let host_labels = profiles
+                    .iter()
+                    .map(|(&id, profile)| (id, profile.label.clone()))
+                    .collect();
+                snapshots.send(Update::Hosts(host_labels)).await?;
                 subscriptions.refresh(&profiles, |id, profile| {
                     poll(profile.address, id, profile.controller, snapshots.clone())
                 });
