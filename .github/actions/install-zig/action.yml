@@ -3,6 +3,11 @@ description: Install the verified Zig toolchain for libghostty-vt
 runs:
   using: composite
   steps:
+    - name: Restore cached Zig archive
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/corvid-zig-cache
+        key: zig-0.17.1-${{ runner.os }}-${{ runner.arch }}
     - name: Download, verify, and extract Zig
       shell: pwsh
       run: |
@@ -19,34 +24,54 @@ runs:
         $platform, $suffix, $sha256 = $archives[$target]
         $stem = "zig-$platform-$version"
         $filename = "$stem.$suffix"
-        $archive = Join-Path $env:RUNNER_TEMP $filename
+        $cacheDir = Join-Path $env:RUNNER_TEMP 'corvid-zig-cache'
+        New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+        $archive = Join-Path $cacheDir $filename
 
-        $curl = if ($env:RUNNER_OS -eq 'Windows') { 'curl.exe' } else { 'curl' }
-        # Zig lists the fallback at https://ziglang.org/download/community-mirrors.txt.
-        $urls = @(
-          "https://ziglang.org/download/$version/$filename",
-          "https://pkg.hexops.org/zig/${filename}?source=corvid-ci"
-        )
-        $timer = [System.Diagnostics.Stopwatch]::new()
-        foreach ($url in $urls) {
+        $cached = $false
+        if (Test-Path -LiteralPath $archive) {
+          $cachedHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($cachedHash -eq $sha256) {
+            Write-Host "Using cached Zig archive $filename"
+            $cached = $true
+          } else {
+            Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+          }
+        }
+
+        if (!$cached) {
+          $curl = if ($env:RUNNER_OS -eq 'Windows') { 'curl.exe' } else { 'curl' }
+          # Zig lists the fallbacks at https://ziglang.org/download/community-mirrors.txt.
+          $urls = @(
+            "https://ziglang.org/download/$version/$filename",
+            "https://zig.squirl.dev/${filename}?source=corvid-ci",
+            "https://zig.chainsafe.dev/${filename}?source=corvid-ci",
+            "https://pkg.earth/zig/${filename}?source=corvid-ci",
+            "https://pkg.hexops.org/zig/${filename}?source=corvid-ci"
+          )
+          $timer = [System.Diagnostics.Stopwatch]::new()
+          foreach ($url in $urls) {
+            $timer.Restart()
+            & $curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' `
+              --connect-timeout 10 --max-time 60 --speed-limit 262144 --speed-time 15 `
+              --retry 0 --remove-on-error --output $archive $url
+            $downloadStatus = $LASTEXITCODE
+            $sourceHost = ([Uri]$url).Host
+            Write-Host "Zig download from $sourceHost took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s (curl exit $downloadStatus)"
+            if ($downloadStatus -eq 0) { break }
+          }
+          if ($downloadStatus -ne 0) { exit $downloadStatus }
+
           $timer.Restart()
-          & $curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' `
-            --connect-timeout 15 --max-time 75 --speed-limit 262144 --speed-time 20 `
-            --retry 1 --retry-connrefused --retry-max-time 90 --remove-on-error --output $archive $url
-          $downloadStatus = $LASTEXITCODE
-          $sourceHost = ([Uri]$url).Host
-          Write-Host "Zig download from $sourceHost took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s (curl exit $downloadStatus)"
-          if ($downloadStatus -eq 0) { break }
-        }
-        if ($downloadStatus -ne 0) { exit $downloadStatus }
-
-        $timer.Restart()
-        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-        Write-Host "Zig checksum took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s"
-        if ($actual -ne $sha256) {
-          throw 'Zig download checksum mismatch'
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          Write-Host "Zig checksum took $([Math]::Round($timer.Elapsed.TotalSeconds, 1)) s"
+          if ($actual -ne $sha256) {
+            Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+            throw 'Zig download checksum mismatch'
+          }
         }
 
+        $timer = [System.Diagnostics.Stopwatch]::new()
         $timer.Restart()
         if ($suffix -eq 'zip') {
           [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $env:RUNNER_TEMP, $true)
