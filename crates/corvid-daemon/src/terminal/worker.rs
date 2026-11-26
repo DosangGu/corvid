@@ -37,6 +37,7 @@ use crate::workspaces::WeakRegistry;
 use super::backend::Backend;
 use super::commands;
 use super::composition::{Composition, HeaderMotion};
+use super::history_view::{HistoryAction, HistoryView};
 use super::host::HostConfig;
 use super::input::{Kind, WriteFailure};
 use super::keys::{InputMode, KeyCommand, Keymap, TabCommand};
@@ -182,7 +183,11 @@ pub(crate) enum Action {
 
 pub(crate) enum Event {
     RenameTab(InputRoute, String),
-    ClipboardWrite(InputRoute, String),
+    ClipboardWrite {
+        route: InputRoute,
+        text: String,
+        user_initiated: bool,
+    },
     Render(Render),
     ViewChanged {
         route: InputRoute,
@@ -1023,6 +1028,49 @@ impl Worker {
                         let display = display.expect("workspace navigation has a layout");
                         lease.overlay = Some(Overlay::open(kind, &display.layout, lease.location));
                     }
+                    Some(KeyCommand::PreviousCommand) => {
+                        let rows = lease.history_rows();
+                        match terminal.session.history(false) {
+                            Ok(history) => match HistoryView::open_previous(history, rows) {
+                                Ok(view) => {
+                                    lease.history = Some(view);
+                                    lease.navigation_dirty = true;
+                                }
+                                Err(message) => lease.set_notice(message),
+                            },
+                            Err(_) => lease.set_notice("Terminal history is unavailable."),
+                        }
+                    }
+                    Some(KeyCommand::CopyLastOutput) => match terminal.session.history(false) {
+                        Ok(history) => {
+                            match corvid_protocol::history::last_command_output(&history) {
+                                Ok(output)
+                                    if corvid_protocol::valid_clipboard_text(&output.text) =>
+                                {
+                                    let _ = lease.events.try_send(Event::ClipboardWrite {
+                                        route: lease.route,
+                                        text: output.text,
+                                        user_initiated: true,
+                                    });
+                                    lease.set_notice(if output.truncated {
+                                        "Copied last command output (older rows omitted)"
+                                    } else {
+                                        "Copied last command output"
+                                    });
+                                }
+                                Ok(_) => lease.set_notice(
+                                    "Last command output exceeds the 64 KiB clipboard limit.",
+                                ),
+                                Err(corvid_protocol::history::CommandOutputError::NoCommands) => {
+                                    lease.set_notice("No command markers in this terminal.");
+                                }
+                                Err(corvid_protocol::history::CommandOutputError::NoOutput) => {
+                                    lease.set_notice("Last command produced no output.");
+                                }
+                            }
+                        }
+                        Err(_) => lease.set_notice("Terminal history is unavailable."),
+                    },
                     Some(KeyCommand::End(target)) => {
                         lease.switch_pending = true;
                         if lease.events.try_send(Event::Close(target)).is_err() {
@@ -1226,6 +1274,8 @@ impl Worker {
                 lease.command_help = false;
                 lease.naming = None;
                 lease.overlay = None;
+                lease.history = None;
+                lease.notice = None;
             }
         }
         if terminal.exit.is_some()
@@ -1251,7 +1301,11 @@ impl Worker {
             && lease.events.is_empty()
         {
             // Keep space for view changes and renders even if the PTY floods copies.
-            let _ = lease.events.try_send(Event::ClipboardWrite(route, text));
+            let _ = lease.events.try_send(Event::ClipboardWrite {
+                route,
+                text,
+                user_initiated: false,
+            });
         }
         if let Some(lease) = &mut self.lease
             && lease.render(terminal, &self.scope).is_err()
@@ -1879,6 +1933,8 @@ struct Lease {
     leader: Option<Instant>,
     picker: Option<TabPicker>,
     overlay: Option<Overlay>,
+    history: Option<HistoryView>,
+    notice: Option<Notice>,
     composition: Option<CompositionCache>,
     navigation_dirty: bool,
     command_help: bool,
@@ -1891,11 +1947,18 @@ struct Lease {
     status: Option<Status>,
 }
 
+struct Notice {
+    text: String,
+    expires: Instant,
+}
+
 enum LastFrame {
     Naming,
     Terminal(Option<Box<ScreenSnapshot>>),
     Picker,
     Commands(bool),
+    History,
+    Notice,
     Composition,
 }
 
@@ -1929,6 +1992,8 @@ impl Lease {
             leader: None,
             picker: None,
             overlay: None,
+            history: None,
+            notice: None,
             composition: keymap.workspace_ui.then(CompositionCache::new),
             navigation_dirty: false,
             command_help: false,
@@ -1952,6 +2017,7 @@ impl Lease {
         if self.leader.is_some()
             || self.picker.is_some()
             || self.overlay.is_some()
+            || self.history.is_some()
             || self.command_help
             || self.naming.is_some()
         {
@@ -1959,6 +2025,29 @@ impl Lease {
         } else {
             InputMode::Passthrough
         }
+    }
+
+    fn history_rows(&self) -> usize {
+        if let Some(view) = self
+            .composition
+            .as_ref()
+            .and_then(|cache| cache.visible.as_ref())
+            && let Some((_, rect)) = view
+                .panes
+                .iter()
+                .find(|(pane, _)| *pane == self.location.pane)
+        {
+            return usize::from(view.body(*rect).height.max(1));
+        }
+        usize::from(self.viewport.content().rows.get())
+    }
+
+    fn set_notice(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            expires: Instant::now() + Duration::from_secs(3),
+        });
+        self.navigation_dirty = true;
     }
 
     fn check_input(&self, route: InputRoute, sequence: u64, terminal: &Running) -> Reply<()> {
@@ -1979,6 +2068,39 @@ impl Lease {
         layout: Option<&Layout>,
         scope: &LaunchScope,
     ) -> Reply<Option<KeyCommand>> {
+        if self.notice.take().is_some() {
+            self.navigation_dirty = true;
+        }
+        if self.history.is_some() {
+            self.input_sequence = sequence;
+            let rows = self.history_rows();
+            let action = self.history.as_mut().unwrap().key(&bytes, rows);
+            match action {
+                HistoryAction::Keep => {
+                    self.navigation_dirty = true;
+                }
+                HistoryAction::Close => {
+                    self.history = None;
+                    self.navigation_dirty = true;
+                }
+                HistoryAction::Copy { text, truncated } => {
+                    let _ = self.events.try_send(Event::ClipboardWrite {
+                        route: self.route,
+                        text,
+                        user_initiated: true,
+                    });
+                    if let Some(history) = &mut self.history {
+                        history.set_notice(if truncated {
+                            "Copied output (older rows omitted)"
+                        } else {
+                            "Copied command output"
+                        });
+                    }
+                    self.navigation_dirty = true;
+                }
+            }
+            return Ok(None);
+        }
         if let Some(layout) = layout {
             self.navigation_dirty |=
                 self.input_mode() == InputMode::Command || bytes == [KEY_LEADER];
@@ -2179,6 +2301,14 @@ impl Lease {
 
     fn expire_input(&mut self, queue: &mut Backend) -> Reply<()> {
         if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| Instant::now() >= notice.expires)
+        {
+            self.notice = None;
+            self.navigation_dirty = true;
+        }
+        if self
             .leader
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
         {
@@ -2364,6 +2494,43 @@ impl Lease {
         let picker_target =
             picker.and_then(|overlay| overlay.title_target(&display.layout, self.viewport.outer));
         let picker_changed = cache.picker_motion.update(picker_target, now);
+        if let Some(history) = &self.history {
+            if !self.navigation_dirty
+                && !layout_changed
+                && matches!(self.previous, Some(LastFrame::History))
+            {
+                return Ok(None);
+            }
+            let rect = view
+                .panes
+                .iter()
+                .find(|(pane, _)| *pane == self.location.pane)
+                .map(|(_, rect)| view.body(*rect))
+                .unwrap_or_else(|| corvid_core::navigation::Rect {
+                    x: 0,
+                    y: 0,
+                    width: self.viewport.outer.cols.get(),
+                    height: self.viewport.outer.rows.get(),
+                });
+            let mut ansi = view.paint(
+                self.location,
+                None,
+                &display,
+                &cache.header_motion,
+                |pane| {
+                    if pane == self.location.pane {
+                        cache.active.clone()
+                    } else {
+                        cache.screens.get(&pane).cloned()
+                    }
+                },
+            );
+            ansi.push_str(&history.paint(rect));
+            cache.layout = Some(display);
+            cache.pending_layout = Some(view);
+            self.navigation_dirty = false;
+            return Ok(Some((ansi, LastFrame::History)));
+        }
         if !terminal.dirty
             && !layout_changed
             && !preview_changed
@@ -2425,6 +2592,11 @@ impl Lease {
                 self.viewport.outer,
                 &["w Workspaces · t Tabs · p Panes · ? Search · Esc Cancel".into()],
             ));
+        } else if let Some(notice) = &self.notice {
+            ansi.push_str(&navigation::paint_lines(
+                self.viewport.outer,
+                std::slice::from_ref(&notice.text),
+            ));
         }
         cache.layout = Some(display);
         cache.pending_layout = Some(view);
@@ -2466,6 +2638,20 @@ impl Lease {
             return Ok(Some((ansi, LastFrame::Picker)));
         }
 
+        if let Some(history) = &self.history {
+            if !self.navigation_dirty && matches!(self.previous, Some(LastFrame::History)) {
+                return Ok(None);
+            }
+            let content = self.viewport.content();
+            let rect = corvid_core::navigation::Rect {
+                x: 0,
+                y: 0,
+                width: content.cols.get(),
+                height: content.rows.get(),
+            };
+            self.navigation_dirty = false;
+            return Ok(Some((history.paint(rect), LastFrame::History)));
+        }
         let status_changed = self.refresh_status(metadata);
         if self.leader.is_some() || self.command_help {
             if matches!(self.previous, Some(LastFrame::Commands(expanded)) if expanded == self.command_help)
@@ -2486,6 +2672,27 @@ impl Lease {
                 self.command_help,
             )?);
             return Ok(Some((ansi, LastFrame::Commands(self.command_help))));
+        }
+        if let Some(notice) = &self.notice {
+            if !terminal.dirty
+                && !status_changed
+                && !self.navigation_dirty
+                && matches!(self.previous, Some(LastFrame::Notice))
+            {
+                return Ok(None);
+            }
+            let footer = self
+                .viewport
+                .status_row()
+                .zip(self.status.as_ref())
+                .map(|(row, status)| (row, status.ansi.as_str()));
+            let (mut ansi, _) = terminal.session.render(None, self.viewport.outer, footer)?;
+            ansi.push_str(&navigation::paint_lines(
+                self.viewport.content(),
+                std::slice::from_ref(&notice.text),
+            ));
+            self.navigation_dirty = false;
+            return Ok(Some((ansi, LastFrame::Notice)));
         }
         let previous = match &self.previous {
             Some(LastFrame::Terminal(screen)) => Some(screen),

@@ -295,6 +295,157 @@ fn adapter_uses_ghostty_reflow_and_keeps_history_with_styles() {
 }
 
 #[test]
+fn tracks_osc_133_and_633_command_boundaries_across_wrapping_reflow_and_eviction() {
+    use corvid_protocol::history::{
+        CommandOutput, command_output, jumpable_commands, last_command_output, previous_command,
+    };
+
+    let mut terminal = TerminalScreen::new(Viewport::new(10, 5).unwrap()).unwrap();
+    // Fragmented OSC 133/633 in BEL and ST forms, plus cancelled OSC and untrusted 633;E/P.
+    let stream = concat!(
+        "\x1b]133;A\x07$ ",
+        "\x1b]133;B\x1b\\",
+        "echo hi",
+        "\x1b]133;C\x07\r\n",
+        "abcdefghijkl\r\n",
+        "\x1b]133;D;0\x07",
+        // Prompt redraw on same row + empty Enter (no C) + continuation prompt
+        "\x1b]633;A\x07$ \r\x1b]633;A\x07$ \r\n",
+        "\x1b]633;A\x07$ ",
+        "\x1b]633;A;k=c\x07",
+        "\x1b]633;E;secret-cmd\x07",
+        "\x1b]633;P;Nonce=secret\x07",
+        "\x1b]133;A\x1b[0m", // cancelled OSC must not record a prompt
+        "\x1b]633;B\x07",
+        "printf x",
+        "\x1b]633;C\x07\r\n",
+        "no-nl",
+        "\x1b]633;D;0\x07",
+    );
+    for chunk in stream.as_bytes().chunks(3) {
+        terminal.process(chunk).unwrap();
+    }
+
+    let history = terminal.history().unwrap();
+    assert!(corvid_protocol::history::validate_history(&history).is_ok());
+    assert!(
+        !history
+            .lines
+            .iter()
+            .any(|line| line.contains("secret-cmd") || line.contains("Nonce"))
+    );
+    let jumpable = jumpable_commands(&history);
+    assert_eq!(jumpable.len(), 2);
+    assert_eq!(
+        command_output(&history, jumpable[0]).unwrap(),
+        CommandOutput {
+            text: "abcdefghijkl".into(),
+            truncated: false,
+        }
+    );
+    assert_eq!(
+        last_command_output(&history).unwrap(),
+        CommandOutput {
+            text: "no-nl".into(),
+            truncated: false,
+        }
+    );
+    assert_eq!(previous_command(&history, None), Some(jumpable[1]));
+    assert_eq!(
+        previous_command(&history, Some(jumpable[1])),
+        Some(jumpable[0])
+    );
+
+    // Reflow to wider viewport preserves wrapped output and prompt row.
+    terminal.resize(Viewport::new(20, 5).unwrap()).unwrap();
+    let wider = terminal.history().unwrap();
+    assert!(corvid_protocol::history::validate_history(&wider).is_ok());
+    assert_eq!(
+        command_output(&wider, jumpable_commands(&wider)[0])
+            .unwrap()
+            .text,
+        "abcdefghijkl"
+    );
+    assert_eq!(last_command_output(&wider).unwrap().text, "no-nl");
+
+    // Alternate screen isolates primary-screen command history.
+    terminal.process(b"\x1b[?1049hinner").unwrap();
+    assert!(terminal.history().unwrap().commands.is_empty());
+    terminal.process(b"\x1b[?1049l").unwrap();
+    assert_eq!(
+        last_command_output(&terminal.history().unwrap())
+            .unwrap()
+            .text,
+        "no-nl"
+    );
+
+    // Full reset clears command history.
+    terminal.process(b"\x1bc").unwrap();
+    assert!(terminal.history().unwrap().commands.is_empty());
+}
+
+#[test]
+fn osc_133_handles_narrow_reflow_wide_pending_wrap_and_eviction() {
+    use corvid_protocol::history::{command_output, last_command_output};
+
+    // 1. Narrow reflow (20 -> 6) and wide/Korean + right-margin pending-wrap output.
+    let mut terminal = TerminalScreen::new(Viewport::new(20, 5).unwrap()).unwrap();
+    terminal
+        .process(
+            concat!(
+                "\x1b]133;A\x07$ ",
+                "\x1b]133;C\x07\r\n",
+                "한글abcdefgh\r\n",
+                "\x1b]133;D;0\x07",
+                "\x1b]133;A\x07$ ",
+                "\x1b]133;C\x07\r\n",
+                "1234",
+                "\x1b]133;D;0\x07",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    terminal.resize(Viewport::new(6, 5).unwrap()).unwrap();
+    let narrow = terminal.history().unwrap();
+    assert!(corvid_protocol::history::validate_history(&narrow).is_ok());
+    assert_eq!(command_output(&narrow, 0).unwrap().text, "한글abcdefgh");
+    assert_eq!(last_command_output(&narrow).unwrap().text, "1234");
+
+    // Pending wrap at right margin (4 cols) followed immediately by 133;D;0.
+    let mut margin = TerminalScreen::new(Viewport::new(4, 3).unwrap()).unwrap();
+    margin
+        .process(b"\x1b]133;A\x07$\r\n\x1b]133;C\x071234\x1b]133;D;0\x07")
+        .unwrap();
+    let margin_history = margin.history().unwrap();
+    assert_eq!(last_command_output(&margin_history).unwrap().text, "1234");
+
+    // 2. Eviction / TERMINAL_HISTORY_MAX_ROWS truncation.
+    let mut evicted = TerminalScreen::new(Viewport::new(20, 5).unwrap()).unwrap();
+    evicted
+        .process(b"\x1b]133;A\x07$ old\x1b]133;C\x07\r\nold-out\r\n\x1b]133;D;0\x07")
+        .unwrap();
+    evicted
+        .process(b"\x1b]133;A\x07$ big\x1b]133;C\x07\r\n")
+        .unwrap();
+    for i in 0..=corvid_protocol::TERMINAL_HISTORY_MAX_ROWS {
+        evicted.process(format!("row-{i}\r\n").as_bytes()).unwrap();
+    }
+    evicted.process(b"\x1b]133;D;0\x07").unwrap();
+    evicted
+        .process(b"\x1b]133;A\x07$ new\x1b]133;C\x07\r\nfresh-out\r\n\x1b]133;D;0\x07")
+        .unwrap();
+
+    let h = evicted.history().unwrap();
+    assert!(corvid_protocol::history::validate_history(&h).is_ok());
+    assert!(h.truncated);
+    // Oldest command was completely evicted; middle command is truncated; newest is intact.
+    assert_eq!(h.commands.len(), 2);
+    assert!(h.commands[0].truncated);
+    assert!(!h.commands[1].truncated);
+    assert_eq!(last_command_output(&h).unwrap().text, "fresh-out");
+}
+
+#[test]
 fn dirty_projection_clears_erased_cells_and_restores_the_primary_grid() {
     let viewport = Viewport::new(12, 4).unwrap();
     let mut terminal = TerminalScreen::new(viewport).unwrap();

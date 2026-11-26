@@ -38,6 +38,9 @@ pub(super) fn paint(
         if keymap.pairing {
             lines.push("r  Pair external controller");
         }
+        if keymap.command_history {
+            lines.push("k  Previous command    c  Copy last output");
+        }
         lines.push("Ctrl-]  Send a literal Ctrl-] to the terminal");
     }
     lines.push("d  Detach (keep terminals running)");

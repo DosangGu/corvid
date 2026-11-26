@@ -121,6 +121,8 @@ impl WorkspaceView {
                                 | WorkspaceCommand::Panes
                                 | WorkspaceCommand::PreviousTab
                                 | WorkspaceCommand::NextTab
+                                | WorkspaceCommand::PreviousCommand
+                                | WorkspaceCommand::CopyLastOutput
                                 | WorkspaceCommand::RenameTab
                         )
                     })
@@ -155,6 +157,28 @@ impl WorkspaceView {
             }
             Workspace(WorkspaceCommand::PreviousTab) => self.cycle_tab(true, window, cx),
             Workspace(WorkspaceCommand::NextTab) => self.cycle_tab(false, window, cx),
+            Workspace(WorkspaceCommand::PreviousCommand) => {
+                if !self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.ui().command_history_supported)
+                {
+                    self.error = Some("This daemon does not support command history.".into());
+                } else if let Some(terminal) = &self.terminal {
+                    terminal.update(cx, |view, cx| view.jump_previous_command(cx));
+                }
+            }
+            Workspace(WorkspaceCommand::CopyLastOutput) => {
+                if !self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.ui().command_history_supported)
+                {
+                    self.error = Some("This daemon does not support command history.".into());
+                } else if let Some(terminal) = &self.terminal {
+                    terminal.update(cx, |view, cx| view.copy_command_output(cx));
+                }
+            }
             Workspace(WorkspaceCommand::RenameTab) => self.open_naming(window, cx),
             Workspace(WorkspaceCommand::Commands) => self.show_navigation(
                 Overlay::Commands {
@@ -663,6 +687,8 @@ mod tests {
             ("w->ㅈ", WorkspaceCommand::Workspaces),
             ("ㅅ", WorkspaceCommand::Tabs),
             ("p->ᅦ", WorkspaceCommand::Panes),
+            ("k->ㅏ", WorkspaceCommand::PreviousCommand),
+            ("c->ㅊ", WorkspaceCommand::CopyLastOutput),
             ("ㅇ", WorkspaceCommand::Detach),
             ("shift-/->?", WorkspaceCommand::Commands),
         ] {

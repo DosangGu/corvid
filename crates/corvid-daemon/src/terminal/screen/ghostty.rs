@@ -1,24 +1,25 @@
 use std::cell::{OnceCell, RefCell};
+use std::collections::{HashMap, VecDeque};
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
-use corvid_protocol::TERMINAL_HISTORY_MAX_ROWS;
 use corvid_protocol::ansi_screen::{
     Cell as FrameCell, Color, Cursor, Screen, Style as FrameStyle, Width,
 };
-use corvid_protocol::wire::{TerminalHistory, WheelEncoding};
+use corvid_protocol::wire::{HistoryCommand, TerminalHistory, WheelEncoding};
+use corvid_protocol::{TERMINAL_HISTORY_MAX_COMMANDS, TERMINAL_HISTORY_MAX_ROWS};
 use ghostty_vt::render::{CellIterator, RenderState, RowIterator};
-use ghostty_vt::screen::{Cell, CellContentTag, CellWide, Screen as ActiveScreen};
+use ghostty_vt::screen::{Cell, CellContentTag, CellWide, Screen as ActiveScreen, TrackedGridRef};
 use ghostty_vt::style::{Style, StyleColor, Underline};
 use ghostty_vt::terminal::{
-    ClipboardWritePolicy, Event, Mode, Options, Point, PointCoordinate, Terminal,
+    ClipboardWritePolicy, Event, Mode, Options, Point, PointCoordinate, PointSpace, Terminal,
 };
 #[cfg(target_os = "linux")]
 use ghostty_vt::terminal::{CompressionActivity, CompressionMode, CompressionResult};
 
-use super::history::{HistoryBuilder, HistoryLine};
+use super::history::{ColumnOffsets, HistoryBuilder, HistoryLine};
 use super::{DEVICE_ATTRIBUTES, MAX_REPLY_BYTES, is_bidi_control};
 
 const SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
@@ -29,6 +30,8 @@ const COMPRESSION_IDLE: Duration = Duration::from_secs(2);
 const COMPRESSION_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) struct Ghostty {
+    // TrackedGridRefs hold non-owning pointers to `terminal` and must drop first.
+    commands: VecDeque<TrackedCommand>,
     terminal: Terminal,
     surface: OnceCell<Screen>,
     projection: RefCell<Option<Projection>>,
@@ -36,8 +39,30 @@ pub(super) struct Ghostty {
     compression: Option<IdleCompression>,
     prompt_parser: vte::Parser,
     prompt: Prompt,
+    pending_st_marker: Option<ShellMarker>,
     pub(super) viewport: Viewport,
     pub(super) title: String,
+}
+
+struct TrackedAnchor {
+    grid: TrackedGridRef,
+    inclusive: bool,
+}
+
+struct TrackedCommand {
+    prompt: Option<TrackedGridRef>,
+    output_start: Option<TrackedAnchor>,
+    output_end: Option<TrackedAnchor>,
+    finished: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ShellMarker {
+    PromptStart { continuation: bool },
+    PromptEnd,
+    CommandStart,
+    CommandEnd,
+    Reset,
 }
 
 impl Ghostty {
@@ -61,6 +86,7 @@ impl Ghostty {
         }
         terminal.resize(viewport.cols.get(), viewport.rows.get(), 0, 0)?;
         Ok(Self {
+            commands: VecDeque::new(),
             terminal,
             surface: OnceCell::new(),
             projection: RefCell::new(None),
@@ -68,6 +94,7 @@ impl Ghostty {
             compression: Some(IdleCompression::new(Instant::now())),
             prompt_parser: vte::Parser::new(),
             prompt: Prompt::default(),
+            pending_st_marker: None,
             viewport,
             title: String::new(),
         })
@@ -79,8 +106,39 @@ impl Ghostty {
         if let Some(compression) = &mut self.compression {
             compression.defer(Instant::now());
         }
-        self.prompt_parser.advance(&mut self.prompt, bytes);
-        self.terminal.vt_write(bytes);
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            if let Some(marker) = self.pending_st_marker.take() {
+                let (first, rest) = remaining.split_at(1);
+                self.prompt_parser.advance(&mut self.prompt, first);
+                self.terminal.vt_write(first);
+                self.drain_events(replies)?;
+                if first == b"\\" {
+                    self.record_marker(marker);
+                }
+                remaining = rest;
+                continue;
+            }
+            let consumed = self
+                .prompt_parser
+                .advance_until_terminated(&mut self.prompt, remaining);
+            let (chunk, rest) = remaining.split_at(consumed);
+            self.terminal.vt_write(chunk);
+            self.drain_events(replies)?;
+            if let Some(marker) = self.prompt.terminated.take() {
+                if self.prompt.awaiting_st {
+                    self.prompt.awaiting_st = false;
+                    self.pending_st_marker = Some(marker);
+                } else {
+                    self.record_marker(marker);
+                }
+            }
+            remaining = rest;
+        }
+        Ok(())
+    }
+
+    fn drain_events(&mut self, replies: &mut Vec<u8>) -> Result<()> {
         for event in self.terminal.events() {
             match event {
                 Event::TitleChanged(title) => self.title = corvid_core::layout::clean_title(&title),
@@ -97,6 +155,130 @@ impl Ghostty {
             }
         }
         Ok(())
+    }
+
+    fn record_marker(&mut self, marker: ShellMarker) {
+        match marker {
+            ShellMarker::PromptStart { .. } | ShellMarker::PromptEnd => {
+                self.prompt.phase = Some(true);
+            }
+            ShellMarker::CommandStart => {
+                self.prompt.phase = Some(false);
+            }
+            ShellMarker::CommandEnd | ShellMarker::Reset => {
+                self.prompt.phase = None;
+            }
+        }
+        if matches!(marker, ShellMarker::Reset) {
+            self.commands.clear();
+            return;
+        }
+        if self.alternate_screen() {
+            return;
+        }
+        let cols = self.viewport.cols.get();
+        let rows = self.viewport.rows.get();
+        let x = self
+            .terminal
+            .cursor_x()
+            .unwrap_or(0)
+            .min(cols.saturating_sub(1));
+        let y = u32::from(
+            self.terminal
+                .cursor_y()
+                .unwrap_or(0)
+                .min(rows.saturating_sub(1)),
+        );
+        let pending_wrap = self.terminal.is_cursor_pending_wrap().unwrap_or(false);
+        let track = |terminal: &Terminal| {
+            terminal
+                .track_grid_ref(Point::Active(PointCoordinate { x, y }))
+                .ok()
+        };
+
+        match marker {
+            ShellMarker::PromptStart { continuation } => {
+                if continuation {
+                    return;
+                }
+                let scrollback =
+                    u32::try_from(self.terminal.scrollback_rows().unwrap_or(0)).unwrap_or(u32::MAX);
+                let current_screen_y = scrollback.saturating_add(y);
+                if let Some(last) = self.commands.back_mut() {
+                    if last.output_start.is_none()
+                        && last
+                            .prompt
+                            .as_ref()
+                            .and_then(|grid| grid.point(PointSpace::Screen).ok().flatten())
+                            .is_some_and(|point| point.y >= current_screen_y)
+                    {
+                        last.prompt = track(&self.terminal);
+                        return;
+                    }
+                    if last.output_start.is_some() && last.output_end.is_none() {
+                        last.output_end = track(&self.terminal).map(|grid| TrackedAnchor {
+                            grid,
+                            inclusive: false,
+                        });
+                        last.finished = true;
+                    }
+                }
+                self.push_command(TrackedCommand {
+                    prompt: track(&self.terminal),
+                    output_start: None,
+                    output_end: None,
+                    finished: false,
+                });
+            }
+            ShellMarker::PromptEnd | ShellMarker::Reset => {}
+            ShellMarker::CommandStart => {
+                let Some(grid) = track(&self.terminal) else {
+                    return;
+                };
+                let anchor = TrackedAnchor {
+                    grid,
+                    inclusive: pending_wrap,
+                };
+                if let Some(last) = self.commands.back_mut()
+                    && last.output_start.is_none()
+                {
+                    last.output_start = Some(anchor);
+                } else {
+                    self.push_command(TrackedCommand {
+                        prompt: None,
+                        output_start: Some(anchor),
+                        output_end: None,
+                        finished: false,
+                    });
+                }
+            }
+            ShellMarker::CommandEnd => {
+                if let Some(last) = self.commands.back_mut()
+                    && last.output_start.is_some()
+                    && last.output_end.is_none()
+                {
+                    last.output_end = track(&self.terminal).map(|grid| TrackedAnchor {
+                        grid,
+                        inclusive: pending_wrap,
+                    });
+                    last.finished = true;
+                }
+            }
+        }
+    }
+
+    fn push_command(&mut self, command: TrackedCommand) {
+        while self
+            .commands
+            .front()
+            .is_some_and(|cmd| !cmd.has_live_anchor())
+        {
+            self.commands.pop_front();
+        }
+        if self.commands.len() >= TERMINAL_HISTORY_MAX_COMMANDS {
+            self.commands.pop_front();
+        }
+        self.commands.push_back(command);
     }
 
     pub(super) fn resize(&mut self, viewport: Viewport) -> Result<()> {
@@ -131,7 +313,7 @@ impl Ghostty {
     }
 
     pub(super) fn shell_prompt(&self) -> Option<bool> {
-        self.prompt.0
+        self.prompt.phase
     }
 
     pub(super) fn wheel_encoding(&self) -> WheelEncoding {
@@ -177,21 +359,60 @@ impl Ghostty {
         if let Some(compression) = &mut self.compression {
             compression.defer(Instant::now());
         }
+        let alternate_screen = self.alternate_screen();
+        let resolved_commands: Vec<ResolvedCommand> = if alternate_screen {
+            Vec::new()
+        } else {
+            while self
+                .commands
+                .front()
+                .is_some_and(|cmd| !cmd.has_live_anchor())
+            {
+                self.commands.pop_front();
+            }
+            self.commands.iter().map(TrackedCommand::resolve).collect()
+        };
+        let mut needed_rows = HashMap::<u32, ColumnOffsets>::new();
+        for cmd in &resolved_commands {
+            if let Some((y, _, _)) = cmd.start {
+                needed_rows.entry(y).or_insert_with(|| ColumnOffsets {
+                    starts: Vec::new(),
+                    ends: Vec::new(),
+                });
+            }
+            if let Some((y, _, _)) = cmd.end {
+                needed_rows.entry(y).or_insert_with(|| ColumnOffsets {
+                    starts: Vec::new(),
+                    ends: Vec::new(),
+                });
+            }
+        }
+
         let columns = self.viewport.cols.get();
-        let rows = self.terminal.total_rows()?;
-        let mut history = HistoryBuilder::new(columns);
+        let rows = u32::try_from(self.terminal.total_rows()?)?;
+        let reserved_bytes = resolved_commands.len() * 32;
+        let mut history = HistoryBuilder::new(columns, reserved_bytes);
         let mut cells = Vec::with_capacity(usize::from(columns));
-        for y in (0..u32::try_from(rows)?).rev() {
+        for y in (0..rows).rev() {
             cells.clear();
+            let mut wrapped = false;
             for x in 0..columns {
                 let reference = self
                     .terminal
                     .grid_ref(Point::Screen(PointCoordinate { x, y }))?;
+                if x == 0 {
+                    wrapped = reference.row()?.is_wrapped()?;
+                }
                 let cell = reference.cell()?;
                 let raw_style = reference.style()?;
                 let style = cell_style(cell, cell.content_tag()?, raw_style)?;
+                let width = match cell.wide()? {
+                    CellWide::Wide => Width::Wide,
+                    CellWide::SpacerTail | CellWide::SpacerHead => Width::Continuation,
+                    CellWide::Narrow => Width::Single,
+                };
                 let mut codepoints = ['\0'; MAX_CELL_CODEPOINTS];
-                let text = if raw_style.invisible {
+                let text = if raw_style.invisible || width == Width::Continuation {
                     String::new()
                 } else {
                     match reference.graphemes(&mut codepoints) {
@@ -202,14 +423,25 @@ impl Ghostty {
                         Err(error) => return Err(error.into()),
                     }
                 };
-                cells.push(FrameCell::new(&text, cell_width(cell)?, style));
+                cells.push(FrameCell::new(&text, width, style));
             }
-            if !history.push(HistoryLine::from_cells(&cells)) {
+            let track = needed_rows.contains_key(&y);
+            let (line, offsets) = HistoryLine::from_cells(&cells, wrapped, track);
+            if !history.push(line, wrapped) {
                 break;
             }
+            if let Some(offsets) = offsets {
+                needed_rows.insert(y, offsets);
+            }
         }
-        let mut snapshot = history.finish();
-        snapshot.alternate_screen = Some(self.alternate_screen());
+        let (mut snapshot, exported_rows) = history.finish();
+        let base_y = rows.saturating_sub(u32::try_from(exported_rows)?);
+        for cmd in resolved_commands {
+            if let Some(exported) = cmd.export(base_y, &needed_rows) {
+                snapshot.commands.push(exported);
+            }
+        }
+        snapshot.alternate_screen = Some(alternate_screen);
         Ok(snapshot)
     }
 
@@ -459,18 +691,162 @@ fn numeric_fields(bytes: &[u8], count: Option<usize>) -> bool {
             .all(|field| !field.is_empty() && field.iter().all(u8::is_ascii_digit))
 }
 
-#[derive(Default)]
-struct Prompt(Option<bool>);
+impl TrackedAnchor {
+    fn resolve(&self) -> Option<(u32, u16, bool)> {
+        let point = self.grid.point(PointSpace::Screen).ok().flatten()?;
+        Some((point.y, point.x, self.inclusive))
+    }
+}
 
-impl vte::Perform for Prompt {
-    fn osc_dispatch(&mut self, params: &[&[u8]], _: bool) {
-        if let [b"133" | b"633", phase, ..] = params {
-            match *phase {
-                b"A" | b"B" => self.0 = Some(true),
-                b"C" => self.0 = Some(false),
-                b"D" => self.0 = None,
-                _ => {}
-            }
+impl TrackedCommand {
+    fn has_live_anchor(&self) -> bool {
+        self.prompt.as_ref().is_some_and(TrackedGridRef::has_value)
+            || self
+                .output_start
+                .as_ref()
+                .is_some_and(|anchor| anchor.grid.has_value())
+            || self
+                .output_end
+                .as_ref()
+                .is_some_and(|anchor| anchor.grid.has_value())
+    }
+
+    fn resolve(&self) -> ResolvedCommand {
+        ResolvedCommand {
+            had_prompt: self.prompt.is_some(),
+            prompt_y: self
+                .prompt
+                .as_ref()
+                .and_then(|grid| grid.point(PointSpace::Screen).ok().flatten())
+                .map(|point| point.y),
+            had_start: self.output_start.is_some(),
+            start: self.output_start.as_ref().and_then(TrackedAnchor::resolve),
+            end: self.output_end.as_ref().and_then(TrackedAnchor::resolve),
+            finished: self.finished,
         }
     }
+}
+
+struct ResolvedCommand {
+    had_prompt: bool,
+    prompt_y: Option<u32>,
+    had_start: bool,
+    start: Option<(u32, u16, bool)>,
+    end: Option<(u32, u16, bool)>,
+    finished: bool,
+}
+
+impl ResolvedCommand {
+    fn export(self, base_y: u32, offsets: &HashMap<u32, ColumnOffsets>) -> Option<HistoryCommand> {
+        if let Some((end_y, _, _)) = self.end
+            && end_y < base_y
+        {
+            return None;
+        }
+        if !self.had_start && self.prompt_y.is_none_or(|prompt_y| prompt_y < base_y) {
+            return None;
+        }
+
+        let prompt_row = self.prompt_y.and_then(|y| y.checked_sub(base_y));
+        let mut truncated = self.had_prompt && prompt_row.is_none();
+
+        let (output_start_row, output_start_offset) = if self.had_start {
+            match self.start {
+                Some((y, x, inclusive)) if y >= base_y => {
+                    let row = y - base_y;
+                    let offset = resolve_offset(offsets.get(&y), x, inclusive);
+                    (Some(row), Some(offset))
+                }
+                _ => {
+                    truncated = true;
+                    (Some(0), Some(0))
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+        let (output_end_row, output_end_offset) = if let Some((y, x, inclusive)) = self.end {
+            if let (Some(sr), Some(so)) = (output_start_row, output_start_offset) {
+                let row = y.checked_sub(base_y)?;
+                let offset = resolve_offset(offsets.get(&y), x, inclusive);
+                if (row, offset) < (sr, so) {
+                    (Some(sr), Some(so))
+                } else {
+                    (Some(row), Some(offset))
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
+        Some(HistoryCommand {
+            prompt_row,
+            output_start_row,
+            output_start_offset,
+            output_end_row,
+            output_end_offset,
+            finished: self.finished,
+            truncated,
+        })
+    }
+}
+
+fn resolve_offset(offsets: Option<&ColumnOffsets>, x: u16, inclusive: bool) -> u32 {
+    let Some(offsets) = offsets else {
+        return 0;
+    };
+    let slice = if inclusive {
+        &offsets.ends
+    } else {
+        &offsets.starts
+    };
+    slice
+        .get(usize::from(x))
+        .copied()
+        .unwrap_or_else(|| slice.last().copied().unwrap_or(0)) as u32
+}
+
+#[derive(Default)]
+struct Prompt {
+    phase: Option<bool>,
+    terminated: Option<ShellMarker>,
+    awaiting_st: bool,
+}
+
+impl vte::Perform for Prompt {
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        let marker = match params {
+            [b"133" | b"633", b"A", rest @ ..] => ShellMarker::PromptStart {
+                continuation: is_continuation_prompt(rest),
+            },
+            [b"133" | b"633", b"B", ..] => ShellMarker::PromptEnd,
+            [b"133" | b"633", b"C", ..] => ShellMarker::CommandStart,
+            [b"133" | b"633", b"D", ..] => ShellMarker::CommandEnd,
+            _ => return,
+        };
+        self.terminated = Some(marker);
+        self.awaiting_st = !bell_terminated;
+    }
+
+    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
+        if !ignore && intermediates.is_empty() && byte == b'c' {
+            self.terminated = Some(ShellMarker::Reset);
+            self.awaiting_st = false;
+        }
+    }
+
+    fn terminated(&self) -> bool {
+        self.terminated.is_some()
+    }
+}
+
+fn is_continuation_prompt(rest: &[&[u8]]) -> bool {
+    rest.iter().any(|param| {
+        param
+            .split(|&byte| byte == b':')
+            .any(|part| matches!(part, b"k=c" | b"k=s"))
+    })
 }

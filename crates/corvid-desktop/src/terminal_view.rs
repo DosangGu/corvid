@@ -44,6 +44,9 @@ pub struct TerminalView {
     selection: Option<Selection>,
     history: Option<History>,
     history_request: Option<Task<()>>,
+    copy_request: Option<Task<()>>,
+    notice: Option<String>,
+    notice_task: Option<Task<()>>,
     pending_wheel_back: usize,
     pending_wheel_copy: bool,
     history_epoch: Option<u64>,
@@ -57,6 +60,7 @@ enum HistoryOpen {
     Wheel,
     Browse,
     Search,
+    PreviousCommand,
 }
 
 #[derive(Clone)]
@@ -250,6 +254,9 @@ impl TerminalView {
             selection: None,
             history: None,
             history_request: None,
+            copy_request: None,
+            notice: None,
+            notice_task: None,
             pending_wheel_back: 0,
             pending_wheel_copy: false,
             history_epoch: None,
@@ -438,6 +445,106 @@ impl TerminalView {
         self.session.send(&self.pane, text.into_bytes(), true);
     }
 
+    pub(crate) fn jump_previous_command(&mut self, cx: &mut Context<Self>) {
+        let height = self.visible_rows();
+        if let Some(history) = &mut self.history {
+            history.jump_command(true, height);
+            self.selection = None;
+            cx.notify();
+            return;
+        }
+        self.open_history(HistoryOpen::PreviousCommand, 0, cx);
+    }
+
+    pub(crate) fn copy_command_output(&mut self, cx: &mut Context<Self>) {
+        if let Some(history) = &mut self.history {
+            match history.copy_command_output() {
+                Ok(output) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(output.text));
+                    history.notice = Some(
+                        if output.truncated {
+                            "Copied output (older rows omitted)"
+                        } else {
+                            "Copied command output"
+                        }
+                        .into(),
+                    );
+                }
+                Err(corvid_protocol::history::CommandOutputError::NoCommands) => {
+                    history.notice = Some("No command markers in this terminal.".into());
+                }
+                Err(corvid_protocol::history::CommandOutputError::NoOutput) => {
+                    history.notice = Some("Last command produced no output.".into());
+                }
+            }
+            cx.notify();
+            return;
+        }
+
+        let route = self.session.wheel_target(&self.pane);
+        let Some(receive) = self.session.history(&self.pane, false) else {
+            self.set_notice("Terminal history is unavailable.", cx);
+            return;
+        };
+        self.copy_request = Some(cx.spawn(async move |view, cx| {
+            let result = receive
+                .await
+                .unwrap_or_else(|_| Err("The terminal connection ended.".into()));
+            let _ = view.update(cx, |view, cx| {
+                let current = view.session.wheel_target(&view.pane);
+                if current.map(|r| r.0) != route.map(|r| r.0) {
+                    return;
+                }
+                match result {
+                    Ok(snapshot) => {
+                        if snapshot.alternate_screen == Some(true) {
+                            view.set_notice(
+                                "Command history is unavailable on the alternate screen.",
+                                cx,
+                            );
+                            return;
+                        }
+                        match corvid_protocol::history::last_command_output(&snapshot) {
+                            Ok(output) => {
+                                cx.write_to_clipboard(ClipboardItem::new_string(output.text));
+                                view.set_notice(
+                                    if output.truncated {
+                                        "Copied last command output (older rows omitted)"
+                                    } else {
+                                        "Copied last command output"
+                                    },
+                                    cx,
+                                );
+                            }
+                            Err(corvid_protocol::history::CommandOutputError::NoCommands) => {
+                                view.set_notice("No command markers in this terminal.", cx);
+                            }
+                            Err(corvid_protocol::history::CommandOutputError::NoOutput) => {
+                                view.set_notice("Last command produced no output.", cx);
+                            }
+                        }
+                    }
+                    Err(message) => view.set_notice(message, cx),
+                }
+            });
+        }));
+    }
+
+    fn set_notice(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.notice = Some(text.into());
+        self.notice_task = Some(cx.spawn(async move |view, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(3))
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.notice = None;
+                view.notice_task = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     pub(crate) fn open_history_command(&mut self, search: bool, cx: &mut Context<Self>) {
         let mode = if search {
             HistoryOpen::Search
@@ -458,6 +565,8 @@ impl TerminalView {
     fn open_history(&mut self, mode: HistoryOpen, back: isize, cx: &mut Context<Self>) {
         let route = self.session.wheel_target(&self.pane);
         let wheel = mode == HistoryOpen::Wheel;
+        self.notice = None;
+        self.notice_task = None;
         self.pending_wheel_copy = false;
         let shell_only =
             wheel && route.is_some_and(|(_, owner)| owner == WheelTarget::LegacyScrollback);
@@ -506,7 +615,30 @@ impl TerminalView {
                         view.copy_visible(cx);
                     }
                 } else if let Some(history) = &mut view.history {
-                    history.loaded(result, height);
+                    if mode == HistoryOpen::PreviousCommand {
+                        match &result {
+                            Ok(snapshot) if snapshot.alternate_screen == Some(true) => {
+                                view.clear_history();
+                                view.set_notice(
+                                    "Command history is unavailable on the alternate screen.",
+                                    cx,
+                                );
+                                return;
+                            }
+                            Ok(_) => {
+                                history.loaded(result, height);
+                                if !history.jump_command(true, height) {
+                                    view.clear_history();
+                                    view.set_notice("No command markers in this terminal.", cx);
+                                }
+                            }
+                            Err(_) => {
+                                history.loaded(result, height);
+                            }
+                        }
+                    } else {
+                        history.loaded(result, height);
+                    }
                 }
                 cx.notify();
             });
@@ -659,6 +791,26 @@ impl TerminalView {
             }
             ("backspace", false, _) if history.search.is_some() => history.edit_query(None),
             ("enter", false, shift) if history.search.is_some() => history.find(shift),
+            ("[", false, _) | ("p", false, _) | ("up", false, true) if history.search.is_none() => {
+                history.jump_command(true, height);
+            }
+            ("]", false, _) | ("n", false, _) | ("down", false, true)
+                if history.search.is_none() =>
+            {
+                history.jump_command(false, height);
+            }
+            ("c", false, false) if history.search.is_none() => {
+                self.copy_command_output(cx);
+                return true;
+            }
+            ("q", false, false) if history.search.is_none() => {
+                self.clear_history();
+                self.selection = None;
+                cx.notify();
+                return true;
+            }
+            ("k", false, false) if history.search.is_none() => history.scroll(-1, height),
+            ("j", false, false) if history.search.is_none() => self.move_in_history(1, height),
             ("up", false, _) => history.scroll(-1, height),
             ("down", false, _) => self.move_in_history(1, height),
             ("pageup", _, _) => history.scroll(-(height as isize), height),
@@ -674,6 +826,10 @@ impl TerminalView {
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.cancel_link();
+        if self.notice.take().is_some() {
+            self.notice_task = None;
+            cx.notify();
+        }
         let key = &event.keystroke;
         let name = shortcuts::key(key);
         let modifiers = key.modifiers;
@@ -848,6 +1004,19 @@ impl Render for TerminalView {
                         .overflow_hidden()
                         .child(history.title(&self.marked)),
                 )
+            })
+            .when(self.history.is_none(), |this| {
+                this.when_some(self.notice.as_ref(), |this, notice| {
+                    this.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_sm()
+                            .text_color(rgb(0xa6c8db))
+                            .pb(ui_px(6.))
+                            .overflow_hidden()
+                            .child(notice.clone()),
+                    )
+                })
             })
             .child(div().flex_1().min_h_0().child(surface))
     }

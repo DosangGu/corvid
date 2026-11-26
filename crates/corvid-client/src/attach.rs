@@ -22,9 +22,10 @@ use corvid_protocol::wire::{
 };
 use corvid_protocol::{
     ADAPTIVE_VIEWPORT_CAPABILITY, CLAIM_WORKSPACE_CAPABILITY, CLIPBOARD_WRITE_CAPABILITY,
-    CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY,
-    Frame, FrameError, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault,
-    RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY, Session, decode_envelope,
+    CLOSE_VIEW_CAPABILITY, COMMAND_HISTORY_CAPABILITY, COMMAND_TIMEOUT, CREATE_VIEW_CAPABILITY,
+    DEFAULT_SHELL_CAPABILITY, Frame, FrameError, MOVE_TAB_CAPABILITY, PANE_WRITERS_CAPABILITY,
+    PeerRole, ProtocolFault, RESPONSE_NOTIFICATION_CAPABILITY, RenderFrame, STATUS_BAR_CAPABILITY,
+    Session, decode_envelope,
 };
 use corvid_protocol::{CompioFrameReader as FrameReader, CompioFrameWriter as FrameWriter};
 use uuid::Uuid;
@@ -510,6 +511,14 @@ async fn request_attach(
     if clipboard_write_enabled(&connection.session) {
         terminal_capabilities.push(CLIPBOARD_WRITE_CAPABILITY.into());
     }
+    if connection
+        .session
+        .capabilities
+        .iter()
+        .any(|name| name == COMMAND_HISTORY_CAPABILITY)
+    {
+        terminal_capabilities.push(COMMAND_HISTORY_CAPABILITY.into());
+    }
     if ResponseNotification::negotiate(&connection.session).is_some() {
         terminal_capabilities.push(RESPONSE_NOTIFICATION_CAPABILITY.into());
     }
@@ -696,6 +705,7 @@ struct Interactive {
     restoring: bool,
     notification: Option<ResponseNotification>,
     clipboard_write: bool,
+    command_history: bool,
 }
 
 fn clipboard_write_enabled(session: &Session) -> bool {
@@ -772,6 +782,11 @@ impl Interactive {
         notification: Option<ResponseNotification>,
     ) -> Self {
         let clipboard_write = clipboard_write_enabled(&connection.session);
+        let command_history = connection
+            .session
+            .capabilities
+            .iter()
+            .any(|cap| cap == COMMAND_HISTORY_CAPABILITY);
         Self {
             saved_view: None,
             session: connection.session,
@@ -788,6 +803,7 @@ impl Interactive {
             restoring: false,
             notification,
             clipboard_write,
+            command_history,
         }
     }
 
@@ -994,7 +1010,7 @@ impl Interactive {
                 }
             }
             Some(Body::ClipboardWrite(clipboard)) => {
-                if self.clipboard_write
+                if (self.clipboard_write || (clipboard.user_initiated && self.command_history))
                     && clipboard.route_token.as_ref() == Some(&self.route)
                     && self.pending_resize.is_none()
                     && corvid_protocol::valid_clipboard_text(&clipboard.text)

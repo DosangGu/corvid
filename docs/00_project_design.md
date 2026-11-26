@@ -638,6 +638,13 @@ responses; unsupported capabilities are not advertised. Child OSC title strings 
 sanitized display data. A client that negotiates `clipboard_write.v1` can receive
 OSC 52 text writes for its current writer route. The daemon sends a structured
 event through the interactive stream, and the client applies its local clipboard
+policy before writing. When `command_history.v1` is negotiated, the PTY host also
+retains up to 256 bounded OSC 133/633 command boundaries (`prompt_row`, execution
+start/end anchors, and `wrapped_rows`) on the primary screen across reflow and
+scrollback. Both Desktop and the composed/legacy TUI expose `Ctrl+] k` (jump to
+previous command) and `Ctrl+] c` (copy last command output, bounded by the 64 KiB
+OSC 52 limit in the TUI); untrusted `633;E` command lines and `633;P` properties
+are discarded, and older peers ignore the additive history fields.
 setting before writing. Events are transient and tied to the view in which the
 daemon read the request. Each PTY keeps at most the latest request between polls.
 Clipboard read and window-control requests remain disabled.

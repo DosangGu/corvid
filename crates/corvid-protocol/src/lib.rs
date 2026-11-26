@@ -5,6 +5,7 @@ pub mod ansi_screen;
 pub use frame::compio::{CompioFrameReader, CompioFrameWriter};
 
 mod frame;
+pub mod history;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -56,6 +57,7 @@ pub const CLOSE_VIEW_CAPABILITY: &str = "close_view.v1";
 pub const PANE_PREVIEW_CAPABILITY: &str = "pane_preview.v1";
 pub const TAB_PREVIEW_CAPABILITY: &str = "tab_preview.v1";
 pub const TERMINAL_HISTORY_CAPABILITY: &str = "terminal_history.v1";
+pub const COMMAND_HISTORY_CAPABILITY: &str = "command_history.v1";
 pub const PROCESS_AGENT_LAUNCH_CAPABILITY: &str = "agent_launch.process.v1";
 pub const PANE_WRITERS_CAPABILITY: &str = "pane_writers.v1";
 pub const SESSION_CLIENTS_CAPABILITY: &str = "session_clients.v1";
@@ -79,6 +81,7 @@ pub fn valid_clipboard_text(text: &str) -> bool {
 pub const TERMINAL_HISTORY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(180);
 pub const TERMINAL_HISTORY_MAX_ROWS: usize = 2048;
 pub const TERMINAL_HISTORY_MAX_BYTES: usize = 192 * 1024;
+pub const TERMINAL_HISTORY_MAX_COMMANDS: usize = 256;
 pub const MOVE_TAB_CAPABILITY: &str = "move_tab.v1";
 pub const REORDER_TAB_CAPABILITY: &str = "reorder_tab.v1";
 pub const WORKSPACE_UI_CAPABILITY: &str = "workspace_ui.v1";
