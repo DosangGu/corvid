@@ -1,7 +1,9 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::Duration;
 
 use corvid_protocol::wire::TerminalColors;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const PROBE_TIMEOUT: Duration = Duration::from_millis(80);
 
 pub(crate) async fn probe_colors() -> Option<TerminalColors> {
@@ -106,6 +108,7 @@ async fn probe_unix_colors() -> Option<TerminalColors> {
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn parse_osc_color_replies(bytes: &[u8]) -> (Option<u32>, Option<u32>, bool) {
     let mut fg = None;
     let mut bg = None;
@@ -158,6 +161,7 @@ pub(crate) fn parse_osc_color_replies(bytes: &[u8]) -> (Option<u32>, Option<u32>
     (fg, bg, sentinel)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn find_osc_terminator(bytes: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
     while i < bytes.len() {
@@ -172,6 +176,7 @@ fn find_osc_terminator(bytes: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn parse_osc_rgb(bytes: &[u8]) -> Option<u32> {
     let mut parts = bytes.split(|&byte| byte == b'/');
     let r = parse_hex_channel(parts.next()?)?;
@@ -183,6 +188,7 @@ fn parse_osc_rgb(bytes: &[u8]) -> Option<u32> {
         .then_some((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn parse_hex_channel(bytes: &[u8]) -> Option<u8> {
     if !(1..=4).contains(&bytes.len()) || !bytes.iter().all(u8::is_ascii_hexdigit) {
         return None;

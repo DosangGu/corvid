@@ -876,12 +876,15 @@ fn card_title(run: &PresentedRun) -> &str {
         .unwrap_or("Untitled")
 }
 
+#[cfg(target_os = "macos")]
+fn card_font(window: &Window) -> gpui::Font {
+    window.text_style().font()
+}
+
+#[cfg(not(target_os = "macos"))]
 fn card_font(window: &Window) -> gpui::Font {
     let mut font = window.text_style().font();
-    #[cfg(not(target_os = "macos"))]
-    {
-        font.family = "Segoe UI".into();
-    }
+    font.family = "Segoe UI".into();
     font
 }
 
