@@ -60,5 +60,5 @@ jobs:
             target/debug
           key: checks-agent-deck-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/checks-agent-deck.yml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: checks-agent-deck-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.cargo/**', '.github/workflows/checks-agent-deck.yml') }}-
-      - run: cargo clippy --locked -p corvid-agent-deck -p corvid-agent-deck-ui -p corvid-agent-deck-core -p corvid-presentation --all-targets -- -D warnings
+      - run: cargo clippy --locked -p corvid-agent-deck -p corvid-agent-deck-ui -p corvid-agent-deck-core -p corvid-presentation --features corvid-agent-deck-ui/ui-tests --all-targets -- -D warnings
       - run: cargo test --locked -p corvid-agent-deck -p corvid-agent-deck-ui -p corvid-agent-deck-core -p corvid-presentation

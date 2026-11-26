@@ -418,7 +418,7 @@ that Desktop comes to the foreground, including from a minimized window, and
 that typed input reaches the selected agent's terminal.
 
 On an interactive Windows desktop, run
-`cargo test -p corvid-agent-deck-ui --test windows_tray -- --ignored --nocapture`
+`cargo test -p corvid-agent-deck-ui --features ui-tests --test windows_tray -- --nocapture`
 to check tray reopening. The fixture launches a separate Deck and delivers
 the Win32 icon and menu messages. It measures the native window bounds and
 styles before and after reopening the mini, moved and resized expanded, and
