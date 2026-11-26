@@ -10,6 +10,7 @@ use crate::macos::window_drag_region;
 #[derive(Clone, Copy)]
 pub(super) enum MenuAction {
     RestoreAgents,
+    LaunchAgent,
     NewWindow,
     Quit,
     Rename,
@@ -50,11 +51,15 @@ impl WorkspaceView {
         let ui = self.session.as_ref().map(Session::ui);
         if self.menu_create {
             return if ui.as_ref().is_some_and(|ui| ui.can_write() && !ui.changing) {
-                vec![
+                let mut items = vec![
                     (MenuAction::NewTab, "New tab", "Ctrl+] → t"),
                     (MenuAction::SplitRight, "Split right", "Ctrl+] → p → r"),
                     (MenuAction::SplitDown, "Split down", "Ctrl+] → p → d"),
-                ]
+                ];
+                if ui.as_ref().is_some_and(|ui| ui.create_view_agent_supported) {
+                    items.push((MenuAction::LaunchAgent, "Launch agent…", "Ctrl+] → a"));
+                }
+                items
             } else {
                 Vec::new()
             };
@@ -145,6 +150,7 @@ impl WorkspaceView {
                     self.restore_agents(selected, false, window, cx);
                 }
             }
+            MenuAction::LaunchAgent => self.show_agent_launcher(window, cx),
             MenuAction::NewWindow => self.new_window(cx),
             MenuAction::Quit => self.windows.quit(cx),
             MenuAction::Rename => self.open_naming(window, cx),

@@ -27,11 +27,20 @@ pub const fn pane_mode_hint(can_close: bool) -> &'static str {
     }
 }
 
+pub const fn agent_launcher_hint(can_split: bool) -> &'static str {
+    if can_split {
+        "↑/↓ Choose · Enter New tab · r Split right · d Split down · Esc Cancel"
+    } else {
+        "↑/↓ Choose · Enter New tab · Esc Cancel"
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceCommand {
     Workspaces,
     Tabs,
     Panes,
+    LaunchAgent,
     PreviousTab,
     NextTab,
     RenameTab,
@@ -40,10 +49,11 @@ pub enum WorkspaceCommand {
 }
 
 impl WorkspaceCommand {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Workspaces,
         Self::Tabs,
         Self::Panes,
+        Self::LaunchAgent,
         Self::PreviousTab,
         Self::NextTab,
         Self::RenameTab,
@@ -56,6 +66,7 @@ impl WorkspaceCommand {
             Self::Workspaces => 'w',
             Self::Tabs => 't',
             Self::Panes => 'p',
+            Self::LaunchAgent => 'a',
             Self::PreviousTab => '[',
             Self::NextTab => ']',
             Self::RenameTab => '.',
@@ -69,6 +80,7 @@ impl WorkspaceCommand {
             Self::Workspaces => "Switch workspace",
             Self::Tabs => "Tabs",
             Self::Panes => "Panes",
+            Self::LaunchAgent => "Launch agent",
             Self::PreviousTab => "Previous tab",
             Self::NextTab => "Next tab",
             Self::RenameTab => "Rename tab",
@@ -180,5 +192,16 @@ mod tests {
         assert_eq!(Rect::neighbor(&panes, &"top", Direction::Down), Some(2));
         assert_eq!(Rect::neighbor(&panes, &"bottom", Direction::Left), Some(0));
         assert_eq!(Rect::neighbor(&panes, &"bottom", Direction::Down), None);
+    }
+
+    #[test]
+    fn launch_agent_command_uses_a_key_and_label() {
+        assert_eq!(WorkspaceCommand::LaunchAgent.key(), 'a');
+        assert_eq!(WorkspaceCommand::LaunchAgent.label(), "Launch agent");
+        assert_eq!(
+            WorkspaceCommand::from_key('a'),
+            Some(WorkspaceCommand::LaunchAgent)
+        );
+        assert!(WorkspaceCommand::ALL.contains(&WorkspaceCommand::LaunchAgent));
     }
 }

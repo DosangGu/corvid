@@ -1,13 +1,19 @@
 use super::*;
+use corvid_core::agent::Provider;
 use corvid_core::layout::Axis;
-use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint, tab_mode_hint};
+use corvid_core::navigation::{
+    Direction, Rect, WorkspaceCommand, agent_launcher_hint, pane_mode_hint, tab_mode_hint,
+};
 use corvid_core::shortcuts::dubeolsik_key;
 use corvid_protocol::wire::reorder_tab::Placement;
-use corvid_protocol::wire::{SplitPane, TabStep};
+use corvid_protocol::wire::{AgentProvider, SplitPane, TabStep};
 
 pub(super) enum Overlay {
     Commands {
         query: String,
+        index: usize,
+    },
+    Agents {
         index: usize,
     },
     Tabs {
@@ -117,6 +123,10 @@ impl WorkspaceView {
             ]);
         }
         if self.navigation_target().is_some() {
+            let agent_launch = self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.ui().create_view_agent_supported);
             items.extend(
                 WorkspaceCommand::ALL
                     .into_iter()
@@ -128,12 +138,20 @@ impl WorkspaceView {
                                 | WorkspaceCommand::PreviousTab
                                 | WorkspaceCommand::NextTab
                                 | WorkspaceCommand::RenameTab
-                        )
+                        ) || (agent_launch && matches!(action, WorkspaceCommand::LaunchAgent))
                     })
                     .map(Workspace),
             );
         }
         matching(items, query, |item| item.label())
+    }
+
+    pub(super) fn show_agent_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_command(
+            Command::Workspace(WorkspaceCommand::LaunchAgent),
+            window,
+            cx,
+        );
     }
 
     fn run_command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
@@ -157,6 +175,19 @@ impl WorkspaceView {
                 if let Some((selected, _)) = self.navigation_target() {
                     self.zoom_pane = false;
                     self.show_navigation(Overlay::Panes(selected), window, cx);
+                }
+            }
+            Workspace(WorkspaceCommand::LaunchAgent) => {
+                if self.navigation_target().is_some() {
+                    if self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.ui().create_view_agent_supported)
+                    {
+                        self.show_navigation(Overlay::Agents { index: 0 }, window, cx);
+                    } else {
+                        self.error = Some("Launch agent requires a newer daemon.".into());
+                    }
                 }
             }
             Workspace(WorkspaceCommand::PreviousTab) => self.cycle_tab(true, window, cx),
@@ -283,7 +314,12 @@ impl WorkspaceView {
         let Some(overlay) = self.navigation.take() else {
             return;
         };
-        if key.modifiers.modified() && matches!(overlay, Overlay::Tabs { .. } | Overlay::Panes(_)) {
+        if key.modifiers.modified()
+            && matches!(
+                overlay,
+                Overlay::Tabs { .. } | Overlay::Panes(_) | Overlay::Agents { .. }
+            )
+        {
             self.navigation = Some(overlay);
             return;
         }
@@ -302,6 +338,42 @@ impl WorkspaceView {
                     edit_list(key, &mut query, &mut index, commands.len());
                 }
                 self.navigation = Some(Overlay::Commands { query, index });
+            }
+            Overlay::Agents { mut index } => {
+                let count = Provider::LAUNCHABLE.len();
+                if count == 0 {
+                    cx.notify();
+                    return;
+                }
+                index = index.min(count - 1);
+                let Some(provider) = wire_provider(Provider::LAUNCHABLE[index]) else {
+                    cx.notify();
+                    return;
+                };
+                match name {
+                    "up" | "k" => index = index.saturating_sub(1),
+                    "down" | "j" => index = (index + 1).min(count - 1),
+                    "enter" => {
+                        self.dismiss_overlay(window, cx);
+                        self.create_agent(Target::TabLabel(String::new()), provider);
+                        return;
+                    }
+                    "r" => {
+                        self.dismiss_overlay(window, cx);
+                        self.create_agent(
+                            Target::SplitAxis(SplitAxis::Horizontal as i32),
+                            provider,
+                        );
+                        return;
+                    }
+                    "d" => {
+                        self.dismiss_overlay(window, cx);
+                        self.create_agent(Target::SplitAxis(SplitAxis::Vertical as i32), provider);
+                        return;
+                    }
+                    _ => {}
+                }
+                self.navigation = Some(Overlay::Agents { index });
             }
             Overlay::Tabs {
                 workspace_id,
@@ -541,29 +613,55 @@ impl WorkspaceView {
             .text_color(rgb(TEXT))
             .text_size(ui_px(13.));
         if self.leader {
-            return Some(panel.child("w Workspaces · t Tabs · p Panes · ? Search · Esc Cancel"));
+            return Some(
+                panel.child("w Workspaces · t Tabs · p Panes · a Agents · ? Search · Esc Cancel"),
+            );
         }
-        let Some(Overlay::Commands { query, index }) = &self.navigation else {
-            return None;
-        };
-        let index = *index;
-        let items = self.commands(query);
-        let start = index.saturating_sub(5).min(items.len().saturating_sub(10));
-        Some(
-            panel.child(format!("Commands · {query}")).children(
-                items
-                    .into_iter()
-                    .enumerate()
-                    .skip(start)
-                    .take(10)
-                    .map(|(row, command)| {
-                        div()
-                            .px(ui_px(5.))
-                            .when(row == index, |row| row.bg(rgb(ACTIVE_FILL)))
-                            .child(command.label())
-                    }),
-            ),
-        )
+        match &self.navigation {
+            Some(Overlay::Commands { query, index }) => {
+                let index = *index;
+                let items = self.commands(query);
+                let start = index.saturating_sub(5).min(items.len().saturating_sub(10));
+                Some(
+                    panel.child(format!("Commands · {query}")).children(
+                        items
+                            .into_iter()
+                            .enumerate()
+                            .skip(start)
+                            .take(10)
+                            .map(|(row, command)| {
+                                div()
+                                    .px(ui_px(5.))
+                                    .when(row == index, |row| row.bg(rgb(ACTIVE_FILL)))
+                                    .child(command.label())
+                            }),
+                    ),
+                )
+            }
+            Some(Overlay::Agents { index }) => {
+                let index = *index;
+                Some(
+                    panel
+                        .child("Launch agent")
+                        .child(
+                            div()
+                                .text_size(ui_px(11.))
+                                .text_color(rgb(MUTED))
+                                .pb(ui_px(4.))
+                                .child(agent_launcher_hint(true)),
+                        )
+                        .children(Provider::LAUNCHABLE.iter().enumerate().map(
+                            |(row, provider)| {
+                                div()
+                                    .px(ui_px(5.))
+                                    .when(row == index, |row| row.bg(rgb(ACTIVE_FILL)))
+                                    .child(provider.label())
+                            },
+                        )),
+                )
+            }
+            _ => None,
+        }
     }
 
     fn pane_ordinal(&self, target: &ViewSelection) -> Option<usize> {
@@ -658,6 +756,16 @@ fn pane_direction(key: &str) -> Option<Direction> {
     }
 }
 
+fn wire_provider(provider: Provider) -> Option<AgentProvider> {
+    match provider {
+        Provider::Claude => Some(AgentProvider::Claude),
+        Provider::Codex => Some(AgentProvider::Codex),
+        Provider::Antigravity => Some(AgentProvider::Antigravity),
+        #[allow(unreachable_patterns)]
+        _ => None,
+    }
+}
+
 fn pane_rects<'a>(tab: &'a TabState, index: usize, region: Rect, panes: &mut Vec<(&'a str, Rect)>) {
     match tab.nodes.get(index).and_then(|node| node.body.as_ref()) {
         Some(Node::PaneId(id)) => panes.push((id, region)),
@@ -691,6 +799,8 @@ mod tests {
             ("w->ㅈ", WorkspaceCommand::Workspaces),
             ("ㅅ", WorkspaceCommand::Tabs),
             ("p->ᅦ", WorkspaceCommand::Panes),
+            ("a", WorkspaceCommand::LaunchAgent),
+            ("ㅁ", WorkspaceCommand::LaunchAgent),
             ("ㅇ", WorkspaceCommand::Detach),
             ("shift-/->?", WorkspaceCommand::Commands),
         ] {

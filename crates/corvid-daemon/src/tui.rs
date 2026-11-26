@@ -56,6 +56,7 @@ const CAPABILITIES: &[&str] = &[
     "select_view.v1",
     CLAIM_WORKSPACE_CAPABILITY,
     CREATE_VIEW_CAPABILITY,
+    corvid_protocol::CREATE_VIEW_AGENT_CAPABILITY,
     corvid_protocol::WORKSPACE_DIRECTORY_CAPABILITY,
     CLOSE_VIEW_CAPABILITY,
     PANE_PREVIEW_CAPABILITY,
@@ -926,23 +927,43 @@ async fn create_destination(
     use corvid_protocol::wire::create_view::Target;
 
     require_view(view.expected_view_revision, revision)?;
+    let provider = view
+        .agent_provider
+        .map(|id| {
+            crate::provider::from_wire(id)
+                .ok_or_else(|| invalid("unsupported managed agent provider"))
+        })
+        .transpose()?;
     match view
         .target
         .as_ref()
         .ok_or_else(|| invalid("missing view target"))?
     {
-        Target::WorkspaceLabel(label) => Ok(Destination::CreateWorkspace(label.clone(), None)),
-        Target::Workspace(workspace) => Ok(Destination::CreateWorkspace(
-            workspace.label.clone(),
-            Some(crate::directories::resolve(workspace.directory.clone()).await?),
-        )),
-        Target::TabLabel(label) if label.is_empty() => {
-            Ok(Destination::Tab(crate::terminal::TabCommand::Create))
+        Target::WorkspaceLabel(label) => {
+            if provider.is_some() {
+                return Err(invalid("agent launch requires a tab or pane target"));
+            }
+            Ok(Destination::CreateWorkspace(label.clone(), None))
         }
-        Target::TabLabel(label) => Ok(Destination::CreateTab(label.clone())),
+        Target::Workspace(workspace) => {
+            if provider.is_some() {
+                return Err(invalid("agent launch requires a tab or pane target"));
+            }
+            Ok(Destination::CreateWorkspace(
+                workspace.label.clone(),
+                Some(crate::directories::resolve(workspace.directory.clone()).await?),
+            ))
+        }
+        Target::TabLabel(label) if label.is_empty() => match provider {
+            Some(provider) => Ok(Destination::Tab(crate::terminal::TabCommand::LaunchAgent(
+                provider, None,
+            ))),
+            None => Ok(Destination::Tab(crate::terminal::TabCommand::Create)),
+        },
+        Target::TabLabel(label) => Ok(Destination::CreateTab(label.clone(), provider)),
         Target::SplitAxis(axis) => match SplitAxis::try_from(*axis) {
-            Ok(SplitAxis::Horizontal) => Ok(Destination::Split(Axis::Horizontal)),
-            Ok(SplitAxis::Vertical) => Ok(Destination::Split(Axis::Vertical)),
+            Ok(SplitAxis::Horizontal) => Ok(Destination::Split(Axis::Horizontal, provider)),
+            Ok(SplitAxis::Vertical) => Ok(Destination::Split(Axis::Vertical, provider)),
             _ => Err(invalid("invalid split axis")),
         },
         Target::SplitPane(split) => {
@@ -951,9 +972,13 @@ async fn create_destination(
                 Ok(SplitAxis::Vertical) => Axis::Vertical,
                 _ => return Err(invalid("invalid split axis")),
             };
-            Ok(Destination::SplitPane(parse_id(&split.pane_id)?, axis))
+            Ok(Destination::SplitPane(
+                parse_id(&split.pane_id)?,
+                axis,
+                provider,
+            ))
         }
-        Target::OpenPane(view) => Ok(Destination::Open(parse_selection(view)?)),
+        Target::OpenPane(view) => Ok(Destination::Open(parse_selection(view)?, provider)),
     }
 }
 
@@ -1364,4 +1389,80 @@ fn invalid(message: &str) -> ProtocolFault {
 
 fn paste_id(id: &str) -> Result<Uuid, ProtocolFault> {
     Uuid::parse_str(id).map_err(|_| invalid("invalid paste ID"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use corvid_core::agent::Provider;
+    use corvid_protocol::wire::create_view::Target;
+    use corvid_protocol::wire::{AgentProvider, SplitPane, ViewSelection};
+
+    #[compio::test]
+    async fn create_destination_handles_agent_provider_targets() {
+        let pane_id = Uuid::new_v4();
+        let tab_id = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+
+        let new_tab = CreateView {
+            expected_view_revision: Some(2),
+            target: Some(Target::TabLabel(String::new())),
+            agent_provider: Some(AgentProvider::Claude as i32),
+        };
+        assert!(matches!(
+            create_destination(&new_tab, 2).await,
+            Ok(Destination::Tab(crate::terminal::TabCommand::LaunchAgent(
+                Provider::Claude,
+                None
+            )))
+        ));
+
+        let split = CreateView {
+            expected_view_revision: Some(2),
+            target: Some(Target::SplitAxis(SplitAxis::Horizontal as i32)),
+            agent_provider: Some(AgentProvider::Codex as i32),
+        };
+        assert!(matches!(
+            create_destination(&split, 2).await,
+            Ok(Destination::Split(Axis::Horizontal, Some(Provider::Codex)))
+        ));
+
+        let split_pane = CreateView {
+            expected_view_revision: Some(2),
+            target: Some(Target::SplitPane(SplitPane {
+                pane_id: pane_id.to_string(),
+                axis: SplitAxis::Vertical as i32,
+            })),
+            agent_provider: Some(AgentProvider::Antigravity as i32),
+        };
+        assert!(matches!(
+            create_destination(&split_pane, 2).await,
+            Ok(Destination::SplitPane(
+                id,
+                Axis::Vertical,
+                Some(Provider::Antigravity)
+            )) if id == pane_id
+        ));
+
+        let open_pane = CreateView {
+            expected_view_revision: Some(2),
+            target: Some(Target::OpenPane(ViewSelection {
+                workspace_id: workspace_id.to_string(),
+                tab_id: tab_id.to_string(),
+                pane_id: pane_id.to_string(),
+            })),
+            agent_provider: Some(AgentProvider::Claude as i32),
+        };
+        assert!(matches!(
+            create_destination(&open_pane, 2).await,
+            Ok(Destination::Open(_, Some(Provider::Claude)))
+        ));
+
+        let workspace_target = CreateView {
+            expected_view_revision: Some(2),
+            target: Some(Target::WorkspaceLabel("ws".into())),
+            agent_provider: Some(AgentProvider::Claude as i32),
+        };
+        assert!(create_destination(&workspace_target, 2).await.is_err());
+    }
 }

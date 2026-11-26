@@ -52,6 +52,7 @@ pub mod controller;
 
 pub const CLAIM_WORKSPACE_CAPABILITY: &str = "claim_workspace.v1";
 pub const CREATE_VIEW_CAPABILITY: &str = "create_view.v1";
+pub const CREATE_VIEW_AGENT_CAPABILITY: &str = "create_view.agent.v1";
 pub const WORKSPACE_DIRECTORY_CAPABILITY: &str = "workspace.directory.v1";
 pub const VIEW_TITLES_CAPABILITY: &str = "view_titles.v1";
 pub const CLOSE_VIEW_CAPABILITY: &str = "close_view.v1";

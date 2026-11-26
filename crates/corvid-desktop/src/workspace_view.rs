@@ -943,6 +943,12 @@ impl WorkspaceView {
         }
     }
 
+    fn create_agent(&self, target: Target, provider: corvid_protocol::wire::AgentProvider) {
+        if let Some(session) = &self.session {
+            session.create_agent(target, provider);
+        }
+    }
+
     fn disconnect_others(&self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone().filter(|session| {
             let ui = session.ui();
