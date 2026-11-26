@@ -1301,6 +1301,16 @@ message TerminalHistory {
   repeated uint32 wrapped_rows = 7;
   // OSC 133/633 command boundaries ordered oldest to newest.
   repeated HistoryCommand commands = 8;
+  // Explicit OSC 8 hyperlink spans ordered by row and UTF-8 byte offset.
+  repeated HistoryHyperlink hyperlinks = 9;
+}
+
+message HistoryHyperlink {
+  uint32 row = 1;
+  uint32 start_offset = 2;
+  uint32 end_offset = 3;
+  string uri = 4;
+  optional string id = 5;
 }
 
 message HistoryCommand {

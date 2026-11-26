@@ -5,7 +5,7 @@ use std::num::NonZeroU16;
 
 use anyhow::{Result, ensure};
 use corvid_core::Viewport;
-use corvid_protocol::ansi_screen::{Cell, Decoder, Screen};
+use corvid_protocol::ansi_screen::{Cell, Decoder, Hyperlink, Screen};
 use unicode_width::UnicodeWidthStr;
 
 const RESET_DRAWING: &str = "\x1b[?6l\x1b[r\x1b[?7h\x1b[0m\x1b[2J";
@@ -120,12 +120,18 @@ impl ScreenSnapshot {
             };
             write!(frame, "\x1b[{};{}H", cursor.row + 1, start + 1)?;
             if let Some(cell) = self.cell(cursor.row, start) {
+                if let Some(link) = cell.hyperlink() {
+                    write_osc8(frame, Some(link));
+                }
                 cell.style.paint(frame);
                 frame.push_str(if cell.has_contents() {
                     cell.contents()
                 } else {
                     " "
                 });
+                if cell.hyperlink().is_some() {
+                    write_osc8(frame, None);
+                }
             }
         } else {
             write!(frame, "\x1b[{};{}H", cursor.row + 1, col + 1)?;
@@ -159,6 +165,7 @@ fn encode_row(
         end += 1;
     }
     let mut style = None;
+    let mut active_link: Option<&Hyperlink> = None;
     let mut column = start;
     write!(frame, "\x1b[{};{}H", row + 1, column + 1)?;
     while column < end {
@@ -166,6 +173,11 @@ fn encode_row(
         if cell.is_wide_continuation() {
             column += 1;
             continue;
+        }
+        let next_link = cell.hyperlink();
+        if next_link != active_link {
+            write_osc8(frame, next_link);
+            active_link = next_link;
         }
         if style != Some(cell.style) {
             cell.style.paint(frame);
@@ -197,5 +209,24 @@ fn encode_row(
             write!(frame, "\x1b[{};{}H", row + 1, column + 1)?;
         }
     }
+    if active_link.is_some() {
+        write_osc8(frame, None);
+    }
     Ok(())
+}
+
+pub(super) fn write_osc8(out: &mut String, link: Option<&Hyperlink>) {
+    match link {
+        None => out.push_str("\x1b]8;;\x1b\\"),
+        Some(link) => {
+            out.push_str("\x1b]8;");
+            if let Some(id) = &link.id {
+                out.push_str("id=");
+                out.push_str(id);
+            }
+            out.push(';');
+            out.push_str(&link.uri);
+            out.push_str("\x1b\\");
+        }
+    }
 }

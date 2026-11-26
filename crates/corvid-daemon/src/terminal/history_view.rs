@@ -211,7 +211,14 @@ impl HistoryView {
             let _ = write!(ansi, "\x1b[{};{}H\x1b[0m", screen_row + 1, rect.x + 1);
             let row_idx = self.top + offset;
             let printed_cols = if let Some(line) = self.history.lines.get(row_idx) {
-                write_styled_line(&mut ansi, line, &self.history.styles, row_idx as u32, width)
+                write_styled_line(
+                    &mut ansi,
+                    line,
+                    &self.history.styles,
+                    &self.history.hyperlinks,
+                    row_idx as u32,
+                    width,
+                )
             } else {
                 0
             };
@@ -228,14 +235,46 @@ fn write_styled_line(
     out: &mut String,
     line: &str,
     styles: &[corvid_protocol::wire::HistoryStyle],
+    hyperlinks: &[corvid_protocol::wire::HistoryHyperlink],
     row_index: u32,
     max_cols: usize,
 ) -> usize {
-    let first = styles.partition_point(|change| change.row < row_index);
-    let row_styles = &styles[first..];
+    let first_style = styles.partition_point(|change| change.row < row_index);
+    let row_styles = &styles[first_style..];
     let mut style_idx = 0;
+    let first_link = hyperlinks.partition_point(|link| link.row < row_index);
+    let row_links = &hyperlinks[first_link..];
+    let mut link_idx = 0;
+    let mut active_end: Option<u32> = None;
     let mut cols = 0;
     for (byte_idx, ch) in line.char_indices() {
+        if let Some(end) = active_end
+            && byte_idx >= end as usize
+        {
+            out.push_str("\x1b]8;;\x1b\\");
+            active_end = None;
+        }
+        while let Some(link) = row_links.get(link_idx)
+            && link.row == row_index
+            && (link.end_offset as usize) <= byte_idx
+        {
+            link_idx += 1;
+        }
+        if active_end.is_none()
+            && let Some(link) = row_links.get(link_idx)
+            && link.row == row_index
+            && (link.start_offset as usize) == byte_idx
+        {
+            out.push_str("\x1b]8;");
+            if let Some(id) = &link.id {
+                out.push_str("id=");
+                out.push_str(id);
+            }
+            out.push(';');
+            out.push_str(&link.uri);
+            out.push_str("\x1b\\");
+            active_end = Some(link.end_offset);
+        }
         while let Some(change) = row_styles.get(style_idx)
             && change.row == row_index
             && (change.offset as usize) <= byte_idx
@@ -253,6 +292,9 @@ fn write_styled_line(
             out.push(ch);
             cols += ch_width;
         }
+    }
+    if active_end.is_some() {
+        out.push_str("\x1b]8;;\x1b\\");
     }
     cols
 }
@@ -321,5 +363,36 @@ mod tests {
         }
 
         assert!(matches!(view.key(b"\x1b", 4), HistoryAction::Close));
+    }
+
+    #[test]
+    fn paint_emits_and_closes_osc8_hyperlinks_even_when_clipped() {
+        let history = TerminalHistory {
+            columns: 20,
+            lines: vec!["open https://example.test".into()],
+            hyperlinks: vec![corvid_protocol::wire::HistoryHyperlink {
+                row: 0,
+                start_offset: 5,
+                end_offset: 25,
+                uri: "https://example.test".into(),
+                id: Some("h1".into()),
+            }],
+            commands: vec![corvid_protocol::wire::HistoryCommand {
+                prompt_row: Some(0),
+                output_start_row: Some(0),
+                output_start_offset: Some(0),
+                finished: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let view = HistoryView::open_previous(history, 3).unwrap();
+        let ansi = view.paint(Rect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 3,
+        });
+        assert!(ansi.contains("\x1b]8;id=h1;https://example.test\x1b\\https\x1b]8;;\x1b\\"));
     }
 }

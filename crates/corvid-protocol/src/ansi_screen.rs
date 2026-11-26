@@ -67,11 +67,52 @@ pub enum Width {
     Continuation,
 }
 
+pub const MAX_HYPERLINK_URI_BYTES: usize = 2048;
+pub const MAX_HYPERLINK_ID_BYTES: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hyperlink {
+    pub uri: String,
+    pub id: Option<String>,
+}
+
+pub fn sanitize_hyperlink(uri: &str, id: Option<&str>) -> Option<Hyperlink> {
+    if uri.is_empty() || uri.len() > MAX_HYPERLINK_URI_BYTES || uri.chars().any(is_unsafe_char) {
+        return None;
+    }
+    let id = match id.filter(|id| !id.is_empty()) {
+        Some(id) => {
+            if id.len() > MAX_HYPERLINK_ID_BYTES
+                || id
+                    .chars()
+                    .any(|ch| is_unsafe_char(ch) || ch == ';' || ch == ':')
+            {
+                return None;
+            }
+            Some(id.to_owned())
+        }
+        None => None,
+    };
+    Some(Hyperlink {
+        uri: uri.to_owned(),
+        id,
+    })
+}
+
+fn is_unsafe_char(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
     text: SmolStr,
     pub width: Width,
     pub style: Style,
+    hyperlink: Option<Arc<Hyperlink>>,
 }
 
 impl Cell {
@@ -80,7 +121,21 @@ impl Cell {
             text: SmolStr::new(text),
             width,
             style,
+            hyperlink: None,
         }
+    }
+
+    pub fn with_hyperlink(mut self, hyperlink: Option<Arc<Hyperlink>>) -> Self {
+        self.hyperlink = hyperlink;
+        self
+    }
+
+    pub fn hyperlink(&self) -> Option<&Hyperlink> {
+        self.hyperlink.as_deref()
+    }
+
+    pub fn hyperlink_arc(&self) -> Option<&Arc<Hyperlink>> {
+        self.hyperlink.as_ref()
     }
 
     pub fn contents(&self) -> &str {
@@ -170,6 +225,12 @@ impl Screen {
         self.rows
             .get(usize::from(row))
             .is_some_and(|row| row.wrapped)
+    }
+
+    pub fn set_row_wrapped(&mut self, row: u16, wrapped: bool) {
+        if let Some(row) = self.rows.get_mut(usize::from(row)) {
+            Arc::make_mut(row).wrapped = wrapped;
+        }
     }
 
     pub fn cursor_position(&self) -> (u16, u16) {

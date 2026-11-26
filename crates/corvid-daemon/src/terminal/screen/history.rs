@@ -1,5 +1,7 @@
-use corvid_protocol::ansi_screen::{Cell, Style};
-use corvid_protocol::wire::{HistoryStyle, TerminalHistory};
+use std::sync::Arc;
+
+use corvid_protocol::ansi_screen::{Cell, Hyperlink, Style};
+use corvid_protocol::wire::{HistoryHyperlink, HistoryStyle, TerminalHistory};
 use corvid_protocol::{TERMINAL_HISTORY_MAX_BYTES, TERMINAL_HISTORY_MAX_ROWS};
 
 use super::is_bidi_control;
@@ -8,6 +10,7 @@ use super::is_bidi_control;
 pub(super) struct HistoryLine {
     text: String,
     styles: Vec<HistoryStyle>,
+    hyperlinks: Vec<HistoryHyperlink>,
 }
 
 pub(super) struct ColumnOffsets {
@@ -24,6 +27,7 @@ impl HistoryLine {
         let mut line = Self::default();
         let mut style = Style::default();
         let mut blanks = 0;
+        let mut active_link: Option<(usize, Arc<Hyperlink>)> = None;
         let mut starts = track_columns.then(|| Vec::with_capacity(cells.len()));
         let mut ends = track_columns.then(|| Vec::with_capacity(cells.len()));
         let mut prev_start = 0;
@@ -36,6 +40,15 @@ impl HistoryLine {
                     ends.push(prev_end);
                 }
                 continue;
+            }
+            let next_link = cell.hyperlink_arc();
+            if next_link.map(Arc::as_ref) != active_link.as_ref().map(|(_, link)| link.as_ref()) {
+                line.finish_hyperlink(&mut active_link);
+                if let Some(next_link) = next_link {
+                    line.text.extend(std::iter::repeat_n(' ', blanks));
+                    blanks = 0;
+                    active_link = Some((line.text.len(), Arc::clone(next_link)));
+                }
             }
             let col_start = line.text.len() + blanks;
             let next = cell.style;
@@ -53,7 +66,7 @@ impl HistoryLine {
                 blanks = 0;
                 line.text
                     .extend(cell.contents().chars().filter(|&ch| printable(ch)));
-            } else if style == Style::default() {
+            } else if style == Style::default() && active_link.is_none() {
                 blanks += 1;
             } else {
                 line.text.push(' ');
@@ -66,6 +79,7 @@ impl HistoryLine {
                 prev_end = col_end;
             }
         }
+        line.finish_hyperlink(&mut active_link);
         if wrapped && blanks > 0 {
             line.text.extend(std::iter::repeat_n(' ', blanks));
         }
@@ -97,6 +111,21 @@ impl HistoryLine {
             sgr,
         });
     }
+
+    fn finish_hyperlink(&mut self, active: &mut Option<(usize, Arc<Hyperlink>)>) {
+        if let Some((start, link)) = active.take() {
+            let end = self.text.len();
+            if end > start {
+                self.hyperlinks.push(HistoryHyperlink {
+                    row: 0,
+                    start_offset: start as u32,
+                    end_offset: end as u32,
+                    uri: link.uri.clone(),
+                    id: link.id.clone(),
+                });
+            }
+        }
+    }
 }
 
 fn printable(ch: char) -> bool {
@@ -125,7 +154,12 @@ impl HistoryBuilder {
         let size = line.text.len()
             + 8
             + usize::from(wrapped) * 4
-            + line.styles.iter().map(|s| s.sgr.len() + 20).sum::<usize>();
+            + line.styles.iter().map(|s| s.sgr.len() + 20).sum::<usize>()
+            + line
+                .hyperlinks
+                .iter()
+                .map(|l| 24 + l.uri.len() + l.id.as_deref().map_or(0, str::len))
+                .sum::<usize>();
         if self.lines.len() == TERMINAL_HISTORY_MAX_ROWS
             || self.bytes + size > TERMINAL_HISTORY_MAX_BYTES
         {
@@ -154,6 +188,12 @@ impl HistoryBuilder {
                 .extend(line.styles.into_iter().map(|mut change| {
                     change.row = row as u32;
                     change
+                }));
+            result
+                .hyperlinks
+                .extend(line.hyperlinks.into_iter().map(|mut link| {
+                    link.row = row as u32;
+                    link
                 }));
         }
         (result, count)

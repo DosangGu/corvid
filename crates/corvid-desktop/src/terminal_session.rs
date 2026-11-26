@@ -319,6 +319,7 @@ pub struct Ui {
     pub ssh_offline: bool,
     pub reconnect_target: Option<AttachTarget>,
     pub inventory_offline: bool,
+    pub remote_host: Option<String>,
 }
 
 impl Ui {
@@ -438,6 +439,7 @@ impl Shared {
                 ssh_offline: false,
                 reconnect_target: None,
                 inventory_offline: false,
+                remote_host: destination.remote().map(|_| destination.label().to_owned()),
             }),
             screen: None,
             wheel_encoding: WheelEncoding::Disabled,
@@ -927,6 +929,10 @@ impl Session {
 
     pub fn ui(&self) -> Ui {
         self.ui_with_revision().0
+    }
+
+    pub(crate) fn remote_host_label(&self) -> Option<String> {
+        self.shared.snapshot().ui.remote_host.clone()
     }
 
     pub fn reconnect_ssh_controls(&self) {
