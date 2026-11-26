@@ -209,11 +209,13 @@ async fn live_pty_tracks_osc_133_commands_across_reflow_reattach_and_tui_copy() 
         timeout(Duration::from_secs(4), read_until(&mut pty, b"Command 1/2"))
             .await
             .context("waiting for Command 1/2 on TUI PTY")??;
+        drain_pty(&mut pty).await?;
 
         pty.write_all(b"\x1b")?;
         timeout(Duration::from_secs(4), read_until(&mut pty, b"READY"))
             .await
             .context("waiting for live READY after closing history")??;
+        drain_pty(&mut pty).await?;
 
         pty.write_all(b"\x1d?")?;
         timeout(Duration::from_secs(4), read_until(&mut pty, b"CORVID COMMANDS"))
@@ -291,6 +293,19 @@ fn spawn_tui(runtime: &Path, views: &Path) -> Result<(Child, File)> {
         .spawn()
         .context("starting TUI")?;
     Ok((child, File::from(pty.master)))
+}
+
+async fn drain_pty(pty: &mut File) -> Result<()> {
+    sleep(Duration::from_millis(50)).await;
+    let mut buffer = [0; 4096];
+    loop {
+        match pty.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(()),
+            Err(error) => return Err(error).context("draining TUI PTY"),
+        }
+    }
 }
 
 async fn read_until(pty: &mut File, expected: &[u8]) -> Result<Vec<u8>> {
