@@ -2,6 +2,10 @@ use std::num::NonZeroU16;
 use std::ops::Range;
 
 use corvid_protocol::ansi_screen::{Decoder, Screen};
+use corvid_protocol::history::{
+    CommandOutput, CommandOutputError, command_output, jumpable_commands, last_command_output,
+    next_command, previous_command,
+};
 use corvid_protocol::wire::TerminalHistory;
 use unicode_width::UnicodeWidthChar;
 
@@ -16,6 +20,8 @@ pub(super) struct History {
     pending_back: usize,
     pub(super) wheel_browse: bool,
     pub(super) search: Option<Search>,
+    pub(super) selected_command: Option<usize>,
+    pub(super) notice: Option<String>,
 }
 
 #[derive(Default)]
@@ -32,6 +38,8 @@ impl History {
             pending_back: 0,
             wheel_browse: false,
             search: search.then(Search::default),
+            selected_command: None,
+            notice: None,
         }
     }
 
@@ -60,7 +68,52 @@ impl History {
     pub(super) fn loaded(&mut self, result: Result<TerminalHistory, String>, height: usize) {
         self.result = Some(result);
         self.first = self.last_top(height).saturating_sub(self.pending_back);
+        self.selected_command = None;
+        self.notice = None;
         self.find(true);
+    }
+
+    pub(super) fn jump_command(&mut self, previous: bool, height: usize) -> bool {
+        let Some(snapshot) = self.snapshot() else {
+            return false;
+        };
+        let next = if previous {
+            previous_command(snapshot, self.selected_command)
+        } else {
+            next_command(snapshot, self.selected_command)
+        };
+        if let Some(index) = next {
+            let prompt_row = snapshot.commands[index]
+                .prompt_row
+                .map(|row| row as usize)
+                .unwrap_or(0);
+            self.selected_command = Some(index);
+            self.first = prompt_row.min(self.last_top(height));
+            self.notice = None;
+            true
+        } else {
+            if self.selected_command.is_some() {
+                self.notice = Some(
+                    if previous {
+                        "At oldest command"
+                    } else {
+                        "At newest command"
+                    }
+                    .into(),
+                );
+            }
+            false
+        }
+    }
+
+    pub(super) fn copy_command_output(&mut self) -> Result<CommandOutput, CommandOutputError> {
+        let Some(snapshot) = self.snapshot() else {
+            return Err(CommandOutputError::NoCommands);
+        };
+        self.selected_command.map_or_else(
+            || last_command_output(snapshot),
+            |index| command_output(snapshot, index),
+        )
     }
 
     pub(super) fn title(&self, marked: &str) -> String {
@@ -83,8 +136,33 @@ impl History {
                         "Find: {}{marked}{found}{coverage}    Enter / Shift+Enter · Esc to live",
                         search.query
                     )
+                } else if let Some(selected) = self.selected_command {
+                    let jumpable = jumpable_commands(snapshot);
+                    let pos = jumpable
+                        .iter()
+                        .position(|&item| item == selected)
+                        .map_or(1, |idx| idx + 1);
+                    let notice = self
+                        .notice
+                        .as_deref()
+                        .map_or(String::new(), |msg| format!(" · {msg}"));
+                    format!(
+                        "Command {pos}/{}{notice}{coverage}    [/] Prev/Next · c Copy · Esc to live",
+                        jumpable.len().max(1)
+                    )
                 } else {
-                    format!("Terminal history{coverage}    Ctrl+] ? to find · Esc to live")
+                    let notice = self
+                        .notice
+                        .as_deref()
+                        .map_or(String::new(), |msg| format!(" · {msg}"));
+                    let cmd_hint = if jumpable_commands(snapshot).is_empty() {
+                        ""
+                    } else {
+                        " · [ Prev command · c Copy"
+                    };
+                    format!(
+                        "Terminal history{notice}{coverage}    Ctrl+] ? to find{cmd_hint} · Esc to live"
+                    )
                 }
             }
         }
@@ -312,5 +390,52 @@ mod tests {
         assert_eq!(hit, Some((0, 5)..(0, 10)));
         history.find(true);
         assert_eq!(history.search.as_ref().unwrap().hit, Some((2, 0)));
+    }
+
+    #[test]
+    fn jumps_between_commands_and_copies_selected_output() {
+        let mut history = History::new(false);
+        history.loaded(
+            Ok(TerminalHistory {
+                columns: 40,
+                lines: vec![
+                    "$ echo one".into(),
+                    "one".into(),
+                    "$ echo two".into(),
+                    "two".into(),
+                    "$ ".into(),
+                ],
+                commands: vec![
+                    corvid_protocol::wire::HistoryCommand {
+                        prompt_row: Some(0),
+                        output_start_row: Some(1),
+                        output_end_row: Some(2),
+                        finished: true,
+                        ..Default::default()
+                    },
+                    corvid_protocol::wire::HistoryCommand {
+                        prompt_row: Some(2),
+                        output_start_row: Some(3),
+                        output_end_row: Some(4),
+                        finished: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            2,
+        );
+        assert!(history.jump_command(true, 2));
+        assert_eq!(history.selected_command, Some(1));
+        assert_eq!(history.first, 2);
+        assert!(history.title("").contains("Command 2/2"));
+
+        assert!(history.jump_command(true, 2));
+        assert_eq!(history.selected_command, Some(0));
+        assert_eq!(history.first, 0);
+        assert_eq!(history.copy_command_output().unwrap().text, "one");
+
+        assert!(!history.jump_command(true, 2));
+        assert_eq!(history.notice.as_deref(), Some("At oldest command"));
     }
 }

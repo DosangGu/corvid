@@ -1182,6 +1182,7 @@ message RouteToken {
 message ClipboardWrite {
   RouteToken route_token = 1;
   string text = 2;
+  bool user_initiated = 3;
 }
 
 message InputChunk {
@@ -1295,6 +1296,20 @@ message TerminalHistory {
   // Sparse SGR changes ordered by row and UTF-8 byte offset in lines.
   repeated HistoryStyle styles = 5;
   optional bool alternate_screen = 6;
+  // Strictly increasing row indices in lines that soft-wrap into the next row.
+  repeated uint32 wrapped_rows = 7;
+  // OSC 133/633 command boundaries ordered oldest to newest.
+  repeated HistoryCommand commands = 8;
+}
+
+message HistoryCommand {
+  optional uint32 prompt_row = 1;
+  optional uint32 output_start_row = 2;
+  optional uint32 output_start_offset = 3;
+  optional uint32 output_end_row = 4;
+  optional uint32 output_end_offset = 5;
+  bool finished = 6;
+  bool truncated = 7;
 }
 
 message HistoryStyle {

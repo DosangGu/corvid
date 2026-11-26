@@ -41,6 +41,8 @@ enum Command {
     Reconnect,
     OpenTerminal,
     History(bool),
+    PreviousPrompt,
+    CopyLastOutput,
     Zoom,
 }
 
@@ -58,6 +60,8 @@ impl Command {
             Self::OpenTerminal => "Open terminal",
             Self::History(false) => "Browse terminal history",
             Self::History(true) => "Search terminal history",
+            Self::PreviousPrompt => "Previous command",
+            Self::CopyLastOutput => "Copy last command output",
             Self::Zoom => "Expand or restore active pane",
         }
     }
@@ -106,6 +110,8 @@ impl WorkspaceView {
                 Agents,
                 History(false),
                 History(true),
+                PreviousPrompt,
+                CopyLastOutput,
                 Zoom,
                 Workspace(WorkspaceCommand::Detach),
             ]);
@@ -155,6 +161,28 @@ impl WorkspaceView {
             }
             Workspace(WorkspaceCommand::PreviousTab) => self.cycle_tab(true, window, cx),
             Workspace(WorkspaceCommand::NextTab) => self.cycle_tab(false, window, cx),
+            PreviousPrompt => {
+                if !self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.ui().command_history_supported)
+                {
+                    self.error = Some("This daemon does not support command history.".into());
+                } else if let Some(terminal) = &self.terminal {
+                    terminal.update(cx, |view, cx| view.jump_previous_command(cx));
+                }
+            }
+            CopyLastOutput => {
+                if !self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.ui().command_history_supported)
+                {
+                    self.error = Some("This daemon does not support command history.".into());
+                } else if let Some(terminal) = &self.terminal {
+                    terminal.update(cx, |view, cx| view.copy_command_output(cx));
+                }
+            }
             Workspace(WorkspaceCommand::RenameTab) => self.open_naming(window, cx),
             Workspace(WorkspaceCommand::Commands) => self.show_navigation(
                 Overlay::Commands {
@@ -671,7 +699,7 @@ mod tests {
                 Some(command)
             );
         }
-        for stroke in ["shift-t->ㅆ", "ctrl-ㅅ", "t->한글"] {
+        for stroke in ["k->ㅏ", "c->ㅊ", "shift-t->ㅆ", "ctrl-ㅅ", "t->한글"] {
             assert_eq!(workspace_command(&Keystroke::parse(stroke).unwrap()), None);
         }
     }

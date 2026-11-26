@@ -400,3 +400,44 @@ fn current_run_pages_are_only_available_to_presentation_peers() {
         );
     }
 }
+
+#[test]
+fn command_history_capability_and_additive_fields_preserve_backward_compatibility() {
+    use prost::Message;
+
+    let greeting = hello(
+        "hello".into(),
+        None,
+        vec![corvid_protocol::COMMAND_HISTORY_CAPABILITY.into()],
+    );
+    let required = match &greeting.body {
+        Some(Body::Hello(hello)) => hello.required_capabilities.clone(),
+        _ => panic!("expected Hello"),
+    };
+    assert_eq!(
+        required,
+        vec![corvid_protocol::COMMAND_HISTORY_CAPABILITY.to_owned()]
+    );
+
+    let old_clipboard = corvid_protocol::wire::ClipboardWrite {
+        route_token: None,
+        text: "hello".into(),
+        user_initiated: false,
+    };
+    let decoded =
+        corvid_protocol::wire::ClipboardWrite::decode(old_clipboard.encode_to_vec().as_slice())
+            .unwrap();
+    assert!(!decoded.user_initiated);
+
+    let old_history = corvid_protocol::wire::TerminalHistory {
+        lines: vec!["line".into()],
+        columns: 80,
+        ..Default::default()
+    };
+    let decoded_history =
+        corvid_protocol::wire::TerminalHistory::decode(old_history.encode_to_vec().as_slice())
+            .unwrap();
+    assert!(decoded_history.wrapped_rows.is_empty());
+    assert!(decoded_history.commands.is_empty());
+    assert!(corvid_protocol::history::validate_history(&decoded_history).is_ok());
+}

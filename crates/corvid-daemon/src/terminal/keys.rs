@@ -13,6 +13,7 @@ pub(crate) struct Keymap {
     pub(crate) pane_writer: bool,
     pub(crate) disconnect: bool,
     pub(crate) clipboard_write: bool,
+    pub(crate) command_history: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,6 +44,8 @@ pub(super) enum KeyCommand {
     Close(CloseKind),
     PickTab,
     Browse(super::navigation::Kind),
+    PreviousCommand,
+    CopyLastOutput,
     End(CloseTarget),
     Click(Uuid, super::navigation::Mouse),
     PairController,

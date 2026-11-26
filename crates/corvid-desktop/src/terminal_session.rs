@@ -38,8 +38,8 @@ use corvid_protocol::{
     CLAIM_WORKSPACE_CAPABILITY, CLIPBOARD_WRITE_CAPABILITY, CLOSE_VIEW_CAPABILITY, COMMAND_TIMEOUT,
     CREATE_VIEW_CAPABILITY, DEFAULT_SHELL_CAPABILITY, Frame, GRACEFUL_DETACH_CAPABILITY,
     PANE_PREVIEW_CAPABILITY, ProtocolFault, REORDER_TAB_CAPABILITY, RenderFrame,
-    SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY, TERMINAL_HISTORY_MAX_BYTES,
-    TERMINAL_HISTORY_MAX_ROWS, WRITER_RESUME_CAPABILITY, decode_envelope,
+    SESSION_CLIENTS_CAPABILITY, TERMINAL_HISTORY_CAPABILITY, WRITER_RESUME_CAPABILITY,
+    decode_envelope,
 };
 use uuid::Uuid;
 
@@ -300,6 +300,7 @@ pub struct Ui {
     pub restore_unavailable: bool,
     pub naming_supported: bool,
     pub split_target_supported: bool,
+    pub command_history_supported: bool,
     pub host_id: Option<String>,
     pub epoch: Option<String>,
     pub endpoint: Option<ControlEndpoint>,
@@ -415,6 +416,7 @@ impl Shared {
                 restore_unavailable: false,
                 naming_supported: false,
                 split_target_supported: false,
+                command_history_supported: false,
                 host_id: None,
                 epoch: None,
                 endpoint: None,
@@ -1954,12 +1956,18 @@ async fn run(
         .capabilities
         .iter()
         .any(|name| name == corvid_protocol::TAB_PREVIEW_CAPABILITY);
+    let command_history_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == corvid_protocol::COMMAND_HISTORY_CAPABILITY);
     shared.update_ui(move |ui| {
         ui.tab_preview_supported = tab_preview_supported;
         ui.close_supported = close_supported;
         ui.reorder_supported = reorder_supported;
         ui.naming_supported = naming_supported;
         ui.split_target_supported = split_target_supported;
+        ui.command_history_supported = command_history_supported;
         ui.session_clients_supported = session_clients_supported;
     });
     let monitor_host = Uuid::parse_str(&host)?;
@@ -3127,40 +3135,5 @@ fn wheel_report(
 }
 
 fn validate_history(history: &TerminalHistory) -> Result<()> {
-    let mut size = history
-        .lines
-        .iter()
-        .map(|line| line.len() + 8)
-        .sum::<usize>();
-    ensure!(
-        (1..=1024).contains(&history.columns)
-            && history.lines.len() <= TERMINAL_HISTORY_MAX_ROWS
-            && size <= TERMINAL_HISTORY_MAX_BYTES
-            && history
-                .lines
-                .iter()
-                .all(|line| !line.chars().any(char::is_control)),
-        "invalid terminal history"
-    );
-    let mut previous = (0, 0);
-    for style in &history.styles {
-        let position = (style.row, style.offset);
-        size += style.sgr.len() + 20;
-        ensure!(
-            size <= TERMINAL_HISTORY_MAX_BYTES
-                && position >= previous
-                && history
-                    .lines
-                    .get(style.row as usize)
-                    .is_some_and(|line| line.is_char_boundary(style.offset as usize))
-                && style.sgr.len() <= 96
-                && style
-                    .sgr
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || byte == b';'),
-            "invalid terminal history style"
-        );
-        previous = position;
-    }
-    Ok(())
+    corvid_protocol::history::validate_history(history).map_err(anyhow::Error::msg)
 }

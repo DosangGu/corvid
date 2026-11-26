@@ -1,6 +1,7 @@
 mod backend;
 mod commands;
 mod composition;
+mod history_view;
 mod host;
 mod input;
 mod keys;

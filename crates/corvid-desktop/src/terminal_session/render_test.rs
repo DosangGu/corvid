@@ -303,4 +303,19 @@ fn history_rejects_non_sgr_payloads_and_broken_character_offsets() {
     history.styles[0].offset = 3;
     history.styles[0].sgr = "0m\x1b[2J".into();
     assert!(validate_history(&history).is_err());
+    history.styles[0].sgr = "38;5;2".into();
+    history.wrapped_rows = vec![0, 0];
+    assert!(validate_history(&history).is_err());
+    history.wrapped_rows = Vec::new();
+    history
+        .commands
+        .push(corvid_protocol::wire::HistoryCommand {
+            prompt_row: Some(0),
+            output_start_row: Some(0),
+            output_start_offset: Some(1),
+            ..Default::default()
+        });
+    assert!(validate_history(&history).is_err());
+    history.commands[0].output_start_offset = Some(3);
+    assert!(validate_history(&history).is_ok());
 }

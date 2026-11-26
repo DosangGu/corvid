@@ -15,8 +15,8 @@ use corvid_protocol::unix::{RuntimeDir, SocketRole};
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{Attached, ClipboardWrite, RenderHeader, RouteToken, TerminalExited};
 use corvid_protocol::{
-    CLIPBOARD_WRITE_CAPABILITY, FrameReader, FrameRole, FrameWriter, PeerRole, RenderFrame,
-    accept_hello,
+    CLIPBOARD_WRITE_CAPABILITY, COMMAND_HISTORY_CAPABILITY, FrameReader, FrameRole, FrameWriter,
+    PeerRole, RenderFrame, accept_hello,
 };
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::pty::{Winsize, openpty};
@@ -30,15 +30,20 @@ const AFTER_CLIPBOARD: &[u8] = b"after clipboard";
 
 #[compio::test]
 async fn tui_renders_and_routes_input_through_a_scripted_daemon() -> Result<()> {
-    scripted_attach(false).await
+    scripted_attach(false, false).await
 }
 
 #[compio::test]
 async fn tui_relays_only_opted_in_clipboard_writes_for_the_active_route() -> Result<()> {
-    scripted_attach(true).await
+    scripted_attach(true, false).await
 }
 
-async fn scripted_attach(allow_clipboard: bool) -> Result<()> {
+#[compio::test]
+async fn tui_relays_user_initiated_command_copy_without_osc52_opt_in() -> Result<()> {
+    scripted_attach(false, true).await
+}
+
+async fn scripted_attach(allow_clipboard: bool, user_initiated_copy: bool) -> Result<()> {
     let home = std::env::home_dir().context("fixture needs a private home directory")?;
     let fixture = tempfile::tempdir_in(home)?;
     let runtime = RuntimeDir::create_all(&fixture.path().join("runtime"))?;
@@ -53,7 +58,7 @@ async fn scripted_attach(allow_clipboard: bool) -> Result<()> {
 
     timeout(WAIT, async {
         let stream = listener.accept().await?.context("rejected TUI peer")?;
-        serve(stream, &mut terminal, allow_clipboard).await?;
+        serve(stream, &mut terminal, allow_clipboard, user_initiated_copy).await?;
         let status = child.status().await?;
         ensure!(status.code() == Some(7), "unexpected TUI status: {status}");
         Ok(())
@@ -106,7 +111,12 @@ fn spawn_tui(runtime: &Path, views: &Path, allow_clipboard: bool) -> Result<(Chi
     Ok((child, File::from(pty.master)))
 }
 
-async fn serve(stream: UnixStream, terminal: &mut File, allow_clipboard: bool) -> Result<()> {
+async fn serve(
+    stream: UnixStream,
+    terminal: &mut File,
+    allow_clipboard: bool,
+    user_initiated_copy: bool,
+) -> Result<()> {
     let (read, write) = corvid_async::io::split_native(stream);
     let mut writer = FrameWriter::start(write, FrameRole::TuiOutput).await?;
     let mut reader = FrameReader::start(read, FrameRole::StructuredOnly).await?;
@@ -121,6 +131,7 @@ async fn serve(stream: UnixStream, terminal: &mut File, allow_clipboard: bool) -
             "render.v1",
             "paste.v1",
             CLIPBOARD_WRITE_CAPABILITY,
+            COMMAND_HISTORY_CAPABILITY,
         ],
     )?;
     writer.envelope(&hello_reply).await?;
@@ -194,13 +205,17 @@ async fn serve(stream: UnixStream, terminal: &mut File, allow_clipboard: bool) -
         view_revision: 0,
         ..route.clone()
     };
-    for (route, text) in [(stale, "stale"), (route.clone(), "hello\n한글")] {
+    for (route, text, user_initiated) in [
+        (stale, "stale", user_initiated_copy),
+        (route.clone(), "hello\n한글", user_initiated_copy),
+    ] {
         writer
             .envelope(&session.envelope(
                 None,
                 Body::ClipboardWrite(ClipboardWrite {
                     route_token: Some(route),
                     text: text.into(),
+                    user_initiated,
                 }),
             ))
             .await?;
@@ -227,7 +242,10 @@ async fn serve(stream: UnixStream, terminal: &mut File, allow_clipboard: bool) -
             .windows(STALE_OSC52.len())
             .any(|bytes| bytes == STALE_OSC52)
     );
-    ensure!(output.windows(OSC52.len()).any(|bytes| bytes == OSC52) == allow_clipboard);
+    ensure!(
+        output.windows(OSC52.len()).any(|bytes| bytes == OSC52)
+            == (allow_clipboard || user_initiated_copy)
+    );
 
     writer
         .envelope(&session.envelope(

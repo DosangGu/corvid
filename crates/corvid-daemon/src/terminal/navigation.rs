@@ -40,6 +40,8 @@ pub(super) enum ListKind {
 enum Choice {
     Workspace(Uuid),
     Command(u8),
+    PreviousCommand,
+    CopyLastOutput,
     EndWorkspace,
 }
 
@@ -119,6 +121,12 @@ impl Overlay {
                                     return unfocused(KeyCommand::Tab(TabCommand::Workspace(id)));
                                 }
                                 Choice::Command(key) => return (None, keymap.command(&[key])),
+                                Choice::PreviousCommand => {
+                                    return (None, Some(KeyCommand::PreviousCommand));
+                                }
+                                Choice::CopyLastOutput => {
+                                    return (None, Some(KeyCommand::CopyLastOutput));
+                                }
                                 Choice::EndWorkspace => {
                                     return (
                                         Some(Self::ConfirmWorkspace(location.workspace)),
@@ -415,6 +423,10 @@ fn choices(kind: ListKind, query: &str, layout: &Layout, keymap: Keymap) -> Vec<
                     ("Split right".into(), Choice::Command(b'%')),
                     ("Split down".into(), Choice::Command(b'"')),
                 ]);
+            }
+            if keymap.command_history {
+                commands.push(("Previous command".into(), Choice::PreviousCommand));
+                commands.push(("Copy last command output".into(), Choice::CopyLastOutput));
             }
             if keymap.close {
                 commands.push(("End workspace…".into(), Choice::EndWorkspace));
