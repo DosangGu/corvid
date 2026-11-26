@@ -6,8 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use corvid_async::time::{sleep, timeout};
 use corvid_client::{ControlEndpoint, DaemonInstallation, HostPlatform, RemoteHost};
-use corvid_protocol::wire::StopAgentMonitor;
 use corvid_protocol::wire::envelope::Body;
+use corvid_protocol::wire::{CompanionConnection, PresentationSlots, StopAgentMonitor};
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -174,7 +174,7 @@ impl Scope {
     }
 
     pub async fn reconnect(&self) -> Result<()> {
-        if let Some(mut client) = self.connected().await? {
+        if let Some((mut client, _)) = self.connected().await? {
             timeout(STARTUP_TIMEOUT, client.reconnect_monitor()).await??;
         }
         Ok(())
@@ -189,7 +189,7 @@ impl Scope {
         let _startup = wait_for_lock(|| directory.lock_startup())
             .await
             .context("waiting for agent monitor startup")?;
-        if let Some(mut client) = self.connected().await? {
+        if let Some((mut client, slots)) = self.connected().await? {
             if self.supports_monitor(&client)
                 && client
                     .session()
@@ -201,6 +201,16 @@ impl Scope {
                             .expect("valid workspace version")
                     })
             {
+                if !running_only
+                    && needs_wake(&self.config.endpoint, slots.connection)
+                    && client
+                        .session()
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == crate::ipc::MONITOR_RECONNECT_CAPABILITY)
+                {
+                    timeout(STARTUP_TIMEOUT, client.reconnect_monitor()).await??;
+                }
                 return Ok(());
             }
             let reply = timeout(
@@ -262,7 +272,7 @@ impl Scope {
             .context("starting the agent monitor")?;
         timeout(STARTUP_TIMEOUT, async {
             loop {
-                if let Some(client) = self.connected().await? {
+                if let Some((client, _)) = self.connected().await? {
                     ensure!(
                         self.supports_monitor(&client),
                         "the started agent monitor does not support the current slot layout"
@@ -278,7 +288,7 @@ impl Scope {
         .context("agent monitor did not start")?
     }
 
-    async fn connected(&self) -> Result<Option<PresentationClient>> {
+    async fn connected(&self) -> Result<Option<(PresentationClient, PresentationSlots)>> {
         let Some(mut client) = PresentationClient::connect_if_present(&self.address).await? else {
             return Ok(None);
         };
@@ -290,8 +300,8 @@ impl Scope {
                 .any(|cap| cap == CAPABILITY),
             "An older companion is running. Quit its companion service once, then reconnect Desktop or TUI."
         );
-        timeout(STARTUP_TIMEOUT, client.slots(Some(&self.config))).await??;
-        Ok(Some(client))
+        let slots = timeout(STARTUP_TIMEOUT, client.slots(Some(&self.config))).await??;
+        Ok(Some((client, slots)))
     }
 
     fn supports_monitor(&self, client: &PresentationClient) -> bool {
@@ -302,6 +312,20 @@ impl Scope {
                     .capabilities
                     .iter()
                     .any(|capability| capability == crate::ipc::MONITOR_RECONNECT_CAPABILITY))
+    }
+}
+
+fn needs_wake(endpoint: &HostEndpoint, connection: i32) -> bool {
+    match CompanionConnection::try_from(connection) {
+        Ok(CompanionConnection::Offline | CompanionConnection::Error) => true,
+        Ok(CompanionConnection::Connecting) => matches!(endpoint, HostEndpoint::Ssh { .. }),
+        Ok(
+            CompanionConnection::Unspecified
+            | CompanionConnection::Ready
+            | CompanionConnection::Syncing
+            | CompanionConnection::Incompatible,
+        )
+        | Err(_) => false,
     }
 }
 
@@ -490,5 +514,159 @@ mod tests {
         other.controller_id = Uuid::new_v4();
         assert!(endpoint(&scope.state, &other).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn wakes_only_offline_error_or_ssh_connecting_monitors() {
+        let local = HostEndpoint::Local {
+            runtime_dir: PathBuf::from("/tmp/corvid-test"),
+        };
+        let ssh = HostEndpoint::Ssh {
+            alias: "work-host".into(),
+        };
+        assert!(needs_wake(&local, CompanionConnection::Offline as i32));
+        assert!(needs_wake(&local, CompanionConnection::Error as i32));
+        assert!(!needs_wake(&local, CompanionConnection::Connecting as i32));
+        assert!(needs_wake(&ssh, CompanionConnection::Connecting as i32));
+        for state in [
+            CompanionConnection::Ready,
+            CompanionConnection::Syncing,
+            CompanionConnection::Incompatible,
+        ] {
+            assert!(!needs_wake(&local, state as i32));
+            assert!(!needs_wake(&ssh, state as i32));
+        }
+    }
+
+    #[cfg(unix)]
+    #[compio::test]
+    async fn ensure_running_wakes_offline_monitor_but_refresh_running_does_not() -> Result<()> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use compio::io::util::Splittable;
+        use corvid_protocol::unix::{RuntimeDir, SocketRole};
+        use corvid_protocol::wire::{Envelope, Pong, PresentationSlots};
+        use corvid_protocol::{
+            CompioFrameReader, CompioFrameWriter, FrameRole, PeerRole, accept_hello_with_profiles,
+        };
+
+        let directory = tempfile::tempdir_in(std::env::home_dir().context("home")?)?;
+        let state = directory.path().join("state");
+        let address = directory.path().join("ipc");
+        let host = Uuid::new_v4();
+        let remote = ControlEndpoint::Ssh(SshAlias::new("work-host".into())?);
+        crate::initialize(&state, host, HostEndpoint::from(&remote), 8)?;
+        let config = Config::read_if_present(&state)?.context("config")?;
+        let controller = config.controller_id.to_string();
+        let scope = Scope {
+            state,
+            address: address.clone(),
+            config,
+        };
+
+        let runtime = RuntimeDir::create_all(&address)?;
+        let instance = runtime.lock_instance()?;
+        let listener = instance.bind_compio(SocketRole::Presentation).await?;
+
+        let connection_state = Arc::new(AtomicUsize::new(CompanionConnection::Offline as usize));
+        let reconnect_count = Arc::new(AtomicUsize::new(0));
+        let server_state = Arc::clone(&connection_state);
+        let server_reconnects = Arc::clone(&reconnect_count);
+        let host_str = host.to_string();
+        let epoch = Uuid::new_v4().to_string();
+
+        let server = async {
+            let caps = [
+                CAPABILITY,
+                EPOCH_RETIREMENT_CAPABILITY,
+                DECK_PRIORITY_CAPABILITY,
+                PROCESS_EXIT_RETIREMENT_CAPABILITY,
+                crate::PRESENTATION_CAPABILITY,
+                crate::PRESENTATION_RUNS_CAPABILITY,
+                crate::ipc::MONITOR_RECONNECT_CAPABILITY,
+            ];
+            while let Ok(Some(stream)) = listener.accept().await {
+                let state = Arc::clone(&server_state);
+                let reconnects = Arc::clone(&server_reconnects);
+                let controller = controller.clone();
+                let host_str = host_str.clone();
+                let epoch = epoch.clone();
+                corvid_async::task::spawn(async move {
+                    let (read, write) = stream.split();
+                    let Ok(mut writer) =
+                        CompioFrameWriter::start(write, FrameRole::StructuredOnly).await
+                    else {
+                        return;
+                    };
+                    let Ok(mut reader) =
+                        CompioFrameReader::start(read, FrameRole::StructuredOnly).await
+                    else {
+                        return;
+                    };
+                    let Ok(Some(hello)) = reader.next_envelope().await else {
+                        return;
+                    };
+                    let Ok((session, reply)) = accept_hello_with_profiles(
+                        &hello,
+                        PeerRole::Presentation,
+                        &host_str,
+                        &epoch,
+                        &caps,
+                        &[],
+                        Some(env!("CARGO_PKG_VERSION")),
+                    ) else {
+                        return;
+                    };
+                    if writer.envelope(&reply).await.is_err() {
+                        return;
+                    }
+                    while let Ok(Some(request)) = reader.next_envelope().await {
+                        let id = request.request_id.clone();
+                        let body = match request.body {
+                            Some(Body::GetPresentationSlots(_)) => {
+                                Body::PresentationSlots(PresentationSlots {
+                                    controller_id: controller.clone(),
+                                    connection: state.load(Ordering::Acquire) as i32,
+                                    ..Default::default()
+                                })
+                            }
+                            Some(Body::ReconnectAgentMonitor(_)) => {
+                                reconnects.fetch_add(1, Ordering::AcqRel);
+                                Body::Pong(Pong {})
+                            }
+                            _ => continue,
+                        };
+                        let response = Envelope {
+                            request_id: id,
+                            ..session.envelope(None, body)
+                        };
+                        if writer.envelope(&response).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            Ok::<_, anyhow::Error>(())
+        };
+
+        let client = async {
+            let unused_exe = Path::new("/nonexistent/corvid");
+            scope.refresh_running(unused_exe).await?;
+            assert_eq!(reconnect_count.load(Ordering::Acquire), 0);
+
+            scope.ensure_running(unused_exe).await?;
+            assert_eq!(reconnect_count.load(Ordering::Acquire), 1);
+
+            connection_state.store(CompanionConnection::Ready as usize, Ordering::Release);
+            scope.ensure_running(unused_exe).await?;
+            assert_eq!(reconnect_count.load(Ordering::Acquire), 1);
+            Ok::<_, anyhow::Error>(())
+        };
+
+        corvid_async::select! {
+            result = client => result,
+            result = server => result,
+        }
     }
 }
