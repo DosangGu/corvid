@@ -162,6 +162,7 @@ impl Remote {
                             provider: run.display.provider,
                             request_status: request.map(|request| request.status),
                             request_kind: request.map(|request| request.kind),
+                            session_title: run.display.session_title.clone(),
                         });
                         run.display.unseen_attention += 1;
                         let latest = (alert.created_unix_ms, alert.attention_id.clone());

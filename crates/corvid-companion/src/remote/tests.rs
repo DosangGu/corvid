@@ -447,6 +447,43 @@ fn run_titles_follow_the_owning_pane_or_its_custom_single_pane_tab_name() {
 }
 
 #[test]
+fn presented_attention_propagates_session_title() {
+    let location = ViewSelection {
+        workspace_id: Uuid::new_v4().to_string(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let Body::Workspace(mut layout) = workspace(&location) else {
+        unreachable!();
+    };
+    layout.tabs[0].manual_name = Some("Deploy checklist".into());
+    let run_id = Uuid::new_v4();
+    let cache = snapshot(vec![
+        SnapshotEntity {
+            body: Some(Body::Workspace(layout)),
+        },
+        SnapshotEntity {
+            body: Some(Body::Agent(Box::new(agent(run_id, &location, 1)))),
+        },
+        SnapshotEntity {
+            body: Some(Body::Attention(AttentionState {
+                agent_run_id: run_id.to_string(),
+                attention_id: Uuid::new_v4().to_string(),
+                reason: AttentionReason::Response as i32,
+                created_unix_ms: 100,
+                ..Default::default()
+            })),
+        },
+    ]);
+    let remote = Remote::read(&cache, &Uuid::new_v4().to_string()).unwrap();
+    assert_eq!(remote.attention.len(), 1);
+    assert_eq!(
+        remote.attention[0].session_title.as_deref(),
+        Some("Deploy checklist")
+    );
+}
+
+#[test]
 fn excludes_confirmed_process_exits_from_admission_with_an_open_pane() {
     let location = ViewSelection {
         workspace_id: Uuid::new_v4().to_string(),

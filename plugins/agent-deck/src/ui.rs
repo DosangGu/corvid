@@ -321,7 +321,7 @@ impl Render for DeckView {
         let content = if self.window.expanded {
             self.expanded(window, cx)
         } else {
-            self.floating(cx)
+            self.floating(window, cx)
         };
         column()
             .id("agent-deck")

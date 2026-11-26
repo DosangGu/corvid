@@ -1,5 +1,7 @@
 use super::*;
-use gpui::{linear_color_stop, linear_gradient, svg};
+use gpui::{Animation, AnimationExt, TextRun, linear_color_stop, linear_gradient, svg};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub(super) fn column() -> Div {
@@ -67,11 +69,21 @@ impl DeckView {
         slot: &PresentedSlot,
         index: usize,
         width: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        self.run_card(snapshot, slot.run.as_ref(), Some(slot), index, width, cx)
+        self.run_card(
+            snapshot,
+            slot.run.as_ref(),
+            Some(slot),
+            index,
+            width,
+            window,
+            cx,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn run_card(
         &self,
         snapshot: &Arc<Snapshot>,
@@ -79,6 +91,7 @@ impl DeckView {
         slot: Option<&PresentedSlot>,
         index: usize,
         width: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let colors = self.colors;
@@ -89,11 +102,15 @@ impl DeckView {
         } else {
             crate::shell::KEY_HEIGHT
         };
-        let host = (self.catalog_view.hosts.len() > 1)
-            .then(|| self.catalog_view.hosts.get(&snapshot.host))
-            .flatten()
-            .map(|host| host.label.as_str());
-        let face = colors.card_face(run, cached, self.selected == index, width, height, host);
+        let face = colors.card_face(
+            run,
+            cached,
+            self.selected == index,
+            index,
+            width,
+            height,
+            window,
+        );
         let mut card = self.attach_card_action(face, index, action, cx);
         if let Some(run) = run {
             card = card.when(self.menu.is_none(), |card| {
@@ -180,6 +197,11 @@ impl DeckView {
         let (snapshot, slot) = self.menu.as_ref()?;
         let run = slot.run.as_ref()?;
         let cached = snapshot.generation().is_none();
+        let host_label = self
+            .catalog_view
+            .hosts
+            .get(&snapshot.host)
+            .map(|host| host.label.clone());
         let mut menu = column()
             .id("agent-actions")
             .p(px(16.))
@@ -194,6 +216,7 @@ impl DeckView {
             .child(
                 colors
                     .describe(run, cached)
+                    .when_some(host_label, |view, label| view.child(colors.muted(label)))
                     .child(colors.muted(placement_label(Some(slot)))),
             )
             .on_mouse_down_out(cx.listener(|view, _, _, cx| {
@@ -260,7 +283,7 @@ impl DeckView {
             )));
             content = content.child(match self.section {
                 Section::Slots => self.board(window, cx),
-                Section::Overflow => self.overflow(cx),
+                Section::Overflow => self.overflow(window, cx),
                 Section::History => column()
                     .children(
                         snapshot
@@ -390,11 +413,11 @@ impl DeckView {
             self.mini_tiles()
                 .iter()
                 .enumerate()
-                .map(|(index, tile)| self.tile_card(*tile, index, edge, cx)),
+                .map(|(index, tile)| self.tile_card(*tile, index, edge, window, cx)),
         )
     }
 
-    fn overflow(&self, cx: &mut Context<Self>) -> Div {
+    fn overflow(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let colors = self.colors;
         let mut view = column().child(
             row()
@@ -426,7 +449,7 @@ impl DeckView {
                 tiles
                     .iter()
                     .enumerate()
-                    .map(|(index, tile)| self.tile_card(*tile, index, 150., cx)),
+                    .map(|(index, tile)| self.tile_card(*tile, index, 150., window, cx)),
             ),
         );
         let page_size = corvid_companion::PRESENTATION_PAGE_SIZE as usize;
@@ -660,6 +683,17 @@ impl DeckView {
                     column().child(
                         colors
                             .button(("notice", index), notice.title.clone(), true)
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap(px(2.))
+                            .child(
+                                colors
+                                    .muted(notice.body.clone())
+                                    .max_w_full()
+                                    .text_size(px(11.))
+                                    .truncate(),
+                            )
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.selected_notice = Some(notice.clone());
                                 cx.notify();
@@ -671,14 +705,16 @@ impl DeckView {
 }
 
 impl Colors {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn card_face(
         self,
         run: Option<&PresentedRun>,
         cached: bool,
         selected: bool,
+        index: usize,
         width: f32,
         height: f32,
-        host: Option<&str>,
+        window: &Window,
     ) -> Div {
         let status = run.map(|run| status(run, cached).1);
         let color = status.map(|status| self.status(status));
@@ -686,9 +722,10 @@ impl Colors {
             .size_full()
             .relative()
             .flex()
+            .flex_col()
             .items_center()
             .justify_center()
-            .when(host.is_some(), |face| face.flex_col())
+            .gap(px(4.))
             .rounded_lg()
             .border_color(color.unwrap_or(self.border))
             .when(run.is_none(), |face| face.border_1())
@@ -705,16 +742,34 @@ impl Colors {
                 ))
             })
             .when_some(run, |face, run| {
+                let muted = status == Some(StatusColor::Muted);
+                let title_color = if muted { self.muted } else { self.text };
+                let title = card_title(run);
+                let font_size = if height <= crate::shell::KEY_HEIGHT + 1.0 {
+                    px(11.)
+                } else {
+                    px(12.)
+                };
+                let available_width = (width - 18.0).max(20.0);
+                let mut hasher = DefaultHasher::new();
+                index.hash(&mut hasher);
+                title.hash(&mut hasher);
+                available_width.to_bits().hash(&mut hasher);
+                let anim_seed = hasher.finish();
                 face.child(
                     svg()
                         .path(provider_logo(run.provider))
-                        .size(px((width.min(height) * 0.46).clamp(28., 72.)))
-                        .text_color(if status == Some(StatusColor::Muted) {
-                            self.muted
-                        } else {
-                            self.text
-                        }),
+                        .size(px((width.min(height) * 0.42).clamp(26., 68.)))
+                        .text_color(title_color),
                 )
+                .child(self.marquee_title(
+                    title,
+                    anim_seed,
+                    available_width,
+                    font_size,
+                    title_color,
+                    window,
+                ))
             })
             .when(
                 run.is_some_and(|run| working_with_unverified_input(run, cached)),
@@ -729,16 +784,7 @@ impl Colors {
                             .bg(self.working),
                     )
                 },
-            )
-            .when_some(host, |face, host| {
-                face.child(
-                    self.muted(host.to_owned())
-                        .max_w_full()
-                        .px(px(3.))
-                        .text_size(px(10.))
-                        .truncate(),
-                )
-            });
+            );
 
         // Selection surrounds the status border instead of replacing its color.
         div()
@@ -759,6 +805,108 @@ impl Colors {
                 self.empty_card
             })
             .child(face)
+    }
+
+    fn marquee_title(
+        self,
+        title: &str,
+        anim_seed: u64,
+        available_width: f32,
+        font_size: gpui::Pixels,
+        color: gpui::Rgba,
+        window: &Window,
+    ) -> Div {
+        let run = TextRun {
+            len: title.len(),
+            font: card_font(window),
+            color: color.into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let line = window.text_system().shape_line(
+            SharedString::from(title.to_owned()),
+            font_size,
+            &[run],
+            None,
+        );
+        let overflow = (f32::from(line.width) - available_width).max(0.0);
+        if overflow <= 0.5 {
+            return div()
+                .w_full()
+                .px(px(4.))
+                .flex()
+                .justify_center()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(font_size)
+                .text_color(color)
+                .child(title.to_owned());
+        }
+        let label = div()
+            .whitespace_nowrap()
+            .flex_shrink_0()
+            .text_size(font_size)
+            .text_color(color)
+            .child(title.to_owned())
+            .with_animation(
+                ElementId::Name(SharedString::from(format!("card-title-{anim_seed:x}"))),
+                Animation::new(marquee_duration(overflow)).repeat(),
+                move |el, delta| el.ml(px(-marquee_offset(delta, overflow))),
+            );
+        div()
+            .w_full()
+            .px(px(4.))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .child(label)
+    }
+}
+
+const MARQUEE_PAUSE_SECS: f32 = 1.2;
+const MARQUEE_SPEED_PX_PER_SEC: f32 = 30.0;
+const MARQUEE_MIN_TRAVEL_SECS: f32 = 0.6;
+
+fn card_title(run: &PresentedRun) -> &str {
+    run.session_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or("Untitled")
+}
+
+fn card_font(window: &Window) -> gpui::Font {
+    let mut font = window.text_style().font();
+    #[cfg(not(target_os = "macos"))]
+    {
+        font.family = "Segoe UI".into();
+    }
+    font
+}
+
+fn marquee_duration(overflow: f32) -> Duration {
+    let travel = (overflow.max(0.0) / MARQUEE_SPEED_PX_PER_SEC).max(MARQUEE_MIN_TRAVEL_SECS);
+    Duration::from_secs_f32(2.0 * MARQUEE_PAUSE_SECS + 2.0 * travel)
+}
+
+fn marquee_offset(progress: f32, overflow: f32) -> f32 {
+    if overflow <= 0.0 {
+        return 0.0;
+    }
+    let progress = progress.clamp(0.0, 1.0);
+    let travel = (overflow / MARQUEE_SPEED_PX_PER_SEC).max(MARQUEE_MIN_TRAVEL_SECS);
+    let total = 2.0 * MARQUEE_PAUSE_SECS + 2.0 * travel;
+    let elapsed = progress * total;
+    if elapsed <= MARQUEE_PAUSE_SECS {
+        0.0
+    } else if elapsed <= MARQUEE_PAUSE_SECS + travel {
+        overflow * ((elapsed - MARQUEE_PAUSE_SECS) / travel)
+    } else if elapsed <= 2.0 * MARQUEE_PAUSE_SECS + travel {
+        overflow
+    } else {
+        let back = elapsed - (2.0 * MARQUEE_PAUSE_SECS + travel);
+        overflow * (1.0 - back / travel).clamp(0.0, 1.0)
     }
 }
 
@@ -1106,5 +1254,32 @@ mod tests {
         let mut run = available(AgentBadge::Unknown);
         run.last_badge = i32::MAX;
         assert_eq!(status(&run, false), ("Unknown", StatusColor::Muted));
+    }
+
+    #[test]
+    fn card_title_falls_back_to_untitled_for_missing_or_blank_titles() {
+        let mut run = available(AgentBadge::Ready);
+        assert_eq!(card_title(&run), "Untitled");
+        run.session_title = Some("   ".into());
+        assert_eq!(card_title(&run), "Untitled");
+        run.session_title = Some("  Fix auth bug  ".into());
+        assert_eq!(card_title(&run), "Fix auth bug");
+    }
+
+    #[test]
+    fn marquee_ping_pongs_across_pause_and_travel_phases() {
+        let overflow = 60.0;
+        let duration = marquee_duration(overflow);
+        assert!((duration.as_secs_f32() - 6.4).abs() < 1e-4);
+        assert_eq!(marquee_offset(0.0, overflow), 0.0);
+        assert_eq!(marquee_offset(0.1, overflow), 0.0);
+        let mid_forward = marquee_offset(0.343_75, overflow);
+        assert!((mid_forward - 30.0).abs() < 0.5);
+        assert_eq!(marquee_offset(0.5, overflow), overflow);
+        assert_eq!(marquee_offset(0.6, overflow), overflow);
+        let mid_back = marquee_offset(0.843_75, overflow);
+        assert!((mid_back - 30.0).abs() < 0.5);
+        assert!(marquee_offset(1.0, overflow).abs() < 1e-4);
+        assert_eq!(marquee_offset(0.5, 0.0), 0.0);
     }
 }
