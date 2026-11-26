@@ -973,6 +973,7 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
         tui.send(Body::CreateView(CreateView {
             expected_view_revision: Some(retired.view_revision),
             target: Some(Target::SplitAxis(SplitAxis::Horizontal as i32)),
+            ..Default::default()
         }))
         .await;
         let Body::ViewChanged(view) = tui.next_body(&mut output).await else {
@@ -1006,6 +1007,7 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
         tui.send(Body::CreateView(CreateView {
             expected_view_revision: Some(tui.route.view_revision),
             target: Some(Target::TabLabel("Other tab".into())),
+            ..Default::default()
         }))
         .await;
         let Body::ViewChanged(tab) = tui.next_body(&mut output).await else {
@@ -1022,6 +1024,7 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
         tui.send(Body::CreateView(CreateView {
             expected_view_revision: Some(tui.route.view_revision),
             target: Some(Target::WorkspaceLabel("Desktop workspace".into())),
+            ..Default::default()
         }))
         .await;
         let Body::ViewChanged(workspace) = tui.next_body(&mut output).await else {
@@ -1098,6 +1101,7 @@ async fn reorders_tabs_for_watchers_and_closes_into_the_nearest_available_tab() 
             tui.send(Body::CreateView(CreateView {
                 expected_view_revision: Some(tui.route.view_revision),
                 target: Some(Target::TabLabel(label.into())),
+                ..Default::default()
             })).await;
             let Body::ViewChanged(view) = tui.next_body(&mut output).await else {
                 panic!("expected a new tab");
@@ -1260,6 +1264,7 @@ async fn closes_views_and_preserves_other_writers() {
         tui.send(Body::CreateView(CreateView {
             expected_view_revision: Some(original_revision),
             target: Some(Target::SplitAxis(SplitAxis::Horizontal as i32)),
+            ..Default::default()
         })).await;
         let Body::ViewChanged(split) = tui.next_body(&mut output).await else {
             panic!("expected split");
@@ -1290,6 +1295,7 @@ async fn closes_views_and_preserves_other_writers() {
         tui.send(Body::CreateView(CreateView {
             expected_view_revision: Some(tui.route.view_revision),
             target: Some(Target::TabLabel("Background".into())),
+            ..Default::default()
         })).await;
         let Body::ViewChanged(tab) = tui.next_body(&mut output).await else {
             panic!("expected a new tab");

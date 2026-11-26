@@ -219,6 +219,7 @@ async fn create(
         .send(Body::CreateView(CreateView {
             target: Some(target),
             expected_view_revision: Some(route.view_revision),
+            ..Default::default()
         }))
         .await?;
     let Body::ViewChanged(result) = reply(link, &id).await? else {

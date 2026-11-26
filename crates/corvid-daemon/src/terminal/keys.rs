@@ -1,3 +1,4 @@
+use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, Location};
 use corvid_core::shortcuts::dubeolsik_key;
 use uuid::Uuid;
@@ -27,6 +28,7 @@ pub(crate) enum TabCommand {
     Next,
     Previous,
     Create,
+    LaunchAgent(Provider, Option<Axis>),
     Split(Axis),
     NextPane,
     Pane(Uuid),
@@ -84,6 +86,7 @@ impl Keymap {
                     Cmd::Workspaces => Some(KeyCommand::Browse(Kind::Workspaces)),
                     Cmd::Tabs if self.tabs => Some(KeyCommand::Browse(Kind::Tabs)),
                     Cmd::Panes if self.panes => Some(KeyCommand::Browse(Kind::Panes)),
+                    Cmd::LaunchAgent if self.tabs => Some(KeyCommand::Browse(Kind::Agents)),
                     Cmd::PreviousTab if self.tabs => Some(KeyCommand::Tab(TabCommand::Previous)),
                     Cmd::NextTab if self.tabs => Some(KeyCommand::Tab(TabCommand::Next)),
                     Cmd::RenameTab if self.naming => Some(KeyCommand::BeginRename),

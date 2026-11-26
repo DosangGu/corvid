@@ -25,6 +25,24 @@ pub enum Provider {
     FixtureUnverified,
 }
 
+impl Provider {
+    pub const LAUNCHABLE: &[Self] = &[Self::Claude, Self::Codex, Self::Antigravity];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Antigravity => "Antigravity",
+            #[cfg(feature = "test-provider")]
+            Self::Fixture => "Fixture",
+            #[cfg(feature = "test-provider")]
+            Self::FixtureManual => "Fixture Manual",
+            #[cfg(feature = "test-provider")]
+            Self::FixtureUnverified => "Fixture Unverified",
+        }
+    }
+}
+
 /// A provider conversation, independent of a process, pane, or daemon epoch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionKey {

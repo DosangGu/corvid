@@ -120,11 +120,11 @@ impl Active {
 #[derive(Clone)]
 pub(crate) enum Destination {
     Exact(Location),
-    Open(Location),
+    Open(Location, Option<Provider>),
     CreateWorkspace(String, Option<Vec<u8>>),
-    CreateTab(String),
-    Split(Axis),
-    SplitPane(Uuid, Axis),
+    CreateTab(String, Option<Provider>),
+    Split(Axis, Option<Provider>),
+    SplitPane(Uuid, Axis, Option<Provider>),
     Tab(TabCommand),
 }
 
@@ -1889,20 +1889,25 @@ fn resolve_switch(
     checked: Option<&CheckedCwd>,
 ) -> Reservation<Option<(Location, Option<Launch>)>> {
     match destination {
-        Destination::Exact(location) | Destination::Open(location) => {
+        Destination::Exact(location) => {
             if !layout.contains(location) {
                 return Err(target_gone().into());
             }
-            let launch =
-                if matches!(destination, Destination::Open(_)) && !registry.has_live_at(location) {
-                    let mut shell = new_shell();
-                    shell.if_empty = true;
-                    shell.cwd =
-                        CwdPaths::for_launch(layout, location, &shell, None).resolved(checked)?;
-                    Some(shell)
-                } else {
-                    None
-                };
+            Ok(Some((location, None)))
+        }
+        Destination::Open(location, provider) => {
+            if !layout.contains(location) {
+                return Err(target_gone().into());
+            }
+            let launch = if !registry.has_live_at(location) {
+                let mut launch = new_launch(provider);
+                launch.if_empty = true;
+                launch.cwd =
+                    CwdPaths::for_launch(layout, location, &launch, None).resolved(checked)?;
+                Some(launch)
+            } else {
+                None
+            };
             Ok(Some((location, launch)))
         }
         Destination::Tab(TabCommand::Pane(pane)) => resolve_switch(
@@ -1919,7 +1924,7 @@ fn resolve_switch(
             registry,
             layout,
             old,
-            Destination::SplitPane(pane, axis),
+            Destination::SplitPane(pane, axis, None),
             checked,
         ),
         Destination::Tab(TabCommand::Workspace(workspace)) => {
@@ -1961,7 +1966,7 @@ fn resolve_switch(
                 registry,
                 layout,
                 old,
-                Destination::CreateTab(label),
+                Destination::CreateTab(label, None),
                 checked,
             )?;
             if let Some((location, _)) = &result {
@@ -1971,9 +1976,20 @@ fn resolve_switch(
             }
             Ok(result)
         }
-        Destination::Tab(TabCommand::Split(axis)) => {
-            resolve_switch(registry, layout, old, Destination::Split(axis), checked)
+        Destination::Tab(TabCommand::LaunchAgent(provider, axis)) => {
+            let destination = match axis {
+                Some(axis) => Destination::Split(axis, Some(provider)),
+                None => Destination::CreateTab(provider.label().to_owned(), Some(provider)),
+            };
+            resolve_switch(registry, layout, old, destination, checked)
         }
+        Destination::Tab(TabCommand::Split(axis)) => resolve_switch(
+            registry,
+            layout,
+            old,
+            Destination::Split(axis, None),
+            checked,
+        ),
         Destination::Tab(TabCommand::NextPane) => {
             let panes = layout.panes(old.location.workspace, old.location.tab);
             let Some(index) = panes.iter().position(|pane| *pane == old.location) else {
@@ -1992,16 +2008,32 @@ fn resolve_switch(
             Ok(select_tab(registry, layout, old, command).map(|location| (location, None)))
         }
         creation => {
-            let mut launch = new_shell();
+            let provider = match &creation {
+                Destination::CreateWorkspace(_, _) => None,
+                Destination::CreateTab(_, provider)
+                | Destination::Split(_, provider)
+                | Destination::SplitPane(_, _, provider) => *provider,
+                _ => unreachable!("all other destinations have already been handled"),
+            };
+            let mut launch = new_launch(provider);
             let inherited = saved_directory(layout, old.location);
             let layout = Arc::make_mut(layout);
             let location = match creation {
                 Destination::CreateWorkspace(label, directory) => {
                     layout.add_workspace_in(label, "Shell".into(), directory)
                 }
-                Destination::CreateTab(label) => layout.add_tab(old.location.workspace, label),
-                Destination::Split(axis) => layout.split_pane(old.location, axis),
-                Destination::SplitPane(pane, axis) => layout.split_pane(
+                Destination::CreateTab(label, provider) => {
+                    let label = if label.is_empty()
+                        && let Some(provider) = provider
+                    {
+                        provider.label().to_owned()
+                    } else {
+                        label
+                    };
+                    layout.add_tab(old.location.workspace, label)
+                }
+                Destination::Split(axis, _) => layout.split_pane(old.location, axis),
+                Destination::SplitPane(pane, axis, _) => layout.split_pane(
                     Location {
                         pane,
                         ..old.location
@@ -2018,11 +2050,11 @@ fn resolve_switch(
     }
 }
 
-fn new_shell() -> Launch {
+fn new_launch(provider: Option<Provider>) -> Launch {
     Launch {
         argv: Vec::new(),
         cwd: None,
-        provider: None,
+        provider,
         if_empty: false,
     }
 }
@@ -2067,6 +2099,7 @@ fn select_tab(
         }
         TabCommand::Next | TabCommand::Previous => {}
         TabCommand::Create
+        | TabCommand::LaunchAgent(_, _)
         | TabCommand::Split(_)
         | TabCommand::SplitAt(_, _)
         | TabCommand::NextPane

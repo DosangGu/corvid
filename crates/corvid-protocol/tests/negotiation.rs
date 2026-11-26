@@ -441,3 +441,16 @@ fn command_history_capability_and_additive_fields_preserve_backward_compatibilit
     assert!(decoded_history.commands.is_empty());
     assert!(corvid_protocol::history::validate_history(&decoded_history).is_ok());
 }
+
+#[test]
+fn create_view_agent_provider_round_trips() {
+    use corvid_protocol::wire::{AgentProvider, CreateView, create_view::Target};
+
+    let view = CreateView {
+        expected_view_revision: Some(4),
+        target: Some(Target::TabLabel(String::new())),
+        agent_provider: Some(AgentProvider::Claude as i32),
+    };
+    let decoded = CreateView::decode(view.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded, view);
+}

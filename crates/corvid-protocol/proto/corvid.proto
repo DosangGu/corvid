@@ -1255,6 +1255,7 @@ message CreateView {
     WorkspaceCreation workspace = 6;
     SplitPane split_pane = 7;
   }
+  optional AgentProvider agent_provider = 8;
 }
 
 message SplitPane {

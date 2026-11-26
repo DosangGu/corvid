@@ -2,8 +2,11 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use corvid_core::Viewport;
+use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, Layout, Location, Node, TabPlacement};
-use corvid_core::navigation::{Direction, Rect, WorkspaceCommand, pane_mode_hint, tab_mode_hint};
+use corvid_core::navigation::{
+    Direction, Rect, WorkspaceCommand, agent_launcher_hint, pane_mode_hint, tab_mode_hint,
+};
 use corvid_protocol::wire::WheelEncoding;
 use uuid::Uuid;
 
@@ -15,6 +18,7 @@ pub(super) enum Kind {
     Workspaces,
     Tabs,
     Panes,
+    Agents,
     Commands,
 }
 
@@ -27,6 +31,9 @@ pub(super) enum Overlay {
     },
     Tabs(Uuid),
     Panes(Uuid),
+    Agents {
+        index: usize,
+    },
     ConfirmWorkspace(Uuid),
 }
 
@@ -59,6 +66,7 @@ impl Overlay {
         let (kind, index, selected) = match kind {
             Kind::Tabs => return Self::Tabs(location.tab),
             Kind::Panes => return Self::Panes(location.pane),
+            Kind::Agents => return Self::Agents { index: 0 },
             Kind::Commands => (ListKind::Commands, 0, None),
             Kind::Workspaces => (
                 ListKind::Workspaces,
@@ -95,6 +103,7 @@ impl Overlay {
                 tab_keys(shortcut_keys(bytes), layout, location, keymap, tab, reorder)
             }
             Self::Panes(pane) => pane_keys(shortcut_keys(bytes), layout, location, keymap, pane),
+            Self::Agents { index } => agent_keys(bytes, keymap, index),
             Self::ConfirmWorkspace(workspace) if matches!(bytes, b"\r" | b"\n") => {
                 unfocused(KeyCommand::End(CloseTarget::Workspace(workspace)))
             }
@@ -263,6 +272,24 @@ impl Overlay {
                     .map_or_else(|| "Panes".into(), |index| format!("Pane {}", index + 1));
                 lines.push(format!("{label} · {}", pane_mode_hint(keymap.close)));
             }
+            Self::Agents { index } => {
+                lines.push(format!(
+                    "Launch agent · {}",
+                    agent_launcher_hint(keymap.panes)
+                ));
+                lines.extend(
+                    Provider::LAUNCHABLE
+                        .iter()
+                        .enumerate()
+                        .map(|(row, provider)| {
+                            format!(
+                                "{} {}",
+                                if row == *index { '>' } else { ' ' },
+                                provider.label()
+                            )
+                        }),
+                );
+            }
             Self::ConfirmWorkspace(_) => {
                 lines.push("End the current workspace and its terminals?".into());
                 lines.push("Enter End terminals · Esc Cancel".into());
@@ -270,6 +297,57 @@ impl Overlay {
         }
         paint_lines(outer, &lines)
     }
+}
+
+fn agent_keys(
+    bytes: &[u8],
+    keymap: Keymap,
+    mut index: usize,
+) -> (Option<Overlay>, Option<KeyCommand>) {
+    let count = Provider::LAUNCHABLE.len();
+    if count == 0 {
+        return (None, None);
+    }
+    index = index.min(count - 1);
+    let provider = Provider::LAUNCHABLE[index];
+    if matches!(bytes, b"\r" | b"\n") {
+        return (
+            None,
+            Some(KeyCommand::Tab(TabCommand::LaunchAgent(provider, None))),
+        );
+    }
+    match bytes {
+        b"\x1b[A" | b"\x1bOA" => index = index.saturating_sub(1),
+        b"\x1b[B" | b"\x1bOB" => index = (index + 1).min(count - 1),
+        _ => {
+            for key in shortcut_keys(bytes) {
+                match key {
+                    b'k' => index = index.saturating_sub(1),
+                    b'j' => index = (index + 1).min(count - 1),
+                    b'r' if keymap.panes => {
+                        return (
+                            None,
+                            Some(KeyCommand::Tab(TabCommand::LaunchAgent(
+                                provider,
+                                Some(Axis::Horizontal),
+                            ))),
+                        );
+                    }
+                    b'd' if keymap.panes => {
+                        return (
+                            None,
+                            Some(KeyCommand::Tab(TabCommand::LaunchAgent(
+                                provider,
+                                Some(Axis::Vertical),
+                            ))),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (Some(Overlay::Agents { index }), None)
 }
 
 fn pane_keys(
@@ -593,5 +671,87 @@ impl Mouse {
             }
         }
         bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_layout() -> (Layout, Location) {
+        let mut layout = Layout::empty_terminal();
+        let location = layout.add_workspace("main".into(), "Shell".into()).unwrap();
+        (layout, location)
+    }
+
+    fn workspace_keymap() -> Keymap {
+        Keymap {
+            workspace_ui: true,
+            tabs: true,
+            panes: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn keymap_opens_agent_launcher_for_ascii_and_dubeolsik() {
+        let keymap = workspace_keymap();
+        assert!(matches!(
+            keymap.command(b"a"),
+            Some(KeyCommand::Browse(Kind::Agents))
+        ));
+        assert!(matches!(
+            keymap.command("ㅁ".as_bytes()),
+            Some(KeyCommand::Browse(Kind::Agents))
+        ));
+    }
+
+    #[test]
+    fn agent_launcher_overlay_navigates_and_launches() {
+        let (layout, location) = test_layout();
+        let keymap = workspace_keymap();
+        let reorder = |_, _| None;
+
+        let overlay = Overlay::open(Kind::Agents, &layout, location);
+        let (next, cmd) = overlay.key(b"\x1b[B", &layout, location, keymap, reorder);
+        assert!(cmd.is_none());
+        let overlay = next.expect("overlay remains open");
+
+        let (next, cmd) = overlay.key(b"\r", &layout, location, keymap, reorder);
+        assert!(next.is_none());
+        assert!(matches!(
+            cmd,
+            Some(KeyCommand::Tab(TabCommand::LaunchAgent(
+                Provider::Codex,
+                None
+            )))
+        ));
+
+        let overlay = Overlay::open(Kind::Agents, &layout, location);
+        let (next, cmd) = overlay.key(b"r", &layout, location, keymap, reorder);
+        assert!(next.is_none());
+        assert!(matches!(
+            cmd,
+            Some(KeyCommand::Tab(TabCommand::LaunchAgent(
+                Provider::Claude,
+                Some(Axis::Horizontal)
+            )))
+        ));
+
+        let overlay = Overlay::open(Kind::Agents, &layout, location);
+        let (next, cmd) = overlay.key(b"d", &layout, location, keymap, reorder);
+        assert!(next.is_none());
+        assert!(matches!(
+            cmd,
+            Some(KeyCommand::Tab(TabCommand::LaunchAgent(
+                Provider::Claude,
+                Some(Axis::Vertical)
+            )))
+        ));
+
+        let overlay = Overlay::open(Kind::Agents, &layout, location);
+        let (next, cmd) = overlay.key(b"\x1b", &layout, location, keymap, reorder);
+        assert!(next.is_none());
+        assert!(cmd.is_none());
     }
 }

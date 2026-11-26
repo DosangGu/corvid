@@ -311,6 +311,7 @@ pub struct Ui {
     pub restore_unavailable: bool,
     pub naming_supported: bool,
     pub split_target_supported: bool,
+    pub create_view_agent_supported: bool,
     pub command_history_supported: bool,
     pub host_id: Option<String>,
     pub epoch: Option<String>,
@@ -428,6 +429,7 @@ impl Shared {
                 restore_unavailable: false,
                 naming_supported: false,
                 split_target_supported: false,
+                create_view_agent_supported: false,
                 command_history_supported: false,
                 host_id: None,
                 epoch: None,
@@ -777,7 +779,7 @@ enum Action {
     ReadHistory(HistoryRead),
     DisconnectOthers(u64),
     Select(ViewSelection, bool),
-    Create(Target),
+    Create(Target, Option<corvid_protocol::wire::AgentProvider>),
     Close(CloseView),
     OpenAgentDeck(agent_deck::Settings),
     FocusAgent(agent_deck::FocusRequest),
@@ -1146,7 +1148,11 @@ impl Session {
     }
 
     pub fn create(&self, target: Target) {
-        self.change(Action::Create(target));
+        self.change(Action::Create(target, None));
+    }
+
+    pub fn create_agent(&self, target: Target, provider: corvid_protocol::wire::AgentProvider) {
+        self.change(Action::Create(target, Some(provider)));
     }
 
     pub fn view_revision(&self) -> u64 {
@@ -1963,6 +1969,11 @@ async fn run(
         .capabilities
         .iter()
         .any(|capability| capability == corvid_protocol::WORKSPACE_UI_CAPABILITY);
+    let create_view_agent_supported = link
+        .session()
+        .capabilities
+        .iter()
+        .any(|name| name == corvid_protocol::CREATE_VIEW_AGENT_CAPABILITY);
     let naming_supported = link
         .session()
         .capabilities
@@ -1984,6 +1995,7 @@ async fn run(
         ui.reorder_supported = reorder_supported;
         ui.naming_supported = naming_supported;
         ui.split_target_supported = split_target_supported;
+        ui.create_view_agent_supported = create_view_agent_supported;
         ui.command_history_supported = command_history_supported;
         ui.session_clients_supported = session_clients_supported;
     });
@@ -2571,7 +2583,7 @@ impl Client<'_> {
             }
             Action::Input { .. } => {}
             Action::Select(selection, open) => self.begin_select(selection, open, None).await?,
-            Action::Create(target) => self.create(target).await?,
+            Action::Create(target, provider) => self.create(target, provider).await?,
             Action::Close(target) if target.workspace_id != self.selected.workspace_id => {
                 self.request(
                     Body::ClaimWorkspaceWriter(ClaimWorkspaceWriter {
@@ -2749,7 +2761,7 @@ impl Client<'_> {
                 .await;
         }
         if open {
-            return self.create(Target::OpenPane(selection)).await;
+            return self.create(Target::OpenPane(selection), None).await;
         }
         self.request(
             Body::SelectView(SelectView {
@@ -2763,7 +2775,11 @@ impl Client<'_> {
         .await
     }
 
-    async fn create(&mut self, target: Target) -> Result<()> {
+    async fn create(
+        &mut self,
+        target: Target,
+        provider: Option<corvid_protocol::wire::AgentProvider>,
+    ) -> Result<()> {
         let target = if matches!(target, Target::TabLabel(_))
             && self.shared.snapshot().ui.naming_supported
         {
@@ -2775,6 +2791,7 @@ impl Client<'_> {
             Body::CreateView(CreateView {
                 expected_view_revision: Some(self.route.view_revision),
                 target: Some(target),
+                agent_provider: provider.map(|provider| provider as i32),
             }),
             Operation::View,
         )

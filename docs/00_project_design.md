@@ -213,7 +213,11 @@ target. Moving a pane is distinct from replacing the PTY in that pane.
 The reliable launch path is an explicit Corvid launch action/helper around the real
 provider CLI. It registers a process incarnation and random launch association, then
 launches the ordinary interactive CLI in the existing PTY. It does not replace the CLI
-with an SDK. Names such as `corvid agent launch` are provisional.
+with an SDK. Names such as `corvid agent launch` are provisional. Interactive TUI and
+Desktop clients also provide an **Agent Launcher** (`Ctrl+] a`) that starts a supported
+provider directly as a managed PTY in a new tab, split pane, or empty pane, while
+preserving the ordinary shell/CLI launch path (`claude`, `codex`, `agy`,
+`corvid attach --agent`) as a separate workflow.
 
 An inherited launch token associates events with a terminal/process family, **not with
 whichever run currently occupies the pane**. The adapter resolves provider session,
@@ -736,7 +740,10 @@ Negotiated extended keyboard protocols and automatic remapping are later work.
 
 In command mode, 1–9 selects a live tab by its displayed position.
 The shared workspace commands use `w` for the workspace picker, `t` for
-the tab list, and `p` for spatial pane selection. The arrow keys after the
+the tab list, `p` for spatial pane selection, and `a` for the Agent Launcher
+picker (`Enter` new tab, `r` split right, `d` split down, `Esc` cancel).
+Agent Launcher is an explicit interactive client gesture, aligned between TUI
+and Desktop, and is unavailable to external controllers. The arrow keys after the
 leader can also focus a neighboring pane directly. The daemon consumes keys
 and paste while a TUI selector is open and resolves the selected identity
 before running the ordinary route-fenced switch. `Ctrl+]` then `?` opens
