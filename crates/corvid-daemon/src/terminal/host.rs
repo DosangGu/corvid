@@ -45,6 +45,7 @@ pub(super) enum Operation {
     Stop = 10,
     History = 11,
     ShellHistory = 12,
+    SetColors = 13,
 }
 
 #[derive(Clone, Message, PartialEq)]
@@ -67,6 +68,8 @@ struct Request {
     clipboard_enabled: bool,
     #[prost(bool, tag = "9")]
     clipboard_reset: bool,
+    #[prost(message, optional, tag = "10")]
+    terminal_colors: Option<corvid_protocol::wire::TerminalColors>,
 }
 
 #[derive(Message)]
@@ -213,6 +216,20 @@ fn retire_host_copies(root: &Path) -> Result<()> {
 }
 
 impl Client {
+    pub(super) fn set_colors(
+        &mut self,
+        colors: corvid_protocol::wire::TerminalColors,
+    ) -> Result<()> {
+        let response = self.call(Request {
+            operation: Operation::SetColors as i32,
+            terminal_colors: Some(colors),
+            ..Default::default()
+        })?;
+        // Older retained hosts may not recognize Operation::SetColors.
+        let _ = response;
+        Ok(())
+    }
+
     pub(super) fn history(
         &mut self,
         shell_only: bool,
@@ -726,6 +743,14 @@ impl Host {
             Operation::Stop => {
                 self.exit = self.session.stop();
                 *response = self.response();
+            }
+            Operation::SetColors => {
+                let colors = request
+                    .terminal_colors
+                    .as_ref()
+                    .filter(|colors| corvid_protocol::valid_terminal_colors(colors))
+                    .context("invalid terminal colors")?;
+                self.session.screen.set_colors(colors)?;
             }
         }
         Ok(())

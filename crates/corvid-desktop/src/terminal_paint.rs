@@ -1,6 +1,9 @@
 use std::ops::Range;
 
 use corvid_protocol::ansi_screen::{Cell, Color, Screen};
+use corvid_protocol::{
+    DEFAULT_ANSI_PALETTE_16, DEFAULT_TERMINAL_BACKGROUND_RGB, DEFAULT_TERMINAL_FOREGROUND_RGB,
+};
 use gpui::{
     App, Bounds, FontStyle, FontWeight, PathBuilder, Pixels, Point, SharedString, TextRun,
     UnderlineStyle, Window, fill, point, px, rgb, size,
@@ -12,8 +15,8 @@ use crate::terminal_session::Grid;
 
 mod graphic;
 
-pub const BACKGROUND: u32 = 0x20242b;
-const FOREGROUND: u32 = 0xcdd3dc;
+pub const BACKGROUND: u32 = DEFAULT_TERMINAL_BACKGROUND_RGB;
+const FOREGROUND: u32 = DEFAULT_TERMINAL_FOREGROUND_RGB;
 const DIM_FOREGROUND: u32 = 0x8993a2;
 
 #[cfg(test)]
@@ -389,15 +392,11 @@ fn text_run(len: usize, style: Style, family: &SharedString) -> TextRun {
 }
 
 fn color(color: Color, default: u32) -> u32 {
-    const ANSI: [u32; 16] = [
-        0x000000, 0xeb777d, 0x0dbc79, 0xe5e510, 0x6ca9ec, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
-        0xffa0a5, 0x23d18b, 0xf5f543, 0x9ccbff, 0xd670d6, 0x29b8db, 0xffffff,
-    ];
     let rgb = |r: u8, g: u8, b: u8| u32::from_be_bytes([0, r, g, b]);
     match color {
         Color::Default => default,
         Color::Rgb(r, g, b) => rgb(r, g, b),
-        Color::Indexed(index @ 0..=15) => ANSI[usize::from(index)],
+        Color::Indexed(index @ 0..=15) => DEFAULT_ANSI_PALETTE_16[usize::from(index)],
         Color::Indexed(index @ 16..=231) => {
             let level = [0, 95, 135, 175, 215, 255];
             let index = usize::from(index - 16);

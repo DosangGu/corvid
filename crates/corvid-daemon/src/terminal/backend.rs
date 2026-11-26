@@ -195,6 +195,16 @@ impl Backend {
         }
     }
 
+    pub(super) fn set_colors(
+        &mut self,
+        colors: corvid_protocol::wire::TerminalColors,
+    ) -> Result<()> {
+        match self {
+            Self::Local(session) => session.screen.set_colors(&colors),
+            Self::Hosted(client) => client.set_colors(colors),
+        }
+    }
+
     pub(super) fn retain(&mut self, retain: bool) -> Result<bool> {
         let Self::Hosted(client) = self else {
             return Ok(false);

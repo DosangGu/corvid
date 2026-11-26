@@ -600,6 +600,7 @@ async fn request_attach(
     } else {
         None
     };
+    let terminal_colors = crate::tty_colors::probe_colors().await;
     let mut attach = Attach {
         writer_resume_token: None,
         agent_run_id: None,
@@ -616,6 +617,7 @@ async fn request_attach(
         terminal_capabilities,
         requested_role: AttachRole::Writer as i32,
         launch,
+        terminal_colors,
     };
     let recovery_requested =
         offer_recovery && AttachRecovery::request(&connection.session, &mut attach);

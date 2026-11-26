@@ -425,6 +425,7 @@ mod tests {
             resume_token: None,
             issue_resume_token: false,
             offer_recovery: false,
+            terminal_colors: None,
             workspace: None,
             tab: None,
             new_workspace: None,

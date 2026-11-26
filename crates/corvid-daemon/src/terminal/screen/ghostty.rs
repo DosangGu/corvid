@@ -10,11 +10,14 @@ use corvid_protocol::ansi_screen::{
     Cell as FrameCell, Color, Cursor, Hyperlink, MAX_HYPERLINK_URI_BYTES, Screen,
     Style as FrameStyle, Width, sanitize_hyperlink,
 };
-use corvid_protocol::wire::{HistoryCommand, TerminalHistory, WheelEncoding};
-use corvid_protocol::{TERMINAL_HISTORY_MAX_COMMANDS, TERMINAL_HISTORY_MAX_ROWS};
+use corvid_protocol::wire::{HistoryCommand, TerminalColors, TerminalHistory, WheelEncoding};
+use corvid_protocol::{
+    DEFAULT_ANSI_PALETTE_16, DEFAULT_TERMINAL_BACKGROUND_RGB, DEFAULT_TERMINAL_FOREGROUND_RGB,
+    TERMINAL_HISTORY_MAX_COMMANDS, TERMINAL_HISTORY_MAX_ROWS,
+};
 use ghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use ghostty_vt::screen::{Cell, CellContentTag, CellWide, Screen as ActiveScreen, TrackedGridRef};
-use ghostty_vt::style::{Style, StyleColor, Underline};
+use ghostty_vt::style::{Palette, RgbColor, Style, StyleColor, Underline};
 use ghostty_vt::terminal::{
     ClipboardWritePolicy, Event, Mode, Options, Point, PointCoordinate, PointSpace, Terminal,
 };
@@ -86,6 +89,11 @@ impl Ghostty {
         if cfg!(windows) {
             terminal.set_resize_pull_scrollback(false)?;
         }
+        // TODO: Synchronize dynamic runtime OSC 10/11/4 color writes and mid-session theme changes across attached clients
+        // Tracked alongside Desktop light appearance (#193) and the general OSC roadmap (#413).
+        terminal.set_default_fg_color(Some(rgb_color(DEFAULT_TERMINAL_FOREGROUND_RGB)))?;
+        terminal.set_default_bg_color(Some(rgb_color(DEFAULT_TERMINAL_BACKGROUND_RGB)))?;
+        terminal.set_default_color_palette(Some(default_palette(None)))?;
         terminal.resize(viewport.cols.get(), viewport.rows.get(), 0, 0)?;
         Ok(Self {
             commands: VecDeque::new(),
@@ -100,6 +108,20 @@ impl Ghostty {
             viewport,
             title: String::new(),
         })
+    }
+
+    pub(super) fn set_colors(&mut self, colors: &TerminalColors) -> Result<()> {
+        if let Some(fg) = colors.foreground_rgb {
+            self.terminal.set_default_fg_color(Some(rgb_color(fg)))?;
+        }
+        if let Some(bg) = colors.background_rgb {
+            self.terminal.set_default_bg_color(Some(rgb_color(bg)))?;
+        }
+        if colors.ansi_palette.len() == 16 {
+            self.terminal
+                .set_default_color_palette(Some(default_palette(Some(&colors.ansi_palette))))?;
+        }
+        Ok(())
     }
 
     pub(super) fn process(&mut self, bytes: &[u8], replies: &mut Vec<u8>) -> Result<()> {
@@ -729,7 +751,60 @@ fn cell_width(cell: Cell) -> Result<Width> {
     })
 }
 
+fn rgb_color(rgb: u32) -> RgbColor {
+    RgbColor {
+        r: ((rgb >> 16) & 0xff) as u8,
+        g: ((rgb >> 8) & 0xff) as u8,
+        b: (rgb & 0xff) as u8,
+    }
+}
+
+fn default_palette(ansi_16: Option<&[u32]>) -> Palette {
+    let mut colors = [RgbColor { r: 0, g: 0, b: 0 }; 256];
+    let base_16 = ansi_16.unwrap_or(&DEFAULT_ANSI_PALETTE_16);
+    for (slot, &rgb) in colors[..16].iter_mut().zip(base_16.iter()) {
+        *slot = rgb_color(rgb);
+    }
+    let level = [0u8, 95, 135, 175, 215, 255];
+    for (offset, slot) in colors[16..232].iter_mut().enumerate() {
+        *slot = RgbColor {
+            r: level[offset / 36],
+            g: level[(offset / 6) % 6],
+            b: level[offset % 6],
+        };
+    }
+    for (offset, slot) in colors[232..256].iter_mut().enumerate() {
+        let gray = 8 + (offset as u8) * 10;
+        *slot = RgbColor {
+            r: gray,
+            g: gray,
+            b: gray,
+        };
+    }
+    Palette(colors)
+}
+
 fn profile_reply(bytes: &[u8]) -> Option<&[u8]> {
+    if let Some(osc) = bytes.strip_prefix(b"\x1b]") {
+        let body = osc
+            .strip_suffix(b"\x07")
+            .or_else(|| osc.strip_suffix(b"\x1b\\"))?;
+        if let Some(rgb) = body
+            .strip_prefix(b"10;rgb:")
+            .or_else(|| body.strip_prefix(b"11;rgb:"))
+        {
+            return osc_rgb_triplet(rgb).then_some(bytes);
+        }
+        if let Some(rest) = body.strip_prefix(b"4;")
+            && let Some((index, rgb)) = split_once_bytes(rest, b";rgb:")
+            && valid_palette_index(index)
+            && osc_rgb_triplet(rgb)
+        {
+            return Some(bytes);
+        }
+        return None;
+    }
+
     let body = bytes.strip_prefix(b"\x1b[")?;
     if body == b"0n" {
         Some(bytes)
@@ -748,6 +823,34 @@ fn profile_reply(bytes: &[u8]) -> Option<&[u8]> {
     } else {
         None
     }
+}
+
+fn split_once_bytes<'a>(bytes: &'a [u8], needle: &[u8]) -> Option<(&'a [u8], &'a [u8])> {
+    let pos = bytes
+        .windows(needle.len())
+        .position(|window| window == needle)?;
+    Some((&bytes[..pos], &bytes[pos + needle.len()..]))
+}
+
+fn valid_palette_index(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && bytes.len() <= 3
+        && bytes.iter().all(u8::is_ascii_digit)
+        && std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|s| s.parse::<u8>().ok())
+            .is_some()
+}
+
+fn osc_rgb_triplet(bytes: &[u8]) -> bool {
+    let mut parts = bytes.split(|&byte| byte == b'/');
+    let Some(r) = parts.next() else { return false };
+    let Some(g) = parts.next() else { return false };
+    let Some(b) = parts.next() else { return false };
+    parts.next().is_none()
+        && [r, g, b]
+            .into_iter()
+            .all(|part| (1..=4).contains(&part.len()) && part.iter().all(u8::is_ascii_hexdigit))
 }
 
 fn numeric_fields(bytes: &[u8], count: Option<usize>) -> bool {

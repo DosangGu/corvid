@@ -2282,6 +2282,13 @@ async fn attach(
         .terminal_capabilities
         .iter()
         .any(|cap| cap == corvid_protocol::ATTACH_RECOVERY_CAPABILITY);
+    request
+        .terminal_colors
+        .get_or_insert_with(|| corvid_protocol::wire::TerminalColors {
+            foreground_rgb: Some(corvid_protocol::DEFAULT_TERMINAL_FOREGROUND_RGB),
+            background_rgb: Some(corvid_protocol::DEFAULT_TERMINAL_BACKGROUND_RGB),
+            ansi_palette: corvid_protocol::DEFAULT_ANSI_PALETTE_16.to_vec(),
+        });
     let id = link.send(Body::Attach(request.clone())).await?;
     let reply = timeout(COMMAND_TIMEOUT, link.receive()).await??;
     let (reply_id, reply) = envelope(link, reply)?;

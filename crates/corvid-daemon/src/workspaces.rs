@@ -76,6 +76,7 @@ pub(crate) struct AttachTarget {
     pub(crate) resume_token: Option<Uuid>,
     pub(crate) issue_resume_token: bool,
     pub(crate) offer_recovery: bool,
+    pub(crate) terminal_colors: Option<Box<corvid_protocol::wire::TerminalColors>>,
 }
 
 #[derive(Debug)]
@@ -629,6 +630,7 @@ impl Workspaces {
             keymap: target.keymap,
             viewport: target.viewport,
             launch: target.launch,
+            terminal_colors: target.terminal_colors,
             events,
         };
         let opened = if let Some(route) = previous {
@@ -1144,6 +1146,7 @@ impl Workspaces {
             keymap,
             viewport: old.viewport,
             launch,
+            terminal_colors: None,
             events,
         };
         Ok(ReservedSwitch {
