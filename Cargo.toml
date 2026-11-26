@@ -82,7 +82,7 @@ prost-build = "=0.14.4"
 prost-types = "=0.14.5"
 protox = "=0.10.0"
 qwertty-term-input = "=0.4.0"
-resvg = { version = "=0.49.0", default-features = false }
+resvg = { version = "=0.50.0", default-features = false }
 rustix = { version = "=1.1.6", features = ["fs"] }
 raw-window-handle = "=0.6.2"
 selectme = "=0.7.2"
