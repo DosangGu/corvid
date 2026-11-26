@@ -125,7 +125,7 @@ pub fn validate_history(history: &TerminalHistory) -> Result<(), &'static str> {
             || !line.is_char_boundary(link.start_offset as usize)
             || !line.is_char_boundary(link.end_offset as usize)
             || previous_link.is_some_and(|prev| (link.row, link.start_offset) < prev)
-            || crate::ansi_screen::sanitize_hyperlink(&link.uri, link.id.as_deref()).is_none()
+            || crate::sanitize_hyperlink(&link.uri, link.id.as_deref()).is_none()
         {
             return Err("invalid terminal history hyperlink");
         }

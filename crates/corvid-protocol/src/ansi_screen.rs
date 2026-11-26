@@ -67,45 +67,7 @@ pub enum Width {
     Continuation,
 }
 
-pub const MAX_HYPERLINK_URI_BYTES: usize = 2048;
-pub const MAX_HYPERLINK_ID_BYTES: usize = 256;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Hyperlink {
-    pub uri: String,
-    pub id: Option<String>,
-}
-
-pub fn sanitize_hyperlink(uri: &str, id: Option<&str>) -> Option<Hyperlink> {
-    if uri.is_empty() || uri.len() > MAX_HYPERLINK_URI_BYTES || uri.chars().any(is_unsafe_char) {
-        return None;
-    }
-    let id = match id.filter(|id| !id.is_empty()) {
-        Some(id) => {
-            if id.len() > MAX_HYPERLINK_ID_BYTES
-                || id
-                    .chars()
-                    .any(|ch| is_unsafe_char(ch) || ch == ';' || ch == ':')
-            {
-                return None;
-            }
-            Some(id.to_owned())
-        }
-        None => None,
-    };
-    Some(Hyperlink {
-        uri: uri.to_owned(),
-        id,
-    })
-}
-
-fn is_unsafe_char(ch: char) -> bool {
-    ch.is_control()
-        || matches!(
-            ch,
-            '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-        )
-}
+pub use crate::{Hyperlink, MAX_HYPERLINK_ID_BYTES, MAX_HYPERLINK_URI_BYTES, sanitize_hyperlink};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cell {

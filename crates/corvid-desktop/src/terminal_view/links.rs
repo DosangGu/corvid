@@ -373,24 +373,27 @@ fn is_local_file_host(host: Option<&str>) -> bool {
     }
     static LOCAL_HOST: OnceLock<Option<String>> = OnceLock::new();
     let local = LOCAL_HOST.get_or_init(|| {
-        let mut buf = [0u8; 256];
         #[cfg(unix)]
         {
-            let name = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-            if name == 0 {
-                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                return std::str::from_utf8(&buf[..len])
-                    .ok()
-                    .map(|s| s.trim_end_matches('.').to_owned());
-            }
-            None
+            std::env::var("HOSTNAME")
+                .ok()
+                .map(|s| s.trim().trim_end_matches('.').to_owned())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let output = std::process::Command::new("hostname").output().ok()?;
+                    output.status.success().then_some(())?;
+                    std::str::from_utf8(&output.stdout)
+                        .ok()
+                        .map(|s| s.trim().trim_end_matches('.').to_owned())
+                        .filter(|s| !s.is_empty())
+                })
         }
         #[cfg(not(unix))]
         {
-            let _ = buf;
             std::env::var("COMPUTERNAME")
                 .ok()
-                .map(|s| s.trim_end_matches('.').to_owned())
+                .map(|s| s.trim().trim_end_matches('.').to_owned())
+                .filter(|s| !s.is_empty())
         }
     });
     local
