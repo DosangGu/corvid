@@ -17,7 +17,6 @@ use anyhow::Result;
 use corvid_async::{mpsc, oneshot};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::ProcessLiveness;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use corvid_core::agent::Provider;
 use corvid_core::layout::{
     Axis, CloseTarget, CwdObservation, CwdSource, Layout, Location, TabPlacement,
