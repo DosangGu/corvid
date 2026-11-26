@@ -226,6 +226,17 @@ impl Inventory {
             .as_ref()
     }
 
+    pub fn reported_directory(
+        &self,
+        selection: &ViewSelection,
+    ) -> Option<&corvid_protocol::wire::ReportedDirectory> {
+        self.terminals
+            .iter()
+            .find(|terminal| terminal.location.as_ref() == Some(selection))?
+            .reported_directory
+            .as_ref()
+    }
+
     pub fn pending_input_at(&self, selection: &ViewSelection) -> bool {
         self.agents.iter().any(|agent| {
             agent.terminal_available

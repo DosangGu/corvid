@@ -1215,12 +1215,18 @@ impl WorkspaceView {
                             .bg(rgb(if active { ACTIVE_FILL } else { PANEL }))
                             .text_color(rgb(if active { ACTIVE } else { MUTED }))
                             .text_size(ui_px(12.))
-                            .child(div().flex_1().min_w_0().truncate().child(title))
+                            .child(div().flex_1().min_w_0().truncate().child(title.clone()))
                             .when(ui.connected && ui.inventory_ready, |header| {
-                                header.children(program_status_line(
-                                    inventory.program_status(&target),
-                                    inventory.pending_input_at(&target),
-                                ))
+                                header
+                                    .children(reported_directory_badge(
+                                        inventory.reported_directory(&target),
+                                        ui.remote_host.as_deref(),
+                                        &title,
+                                    ))
+                                    .children(program_status_line(
+                                        inventory.program_status(&target),
+                                        inventory.pending_input_at(&target),
+                                    ))
                             })
                             .when(
                                 !preview_only && ui.connected && ui.close_supported,
@@ -1388,7 +1394,9 @@ impl WorkspaceView {
                 .flex_1()
                 .min_h_0()
                 .when(ui.inventory_ready, |body| {
-                    body.children(program_status_line(
+                    body.children(single_pane_status_bar(
+                        inventory.reported_directory(selected),
+                        ui.remote_host.as_deref(),
                         inventory.program_status(selected),
                         inventory.pending_input_at(selected),
                     ))
@@ -1419,7 +1427,9 @@ impl WorkspaceView {
                     .flex_1()
                     .min_h_0()
                     .when(ui.connected && ui.inventory_ready, |body| {
-                        body.children(program_status_line(
+                        body.children(single_pane_status_bar(
+                            inventory.reported_directory(&target),
+                            ui.remote_host.as_deref(),
                             inventory.program_status(&target),
                             inventory.pending_input_at(&target),
                         ))
@@ -1448,7 +1458,9 @@ impl WorkspaceView {
                 .flex_1()
                 .min_h_0()
                 .when(ui.inventory_ready, |body| {
-                    body.children(program_status_line(
+                    body.children(single_pane_status_bar(
+                        inventory.reported_directory(selected),
+                        ui.remote_host.as_deref(),
                         inventory.program_status(selected),
                         inventory.pending_input_at(selected),
                     ))
@@ -1467,6 +1479,69 @@ impl WorkspaceView {
             .min_h_0()
             .child(div().flex().flex_1().min_h_0().child(body))
     }
+}
+
+fn reported_directory_badge(
+    dir: Option<&corvid_protocol::wire::ReportedDirectory>,
+    local_host: Option<&str>,
+    title: &str,
+) -> Option<Div> {
+    let dir = dir?;
+    let formatted =
+        corvid_protocol::reported_directory::format_reported_directory(dir, local_host, 36);
+    if title.contains(&formatted) {
+        return None;
+    }
+    Some(
+        div()
+            .flex_initial()
+            .min_w_0()
+            .truncate()
+            .pl(ui_px(8.))
+            .text_color(rgb(MUTED))
+            .text_size(ui_px(11.))
+            .child(formatted),
+    )
+}
+
+fn single_pane_status_bar(
+    dir: Option<&corvid_protocol::wire::ReportedDirectory>,
+    local_host: Option<&str>,
+    status: Option<&corvid_protocol::wire::ProgramStatus>,
+    pending_input: bool,
+) -> Option<Div> {
+    let dir_text = dir.map(|dir| {
+        corvid_protocol::reported_directory::format_reported_directory(dir, local_host, 48)
+    });
+    let status_text = status.map(|status| {
+        let detail = status.detail();
+        if pending_input {
+            format!("Needs input · {detail}")
+        } else {
+            detail
+        }
+    });
+    if dir_text.is_none() && status_text.is_none() {
+        return None;
+    }
+    Some(
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(ui_px(8.))
+            .min_w_0()
+            .px(ui_px(8.))
+            .py(ui_px(3.))
+            .text_color(rgb(MUTED))
+            .text_size(ui_px(12.))
+            .when_some(dir_text, |row, text| {
+                row.child(div().flex_1().min_w_0().truncate().child(text))
+            })
+            .when_some(status_text, |row, text| {
+                row.child(div().flex_none().min_w_0().truncate().child(text))
+            }),
+    )
 }
 
 fn program_status_line(

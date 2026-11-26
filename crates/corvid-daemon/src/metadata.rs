@@ -134,6 +134,7 @@ pub(crate) struct DisplayLayout {
     pub(crate) layout: Arc<Layout>,
     pub(crate) titles: Arc<HashMap<Uuid, String>>,
     pub(crate) program_statuses: Arc<HashMap<Uuid, ProgramStatus>>,
+    pub(crate) reported_directories: Arc<HashMap<Uuid, corvid_protocol::wire::ReportedDirectory>>,
     pub(crate) pending_input_panes: Arc<BTreeSet<Uuid>>,
 }
 
@@ -184,6 +185,7 @@ impl MetadataUpdates {
             layout,
             titles,
             program_statuses: Arc::default(),
+            reported_directories: Arc::default(),
             pending_input_panes: Arc::default(),
         };
         Self(updates, watch::channel(display).0)
@@ -204,6 +206,21 @@ impl MetadataUpdates {
                 statuses.insert(pane, status);
             } else {
                 statuses.remove(&pane);
+            }
+        });
+    }
+
+    pub(crate) fn publish_reported_directory(
+        &self,
+        pane: Uuid,
+        directory: Option<corvid_protocol::wire::ReportedDirectory>,
+    ) {
+        self.1.send_modify(|display| {
+            let directories = Arc::make_mut(&mut display.reported_directories);
+            if let Some(directory) = directory {
+                directories.insert(pane, directory);
+            } else {
+                directories.remove(&pane);
             }
         });
     }

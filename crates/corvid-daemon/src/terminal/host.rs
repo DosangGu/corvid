@@ -113,6 +113,8 @@ pub(super) struct Response {
     pub(super) clipboard: Option<String>,
     #[prost(message, optional, tag = "19")]
     pub(super) program_status: Option<corvid_protocol::wire::ProgramStatus>,
+    #[prost(message, optional, tag = "20")]
+    pub(super) reported_directory: Option<corvid_protocol::wire::ReportedDirectory>,
 }
 
 impl Response {
@@ -676,6 +678,7 @@ impl Host {
                     .configure_clipboard(request.clipboard_enabled, request.clipboard_reset);
                 response.clipboard = self.session.screen.take_clipboard();
                 response.program_status = self.session.screen.program_status();
+                response.reported_directory = self.session.screen.reported_directory();
                 response.changed = std::mem::take(&mut self.changed);
                 if let Some(failure) = self.failure.take() {
                     response.failure = match failure.kind {

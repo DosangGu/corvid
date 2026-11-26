@@ -262,10 +262,23 @@ impl Composition {
                     .get(&id)
                     .map_or(fallback.as_str(), String::as_str);
                 let status = pane_status(display, id);
-                let label = status.map_or_else(
-                    || format!("{marker}{title}"),
-                    |status| format!("{marker}{status} · {title}"),
-                );
+                let dir = display
+                    .reported_directories
+                    .get(&id)
+                    .map(|dir| {
+                        corvid_protocol::reported_directory::format_reported_directory(
+                            dir,
+                            host_name(),
+                            28,
+                        )
+                    })
+                    .filter(|formatted| !title.contains(formatted.as_str()));
+                let label = match (status, dir) {
+                    (Some(status), Some(dir)) => format!("{marker}{status} · {title} · {dir}"),
+                    (Some(status), None) => format!("{marker}{status} · {title}"),
+                    (None, Some(dir)) => format!("{marker}{title} · {dir}"),
+                    (None, None) => format!("{marker}{title}"),
+                };
                 let label = clip(&label, usize::from(region.width));
                 let _ = write!(
                     ansi,

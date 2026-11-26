@@ -954,15 +954,12 @@ impl Workspaces {
                     .workspace = destination;
                 registry.terminals.insert(terminal, location);
                 registry.agents.relocate_terminal(terminal, location);
-                let status = registry
-                    .metadata
-                    .display()
-                    .program_statuses
-                    .get(&location.pane)
-                    .cloned();
+                let display = registry.metadata.display();
+                let status = display.program_statuses.get(&location.pane).cloned();
+                let directory = display.reported_directories.get(&location.pane).cloned();
                 registry.publish_layout(
                     layout,
-                    vec![terminal_projection(terminal, location, status)],
+                    vec![terminal_projection(terminal, location, status, directory)],
                 );
                 Ok(TabMoved {
                     location: Some(projection::selection(location)),
@@ -1343,7 +1340,7 @@ impl Registry {
 
     pub(crate) fn terminal_started(&mut self, id: Uuid, location: Location) {
         self.terminals.insert(id, location);
-        self.publish(vec![terminal_projection(id, location, None)]);
+        self.publish(vec![terminal_projection(id, location, None, None)]);
     }
 
     pub(crate) fn record_title(&mut self, id: Uuid, title: String) {
@@ -1372,12 +1369,37 @@ impl Registry {
             return;
         };
         let check_observer = status.as_ref().is_some_and(|status| status.osc_7501);
+        let directory = self
+            .metadata
+            .display()
+            .reported_directories
+            .get(&location.pane)
+            .cloned();
         self.metadata
             .publish_program_status(location.pane, status.clone());
-        self.publish(vec![terminal_projection(id, location, status)]);
+        self.publish(vec![terminal_projection(id, location, status, directory)]);
         if check_observer {
             self.check_observer(id);
         }
+    }
+
+    pub(crate) fn record_reported_directory(
+        &mut self,
+        id: Uuid,
+        directory: Option<corvid_protocol::wire::ReportedDirectory>,
+    ) {
+        let Some(&location) = self.terminals.get(&id) else {
+            return;
+        };
+        let status = self
+            .metadata
+            .display()
+            .program_statuses
+            .get(&location.pane)
+            .cloned();
+        self.metadata
+            .publish_reported_directory(location.pane, directory.clone());
+        self.publish(vec![terminal_projection(id, location, status, directory)]);
     }
 
     fn check_observer(&mut self, terminal: Uuid) {
@@ -1454,6 +1476,8 @@ impl Registry {
         }
         if let Some(location) = self.terminals.remove(&id) {
             self.metadata.publish_program_status(location.pane, None);
+            self.metadata
+                .publish_reported_directory(location.pane, None);
             if self.titles.contains_key(&location.pane) {
                 Arc::make_mut(&mut self.titles).remove(&location.pane);
                 self.metadata.publish_display(&self.titles);
@@ -1804,11 +1828,13 @@ fn terminal_projection(
     id: Uuid,
     location: Location,
     program_status: Option<corvid_protocol::wire::ProgramStatus>,
+    reported_directory: Option<corvid_protocol::wire::ReportedDirectory>,
 ) -> Projection {
     let state = TerminalState {
         terminal_id: id.to_string(),
         location: Some(projection::selection(location)),
         program_status,
+        reported_directory,
     };
     (
         Group::Terminal(id),

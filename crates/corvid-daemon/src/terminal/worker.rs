@@ -1401,6 +1401,7 @@ struct Running {
     dirty: bool,
     reported_title: String,
     reported_program_status: Option<corvid_protocol::wire::ProgramStatus>,
+    reported_directory: Option<corvid_protocol::wire::ReportedDirectory>,
     clipboard_route: Option<InputRoute>,
     exit: Option<ExitStatus>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1459,6 +1460,7 @@ impl Running {
             dirty: true,
             reported_title: String::new(),
             reported_program_status: None,
+            reported_directory: None,
             clipboard_route: None,
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1615,6 +1617,7 @@ impl Running {
             dirty: true,
             reported_title: String::new(),
             reported_program_status: None,
+            reported_directory: None,
             clipboard_route: None,
             exit: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1649,6 +1652,13 @@ impl Running {
             let status = self.reported_program_status.clone();
             self.registry
                 .request(move |registry| registry.record_program_status(id, status));
+        }
+        if tick.reported_directory != self.reported_directory {
+            self.reported_directory = tick.reported_directory;
+            let id = self.id;
+            let directory = self.reported_directory.clone();
+            self.registry
+                .request(move |registry| registry.record_reported_directory(id, directory));
         }
         self.dirty |= tick.output;
         if let Some(status) = tick.exit {
@@ -2481,6 +2491,7 @@ impl Lease {
         let layout_changed = cache.layout.as_ref().is_none_or(|old| {
             !Arc::ptr_eq(&old.layout, &display.layout)
                 || !Arc::ptr_eq(&old.program_statuses, &display.program_statuses)
+                || !Arc::ptr_eq(&old.reported_directories, &display.reported_directories)
                 || !Arc::ptr_eq(&old.pending_input_panes, &display.pending_input_panes)
         });
         if cache.size != Some(size) && !terminal.session.paste_pending() && self.paste.is_none() {

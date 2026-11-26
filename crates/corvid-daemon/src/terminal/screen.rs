@@ -36,6 +36,10 @@ impl TerminalScreen {
         &self.engine.title
     }
 
+    pub(super) fn reported_directory(&self) -> Option<corvid_protocol::wire::ReportedDirectory> {
+        self.engine.reported_directory.clone()
+    }
+
     pub fn process(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
         let mut replies = Vec::new();
         let mut result = Ok(());
@@ -822,5 +826,33 @@ mod tests {
             updated_text.contains("\x1b]4;0;rgb:1111/2222/3333"),
             "{updated_text:?}"
         );
+    }
+
+    #[test]
+    fn tracks_osc7_osc9_9_and_osc633_cwd_and_clears_on_reset() {
+        let mut terminal = terminal(80, 24);
+        assert_eq!(terminal.reported_directory(), None);
+
+        terminal
+            .process(b"\x1b]7;file://prod-box/srv/my%20app\x07")
+            .unwrap();
+        let reported = terminal.reported_directory().unwrap();
+        assert_eq!(reported.host.as_deref(), Some("prod-box"));
+        assert_eq!(reported.path, "/srv/my app");
+
+        terminal.process(b"\x1b]9;9;/tmp/win-style\x1b\\").unwrap();
+        let reported = terminal.reported_directory().unwrap();
+        assert_eq!(reported.host, None);
+        assert_eq!(reported.path, "/tmp/win-style");
+
+        terminal
+            .process(b"\x1b]633;P;Cwd=/Users/dev/corvid\x07")
+            .unwrap();
+        let reported = terminal.reported_directory().unwrap();
+        assert_eq!(reported.host, None);
+        assert_eq!(reported.path, "/Users/dev/corvid");
+
+        terminal.process(b"\x1bc").unwrap();
+        assert_eq!(terminal.reported_directory(), None);
     }
 }
