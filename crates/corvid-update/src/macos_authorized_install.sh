@@ -7,6 +7,40 @@ expected=$3
 cdhash=$4
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
+# Reject macOS extended ACL entries granting write/modification rights to
+# non-administrator accounts on the bundle or its ancestor directories.
+check_macos_acl() {
+    acl_output=$(/bin/ls -led "$1") || fail 'Cannot inspect the installed app ACL.'
+    printf '%s\n' "$acl_output" | while IFS= read -r line; do
+        case "$line" in
+            *[0-9]:\ *)
+                rest=${line#*: }
+                principal=${rest%% *}
+                attrs=${rest#"$principal"}
+                case " $attrs " in
+                    *' deny '*)
+                        continue
+                        ;;
+                    *' allow '*)
+                        perms=${attrs#* allow }
+                        case ",$perms," in
+                            *,write,*|*,append,*|*,add_file,*|*,add_subdirectory,*|*,delete,*|*,delete_child,*|*,writeattr,*|*,writeextattr,*|*,writesecurity,*|*,chown,*)
+                                case "$principal" in
+                                    user:root|group:wheel|group:admin) ;;
+                                    *) fail 'The app path has an extended ACL granting non-administrator write access.' ;;
+                                esac
+                                ;;
+                        esac
+                        ;;
+                    *)
+                        fail 'The app path has an unrecognized extended ACL.'
+                        ;;
+                esac
+                ;;
+        esac
+    done || exit 1
+}
+
 # Elevated filesystem operations are limited to bundles under administrator-
 # controlled paths. Recheck every component here before creating any files.
 entry=$app
@@ -28,6 +62,7 @@ while [ "$entry" != / ]; do
     if [ "$((0$3 & 0020))" -ne 0 ]; then
         [ "$2" -eq 0 ] || [ "$2" -eq 80 ] || fail 'The app path is writable by other users.'
     fi
+    check_macos_acl "$entry"
     entry=$(/usr/bin/dirname "$entry")
 done
 
