@@ -634,7 +634,7 @@ impl TerminalView {
             match history.copy_command_output() {
                 Ok(output) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(output.text));
-                    history.notice = Some(
+                    history.nav.notice = Some(
                         if output.truncated {
                             "Copied output (older rows omitted)"
                         } else {
@@ -644,10 +644,10 @@ impl TerminalView {
                     );
                 }
                 Err(corvid_protocol::history::CommandOutputError::NoCommands) => {
-                    history.notice = Some("No command markers in this terminal.".into());
+                    history.nav.notice = Some("No command markers in this terminal.".into());
                 }
                 Err(corvid_protocol::history::CommandOutputError::NoOutput) => {
-                    history.notice = Some("Last command produced no output.".into());
+                    history.nav.notice = Some("Last command produced no output.".into());
                 }
             }
             cx.notify();
@@ -846,11 +846,11 @@ impl TerminalView {
     }
 
     fn move_in_history(&mut self, rows: isize, height: usize) {
-        if let Some(history) = &mut self.history {
-            history.scroll(rows, height);
-            if rows > 0 && history.at_bottom(height) {
-                self.clear_history();
-            }
+        if let Some(history) = &mut self.history
+            && (history.scroll(rows, height) == corvid_protocol::history::ScrollOutcome::ExitToLive
+                || (!history.is_loaded() && rows > 0 && history.at_bottom(height)))
+        {
+            self.clear_history();
         }
         self.selection = None;
     }
@@ -982,13 +982,21 @@ impl TerminalView {
                 cx.notify();
                 return true;
             }
-            ("k", false, false) if history.search.is_none() => history.scroll(-1, height),
+            ("k", false, false) if history.search.is_none() => {
+                let _ = history.scroll(-1, height);
+            }
             ("j", false, false) if history.search.is_none() => self.move_in_history(1, height),
-            ("up", false, _) => history.scroll(-1, height),
+            ("up", false, _) => {
+                let _ = history.scroll(-1, height);
+            }
             ("down", false, _) => self.move_in_history(1, height),
-            ("pageup", _, _) => history.scroll(-(height as isize), height),
+            ("pageup", _, _) => {
+                let _ = history.scroll(-(height as isize), height);
+            }
             ("pagedown", _, _) => self.move_in_history(height as isize, height),
-            ("home", _, _) => history.scroll(isize::MIN, height),
+            ("home", _, _) => {
+                let _ = history.scroll(isize::MIN, height);
+            }
             ("end", _, _) => self.move_in_history(isize::MAX, height),
             _ => return false,
         }
