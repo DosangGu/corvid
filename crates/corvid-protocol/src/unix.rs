@@ -129,6 +129,8 @@ impl RuntimeDir {
         let file = File::from(fd);
         let metadata = file.metadata()?;
         self.check_private_file(name, &metadata)?;
+        #[cfg(target_os = "macos")]
+        macos_acl::check_private(file.as_fd(), name)?;
         ensure!(metadata.len() <= max_bytes, "{name} exceeds its size limit");
         let mut bytes = Vec::new();
         file.take(max_bytes.saturating_add(1))
@@ -143,7 +145,11 @@ impl RuntimeDir {
     pub fn replace_private_file(&self, name: &str, bytes: &[u8]) -> Result<()> {
         let destination = self.private_file_path(name)?;
         match fs::symlink_metadata(&destination) {
-            Ok(metadata) => self.check_private_file(name, &metadata)?,
+            Ok(metadata) => {
+                self.check_private_file(name, &metadata)?;
+                #[cfg(target_os = "macos")]
+                macos_acl::check_private_path(&destination, name)?;
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error).with_context(|| format!("examining {name}")),
         }
@@ -195,6 +201,8 @@ impl RuntimeDir {
                 && metadata.nlink() == 1,
             "unsafe Corvid lock"
         );
+        #[cfg(target_os = "macos")]
+        macos_acl::check_private(file.as_fd(), name)?;
 
         Flock::lock(file, FlockArg::LockExclusiveNonblock)
             .map_err(|(_, error)| error)
@@ -296,8 +304,12 @@ fn open_runtime_path(path: &Path, uid: u32, create: Create) -> Result<File> {
                 metadata.uid() == uid && metadata.mode() & 0o777 == 0o700,
                 "runtime directory must belong to this UID and have mode 0700"
             );
+            #[cfg(target_os = "macos")]
+            macos_acl::check_private(parent.as_fd(), "runtime directory")?;
         } else {
             check_parent(&metadata, uid)?;
+            #[cfg(target_os = "macos")]
+            macos_acl::check_parent(parent.as_fd())?;
         }
     }
     Ok(parent)
@@ -482,5 +494,157 @@ impl CompioBoundSocket<'_> {
 impl<L> Drop for SocketListener<'_, L> {
     fn drop(&mut self) {
         let _ = unlink_if_same(&self.path, self.device, self.inode);
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_acl {
+    use std::ffi::{CString, c_int, c_void};
+    use std::io;
+    use std::os::fd::{AsRawFd, BorrowedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    use anyhow::{Context, Result, bail};
+
+    type AclT = *mut c_void;
+    type AclEntryT = *mut c_void;
+    type AclPermsetT = *mut c_void;
+    type AclTagT = u32;
+    type AclTypeT = u32;
+    type AclPermT = u32;
+
+    const ACL_TYPE_EXTENDED: AclTypeT = 0x0000_0100;
+    const ACL_FIRST_ENTRY: c_int = 0;
+    const ACL_NEXT_ENTRY: c_int = -1;
+    const ACL_EXTENDED_ALLOW: AclTagT = 1;
+    const ACL_EXTENDED_DENY: AclTagT = 2;
+
+    // macOS <sys/acl.h> write/modify permissions that let another account alter
+    // directory contents, metadata, or ACLs on an ancestor directory.
+    const WRITE_PERMS: &[AclPermT] = &[
+        1 << 2,  // ACL_WRITE_DATA / ACL_ADD_FILE
+        1 << 4,  // ACL_APPEND_DATA / ACL_ADD_SUBDIRECTORY
+        1 << 7,  // ACL_DELETE
+        1 << 9,  // ACL_DELETE_CHILD
+        1 << 10, // ACL_WRITE_ATTRIBUTES
+        1 << 12, // ACL_WRITE_EXTATTRIBUTES
+        1 << 14, // ACL_WRITE_SECURITY
+        1 << 15, // ACL_CHANGE_OWNER
+    ];
+
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: c_int, acl_type: AclTypeT) -> AclT;
+        fn acl_get_link_np(path_p: *const std::ffi::c_char, acl_type: AclTypeT) -> AclT;
+        fn acl_get_entry(acl: AclT, entry_id: c_int, entry_p: *mut AclEntryT) -> c_int;
+        fn acl_get_tag_type(entry_d: AclEntryT, tag_type_p: *mut AclTagT) -> c_int;
+        fn acl_get_permset(entry_d: AclEntryT, permset_p: *mut AclPermsetT) -> c_int;
+        fn acl_get_perm_np(permset_d: AclPermsetT, perm: AclPermT) -> c_int;
+        fn acl_free(obj_p: *mut c_void) -> c_int;
+    }
+
+    struct AclGuard(AclT);
+
+    impl Drop for AclGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: `self.0` was returned by `acl_get_fd_np` or `acl_get_link_np`.
+                unsafe {
+                    acl_free(self.0);
+                }
+            }
+        }
+    }
+
+    pub(super) fn check_private(fd: BorrowedFd<'_>, context: &str) -> Result<()> {
+        let Some(acl) = fetch_fd_acl(fd, context)? else {
+            return Ok(());
+        };
+        inspect_entries(acl.0, false, context)
+    }
+
+    pub(super) fn check_private_path(path: &Path, context: &str) -> Result<()> {
+        let c_path = CString::new(path.as_os_str().as_bytes())
+            .with_context(|| format!("invalid path for {context}"))?;
+        // SAFETY: `c_path` is NUL-terminated; `ACL_TYPE_EXTENDED` is valid on macOS.
+        let raw = unsafe { acl_get_link_np(c_path.as_ptr(), ACL_TYPE_EXTENDED) };
+        let Some(acl) = wrap_acl(raw, context)? else {
+            return Ok(());
+        };
+        inspect_entries(acl.0, false, context)
+    }
+
+    pub(super) fn check_parent(fd: BorrowedFd<'_>) -> Result<()> {
+        let Some(acl) = fetch_fd_acl(fd, "runtime parent")? else {
+            return Ok(());
+        };
+        inspect_entries(acl.0, true, "runtime parent")
+    }
+
+    fn fetch_fd_acl(fd: BorrowedFd<'_>, context: &str) -> Result<Option<AclGuard>> {
+        // SAFETY: `fd` is a valid open file descriptor and `ACL_TYPE_EXTENDED` is valid on macOS.
+        let raw = unsafe { acl_get_fd_np(fd.as_raw_fd(), ACL_TYPE_EXTENDED) };
+        wrap_acl(raw, context)
+    }
+
+    fn wrap_acl(raw: AclT, context: &str) -> Result<Option<AclGuard>> {
+        if raw.is_null() {
+            let error = io::Error::last_os_error();
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOENT | libc::ENOTSUP | libc::EOPNOTSUPP)
+            ) {
+                return Ok(None);
+            }
+            return Err(error).with_context(|| format!("reading macOS ACL for {context}"));
+        }
+        Ok(Some(AclGuard(raw)))
+    }
+
+    fn inspect_entries(acl: AclT, allow_read_only: bool, context: &str) -> Result<()> {
+        let mut entry: AclEntryT = std::ptr::null_mut();
+        let mut which = ACL_FIRST_ENTRY;
+        loop {
+            // SAFETY: `acl` is a live `acl_t` owned by `AclGuard` and `entry` is writable.
+            let status = unsafe { acl_get_entry(acl, which, &mut entry) };
+            which = ACL_NEXT_ENTRY;
+            if status == -1 {
+                break;
+            }
+            if status != 0 {
+                return Err(io::Error::last_os_error())
+                    .with_context(|| format!("iterating macOS ACL for {context}"));
+            }
+            let mut tag: AclTagT = 0;
+            // SAFETY: `entry` was populated by `acl_get_entry`.
+            if unsafe { acl_get_tag_type(entry, &mut tag) } != 0 {
+                return Err(io::Error::last_os_error())
+                    .with_context(|| format!("reading macOS ACL tag for {context}"));
+            }
+            match tag {
+                ACL_EXTENDED_DENY => continue,
+                ACL_EXTENDED_ALLOW if allow_read_only => {
+                    let mut permset: AclPermsetT = std::ptr::null_mut();
+                    // SAFETY: `entry` is a valid extended ACL entry and `permset` is writable.
+                    if unsafe { acl_get_permset(entry, &mut permset) } != 0 {
+                        return Err(io::Error::last_os_error())
+                            .with_context(|| format!("reading macOS ACL permset for {context}"));
+                    }
+                    for &perm in WRITE_PERMS {
+                        // SAFETY: `permset` was populated by `acl_get_permset`.
+                        if unsafe { acl_get_perm_np(permset, perm) } == 1 {
+                            bail!("{context} has an extended macOS ACL granting write access");
+                        }
+                    }
+                }
+                ACL_EXTENDED_ALLOW => {
+                    bail!("{context} has an extended macOS ACL granting additional access");
+                }
+                _ => {
+                    bail!("{context} has an unrecognized extended macOS ACL");
+                }
+            }
+        }
+        Ok(())
     }
 }
