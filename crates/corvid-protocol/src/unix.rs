@@ -506,6 +506,7 @@ mod macos_acl {
     use std::path::Path;
 
     use anyhow::{Context, Result, bail};
+    use nix::errno::Errno;
 
     type AclT = *mut c_void;
     type AclEntryT = *mut c_void;
@@ -592,7 +593,10 @@ mod macos_acl {
             let error = io::Error::last_os_error();
             if matches!(
                 error.raw_os_error(),
-                Some(libc::ENOENT | libc::ENOTSUP | libc::EOPNOTSUPP)
+                Some(code)
+                    if code == Errno::ENOENT as i32
+                        || code == Errno::ENOTSUP as i32
+                        || code == Errno::EOPNOTSUPP as i32
             ) {
                 return Ok(None);
             }
