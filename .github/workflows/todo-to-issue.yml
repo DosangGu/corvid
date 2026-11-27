@@ -22,5 +22,6 @@ jobs:
         with:
           CLOSE_ISSUES: 'true'
           INSERT_ISSUE_URLS: 'false'
+          IDENTIFIERS: '[{"name": "TODO", "labels": ["todo"]}]'
           # Documentation examples should not create issues.
           IGNORE: '.*\.md$'
