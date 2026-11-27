@@ -48,7 +48,6 @@ async-io = "=2.6.0"
 async-lock = "=3.5.0"
 async-process = "=2.5.0"
 base64 = "=0.23.1"
-chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6", features = ["derive"] }
 compio-io = { version = "=0.10.1", features = ["compat"] }
 compio = { version = "=0.19.2", default-features = false, features = ["runtime", "time", "macros", "io-uring", "polling"] }
@@ -74,6 +73,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "2f80
 hex = "=0.4.3"
 icu_properties = "=2.4.0"
 image = { version = "0.25", default-features = false }
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
 libc = "=0.2.191"
 nix = { version = "0.31.3", default-features = false }
 portable-pty = "=0.9.0"
