@@ -1,0 +1,9 @@
+[advisories]
+# Report unmaintained/yanked crates in the separate informational CI step;
+# hard-fail PRs and scheduled runs on security vulnerabilities and unsoundness.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = [
+    # Tracked in #456 (transitive via gpui/scheduler as well as direct corvid-desktop).
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained migration tracked in #456" },
+]
