@@ -774,6 +774,11 @@ fn print_history(cache: &SynchronizedSnapshot) -> Result<()> {
     Ok(())
 }
 
+/// Prints a single agent inventory line to stdout for `corvid control agents`.
+///
+/// This command is an explicit, local, UID-authenticated CLI query rather than
+/// routine daemon logging; `session=<provider_session_id>` is included on stdout
+/// for local diagnostics and qualification parsers.
 fn print_agent(agent: AgentInfo) {
     let provider = AgentProvider::try_from(agent.provider).unwrap_or(AgentProvider::Unspecified);
     let process =
@@ -800,6 +805,7 @@ fn print_agent(agent: AgentInfo) {
         print!(" pid={}", process.pid);
     }
     if let Some(session) = agent.provider_session_id {
+        // Explicit local CLI inventory output (not routine daemon logs).
         print!(" session={session}");
     }
     if let Some(parent) = agent.parent_run_id {
