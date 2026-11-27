@@ -20,7 +20,7 @@ use crate::shortcuts;
 use crate::terminal_fonts::TerminalFonts;
 use crate::terminal_paint::{self as paint, Frame, Metrics};
 use crate::terminal_session::{
-    Grid, MAX_INPUT, MouseAction, MouseButtonCode, MouseEventReport, Session, WheelTarget,
+    Grid, MouseAction, MouseButtonCode, MouseEventReport, Session, WheelTarget,
 };
 
 mod history;
@@ -598,11 +598,12 @@ impl TerminalView {
         }
     }
 
-    fn paste(&self, cx: &mut Context<Self>) {
+    fn paste(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if text.len() > MAX_INPUT {
+        if text.len() > corvid_core::MAX_PASTE_BYTES {
+            self.set_notice(corvid_core::PASTE_LIMIT_NOTICE, cx);
             return;
         }
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -610,6 +611,10 @@ impl TerminalView {
             .chars()
             .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
             .collect();
+        if text.len() > corvid_core::MAX_PASTE_BYTES {
+            self.set_notice(corvid_core::PASTE_LIMIT_NOTICE, cx);
+            return;
+        }
         self.session.send(&self.pane, text.into_bytes(), true);
     }
 

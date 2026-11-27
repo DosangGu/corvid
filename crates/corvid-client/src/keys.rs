@@ -7,9 +7,11 @@ use std::time::Instant;
 const ESC: u8 = 0x1b;
 const KEY_LIMIT: usize = 64;
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Input {
     Keys(Vec<u8>),
     Paste(Vec<u8>),
+    OversizedPaste,
 }
 
 #[cfg(test)]
@@ -17,6 +19,7 @@ impl Input {
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Keys(bytes) | Self::Paste(bytes) => bytes,
+            Self::OversizedPaste => b"",
         }
     }
 }
@@ -86,9 +89,11 @@ impl Decoder {
         let mut plain = Vec::new();
         for &byte in bytes {
             if let Some(paste) = &mut self.paste {
-                if paste.push(byte)? {
+                if paste.push(byte) {
                     let paste = self.paste.take().expect("finished capture is present");
-                    if !paste.discard {
+                    if paste.oversized {
+                        output.push(Input::OversizedPaste);
+                    } else if !paste.discard {
                         output.push(Input::Paste(paste.data));
                     }
                 }
@@ -141,6 +146,7 @@ impl Decoder {
                 matched: 0,
                 deadline: Instant::now() + PASTE_CAPTURE_TIMEOUT,
                 discard: key.discard,
+                oversized: false,
             });
         } else if !key.discard {
             self.emit_key(key.bytes, output);
@@ -254,13 +260,14 @@ struct PasteCapture {
     matched: usize,
     deadline: Instant,
     discard: bool,
+    oversized: bool,
 }
 
 impl PasteCapture {
-    fn push(&mut self, byte: u8) -> Result<bool> {
+    fn push(&mut self, byte: u8) -> bool {
         if byte == PASTE_END[self.matched] {
             self.matched += 1;
-            return Ok(self.matched == PASTE_END.len());
+            return self.matched == PASTE_END.len();
         }
         if !self.discard {
             self.data.extend_from_slice(&PASTE_END[..self.matched]);
@@ -269,11 +276,12 @@ impl PasteCapture {
         if !self.discard && self.matched == 0 {
             self.data.push(byte);
         }
-        ensure!(
-            self.data.len() <= MAX_PASTE_BYTES,
-            "paste exceeds the 1 MiB limit"
-        );
-        Ok(false)
+        if !self.discard && self.data.len() > MAX_PASTE_BYTES {
+            self.oversized = true;
+            self.discard = true;
+            self.data.clear();
+        }
+        false
     }
 }
 
@@ -368,5 +376,21 @@ mod tests {
             panic!("expected an incomplete paste error");
         };
         assert_eq!(error.to_string(), "paste start marker did not finish");
+    }
+
+    #[test]
+    fn discards_oversized_paste_without_ending_decoder_session() {
+        let mut decoder = decoder();
+        let mut bytes = PASTE_START.to_vec();
+        bytes.extend(std::iter::repeat_n(b'a', MAX_PASTE_BYTES + 16));
+        bytes.extend_from_slice(PASTE_END);
+        bytes.extend_from_slice(b"ok");
+
+        let events = decoder.feed(&bytes, true).unwrap();
+        assert_eq!(
+            events,
+            vec![Input::OversizedPaste, Input::Keys(b"ok".to_vec())]
+        );
+        assert!(!decoder.capturing_paste());
     }
 }

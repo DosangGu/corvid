@@ -1182,12 +1182,17 @@ impl Session {
     }
 
     fn queue_input(&self, snapshot: &Snapshot, pane: &str, bytes: Vec<u8>, paste: bool) -> bool {
+        let limit = if paste {
+            corvid_core::MAX_PASTE_BYTES
+        } else {
+            MAX_INPUT
+        };
         if !snapshot.ui.can_write()
             || self.changing(snapshot)
             || snapshot.screen.is_none()
             || !in_pane(&snapshot.ui, pane)
             || bytes.is_empty()
-            || bytes.len() > MAX_INPUT
+            || bytes.len() > limit
         {
             return false;
         }
