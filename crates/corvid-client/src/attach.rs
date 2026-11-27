@@ -1090,7 +1090,8 @@ impl Interactive {
         }
 
         if self.pairing.is_none() && (!self.restoring || header.base_frame_id.is_none()) {
-            timeout(COMMAND_TIMEOUT, tty.write_all(&render.ansi)).await??;
+            let framed = wrap_synchronized_frame(&render.ansi);
+            timeout(COMMAND_TIMEOUT, tty.write_all(&framed)).await??;
             self.restoring = false;
         }
         self.applied = Some((header.render_generation, header.frame_id));
@@ -1364,6 +1365,16 @@ fn wire_viewport(viewport: Viewport) -> WireViewport {
     }
 }
 
+fn wrap_synchronized_frame(ansi: &[u8]) -> Vec<u8> {
+    const BEGIN_SYNC: &[u8] = b"\x1b[?2026h";
+    const END_SYNC: &[u8] = b"\x1b[?2026l";
+    let mut framed = Vec::with_capacity(BEGIN_SYNC.len() + ansi.len() + END_SYNC.len());
+    framed.extend_from_slice(BEGIN_SYNC);
+    framed.extend_from_slice(ansi);
+    framed.extend_from_slice(END_SYNC);
+    framed
+}
+
 #[cfg(test)]
 mod restore_tests {
     use super::*;
@@ -1592,5 +1603,13 @@ mod restore_tests {
         ] {
             assert!(!can_restore(&options));
         }
+    }
+
+    #[test]
+    fn synchronized_frame_wrapper_encloses_payload() {
+        assert_eq!(
+            wrap_synchronized_frame(b"\x1b[Hhello"),
+            b"\x1b[?2026h\x1b[Hhello\x1b[?2026l"
+        );
     }
 }

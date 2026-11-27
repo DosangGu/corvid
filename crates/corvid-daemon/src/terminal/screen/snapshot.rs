@@ -8,7 +8,7 @@ use corvid_core::Viewport;
 use corvid_protocol::ansi_screen::{Cell, Decoder, Hyperlink, Screen};
 use unicode_width::UnicodeWidthStr;
 
-const RESET_DRAWING: &str = "\x1b[?6l\x1b[r\x1b[?7h\x1b[0m\x1b[2J";
+const RESET_DRAWING: &str = "\x1b[?6l\x1b[r\x1b[?7h\x1b[0m";
 const MAX_FRAME_BYTES: usize = corvid_protocol::RENDER_LIMIT;
 
 #[derive(Clone)]
@@ -94,6 +94,15 @@ impl ScreenSnapshot {
                 "terminal redraw exceeds frame limit"
             );
         }
+        if previous.is_none() {
+            for row in rows.get()..outer.rows.get() {
+                let row_1 = row + 1;
+                if footer.is_some_and(|(footer_row, _)| footer_row == row_1) {
+                    continue;
+                }
+                write!(frame, "\x1b[{row_1};1H\x1b[0m\x1b[K")?;
+            }
+        }
 
         if let Some((row, ansi)) = footer {
             write!(frame, "\x1b[?7l\x1b[{row};1H{ansi}\x1b[0m\x1b[?7h")?;
@@ -159,6 +168,9 @@ fn encode_row(
     let empty = Cell::default();
     let changed = |index: usize| cells[index] != *previous.map_or(&empty, |old| &old[index]);
     let Some(mut start) = (0..cells.len()).find(|&index| changed(index)) else {
+        if previous.is_none() && !cells.is_empty() {
+            write!(frame, "\x1b[{};1H\x1b[0m\x1b[K", row + 1)?;
+        }
         return Ok(());
     };
     let mut end = (start..cells.len()).rfind(|&index| changed(index)).unwrap() + 1;
@@ -173,6 +185,9 @@ fn encode_row(
     let mut style = None;
     let mut active_link: Option<&Hyperlink> = None;
     let mut column = start;
+    if previous.is_none() && start > 0 {
+        write!(frame, "\x1b[{};1H\x1b[0m\x1b[{start}X", row + 1)?;
+    }
     write!(frame, "\x1b[{};{}H", row + 1, column + 1)?;
     while column < end {
         let cell = &cells[column];
@@ -218,6 +233,9 @@ fn encode_row(
     if active_link.is_some() {
         write_osc8(frame, None);
     }
+    if previous.is_none() && (end < cells.len() || !full_width) {
+        frame.push_str("\x1b[0m\x1b[K");
+    }
     Ok(())
 }
 
@@ -234,5 +252,25 @@ pub(super) fn write_osc8(out: &mut String, link: Option<&Hyperlink>) {
             out.push_str(&link.uri);
             out.push_str("\x1b\\");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_redraw_overwrites_stale_cells_without_clear_screen() {
+        let outer = Viewport::new(8, 3).unwrap();
+        let inner = Viewport::new(6, 2).unwrap();
+        let mut terminal = vt100::Parser::new(outer.rows, outer.cols, 0);
+        terminal.process(b"12345678\r\nabcdefgh\r\nstale!!!");
+
+        let screen = ScreenSnapshot::from_ansi(inner, b"\x1b[2;3Hok", None);
+        let ansi = screen.encode(None, false, outer, None).unwrap();
+        assert!(!ansi.contains("\x1b[2J"));
+
+        terminal.process(ansi.as_bytes());
+        assert_eq!(terminal.screen().contents(), "\n  ok");
     }
 }
