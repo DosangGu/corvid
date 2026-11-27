@@ -2,8 +2,7 @@ use std::fmt::Write as _;
 
 use corvid_core::navigation::Rect;
 use corvid_protocol::history::{
-    CommandOutputError, command_output, jumpable_commands, last_command_output, next_command,
-    previous_command,
+    CommandOutputError, HistoryNavigation, ScrollOutcome, jumpable_commands,
 };
 use corvid_protocol::valid_clipboard_text;
 use corvid_protocol::wire::TerminalHistory;
@@ -14,9 +13,7 @@ use super::title_motion::window;
 
 pub(super) struct HistoryView {
     history: TerminalHistory,
-    top: usize,
-    selected_command: Option<usize>,
-    notice: Option<String>,
+    nav: HistoryNavigation,
 }
 
 pub(super) enum HistoryAction {
@@ -30,46 +27,31 @@ impl HistoryView {
         history: TerminalHistory,
         rows: usize,
     ) -> Result<Self, &'static str> {
-        if history.alternate_screen == Some(true) {
-            return Err("Command history is unavailable on the alternate screen.");
-        }
-        let selected =
-            previous_command(&history, None).ok_or("No command markers in this terminal.")?;
-        let prompt_row = history.commands[selected]
-            .prompt_row
-            .map(|row| row as usize)
-            .unwrap_or(0);
         let body_rows = rows.saturating_sub(1).max(1);
-        let max_top = history.lines.len().saturating_sub(body_rows);
-        Ok(Self {
-            history,
-            top: prompt_row.min(max_top),
-            selected_command: Some(selected),
-            notice: None,
-        })
+        let nav = HistoryNavigation::open_previous(&history, body_rows)?;
+        Ok(Self { history, nav })
     }
 
     pub(super) fn set_notice(&mut self, notice: impl Into<String>) {
-        self.notice = Some(notice.into());
+        self.nav.notice = Some(notice.into());
     }
 
     pub(super) fn key(&mut self, bytes: &[u8], rows: usize) -> HistoryAction {
         let body_rows = rows.saturating_sub(1).max(1);
-        let max_top = self.history.lines.len().saturating_sub(body_rows);
         match bytes {
             b"\x1b" | b"\x03" => return HistoryAction::Close,
             b"\x1b[A" | b"\x1bOA" => {
-                self.top = self.top.saturating_sub(1);
+                self.nav.scroll_up(1);
                 return HistoryAction::Keep;
             }
-            b"\x1b[B" | b"\x1bOB" => return self.scroll_down(1, max_top),
+            b"\x1b[B" | b"\x1bOB" => return self.scroll_down(1, body_rows),
             b"\x1b[5~" => {
-                self.top = self.top.saturating_sub(body_rows);
+                self.nav.scroll_up(body_rows);
                 return HistoryAction::Keep;
             }
-            b"\x1b[6~" => return self.scroll_down(body_rows, max_top),
+            b"\x1b[6~" => return self.scroll_down(body_rows, body_rows),
             b"\x1b[H" | b"\x1b[1~" => {
-                self.top = 0;
+                self.nav.scroll_to_top();
                 return HistoryAction::Keep;
             }
             b"\x1b[F" | b"\x1b[4~" => return HistoryAction::Close,
@@ -96,12 +78,12 @@ impl HistoryView {
             }
             b"c" => self.copy_selected(),
             b"k" => {
-                self.top = self.top.saturating_sub(1);
+                self.nav.scroll_up(1);
                 HistoryAction::Keep
             }
-            b"j" => self.scroll_down(1, max_top),
+            b"j" => self.scroll_down(1, body_rows),
             b"g" => {
-                self.top = 0;
+                self.nav.scroll_to_top();
                 HistoryAction::Keep
             }
             b"G" => HistoryAction::Close,
@@ -110,61 +92,33 @@ impl HistoryView {
     }
 
     pub(super) fn jump(&mut self, previous: bool, body_rows: usize) {
-        let next = if previous {
-            previous_command(&self.history, self.selected_command)
-        } else {
-            next_command(&self.history, self.selected_command)
-        };
-        if let Some(index) = next {
-            self.selected_command = Some(index);
-            let prompt_row = self.history.commands[index]
-                .prompt_row
-                .map(|row| row as usize)
-                .unwrap_or(0);
-            let max_top = self.history.lines.len().saturating_sub(body_rows.max(1));
-            self.top = prompt_row.min(max_top);
-            self.notice = None;
-        } else {
-            self.notice = Some(
-                if previous {
-                    "At oldest command"
-                } else {
-                    "At newest command"
-                }
-                .into(),
-            );
-        }
+        self.nav.jump_command(&self.history, previous, body_rows);
     }
 
-    fn scroll_down(&mut self, rows: usize, max_top: usize) -> HistoryAction {
-        if self.top >= max_top {
-            return HistoryAction::Close;
+    fn scroll_down(&mut self, rows: usize, body_rows: usize) -> HistoryAction {
+        match self.nav.scroll_down(&self.history, rows, body_rows) {
+            ScrollOutcome::Keep => HistoryAction::Keep,
+            ScrollOutcome::ExitToLive => HistoryAction::Close,
         }
-        self.top = (self.top + rows).min(max_top);
-        HistoryAction::Keep
     }
 
     fn copy_selected(&mut self) -> HistoryAction {
-        let result = self.selected_command.map_or_else(
-            || last_command_output(&self.history),
-            |index| command_output(&self.history, index),
-        );
-        match result {
+        match self.nav.copy_output(&self.history) {
             Ok(output) if valid_clipboard_text(&output.text) => HistoryAction::Copy {
                 text: output.text,
                 truncated: output.truncated,
             },
             Ok(_) => {
-                self.notice =
+                self.nav.notice =
                     Some("Last command output exceeds the 64 KiB clipboard limit.".into());
                 HistoryAction::Keep
             }
             Err(CommandOutputError::NoCommands) => {
-                self.notice = Some("No command markers in this terminal.".into());
+                self.nav.notice = Some("No command markers in this terminal.".into());
                 HistoryAction::Keep
             }
             Err(CommandOutputError::NoOutput) => {
-                self.notice = Some("Last command produced no output.".into());
+                self.nav.notice = Some("Last command produced no output.".into());
                 HistoryAction::Keep
             }
         }
@@ -177,13 +131,14 @@ impl HistoryView {
         let width = usize::from(rect.width);
         let jumpable = jumpable_commands(&self.history);
         let mut header = match self
+            .nav
             .selected_command
             .and_then(|idx| jumpable.iter().position(|&item| item == idx))
         {
             Some(pos) => format!("Command {}/{}", pos + 1, jumpable.len()),
             None => "Terminal history".to_owned(),
         };
-        if let Some(notice) = &self.notice {
+        if let Some(notice) = &self.nav.notice {
             let _ = write!(header, " · {notice}");
         }
         if self.history.truncated {
@@ -209,7 +164,7 @@ impl HistoryView {
         for offset in 0..body_rows {
             let screen_row = rect.y + 1 + offset as u16;
             let _ = write!(ansi, "\x1b[{};{}H\x1b[0m", screen_row + 1, rect.x + 1);
-            let row_idx = self.top + offset;
+            let row_idx = self.nav.top + offset;
             let printed_cols = if let Some(line) = self.history.lines.get(row_idx) {
                 write_styled_line(
                     &mut ansi,
@@ -334,8 +289,8 @@ mod tests {
             ..Default::default()
         };
         let mut view = HistoryView::open_previous(history, 4).unwrap();
-        assert_eq!(view.selected_command, Some(1));
-        assert_eq!(view.top, 2);
+        assert_eq!(view.nav.selected_command, Some(1));
+        assert_eq!(view.nav.top, 2);
 
         let ansi = view.paint(Rect {
             x: 0,
@@ -354,8 +309,14 @@ mod tests {
         assert!(contents.contains("$ echo two"));
 
         assert!(matches!(view.key(b"[", 4), HistoryAction::Keep));
-        assert_eq!(view.selected_command, Some(0));
-        assert_eq!(view.top, 0);
+        assert_eq!(view.nav.selected_command, Some(0));
+        assert_eq!(view.nav.top, 0);
+
+        assert!(matches!(view.key(b"j", 4), HistoryAction::Keep));
+        assert_eq!(view.nav.top, 1);
+        assert!(matches!(view.key(b"j", 4), HistoryAction::Keep));
+        assert_eq!(view.nav.top, 2);
+        assert!(matches!(view.key(b"j", 4), HistoryAction::Close));
 
         match view.key(b"c", 4) {
             HistoryAction::Copy { text, .. } => assert_eq!(text, "one"),

@@ -183,6 +183,141 @@ pub fn next_command(history: &TerminalHistory, current: Option<usize>) -> Option
         .find(|&index| index > cur)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollOutcome {
+    Keep,
+    ExitToLive,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryNavigation {
+    pub top: usize,
+    pub selected_command: Option<usize>,
+    pub notice: Option<String>,
+}
+
+impl HistoryNavigation {
+    pub fn max_top(history: &TerminalHistory, visible_rows: usize) -> usize {
+        history.lines.len().saturating_sub(visible_rows.max(1))
+    }
+
+    pub fn reset_bottom(
+        &mut self,
+        history: &TerminalHistory,
+        visible_rows: usize,
+        pending_back: usize,
+    ) {
+        self.top = Self::max_top(history, visible_rows).saturating_sub(pending_back);
+        self.selected_command = None;
+        self.notice = None;
+    }
+
+    pub fn open_previous(
+        history: &TerminalHistory,
+        visible_rows: usize,
+    ) -> Result<Self, &'static str> {
+        if history.alternate_screen == Some(true) {
+            return Err("Command history is unavailable on the alternate screen.");
+        }
+        let selected =
+            previous_command(history, None).ok_or("No command markers in this terminal.")?;
+        let prompt_row = history.commands[selected]
+            .prompt_row
+            .map(|row| row as usize)
+            .unwrap_or(0);
+        Ok(Self {
+            top: prompt_row.min(Self::max_top(history, visible_rows)),
+            selected_command: Some(selected),
+            notice: None,
+        })
+    }
+
+    pub fn jump_command(
+        &mut self,
+        history: &TerminalHistory,
+        previous: bool,
+        visible_rows: usize,
+    ) -> bool {
+        let next = if previous {
+            previous_command(history, self.selected_command)
+        } else {
+            next_command(history, self.selected_command)
+        };
+        if let Some(index) = next {
+            let prompt_row = history.commands[index]
+                .prompt_row
+                .map(|row| row as usize)
+                .unwrap_or(0);
+            self.selected_command = Some(index);
+            self.top = prompt_row.min(Self::max_top(history, visible_rows));
+            self.notice = None;
+            true
+        } else {
+            if self.selected_command.is_some() {
+                self.notice = Some(
+                    if previous {
+                        "At oldest command"
+                    } else {
+                        "At newest command"
+                    }
+                    .into(),
+                );
+            }
+            false
+        }
+    }
+
+    pub fn scroll_up(&mut self, rows: usize) {
+        self.top = self.top.saturating_sub(rows);
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.top = 0;
+    }
+
+    pub fn scroll_down(
+        &mut self,
+        history: &TerminalHistory,
+        rows: usize,
+        visible_rows: usize,
+    ) -> ScrollOutcome {
+        let max_top = Self::max_top(history, visible_rows);
+        if self.top >= max_top {
+            return ScrollOutcome::ExitToLive;
+        }
+        self.top = self.top.saturating_add(rows).min(max_top);
+        ScrollOutcome::Keep
+    }
+
+    pub fn scroll_by(
+        &mut self,
+        history: &TerminalHistory,
+        delta: isize,
+        visible_rows: usize,
+    ) -> ScrollOutcome {
+        if delta > 0 {
+            return self.scroll_down(history, delta as usize, visible_rows);
+        }
+        let max_top = Self::max_top(history, visible_rows);
+        self.top = self
+            .top
+            .min(max_top)
+            .saturating_add_signed(delta)
+            .min(max_top);
+        ScrollOutcome::Keep
+    }
+
+    pub fn copy_output(
+        &self,
+        history: &TerminalHistory,
+    ) -> Result<CommandOutput, CommandOutputError> {
+        self.selected_command.map_or_else(
+            || last_command_output(history),
+            |index| command_output(history, index),
+        )
+    }
+}
+
 pub fn command_output(
     history: &TerminalHistory,
     index: usize,
@@ -530,5 +665,47 @@ mod tests {
             validate_history(&bad_uri),
             Err("invalid terminal history hyperlink")
         );
+    }
+
+    #[test]
+    fn navigation_tracks_command_boundaries_and_two_step_bottom_exit() {
+        let mut snapshot = history(&["$ one", "a", "$ two", "b", "$ "], &[], vec![]);
+        snapshot.commands = vec![
+            crate::wire::HistoryCommand {
+                prompt_row: Some(0),
+                output_start_row: Some(1),
+                output_end_row: Some(2),
+                finished: true,
+                ..Default::default()
+            },
+            crate::wire::HistoryCommand {
+                prompt_row: Some(2),
+                output_start_row: Some(3),
+                output_end_row: Some(4),
+                finished: true,
+                ..Default::default()
+            },
+        ];
+
+        let mut nav = HistoryNavigation::open_previous(&snapshot, 2).unwrap();
+        assert_eq!(nav.selected_command, Some(1));
+        assert_eq!(nav.top, 2);
+
+        assert!(!nav.jump_command(&snapshot, false, 2));
+        assert_eq!(nav.notice.as_deref(), Some("At newest command"));
+
+        assert!(nav.jump_command(&snapshot, true, 2));
+        assert_eq!(nav.selected_command, Some(0));
+        assert_eq!(nav.top, 0);
+        assert_eq!(nav.notice, None);
+
+        assert!(!nav.jump_command(&snapshot, true, 2));
+        assert_eq!(nav.notice.as_deref(), Some("At oldest command"));
+
+        // Max top is 5 - 2 = 3; first scroll reaches bottom and stays in history,
+        // second scroll at bottom exits to live.
+        assert_eq!(nav.scroll_down(&snapshot, 10, 2), ScrollOutcome::Keep);
+        assert_eq!(nav.top, 3);
+        assert_eq!(nav.scroll_down(&snapshot, 1, 2), ScrollOutcome::ExitToLive);
     }
 }

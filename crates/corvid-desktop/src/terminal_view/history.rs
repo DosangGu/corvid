@@ -3,8 +3,7 @@ use std::ops::Range;
 
 use corvid_protocol::ansi_screen::{Decoder, Screen};
 use corvid_protocol::history::{
-    CommandOutput, CommandOutputError, command_output, jumpable_commands, last_command_output,
-    next_command, previous_command,
+    CommandOutput, CommandOutputError, HistoryNavigation, ScrollOutcome, jumpable_commands,
 };
 use corvid_protocol::wire::TerminalHistory;
 use unicode_width::UnicodeWidthChar;
@@ -16,12 +15,10 @@ type CellRange = Range<(u16, u16)>;
 
 pub(super) struct History {
     result: Option<Result<TerminalHistory, String>>,
-    first: usize,
     pending_back: usize,
     pub(super) wheel_browse: bool,
     pub(super) search: Option<Search>,
-    pub(super) selected_command: Option<usize>,
-    pub(super) notice: Option<String>,
+    pub(super) nav: HistoryNavigation,
 }
 
 #[derive(Default)]
@@ -34,12 +31,14 @@ impl History {
     pub(super) fn new(search: bool) -> Self {
         Self {
             result: None,
-            first: usize::MAX,
             pending_back: 0,
             wheel_browse: false,
             search: search.then(Search::default),
-            selected_command: None,
-            notice: None,
+            nav: HistoryNavigation {
+                top: usize::MAX,
+                selected_command: None,
+                notice: None,
+            },
         }
     }
 
@@ -66,54 +65,27 @@ impl History {
     }
 
     pub(super) fn loaded(&mut self, result: Result<TerminalHistory, String>, height: usize) {
+        if let Ok(snapshot) = &result {
+            self.nav.reset_bottom(snapshot, height, self.pending_back);
+        } else {
+            self.nav = HistoryNavigation::default();
+        }
         self.result = Some(result);
-        self.first = self.last_top(height).saturating_sub(self.pending_back);
-        self.selected_command = None;
-        self.notice = None;
         self.find(true);
     }
 
     pub(super) fn jump_command(&mut self, previous: bool, height: usize) -> bool {
-        let Some(snapshot) = self.snapshot() else {
+        let Some(snapshot) = self.snapshot().cloned() else {
             return false;
         };
-        let next = if previous {
-            previous_command(snapshot, self.selected_command)
-        } else {
-            next_command(snapshot, self.selected_command)
-        };
-        if let Some(index) = next {
-            let prompt_row = snapshot.commands[index]
-                .prompt_row
-                .map(|row| row as usize)
-                .unwrap_or(0);
-            self.selected_command = Some(index);
-            self.first = prompt_row.min(self.last_top(height));
-            self.notice = None;
-            true
-        } else {
-            if self.selected_command.is_some() {
-                self.notice = Some(
-                    if previous {
-                        "At oldest command"
-                    } else {
-                        "At newest command"
-                    }
-                    .into(),
-                );
-            }
-            false
-        }
+        self.nav.jump_command(&snapshot, previous, height)
     }
 
     pub(super) fn copy_command_output(&mut self) -> Result<CommandOutput, CommandOutputError> {
         let Some(snapshot) = self.snapshot() else {
             return Err(CommandOutputError::NoCommands);
         };
-        self.selected_command.map_or_else(
-            || last_command_output(snapshot),
-            |index| command_output(snapshot, index),
-        )
+        self.nav.copy_output(snapshot)
     }
 
     pub(super) fn title(&self, marked: &str) -> String {
@@ -136,13 +108,14 @@ impl History {
                         "Find: {}{marked}{found}{coverage}    Enter / Shift+Enter · Esc to live",
                         search.query
                     )
-                } else if let Some(selected) = self.selected_command {
+                } else if let Some(selected) = self.nav.selected_command {
                     let jumpable = jumpable_commands(snapshot);
                     let pos = jumpable
                         .iter()
                         .position(|&item| item == selected)
                         .map_or(1, |idx| idx + 1);
                     let notice = self
+                        .nav
                         .notice
                         .as_deref()
                         .map_or(String::new(), |msg| format!(" · {msg}"));
@@ -152,6 +125,7 @@ impl History {
                     )
                 } else {
                     let notice = self
+                        .nav
                         .notice
                         .as_deref()
                         .map_or(String::new(), |msg| format!(" · {msg}"));
@@ -168,23 +142,26 @@ impl History {
         }
     }
 
-    pub(super) fn scroll(&mut self, delta: isize, height: usize) {
-        if self.result.is_none() {
+    pub(super) fn scroll(&mut self, delta: isize, height: usize) -> ScrollOutcome {
+        let Some(snapshot) = self.result.as_ref().and_then(|result| result.as_ref().ok()) else {
             self.pending_back = self
                 .pending_back
                 .saturating_add_signed(delta.saturating_neg());
-            return;
-        }
-        let end = self.last_top(height);
-        self.first = self.first.min(end).saturating_add_signed(delta).min(end);
+            return ScrollOutcome::Keep;
+        };
+        self.nav.scroll_by(snapshot, delta, height)
     }
 
     pub(super) fn at_bottom(&self, height: usize) -> bool {
         match &self.result {
             None => self.pending_back == 0,
-            Some(Ok(_)) => self.first >= self.last_top(height),
+            Some(Ok(_)) => self.nav.top >= self.last_top(height),
             Some(Err(_)) => true,
         }
+    }
+
+    pub(super) fn is_loaded(&self) -> bool {
+        self.result.is_some()
     }
 
     fn snapshot(&self) -> Option<&TerminalHistory> {
@@ -193,13 +170,13 @@ impl History {
 
     fn last_top(&self, height: usize) -> usize {
         self.snapshot()
-            .map_or(0, |snapshot| snapshot.lines.len().saturating_sub(height))
+            .map_or(0, |snapshot| HistoryNavigation::max_top(snapshot, height))
     }
 
     pub(super) fn screen(&self, grid: Grid) -> Option<(Screen, Option<CellRange>)> {
         let snapshot = self.snapshot()?;
         let rows = usize::from(grid.rows.get());
-        let top = self.first.min(self.last_top(rows));
+        let top = self.nav.top.min(self.last_top(rows));
         let cols = NonZeroU16::new(snapshot.columns as u16)?;
         let mut parser = Decoder::new(grid.rows, cols);
         for (row, line) in snapshot.lines.iter().skip(top).take(rows).enumerate() {
@@ -341,7 +318,7 @@ impl History {
         }
         search.hit = closest.or(boundary);
         if let Some((row, _)) = search.hit {
-            self.first = row.saturating_sub(2);
+            self.nav.top = row.saturating_sub(2);
         }
     }
 }
@@ -370,9 +347,10 @@ mod tests {
         assert!(History::from_wheel(Ok(snapshot.clone()), 3, 12, true).is_none());
         assert!(History::from_wheel(Ok(snapshot.clone()), 0, 4, true).is_none());
         let mut history = History::from_wheel(Ok(snapshot), 3, 4, true).unwrap();
-        assert_eq!(history.first, 5);
-        history.scroll(3, 4);
+        assert_eq!(history.nav.top, 5);
+        assert_eq!(history.scroll(3, 4), ScrollOutcome::Keep);
         assert!(history.at_bottom(4));
+        assert_eq!(history.scroll(1, 4), ScrollOutcome::ExitToLive);
     }
 
     #[test]
@@ -421,7 +399,7 @@ mod tests {
             }),
             4,
         );
-        assert_eq!(history.first, 62);
+        assert_eq!(history.nav.top, 62);
         assert!(!history.at_bottom(4));
         history.scroll(13, 4);
         assert!(!history.at_bottom(4));
@@ -490,17 +468,17 @@ mod tests {
             2,
         );
         assert!(history.jump_command(true, 2));
-        assert_eq!(history.selected_command, Some(1));
-        assert_eq!(history.first, 2);
+        assert_eq!(history.nav.selected_command, Some(1));
+        assert_eq!(history.nav.top, 2);
         assert!(history.title("").contains("Command 2/2"));
 
         assert!(history.jump_command(true, 2));
-        assert_eq!(history.selected_command, Some(0));
-        assert_eq!(history.first, 0);
+        assert_eq!(history.nav.selected_command, Some(0));
+        assert_eq!(history.nav.top, 0);
         assert_eq!(history.copy_command_output().unwrap().text, "one");
 
         assert!(!history.jump_command(true, 2));
-        assert_eq!(history.notice.as_deref(), Some("At oldest command"));
+        assert_eq!(history.nav.notice.as_deref(), Some("At oldest command"));
     }
 
     #[test]
