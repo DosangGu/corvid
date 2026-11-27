@@ -73,7 +73,7 @@ impl PreferencesStore {
 }
 
 #[cfg(windows)]
-fn lock_preferences(directory: &Directory) -> Result<impl Drop + use<>> {
+fn lock_preferences(directory: &Directory) -> Result<std::fs::File> {
     directory.lock_storage_with_timeout(LOCK_TIMEOUT)
 }
 
