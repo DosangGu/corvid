@@ -77,7 +77,7 @@ struct FocusDestination {
 
 enum Prepared {
     Current(FocusApplied),
-    Move(FocusDestination, ReservedSwitch),
+    Move(FocusDestination, Box<ReservedSwitch>),
 }
 
 impl Workspaces {
@@ -116,7 +116,7 @@ impl Workspaces {
                     active: None,
                 });
             }
-            Prepared::Move(destination, reserved) => (destination, reserved),
+            Prepared::Move(destination, reserved) => (destination, *reserved),
         };
         let result = self.switch_focus(old, target, destination, reserved).await;
         let client = old.route.client_id;
@@ -150,7 +150,7 @@ impl Workspaces {
                 None,
                 false,
             )?;
-            Ok(Prepared::Move(destination, reserved))
+            Ok(Prepared::Move(destination, Box::new(reserved)))
         })
         .await
     }
