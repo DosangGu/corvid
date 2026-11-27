@@ -914,10 +914,11 @@ fn marquee_offset(progress: f32, overflow: f32) -> f32 {
 }
 
 fn provider_logo(raw: i32) -> &'static str {
-    match AgentProvider::try_from(raw) {
-        Ok(AgentProvider::Claude) => chrome::CLAUDE,
-        Ok(AgentProvider::Codex) => chrome::CODEX,
-        _ => chrome::AGENT,
+    match corvid_agent_deck_core::provider::icon(raw) {
+        corvid_agent_deck_core::provider::ProviderIcon::Claude => chrome::CLAUDE,
+        corvid_agent_deck_core::provider::ProviderIcon::Codex => chrome::CODEX,
+        corvid_agent_deck_core::provider::ProviderIcon::Antigravity => chrome::ANTIGRAVITY,
+        corvid_agent_deck_core::provider::ProviderIcon::Generic => chrome::AGENT,
     }
 }
 
@@ -995,11 +996,7 @@ impl Render for RunDetails {
 }
 
 fn provider(run: &PresentedRun) -> &'static str {
-    match AgentProvider::try_from(run.provider) {
-        Ok(AgentProvider::Claude) => "Claude",
-        Ok(AgentProvider::Codex) => "Codex",
-        _ => "Agent",
-    }
+    corvid_agent_deck_core::provider::display_name(run.provider)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StatusColor {
@@ -1257,6 +1254,34 @@ mod tests {
         let mut run = available(AgentBadge::Unknown);
         run.last_badge = i32::MAX;
         assert_eq!(status(&run, false), ("Unknown", StatusColor::Muted));
+    }
+
+    #[test]
+    fn provider_labels_and_logos_cover_antigravity_and_load_assets() {
+        use corvid_protocol::wire::AgentProvider;
+        use gpui::AssetSource;
+
+        for (raw, label, logo) in [
+            (AgentProvider::Claude as i32, "Claude", chrome::CLAUDE),
+            (AgentProvider::Codex as i32, "Codex", chrome::CODEX),
+            (
+                AgentProvider::Antigravity as i32,
+                "Antigravity",
+                chrome::ANTIGRAVITY,
+            ),
+            (AgentProvider::Unspecified as i32, "Agent", chrome::AGENT),
+            (99, "Agent", chrome::AGENT),
+        ] {
+            let mut run = available(AgentBadge::Ready);
+            run.provider = raw;
+            assert_eq!(provider(&run), label);
+            assert_eq!(provider_logo(raw), logo);
+            assert!(
+                AssetSource::load(&chrome::DeckAssets, logo)
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 
     #[test]

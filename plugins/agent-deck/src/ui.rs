@@ -11,9 +11,8 @@ use corvid_presentation::ipc::{Display, Link};
 use corvid_presentation::model::Snapshot;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
-    AgentBadge, AgentCollection, AgentProvider, CompanionConnection, EvidenceConfidence,
-    PresentedBinding, PresentedRun, PresentedRunKey, PresentedSlot, PromptObservation,
-    RunAvailability,
+    AgentBadge, AgentCollection, CompanionConnection, EvidenceConfidence, PresentedBinding,
+    PresentedRun, PresentedRunKey, PresentedSlot, PromptObservation, RunAvailability,
 };
 use gpui::{
     Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, KeyUpEvent, MouseButton,

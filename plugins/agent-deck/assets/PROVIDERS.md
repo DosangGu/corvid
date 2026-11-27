@@ -2,6 +2,7 @@
 
 - `provider-claude.svg`: Claude mark from [Simple Icons 15.0.0](https://github.com/simple-icons/simple-icons/blob/15.0.0/icons/claude.svg).
 - `provider-codex.svg`: OpenAI mark identifying the Codex provider, from [Simple Icons 15.0.0](https://github.com/simple-icons/simple-icons/blob/15.0.0/icons/openai.svg).
+- `provider-antigravity.svg`: original monochrome mark identifying the Antigravity provider.
 - `provider-agent.svg`: original generic terminal glyph for unknown providers.
 
 The two provider SVGs are unmodified upstream files. Simple Icons distributes
