@@ -206,13 +206,11 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let location = self
-            .destination
-            .as_ref()
-            .map_or("Local", Destination::label);
-        let title = workspace.map_or_else(
-            || location.to_owned(),
-            |workspace| format!("{location} / {}", workspace.label),
+        let title = workspace_header_title(
+            self.destination
+                .as_ref()
+                .map_or("Local", Destination::label),
+            workspace.map(|workspace| workspace.label.as_str()),
         );
         let needs_input = ui
             .filter(|ui| ui.connected && ui.inventory_ready)
@@ -393,10 +391,7 @@ impl WorkspaceView {
                         .map(|status| status.label())
                 })
                 .flatten();
-            let title = program_summary.map_or_else(
-                || tab.label.clone(),
-                |summary| format!("{} · {summary}", tab.label),
-            );
+            let title = tab_display_title(&tab.label, program_summary);
             let button = title::button(
                 button_frame("select-tab", active)
                     .bg(rgb(fill))
@@ -570,7 +565,11 @@ impl WorkspaceView {
                     + 1;
                 Some((
                     target.clone(),
-                    format!("{} · Pane {ordinal}: {}", tab.label, error.message),
+                    format!(
+                        "{} · Pane {ordinal}: {}",
+                        corvid_core::layout::clean_title(&tab.label),
+                        corvid_core::layout::clean_title(&error.message)
+                    ),
                 ))
             })
             .collect();
@@ -730,5 +729,39 @@ impl Render for WorkspaceView {
             .when(self.creation.is_some(), |root| {
                 root.child(self.creation_panel(window, cx))
             })
+    }
+}
+
+fn workspace_header_title(location: &str, workspace_label: Option<&str>) -> String {
+    let location = corvid_core::layout::clean_title(location);
+    workspace_label.map_or(location.clone(), |label| {
+        format!("{location} / {}", corvid_core::layout::clean_title(label))
+    })
+}
+
+fn tab_display_title(tab_label: &str, program_summary: Option<&str>) -> String {
+    let label = corvid_core::layout::clean_title(tab_label);
+    program_summary.map_or(label.clone(), |summary| format!("{label} · {summary}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_and_tab_titles_strip_bidi_and_control_chars_preserving_rtl() {
+        assert_eq!(
+            workspace_header_title("prod\u{202e}box", Some("app\u{202e}\nname")),
+            "prodbox / appname"
+        );
+        assert_eq!(
+            tab_display_title("tab\u{2066}one\u{0007}", Some("Working")),
+            "tabone · Working"
+        );
+        assert_eq!(
+            workspace_header_title("Local", Some("مشروع")),
+            "Local / مشروع"
+        );
+        assert_eq!(tab_display_title("שלום", None), "שלום");
     }
 }

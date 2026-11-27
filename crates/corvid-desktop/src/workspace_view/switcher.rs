@@ -191,7 +191,7 @@ impl WorkspaceView {
                             host_id: known.host_id.clone(),
                             workspace_id: workspace.workspace_id.clone(),
                         },
-                        title: workspace.label.clone(),
+                        title: corvid_core::layout::clean_title(&workspace.label),
                         expanded: false,
                         status: if selected {
                             "Current"
