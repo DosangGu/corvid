@@ -1001,7 +1001,30 @@ impl Worker {
                     &self.scope,
                 )? {
                     Some(KeyCommand::BeginRename) => {
-                        lease.naming = Some(super::rename::NameEditor::new());
+                        let (label, manual) = display
+                            .as_ref()
+                            .and_then(|display| {
+                                display
+                                    .layout
+                                    .workspaces
+                                    .iter()
+                                    .find(|workspace| workspace.id == lease.location.workspace)
+                                    .and_then(|workspace| {
+                                        workspace
+                                            .tabs
+                                            .iter()
+                                            .enumerate()
+                                            .find(|(_, tab)| tab.id == lease.location.tab)
+                                            .map(|(index, tab)| {
+                                                (
+                                                    tab.display_name(index, &display.titles),
+                                                    tab.manual_name.as_deref(),
+                                                )
+                                            })
+                                    })
+                            })
+                            .unwrap_or_else(|| (String::new(), None));
+                        lease.naming = Some(super::rename::NameEditor::new(&label, manual));
                     }
                     Some(KeyCommand::RenameTab(name)) => {
                         if lease
