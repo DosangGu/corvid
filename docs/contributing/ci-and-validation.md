@@ -215,3 +215,16 @@ daemon upgrade. It unregisters the temporary distribution it imported.
 
 When you find an intermittent CI workflow failure, open a GitHub issue to track it.
 If an issue already tracks the failure, add a comment linking to the failed workflow run.
+
+## Dependency updates (Dependabot)
+
+[Dependabot](../../.github/dependabot.yml) checks Cargo dependencies and GitHub Actions
+every day (including weekends) at 09:00 Asia/Seoul, with up to five open
+version-update PRs per ecosystem. Version updates wait at least 14 days after a
+release and become eligible at the next check. This cooldown does not delay
+security updates and cannot be configured by vulnerability severity. Protobuf
+dependencies (`prost*` and `protox`) are updated together; all other updates,
+including patches, receive individual PRs for review.
+Dependency PRs run the existing packaging and workspace CI and require review
+before manual merging. Dependabot security updates are controlled separately
+in the repository's security settings.

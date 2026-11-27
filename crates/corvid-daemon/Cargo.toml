@@ -3,8 +3,12 @@ name = "corvid-daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "PTY and session daemon for the Corvid terminal multiplexer"
 publish = ["crates-io"]
 
