@@ -117,6 +117,8 @@ jobs:
             ~/.cargo/registry
             target/debug
           key: checks-desktop-fonts-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/checks-desktop.yml', 'Cargo.lock') }}
+      - name: Workspace lints
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build Desktop, Agent Deck, and the standalone daemon
         run: cargo build --locked -p corvid-desktop -p corvid-agent-deck-ui -p corvid-daemon
       - name: Desktop font fallback and emoji presentation
