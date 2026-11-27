@@ -6,7 +6,7 @@ Corvid Desktop opens a local terminal and connects to remote hosts over SSH.
 Its built-in Agents window (Corvid Agent Deck) shows observed Codex and Claude Code
 activity and opens the corresponding pane in Desktop. Agent Deck provides a Windows system tray
 and macOS menu-bar item with native notifications. Completed agents remain until their panes close;
-additional agents queue and can move into view as their priority changes. See [Agent Deck](docs/06_agent_deck.md).
+additional agents queue and can move into view as their priority changes. See [Agent Deck](docs/guides/agent-deck.md).
 
 | Component | Supported platform |
 | --- | --- |
@@ -22,8 +22,8 @@ and interactive ConPTY behavior require separate qualification.
 
 Download Windows, Linux, and macOS Desktop or TUI packages from
 [GitHub Releases](https://github.com/DosangGu/corvid/releases).
-Desktop offers [Windows Setup](docs/05_release_distribution.md#windows-setup) and an
-[unsigned macOS DMG](docs/07_macos.md).
+Desktop offers [Windows Setup](docs/guides/release-and-install.md#windows-setup) and an
+[unsigned macOS DMG](docs/guides/release-and-install.md#install-on-macos).
 On Linux x64/ARM64, WSL, or macOS Apple Silicon, install the TUI with:
 
 ```sh
@@ -37,9 +37,9 @@ daemons unchanged; use `corvid upgrade` separately for automatically started dae
 
 For versions published to crates.io, install or update the TUI with
 `cargo install --locked corvid-tui` and run `corvid`. See the
-[Cargo installation requirements](docs/05_release_distribution.md#install-with-cargo).
+[Cargo installation requirements](docs/guides/release-and-install.md#install-with-cargo).
 
-See the [distribution guide](docs/05_release_distribution.md) for Desktop and
+See the [distribution guide](docs/guides/release-and-install.md) for Desktop and
 Windows installation, custom paths, system requirements, and daemon lifecycle.
 
 ## Build and run the Linux TUI
@@ -64,7 +64,7 @@ Press
 <kbd>Ctrl</kbd>+<kbd>]</kbd>, then <kbd>d</kbd>. Run Corvid again to return to the workspace.
 Use `Ctrl+]` then `w` to switch workspaces, `t` to manage tabs, or `p`
 to select, split or close a pane. Use `Ctrl+]` then `?` to search commands.
-See the [daemon guide](docs/02_daemon_foundation.md) for session controls and
+See the [daemon guide](docs/guides/daemon.md) for session controls and
 systemd setup.
 
 ## Run the Windows TUI
@@ -77,14 +77,14 @@ cargo build --locked -p corvid-tui
 ```
 
 Corvid starts its local daemon and opens PowerShell. See the
-[Windows daemon guide](docs/02_daemon_foundation.md#run-locally-on-windows)
+[Windows daemon guide](docs/guides/daemon.md#run-locally-on-windows)
 for local state paths and validation.
 
 ## Run Corvid Desktop
 
-Follow the [Windows quick start](docs/04_companion.md#windows-quick-start)
-[Linux Desktop quick start](docs/04_companion.md#linux-desktop-quick-start),
-or [macOS guide](docs/07_macos.md)
+Follow the [Windows quick start](docs/guides/desktop.md#windows-quick-start),
+[Linux Desktop quick start](docs/guides/desktop.md#linux-desktop-quick-start),
+or [macOS guide](docs/guides/desktop.md#macos)
 for build requirements. Build the Agents window and run Desktop from the repository root.
 
 ```sh
@@ -98,7 +98,7 @@ Use **×** on a session, tab, or pane to close it and stop its shells.
 Choose a host from `~/.ssh/config` or enter an alias. Remote hosts require
 host-key trust and noninteractive authentication. Pass `-- --ssh-alias work-host`
 to launch directly into SSH. The
-[Windows packaging guide](docs/04_companion.md#windows-package-and-login-startup)
+[Windows packaging guide](docs/guides/desktop.md#windows-package-and-login-startup)
 shows how to build a ZIP with daemon bundles for first-time installation over SSH.
 
 ## Development
@@ -106,9 +106,9 @@ shows how to build a ZIP with daemon bundles for first-time installation over SS
 The root Cargo workspace shares package and dependency versions in `Cargo.toml`
 and a single `Cargo.lock`. Run `cargo test --locked` for the default packages.
 Use `--workspace` to include Desktop, Deck, and the packaging tool. Full Linux
-workspace builds require the [Desktop system packages](docs/04_companion.md#linux-desktop-quick-start).
+workspace builds require the [Desktop system packages](docs/guides/desktop.md#linux-desktop-quick-start).
 
-See [CI validation](docs/08_ci_validation.md) for platform coverage, real TTY/SSH
+See [CI validation](docs/contributing/ci-and-validation.md) for platform coverage, real TTY/SSH
 and Desktop UI tests, local reproduction commands, and remaining device checks.
 
 [Dependabot](.github/dependabot.yml) checks Cargo dependencies and GitHub Actions
@@ -122,9 +122,10 @@ Dependency PRs run the existing packaging and workspace CI and require review
 before manual merging. Dependabot security updates are controlled separately
 in the repository's security settings.
 
-- [Architecture and roadmap](docs/00_project_design.md)
-- [Agent hook coverage and setup](docs/03_provider_qualification.md)
-- [Release distribution and updates](docs/05_release_distribution.md)
+- [Documentation index](docs/README.md)
+- [Architecture and roadmap](docs/architecture/overview.md)
+- [Agent hook coverage and setup](docs/guides/providers.md)
+- [Release distribution and updates](docs/guides/release-and-install.md)
 - [Repository guidelines](AGENTS.md)
 
 ### TODO issues

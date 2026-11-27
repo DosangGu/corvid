@@ -1,11 +1,6 @@
-# Release distribution and updates
+# Release Distribution, Installation, and Updates
 
-Corvid distributes versioned Desktop and TUI packages through the public
-[`DosangGu/corvid` GitHub Releases](https://github.com/DosangGu/corvid/releases).
-The root Cargo workspace version is the release version. A `vX.Y.Z` tag must
-match that version. Prerelease versions use tags such as `v0.2.0-rc.1`.
-The GitHub Release title is exactly the version tag, with no product name or
-other text (for example, `v0.1.2`, not `Corvid v0.1.2`).
+> For ARM64 validation and release qualification boundaries, see [Platform Qualification](../qualification/platforms.md#arm64-and-release-validation).
 
 ## Release assets
 
@@ -26,12 +21,12 @@ other text (for example, `v0.1.2`, not `Corvid v0.1.2`).
 | Windows ARM64 Desktop Setup | Windows 11 ARM64 | `corvid-desktop-VERSION-aarch64-pc-windows-msvc-setup.exe` |
 
 Linux TUI and daemon binaries are statically linked. Linux Desktop builds and
-installer tests use the Ubuntu runners listed in [CI coverage](08_ci_validation.md).
+installer tests use the Ubuntu runners listed in [CI coverage](../contributing/ci-and-validation.md).
 The resulting binaries require X11 or XWayland, Fontconfig, and a Vulkan driver.
 Older Ubuntu releases and other distributions require separate runtime
 qualification. WSL uses the Linux TUI and daemon package for its architecture.
 Linux and Windows support x64 and ARM64. Windows ARM64 targets Windows 11.
-Apple Silicon packages target macOS 15 and later. See the [macOS guide](07_macos.md)
+Apple Silicon packages target macOS 15 and later. See the [macOS guide](../guides/desktop.md#macos)
 for Gatekeeper, app layout, installation paths, and validation limitations.
 
 Actions builds the `corvid` client and standalone `corvidd` once per execution
@@ -68,7 +63,7 @@ directory. Source builds can use a sibling `corvidd` or set
 
 Packaged and source-built `corvidd` use libghostty-vt for new terminals.
 Running terminal hosts keep their current emulator through daemon handoff.
-Building the daemon from source requires the [pinned Zig toolchain](01_terminal_qualification.md#libghostty-vt-runtime).
+Building the daemon from source requires the [pinned Zig toolchain](../qualification/terminal.md#libghostty-vt-runtime).
 The Desktop and TUI production builds are independent of Zig and libghostty-vt.
 
 Downloads trust the public repository over HTTPS and verify the expected asset
@@ -113,7 +108,7 @@ Linux Desktop installations register per-user application menu entries and
 hicolor icons under `$XDG_DATA_HOME` (or `~/.local/share`). Entries follow the
 stable `current` link, and files owned by another installation are preserved.
 Portable and development Desktop windows also provide their icon directly to
-X11, including the Settings window. See the [shared icon assets](../assets/icons/).
+X11, including the Settings window. See the [shared icon assets](../../assets/icons/).
 
 ## Install on Windows
 
@@ -183,7 +178,7 @@ shows the running version, installation type, stable channel, and last check tim
 in the system time zone. Check results and actionable errors stay in the panel,
 with expandable technical details. Release notes open the selected release page.
 
-![Last update check time in Settings](images/release-update-last-checked.png)
+![Last update check time in Settings](../images/release-update-last-checked.png)
 
 For installations from Windows Setup, the scripts, or a portable archive,
 **Download update** downloads and verifies the selected release in
@@ -202,11 +197,11 @@ Desktop waits for the replacement to restore its windows and reclaims them if
 startup fails. Managed Desktops also follow an
 external installation change. Existing Agent Deck instances refresh in their
 original scopes, including Decks hidden in the tray.
-Stopped Decks remain stopped. See [Deck lifetime](06_agent_deck.md#launch-and-lifetime).
+Stopped Decks remain stopped. See [Deck lifetime](../guides/agent-deck.md#launch-and-lifetime).
 
-![Available update in Settings](images/release-update-available.png)
-![Loading indicator during an update check](images/release-update-loading.jpg)
-![Prepared update with a choice of restart time](images/release-update-ready.png)
+![Available update in Settings](../images/release-update-available.png)
+![Loading indicator during an update check](../images/release-update-loading.jpg)
+![Prepared update with a choice of restart time](../images/release-update-ready.png)
 
 Both clients use `corvid-update`. For script and portable installations, the
 updater selects a release once, validates its manifest, and runs that exact
@@ -261,7 +256,7 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 | Change or trigger | Workflow and result |
 | --- | --- |
 | Any PR | **Checks / Basics** validates formatting, whitespace, and workspace version consistency. |
-| PR changes component or packaging inputs | Matching workflows run the [component or packaging checks](08_ci_validation.md#pull-requests). |
+| PR changes component or packaging inputs | Matching workflows run the [component or packaging checks](../contributing/ci-and-validation.md#pull-requests). |
 | PR to `main` updates `deploy/release-notes.md` | **Checks / Release** builds the five release targets and runs live runtime and installer tests. |
 | Manual **Run workflow** on **Checks / Release** | The same release qualification runs for the selected ref. |
 | Push of a `v*` tag | **Publish Corvid Release** publishes the GitHub release and then the Cargo source packages to crates.io. |
@@ -355,8 +350,8 @@ apply** runs Setup in the existing installation directory. The installer collect
 unused versions and schedules cleanup for images that still serve active sessions.
 `corvid update` also supports forward updates for Setup installations.
 
-![Windows Setup update available in Desktop](images/release-setup-update-available.jpg)
-![Windows Setup update ready for Desktop restart](images/release-setup-update-ready.jpg)
+![Windows Setup update available in Desktop](../images/release-setup-update-available.jpg)
+![Windows Setup update ready for Desktop restart](../images/release-setup-update-ready.jpg)
 
 Agent Deck registers its notification shortcut when started
 and offers an opt-in login startup setting. Those shortcuts follow the selected
@@ -369,65 +364,41 @@ Run `python deploy/native_package.py --archive PATH --output DIRECTORY` with
 the Windows Desktop ZIP and adjacent SHA-256 file. Pass `--iscc PATH` with
 the path to the Inno Setup compiler.
 
-## ARM64 validation
 
-Linux and Windows ARM64 assets are produced by `ubuntu-26.04-arm` and
-`windows-11-arm` runners. They run runtime and workspace tests, Clippy,
-installer lifecycle checks, and native package assembly. Linux ARM64 also runs
-the PTY, SSH reconnect, and Xvfb Desktop checks. Release assembly requires both
-architectures and checks daemon manifests and Setup provenance.
+## Install on macOS
 
-Desktop probes the execution host's architecture before selecting a daemon for
-installation or upgrade, including ARM64 WSL. Existing working connections do not
-need a new architecture probe. Windows installers detect the native OS architecture
-even from an emulated PowerShell process. Updates preserve the installed package's
-architecture; `install.ps1 -Target` supports that choice explicitly.
 
-This support applies to builds from this revision and future releases. It does not
-add assets to already published releases. Physical ARM64 GPU rendering and interactive Windows ConPTY behavior still
-need device qualification.
+Download `corvid-desktop-VERSION-aarch64-apple-darwin.dmg`, open it, and drag
+**Corvid.app** to Applications. Desktop includes the native `corvid` runtime,
+the nested **Corvid Agent Deck.app**, and Linux, Windows, and macOS SSH runtimes.
+Launch Desktop and open **Agents** to launch Agent Deck.
 
-## Validation boundary
+These initial packages are **not Developer ID signed or notarized**. Mach-O
+binaries and app bundles use ad-hoc signatures for Apple Silicon integrity.
+After attempting to open the downloaded app, use **System Settings → Privacy &
+Security → Open Anyway** if Gatekeeper blocks it. Only approve a package you
+obtained from the project's release. No system-wide Gatekeeper changes are needed.
 
-The Settings screenshots above use synthetic release metadata in an isolated
-Linux Xvfb session. On 2026-11-12, UI checks verified closing and reopening Settings
-during a check and installation, retrying after a failed check or corrupted archive,
-minimum-width layout, deferred restart, and restart failure with the same retained
-shell PID. The real Linux installer ran with verified local fixture assets in a
-private installation directory containing spaces. A replacement-process fixture
-verified restart dispatch while the daemon and original shell remained alive;
-this does not establish compatibility between two published Desktop versions.
-The Windows updater also rejected a corrupted fixture archive before mutation,
-then ran the real PowerShell installer successfully with verified local assets
-and an installation path containing spaces. Desktop, updater, and CLI checks
-passed on Windows (30 tests, one WSL-profile test ignored) and Linux (49 tests),
-along with builds, Clippy, formatting, and whitespace checks.
-On 2026-11-19, a Linux Xvfb test with a local release fixture verified that
-**Later** closed Settings while the same Desktop PID and selected package stayed
-active. Reopening Settings preserved the prepared update. **Restart to apply**
-then ran the fixture installer, opened the replacement Desktop, and closed the
-previous process. The available and prepared screenshots show this test.
-An isolated Windows integration test used the published 0.3.2 and 0.3.4 runtime
-binaries. After handoff, the host ID, terminal ID, and PowerShell PID survived.
-The old package was collected after the last shell exited.
+For the TUI, use the same user-scoped `install.sh` as Linux:
 
-On 2026-11-13, the Windows Settings screenshots above were captured using
-local release fixtures in a separate Setup installation. The app rejected a
-checksum mismatch, then verified and ran the real Setup. Restart opened the
-updated Desktop and restored the existing terminal screen.
+```sh
+curl -fsSL https://github.com/DosangGu/corvid/releases/latest/download/install.sh | sh
+```
 
-`deploy/test_install.py` exercises the actual installers with isolated paths,
-including spaces, a synthetic older version, repeat installation, concurrent
-installation rejection, corrupted downloads, and a running foreground daemon.
-The older executable is a version-probe fixture: this tests installation
-transactions, not historical daemon compatibility. Existing daemon handoff tests
-cover the protocol. Every subsequent release should also qualify an upgrade from
-the previous published release with live terminal sessions.
+The installer detects Darwin/arm64 and uses BSD utilities and `shasum`. Add
+`~/.local/bin` to PATH. `--product desktop` installs a persistent
+`~/Applications/Corvid.app` bundle and keeps executable packages in versioned
+storage for background service handoff. Explicit `--install-root` installations
+keep their app bundle under that root. The first update of an earlier script
+installation moves its existing app bundle into the permanent location so
+Finder and Dock bookmarks can follow it. Desktop **About & updates** and
+`corvid update` use this installer, verify the selected release's checksums, and
+collect unused earlier managed packages after activation. An update started
+from a DMG-installed app replaces its contents in the same application bundle,
+so an existing Dock item continues to open it. macOS asks for administrator
+authorization if the bundle requires it. Copy the app to Applications before
+updating from a mounted disk image. Existing CLI commands from another installation
+are preserved; use a separate `--bin-dir` when needed.
 
-`deploy/test_native.py` checks Windows Setup install, upgrade from a synthetic earlier
-version with a running daemon, and uninstall with retained user state.
-`tests/ui/run.py` exercises the packaged Desktop and Agent Deck on Linux,
-Windows, and macOS before publication. See the
-[UI test commands](08_ci_validation.md#desktop-and-agent-deck-ui).
-On WSL, run Unix integration tests from a Linux filesystem checkout: fixtures
-under a Windows mount can fail the runtime's parent-directory permission checks.
+Package updates request handoff for an older daemon started from that installation.
+Hosted PTYs continue running. A supervised daemon follows its service manager's restart procedure.

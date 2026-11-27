@@ -1,7 +1,9 @@
 # Corvid Agent Deck
 
+> For validation details and remaining OS qualification, see [Platform Qualification](../qualification/platforms.md#agent-deck-qualification).
+
 For Apple Silicon paths, native behavior, building, and distribution, see
-[macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
+[macOS support](../guides/desktop.md#macos). macOS uses the shared Unix daemon/client boundary.
 
 Corvid Agent Deck is Corvid Desktop's built-in **Agents** surface. It ships and
 updates with Desktop and extends the former Agent Board. Agent status, cards,
@@ -10,7 +12,7 @@ provides a compact **Agents** entry point with an input-request count when neede
 **Settings → Agents** provides access and explains notification preferences.
 
 The executable and its UI, launch, background, notification, and OS integration
-code remain in [`plugins/agent-deck`](../plugins/agent-deck/) for source and package
+code remain in [`plugins/agent-deck`](../../plugins/agent-deck/) for source and package
 compatibility. This is an internal module boundary, not a user-installable plugin
 or a public plugin API. Desktop and the Windows CLI delegate to that package.
 The daemon remains authoritative for PTYs and agent state; `corvid-companion`
@@ -118,7 +120,7 @@ On macOS, click the menu bar icon to open the Deck below it. Click it again,
 click outside the panel, or press Escape to dismiss it. Right-click the icon for
 notification settings, pause/resume, and quit. The panel can switch between the
 mini grid and expanded views, and monitoring continues while it is dismissed.
-Login startup shows only the menu bar icon. See the [macOS guide](07_macos.md)
+Login startup shows only the menu bar icon. See the [macOS guide](../guides/desktop.md#macos)
 for installation and notification permissions.
 
 ## Deck layouts
@@ -241,20 +243,20 @@ status for each run. Process-only sessions stay gray. `corvid companion slots`
 also shows the last prompt observation and its timestamp when available. On Linux
 and macOS they are also available from `corvid control agents`.
 
-![Agent Deck showing Working, Check terminal with a blue working dot, and an observed response](images/agent-deck/working-with-unverified-input.png)
+![Agent Deck showing Working, Check terminal with a blue working dot, and an observed response](../images/agent-deck/working-with-unverified-input.png)
 
-![Two live fixture sessions after the first responded and the second submitted a prompt](images/agent-deck/live-prompt-status.png)
+![Two live fixture sessions after the first responded and the second submitted a prompt](../images/agent-deck/live-prompt-status.png)
 
 **Queue**, **Run history**, **Hosts**, and **Notifications** retain their separate
 views; notification preferences are under **Notifications**.
 
-![Mini Agent Deck with provider logos and synthetic states](images/agent-deck/logo-cards.png)
+![Mini Agent Deck with provider logos and synthetic states](../images/agent-deck/logo-cards.png)
 
-![Expanded Agent Deck with the same logo cards](images/agent-deck/logo-cards-expanded.png)
+![Expanded Agent Deck with the same logo cards](../images/agent-deck/logo-cards-expanded.png)
 
-![Portrait logo cards with keyboard selection](images/agent-deck/logo-cards-portrait.png)
+![Portrait logo cards with keyboard selection](../images/agent-deck/logo-cards-portrait.png)
 
-![Text details and pin action for a logo card](images/agent-deck/logo-cards-details.png)
+![Text details and pin action for a logo card](../images/agent-deck/logo-cards-details.png)
 
 The logo-card screenshots use the GPUI application with synthetic observations
 in an isolated Linux Xvfb session. On 2026-11-17, visual checks covered mini and
@@ -265,11 +267,11 @@ native Windows visual interaction remains unverified for this change.
 The older screenshots below document window controls and layout; their
 text-heavy card faces predate the logo-only design.
 
-![Pinned mini Agent Deck with synthetic cached agents](images/agent-deck/window-pin-mini.png)
+![Pinned mini Agent Deck with synthetic cached agents](../images/agent-deck/window-pin-mini.png)
 
-![The same window pin in expanded Agent Deck](images/agent-deck/window-pin-expanded.png)
+![The same window pin in expanded Agent Deck](../images/agent-deck/window-pin-expanded.png)
 
-![GPUI portrait Agent Deck with fifteen keys](images/agent-deck/gpui-portrait.png)
+![GPUI portrait Agent Deck with fifteen keys](../images/agent-deck/gpui-portrait.png)
 
 The screenshots use synthetic cached agents in an isolated Linux Xvfb session.
 The window pin was verified under Xvfb with Openbox: dragging worked while
@@ -295,8 +297,8 @@ the tracked run to **Run history**, including when its shell and pane stay open.
 Closing the owning pane, tab, or workspace also retires the card. Closing the
 Desktop window detaches the presentation and retains the layout.
 
-![Mini Deck with a tracked Claude fixture](images/agent-deck/agent-cli-exit-before.png)
-![Mini Deck after the fixture exits with the same Desktop shell still open](images/agent-deck/agent-cli-exit-after.png)
+![Mini Deck with a tracked Claude fixture](../images/agent-deck/agent-cli-exit-before.png)
+![Mini Deck after the fixture exits with the same Desktop shell still open](../images/agent-deck/agent-cli-exit-after.png)
 
 New runs enter the queue in creation order, with run identity as a deterministic
 fallback. On a full grid a queued card replaces the lowest-priority unpinned
@@ -322,7 +324,7 @@ Companion moves the previous epoch's runs into **Run history**. The queue is
 bounded to 4,096 tracked runs per host and run history to 256 entries per host.
 The Companion CLI can still inspect saved layouts.
 
-![Hosts showing New response for an SSH run after Desktop reconnects](images/agent-deck/ssh-reconnected-host-status.png)
+![Hosts showing New response for an SSH run after Desktop reconnects](../images/agent-deck/ssh-reconnected-host-status.png)
 
 Updated Desktop replaces an older Companion the next time it connects to the
 monitored host. The replacement reuses that host's saved controller state while
@@ -391,79 +393,15 @@ Unavailable or ended targets remain in history without opening a new terminal.
 
 ## Assets and source map
 
-- [`src/desktop.rs`](../crates/corvid-agent-deck/src/desktop.rs): Desktop launch and focus adapter.
-- [`src/connection.rs`](../crates/corvid-agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
-- [`src/background.rs`](../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
-- [Shell](../plugins/agent-deck/src/shell.rs) and [UI](../plugins/agent-deck/src/ui.rs): native window or panel handling, GPUI content, and view controls.
-- [Agent Deck core](../crates/corvid-agent-deck-core/): grid choices, notification policy, gesture capture, action tracking, and the native service contract.
-- [`src/platform.rs`](../plugins/agent-deck/src/platform.rs): OS adapter selection, bounded callback delivery, and capability updates.
-- [`src/ui_signal.rs`](../plugins/agent-deck/src/ui_signal.rs): coalesced worker updates and latched open/quit requests.
-- [`src/platform`](../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
-- [`assets`](../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../assets/icons/); `cargo run -p corvid-agent-deck-ui --example render-icons` regenerates all raster assets.
+- [`src/desktop.rs`](../../crates/corvid-agent-deck/src/desktop.rs): Desktop launch and focus adapter.
+- [`src/connection.rs`](../../crates/corvid-agent-deck/src/connection.rs), `src/parent.rs`: private activation/registration protocol.
+- [`src/background.rs`](../../plugins/agent-deck/src/background.rs): independent observation and notification lifetime.
+- [Shell](../../plugins/agent-deck/src/shell.rs) and [UI](../../plugins/agent-deck/src/ui.rs): native window or panel handling, GPUI content, and view controls.
+- [Agent Deck core](../../crates/corvid-agent-deck-core/): grid choices, notification policy, gesture capture, action tracking, and the native service contract.
+- [`src/platform.rs`](../../plugins/agent-deck/src/platform.rs): OS adapter selection, bounded callback delivery, and capability updates.
+- [`src/ui_signal.rs`](../../plugins/agent-deck/src/ui_signal.rs): coalesced worker updates and latched open/quit requests.
+- [`src/platform`](../../plugins/agent-deck/src/platform/): Windows tray, shortcuts, toast delivery; Linux fallback in `platform.rs`.
+- [`assets`](../../plugins/agent-deck/assets/): tray SVG, PNG, and multi-size ICO assets. The shared application icon lives in [`assets/icons`](../../assets/icons/); `cargo run -p corvid-agent-deck-ui --example render-icons` regenerates all raster assets.
 
 The icon extends the existing Corvid bird silhouette. App and tray icons have a
-normal state and a separate attention overlay. See the [icon preview](images/agent-deck/preview.png).
-
-## Validation and remaining qualification
-
-Automated coverage includes retained completed responses, FIFO compaction, persisted
-pane ownership, stale slot captures, off-page attention and bounds, request metadata,
-notification deduplication and snooze, cross-host rejection, Desktop reconnection,
-and activation without replacing an existing registration. The Linux routing fixture
-exercises real process exit with the shell still open, relaunch in the same pane,
-and explicit pane closure.
-
-The Linux Deck focus fixture clicks cards for two live agent tabs. It verifies
-that Desktop comes to the foreground, including from a minimized window, and
-that typed input reaches the selected agent's terminal.
-
-On an interactive Windows desktop, run
-`cargo test -p corvid-agent-deck-ui --features ui-tests --test windows_tray -- --nocapture`
-to check tray reopening. The fixture launches a separate Deck and delivers
-the Win32 icon and menu messages. It measures the native window bounds and
-styles before and after reopening the mini, moved and resized expanded, and
-pinned views.
-
-Windows tests invoke the WinRT activation delegate to verify that it preserves
-each toast's notice and that summary clicks open settings for both a visible
-and tray-hidden Deck. The background routing test delivers clicks for two
-hosts in reverse order and checks exact routing, stale-epoch rejection, and
-persisted failure when Desktop is disconnected.
-
-Native popup/click behavior, Explorer restart, startup after login, and installed
-package behavior require interactive OS qualification. They must not be inferred
-from unit tests. To qualify pane focus on Windows and macOS, generate individual
-notices from two agents, hide Deck, minimize Desktop, and activate the notices
-from the OS while another app is active. Check that Desktop restores the correct
-window and that a typed marker reaches only the selected pane. With Desktop
-closed, click another retained notice and check the entry in Agent Deck history
-after opening it manually. The explicit native test
-`native_notification_reaches_windows_history` verifies delivery through WinRT into
-Windows notification-center history and removes its temporary notification and
-shortcut. It passed on the development Windows host; visual popup/click behavior
-remains unverified because the UI tool could not access its cursor or capture its
-monitor. Windows notification architecture follows the
-[desktop toast sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/DesktopToasts).
-
-Desktop provides [terminal selection, scrollback, and search](04_companion.md#desktop-terminal-selection-and-history).
-Windows observes [native agent processes](04_companion.md#windows-quick-start)
-launched directly by Corvid or from a Corvid shell.
-Desktop's workspace picker watches verified hosts while their terminal views are
-detached. In Agent Deck, **Hosts** lists configured monitors and their connection
-states. The Deck checks the host identity and limits concurrent inventory
-requests to eight. Newly connected hosts contribute their existing agents as
-soon as the initial snapshot is ready.
-
-![Agent Deck with synthetic runs on a local host and two SSH hosts](images/agent-deck/current-runs-multi-host.png)
-
-A card requests the exact run from Desktop through its private, controller-scoped
-focus endpoint. If the pane is already open in a Desktop window, that window is
-activated. Otherwise Desktop opens the pane and connects to the registered host
-if needed. Switching hosts releases the previous pane's writer and keeps its
-connection ready for reuse on daemons that support parking. If the focus
-endpoint is unavailable or reports a writer conflict on the opening host, Deck
-can pass the same request to the Desktop window that opened it.
-
-Windows supports [opt-in provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage).
-Desktop and the TUI support read-only attach and explicit writer handoff.
-Agent Deck is bundled in [Windows Setup](05_release_distribution.md#windows-setup).
+normal state and a separate attention overlay. See the [icon preview](../images/agent-deck/preview.png).
