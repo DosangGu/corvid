@@ -923,13 +923,13 @@ impl Interactive {
                         continue;
                     }
                     let events = self.keys.feed(&buffer[..count], self.pending_resize.is_none())?;
-                    self.forward(events).await?;
+                    self.forward(tty, events).await?;
                 }
                 _ = resized => self.resize().await?,
                 _ = wait_until(pairing_deadline) => self.dismiss_pairing(tty).await?,
                 _ = wait_until(input_deadline) => {
                     let events = self.keys.expire()?;
-                    self.forward(events).await?;
+                    self.forward(tty, events).await?;
                 }
             }
         }
@@ -1150,14 +1150,14 @@ impl Interactive {
         bail!("TTY input did not drain during route change")
     }
 
-    async fn forward(&mut self, events: Vec<Input>) -> Result<()> {
+    async fn forward(&mut self, tty: &Tty, events: Vec<Input>) -> Result<()> {
         if self.pending_resize.is_some() || self.pairing.is_some() || self.restoring {
             return Ok(());
         }
         for event in events {
-            let sequence = self.next_input_sequence()?;
             match event {
                 Input::Keys(data) => {
+                    let sequence = self.next_input_sequence()?;
                     self.send(Body::InputChunk(InputChunk {
                         route_token: Some(self.route.clone()),
                         input_sequence: sequence,
@@ -1165,7 +1165,13 @@ impl Interactive {
                     }))
                     .await?;
                 }
-                Input::Paste(bytes) => self.paste(sequence, &bytes).await?,
+                Input::Paste(bytes) => {
+                    let sequence = self.next_input_sequence()?;
+                    self.paste(sequence, &bytes).await?;
+                }
+                Input::OversizedPaste => {
+                    let _ = tty.write_all(b"\x07").await;
+                }
             }
         }
         Ok(())

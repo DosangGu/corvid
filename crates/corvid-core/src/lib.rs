@@ -12,6 +12,7 @@ pub const KEY_LEADER: u8 = 0x1d;
 pub const PASTE_START: &[u8; 6] = b"\x1b[200~";
 pub const PASTE_END: &[u8; 6] = b"\x1b[201~";
 pub const MAX_PASTE_BYTES: usize = 1024 * 1024;
+pub const PASTE_LIMIT_NOTICE: &str = "Paste exceeds the 1 MiB limit and was discarded.";
 pub const PASTE_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 const MAX_SCREEN_CELLS: u16 = 36_000;
