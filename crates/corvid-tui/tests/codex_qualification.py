@@ -644,10 +644,6 @@ def capture(binary, corvid, directory, port, fault, auto_start, parallel, conver
     try:
         if corvid is not None:
             runtime = directory / "run"
-            terminfo = directory / "terminfo"
-            subprocess.run(["tic", "-x", "-o", terminfo, ROOT / "crates/corvid-daemon/assets/corvid.terminfo"],
-                           check=True, timeout=3)
-            env["TERMINFO"] = str(terminfo)
             command = [corvid, "--runtime-dir", runtime]
             daemon = subprocess.Popen([*command, "daemon", "--state-dir", directory / "state"],
                                       env=env, cwd=project)

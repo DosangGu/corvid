@@ -172,14 +172,11 @@ stay in place during animation.
 ![Long workspace and tab titles scrolling in a 40-column TUI](images/workspace-navigation/tui-title-animation.gif)
 
 Use `corvid attach -- program arg` to start an explicit command on the running
-daemon. When starting the legacy `corvid daemon` directly, install the terminfo
-entry with `tic -x -o "$HOME/.terminfo" crates/corvid-daemon/assets/corvid.terminfo`
-first.
+daemon.
 
-New Linux PTYs use `TERM=xterm-corvid-256color`. The name enables title output
-in shells that recognize the `xterm*` prefix, while the bundled entry advertises
-Corvid's own VT profile. The `corvid` terminfo name remains available for older
-PTYs. To pick up the new `TERM` after a daemon upgrade, open a new terminal.
+New PTYs use `TERM=xterm-256color` so shells, editors, and nested SSH sessions
+work without installing a custom terminfo entry on remote hosts. To pick up a
+changed `TERM` after a daemon upgrade, open a new terminal.
 
 Ctrl-] enters command mode for the next complete key. Ctrl-] twice sends one
 literal Ctrl-]. An unmapped key sends the leader and the key as terminal input.
@@ -486,12 +483,11 @@ daemon and the attach client must support the response notification capability.
 ## Run Under systemd
 
 The [user unit](../deploy/systemd/corvid.service) starts Corvid under the user's
-service manager and provisions the private socket directory. Install the binary,
-terminal profile, and unit on the execution host.
+service manager and provisions the private socket directory. Install the binary
+and unit on the execution host.
 
 ```sh
 cargo install --locked --path crates/corvid-tui --root "$HOME/.local"
-tic -x -o "$HOME/.terminfo" crates/corvid-daemon/assets/corvid.terminfo
 install -Dm644 deploy/systemd/corvid.service "$HOME/.config/systemd/user/corvid.service"
 systemctl --user daemon-reload
 systemctl --user enable --now corvid.service
@@ -894,9 +890,8 @@ unshare --user --map-root-user bwrap --unshare-pid --as-pid-1 \
   --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 --dir /run \
   --ro-bind "$PWD/target/debug/corvid" /corvid \
   --ro-bind "$PWD/crates/corvid-tui/tests" /fixtures \
-  --ro-bind "$PWD/crates/corvid-daemon/assets/corvid.terminfo" /corvid.terminfo \
   --clearenv --setenv PATH /usr/bin --setenv PYTHONDONTWRITEBYTECODE 1 --chdir / \
-  -- /usr/bin/python3 /fixtures/pid_reuse.py /corvid /corvid.terminfo
+  -- /usr/bin/python3 /fixtures/pid_reuse.py /corvid
 ```
 
 ### Unix socket and framing reproduction

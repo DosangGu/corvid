@@ -137,38 +137,35 @@ def verify_session(process, master, slave, cooked):
 
 
 def run(binary):
-    terminfo = Path(__file__).resolve().parents[3] / "crates/corvid-daemon/assets/corvid.terminfo"
-    with tempfile.TemporaryDirectory(prefix="corvid-terminfo-") as database:
-        subprocess.run(["tic", "-x", "-o", database, terminfo], check=True)
-        env = os.environ | {"TERM": "xterm-256color", "TERMINFO": database}
-        env.pop("COLUMNS", None)
-        env.pop("LINES", None)
-        master, slave = pty.openpty()
-        try:
-            cooked = terminal_attributes(slave)
-            resize(slave, 80, 24)
-            command = [binary, sys.executable, __file__, "--child"]
-            with subprocess.Popen(
-                command,
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                env=env,
-                start_new_session=True,
-            ) as process:
-                try:
-                    verify_session(process, master, slave, cooked)
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait(timeout=2)
-        finally:
-            os.close(master)
-            os.close(slave)
+    env = os.environ | {"TERM": "xterm-256color"}
+    env.pop("COLUMNS", None)
+    env.pop("LINES", None)
+    master, slave = pty.openpty()
+    try:
+        cooked = terminal_attributes(slave)
+        resize(slave, 80, 24)
+        command = [binary, sys.executable, __file__, "--child"]
+        with subprocess.Popen(
+            command,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+            start_new_session=True,
+        ) as process:
+            try:
+                verify_session(process, master, slave, cooked)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=2)
+    finally:
+        os.close(master)
+        os.close(slave)
 
     print("PTY session passed input, query, resize, Ctrl-C, exit, and TTY restoration checks.")
 

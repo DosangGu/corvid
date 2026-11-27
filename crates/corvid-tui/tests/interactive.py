@@ -615,7 +615,7 @@ def verify_default_start(binary, directory):
                 os.close(handle)
 
 
-def verify_shell_with_agents(binary, directory, terminfo, providers):
+def verify_shell_with_agents(binary, directory, providers):
     root = directory / "-".join(providers)
     root.mkdir()
     programs = root / "bin"
@@ -639,7 +639,7 @@ def verify_shell_with_agents(binary, directory, terminfo, providers):
     client_programs = root / "client-bin"
     client_programs.mkdir()
     daemon_env = os.environ | {
-        "PATH": str(programs), "TERMINFO": str(terminfo),
+        "PATH": str(programs),
         "SHELL": str(shell), "PS1": "CORVID-SHELL> ", "CORVID_AGENT_LOG": str(agent_log),
     }
     daemon_env.pop("ENV", None)
@@ -710,7 +710,7 @@ def verify_resume(binary, directory):
 
 
 def verify_shell_agent_notifications(
-    binary, directory, terminfo, ssh=None, shell_name="sh", *, release="baseline", broker=False,
+    binary, directory, ssh=None, shell_name="sh", *, release="baseline", broker=False,
 ):
     root = directory / f"notify-{shell_name}-{release}{'-broker' if broker else ''}"
     root.mkdir()
@@ -746,7 +746,7 @@ def verify_shell_agent_notifications(
     (programs / "codex").hardlink_to(programs / "claude")
 
     env = os.environ | {
-        "TERMINFO": str(terminfo), "SHELL": str(shell), "HOME": str(home), "PS1": "NOTIFY-SHELL> ",
+        "SHELL": str(shell), "HOME": str(home), "PS1": "NOTIFY-SHELL> ",
         "PATH": str(programs), "CORVID_FIXTURE_BINARY": str(Path(binary).resolve()),
         "CLAUDE_CONFIG_DIR": str(root / "claude-config"), "CODEX_HOME": str(root / "codex-home"),
     }
@@ -1127,18 +1127,14 @@ def verify_overflowing_titles(command):
 def run(binary, *, tty_only=False):
     binary = str(Path(binary).resolve())
     os.environ["TERM"] = "xterm-256color"
-    root = Path(__file__).resolve().parents[3]
-    profile = root / "crates/corvid-daemon/assets/corvid.terminfo"
     # The runtime directory must have private, trusted parents.
     with tempfile.TemporaryDirectory(prefix="corvid-test-", dir=Path.home()) as temporary:
         directory = Path(temporary)
         os.environ["CORVID_VIEW_STATE_DIR"] = str(directory / "views")
-        database = directory / "terminfo"
-        subprocess.run(["tic", "-x", "-o", database, profile], check=True)
         command = [binary, "--runtime-dir", directory / "runtime"]
         daemon = subprocess.Popen(
             [*command, "daemon", "--state-dir", directory / "state"],
-            env=os.environ | {"TERMINFO": str(database)},
+            env=os.environ,
         )
         try:
             wait_for_daemon(command, daemon)
@@ -1159,17 +1155,17 @@ def run(binary, *, tty_only=False):
             return
         verify_default_start(binary, directory)
         for providers in [("claude",), ("codex",), ("claude", "codex")]:
-            verify_shell_with_agents(binary, directory, database, providers)
-        verify_shell_agent_notifications(binary, directory, database)
+            verify_shell_with_agents(binary, directory, providers)
+        verify_shell_agent_notifications(binary, directory)
         for release in ("older", "newer"):
             for broker in (False, True):
                 verify_shell_agent_notifications(
-                    binary, directory, database, release=release, broker=broker,
+                    binary, directory, release=release, broker=broker,
                 )
         for shell in ("bash", "zsh"):
             if shutil.which(shell):
                 verify_shell_agent_notifications(
-                    binary, directory, database, shell_name=shell, release="newer",
+                    binary, directory, shell_name=shell, release="newer",
                 )
     print("Live TTYs verified shell-first startup, agent notifications, resize, redraw, input, command-menu isolation, detach, tab switching, tab search, and daemon replacement with a retained shell.")
 

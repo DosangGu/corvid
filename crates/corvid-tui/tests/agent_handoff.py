@@ -130,7 +130,7 @@ def prepare(command, runtime, schema):
     return identity
 
 
-def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False, broker=False,
+def verify(binary, directory, ssh=None, *, legacy=False, managed=False, broker=False,
            previous=None, providers=("claude", "codex")):
     repository = Path(__file__).resolve().parents[3]
     # Keep Unix socket names within sockaddr_un even below the SSH fixture root.
@@ -158,7 +158,7 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
     )
     (programs / "codex").hardlink_to(programs / "claude")
     env = os.environ | {
-        "HOME": str(home), "SHELL": str(shell), "TERMINFO": str(terminfo), "TERM": "xterm-256color",
+        "HOME": str(home), "SHELL": str(shell), "TERM": "xterm-256color",
         "PATH": str(programs), "CORVID_FIXTURE_BINARY": str(binary), "CORVID_FIXTURE_HANDOFF": "1",
         "CORVID_AGENT_MONITOR": "0", "CORVID_VIEW_STATE_DIR": str(root / "views"),
     }
@@ -287,20 +287,17 @@ def verify(binary, directory, terminfo, ssh=None, *, legacy=False, managed=False
 
 def run(binary, previous=None):
     binary = binary.resolve()
-    repository = Path(__file__).resolve().parents[3]
     with tempfile.TemporaryDirectory(prefix="corvid-agent-handoff-", dir=Path.home()) as temporary:
         directory = Path(temporary)
-        terminfo = directory / "terminfo"
-        subprocess.run(["tic", "-x", "-o", terminfo, repository / "crates/corvid-daemon/assets/corvid.terminfo"], check=True)
         if previous:
             for provider in ("claude", "codex"):
-                verify(binary, directory, terminfo, legacy=True, previous=previous, providers=(provider,))
+                verify(binary, directory, legacy=True, previous=previous, providers=(provider,))
             return
         for legacy in ((False, True) if sys.platform == "linux" else (False,)):
             for managed in (False, True):
-                verify(binary, directory, terminfo, legacy=legacy, managed=managed)
+                verify(binary, directory, legacy=legacy, managed=managed)
             if sys.platform == "linux":
-                verify(binary, directory, terminfo, legacy=legacy, broker=True)
+                verify(binary, directory, legacy=legacy, broker=True)
 
 
 if __name__ == "__main__":

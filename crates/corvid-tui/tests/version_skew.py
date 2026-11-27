@@ -73,18 +73,15 @@ def verify_retained_terminal(old, compatible, incompatible, daemon, progress):
 
 def run(old, compatible, incompatible):
     root = Path(__file__).resolve().parents[3]
-    profile = root / "crates/corvid-daemon/assets/corvid.terminfo"
     with tempfile.TemporaryDirectory(prefix="corvid-skew-", dir=root) as temporary:
         directory = Path(temporary)
-        database = directory / "terminfo"
-        subprocess.run(["tic", "-x", "-o", database, profile], check=True, timeout=5)
         runtime = directory / "runtime"
         old, compatible, incompatible = (
             [binary.resolve(), "--runtime-dir", runtime] for binary in (old, compatible, incompatible)
         )
         daemon = subprocess.Popen(
             [*old, "daemon", "--state-dir", directory / "state"],
-            env=os.environ | {"TERMINFO": str(database)},
+            env=os.environ,
         )
         try:
             wait_for_daemon(old, daemon)

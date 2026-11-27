@@ -1905,9 +1905,9 @@ impl Launch {
         if let Some(cwd) = self.cwd {
             command.cwd(cwd);
         }
-        // Bash and other prompt scripts check the TERM name before emitting
-        // OSC titles. The matching terminfo entry describes Corvid's VT subset.
-        command.env("TERM", "xterm-corvid-256color");
+        // Use the standard xterm-256color profile so nested SSH hops and remote
+        // hosts without custom terminfo entries handle editing keys reliably.
+        command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
         command
     }

@@ -97,8 +97,6 @@ pub(super) fn foreground(runtime: &Path, state: &Path, autostarted: bool) -> Res
         OsString::from("--state-dir"),
         state.as_os_str().to_owned(),
     ];
-    #[cfg(unix)]
-    args.push("--inherit-terminfo".into());
     if autostarted {
         args.push("--autostarted".into());
     }

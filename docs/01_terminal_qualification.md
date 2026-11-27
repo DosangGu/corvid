@@ -11,13 +11,10 @@ terminal behavior across their process boundary.
 cargo build --locked
 cargo test --locked
 python3 spikes/terminal/tests/interactive.py target/debug/corvid-terminal-spike
-
-mkdir -p target/terminfo
-tic -x -o target/terminfo crates/corvid-daemon/assets/corvid.terminfo
-TERMINFO="$PWD/target/terminfo" cargo run --locked -p corvid-terminal-spike -- /bin/sh -i
+cargo run --locked -p corvid-terminal-spike -- /bin/sh -i
 ```
 
-The integration driver needs Linux PTYs, Python with curses, and ncurses `tic`.
+The integration driver needs Linux PTYs and Python with curses.
 The spike takes the child program and its arguments as separate CLI arguments.
 Its default program is the user's shell.
 
