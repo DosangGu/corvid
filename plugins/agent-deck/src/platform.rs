@@ -39,7 +39,7 @@ pub(crate) use linux::start;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{shutdown_on_main, start, yield_activation, yield_card_activation};
+pub(crate) use macos::{shutdown_on_main, start, yield_activation};
 
 #[cfg(windows)]
 mod windows;

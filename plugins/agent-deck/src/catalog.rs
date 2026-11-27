@@ -243,7 +243,7 @@ async fn execute(
                 let controller = snapshot
                     .desktop_run_target(&run)
                     .context("Invalid focus target")?;
-                let result = request_focus(controller, run.clone(), require_card).await;
+                let result = request_focus(controller, run.clone()).await;
                 if snapshot.host == current
                     && result.as_ref().is_err_and(allows_focus_fallback)
                     && legacy.focus(id, run)
@@ -278,16 +278,13 @@ async fn execute(
     result.transpose()
 }
 
-async fn request_focus(controller: Uuid, run: PresentedRunKey, _require_card: bool) -> Result<()> {
+async fn request_focus(controller: Uuid, run: PresentedRunKey) -> Result<()> {
     #[cfg(target_os = "macos")]
-    if _require_card {
-        return desktop_focus::request_with_activation(
-            controller,
-            run,
-            crate::platform::yield_card_activation,
-        )
-        .await;
+    {
+        desktop_focus::request_with_activation(controller, run, crate::platform::yield_activation)
+            .await
     }
+    #[cfg(not(target_os = "macos"))]
     desktop_focus::request(controller, run).await
 }
 

@@ -87,15 +87,9 @@ static NSImage *statusIcon(bool attention) {
     return image;
 }
 
-static bool deckIsFrontmost(void) {
-    return NSApp.isActive &&
-        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == getpid();
-}
-
-static void yieldActivation(unsigned int pid, bool card, void *completion, unsigned int attempts) {
+static void yieldActivation(unsigned int pid, void *completion, unsigned int attempts) {
     if (!atomic_load(&stopping)) {
-        bool active = card ? deckIsFrontmost() : NSApp.isActive;
-        if (active) {
+        if (NSApp.isActive) {
             NSRunningApplication *desktop =
                 [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)pid];
             if (desktop) [NSApp yieldActivationToApplication:desktop];
@@ -103,7 +97,7 @@ static void yieldActivation(unsigned int pid, bool card, void *completion, unsig
             // WindowServer can finish activating the clicked panel asynchronously.
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC),
                 dispatch_get_main_queue(), ^{
-                    yieldActivation(pid, card, completion, attempts - 1);
+                    yieldActivation(pid, completion, attempts - 1);
                 });
             return;
         }
@@ -111,9 +105,9 @@ static void yieldActivation(unsigned int pid, bool card, void *completion, unsig
     corvid_native_activation_yielded(completion);
 }
 
-void corvid_native_yield_activation(unsigned int pid, bool card, void *completion) {
+void corvid_native_yield_activation(unsigned int pid, void *completion) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        yieldActivation(pid, card, completion, card ? 10 : 0);
+        yieldActivation(pid, completion, 10);
     });
 }
 
