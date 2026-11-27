@@ -77,9 +77,9 @@ image = { version = "0.25", default-features = false }
 libc = "=0.2.191"
 nix = { version = "0.31.3", default-features = false }
 portable-pty = "=0.9.0"
-prost = "=0.14.5"
+prost = "=0.14.6"
 prost-build = "=0.14.5"
-prost-types = "=0.14.5"
+prost-types = "=0.14.6"
 protox = "=0.10.0"
 qwertty-term-input = "=0.4.0"
 resvg = { version = "=0.50.0", default-features = false }
