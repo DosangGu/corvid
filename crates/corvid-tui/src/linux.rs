@@ -1,7 +1,6 @@
 mod start;
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -49,49 +48,17 @@ pub(super) enum Command {
     },
     /// Attach to the live terminal, or start one explicitly.
     Attach {
-        /// Start a new terminal with the user's shell.
-        #[arg(long)]
-        new: bool,
-        /// Take the writer lease on an existing pane and disconnect its current writer.
-        #[arg(long = "takeover", conflicts_with_all = ["new", "agent", "new_workspace", "new_tab", "argv", "claim_workspace", "move_tab"])]
-        take_over: bool,
-        /// Start the named provider; arguments after -- go to its CLI.
-        #[arg(long, value_enum)]
-        agent: Option<ManagedAgent>,
-        /// Attach to a workspace by ID.
-        #[arg(long, conflicts_with = "new_workspace")]
-        workspace: Option<String>,
-        /// Attach to a tab by ID within the workspace.
-        #[arg(long, conflicts_with_all = ["new_workspace", "new_tab"])]
-        tab: Option<String>,
-        /// Attach to an exact pane within the selected workspace and tab.
-        #[arg(long, requires_all = ["workspace", "tab"])]
-        pane: Option<String>,
-        /// Create a workspace with this label and open a terminal.
-        #[arg(long)]
-        new_workspace: Option<String>,
-        /// Use this folder on the execution host as the workspace default.
-        #[arg(long, requires = "new_workspace")]
-        workspace_directory: Option<String>,
-        /// Browse folders on the execution host before creating a workspace.
-        #[arg(
-            long,
-            requires = "new_workspace",
-            conflicts_with = "workspace_directory"
-        )]
-        browse_directory: bool,
-        /// Create a tab with this label and open a terminal.
-        #[arg(long)]
-        new_tab: Option<String>,
+        #[command(flatten)]
+        common: crate::attach_args::CommonAttachArgs,
         /// Explicitly claim an additional unowned workspace for this TUI.
-        #[arg(long, value_name = "WORKSPACE_ID")]
+        #[arg(long, value_name = "WORKSPACE_ID", conflicts_with = "take_over")]
         claim_workspace: Vec<Uuid>,
         /// Move a hidden live tab from the attached workspace.
         #[arg(
             long,
             value_name = "TAB_ID",
             requires_all = ["to_workspace", "claim_workspace"],
-            conflicts_with_all = ["new", "agent", "new_workspace", "new_tab", "argv"]
+            conflicts_with_all = ["new", "take_over", "agent", "new_workspace", "new_tab", "argv"]
         )]
         move_tab: Option<Uuid>,
         /// Destination for --move-tab. Claim it with --claim-workspace.
@@ -103,12 +70,6 @@ pub(super) enum Command {
         /// Milliseconds to wait for a fragmented escape sequence.
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=2000))]
         escape_delay_ms: u64,
-        /// Open an existing workspace by exact name or ID.
-        #[arg(value_name = "NAME_OR_ID", conflicts_with_all = ["workspace", "new_workspace"])]
-        target: Option<String>,
-        /// Program and arguments for an explicitly started terminal.
-        #[arg(last = true)]
-        argv: Vec<OsString>,
     },
     /// Send a read-only command or relay the control protocol over stdio.
     Control {
@@ -176,14 +137,6 @@ pub(super) enum ControlRequest {
     Clients,
     Snapshot,
     Watch,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub(super) enum ManagedAgent {
-    Claude,
-    Codex,
-    #[value(alias = "agy")]
-    Antigravity,
 }
 
 #[derive(Subcommand)]
@@ -303,63 +256,34 @@ async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
             start::upgrade(&runtime).await.map(|()| 0)
         }
         Command::Attach {
-            new,
-            take_over,
-            target,
-            agent,
+            mut common,
             restore_cwd,
             escape_delay_ms,
-            argv,
-            workspace,
-            tab,
-            pane,
-            new_workspace,
-            workspace_directory,
-            browse_directory,
-            new_tab,
             claim_workspace,
             move_tab,
             to_workspace,
         } => {
-            let workspace =
-                super::workspace_cli::attach_target(&runtime, target, workspace).await?;
-            let workspace_directory = if browse_directory {
+            let workspace = super::workspace_cli::attach_target(
+                &runtime,
+                common.target.take(),
+                common.workspace.take(),
+            )
+            .await?;
+            let workspace_directory = if common.browse_directory {
                 corvid_client::check_tty()?;
                 crate::daemon_bootstrap::ensure_cli(&runtime).await?;
                 super::directory_picker::pick(&runtime).await?
             } else {
-                workspace_directory
+                common.workspace_directory.take()
             };
-            if browse_directory && workspace_directory.is_none() {
+            if common.browse_directory && workspace_directory.is_none() {
                 return Ok(0);
             }
-            let launch = (new
-                || agent.is_some()
-                || !argv.is_empty()
-                || new_workspace.is_some()
-                || new_tab.is_some())
-            .then_some(argv);
-            let options = corvid_client::AttachOptions {
-                remember_view: true,
-                launch,
-                take_over,
-                launch_if_empty: false,
-                agent: agent.map(|agent| match agent {
-                    ManagedAgent::Claude => AgentProvider::Claude,
-                    ManagedAgent::Codex => AgentProvider::Codex,
-                    ManagedAgent::Antigravity => AgentProvider::Antigravity,
-                }),
-                restore_cwd,
-                escape_delay: Duration::from_millis(escape_delay_ms),
-                workspace,
-                tab,
-                pane,
-                new_workspace,
-                workspace_directory,
-                new_tab,
-                claim_workspaces: claim_workspace,
-                move_tab: move_tab.zip(to_workspace),
-            };
+            let mut options = common.into_attach_options(workspace, workspace_directory);
+            options.restore_cwd = restore_cwd;
+            options.escape_delay = Duration::from_millis(escape_delay_ms);
+            options.claim_workspaces = claim_workspace;
+            options.move_tab = move_tab.zip(to_workspace);
             super::workspace_cli::attach_existing(&runtime, options).await
         }
         Command::Controller {

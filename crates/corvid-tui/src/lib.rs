@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod attach_args;
 mod companion;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use corvid_client::hooks;
