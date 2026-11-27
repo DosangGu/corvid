@@ -348,6 +348,16 @@ def check_protected_bundle(app, archive, directory):
     run("sudo", "-n", "/bin/sh", script, app, incoming, expected, cdhash)
     assert app.stat().st_ino == before
     assert digest(app / "Contents/Resources/package.json") == digest(incoming / "Contents/Resources/package.json")
+    for root, dirs, files in os.walk(app / "Contents", followlinks=False):
+        root_path = Path(root)
+        for name in [*dirs, *files]:
+            entry = root_path / name
+            if entry.is_symlink():
+                continue
+            info = entry.lstat()
+            assert info.st_uid == 0, f"expected root ownership on {entry}, got uid {info.st_uid}"
+            assert info.st_mode & 0o022 == 0, f"expected no group/other write bits on {entry}: {oct(info.st_mode)}"
+            assert not os.access(entry, os.W_OK), f"expected non-writable entry for staging user: {entry}"
     run("codesign", "--verify", "--deep", "--strict", app)
     print("PASS authorized replacement of an administrator-owned Corvid.app")
 
