@@ -135,3 +135,33 @@ async fn rejects_overlong_socket_paths_and_authenticates_peer_pid() {
         std::process::id()
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rejects_macos_extended_acls_on_private_paths() {
+    let parent = test_parent();
+    let dir = path(&parent);
+    let runtime = RuntimeDir::create(&dir).unwrap();
+    runtime.replace_private_file("secret.json", b"{}").unwrap();
+    assert_eq!(
+        runtime.read_private_file("secret.json", 64).unwrap(),
+        Some(b"{}".to_vec())
+    );
+
+    let secret = dir.join("secret.json");
+    let status = std::process::Command::new("/bin/chmod")
+        .args(["+a", "everyone allow read"])
+        .arg(&secret)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(runtime.read_private_file("secret.json", 64).is_err());
+
+    let status = std::process::Command::new("/bin/chmod")
+        .args(["+a", "everyone allow read"])
+        .arg(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(RuntimeDir::open(&dir).is_err());
+}

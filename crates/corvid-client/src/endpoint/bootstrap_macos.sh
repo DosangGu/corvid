@@ -29,13 +29,54 @@ safe_home() {
         mode=$(stat -f %Lp "$parent") || return 1
         { [ "$owner" = 0 ] || [ "$owner" = "$user" ]; } || return 1
         [ "$((0$mode & 022))" -eq 0 ] || return 1
+        no_write_acl "$parent" || return 1
         parent=${parent%/*}
     done
 }
 
 private_root() {
     [ -d "$root" ] && [ ! -L "$root" ] &&
-        [ "$(stat -f %u:%Lp "$root")" = "$user:700" ]
+        [ "$(stat -f %u:%Lp "$root")" = "$user:700" ] &&
+        no_allow_acl "$root"
+}
+
+no_allow_acl() {
+    acl_output=$(/bin/ls -led "$1") || return 1
+    printf '%s\n' "$acl_output" | while IFS= read -r line; do
+        case "$line" in
+            *[0-9]:\ *)
+                case " ${line#*: } " in
+                    *' deny '*) ;;
+                    *) return 1 ;;
+                esac
+                ;;
+        esac
+    done
+}
+
+no_write_acl() {
+    acl_output=$(/bin/ls -led "$1") || return 1
+    printf '%s\n' "$acl_output" | while IFS= read -r line; do
+        case "$line" in
+            *[0-9]:\ *)
+                rest=${line#*: }
+                principal=${rest%% *}
+                attrs=${rest#"$principal"}
+                case " $attrs " in
+                    *' deny '*) ;;
+                    *' allow '*)
+                        perms=${attrs#* allow }
+                        case ",$perms," in
+                            *,write,*|*,append,*|*,add_file,*|*,add_subdirectory,*|*,delete,*|*,delete_child,*|*,writeattr,*|*,writeextattr,*|*,writesecurity,*|*,chown,*)
+                                return 1
+                                ;;
+                        esac
+                        ;;
+                    *) return 1 ;;
+                esac
+                ;;
+        esac
+    done
 }
 
 path_daemon() {
@@ -50,7 +91,8 @@ path_daemon() {
 
 managed_binary() {
     [ -f "$root/corvid" ] && [ ! -L "$root/corvid" ] &&
-        [ "$(stat -f %u:%Lp "$root/corvid")" = "$user:700" ]
+        [ "$(stat -f %u:%Lp "$root/corvid")" = "$user:700" ] &&
+        no_allow_acl "$root/corvid"
 }
 
 prepare_runtime() {
