@@ -36,6 +36,10 @@ rust-version = "1.100"
 license = "Apache-2.0"
 license-file = "LICENSE"
 repository = "https://github.com/DosangGu/corvid"
+documentation = "https://github.com/DosangGu/corvid/blob/main/docs/README.md"
+readme = "README.md"
+keywords = ["terminal", "multiplexer", "tui", "coding-agents", "ssh"]
+categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [workspace.dependencies]
