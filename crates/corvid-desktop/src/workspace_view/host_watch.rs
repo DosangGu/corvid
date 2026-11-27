@@ -2,12 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use corvid_async::time::Instant;
 use corvid_async::{oneshot, watch};
-use corvid_client::{ControlEndpoint, SshRetry, daemon_missing, runtime_path};
-use uuid::Uuid;
+use corvid_client::{ControlEndpoint, daemon_missing, runtime_path};
 
-use crate::inventory_runtime::{self, sleep, sleep_until, timeout, timeout_at};
+use crate::inventory_runtime::{self, timeout};
 use crate::terminal_session::Inventory;
 
 use super::{Destination, KnownSessions};
@@ -77,56 +75,22 @@ pub(super) fn start(
     endpoint: ControlEndpoint,
     host: String,
 ) -> Result<watch::Receiver<Option<Arc<Inventory>>>> {
+    let subscription = crate::snapshot_hub::subscribe(endpoint, host)?;
     let (send, receive) = watch::channel(None);
     inventory_runtime::start("corvid-desktop-host-watch", move || async move {
-        corvid_async::select! {
-            _ = send.closed() => {}
-            _ = monitor(&endpoint, &host, &send) => {}
+        let mut updates = subscription.receiver();
+        send.send_replace(updates.borrow().inventory.clone());
+        loop {
+            corvid_async::select! {
+                _ = send.closed() => return,
+                changed = updates.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    send.send_replace(updates.borrow().inventory.clone());
+                }
+            }
         }
     })?;
     Ok(receive)
-}
-
-async fn monitor(
-    endpoint: &ControlEndpoint,
-    host: &str,
-    publish: &watch::Sender<Option<Arc<Inventory>>>,
-) {
-    let controller = Uuid::new_v4().to_string();
-    let ssh = matches!(endpoint, ControlEndpoint::Ssh(_));
-    let mut retry = ssh.then(SshRetry::default);
-    loop {
-        let connect = endpoint.watch(&controller, host, || {});
-        let result = match &retry {
-            Some(retry) => timeout_at(retry.deadline(), connect)
-                .await
-                .unwrap_or_else(|_| Err(SshRetry::exhausted().into())),
-            None => connect.await,
-        };
-        let error = match result {
-            Ok(mut watch) => {
-                retry = None;
-                loop {
-                    publish.send_replace(Some(Arc::new(Inventory::read(watch.state()))));
-                    if let Err(error) = watch.next_change().await {
-                        break error;
-                    }
-                }
-            }
-            Err(error) => error,
-        };
-        publish.send_replace(None);
-        if ssh {
-            let retry = retry.get_or_insert_with(SshRetry::default);
-            let Some(next) = retry.next_attempt(&error) else {
-                return;
-            };
-            sleep_until(next).await;
-            if Instant::now() >= retry.deadline() {
-                return;
-            }
-        } else {
-            sleep(Duration::from_secs(3)).await;
-        }
-    }
 }
