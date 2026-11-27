@@ -420,9 +420,9 @@ def run(binary, *, measure_keys=False):
                 check_companion_ssh(ssh, command, directory)
                 for release in ("older", "newer"):
                     verify_shell_agent_notifications(
-                        command[0], directory, database, ssh, release=release, broker=True,
+                        command[0], directory, ssh, release=release, broker=True,
                     )
-                verify_agent_handoff(command[0], directory, database, ssh, legacy=True, broker=True)
+                verify_agent_handoff(command[0], directory, ssh, legacy=True, broker=True)
                 if measure_keys:
                     measure_input(ssh, command, directory)
                 assert unit_pid(unit) == pid
