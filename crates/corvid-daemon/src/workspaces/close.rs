@@ -71,7 +71,7 @@ impl Workspaces {
                         } else {
                             registry.require_writer(client, location.workspace)?
                         };
-                        workspaces.reserve_view(registry, old, location, generation, None)
+                        workspaces.reserve_view(registry, old, location, generation, None, false)
                     })
                     .transpose()?;
                 registry.closing.push(target);
@@ -137,6 +137,7 @@ impl Workspaces {
             terminal,
             spec,
             events,
+            created_layout: _,
         } = reserved;
         let active = open_pane(terminal, location, spec, events).await?;
         active

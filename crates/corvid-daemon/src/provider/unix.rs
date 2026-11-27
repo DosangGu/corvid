@@ -17,8 +17,10 @@ use semver::Version;
 use super::{CONTRACTS, adapter, contract, hooks};
 use crate::process::Executable;
 
-const VERSION_TIMEOUT: Duration = Duration::from_millis(350);
+const VERSION_TIMEOUT: Duration = Duration::from_millis(1500);
 const VERSION_OUTPUT_LIMIT: usize = 128;
+const LOGIN_PATH_TIMEOUT: Duration = Duration::from_millis(500);
+const LOGIN_PATH_LIMIT: usize = 16 * 1024;
 
 pub(crate) fn qualify(provider: Provider, path: &Path) -> Option<(Executable, Version)> {
     let executable = Executable::read(path)?;
@@ -67,8 +69,7 @@ pub(crate) fn qualified_profiles() -> &'static [ProviderProfile] {
 }
 
 pub(crate) fn find_on_path(name: &str, skip: Option<Executable>) -> Option<PathBuf> {
-    let paths = env::var_os("PATH")?;
-    env::split_paths(&paths).find_map(|directory| {
+    let matches_executable = |directory: PathBuf| {
         let path = directory.join(name);
         let metadata = path.metadata().ok()?;
         if !metadata.is_file()
@@ -78,7 +79,83 @@ pub(crate) fn find_on_path(name: &str, skip: Option<Executable>) -> Option<PathB
             return None;
         }
         std::path::absolute(path).ok()
-    })
+    };
+    let env_path = env::var_os("PATH");
+    if let Some(paths) = env_path.as_deref()
+        && let Some(found) = env::split_paths(paths).find_map(&matches_executable)
+    {
+        return Some(found);
+    }
+    if let Some(home) = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        let user_dirs = [
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".bun/bin"),
+        ];
+        if let Some(found) = user_dirs.into_iter().find_map(&matches_executable) {
+            return Some(found);
+        }
+    }
+    if env_path.as_deref().is_some_and(|paths| !paths.is_empty()) {
+        if let Some(found) = ["/opt/homebrew/bin", "/usr/local/bin"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find_map(&matches_executable)
+        {
+            return Some(found);
+        }
+        if let Some(paths) = login_shell_path()
+            && let Some(found) = env::split_paths(paths).find_map(&matches_executable)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn login_shell_path() -> Option<&'static OsString> {
+    static LOGIN_PATH: OnceLock<Option<OsString>> = OnceLock::new();
+    LOGIN_PATH
+        .get_or_init(|| {
+            let shell = env::var_os("SHELL").filter(|value| !value.is_empty())?;
+            let mut child = Command::new(shell)
+                .args(["-lc", "printf '%s' \"$PATH\""])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let deadline = Instant::now() + LOGIN_PATH_TIMEOUT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) if status.success() => break,
+                    Ok(Some(_)) => return None,
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return None;
+                    }
+                }
+            }
+            let mut bytes = Vec::new();
+            child
+                .stdout?
+                .take(LOGIN_PATH_LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            if bytes.is_empty() || bytes.len() > LOGIN_PATH_LIMIT || bytes.contains(&0) {
+                return None;
+            }
+            let text = String::from_utf8(bytes).ok()?;
+            Some(OsString::from(text))
+        })
+        .as_ref()
 }
 
 fn version_output(path: &Path) -> Option<String> {

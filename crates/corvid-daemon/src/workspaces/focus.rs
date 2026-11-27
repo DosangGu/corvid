@@ -148,6 +148,7 @@ impl Workspaces {
                 destination.location,
                 destination.lease,
                 None,
+                false,
             )?;
             Ok(Prepared::Move(destination, reserved))
         })

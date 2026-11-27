@@ -145,6 +145,7 @@ struct ReservedSwitch {
     terminal: TerminalHandle,
     spec: AttachSpec,
     events: mpsc::Receiver<Event>,
+    created_layout: bool,
 }
 
 #[derive(Clone)]
@@ -1030,6 +1031,7 @@ impl Workspaces {
             terminal,
             spec,
             events,
+            created_layout,
         } = loop {
             match self
                 .reserve_switch(old, destination.clone(), checked.clone())
@@ -1048,19 +1050,30 @@ impl Workspaces {
         };
         let result = transition(old, terminal, location, spec, events).await;
         let client = old.route.client_id;
-        self.registry
-            .request(move |registry| {
-                if let Some(slot) = registry.slots.get_mut(&location.pane) {
-                    slot.reserved = false;
+        self.transaction(move |registry, workspaces| {
+            if let Some(slot) = registry.slots.get_mut(&location.pane) {
+                slot.reserved = false;
+            }
+            if let Ok(switched) = &result {
+                registry.record_view(&switched.active.view());
+            } else {
+                registry.remove_pane_claim(location.pane, client);
+                if created_layout && !registry.has_live_at(location) {
+                    if let Some(slot) = registry.slots.remove(&location.pane) {
+                        registry.retired.push(slot.task);
+                    }
+                    let mut current = workspaces.metadata.layout();
+                    if Arc::make_mut(&mut current)
+                        .close(CloseTarget::Pane(location))
+                        .is_ok()
+                    {
+                        registry.publish_layout(current, Vec::new());
+                    }
                 }
-                if let Ok(switched) = &result {
-                    registry.record_view(&switched.active.view());
-                } else {
-                    registry.remove_pane_claim(location.pane, client);
-                }
-                result.map(Some)
-            })
-            .await
+            }
+            result.map(Some)
+        })
+        .await
     }
 
     async fn reserve_switch(
@@ -1097,8 +1110,15 @@ impl Workspaces {
             } else {
                 registry.require_writer(client, location.workspace)?
             };
-            let reserved =
-                workspaces.reserve_view(registry, &old, location, lease_generation, launch)?;
+            let existed = workspaces.metadata.layout().contains(location);
+            let reserved = workspaces.reserve_view(
+                registry,
+                &old,
+                location,
+                lease_generation,
+                launch,
+                !existed,
+            )?;
             if creates_workspace && !pane_writer {
                 registry.claims.insert(
                     location.workspace,
@@ -1123,6 +1143,7 @@ impl Workspaces {
         location: Location,
         lease_generation: u64,
         launch: Option<Launch>,
+        created_layout: bool,
     ) -> Reply<ReservedSwitch> {
         let revision = old.route.view_revision.checked_add(1).ok_or_else(limit)?;
         let keymap = registry.clients[&old.route.client_id].keymap;
@@ -1150,6 +1171,7 @@ impl Workspaces {
             terminal,
             spec,
             events: receiver,
+            created_layout,
         })
     }
 
