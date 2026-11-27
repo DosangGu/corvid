@@ -1,4 +1,5 @@
 use super::*;
+use corvid_core::rename::{RenameOutcome, RenameState};
 use gpui::{
     Bounds, ElementInputHandler, EntityInputHandler, MouseButton, Pixels, Point, UTF16Selection,
     canvas,
@@ -6,20 +7,30 @@ use gpui::{
 use std::ops::Range;
 
 pub(super) struct NameDraft {
-    text: String,
+    state: RenameState,
     marked: String,
     selected: bool,
     revision: u64,
 }
 
 impl NameDraft {
+    fn new(display_label: &str, manual_name: Option<&str>, revision: u64) -> Self {
+        Self {
+            state: RenameState::new(display_label, manual_name),
+            marked: String::new(),
+            selected: true,
+            revision,
+        }
+    }
+
     fn append(&mut self, text: &str) {
         if self.selected {
-            self.text.clear();
+            self.state.replace(text);
+        } else {
+            self.state.append(text);
         }
         self.selected = false;
         self.marked.clear();
-        self.text = corvid_core::layout::clean_title(&(self.text.clone() + text));
     }
 }
 
@@ -53,12 +64,11 @@ impl WorkspaceView {
         else {
             return;
         };
-        self.naming = Some(NameDraft {
-            text: tab.label.clone(),
-            marked: String::new(),
-            selected: true,
+        self.naming = Some(NameDraft::new(
+            &tab.label,
+            tab.manual_name.as_deref(),
             revision,
-        });
+        ));
         self.menu_open = false;
         self.switcher_open = false;
         window.focus(&self.setup_focus, cx);
@@ -69,10 +79,16 @@ impl WorkspaceView {
         if let Some(draft) = self.naming.take()
             && let Some(session) = &self.session
         {
-            session.rename_tab(
-                if automatic { String::new() } else { draft.text },
-                draft.revision,
-            );
+            let outcome = if automatic {
+                RenameOutcome::ResetAutomatic
+            } else {
+                draft.state.submit()
+            };
+            match outcome {
+                RenameOutcome::Unchanged => {}
+                RenameOutcome::SetManual(name) => session.rename_tab(name, draft.revision),
+                RenameOutcome::ResetAutomatic => session.rename_tab(String::new(), draft.revision),
+            }
         }
         self.dismiss_overlay(window, cx);
     }
@@ -92,9 +108,9 @@ impl WorkspaceView {
             "enter" if draft.marked.is_empty() => self.save_name(false, window, cx),
             "backspace" if draft.marked.is_empty() => {
                 if draft.selected {
-                    draft.text.clear();
+                    draft.state.clear();
                 } else {
-                    draft.text.pop();
+                    draft.state.pop();
                 }
                 draft.selected = false;
             }
@@ -150,7 +166,7 @@ impl WorkspaceView {
                     } else {
                         BACKGROUND
                     }))
-                    .child(format!("{}{}▏", draft.text, draft.marked))
+                    .child(format!("{}{}▏", draft.state.text(), draft.marked))
                     .child(input),
             )
             .child(
@@ -188,7 +204,7 @@ impl EntityInputHandler for WorkspaceView {
             return Some(draft.text().content(range, actual));
         }
         let draft = self.naming.as_ref()?;
-        let units: Vec<_> = (draft.text.clone() + &draft.marked)
+        let units: Vec<_> = format!("{}{}", draft.state.text(), draft.marked)
             .encode_utf16()
             .collect();
         let range = range.start.min(units.len())..range.end.min(units.len());
@@ -206,7 +222,7 @@ impl EntityInputHandler for WorkspaceView {
             return Some(draft.text().selected());
         }
         let draft = self.naming.as_ref()?;
-        let end = draft.text.encode_utf16().count();
+        let end = draft.state.text().encode_utf16().count();
         Some(UTF16Selection {
             range: if draft.selected { 0..end } else { end..end },
             reversed: false,
@@ -218,7 +234,7 @@ impl EntityInputHandler for WorkspaceView {
             return draft.text().marked();
         }
         let draft = self.naming.as_ref()?;
-        let start = draft.text.encode_utf16().count();
+        let start = draft.state.text().encode_utf16().count();
         (!draft.marked.is_empty()).then(|| start..start + draft.marked.encode_utf16().count())
     }
 
@@ -264,7 +280,7 @@ impl EntityInputHandler for WorkspaceView {
         }
         if let Some(draft) = &mut self.naming {
             if draft.selected {
-                draft.text.clear();
+                draft.state.clear();
                 draft.selected = false;
             }
             draft.marked = corvid_core::layout::clean_title(text);
@@ -288,5 +304,24 @@ impl EntityInputHandler for WorkspaceView {
         _: &mut Context<Self>,
     ) -> Option<usize> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_draft_preserves_automatic_and_manual_tabs() {
+        let auto_draft = NameDraft::new("Pane 1", None, 1);
+        assert_eq!(auto_draft.state.submit(), RenameOutcome::Unchanged);
+
+        let mut manual_draft = NameDraft::new("Release notes", Some("Release notes"), 2);
+        assert_eq!(manual_draft.state.submit(), RenameOutcome::Unchanged);
+        manual_draft.append("v2");
+        assert_eq!(
+            manual_draft.state.submit(),
+            RenameOutcome::SetManual("v2".into())
+        );
     }
 }

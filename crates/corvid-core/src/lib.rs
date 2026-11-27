@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub mod agent;
 pub mod layout;
 pub mod navigation;
+pub mod rename;
 pub mod shortcuts;
 
 pub const KEY_LEADER: u8 = 0x1d;
