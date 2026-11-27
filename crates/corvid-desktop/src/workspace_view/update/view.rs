@@ -1,5 +1,4 @@
 use super::*;
-use chrono::{DateTime, Local};
 use gpui::{Animation, AnimationExt};
 
 impl WorkspaceView {
@@ -52,12 +51,8 @@ impl WorkspaceView {
                     .child(status(state)),
             );
 
-        if let Some(checked) = state.last_checked {
-            let local_time = DateTime::<Local>::from(checked);
-            card = card.child(hint(format!(
-                "Last checked at {}",
-                local_time.format("%H:%M")
-            )));
+        if let Some(checked) = state.last_checked.and_then(format_local_time) {
+            card = card.child(hint(format!("Last checked at {checked}")));
         }
         if !state.busy() {
             card = card.child(self.update_actions(cx));
@@ -270,4 +265,30 @@ fn wrap_detail(detail: &str) -> String {
         }
     }
     wrapped
+}
+
+fn format_local_time(time: std::time::SystemTime) -> Option<String> {
+    jiff::Timestamp::try_from(time).ok().map(|timestamp| {
+        let local = timestamp.to_zoned(jiff::tz::TimeZone::system());
+        format!("{:02}:{:02}", local.hour(), local.minute())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use super::format_local_time;
+
+    #[test]
+    fn formats_local_time_as_hh_mm() {
+        let formatted = format_local_time(SystemTime::UNIX_EPOCH).expect("unix epoch converts");
+        let bytes = formatted.as_bytes();
+        assert_eq!(bytes.len(), 5, "unexpected format: {formatted}");
+        assert_eq!(bytes[2], b':', "unexpected separator: {formatted}");
+        let hour: u8 = formatted[..2].parse().expect("valid hour");
+        let minute: u8 = formatted[3..].parse().expect("valid minute");
+        assert!(hour < 24, "hour out of range: {formatted}");
+        assert!(minute < 60, "minute out of range: {formatted}");
+    }
 }
