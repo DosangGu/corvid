@@ -723,7 +723,7 @@ impl Render for WorkspaceView {
                 root.child(self.overlay_backdrop(cx))
             })
             .when(self.menu_open, |root| root.child(self.action_menu(cx)))
-            .when_some(self.navigation_panel(), |root, panel| root.child(panel))
+            .when_some(self.navigation_panel(cx), |root, panel| root.child(panel))
             .when(self.naming.is_some(), |root| {
                 root.child(self.naming_panel(cx))
             })

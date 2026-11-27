@@ -154,6 +154,21 @@ impl WorkspaceView {
         );
     }
 
+    fn launch_agent(
+        &mut self,
+        provider: Provider,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(wire) = wire_provider(provider) else {
+            return;
+        };
+        self.error = None;
+        self.dismiss_overlay(window, cx);
+        self.create_agent(target, wire);
+    }
+
     fn run_command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         use Command::*;
         self.dismiss_overlay(window, cx);
@@ -346,29 +361,30 @@ impl WorkspaceView {
                     return;
                 }
                 index = index.min(count - 1);
-                let Some(provider) = wire_provider(Provider::LAUNCHABLE[index]) else {
-                    cx.notify();
-                    return;
-                };
+                let provider = Provider::LAUNCHABLE[index];
                 match name {
                     "up" | "k" => index = index.saturating_sub(1),
                     "down" | "j" => index = (index + 1).min(count - 1),
                     "enter" => {
-                        self.dismiss_overlay(window, cx);
-                        self.create_agent(Target::TabLabel(String::new()), provider);
+                        self.launch_agent(provider, Target::TabLabel(String::new()), window, cx);
                         return;
                     }
                     "r" => {
-                        self.dismiss_overlay(window, cx);
-                        self.create_agent(
-                            Target::SplitAxis(SplitAxis::Horizontal as i32),
+                        self.launch_agent(
                             provider,
+                            Target::SplitAxis(SplitAxis::Horizontal as i32),
+                            window,
+                            cx,
                         );
                         return;
                     }
                     "d" => {
-                        self.dismiss_overlay(window, cx);
-                        self.create_agent(Target::SplitAxis(SplitAxis::Vertical as i32), provider);
+                        self.launch_agent(
+                            provider,
+                            Target::SplitAxis(SplitAxis::Vertical as i32),
+                            window,
+                            cx,
+                        );
                         return;
                     }
                     _ => {}
@@ -571,7 +587,7 @@ impl WorkspaceView {
         })
     }
 
-    pub(super) fn navigation_panel(&self) -> Option<Div> {
+    pub(super) fn navigation_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
         let ui = self.session.as_ref().map(Session::ui);
         let can_close = ui.as_ref().is_some_and(Ui::can_close);
         let can_reorder = ui.as_ref().is_some_and(Ui::can_reorder_tabs);
@@ -651,11 +667,79 @@ impl WorkspaceView {
                                 .child(agent_launcher_hint(true)),
                         )
                         .children(Provider::LAUNCHABLE.iter().enumerate().map(
-                            |(row, provider)| {
+                            |(row, &provider)| {
                                 div()
+                                    .id(("launch-agent-row", row))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(ui_px(6.))
                                     .px(ui_px(5.))
+                                    .py(ui_px(2.))
                                     .when(row == index, |row| row.bg(rgb(ACTIVE_FILL)))
+                                    .hover(|style| style.bg(rgb(ACTIVE_FILL)))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.launch_agent(
+                                            provider,
+                                            Target::TabLabel(String::new()),
+                                            window,
+                                            cx,
+                                        );
+                                    }))
                                     .child(provider.label())
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(ui_px(4.))
+                                            .child(
+                                                div()
+                                                    .id(("launch-agent-split-r", row))
+                                                    .px(ui_px(5.))
+                                                    .py(ui_px(1.))
+                                                    .text_size(ui_px(11.))
+                                                    .text_color(rgb(MUTED))
+                                                    .hover(|style| style.text_color(rgb(TEXT)))
+                                                    .child("Split →")
+                                                    .on_click(cx.listener(
+                                                        move |view, _, window, cx| {
+                                                            cx.stop_propagation();
+                                                            view.launch_agent(
+                                                                provider,
+                                                                Target::SplitAxis(
+                                                                    SplitAxis::Horizontal as i32,
+                                                                ),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id(("launch-agent-split-d", row))
+                                                    .px(ui_px(5.))
+                                                    .py(ui_px(1.))
+                                                    .text_size(ui_px(11.))
+                                                    .text_color(rgb(MUTED))
+                                                    .hover(|style| style.text_color(rgb(TEXT)))
+                                                    .child("Split ↓")
+                                                    .on_click(cx.listener(
+                                                        move |view, _, window, cx| {
+                                                            cx.stop_propagation();
+                                                            view.launch_agent(
+                                                                provider,
+                                                                Target::SplitAxis(
+                                                                    SplitAxis::Vertical as i32,
+                                                                ),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            ),
+                                    )
                             },
                         )),
                 )

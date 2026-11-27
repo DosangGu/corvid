@@ -3794,3 +3794,151 @@ fn process_image(pid: u32) -> std::io::Result<std::path::PathBuf> {
         corvid_protocol::macos::process_path(pid)
     }
 }
+
+#[compio::test]
+async fn agent_launcher_focuses_new_tab_and_rolls_back_failed_launch() {
+    let fixture = fixture_directory().unwrap();
+    let runtime = fixture.path().join("run");
+    let bin = fixture.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let provider = bin.join("claude");
+    compile_shell_agent(&provider);
+
+    let mut daemon_command = command(&runtime);
+    daemon_command
+        .env("HOME", fixture.path())
+        .env(
+            "PATH",
+            std::env::join_paths([&bin, Path::new("/usr/bin"), Path::new("/bin")]).unwrap(),
+        )
+        .env("SHELL", "/bin/sh")
+        .env("CORVID_FIXTURE_BINARY", env!("CARGO_BIN_EXE_corvid"));
+    let _daemon = start_daemon(daemon_command, &runtime, &fixture.path().join("state")).await;
+
+    timeout(WAIT, async {
+        // 1. Desktop CreateView path focuses the newly created agent tab.
+        let mut tui = Tui::attach_target(
+            &runtime,
+            Attach {
+                launch: Some(LaunchCommand::default()),
+                terminal_capabilities: [
+                    PANE_WRITERS_CAPABILITY,
+                    WORKSPACE_UI_CAPABILITY,
+                    "tabs.v1",
+                    CREATE_VIEW_CAPABILITY,
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                ..Default::default()
+            },
+        )
+        .await;
+        let original = tui.selection.clone();
+        let mut output = Vec::new();
+        tui.send(Body::CreateView(CreateView {
+            expected_view_revision: Some(tui.route.view_revision),
+            target: Some(Target::TabLabel(String::new())),
+            agent_provider: Some(AgentProvider::Claude as i32),
+        }))
+        .await;
+        let Body::ViewChanged(view) = tui.next_body(&mut output).await else {
+            panic!("expected ViewChanged for launched agent tab");
+        };
+        tui.selection = view.selection.unwrap();
+        tui.route = view.route_token.unwrap();
+        assert_eq!(tui.selection.workspace_id, original.workspace_id);
+        assert_ne!(tui.selection.tab_id, original.tab_id);
+        assert_ne!(tui.selection.pane_id, original.pane_id);
+        wait_for_text(&mut tui, &mut output, "READY-claude").await;
+        let launched = wait_for_agent(&runtime, &tui.route.terminal_id, |agent| {
+            agent.terminal_available
+        })
+        .await;
+        assert_eq!(launched.location, Some(tui.selection.clone()));
+
+        // 2. TUI Ctrl+] a + Enter path focuses a new agent tab.
+        let after_create = tui.selection.clone();
+        output.clear();
+        tui.input(tui.route.clone(), 1, &[corvid_core::KEY_LEADER])
+            .await;
+        tui.input(tui.route.clone(), 2, b"a").await;
+        tui.input(tui.route.clone(), 3, b"\r").await;
+        let Body::ViewChanged(modal_view) = tui.next_body(&mut output).await else {
+            panic!("expected ViewChanged from TUI Ctrl+] a");
+        };
+        tui.selection = modal_view.selection.unwrap();
+        tui.route = modal_view.route_token.unwrap();
+        assert_ne!(tui.selection.tab_id, after_create.tab_id);
+        wait_for_text(&mut tui, &mut output, "READY-claude").await;
+        let modal_launched = wait_for_agent(&runtime, &tui.route.terminal_id, |agent| {
+            agent.terminal_available
+        })
+        .await;
+        assert_eq!(modal_launched.location, Some(tui.selection.clone()));
+    })
+    .await
+    .unwrap();
+
+    // 3. Failed launch rolls back the newly created tab and leaves the original tab usable.
+    let missing_fixture = fixture_directory().unwrap();
+    let missing_runtime = missing_fixture.path().join("run");
+    let empty_bin = missing_fixture.path().join("empty-bin");
+    std::fs::create_dir_all(&empty_bin).unwrap();
+    let mut missing_daemon = command(&missing_runtime);
+    missing_daemon
+        .env("HOME", missing_fixture.path())
+        .env("PATH", &empty_bin)
+        .env("SHELL", "/bin/sh");
+    let _missing = start_daemon(
+        missing_daemon,
+        &missing_runtime,
+        &missing_fixture.path().join("state"),
+    )
+    .await;
+
+    timeout(WAIT, async {
+        let mut tui = Tui::attach_command(&missing_runtime, Some(LaunchCommand::default())).await;
+        let mut output = Vec::new();
+        tui.send(Body::CreateView(CreateView {
+            expected_view_revision: Some(tui.route.view_revision),
+            target: Some(Target::TabLabel(String::new())),
+            agent_provider: Some(AgentProvider::Claude as i32),
+        }))
+        .await;
+        let Body::Error(fault) = tui.next_body(&mut output).await else {
+            panic!("expected TerminalStartFailed error");
+        };
+        assert_eq!(fault.code, "TerminalStartFailed");
+        assert!(
+            fault.message.contains("Claude Code"),
+            "unexpected fault message: {}",
+            fault.message
+        );
+
+        let mut control = ControlWire::connect(&missing_runtime, SNAPSHOT_CAPABILITY).await;
+        control
+            .request("snapshot", Body::GetSnapshot(GetSnapshot::default()))
+            .await;
+        let Some(Body::SnapshotBegin(begin)) = control.next().await.body else {
+            panic!("missing snapshot begin");
+        };
+        let mut tab_count = 0;
+        for _ in 0..begin.chunks {
+            let Some(Body::SnapshotChunk(chunk)) = control.next().await.body else {
+                panic!("missing snapshot chunk");
+            };
+            for entity in chunk.entities {
+                if let Some(EntityBody::Workspace(workspace)) = entity.body {
+                    tab_count += workspace.tabs.len();
+                }
+            }
+        }
+        assert_eq!(tab_count, 1, "failed launch should roll back the new tab");
+
+        tui.input(tui.route.clone(), 1, b"printf '%s\\n' STILL-USABLE\n")
+            .await;
+        wait_for_text(&mut tui, &mut output, "STILL-USABLE").await;
+    })
+    .await
+    .unwrap();
+}

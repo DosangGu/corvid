@@ -788,13 +788,15 @@ impl Worker {
                 ));
             }
             (None, Some(launch)) => {
-                self.terminal =
-                    Some(Running::spawn(launch, content, &self.scope).map_err(|_| {
+                let provider = launch.provider;
+                self.terminal = Some(Running::spawn(launch, content, &self.scope).map_err(
+                    |error| {
                         ProtocolFault::new(
                             "TerminalStartFailed",
-                            "unable to start the requested terminal",
+                            &spawn_error_message(provider, &error),
                         )
-                    })?);
+                    },
+                )?);
                 self.live.store(true, Ordering::Release);
             }
             (None, None) => {
@@ -1738,10 +1740,19 @@ impl TerminalProcess {
         id: Uuid,
     ) -> Result<(Backend, Self, bool, Option<Incarnation>)> {
         let shell = launch.provider.is_none() && launch.argv.is_empty();
-        let launcher = launch.provider.and_then(provider::installed_program);
+        let launcher = match launch.provider {
+            Some(provider) => Some(provider::installed_program(provider).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} ({}) is not installed or not on the daemon PATH",
+                    provider.label(),
+                    provider::program(provider),
+                )
+            })?),
+            None => None,
+        };
         let program = launcher
             .as_deref()
-            .and_then(|path| path.canonicalize().ok());
+            .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
         let observer = launch
             .provider
             .zip(program.as_deref())
@@ -1768,10 +1779,8 @@ impl TerminalProcess {
             .as_ref()
             .and(reservation.as_ref())
             .map(|launch| launch.association);
-        let mut command = launch.into_command(
-            program.filter(|_| qualified),
-            observer.as_ref().map(|(_, version)| version),
-        );
+        let mut command =
+            launch.into_command(program, observer.as_ref().map(|(_, version)| version));
         scope
             .hook_environment
             .configure(&mut command, association, shell.then_some(id));
@@ -2856,4 +2865,20 @@ fn input_busy() -> ProtocolFault {
     let mut fault = ProtocolFault::new("InputBusy", "a paste transaction is in progress");
     fault.retryable = true;
     fault
+}
+
+fn spawn_error_message(provider: Option<Provider>, error: &anyhow::Error) -> String {
+    let raw = error.to_string();
+    let detail: String = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .take(160)
+        .collect();
+    let detail = detail.trim();
+    match (provider, detail.is_empty()) {
+        (Some(provider), false) => format!("could not start {}: {detail}", provider.label()),
+        (Some(provider), true) => format!("could not start {}", provider.label()),
+        (None, false) => format!("unable to start the requested terminal: {detail}"),
+        (None, true) => "unable to start the requested terminal".into(),
+    }
 }

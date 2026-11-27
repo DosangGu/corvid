@@ -769,6 +769,7 @@ impl WorkspaceView {
                 .and_then(|(target, cell, time)| {
                     (target == selected && time.elapsed() < Duration::from_secs(2)).then_some(cell)
                 });
+            self.error = None;
             self.selected = Some(selected);
             self.terminal = Some(cx.new(|cx| {
                 let mut view = TerminalView::new(session, pane, window, cx);
@@ -781,6 +782,15 @@ impl WorkspaceView {
                 && self.creation.is_none()
             {
                 self.focus_terminal(window, cx);
+                cx.defer_in(window, |view, window, cx| {
+                    if !view.switcher_open
+                        && !view.menu_open
+                        && view.navigation.is_none()
+                        && view.creation.is_none()
+                    {
+                        view.focus_terminal(window, cx);
+                    }
+                });
             }
         }
         cx.notify();
