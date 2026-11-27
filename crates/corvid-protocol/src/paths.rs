@@ -1,10 +1,13 @@
 //! State and local endpoint locations shared by Corvid entry points.
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+use std::ffi::OsStr;
 #[cfg(any(test, target_os = "macos"))]
 use std::io;
-#[cfg(any(test, target_os = "linux", target_os = "macos"))]
-use std::{ffi::OsStr, path::Path};
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
