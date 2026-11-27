@@ -243,7 +243,6 @@ fn verify_user_ace(acl: *const ACL, user: &str, mask: u32) -> Result<()> {
         ace.cast::<u8>()
             .add(offset_of!(ACCESS_ALLOWED_ACE, SidStart))
     }
-    .cast_mut()
     .cast();
     // The size check above includes the SID header and its subauthority count.
     let count = unsafe { *sid.cast::<u8>().add(1) };
