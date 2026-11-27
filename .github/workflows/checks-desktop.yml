@@ -35,6 +35,8 @@ on:
       - 'crates/corvid-tui/assets/**'
       - 'crates/corvid-tui/src/**'
       - '!crates/corvid-tui/src/main.rs'
+      - 'crates/corvid-tui/tests/control.rs'
+      - 'crates/corvid-tui/tests/windows_daemon.rs'
 
 permissions:
   contents: read
@@ -119,10 +121,18 @@ jobs:
           key: checks-desktop-fonts-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/checks-desktop.yml', 'Cargo.lock') }}
       - name: Workspace lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Build Desktop, Agent Deck, and the standalone daemon
-        run: cargo build --locked -p corvid-desktop -p corvid-agent-deck-ui -p corvid-daemon
+      - name: Build Desktop, Agent Deck, TUI, and the standalone daemon
+        run: cargo build --locked -p corvid-desktop -p corvid-agent-deck-ui -p corvid-daemon -p corvid-tui
       - name: Desktop font fallback and emoji presentation
         run: cargo test --locked -p corvid-desktop --test desktop_symbols
       - name: Relaunch a pinned macOS Desktop through the installed bundle
         if: runner.os == 'macOS'
         run: python3 tests/ui/macos/test_dock_update.py --relaunch-binary target/debug/corvid-desktop
+      - name: macOS runtime fallback and control tests
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        run: cargo test --locked -p corvid-tui --test control
+      - name: Windows ConPTY and daemon lifecycle tests
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        run: cargo test --locked -p corvid-tui --test windows_daemon
