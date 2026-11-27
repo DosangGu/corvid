@@ -44,6 +44,7 @@ const PRESSURE_MOVES: usize = 48;
 const PRESSURE_WATCHES: usize = 8;
 
 fn fixture_directory() -> std::io::Result<tempfile::TempDir> {
+    common::install_routing_panic_hook();
     let directory = tempfile::tempdir_in(std::env::home_dir().unwrap())?;
     if common::routing_diagnostics() {
         let thread = std::thread::current();

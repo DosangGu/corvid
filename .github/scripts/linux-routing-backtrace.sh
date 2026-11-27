@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-core_dir=$(mktemp -d "$RUNNER_TEMP/routing-cores.XXXXXX")
+workspace="${GITHUB_WORKSPACE:-$PWD}"
+temp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+core_dir=$(mktemp -d "$temp_root/routing-cores.XXXXXX")
 core_pattern=/proc/sys/kernel/core_pattern
 original_pattern=$(<"$core_pattern")
 restore_pattern=false
@@ -34,7 +36,7 @@ for core in "$core_dir"/core.*; do
   encoded_executable=${encoded_executable%.*}
   executable=${encoded_executable//!/\/}
   case "$executable" in
-    "$GITHUB_WORKSPACE"/target/aarch64-unknown-linux-musl/release/*/routing-*)
+    "$workspace"/target/*/routing-*)
       echo "Routing backtrace for ${executable##*/}"
       timeout 30s gdb --batch -nx -iex 'set debuginfod enabled off' -iex 'set auto-load off' \
         -ex 'set print frame-arguments none' -ex 'thread apply all bt 20' "$executable" "$core" || true

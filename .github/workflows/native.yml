@@ -86,7 +86,7 @@ jobs:
         run: |
           tests=(cargo test --locked --release --target "$TARGET" -p corvid-tui -p corvid-daemon -p corvid-client -p corvid-update)
           if [[ "$TARGET" == aarch64-unknown-linux-musl ]]; then
-            bash .github/scripts/arm64-routing-backtrace.sh "${tests[@]}"
+            bash .github/scripts/linux-routing-backtrace.sh "${tests[@]}"
           else
             "${tests[@]}"
           fi
