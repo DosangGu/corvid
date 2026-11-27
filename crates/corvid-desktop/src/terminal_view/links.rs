@@ -325,12 +325,8 @@ fn classify_explicit_uri(raw: &str, remote_host: Option<&str>) -> Option<LinkTar
             Some(LinkTarget::External(uri.into()))
         }
         "file" => {
-            let path = uri
-                .to_file_path()
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| uri.path().to_owned());
-            if path.is_empty() {
+            let path = decode_file_uri_path(&uri);
+            if path.is_empty() || has_unsafe_path_chars(&path) {
                 return None;
             }
             if let Some(remote) = remote_host {
@@ -339,6 +335,9 @@ fn classify_explicit_uri(raw: &str, remote_host: Option<&str>) -> Option<LinkTar
                     .filter(|host| !host.is_empty())
                     .map(str::to_owned)
                     .or_else(|| Some(remote.to_owned()));
+                if host.as_deref().is_some_and(has_unsafe_path_chars) {
+                    return None;
+                }
                 return Some(LinkTarget::RemoteFile {
                     uri: uri.into(),
                     host,
@@ -352,6 +351,9 @@ fn classify_explicit_uri(raw: &str, remote_host: Option<&str>) -> Option<LinkTar
                 })
             } else {
                 let host = uri.host_str().map(str::to_owned);
+                if host.as_deref().is_some_and(has_unsafe_path_chars) {
+                    return None;
+                }
                 Some(LinkTarget::RemoteFile {
                     uri: uri.into(),
                     host,
@@ -401,18 +403,56 @@ fn is_local_file_host(host: Option<&str>) -> bool {
         .is_some_and(|local| host.eq_ignore_ascii_case(local))
 }
 
+fn decode_file_uri_path(uri: &Url) -> String {
+    if let Ok(path) = uri.to_file_path() {
+        return path.to_string_lossy().into_owned();
+    }
+    percent_decode_lossy(uri.path())
+}
+
+fn percent_decode_lossy(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn has_unsafe_path_chars(text: &str) -> bool {
+    text.chars().any(is_unsafe_display_char)
+}
+
 fn has_unsafe_uri_chars(text: &str) -> bool {
-    text.chars().any(|ch| {
-        ch.is_control()
-            || matches!(
-                ch,
-                '\\' | '\u{061c}'
-                    | '\u{200e}'
-                    | '\u{200f}'
-                    | '\u{202a}'..='\u{202e}'
-                    | '\u{2066}'..='\u{2069}'
-            )
-    })
+    text.chars()
+        .any(|ch| ch == '\\' || is_unsafe_display_char(ch))
+}
+
+fn is_unsafe_display_char(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
 }
 
 fn parse(token: &str, clicked_byte: usize) -> Option<(String, Range<usize>)> {
@@ -643,5 +683,42 @@ mod tests {
             }
         );
         assert_eq!(at(&display, grid, false, None, (0, 15)), None);
+    }
+
+    #[test]
+    fn rejects_decoded_control_and_bidi_chars_in_file_links_but_allows_unicode() {
+        let grid = Grid::new(2, 80);
+        for encoded in [
+            "file:///tmp/line%0Anext.txt",
+            "file:///tmp/line%0Dnext.txt",
+            "file:///tmp/nul%00byte.txt",
+            "file:///tmp/esc%1Bseq.txt",
+            "file:///tmp/bidi%E2%80%AEtxt.rs",
+            "file://remote-host/tmp/bidi%E2%80%AEtxt.rs",
+        ] {
+            let display = screen(grid, &format!("\x1b]8;;{encoded}\x1b\\open\x1b]8;;\x1b\\"));
+            assert_eq!(at(&display, grid, false, None, (0, 1)), None, "{encoded}");
+            assert_eq!(
+                at(&display, grid, false, Some("prod-box"), (0, 1)),
+                None,
+                "{encoded}"
+            );
+        }
+
+        let unicode = screen(
+            grid,
+            "\x1b]8;;file:///tmp/%ED%95%9C%EA%B8%80/caf%C3%A9.txt\x1b\\open\x1b]8;;\x1b\\",
+        );
+        let remote = at(&unicode, grid, false, Some("prod-box"), (0, 1)).unwrap();
+        assert_eq!(
+            remote.target,
+            LinkTarget::RemoteFile {
+                uri: "file:///tmp/%ED%95%9C%EA%B8%80/caf%C3%A9.txt".into(),
+                host: Some("prod-box".into()),
+                path: "/tmp/한글/café.txt".into(),
+            }
+        );
+        let local = at(&unicode, grid, false, None, (0, 1)).unwrap();
+        assert_eq!(local.target.preview_label(), "/tmp/한글/café.txt");
     }
 }
