@@ -774,6 +774,7 @@ impl WorkspaceView {
             self.terminal = Some(cx.new(|cx| {
                 let mut view = TerminalView::new(session, pane, window, cx);
                 view.pending_pane_click(click);
+                view.set_leader_active(self.leader, cx);
                 view
             }));
             if !self.switcher_open
