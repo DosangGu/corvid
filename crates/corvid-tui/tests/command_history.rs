@@ -192,43 +192,46 @@ async fn live_pty_tracks_osc_133_commands_across_reflow_reattach_and_tui_copy() 
 
         // 2. Attach real TUI with CORVID_ALLOW_CLIPBOARD_WRITE=0 and exercise Ctrl+] ? palette actions.
         let (mut tui, mut pty) = spawn_tui(&runtime, &temporary.path().join("views"))?;
-        timeout(Duration::from_secs(4), read_until(&mut pty, b"READY"))
-            .await
-            .context("waiting for READY on TUI PTY")??;
+        wait_for(&mut pty, b"READY", "waiting for READY on TUI PTY").await?;
 
         pty.write_all(b"\x1d?")?;
-        timeout(Duration::from_secs(4), read_until(&mut pty, b"CORVID COMMANDS"))
-            .await
-            .context("waiting for command palette on TUI PTY")??;
+        wait_for(
+            &mut pty,
+            b"CORVID COMMANDS",
+            "waiting for command palette on TUI PTY",
+        )
+        .await?;
         pty.write_all(b"Previous command\r")?;
-        timeout(Duration::from_secs(4), read_until(&mut pty, b"Command 2/2"))
-            .await
-            .context("waiting for Command 2/2 on TUI PTY")??;
+        wait_for(&mut pty, b"Command 2/2", "waiting for Command 2/2 on TUI PTY").await?;
 
         pty.write_all(b"[")?;
-        timeout(Duration::from_secs(4), read_until(&mut pty, b"Command 1/2"))
-            .await
-            .context("waiting for Command 1/2 on TUI PTY")??;
+        wait_for(&mut pty, b"Command 1/2", "waiting for Command 1/2 on TUI PTY").await?;
         drain_pty(&mut pty).await?;
 
         pty.write_all(b"\x1b")?;
-        timeout(Duration::from_secs(4), read_until(&mut pty, b"READY"))
-            .await
-            .context("waiting for live READY after closing history")??;
+        wait_for(
+            &mut pty,
+            b"\x1b[?25h",
+            "waiting for live cursor restore after closing history",
+        )
+        .await?;
         drain_pty(&mut pty).await?;
 
         pty.write_all(b"\x1d?")?;
-        timeout(Duration::from_secs(4), read_until(&mut pty, b"CORVID COMMANDS"))
-            .await
-            .context("waiting for command palette for copy on TUI PTY")??;
+        wait_for(
+            &mut pty,
+            b"CORVID COMMANDS",
+            "waiting for command palette for copy on TUI PTY",
+        )
+        .await?;
         pty.write_all(b"Copy last command output\r")?;
         // Base64 of "line1\nline2" is "bGluZTEKbGluZTI=".
-        timeout(
-            Duration::from_secs(4),
-            read_until(&mut pty, b"\x1b]52;c;bGluZTEKbGluZTI=\x1b\\"),
+        wait_for(
+            &mut pty,
+            b"\x1b]52;c;bGluZTEKbGluZTI=\x1b\\",
+            "waiting for OSC 52 on TUI PTY",
         )
-        .await
-        .context("waiting for OSC 52 on TUI PTY")??;
+        .await?;
 
         let _ = tui.kill();
         let _ = tui.status().await;
@@ -308,8 +311,24 @@ async fn drain_pty(pty: &mut File) -> Result<()> {
     }
 }
 
-async fn read_until(pty: &mut File, expected: &[u8]) -> Result<Vec<u8>> {
+async fn wait_for(pty: &mut File, expected: &[u8], label: &str) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
+    match timeout(
+        Duration::from_secs(4),
+        read_until(pty, expected, &mut bytes),
+    )
+    .await
+    {
+        Ok(result) => result.with_context(|| label.to_owned()),
+        Err(_) => {
+            let tail_start = bytes.len().saturating_sub(1024);
+            let tail = String::from_utf8_lossy(&bytes[tail_start..]);
+            bail!("{label}: timed out; tail={tail:?}");
+        }
+    }
+}
+
+async fn read_until(pty: &mut File, expected: &[u8], bytes: &mut Vec<u8>) -> Result<Vec<u8>> {
     let mut buffer = [0; 4096];
     loop {
         match pty.read(&mut buffer) {
@@ -320,7 +339,7 @@ async fn read_until(pty: &mut File, expected: &[u8]) -> Result<Vec<u8>> {
             Ok(count) => {
                 bytes.extend_from_slice(&buffer[..count]);
                 if bytes.windows(expected.len()).any(|w| w == expected) {
-                    return Ok(bytes);
+                    return Ok(std::mem::take(bytes));
                 }
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
