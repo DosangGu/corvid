@@ -124,3 +124,23 @@ fn simultaneous_launches_claim_each_saved_window_once() -> Result<()> {
     });
     Ok(())
 }
+
+#[test]
+fn missing_windows_primary_restores_from_backup_without_first_launch() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let state = dir.path().join("state");
+    let registry = WindowRegistry::new(state.clone());
+    let initial = registry.restore()?;
+    let id = initial[0].id;
+    drop(initial);
+    // Create a second window so `windows.json.bak` holds the prior `initial` list.
+    let second = registry.create()?;
+    drop(second);
+
+    std::fs::remove_file(state.join(FILE))?;
+    let restored = registry.restore()?;
+    assert!(!restored.is_empty());
+    assert!(restored.iter().any(|window| window.id == id));
+    assert!(restored.iter().all(|window| !window.first_launch));
+    Ok(())
+}

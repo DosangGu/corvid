@@ -409,3 +409,68 @@ fn deleted_pane_falls_back_within_its_tab_and_deleted_tab_within_its_workspace()
         "SavedWorkspaceGone"
     );
 }
+
+#[test]
+fn missing_primary_restores_from_backup_and_preserves_views_on_save() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let state = dir.path().join("state");
+    let store = ViewStore::new(state.clone());
+    let first = view(Target::Local);
+    let second = view(Target::Ssh {
+        alias: "prod-box".into(),
+    });
+    store.save(&first)?;
+    store.save(&second)?;
+
+    std::fs::remove_file(state.join(FILE))?;
+    let restored = store.last().expect("backup view should restore");
+    assert_eq!(restored.target, first.target);
+
+    let third = view(Target::Wsl {
+        distribution: "Ubuntu".into(),
+    });
+    store.save(&third)?;
+    assert_eq!(
+        store.for_target(&first.target).unwrap().location,
+        first.location
+    );
+    assert_eq!(
+        store.for_target(&third.target).unwrap().location,
+        third.location
+    );
+    Ok(())
+}
+
+#[test]
+fn recorder_continues_after_transient_save_error() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let state = dir.path().join("state");
+    let store = ViewStore::new(state.clone());
+    let first = view(Target::Local);
+    let second = view(Target::Local);
+    let third = view(Target::Local);
+    store.save(&first)?;
+
+    let recorder = store.recorder()?;
+    let lock = Directory::open(&state)?.lock_storage()?;
+    recorder.record(
+        second.target.clone(),
+        &second.host_id.to_string(),
+        &selection(&second),
+    );
+    std::thread::sleep(Duration::from_millis(850));
+    drop(lock);
+
+    recorder.record(
+        third.target.clone(),
+        &third.host_id.to_string(),
+        &selection(&third),
+    );
+    drop(recorder);
+
+    let saved = store
+        .last()
+        .expect("third view should persist after lock release");
+    assert_eq!(saved.location, third.location);
+    Ok(())
+}

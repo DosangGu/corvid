@@ -49,15 +49,16 @@ impl WindowRegistry {
     pub fn restore(&self) -> Result<Vec<WindowState>> {
         let directory = retry_storage(|| Directory::create_all(&self.path))?;
         let _lock = retry_storage(|| directory.lock_storage())?;
-        let previous = directory.read_private_file(FILE, MAX_BYTES)?;
-        let mut windows = read(&directory, previous.as_deref())?;
+        let existing = read(&directory)?;
+        let from_empty_store = existing.is_none();
+        let mut windows = existing.unwrap_or_default();
         let mut restored = Vec::new();
         for id in &windows.windows {
             if let Some(window) = self.claim(*id)? {
                 restored.push(window);
             }
         }
-        if previous.is_none() {
+        if from_empty_store {
             let mut window = self.allocate(&mut windows)?;
             window.first_launch = true;
             if let Some(legacy) = ViewStore::new(self.path.clone()).read() {
@@ -74,8 +75,7 @@ impl WindowRegistry {
     pub fn create(&self) -> Result<WindowState> {
         let directory = retry_storage(|| Directory::create_all(&self.path))?;
         let _lock = retry_storage(|| directory.lock_storage())?;
-        let previous = directory.read_private_file(FILE, MAX_BYTES)?;
-        let mut windows = read(&directory, previous.as_deref())?;
+        let mut windows = read(&directory)?.unwrap_or_default();
         let window = self.allocate(&mut windows)?;
         write(&directory, &windows)?;
         Ok(window)
@@ -84,9 +84,8 @@ impl WindowRegistry {
     pub fn reclaim(&self, id: Uuid) -> Result<WindowState> {
         let directory = Directory::open(&self.path)?;
         let _lock = retry_storage(|| directory.lock_storage())?;
-        let previous = directory.read_private_file(FILE, MAX_BYTES)?;
         ensure!(
-            read(&directory, previous.as_deref())?.windows.contains(&id),
+            read(&directory)?.unwrap_or_default().windows.contains(&id),
             "the Desktop window was closed by another instance"
         );
         self.claim(id)?
@@ -96,8 +95,7 @@ impl WindowRegistry {
     pub fn close(&self, window: WindowState) -> Result<()> {
         let directory = Directory::open(&self.path)?;
         let _lock = retry_storage(|| directory.lock_storage())?;
-        let previous = directory.read_private_file(FILE, MAX_BYTES)?;
-        let mut windows = read(&directory, previous.as_deref())?;
+        let mut windows = read(&directory)?.unwrap_or_default();
         windows.windows.retain(|id| *id != window.id);
         write(&directory, &windows)?;
         let path = self.window_path(window.id);
@@ -177,32 +175,28 @@ fn decode_windows(bytes: &[u8]) -> Result<Windows> {
     Ok(windows)
 }
 
-fn read(directory: &Directory, bytes: Option<&[u8]>) -> Result<Windows> {
-    let Some(bytes) = bytes else {
-        return Ok(Windows::default());
-    };
-    match decode_windows(bytes) {
-        Ok(windows) => Ok(windows),
-        Err(_) => {
-            require_supported_schema(bytes)?;
-            directory
-                .read_private_file(BACKUP, MAX_BYTES)?
-                .map(|bytes| decode_windows(&bytes))
-                .transpose()?
-                .context("invalid Desktop window list")
-        }
-    }
+fn read(directory: &Directory) -> Result<Option<Windows>> {
+    super::backup_store::read_with_backup(
+        directory,
+        FILE,
+        BACKUP,
+        MAX_BYTES,
+        decode_windows,
+        require_supported_schema,
+        "invalid Desktop window list",
+    )
 }
 
 fn write(directory: &Directory, windows: &Windows) -> Result<()> {
-    if let Some(previous) = directory.read_private_file(FILE, MAX_BYTES)? {
-        require_supported_schema(&previous)?;
-        if decode_windows(&previous).is_ok() {
-            directory.replace_private_file(BACKUP, &previous)?;
-        } else {
-            directory.replace_private_file("windows.json.corrupt", &previous)?;
-        }
-    }
+    let _ = super::backup_store::load_for_write(
+        directory,
+        FILE,
+        BACKUP,
+        "windows.json.corrupt",
+        MAX_BYTES,
+        decode_windows,
+        require_supported_schema,
+    )?;
     directory.replace_private_file(FILE, &serde_json::to_vec(windows)?)
 }
 
