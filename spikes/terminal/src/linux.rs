@@ -59,7 +59,7 @@ fn child_command() -> CommandBuilder {
         None => CommandBuilder::new_default_prog(),
     };
 
-    command.env("TERM", "corvid");
+    command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command
 }
