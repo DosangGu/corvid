@@ -860,6 +860,12 @@ impl Tui {
         self.selection = view.selection.unwrap();
     }
 
+    async fn ack_render(&mut self, output: &mut Vec<u8>) {
+        if let Some(body) = self.event(output).await {
+            panic!("expected render frame, got {body:?}");
+        }
+    }
+
     async fn wait_for_detach(&mut self) {
         loop {
             match self.reader.next_frame().await.unwrap().unwrap() {
@@ -2439,6 +2445,9 @@ async fn registered_focus_fences_input_and_changes_only_the_named_client() {
         assert_eq!(other.client_state(&runtime).await.input_mode, Some(TuiInputMode::Passthrough as i32));
         focus(&runtime, &scope, "focus-b", client, revision, &b).await.unwrap();
         main.moved(&mut output, b.location.as_ref().unwrap()).await;
+        // Acknowledge the redraw for `b` before `main` sits idle during companion startup,
+        // so the daemon does not revoke `main` as a stalled render consumer after COMMAND_TIMEOUT.
+        main.ack_render(&mut output).await;
 
         let mut wire = ControlWire::connect(&runtime, FOCUS_CAPABILITY).await;
         let run = Uuid::parse_str(&a.agent_run_id).unwrap();
