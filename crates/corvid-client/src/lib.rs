@@ -58,7 +58,7 @@ pub use endpoint::{
 };
 pub use restore::AttachRecovery;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub use runtime::{daemon_missing, runtime_path};
+pub use runtime::{daemon_missing, runtime_path, tui_runtime};
 pub use snapshot::SnapshotWatch;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use snapshot::{snapshot, watch_snapshot};

@@ -6,7 +6,7 @@ use corvid_protocol::{ProtocolFault, wire::WorkspaceInfo};
 use uuid::Uuid;
 
 pub(super) async fn list(runtime: Option<PathBuf>) -> Result<u32> {
-    let runtime = corvid_client::view_state::tui_runtime(runtime)?;
+    let runtime = corvid_client::tui_runtime(runtime).await?;
     for workspace in workspaces(&runtime).await? {
         println!(
             "{}\t{}",
@@ -24,7 +24,7 @@ pub(super) async fn create(runtime: Option<PathBuf>, name: String) -> Result<u32
         .into_string()
         .ok()
         .context("the current directory is not valid UTF-8")?;
-    let runtime = corvid_client::view_state::tui_runtime(runtime)?;
+    let runtime = corvid_client::tui_runtime(runtime).await?;
     let options = AttachOptions {
         remember_view: true,
         launch: Some(Vec::new()),

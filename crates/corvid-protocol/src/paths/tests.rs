@@ -156,36 +156,27 @@ fn runtime_precedence<P: PlatformPaths>(env: &[(&str, &str)], expected_default: 
         boot: Some(FIRST_BOOT),
         ..Default::default()
     };
-    assert_eq!(
-        P::runtime(&inputs, None, || None).unwrap().path,
-        Path::new(expected_default),
-    );
-    assert_eq!(
-        P::runtime(&inputs, None, || Some(PathBuf::from("/previous")))
-            .unwrap()
-            .path,
-        Path::new("/previous"),
-    );
+    let resolved = P::runtime(&inputs, None).unwrap();
+    assert!(matches!(resolved, DaemonRuntime::Default(_)));
+    assert_eq!(resolved.path(), Path::new(expected_default));
     for value in ["/custom", ""] {
         let inputs = Inputs {
             env: &[(crate::collector::RUNTIME_DIR, value)],
             ..Default::default()
         };
-        let previous = || panic!("a runtime override should bypass view storage");
-        let resolved = P::runtime(&inputs, None, previous).unwrap();
-        assert_eq!(resolved.path, Path::new(value));
-        assert!(resolved.boot_parent.is_none());
-        assert_eq!(
-            P::runtime(&inputs, Some(PathBuf::from("/cli")), previous)
-                .unwrap()
-                .path,
-            Path::new("/cli"),
-        );
+        let resolved = P::runtime(&inputs, None).unwrap();
+        assert!(matches!(resolved, DaemonRuntime::Override(_)));
+        assert_eq!(resolved.path(), Path::new(value));
+        assert!(resolved.into_runtime_path().boot_parent.is_none());
+
+        let cli = P::runtime(&inputs, Some(PathBuf::from("/cli"))).unwrap();
+        assert!(matches!(cli, DaemonRuntime::Override(_)));
+        assert_eq!(cli.path(), Path::new("/cli"));
     }
 }
 
 #[test]
-fn runtime_precedence_preserves_overrides_and_saved_navigation() {
+fn runtime_precedence_distinguishes_overrides_from_platform_defaults() {
     runtime_precedence::<Linux>(&[("XDG_RUNTIME_DIR", "/run")], "/run/corvid");
     runtime_precedence::<MacOs>(&[("HOME", "/home")], "/home/.corvid/r-01234567-89ab-cd");
     runtime_precedence::<Windows>(&[("LOCALAPPDATA", "/appdata")], "/appdata/Corvid/runtime");
@@ -198,9 +189,9 @@ fn runtime_precedence_preserves_overrides_and_saved_navigation() {
             env,
             ..Default::default()
         };
-        assert!(Linux::runtime(&inputs, None, || None).is_err());
-        assert!(MacOs::runtime(&inputs, None, || None).is_err());
-        assert!(Windows::runtime(&inputs, None, || None).is_err());
+        assert!(Linux::runtime(&inputs, None).is_err());
+        assert!(MacOs::runtime(&inputs, None).is_err());
+        assert!(Windows::runtime(&inputs, None).is_err());
     }
 }
 
@@ -318,7 +309,7 @@ fn macos_endpoints_follow_boot_and_keep_controller_scope() {
             boot,
             ..Default::default()
         };
-        assert!(MacOs::runtime(&inputs, None, || None).is_err());
+        assert!(MacOs::runtime(&inputs, None).is_err());
     }
 }
 
@@ -381,7 +372,7 @@ fn macos_resolution_is_read_only_and_preparation_checks_the_boot_parent() {
         ..Default::default()
     };
     let parent = home.path().join(".corvid");
-    let runtime = MacOs::runtime(&inputs, None, || None).unwrap();
+    let runtime = MacOs::runtime(&inputs, None).unwrap();
     assert!(!parent.exists());
     assert!(!runtime.prepare().unwrap().exists());
     assert_eq!(
@@ -390,20 +381,10 @@ fn macos_resolution_is_read_only_and_preparation_checks_the_boot_parent() {
     );
 
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o770)).unwrap();
-    assert!(
-        MacOs::runtime(&inputs, None, || None)
-            .unwrap()
-            .prepare()
-            .is_err()
-    );
+    assert!(MacOs::runtime(&inputs, None).unwrap().prepare().is_err());
     std::fs::remove_dir(&parent).unwrap();
     let other = home.path().join("other");
     std::fs::create_dir(&other).unwrap();
     symlink(other, parent).unwrap();
-    assert!(
-        MacOs::runtime(&inputs, None, || None)
-            .unwrap()
-            .prepare()
-            .is_err()
-    );
+    assert!(MacOs::runtime(&inputs, None).unwrap().prepare().is_err());
 }

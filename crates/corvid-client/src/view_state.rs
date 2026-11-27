@@ -494,15 +494,12 @@ pub fn tui_store() -> Option<ViewStore> {
     Some(ViewStore::new(path))
 }
 
-pub fn tui_runtime(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    corvid_protocol::paths::daemon_runtime(override_path, || {
-        let view = tui_store()?.last()?;
-        match view.target {
-            Target::Tui { runtime } => Some(runtime),
-            _ => None,
-        }
-    })?
-    .prepare()
+pub(crate) fn last_tui_runtime() -> Option<PathBuf> {
+    let view = tui_store()?.last()?;
+    match view.target {
+        Target::Tui { runtime } => Some(runtime),
+        _ => None,
+    }
 }
 
 pub fn tui_target(runtime: &Path) -> Result<Target> {

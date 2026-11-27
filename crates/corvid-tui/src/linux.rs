@@ -280,7 +280,7 @@ pub(super) fn execute(
 
 async fn run(command: Command, runtime_dir: Option<PathBuf>) -> Result<u32> {
     let runtime = if matches!(command, Command::Attach { .. }) {
-        corvid_client::view_state::tui_runtime(runtime_dir)?
+        corvid_client::tui_runtime(runtime_dir).await?
     } else {
         runtime_path(runtime_dir)?
     };
