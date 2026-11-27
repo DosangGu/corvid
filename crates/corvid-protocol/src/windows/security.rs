@@ -196,25 +196,58 @@ fn verify_acl(
 }
 
 fn verify_user_ace(acl: *const ACL, user: &str, mask: u32) -> Result<()> {
+    // SAFETY: `verify_acl` validated `acl` is non-null, owned by the live
+    // `LocalAllocation` security descriptor, and has `AceCount == 1`.
+    let acl_size = usize::from(unsafe { (*acl).AclSize });
+    ensure!(acl_size >= size_of::<ACL>(), "invalid Windows ACL size");
+
     let mut ace: *mut c_void = null_mut();
     // The caller verified there is one ACE in the live ACL.
     checked(unsafe { GetAce(acl, 0, &mut ace) })?;
     ensure!(!ace.is_null(), "Windows object ACL entry is missing");
-    // Every ACE returned by GetAce starts with a valid ACE_HEADER.
-    let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+
+    // Verify the ACE pointer returned by `GetAce` lies within the live ACL
+    // buffer before reading its header and access fields.
+    let acl_start = acl.addr();
+    let ace_start = ace.addr();
+    let ace_offset = ace_start
+        .checked_sub(acl_start)
+        .filter(|&offset| offset >= size_of::<ACL>())
+        .context("Windows ACE pointer falls outside ACL bounds")?;
+    let remaining = acl_size
+        .checked_sub(ace_offset)
+        .context("Windows ACE offset exceeds ACL size")?;
     ensure!(
-        u32::from(header.AceType) == ACCESS_ALLOWED_ACE_TYPE
-            && usize::from(header.AceSize) >= size_of::<ACCESS_ALLOWED_ACE>() + 4,
+        remaining >= size_of::<ACE_HEADER>(),
+        "Windows ACE header exceeds ACL bounds"
+    );
+
+    // SAFETY: `ace_offset..ace_offset + size_of::<ACE_HEADER>()` is within the
+    // live `LocalAllocation`-owned ACL buffer. `read_unaligned` avoids creating
+    // a reference if the OS buffer is not aligned for the target struct.
+    let header = unsafe { ace.cast::<ACE_HEADER>().read_unaligned() };
+    let ace_size = usize::from(header.AceSize);
+    ensure!(
+        ace_size <= remaining
+            && u32::from(header.AceType) == ACCESS_ALLOWED_ACE_TYPE
+            && ace_size >= size_of::<ACCESS_ALLOWED_ACE>() + 4,
         "invalid private Windows access rule"
     );
-    // The type and size check establish the ACE layout and beginning of its SID.
-    let access = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-    let sid: PSID = std::ptr::addr_of!(access.SidStart).cast_mut().cast();
+
+    // SAFETY: `ace_size >= size_of::<ACCESS_ALLOWED_ACE>() + 4` and
+    // `ace_offset + ace_size <= acl_size` guarantee the entire
+    // `ACCESS_ALLOWED_ACE` struct lies within the live ACL buffer.
+    let access = unsafe { ace.cast::<ACCESS_ALLOWED_ACE>().read_unaligned() };
+    // SAFETY: `offset_of!(ACCESS_ALLOWED_ACE, SidStart)` is within `ace_size`.
+    let sid: PSID = unsafe {
+        ace.cast::<u8>()
+            .add(offset_of!(ACCESS_ALLOWED_ACE, SidStart))
+    }
+    .cast();
     // The size check above includes the SID header and its subauthority count.
     let count = unsafe { *sid.cast::<u8>().add(1) };
     ensure!(
-        usize::from(header.AceSize)
-            >= offset_of!(ACCESS_ALLOWED_ACE, SidStart) + 8 + 4 * usize::from(count),
+        ace_size >= offset_of!(ACCESS_ALLOWED_ACE, SidStart) + 8 + 4 * usize::from(count),
         "invalid SID length in Windows access rule"
     );
     ensure!(
