@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use anyhow::Result;
 #[cfg(unix)]
@@ -71,7 +73,7 @@ impl PreferencesStore {
 }
 
 #[cfg(windows)]
-fn lock_preferences(directory: &Directory) -> Result<corvid_protocol::windows::StorageLock> {
+fn lock_preferences(directory: &Directory) -> Result<impl Drop + use<>> {
     directory.lock_storage_with_timeout(LOCK_TIMEOUT)
 }
 
