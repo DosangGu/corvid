@@ -38,25 +38,13 @@ pub fn run_helper() -> Option<ExitCode> {
 }
 
 /// Serve a runtime until it stops or receives an OS shutdown signal.
-pub fn run_foreground(
-    runtime: &Path,
-    state: &Path,
-    autostarted: bool,
-    #[cfg(any(target_os = "linux", target_os = "macos"))] terminfo: crate::terminfo::Mode,
-) -> Result<()> {
+pub fn run_foreground(runtime: &Path, state: &Path, autostarted: bool) -> Result<()> {
     let executor = compio::runtime::Runtime::new()?;
     executor.block_on(async {
         let (stop, stopped) = corvid_async::oneshot::channel::<()>();
-        let daemon = crate::serve_daemon(
-            runtime,
-            state,
-            autostarted,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            terminfo,
-            async move {
-                let _ = stopped.await;
-            },
-        );
+        let daemon = crate::serve_daemon(runtime, state, autostarted, async move {
+            let _ = stopped.await;
+        });
         let mut daemon = std::pin::pin!(daemon);
         let signal = async {
             #[cfg(unix)]

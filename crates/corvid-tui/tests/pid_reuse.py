@@ -181,7 +181,7 @@ def verify(command, companion, directory):
         terminal.wait(0)
 
 
-def run(binary, terminfo_source):
+def run(binary):
     uid_map = Path("/proc/self/uid_map").read_text().split()
     if (
         os.getpid() != 1
@@ -201,15 +201,10 @@ def run(binary, terminfo_source):
         launcher = directory / "claude"
         launcher.write_text(f"#!{sys.executable}\n{LAUNCHER}")
         launcher.chmod(0o700)
-        terminfo = directory / "terminfo"
-        subprocess.run(
-            ["tic", "-x", "-o", terminfo, terminfo_source], check=True, timeout=5
-        )
         os.environ["TERM"] = "xterm-256color"
         environment = os.environ | {
             "PATH": f"{directory}:{os.environ['PATH']}",
             "SHELL": "/bin/sh",
-            "TERMINFO": str(terminfo),
             "CORVID_TEST_PID_CURSOR": str(cursor),
         }
         command = [binary.resolve(), "--runtime-dir", directory / "runtime"]
@@ -230,6 +225,6 @@ def run(binary, terminfo_source):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
-    parser.add_argument("terminfo", type=Path)
+    parser.add_argument("terminfo", nargs="?", type=Path)
     args = parser.parse_args()
-    run(args.binary, args.terminfo)
+    run(args.binary)

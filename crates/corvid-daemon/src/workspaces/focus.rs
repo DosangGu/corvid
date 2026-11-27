@@ -410,7 +410,6 @@ mod tests {
             metadata,
             Arc::new(HookEnvironment {
                 shell_commands: None,
-                terminfo: None,
                 runtime: PathBuf::from("/tmp"),
                 identity: Arc::new(identity),
             }),

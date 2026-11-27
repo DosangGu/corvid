@@ -807,13 +807,12 @@ alternate-screen entry/exit; cursor visibility/movement; indexed/true color; era
 scroll regions; resize at boundaries; bracketed paste; Ctrl-C; Esc/Alt ambiguity and split
 key sequences; child terminal queries/responses; and attach/redraw after output continues.
 
-Use the bundled Corvid terminfo profile for Linux child PTYs and advertise only
-qualified features. The `xterm-corvid-256color` name lets shells recognize the
-terminal for title updates and refers to Corvid's profile. The outer client's
-TERM and the inner PTY's TERM are separate. IME composition belongs to the outer
-terminal; Corvid still must preserve its committed UTF-8. Images, arbitrary
-clipboard passthrough, and full emulator parity are
-outside the initial profile.
+Use `TERM=xterm-256color` for child PTYs so shells and remote hosts (including
+nested SSH hops and containers without custom terminfo entries) handle editing
+keys and title updates reliably. The outer client's TERM and the inner PTY's
+TERM are separate. IME composition belongs to the outer terminal; Corvid still
+must preserve its committed UTF-8. Images, arbitrary clipboard passthrough, and
+full emulator parity are outside the initial profile.
 
 ### 7.7 Shared TUI and GUI behavior
 

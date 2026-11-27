@@ -111,19 +111,11 @@ mod cli {
         let runtime = options.runtime_dir;
         match options.command {
             None | Some(Command::Daemon) => {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                let _ = options.inherit_terminfo;
                 let runtime = corvid_client::runtime_path(runtime)?;
                 let state = daemon_control::state_path(options.state_dir)?;
-                command::run_foreground(
-                    &runtime,
-                    &state,
-                    options.autostarted,
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    if options.inherit_terminfo {
-                        corvid_daemon::terminfo::Mode::Inherit
-                    } else {
-                        corvid_daemon::terminfo::Mode::Bundled
-                    },
-                )
+                command::run_foreground(&runtime, &state, options.autostarted)
             }
             Some(Command::EnsureDaemon {
                 #[cfg(windows)]

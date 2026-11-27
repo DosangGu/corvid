@@ -399,14 +399,12 @@ def run(binary, *, measure_keys=False):
     schema = root / "crates/corvid-protocol/proto/corvid.proto"
     with tempfile.TemporaryDirectory(prefix="corvid-ssh-", dir=root) as temporary:
         directory = Path(temporary)
-        database = directory / "terminfo"
-        subprocess.run(["tic", "-x", "-o", database, root / "crates/corvid-daemon/assets/corvid.terminfo"], check=True)
         command = [str(Path(binary).resolve()), "--runtime-dir", str(directory / "runtime")]
         unit = f"corvid-fixture-{uuid.uuid4().hex}.service"
         subprocess.run(
             ["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}",
              "--property=Type=exec", "--property=KillMode=control-group",
-             f"--setenv=TERMINFO={database}", *command, "daemon", "--state-dir", directory / "state"],
+             *command, "daemon", "--state-dir", directory / "state"],
             check=True, timeout=10,
         )
         try:
