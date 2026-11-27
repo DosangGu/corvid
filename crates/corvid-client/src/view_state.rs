@@ -23,6 +23,8 @@ use corvid_protocol::unix::RuntimeDir as Directory;
 #[cfg(windows)]
 use corvid_protocol::windows::StateDirectory as Directory;
 
+mod backup_store;
+
 const FILE: &str = "view.json";
 const BACKUP: &str = "view.json.bak";
 const MAX_BYTES: u64 = 64 * 1024;
@@ -328,23 +330,18 @@ impl ViewStore {
         if !self.path.exists() {
             return None;
         }
-        let result = (|| {
+        let result: Result<Stored> = (|| {
             let directory = Directory::open(&self.path)?;
-            let Some(bytes) = directory.read_private_file(FILE, MAX_BYTES)? else {
-                return Ok(Stored::default());
-            };
-            match decode(&bytes) {
-                Ok(stored) => Ok(stored),
-                Err(_) => {
-                    // Never reinterpret or overwrite a future schema as an older one.
-                    require_supported_schema(&bytes)?;
-                    directory
-                        .read_private_file(BACKUP, MAX_BYTES)?
-                        .map(|bytes| decode(&bytes))
-                        .transpose()?
-                        .context("invalid saved client view")
-                }
-            }
+            Ok(backup_store::read_with_backup(
+                &directory,
+                FILE,
+                BACKUP,
+                MAX_BYTES,
+                decode,
+                require_supported_schema,
+                "invalid saved client view",
+            )?
+            .unwrap_or_default())
         })();
         match result {
             Ok(stored) => Some(stored),
@@ -381,24 +378,15 @@ impl ViewStore {
     }
 
     fn save_locked(directory: &Directory, views: &[SavedView]) -> Result<()> {
-        let previous = directory.read_private_file(FILE, MAX_BYTES)?;
-        let mut stored = match previous.as_deref() {
-            None => Stored::default(),
-            Some(bytes) => match decode(bytes) {
-                Ok(stored) => {
-                    directory.replace_private_file(BACKUP, bytes)?;
-                    stored
-                }
-                Err(_) => {
-                    require_supported_schema(bytes)?;
-                    directory.replace_private_file("view.json.corrupt", bytes)?;
-                    directory
-                        .read_private_file(BACKUP, MAX_BYTES)?
-                        .and_then(|bytes| decode(&bytes).ok())
-                        .unwrap_or_default()
-                }
-            },
-        };
+        let mut stored = backup_store::load_for_write(
+            directory,
+            FILE,
+            BACKUP,
+            "view.json.corrupt",
+            MAX_BYTES,
+            decode,
+            require_supported_schema,
+        )?;
         if stored.workspace_views.is_empty() {
             stored.workspace_views.clone_from(&stored.views);
         }
@@ -432,9 +420,17 @@ impl ViewStore {
                     while incoming.changed().await.is_ok() {
                         compio::time::sleep(SAVE_DELAY).await;
                         let views = std::mem::take(&mut queued.lock().unwrap().batch);
-                        if !views.is_empty() {
-                            store.save_views(&views)?;
+                        if !views.is_empty()
+                            && let Err(error) = store.save_views(&views)
+                        {
+                            eprintln!("corvid: could not save the last view: {error:#}");
                         }
+                    }
+                    let remaining = std::mem::take(&mut queued.lock().unwrap().batch);
+                    if !remaining.is_empty()
+                        && let Err(error) = store.save_views(&remaining)
+                    {
+                        eprintln!("corvid: could not save the last view: {error:#}");
                     }
                     Ok(())
                 })
