@@ -1,0 +1,30 @@
+name: Feature or UX request
+description: Propose a new feature or usability improvement
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Both Desktop and TUI
+        - Desktop
+        - TUI
+        - Agent Deck
+        - Daemon (corvidd)
+        - Other
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Describe the workflow gap or friction you are trying to solve.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe how you would expect Corvid to behave.
+    validations:
+      required: true

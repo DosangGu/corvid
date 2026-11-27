@@ -1,0 +1,44 @@
+name: Bug report
+description: Report unexpected behavior or a regression in Corvid
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Desktop
+        - TUI
+        - Agent Deck
+        - Daemon (corvidd)
+        - SSH / Remote
+        - Packaging / Installer
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Corvid version
+      placeholder: "e.g. macOS 15.x / Windows 11 / Ubuntu 24.04, Corvid v0.8.2"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior clearly. Avoid pasting credentials or private terminal output.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior

@@ -1,0 +1,18 @@
+# Automatic issue labeling based on issue title prefixes.
+# Each label uses a single regex because github/issue-labeler requires all entries in a list to match.
+bug:
+  - '/^(?:bug|fix)(?:\([^)]+\))?:/i'
+enhancement:
+  - '/^(?:feat|ux)(?:\([^)]+\))?:/i'
+security:
+  - '/^security(?:\([^)]+\))?:/i'
+ux:
+  - '/^ux(?:\([^)]+\))?:/i'
+ci:
+  - '/^ci(?:\([^)]+\))?:/i'
+refactor:
+  - '/^refactor(?:\([^)]+\))?:/i'
+documentation:
+  - '/^docs?(?:\([^)]+\))?:/i'
+dependencies:
+  - '/^dep(?:s|endencies)(?:\([^)]+\))?:/i'
