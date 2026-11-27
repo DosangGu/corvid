@@ -1,11 +1,9 @@
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Subcommand, ValueEnum};
 use corvid_client::{AttachOptions, check_tty, host, ping, runtime_path};
-use corvid_protocol::wire::AgentProvider;
 use uuid::Uuid;
 
 use crate::hooks::{self, HookProvider};
@@ -39,40 +37,8 @@ pub(super) enum Command {
     },
     /// Attach to a terminal workspace.
     Attach {
-        #[arg(long)]
-        new: bool,
-        /// Take the writer lease on an existing pane and disconnect its current writer.
-        #[arg(long = "takeover", conflicts_with_all = ["new", "agent", "new_workspace", "new_tab", "argv"])]
-        take_over: bool,
-        /// Launch a native agent and observe its process lifecycle.
-        #[arg(long, value_enum)]
-        agent: Option<ManagedAgent>,
-        #[arg(long)]
-        workspace: Option<String>,
-        #[arg(long)]
-        tab: Option<String>,
-        #[arg(long)]
-        pane: Option<String>,
-        #[arg(long, conflicts_with = "workspace")]
-        new_workspace: Option<String>,
-        /// Use this folder on the execution host as the workspace default.
-        #[arg(long, requires = "new_workspace")]
-        workspace_directory: Option<String>,
-        /// Browse folders on the execution host before creating a workspace.
-        #[arg(
-            long,
-            requires = "new_workspace",
-            conflicts_with = "workspace_directory"
-        )]
-        browse_directory: bool,
-        #[arg(long, conflicts_with = "tab")]
-        new_tab: Option<String>,
-        /// Open an existing workspace by exact name or ID.
-        #[arg(value_name = "NAME_OR_ID", conflicts_with_all = ["workspace", "new_workspace"])]
-        target: Option<String>,
-        /// Program and arguments for an explicitly started terminal.
-        #[arg(last = true)]
-        argv: Vec<OsString>,
+        #[command(flatten)]
+        common: crate::attach_args::CommonAttachArgs,
     },
     /// Query the local daemon.
     Control {
@@ -109,14 +75,6 @@ pub(super) enum Command {
 pub(super) enum ControlRequest {
     Host,
     Ping,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub(super) enum ManagedAgent {
-    Claude,
-    Codex,
-    #[value(alias = "agy")]
-    Antigravity,
 }
 
 pub(super) async fn start(runtime: Option<PathBuf>) -> Result<u32> {
@@ -212,54 +170,24 @@ async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
             crate::daemon_bootstrap::require_cli_daemon().await?;
             upgrade_local_daemon(&runtime, false).await?;
         }
-        Command::Attach {
-            new,
-            take_over,
-            target,
-            agent,
-            workspace,
-            tab,
-            pane,
-            new_workspace,
-            workspace_directory,
-            browse_directory,
-            new_tab,
-            argv,
-        } => {
-            let workspace =
-                super::workspace_cli::attach_target(&runtime, target, workspace).await?;
-            let workspace_directory = if browse_directory {
+        Command::Attach { mut common } => {
+            let workspace = super::workspace_cli::attach_target(
+                &runtime,
+                common.target.take(),
+                common.workspace.take(),
+            )
+            .await?;
+            let workspace_directory = if common.browse_directory {
                 check_tty()?;
                 crate::daemon_bootstrap::ensure_cli(&runtime).await?;
                 super::directory_picker::pick(&runtime).await?
             } else {
-                workspace_directory
+                common.workspace_directory.take()
             };
-            if browse_directory && workspace_directory.is_none() {
+            if common.browse_directory && workspace_directory.is_none() {
                 return Ok(0);
             }
-            let launch = (new
-                || agent.is_some()
-                || !argv.is_empty()
-                || new_workspace.is_some()
-                || new_tab.is_some())
-            .then_some(argv);
-            let options = AttachOptions {
-                launch,
-                take_over,
-                agent: agent.map(|provider| match provider {
-                    ManagedAgent::Claude => AgentProvider::Claude,
-                    ManagedAgent::Codex => AgentProvider::Codex,
-                    ManagedAgent::Antigravity => AgentProvider::Antigravity,
-                }),
-                workspace,
-                tab,
-                pane,
-                new_workspace,
-                workspace_directory,
-                new_tab,
-                ..AttachOptions::default()
-            };
+            let options = common.into_attach_options(workspace, workspace_directory);
             return super::workspace_cli::attach_existing(&runtime, options).await;
         }
         Command::Control { stdio, request } => match (stdio, request) {
