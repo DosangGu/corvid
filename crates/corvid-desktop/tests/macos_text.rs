@@ -1,4 +1,9 @@
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../src/preferences.rs"]
+mod preferences;
+
+#[cfg(target_os = "macos")]
 #[path = "../src/terminal_fonts.rs"]
 mod terminal_fonts;
 

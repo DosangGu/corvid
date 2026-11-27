@@ -19,6 +19,8 @@ mod local_bootstrap;
 mod macos;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod preferences;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod remote_bootstrap;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use corvid_agent_deck::desktop as agent_deck;
