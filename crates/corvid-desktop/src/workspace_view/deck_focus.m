@@ -36,9 +36,13 @@ static void confirmActivation(NSWindow *window, void *reply, bool raised, unsign
 }
 
 static void activateDesktop(unsigned int peerPid) {
-    NSRunningApplication *source = NSWorkspace.sharedWorkspace.frontmostApplication;
-    // The local socket identifies the Deck process that can yield activation.
-    bool requested = peerPid != 0 && source.processIdentifier == (pid_t)peerPid
+    NSRunningApplication *source = peerPid != 0
+        ? [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)peerPid]
+        : nil;
+    // The local socket identifies the Deck process that yielded activation.
+    // Deck is an accessory app, so NSWorkspace.frontmostApplication stays on the
+    // previous regular app even while Deck is active and yields activation.
+    bool requested = source != nil
         && [NSRunningApplication.currentApplication activateFromApplication:source options:0];
     if (!requested) [NSApp activate];
 }
@@ -49,6 +53,6 @@ void corvid_desktop_activate_window(void *view, unsigned int peerPid, void *repl
         if (window && corvid_desktop_activation_pending(reply) && !isFrontmost()) {
             activateDesktop(peerPid);
         }
-        confirmActivation(window, reply, false, 20);
+        confirmActivation(window, reply, false, 60);
     });
 }
