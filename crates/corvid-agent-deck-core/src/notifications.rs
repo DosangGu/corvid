@@ -2,8 +2,10 @@ use std::collections::{BTreeSet, VecDeque};
 
 use anyhow::{Result, ensure};
 use corvid_companion::PRESENTATION_ATTENTION_LIMIT;
+#[cfg(test)]
+use corvid_protocol::wire::AgentProvider;
 use corvid_protocol::wire::{
-    AgentProvider, AttentionReason, CompanionConnection, InputRequestKind, InputRequestStatus,
+    AttentionReason, CompanionConnection, InputRequestKind, InputRequestStatus,
     PresentationAttention, PresentedAttention, PresentedRunKey,
 };
 use serde::{Deserialize, Serialize};
@@ -257,12 +259,8 @@ fn notice(
         run: id(&run.agent_run_id)?,
         attention: id(&item.attention_id)?,
     };
-    let provider = match AgentProvider::try_from(item.provider)? {
-        AgentProvider::Claude => "Claude",
-        AgentProvider::Codex => "Codex",
-        AgentProvider::Antigravity => "Antigravity",
-        _ => anyhow::bail!("unknown notification provider"),
-    };
+    let provider = crate::provider::known_display_name(item.provider)
+        .ok_or_else(|| anyhow::anyhow!("unknown notification provider"))?;
     let title = match AttentionReason::try_from(item.reason)? {
         AttentionReason::Input
             if item.request_status == Some(InputRequestStatus::Pending as i32) =>

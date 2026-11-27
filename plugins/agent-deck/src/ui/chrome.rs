@@ -9,6 +9,7 @@ const SHRINK: &str = "window-shrink.svg";
 const CLOSE: &str = "window-close.svg";
 pub(super) const CLAUDE: &str = "provider-claude.svg";
 pub(super) const CODEX: &str = "provider-codex.svg";
+pub(super) const ANTIGRAVITY: &str = "provider-antigravity.svg";
 pub(super) const AGENT: &str = "provider-agent.svg";
 
 pub(crate) struct DeckAssets;
@@ -22,6 +23,7 @@ impl AssetSource for DeckAssets {
             CLOSE => include_bytes!("../../assets/window-close.svg").as_slice(),
             CLAUDE => include_bytes!("../../assets/provider-claude.svg").as_slice(),
             CODEX => include_bytes!("../../assets/provider-codex.svg").as_slice(),
+            ANTIGRAVITY => include_bytes!("../../assets/provider-antigravity.svg").as_slice(),
             AGENT => include_bytes!("../../assets/provider-agent.svg").as_slice(),
             _ => return Ok(None),
         };
@@ -29,11 +31,20 @@ impl AssetSource for DeckAssets {
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        Ok([PIN, EXPAND, SHRINK, CLOSE, CLAUDE, CODEX, AGENT]
-            .into_iter()
-            .filter(|name| name.starts_with(path))
-            .map(SharedString::from)
-            .collect())
+        Ok([
+            PIN,
+            EXPAND,
+            SHRINK,
+            CLOSE,
+            CLAUDE,
+            CODEX,
+            ANTIGRAVITY,
+            AGENT,
+        ]
+        .into_iter()
+        .filter(|name| name.starts_with(path))
+        .map(SharedString::from)
+        .collect())
     }
 }
 

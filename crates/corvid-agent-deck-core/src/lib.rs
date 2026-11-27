@@ -5,3 +5,4 @@ pub mod gesture;
 pub mod layout;
 pub mod native;
 pub mod notifications;
+pub mod provider;
