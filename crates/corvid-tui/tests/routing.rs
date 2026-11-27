@@ -24,14 +24,14 @@ use corvid_protocol::wire::{
     CompanionConnection, CreateView, EntityKind, Envelope, FocusAgentRequest, FocusApplied,
     FocusSlot, FrameApplied, GetPresentationSlots, GetSnapshot, InputChunk, IssuePairingCode,
     LaunchCommand, ListClients, MoveTab, PairTerminal, PasteBegin, PasteChunk, PasteEnd, Ping,
-    PresentationSlots, PresentedSlot, PresentedSlotToken, ReadPanePreview, ReorderTab,
-    ResizeViewport, RouteToken, SelectView, SnapshotWatch, SplitAxis, TabStep, TuiInputMode,
-    ViewSelection, Viewport,
+    PresentationSlots, PresentedSlot, PresentedSlotToken, ReorderTab, ResizeViewport, RouteToken,
+    SelectView, SnapshotWatch, SplitAxis, TabStep, TuiInputMode, ViewSelection, Viewport,
 };
 use corvid_protocol::{
     COMMAND_TIMEOUT, CONTROL_LIMIT, CREATE_VIEW_CAPABILITY, FRAME_PREAMBLE, Frame, FrameError,
-    FrameReader, FrameRole, FrameWriter, PANE_WRITERS_CAPABILITY, PeerRole, ProtocolFault, Session,
-    WORKSPACE_UI_CAPABILITY, check_hello_result, decode_envelope, hello,
+    FrameReader, FrameRole, FrameWriter, PANE_PREVIEW_CAPABILITY, PANE_WRITERS_CAPABILITY,
+    PeerRole, ProtocolFault, Session, WORKSPACE_UI_CAPABILITY, check_hello_result, decode_envelope,
+    hello,
 };
 type Socket = corvid_async::io::Native<compio::net::UnixStream>;
 type OwnedReadHalf = corvid_async::io::ReadHalf<Socket>;
@@ -884,6 +884,9 @@ impl Tui {
     async fn event(&mut self, output: &mut Vec<u8>) -> Option<Body> {
         match self.reader.next_frame().await.unwrap().unwrap() {
             Frame::Render(render) => {
+                if render.header.preview.is_some() {
+                    return None;
+                }
                 output.extend(render.ansi);
                 assert!(output.len() < 1024 * 1024);
                 self.send(Body::FrameApplied(FrameApplied {
@@ -939,21 +942,19 @@ async fn control(runtime: &Path, request: &str) -> String {
 }
 
 async fn expect_pane_preview(tui: &mut Tui, target: &ViewSelection, text: &str) {
-    tui.send(Body::ReadPanePreview(ReadPanePreview {
-        expected_view_revision: Some(tui.route.view_revision),
-        pane_id: target.pane_id.clone(),
-    }))
-    .await;
     loop {
         let Frame::Render(frame) = tui.reader.next_frame().await.unwrap().unwrap() else {
             panic!("expected a render frame")
         };
         if let Some(preview) = frame.header.preview {
             assert_eq!(frame.header.view_revision, tui.route.view_revision);
-            assert_eq!(preview.pane_id, target.pane_id);
-            assert!(frame.header.base_frame_id.is_none());
-            assert!(String::from_utf8_lossy(&frame.ansi).contains(text));
-            break;
+            if preview.pane_id == target.pane_id {
+                assert!(frame.header.base_frame_id.is_none());
+                if String::from_utf8_lossy(&frame.ansi).contains(text) {
+                    break;
+                }
+            }
+            continue;
         }
         tui.send(Body::FrameApplied(FrameApplied {
             render_generation: frame.header.render_generation,
@@ -971,7 +972,15 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
     let mut daemon = daemon(&runtime, &state).await;
 
     timeout(WAIT, async {
-        let mut tui = Tui::attach_command(&runtime, Some(echo_fixture("SOURCE"))).await;
+        let mut tui = Tui::attach_target(
+            &runtime,
+            Attach {
+                launch: Some(echo_fixture("SOURCE")),
+                terminal_capabilities: vec![PANE_PREVIEW_CAPABILITY.into()],
+                ..Default::default()
+            },
+        )
+        .await;
         let original = tui.selection.clone();
         let retired = tui.route.clone();
         let mut output = Vec::new();
@@ -994,22 +1003,23 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
         assert_eq!(split.tab_id, original.tab_id);
         assert_ne!(split.pane_id, original.pane_id);
 
+        expect_pane_preview(&mut tui, &original, "SOURCE-READY").await;
+
         tui.input(retired.clone(), 1, b"stale\n").await;
         let Body::Error(error) = tui.next_body(&mut output).await else {
             panic!("expected a fenced route")
         };
         assert_eq!(error.code, "StaleRoute");
 
-        tui.send(Body::ReadPanePreview(ReadPanePreview {
+        tui.send(Body::SetPreviewTab(corvid_protocol::wire::SetPreviewTab {
             expected_view_revision: Some(retired.view_revision),
-            pane_id: original.pane_id.clone(),
+            tab_id: Some(original.tab_id.clone()),
         }))
         .await;
         assert!(matches!(
             tui.next_body(&mut output).await,
             Body::Error(error) if error.code == "StaleRoute"
         ));
-        expect_pane_preview(&mut tui, &original, "SOURCE-READY").await;
 
         tui.send(Body::CreateView(CreateView {
             expected_view_revision: Some(tui.route.view_revision),
@@ -1025,7 +1035,12 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
         assert_eq!(tui.selection.workspace_id, original.workspace_id);
         assert_ne!(tui.selection.tab_id, original.tab_id);
 
-        sleep(Duration::from_millis(200)).await;
+        tui.send(Body::SetPreviewTab(corvid_protocol::wire::SetPreviewTab {
+            expected_view_revision: Some(tui.route.view_revision),
+            tab_id: Some(original.tab_id.clone()),
+        }))
+        .await;
+        assert!(matches!(tui.next_body(&mut output).await, Body::Pong(_)));
         expect_pane_preview(&mut tui, &original, "SOURCE-READY").await;
 
         tui.send(Body::CreateView(CreateView {
@@ -1041,16 +1056,6 @@ async fn daemon_owns_tab_and_split_pane_previews_and_exact_reattach() {
             workspace.selection.unwrap().workspace_id,
             original.workspace_id
         );
-        sleep(Duration::from_millis(200)).await;
-        tui.send(Body::ReadPanePreview(ReadPanePreview {
-            expected_view_revision: Some(workspace.route_token.unwrap().view_revision),
-            pane_id: original.pane_id.clone(),
-        }))
-        .await;
-        assert!(matches!(
-            tui.next_body(&mut output).await,
-            Body::Error(error) if error.code == "TargetGone"
-        ));
         drop(tui);
         loop {
             if corvid_client::clients(&runtime)

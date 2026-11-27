@@ -24,14 +24,15 @@ use corvid_protocol::ansi_screen::{Decoder, Screen};
 use corvid_protocol::snapshot::SynchronizedSnapshot;
 use corvid_protocol::wire::create_view::Target;
 use corvid_protocol::wire::envelope::Body;
+#[cfg(test)]
 use corvid_protocol::wire::layout_node_state::Body as Node;
 use corvid_protocol::wire::reorder_tab::Placement;
 use corvid_protocol::wire::snapshot_entity::Body as EntityBody;
 use corvid_protocol::wire::{
     AgentInfo, Attach, AttachRole, Attached, ClaimWorkspaceWriter, ClientState, CloseView,
     CreateView, DisconnectWorkspaceClients, FocusViewAgent, FrameApplied, InputChunk,
-    LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadPanePreview, ReadTerminalHistory,
-    ReorderTab, ResizeViewport, RouteToken, SelectView, TerminalHistory, TerminalState,
+    LaunchCommand, PasteBegin, PasteChunk, PasteEnd, ReadTerminalHistory, ReorderTab,
+    ResizeViewport, RouteToken, SelectView, SetPreviewTab, TerminalHistory, TerminalState,
     ViewSelection, Viewport, WheelEncoding, WorkspaceState,
 };
 use corvid_protocol::{
@@ -48,7 +49,7 @@ use crate::{agent_deck, local_bootstrap, remote_bootstrap};
 
 pub const MAX_INPUT: usize = 64 * 1024;
 const INPUT_CHUNK: usize = 8192;
-const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_CACHED_PANE_SCREENS: usize = 32;
 const DETACH_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_PENDING_TAB_REORDERS: usize = 32;
 type HistoryReply = std::result::Result<TerminalHistory, String>;
@@ -274,33 +275,6 @@ impl Inventory {
             .iter()
             .any(|client| client.active_selection() == Some(selection))
     }
-
-    fn live_preview_panes(&self, selected: &ViewSelection, tab_id: &str) -> Vec<String> {
-        let Some(tab) = self
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.workspace_id == selected.workspace_id)
-            .and_then(|workspace| workspace.tabs.iter().find(|tab| tab.tab_id == tab_id))
-        else {
-            return Vec::new();
-        };
-        tab.nodes
-            .iter()
-            .filter_map(|node| match node.body.as_ref() {
-                Some(Node::PaneId(pane))
-                    if *pane != selected.pane_id
-                        && self.live(&ViewSelection {
-                            tab_id: tab_id.to_owned(),
-                            pane_id: pane.clone(),
-                            ..selected.clone()
-                        }) =>
-                {
-                    Some(pane.clone())
-                }
-                _ => None,
-            })
-            .collect()
-    }
 }
 
 #[derive(Clone)]
@@ -359,17 +333,26 @@ pub enum WheelTarget {
 #[derive(Clone)]
 struct Snapshot {
     ui: Arc<Ui>,
-    screen: Option<Arc<Screen>>,
+    pane_screens: Arc<HashMap<String, Arc<Screen>>>,
+    pane_order: VecDeque<String>,
+    active_screen_ready: bool,
     wheel_encoding: WheelEncoding,
     alternate_screen: Option<bool>,
     view_epoch: u64,
     revision: u64,
-    previews: Arc<HashMap<String, Arc<Screen>>>,
 }
 
 impl Snapshot {
+    fn active_screen(&self) -> Option<&Arc<Screen>> {
+        if !self.active_screen_ready {
+            return None;
+        }
+        let pane = &self.ui.selected.as_ref()?.pane_id;
+        self.pane_screens.get(pane)
+    }
+
     fn wheel_target(&self, pane: &str) -> Option<WheelTarget> {
-        let screen = self.screen.as_ref()?;
+        let screen = self.active_screen()?;
         if !self.ui.can_write() || self.ui.changing || !in_pane(&self.ui, pane) {
             return None;
         }
@@ -384,6 +367,31 @@ impl Snapshot {
                 None => WheelTarget::LegacyScrollback,
             }
         })
+    }
+}
+
+fn cache_pane_screen(state: &mut Snapshot, pane_id: String, screen: Arc<Screen>) {
+    let screens = Arc::make_mut(&mut state.pane_screens);
+    screens.insert(pane_id.clone(), screen);
+    state.pane_order.retain(|id| id != &pane_id);
+    state.pane_order.push_back(pane_id);
+    let active_pane = state
+        .ui
+        .selected
+        .as_ref()
+        .map(|selected| selected.pane_id.as_str());
+    while state.pane_order.len() > MAX_CACHED_PANE_SCREENS {
+        let Some(oldest) = state.pane_order.pop_front() else {
+            break;
+        };
+        if active_pane == Some(oldest.as_str()) {
+            state.pane_order.push_back(oldest);
+            if state.pane_order.len() <= 1 {
+                break;
+            }
+            continue;
+        }
+        screens.remove(&oldest);
     }
 }
 
@@ -454,12 +462,13 @@ impl Shared {
                 inventory_offline: false,
                 remote_host: destination.remote().map(|_| destination.label().to_owned()),
             }),
-            screen: None,
+            pane_screens: Arc::new(HashMap::new()),
+            pane_order: VecDeque::new(),
+            active_screen_ready: false,
             wheel_encoding: WheelEncoding::Disabled,
             alternate_screen: None,
             view_epoch: 0,
             revision: 0,
-            previews: Arc::new(HashMap::new()),
         };
         let (snapshots, latest) = watch::channel(Arc::new(state.clone()));
         let (edits, mut incoming) = mpsc::channel::<(StateEdit, blocking::SyncSender<()>)>(2);
@@ -531,12 +540,13 @@ impl Shared {
 
     fn apply_ansi(
         &self,
+        pane_id: String,
         parser: &mut Decoder,
         ansi: &[u8],
         wheel_encoding: WheelEncoding,
         alternate_screen: Option<bool>,
     ) {
-        self.apply_frame(wheel_encoding, alternate_screen, || {
+        self.apply_frame(pane_id, wheel_encoding, alternate_screen, || {
             parser.process(ansi);
             parser.screen().clone()
         });
@@ -544,6 +554,7 @@ impl Shared {
 
     fn apply_frame(
         &self,
+        pane_id: String,
         wheel_encoding: WheelEncoding,
         alternate_screen: Option<bool>,
         decode: impl FnOnce() -> Screen,
@@ -553,7 +564,8 @@ impl Shared {
         self.edit(move |state| {
             state.wheel_encoding = wheel_encoding;
             state.alternate_screen = alternate_screen;
-            state.screen = Some(screen);
+            state.active_screen_ready = true;
+            cache_pane_screen(state, pane_id, screen);
             Changed::Screen
         });
     }
@@ -1041,7 +1053,12 @@ impl Session {
         if !in_pane(&snapshot.ui, pane) {
             return None;
         }
-        snapshot.screen.clone()
+        snapshot.pane_screens.get(pane).cloned()
+    }
+
+    pub fn active_screen_ready(&self, pane: &str) -> bool {
+        let snapshot = self.shared.snapshot();
+        snapshot.active_screen_ready && in_pane(&snapshot.ui, pane)
     }
 
     pub fn set_preview_tab(&self, tab: Option<&str>) {
@@ -1055,7 +1072,7 @@ impl Session {
     }
 
     pub fn preview<R>(&self, pane: &str, read: impl FnOnce(&Screen) -> R) -> Option<R> {
-        let screen = self.shared.snapshot().previews.get(pane)?.clone();
+        let screen = self.shared.snapshot().pane_screens.get(pane)?.clone();
         Some(read(&screen))
     }
 
@@ -1063,7 +1080,7 @@ impl Session {
         let snapshot = self.shared.snapshot();
         if !snapshot.ui.can_write()
             || self.changing(&snapshot)
-            || snapshot.screen.is_none()
+            || !snapshot.active_screen_ready
             || !in_pane(&snapshot.ui, pane)
         {
             return None;
@@ -1189,7 +1206,7 @@ impl Session {
         };
         if !snapshot.ui.can_write()
             || self.changing(snapshot)
-            || snapshot.screen.is_none()
+            || !snapshot.active_screen_ready
             || !in_pane(&snapshot.ui, pane)
             || bytes.is_empty()
             || bytes.len() > limit
@@ -1353,12 +1370,10 @@ struct Client<'a> {
     pending_tab_reorders: VecDeque<(String, Instant)>,
     view_change: Option<ViewChange>,
     activation: mpsc::Sender<DeckActivation>,
-    preview: Option<(String, Pending)>,
     history: Option<HistoryRequest>,
     queued_history: Option<HistoryRead>,
     next_history: Instant,
-    preview_index: usize,
-    next_preview: Instant,
+    preview_tab_req: Option<String>,
 }
 
 struct HistoryRead {
@@ -1388,7 +1403,6 @@ enum Operation {
     View,
     Close,
     Resize,
-    Preview,
     DisconnectOthers,
 }
 
@@ -2191,18 +2205,17 @@ async fn run(
         pending_tab_reorders: VecDeque::new(),
         view_change: None,
         activation: activation.clone(),
-        preview: None,
         history: None,
         queued_history: None,
         next_history: Instant::now(),
-        preview_index: 0,
-        next_preview: Instant::now(),
+        preview_tab_req: None,
     };
     client.publish_view();
     if let Some(attached) = attach_ready.take() {
         let _ = attached.send(());
     }
     let mut inventory = InventoryWatch::start(endpoint.clone(), host, epoch, Arc::clone(shared))?;
+    let mut preview_tabs = shared.preview_tab.subscribe();
     let mut tick = corvid_async::time::interval(Duration::from_millis(100));
     let keep_connection = loop {
         corvid_async::select! {
@@ -2230,6 +2243,10 @@ async fn run(
                 Some(action) => client.action(action).await?,
                 None => break false,
             },
+            Ok(()) = preview_tabs.changed() => {
+                let tab_id = preview_tabs.borrow_and_update().clone();
+                client.set_preview_tab(tab_id).await?;
+            }
             Some(request) = deck_focus.recv() => client.focus_from_deck(request).await?,
             result = client.agent_deck.tasks.join_next() if !client.agent_deck.tasks.is_empty() => {
                 match result {
@@ -2430,6 +2447,16 @@ async fn attach(
         .session()
         .capabilities
         .iter()
+        .any(|cap| cap == PANE_PREVIEW_CAPABILITY)
+    {
+        request
+            .terminal_capabilities
+            .push(PANE_PREVIEW_CAPABILITY.into());
+    }
+    if link
+        .session()
+        .capabilities
+        .iter()
         .any(|cap| cap == WRITER_RESUME_CAPABILITY)
     {
         request
@@ -2544,13 +2571,9 @@ impl Client<'_> {
         let revision = self.route.view_revision;
         self.shared.edit(move |state| {
             let ui = Arc::make_mut(&mut state.ui);
-            if !ui.connected
-                || ui
-                    .selected
-                    .as_ref()
-                    .is_some_and(|previous| previous.tab_id != selected.tab_id)
-            {
-                state.previews = Arc::new(HashMap::new());
+            if !ui.connected {
+                Arc::make_mut(&mut state.pane_screens).clear();
+                state.pane_order.clear();
             }
             ui.selected = Some(selected);
             ui.terminal_id = Some(terminal_id);
@@ -2560,16 +2583,25 @@ impl Client<'_> {
             ui.message = "Attached to Corvid daemon".into();
             state.revision = revision;
             state.view_epoch = state.view_epoch.wrapping_add(1);
-            state.screen = None;
+            state.active_screen_ready = false;
             Changed::View
         });
     }
 
+    async fn set_preview_tab(&mut self, tab_id: Option<String>) -> Result<()> {
+        let id = self
+            .link
+            .send(Body::SetPreviewTab(SetPreviewTab {
+                expected_view_revision: Some(self.route.view_revision),
+                tab_id,
+            }))
+            .await?;
+        self.preview_tab_req = Some(id);
+        Ok(())
+    }
+
     async fn tick(&mut self, (view_epoch, revision, grid): (u64, u64, Grid)) -> Result<()> {
         let now = Instant::now();
-        if let Some((_, preview)) = &self.preview {
-            ensure!(now < preview.deadline, "daemon pane preview timed out");
-        }
         if let Some(history) = &self.history {
             ensure!(now < history.deadline, "daemon terminal history timed out");
         }
@@ -2586,54 +2618,7 @@ impl Client<'_> {
             ensure!(now < pending.deadline, "daemon view change timed out");
         } else if self.matches_view(view_epoch, revision) && self.grid != grid {
             self.resize(grid).await?;
-        } else if self.preview.is_none() && now >= self.next_preview && self.applied.is_some() {
-            self.next_preview = now + PREVIEW_INTERVAL;
-            self.read_preview().await?;
         }
-        Ok(())
-    }
-
-    fn preview_panes(&self, ui: &Ui) -> Vec<String> {
-        let preview_tab = self.shared.preview_tab.borrow();
-        let tab = preview_tab
-            .as_deref()
-            .filter(|_| ui.tab_preview_supported)
-            .unwrap_or(&self.selected.tab_id);
-        ui.inventory.as_ref().map_or_else(Vec::new, |inventory| {
-            inventory.live_preview_panes(&self.selected, tab)
-        })
-    }
-
-    async fn read_preview(&mut self) -> Result<()> {
-        let snapshot = self.shared.snapshot();
-        let panes = self.preview_panes(&snapshot.ui);
-        if snapshot.previews.keys().any(|pane| !panes.contains(pane)) {
-            let keep = panes.clone();
-            self.shared.edit(move |state| {
-                Arc::make_mut(&mut state.previews).retain(|pane, _| keep.contains(pane));
-                Changed::Ui
-            });
-        }
-        if panes.is_empty() {
-            return Ok(());
-        }
-        let pane = panes[self.preview_index % panes.len()].clone();
-        self.preview_index = self.preview_index.wrapping_add(1);
-        let id = self
-            .link
-            .send(Body::ReadPanePreview(ReadPanePreview {
-                expected_view_revision: Some(self.route.view_revision),
-                pane_id: pane.clone(),
-            }))
-            .await?;
-        self.preview = Some((
-            pane,
-            Pending {
-                id,
-                deadline: Instant::now() + COMMAND_TIMEOUT,
-                kind: Operation::Preview,
-            },
-        ));
         Ok(())
     }
 
@@ -3142,13 +3127,14 @@ impl Client<'_> {
                     self.finish_deck_focus(Err("The selected agent has moved or ended.".into()));
                 }
             }
+            Body::Pong(_) => {
+                if id.is_some() && id == self.preview_tab_req {
+                    self.preview_tab_req = None;
+                }
+            }
             Body::Error(error) => {
-                if self
-                    .preview
-                    .as_ref()
-                    .is_some_and(|(_, preview)| id.as_deref() == Some(&preview.id))
-                {
-                    self.preview = None;
+                if id.is_some() && id == self.preview_tab_req {
+                    self.preview_tab_req = None;
                     return Ok(None);
                 }
                 let matched = self
@@ -3224,33 +3210,33 @@ impl Client<'_> {
         ensure!(
             header.host_id == self.link.session().host_id
                 && header.server_epoch == self.link.session().server_epoch
-                && header.client_id == self.route.client_id
-                && header.view_revision == self.route.view_revision,
+                && header.client_id == self.route.client_id,
             "daemon render targets another view"
         );
         if let Some(preview) = header.preview {
-            let (expected, _) = self.preview.take().context("unsolicited pane preview")?;
-            ensure!(
-                preview.pane_id == expected,
-                "daemon returned a different pane preview"
-            );
-            if !self
-                .preview_panes(&self.shared.snapshot().ui)
-                .contains(&expected)
-            {
+            if header.view_revision < self.route.view_revision {
                 return Ok(());
             }
+            ensure!(
+                header.view_revision == self.route.view_revision,
+                "daemon render targets another view"
+            );
             if let Ok(grid) = Grid::read(preview.viewport.context("pane preview has no size")?) {
                 let mut parser = Decoder::new(grid.rows, grid.cols);
                 parser.process(&frame.ansi);
                 let screen = Arc::new(parser.screen().clone());
+                let pane_id = preview.pane_id;
                 self.shared.edit(move |state| {
-                    Arc::make_mut(&mut state.previews).insert(expected, screen);
+                    cache_pane_screen(state, pane_id, screen);
                     Changed::Ui
                 });
             }
             return Ok(());
         }
+        ensure!(
+            header.view_revision == self.route.view_revision,
+            "daemon render targets another view"
+        );
         match (self.applied, header.base_frame_id) {
             (None, None) => {}
             (Some((generation, previous)), Some(base)) => {
@@ -3268,6 +3254,7 @@ impl Client<'_> {
             _ => bail!("daemon must start with a full render"),
         }
         self.shared.apply_ansi(
+            self.selected.pane_id.clone(),
             &mut self.parser,
             &frame.ansi,
             header.wheel_encoding(),

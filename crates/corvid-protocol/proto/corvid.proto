@@ -3,8 +3,8 @@ syntax = "proto3";
 package corvid.protocol.v1;
 
 message Envelope {
-  reserved 124;
-  reserved "request_writer_handoff";
+  reserved 114, 124;
+  reserved "read_pane_preview", "request_writer_handoff";
   uint32 protocol_major = 1;
   uint32 protocol_minor = 2;
   optional string request_id = 3;
@@ -85,7 +85,6 @@ message Envelope {
     AgentResponded agent_responded = 111;
     CreateView create_view = 112;
     FocusViewAgent focus_view_agent = 113;
-    ReadPanePreview read_pane_preview = 114;
     CloseView close_view = 115;
     FocusDesktopAgent focus_desktop_agent = 116;
     DesktopAgentFocused desktop_agent_focused = 117;
@@ -113,6 +112,7 @@ message Envelope {
     BrowseDirectories browse_directories = 132;
     DirectoryListing directory_listing = 133;
     GracefulDetach graceful_detach = 134;
+    SetPreviewTab set_preview_tab = 143;
   }
 }
 
@@ -1276,9 +1276,9 @@ message CloseView {
   optional string pane_id = 4;
 }
 
-message ReadPanePreview {
+message SetPreviewTab {
   optional uint64 expected_view_revision = 1;
-  string pane_id = 2;
+  optional string tab_id = 2;
 }
 
 message RenameView {

@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::executor::time::timeout;
+use crate::executor::time::{sleep_until, timeout};
 use crate::platform::{self, FrameWriter, Stream, WriteHalf, decode_os_string};
 use anyhow::Result;
-use corvid_async::{Semaphore, SemaphoreGuard, mpsc, oneshot};
+use corvid_async::{Semaphore, SemaphoreGuard, mpsc, oneshot, watch};
 use corvid_core::agent::Provider;
 use corvid_core::layout::{Axis, CloseTarget, Location, TabPlacement};
 use corvid_core::{InputRoute, Viewport};
@@ -12,8 +13,8 @@ use corvid_protocol::controller::PAIR_CAPABILITY;
 use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentResponded, Attach, AttachRole, Attached, ClipboardWrite, CloseView, CreateView, Envelope,
-    FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, ReadPanePreview, RenderHeader,
-    ReorderTab, RouteToken, SplitAxis, TabMoved, TabReordered, TabStep, TerminalExited,
+    FocusViewAgent, LaunchCommand, MoveTab, PanePreviewFrame, Pong, RenderHeader, ReorderTab,
+    RouteToken, SetPreviewTab, SplitAxis, TabMoved, TabReordered, TabStep, TerminalExited,
     ViewChanged, Viewport as WireViewport, WorkspaceClientsDisconnected, WorkspaceRestored,
     WriterClaimed,
 };
@@ -31,7 +32,7 @@ use crate::control::handshake;
 use crate::identity::Identity;
 use crate::incoming::Incoming;
 use crate::projection::selection;
-use crate::terminal::{Action, Event, Keymap, Launch, Render, TuiViewport};
+use crate::terminal::{Action, Event, Keymap, Launch, Render, TerminalHandle, TuiViewport};
 use crate::workspaces::{
     Active, AttachFailure, AttachTarget, Closed, Destination, FocusDispatch, FocusRecovery,
     Workspaces,
@@ -207,21 +208,27 @@ async fn serve_attachment(
     let (disconnect, disconnected) = oneshot::channel();
     let (notice_tx, notices) = mpsc::channel(8);
     let target = match session.validate_request(&request) {
-        Ok(Body::Attach(attach)) => attach_target(attach).await.map(|target| {
-            let enabled = attach
+        Ok(Body::Attach(attach)) => {
+            let pane_stream_enabled = attach
                 .terminal_capabilities
                 .iter()
-                .any(|capability| capability == RESPONSE_NOTIFICATION_CAPABILITY);
-            (target, enabled)
-        }),
+                .any(|capability| capability == PANE_PREVIEW_CAPABILITY);
+            attach_target(attach).await.map(|target| {
+                let enabled = attach
+                    .terminal_capabilities
+                    .iter()
+                    .any(|capability| capability == RESPONSE_NOTIFICATION_CAPABILITY);
+                (target, enabled, pane_stream_enabled)
+            })
+        }
         Ok(_) => Err(invalid("expected Attach request")),
         Err(error) => Err(error),
     };
-    let active = match target {
-        Ok((target, enabled)) => {
+    let (active, pane_stream_enabled) = match target {
+        Ok((target, enabled, pane_stream_enabled)) => {
             #[cfg(windows)]
             let _ = (enabled, notice_tx);
-            workspaces
+            let active = workspaces
                 .attach(
                     client,
                     target,
@@ -230,9 +237,10 @@ async fn serve_attachment(
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     enabled.then_some(notice_tx),
                 )
-                .await
+                .await;
+            (active, pane_stream_enabled)
         }
-        Err(error) => Err(error.into()),
+        Err(error) => (Err(error.into()), false),
     };
     let active = match active {
         Ok(active) => active,
@@ -259,6 +267,7 @@ async fn serve_attachment(
             focuses,
             notices,
             disconnected,
+            pane_stream_enabled,
         },
     )
     .await;
@@ -285,18 +294,90 @@ async fn serve_active(
         writer_resume_token: active.resume_token.map(|token| token.as_bytes().to_vec()),
     };
     send(session, writer, request_id, Body::Attached(attached)).await?;
+    let pane_stream_enabled = client_events.pane_stream_enabled;
     TuiConnection {
         session,
         writer,
         active,
         workspaces,
         client_events,
-        last_preview: None,
+        preview_tab: None,
+        pane_stream_enabled,
+        pane_stream: PaneStream::default(),
         last_history: None,
         parked: None,
     }
     .run(incoming)
     .await
+}
+
+const PANE_PUSH_INTERVAL: Duration = Duration::from_millis(60);
+
+struct WatchedPane {
+    handle: TerminalHandle,
+    version_rx: watch::Receiver<u64>,
+    sent_version: Option<u64>,
+    last_sent: Option<Instant>,
+}
+
+#[derive(Default)]
+struct PaneStream {
+    watched: HashMap<Uuid, WatchedPane>,
+}
+
+impl PaneStream {
+    fn sync(&mut self, handles: Vec<(Uuid, TerminalHandle)>) {
+        self.watched
+            .retain(|pane, _| handles.iter().any(|(id, _)| id == pane));
+        for (pane, handle) in handles {
+            self.watched.entry(pane).or_insert_with(|| WatchedPane {
+                version_rx: handle.screen_version(),
+                handle,
+                sent_version: None,
+                last_sent: None,
+            });
+        }
+    }
+
+    async fn next_ready(&mut self) -> Option<(Uuid, TerminalHandle, u64)> {
+        let now = Instant::now();
+        let mut earliest_wake: Option<Instant> = None;
+        for (&pane, entry) in &self.watched {
+            let current = *entry.version_rx.borrow();
+            if entry.sent_version == Some(current) {
+                continue;
+            }
+            let ready_at = entry
+                .last_sent
+                .map_or(now, |last| last + PANE_PUSH_INTERVAL);
+            if ready_at <= now {
+                return Some((pane, entry.handle.clone(), current));
+            }
+            earliest_wake = Some(earliest_wake.map_or(ready_at, |best| best.min(ready_at)));
+        }
+        if let Some(wake) = earliest_wake {
+            sleep_until(wake).await;
+            return None;
+        }
+        if self.watched.is_empty() {
+            std::future::pending::<()>().await;
+            return None;
+        }
+        let waiters: Vec<_> = self
+            .watched
+            .values_mut()
+            .map(|entry| Box::pin(entry.version_rx.changed()))
+            .collect();
+        let _ = futures_util::future::select_all(waiters).await;
+        None
+    }
+
+    fn mark_sent(&mut self, pane: Uuid, version: u64) {
+        if let Some(entry) = self.watched.get_mut(&pane) {
+            entry.sent_version = Some(version);
+            entry.last_sent = Some(Instant::now());
+        }
+    }
 }
 
 struct TuiConnection<'a> {
@@ -305,7 +386,9 @@ struct TuiConnection<'a> {
     active: Active,
     workspaces: &'a Workspaces,
     client_events: ClientEvents,
-    last_preview: Option<Instant>,
+    preview_tab: Option<Uuid>,
+    pane_stream_enabled: bool,
+    pane_stream: PaneStream,
     last_history: Option<Instant>,
     parked: ParkedTerminal,
 }
@@ -314,10 +397,12 @@ struct ClientEvents {
     focuses: mpsc::Receiver<FocusDispatch>,
     notices: mpsc::Receiver<Provider>,
     disconnected: oneshot::Receiver<()>,
+    pane_stream_enabled: bool,
 }
 
 impl TuiConnection<'_> {
     async fn run(mut self, incoming: &mut Incoming) -> Result<ParkedTerminal> {
+        self.sync_pane_stream().await;
         loop {
             corvid_async::select! {
                 biased;
@@ -342,6 +427,11 @@ impl TuiConnection<'_> {
                     self.send(None, Body::AgentResponded(AgentResponded {
                         provider: crate::provider::contract(provider).wire_id,
                     })).await?;
+                }
+                ready = self.pane_stream.next_ready() => {
+                    if let Some((pane_id, handle, version)) = ready {
+                        self.push_pane_preview(pane_id, &handle, version).await?;
+                    }
                 }
             }
         }
@@ -429,8 +519,9 @@ impl TuiConnection<'_> {
                     .focus_own_agent(agent, request.request_id.clone())
                     .await;
             }
-            Body::ReadPanePreview(preview) => {
-                self.preview(preview, request.request_id.clone()).await?
+            Body::SetPreviewTab(preview) => {
+                self.set_preview_tab(preview, request.request_id.clone())
+                    .await?
             }
             Body::ReadTerminalHistory(history) => {
                 let result = self.history(history).await;
@@ -784,6 +875,8 @@ impl TuiConnection<'_> {
         request_id: Option<String>,
         paste_discarded: bool,
     ) -> Result<()> {
+        self.preview_tab = None;
+        self.sync_pane_stream().await;
         let viewport = self.active.viewport.outer;
         let view = ViewChanged {
             view_revision: self.active.route.view_revision,
@@ -820,35 +913,44 @@ impl TuiConnection<'_> {
         Ok(())
     }
 
-    async fn preview(&mut self, preview: &ReadPanePreview, id: Option<String>) -> Result<()> {
-        let outcome = async {
+    async fn sync_pane_stream(&mut self) {
+        if !self.pane_stream_enabled {
+            return;
+        }
+        let tab = self.preview_tab.unwrap_or(self.active.location.tab);
+        let handles = self.workspaces.preview_handles(&self.active, tab).await;
+        self.pane_stream.sync(handles);
+    }
+
+    async fn set_preview_tab(&mut self, preview: &SetPreviewTab, id: Option<String>) -> Result<()> {
+        let tab = match (|| -> std::result::Result<Option<Uuid>, ProtocolFault> {
             require_view(
                 preview.expected_view_revision,
                 self.active.route.view_revision,
             )?;
-            let pane = parse_id(&preview.pane_id)?;
-            let now = Instant::now();
-            if self
-                .last_preview
-                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(180))
-            {
-                return Err(ProtocolFault::new(
-                    "LimitExceeded",
-                    "pane previews are rate limited",
-                ));
-            }
-            self.last_preview = Some(now);
-            timeout(
-                Duration::from_millis(150),
-                self.workspaces.preview(&self.active, pane),
-            )
-            .await
-            .map_err(|_| ProtocolFault::new("Timeout", "pane preview timed out"))?
-        }
-        .await;
-        let (viewport, ansi) = match outcome {
-            Ok(preview) => preview,
+            preview.tab_id.as_deref().map(parse_id).transpose()
+        })() {
+            Ok(tab) => tab,
             Err(fault) => return self.fault(id, fault).await,
+        };
+        self.preview_tab = tab;
+        self.sync_pane_stream().await;
+        if id.is_some() {
+            self.send(id, Body::Pong(Pong {})).await?;
+        }
+        Ok(())
+    }
+
+    async fn push_pane_preview(
+        &mut self,
+        pane_id: Uuid,
+        handle: &TerminalHandle,
+        version: u64,
+    ) -> Result<()> {
+        self.pane_stream.mark_sent(pane_id, version);
+        let Ok(Ok((viewport, ansi))) = timeout(Duration::from_millis(150), handle.preview()).await
+        else {
+            return Ok(());
         };
         let header = RenderHeader {
             host_id: self.session.host_id.clone(),
@@ -862,7 +964,7 @@ impl TuiConnection<'_> {
             wheel_encoding: corvid_protocol::wire::WheelEncoding::Disabled.into(),
             alternate_screen: None,
             preview: Some(PanePreviewFrame {
-                pane_id: preview.pane_id.clone(),
+                pane_id: pane_id.to_string(),
                 viewport: Some(WireViewport {
                     rows: viewport.rows.get().into(),
                     cols: viewport.cols.get().into(),

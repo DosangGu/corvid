@@ -244,6 +244,7 @@ enum Command {
     Activate(InputRoute, TuiViewport, oneshot::Sender<Reply<()>>),
     Resume(InputRoute),
     Preview(oneshot::Sender<Reply<(Viewport, Vec<u8>)>>),
+    PreviewSnapshot(oneshot::Sender<Reply<(Viewport, Arc<ScreenSnapshot>)>>),
     History(
         InputRoute,
         bool,
@@ -258,6 +259,7 @@ pub(crate) struct TerminalHandle {
     live: Arc<AtomicBool>,
     viewing: Arc<AtomicBool>,
     hidden_viewport: watch::Sender<Option<Viewport>>,
+    screen_version: watch::Sender<u64>,
 }
 
 impl TerminalHandle {
@@ -299,8 +301,10 @@ impl TerminalHandle {
         let live = Arc::new(AtomicBool::new(false));
         let viewing = Arc::new(AtomicBool::new(false));
         let (hidden_viewport, pending_viewport) = watch::channel(None);
+        let (screen_version, _) = watch::channel(0u64);
         let worker_live = Arc::clone(&live);
         let worker_viewing = Arc::clone(&viewing);
+        let worker_version = screen_version.clone();
         let worker = executor::spawn_worker(move || {
             // Terminal engines are created, used, and dropped on this worker.
             let mut worker = Worker {
@@ -310,12 +314,14 @@ impl TerminalHandle {
                 live: worker_live,
                 viewing: worker_viewing,
                 hidden_viewport: pending_viewport,
+                screen_version: worker_version,
                 retaining: false,
             };
             if let Some((saved, ready)) = recovery {
                 let result = Running::recover(saved, &worker.scope).map(|terminal| {
                     worker.terminal = Some(terminal);
                     worker.live.store(true, Ordering::Release);
+                    worker.bump_screen_version();
                 });
                 let recovered = result.is_ok();
                 let _ = ready.send(result);
@@ -331,6 +337,7 @@ impl TerminalHandle {
                 live,
                 viewing,
                 hidden_viewport,
+                screen_version,
             },
             worker,
         )
@@ -366,6 +373,10 @@ impl TerminalHandle {
             .try_send(Command::Transfer(route, spec, send))
             .map_err(|_| overloaded())?;
         receive.await.map_err(|_| overloaded())?
+    }
+
+    pub(crate) fn screen_version(&self) -> watch::Receiver<u64> {
+        self.screen_version.subscribe()
     }
 
     pub(crate) async fn preview(&self) -> Reply<(Viewport, Vec<u8>)> {
@@ -481,6 +492,7 @@ struct Worker {
     live: Arc<AtomicBool>,
     viewing: Arc<AtomicBool>,
     hidden_viewport: watch::Receiver<Option<Viewport>>,
+    screen_version: watch::Sender<u64>,
     retaining: bool,
 }
 
@@ -526,6 +538,7 @@ impl Worker {
                                 let id = terminal.id;
                                 self.terminal = Some(terminal);
                                 self.live.store(true, Ordering::Release);
+                                self.bump_screen_version();
                                 id
                             })
                             .map_err(|_| ProtocolFault::new("TerminalStartFailed", "could not launch the provider; check its installation on the daemon host"))
@@ -594,6 +607,11 @@ impl Worker {
                     let _ = reply.send(self.preview());
                 }
             }
+            Command::PreviewSnapshot(reply) => {
+                if !reply.is_closed() {
+                    let _ = reply.send(self.preview_snapshot());
+                }
+            }
             Command::Transfer(route, spec, reply) => {
                 if !reply.is_closed() && !spec.events.is_closed() {
                     let _ = reply.send(self.transfer(route, spec));
@@ -633,6 +651,10 @@ impl Worker {
         self.lease.as_ref().map(Lease::input_mode)
     }
 
+    fn bump_screen_version(&self) {
+        bump_version(&self.screen_version);
+    }
+
     fn preview(&mut self) -> Reply<(Viewport, Vec<u8>)> {
         let running = self
             .terminal
@@ -644,6 +666,18 @@ impl Worker {
             return Err(terminal_fault());
         }
         Ok((viewport, ansi))
+    }
+
+    fn preview_snapshot(&mut self) -> Reply<(Viewport, Arc<ScreenSnapshot>)> {
+        let running = self
+            .terminal
+            .as_mut()
+            .filter(|terminal| terminal.exit.is_none())
+            .ok_or_else(terminal_fault)?;
+        running
+            .session
+            .preview_snapshot()
+            .map_err(|_| terminal_fault())
     }
 
     fn history(
@@ -780,7 +814,10 @@ impl Worker {
         match (&mut self.terminal, launch) {
             (Some(terminal), None) if terminal.exit.is_some() => return Err(terminal_fault()),
             (Some(_), None) if spec.dormant => {}
-            (Some(terminal), None) => terminal.resize(content).map_err(|_| terminal_fault())?,
+            (Some(terminal), None) => {
+                terminal.resize(content).map_err(|_| terminal_fault())?;
+                self.bump_screen_version();
+            }
             (Some(_), Some(_)) => {
                 return Err(ProtocolFault::new(
                     "TerminalExists",
@@ -798,6 +835,7 @@ impl Worker {
                     },
                 )?);
                 self.live.store(true, Ordering::Release);
+                self.bump_screen_version();
             }
             (None, None) => {
                 return Err(ProtocolFault::new(
@@ -961,6 +999,7 @@ impl Worker {
         lease.viewport = viewport;
         terminal.dirty = true;
         lease.armed = true;
+        self.bump_screen_version();
         Ok(())
     }
 
@@ -1232,6 +1271,7 @@ impl Worker {
                 lease.route.view_revision = revision;
                 lease.render_generation = generation;
                 lease.previous = None;
+                bump_version(&self.screen_version);
                 if lease
                     .events
                     .try_send(Event::ViewChanged {
@@ -1282,17 +1322,21 @@ impl Worker {
         if self.lease.is_none()
             && terminal.exit.is_none()
             && let Some(viewport) = viewport
+            && terminal.resize(viewport).is_ok()
         {
-            let _ = terminal.resize(viewport);
+            bump_version(&self.screen_version);
         }
         let clipboard_route = self.lease.as_ref().and_then(Lease::clipboard_route);
-        let (failure, clipboard) = match terminal.advance(clipboard_route) {
+        let (failure, clipboard, output) = match terminal.advance(clipboard_route) {
             Ok(result) => result,
             Err(_) => {
                 self.fail(terminal_fault(), true);
                 return;
             }
         };
+        if output {
+            bump_version(&self.screen_version);
+        }
         if terminal.exit.is_some() {
             self.live.store(false, Ordering::Release);
             if let Some(lease) = &mut self.lease {
@@ -1652,9 +1696,9 @@ impl Running {
     fn advance(
         &mut self,
         clipboard_route: Option<InputRoute>,
-    ) -> Result<(Option<WriteFailure>, Option<String>)> {
+    ) -> Result<(Option<WriteFailure>, Option<String>, bool)> {
         if self.exit.is_some() {
-            return Ok((None, None));
+            return Ok((None, None, false));
         }
         let clipboard_reset = self.clipboard_route != clipboard_route;
         self.clipboard_route = clipboard_route;
@@ -1703,7 +1747,7 @@ impl Running {
                 });
             }
         }
-        Ok((tick.failure, tick.clipboard))
+        Ok((tick.failure, tick.clipboard, tick.output))
     }
 
     #[cfg(windows)]
@@ -2759,7 +2803,13 @@ impl Lease {
     }
 }
 
-type PreviewReply = oneshot::Receiver<Reply<(Viewport, Vec<u8>)>>;
+type PreviewSnapshotReply = oneshot::Receiver<Reply<(Viewport, Arc<ScreenSnapshot>)>>;
+
+struct WatchedPreview {
+    rx: watch::Receiver<u64>,
+    seen: Option<u64>,
+    last_fetch: Option<Instant>,
+}
 
 struct CompositionCache {
     header_motion: HeaderMotion,
@@ -2770,9 +2820,8 @@ struct CompositionCache {
     size: Option<Viewport>,
     active: Option<Arc<ScreenSnapshot>>,
     screens: HashMap<Uuid, Arc<ScreenSnapshot>>,
-    pending: Option<(Uuid, Instant, PreviewReply)>,
-    next_preview: Instant,
-    index: usize,
+    watched: HashMap<Uuid, WatchedPreview>,
+    pending: Option<(Uuid, Instant, PreviewSnapshotReply)>,
 }
 
 impl CompositionCache {
@@ -2786,9 +2835,8 @@ impl CompositionCache {
             size: None,
             active: None,
             screens: HashMap::new(),
+            watched: HashMap::new(),
             pending: None,
-            next_preview: Instant::now(),
-            index: 0,
         }
     }
 
@@ -2799,6 +2847,8 @@ impl CompositionCache {
         location: Location,
         shown_tab: Uuid,
     ) -> bool {
+        const PREVIEW_COALESCE: Duration = Duration::from_millis(33);
+
         let pane_body = |pane| {
             view.panes
                 .iter()
@@ -2815,25 +2865,30 @@ impl CompositionCache {
         let mut changed = before != self.screens.len();
         if !view.split && shown_tab == location.tab {
             self.pending = None;
+            self.watched.clear();
             return changed;
         }
         if let Some((pane, until, mut pending)) = self.pending.take()
             && let Some(body) = pane_body(pane)
         {
             match pending.try_recv() {
-                Ok(Ok((viewport, bytes))) => {
+                Ok(Ok((viewport, screen))) => {
                     // Each cached preview occupies at most its rendered area.
                     // Reading a wider preview neither resizes nor retains a full copy of that PTY.
                     let cols = viewport.cols.get().min(body.width);
                     let rows = viewport.rows.get().min(body.height);
                     let clip = Viewport::new(cols, rows).expect("composition has a usable body");
-                    let screen = ScreenSnapshot::from_ansi(viewport, &bytes, Some(clip));
+                    let screen = if clip != viewport {
+                        Arc::new(screen.clipped(clip))
+                    } else {
+                        screen
+                    };
                     if self
                         .screens
                         .get(&pane)
                         .is_none_or(|previous| !screen.matches(previous))
                     {
-                        self.screens.insert(pane, Arc::new(screen));
+                        self.screens.insert(pane, screen);
                         changed = true;
                     }
                 }
@@ -2845,29 +2900,59 @@ impl CompositionCache {
                 }
             }
         }
-        if self.pending.is_none() && Instant::now() >= self.next_preview {
-            self.next_preview = Instant::now() + Duration::from_millis(125);
-            if let Some(mut handles) = scope
-                .registry
-                .request(move |registry| registry.preview_handles(location, shown_tab))
-            {
-                handles.retain(|(pane, _)| pane_body(*pane).is_some());
-                let before = self.screens.len();
-                self.screens
-                    .retain(|pane, _| handles.iter().any(|(id, _)| id == pane));
-                changed |= before != self.screens.len();
-                if !handles.is_empty() {
-                    let (pane, handle) = &handles[self.index % handles.len()];
-                    self.index = self.index.wrapping_add(1);
+        if let Some(mut handles) = scope
+            .registry
+            .request(move |registry| registry.preview_handles(location, shown_tab))
+        {
+            handles.retain(|(pane, _)| pane_body(*pane).is_some());
+            let before = self.screens.len();
+            self.screens
+                .retain(|pane, _| handles.iter().any(|(id, _)| id == pane));
+            changed |= before != self.screens.len();
+            self.watched
+                .retain(|pane, _| handles.iter().any(|(id, _)| id == pane));
+            for (pane, handle) in &handles {
+                self.watched.entry(*pane).or_insert_with(|| WatchedPreview {
+                    rx: handle.screen_version(),
+                    seen: None,
+                    last_fetch: None,
+                });
+            }
+            if self.pending.is_none() {
+                let now = Instant::now();
+                let next = handles.into_iter().find(|(pane, _)| {
+                    self.watched.get(pane).is_some_and(|entry| {
+                        let current = *entry.rx.borrow();
+                        entry.seen != Some(current)
+                            && entry
+                                .last_fetch
+                                .is_none_or(|last| now.duration_since(last) >= PREVIEW_COALESCE)
+                    })
+                });
+                if let Some((pane, handle)) = next {
                     let (send, reply) = oneshot::channel();
-                    if handle.commands.try_send(Command::Preview(send)).is_ok() {
-                        self.pending = Some((*pane, Instant::now() + COMMAND_TIMEOUT, reply));
+                    if handle
+                        .commands
+                        .try_send(Command::PreviewSnapshot(send))
+                        .is_ok()
+                    {
+                        if let Some(entry) = self.watched.get_mut(&pane) {
+                            entry.seen = Some(*entry.rx.borrow());
+                            entry.last_fetch = Some(now);
+                        }
+                        self.pending = Some((pane, now + COMMAND_TIMEOUT, reply));
                     }
                 }
             }
         }
         changed
     }
+}
+
+fn bump_version(screen_version: &watch::Sender<u64>) {
+    screen_version.send_modify(|version| {
+        *version = version.wrapping_add(1);
+    });
 }
 
 fn stale_route() -> ProtocolFault {

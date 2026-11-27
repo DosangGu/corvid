@@ -33,7 +33,7 @@ fn preview_snapshot_allows_publication_during_rendering() {
     parser.process(b"before");
     let screen = Arc::new(parser.screen().clone());
     shared.edit(move |state| {
-        Arc::make_mut(&mut state.previews).insert("pane".into(), screen);
+        cache_pane_screen(state, "pane".into(), screen);
         Changed::Ui
     });
 
@@ -53,7 +53,7 @@ fn preview_snapshot_allows_publication_during_rendering() {
         parser.process(b" after");
         let screen = Arc::new(parser.screen().clone());
         shared.edit(move |state| {
-            Arc::make_mut(&mut state.previews).insert("pane".into(), screen);
+            cache_pane_screen(state, "pane".into(), screen);
             Changed::Ui
         });
         published.send(()).unwrap();
@@ -220,7 +220,13 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         let (parsing, parsing_started) = blocking::channel();
         let (resume_parsing, resume) = blocking::channel();
         let mut parser = Decoder::new(grid.rows, grid.cols);
-        shared.apply_ansi(&mut parser, b"before", WheelEncoding::Sgr, Some(false));
+        shared.apply_ansi(
+            "pane".into(),
+            &mut parser,
+            b"before",
+            WheelEncoding::Sgr,
+            Some(false),
+        );
         assert!(session.wheel_target("other").is_none());
         let route = session.wheel_target("pane").unwrap();
         session.send_wheel("pane", route, (3, 4), -1, 0);
@@ -230,7 +236,7 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         changes.borrow_and_update();
         let shared = &shared;
         let parsing = scope.spawn(move || {
-            shared.apply_frame(WheelEncoding::Disabled, Some(false), || {
+            shared.apply_frame("pane".into(), WheelEncoding::Disabled, Some(false), || {
                 parser.process(b"\x1b[2J\x1b[Hpartial");
                 parsing.send(()).unwrap();
                 resume.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -273,6 +279,7 @@ fn large_ansi_update_keeps_previous_screen_and_input_available() {
         );
 
         shared.apply_ansi(
+            "pane".into(),
             &mut parser,
             &"한".as_bytes()[1..],
             WheelEncoding::Disabled,
@@ -457,7 +464,13 @@ fn send_mouse_requires_matching_epoch_and_mouse_target() {
         Changed::View
     });
     let mut parser = corvid_protocol::ansi_screen::Decoder::new(grid.rows, grid.cols);
-    shared.apply_ansi(&mut parser, b"ready", WheelEncoding::Sgr, Some(true));
+    shared.apply_ansi(
+        "pane".into(),
+        &mut parser,
+        b"ready",
+        WheelEncoding::Sgr,
+        Some(true),
+    );
 
     let route = session.wheel_target("pane").unwrap();
     assert_eq!(route.1, WheelTarget::Mouse(WheelEncoding::Sgr));
@@ -521,4 +534,85 @@ fn send_mouse_requires_matching_epoch_and_mouse_target() {
         },
     ));
     assert!(incoming.try_recv().is_err());
+}
+
+#[test]
+fn pane_screens_cache_survives_view_switches_and_evicts_oldest_non_active() {
+    let shared = Arc::new(Shared::new(&Destination::Local, session_runtime().unwrap()));
+    let (actions, _) = mpsc::channel(1);
+    let grid = Grid::new(2, 24);
+    let (size, _) = watch::channel((0, 1, grid));
+    let session = Session {
+        shared: Arc::clone(&shared),
+        actions,
+        size,
+    };
+
+    let mut parser_a = Decoder::new(grid.rows, grid.cols);
+    parser_a.process(b"pane-a");
+    let screen_a = Arc::new(parser_a.screen().clone());
+    let mut parser_b = Decoder::new(grid.rows, grid.cols);
+    parser_b.process(b"pane-b");
+    let screen_b = Arc::new(parser_b.screen().clone());
+
+    shared.edit(move |state| {
+        let ui = Arc::make_mut(&mut state.ui);
+        ui.connected = true;
+        ui.changing = false;
+        ui.selected = Some(ViewSelection {
+            workspace_id: "ws".into(),
+            tab_id: "tab-1".into(),
+            pane_id: "pane-a".into(),
+        });
+        state.active_screen_ready = true;
+        cache_pane_screen(state, "pane-a".into(), screen_a);
+        cache_pane_screen(state, "pane-b".into(), screen_b);
+        Changed::View
+    });
+
+    assert_eq!(
+        session.screen("pane-a", Screen::contents).as_deref(),
+        Some("pane-a")
+    );
+    assert!(session.active_screen_ready("pane-a"));
+
+    // Simulate switching to pane-b in another tab: cached screen_b is immediately available
+    // while active_screen_ready stays false until the new live RenderFrame arrives.
+    shared.edit(|state| {
+        let ui = Arc::make_mut(&mut state.ui);
+        ui.selected = Some(ViewSelection {
+            workspace_id: "ws".into(),
+            tab_id: "tab-2".into(),
+            pane_id: "pane-b".into(),
+        });
+        state.active_screen_ready = false;
+        Changed::View
+    });
+    assert_eq!(
+        session.screen("pane-b", Screen::contents).as_deref(),
+        Some("pane-b")
+    );
+    assert!(!session.active_screen_ready("pane-b"));
+    assert_eq!(
+        session.preview("pane-a", Screen::contents).as_deref(),
+        Some("pane-a")
+    );
+
+    // Filling past MAX_CACHED_PANE_SCREENS evicts oldest non-active panes without evicting active pane-b.
+    shared.edit(move |state| {
+        for idx in 0..MAX_CACHED_PANE_SCREENS + 4 {
+            let mut parser = Decoder::new(grid.rows, grid.cols);
+            parser.process(format!("extra-{idx}").as_bytes());
+            cache_pane_screen(
+                state,
+                format!("extra-{idx}"),
+                Arc::new(parser.screen().clone()),
+            );
+        }
+        Changed::Ui
+    });
+    let snapshot = shared.snapshot();
+    assert_eq!(snapshot.pane_screens.len(), MAX_CACHED_PANE_SCREENS);
+    assert!(snapshot.pane_screens.contains_key("pane-b"));
+    assert!(!snapshot.pane_screens.contains_key("pane-a"));
 }

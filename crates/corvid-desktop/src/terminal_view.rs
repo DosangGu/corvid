@@ -1091,7 +1091,7 @@ impl TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.pending_pane_click.is_some()
-            && self.session.screen_snapshot(&self.pane).is_some()
+            && self.session.active_screen_ready(&self.pane)
             && let Some(cell) = self.pending_pane_click.take()
         {
             self.session.send_pane_click(&self.pane, cell);
