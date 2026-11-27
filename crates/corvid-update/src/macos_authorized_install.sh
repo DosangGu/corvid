@@ -10,10 +10,16 @@ fail() { printf '%s\n' "$*" >&2; exit 1; }
 # Elevated filesystem operations are limited to bundles under administrator-
 # controlled paths. Recheck every component here before creating any files.
 entry=$app
+app_uid=
+app_gid=
 while [ "$entry" != / ]; do
     [ -d "$entry" ] && [ ! -L "$entry" ] || fail 'The installed app path changed.'
     set -- $(/usr/bin/stat -f '%u %g %p' "$entry")
     [ "$#" -eq 3 ] || fail 'Cannot inspect the installed app path.'
+    if [ -z "$app_uid" ]; then
+        app_uid=$1
+        app_gid=$2
+    fi
     case " $(/usr/bin/id -Gn "$1") " in
         *' admin '*|*' wheel '*) ;;
         *) fail 'The app path is not controlled by an administrator.' ;;
@@ -42,8 +48,9 @@ trap 'exit 1' HUP INT TERM
 digest=$(/usr/bin/shasum -a 256 "$app/Contents/Resources/package.json")
 [ "${digest%% *}" = "$expected" ] || fail 'Corvid changed while the update was being prepared.'
 /usr/bin/ditto --noacl --noqtn "$incoming" "$lock/Corvid.app"
-# Allow users of the shared installation to read its new resources.
-/bin/chmod -R a+rX "$lock/Corvid.app"
+# Preserve administrator ownership and read-only access for non-administrators.
+/usr/sbin/chown -Rh "$app_uid:$app_gid" "$lock/Corvid.app"
+/bin/chmod -R go-w,a+rX "$lock/Corvid.app"
 /usr/bin/codesign --verify --deep --strict -R='identifier "org.corvid.desktop"' "$lock/Corvid.app"
 actual=$(/usr/bin/codesign --display --verbose=4 "$lock/Corvid.app" 2>&1 | /usr/bin/sed -n 's/^CDHash=//p')
 [ "$actual" = "$cdhash" ] || fail 'The staged Corvid code signature changed.'
