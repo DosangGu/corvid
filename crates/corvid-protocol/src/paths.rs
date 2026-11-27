@@ -34,7 +34,7 @@ pub struct RuntimePath {
 }
 
 impl RuntimePath {
-    fn direct(path: PathBuf) -> Self {
+    pub fn direct(path: PathBuf) -> Self {
         Self {
             path,
             #[cfg(any(test, target_os = "macos"))]
@@ -52,10 +52,39 @@ impl RuntimePath {
         Ok(self.path)
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     fn join(mut self, name: impl AsRef<OsStr>) -> Self {
         self.path.push(name.as_ref());
         self
+    }
+}
+
+/// A resolved daemon runtime location and whether it came from an explicit override.
+#[derive(Debug)]
+pub enum DaemonRuntime {
+    Override(RuntimePath),
+    Default(RuntimePath),
+}
+
+impl DaemonRuntime {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Override(runtime) | Self::Default(runtime) => runtime.path(),
+        }
+    }
+
+    pub fn prepare(self) -> Result<PathBuf> {
+        self.into_runtime_path().prepare()
+    }
+
+    pub fn into_runtime_path(self) -> RuntimePath {
+        match self {
+            Self::Override(runtime) | Self::Default(runtime) => runtime,
+        }
     }
 }
 
@@ -136,18 +165,13 @@ trait PlatformPaths {
         })
     }
 
-    fn runtime(
-        inputs: &impl PathInputs,
-        explicit: Option<PathBuf>,
-        previous: impl FnOnce() -> Option<PathBuf>,
-    ) -> Result<RuntimePath> {
-        if let Some(path) = explicit
-            .or_else(|| inputs.var(crate::collector::RUNTIME_DIR).map(PathBuf::from))
-            .or_else(previous)
+    fn runtime(inputs: &impl PathInputs, explicit: Option<PathBuf>) -> Result<DaemonRuntime> {
+        if let Some(path) =
+            explicit.or_else(|| inputs.var(crate::collector::RUNTIME_DIR).map(PathBuf::from))
         {
-            return Ok(RuntimePath::direct(path));
+            return Ok(DaemonRuntime::Override(RuntimePath::direct(path)));
         }
-        Self::default_runtime(inputs)
+        Ok(DaemonRuntime::Default(Self::default_runtime(inputs)?))
     }
 }
 
@@ -256,13 +280,9 @@ pub fn state_directory(role: StateRole, explicit: Option<PathBuf>) -> Result<Pat
     Native::state(&System, role, explicit)
 }
 
-/// Explicit selection precedes the environment, then the saved navigation hint
-/// (if supplied) and the platform default.
-pub fn daemon_runtime(
-    explicit: Option<PathBuf>,
-    previous: impl FnOnce() -> Option<PathBuf>,
-) -> Result<RuntimePath> {
-    Native::runtime(&System, explicit, previous)
+/// Explicit selection precedes the environment, then the platform default.
+pub fn daemon_runtime(explicit: Option<PathBuf>) -> Result<DaemonRuntime> {
+    Native::runtime(&System, explicit)
 }
 
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
@@ -342,7 +362,11 @@ impl UnixPaths for Linux {
                     .user_runtime()
                     .or_else(|| local_runtime.map(Path::to_owned))
                     .map(RuntimePath::direct)
-                    .or_else(|| Self::runtime(inputs, None, || None).ok())
+                    .or_else(|| {
+                        Self::runtime(inputs, None)
+                            .ok()
+                            .map(DaemonRuntime::into_runtime_path)
+                    })
                     .context("set XDG_RUNTIME_DIR for the agent monitor");
             }
         };
@@ -362,7 +386,7 @@ impl UnixPaths for MacOs {
         _: UnixEndpoint,
         _: Option<&Path>,
     ) -> Result<RuntimePath> {
-        Self::runtime(inputs, None, || None)
+        Ok(Self::runtime(inputs, None)?.into_runtime_path())
     }
 }
 
@@ -409,7 +433,7 @@ fn named_socket(inputs: &impl PathInputs, name: &OsStr) -> Result<RuntimePath> {
         Path::new(name).file_name() == Some(name),
         "invalid socket name"
     );
-    Ok(MacOs::runtime(inputs, None, || None)?.join(name))
+    Ok(MacOs::runtime(inputs, None)?.into_runtime_path().join(name))
 }
 
 #[cfg(target_os = "macos")]
@@ -432,7 +456,7 @@ fn startup_socket_name<'a>(
             .and_then(|name| name.strip_prefix("r-"))
             .is_some_and(|id| id.len() == 16 && is_boot_id(id))
     });
-    if prior_boot || parent == Some(MacOs::runtime(inputs, None, || None)?.path.as_path()) {
+    if prior_boot || parent == Some(MacOs::runtime(inputs, None)?.path()) {
         return Ok(Some(address.file_name().context("missing socket name")?));
     }
     Ok(None)

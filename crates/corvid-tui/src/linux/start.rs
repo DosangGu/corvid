@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 pub(crate) async fn start(override_path: Option<PathBuf>) -> Result<u32> {
     corvid_client::check_tty()?;
-    let path = corvid_client::view_state::tui_runtime(override_path)?;
+    let path = corvid_client::tui_runtime(override_path).await?;
     crate::daemon_bootstrap::ensure_cli(&path).await?;
 
     let options = AttachOptions {

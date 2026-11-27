@@ -636,3 +636,133 @@ async fn observers_exit_neutrally_with_missing_daemon_and_bad_or_stalled_input()
         }
     }
 }
+
+#[compio::test]
+async fn plain_tui_falls_back_to_default_runtime_when_saved_runtime_is_unreachable() {
+    use corvid_client::view_state::{Target, ViewStore};
+    use corvid_protocol::wire::ViewSelection;
+
+    let temporary = tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap();
+    let root = temporary.path();
+    let xdg_runtime = root.join("xdg-run");
+    let xdg_state = root.join("xdg-state");
+    let home = root.join("home");
+    let views = root.join("views");
+    fs::create_dir_all(&xdg_runtime).unwrap();
+    fs::create_dir_all(&xdg_state).unwrap();
+    fs::create_dir_all(&home).unwrap();
+
+    #[cfg(target_os = "linux")]
+    let default_runtime = xdg_runtime.join("corvid");
+    #[cfg(target_os = "macos")]
+    let default_runtime = {
+        let boot = corvid_protocol::macos::boot_session().unwrap();
+        home.join(".corvid").join(format!("r-{}", &boot[..16]))
+    };
+
+    #[cfg(target_os = "linux")]
+    let default_state = xdg_state.join("corvid");
+    #[cfg(target_os = "macos")]
+    let default_state = home.join("Library/Application Support/Corvid/daemon");
+
+    let _default_daemon = daemon(&default_runtime, &default_state).await;
+
+    let save_tui_runtime = |runtime: &Path| {
+        let store = ViewStore::new(views.join("tui"));
+        let recorder = store.recorder().unwrap();
+        recorder.record(
+            Target::Tui {
+                runtime: runtime.to_path_buf(),
+            },
+            &Uuid::new_v4().to_string(),
+            &ViewSelection {
+                workspace_id: Uuid::new_v4().to_string(),
+                tab_id: Uuid::new_v4().to_string(),
+                pane_id: Uuid::new_v4().to_string(),
+            },
+        );
+        drop(recorder);
+    };
+
+    let run_plain_corvid = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_corvid"));
+        cmd.args(args)
+            .env("HOME", &home)
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("XDG_STATE_HOME", &xdg_state)
+            .env("CORVID_VIEW_STATE_DIR", &views)
+            .env_remove("CORVID_RUNTIME_DIR")
+            .stdin(Stdio::null());
+        cmd.output().unwrap()
+    };
+
+    // 1. Deleted saved runtime (and its parent directory) must not be recreated or fail.
+    let stale_parent = root.join("deleted-parent");
+    let stale_runtime = stale_parent.join("stale-run");
+    fs::create_dir_all(&stale_runtime).unwrap();
+    save_tui_runtime(&stale_runtime);
+    fs::remove_dir_all(&stale_parent).unwrap();
+
+    let output = run_plain_corvid(&["list"]);
+    assert!(
+        output.status.success(),
+        "plain corvid list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!stale_parent.exists());
+    assert!(!stale_runtime.exists());
+
+    // 2. Existing but dead runtime directory must also fall back to the default daemon.
+    let dead_runtime = root.join("dead-run");
+    fs::create_dir_all(&dead_runtime).unwrap();
+    save_tui_runtime(&dead_runtime);
+    let output = run_plain_corvid(&["list"]);
+    assert!(
+        output.status.success(),
+        "plain corvid list failed for dead runtime: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // 3. Authoritative overrides (--runtime-dir and CORVID_RUNTIME_DIR) must not fall back.
+    let missing_override = root.join("missing-override");
+    let cli_override = std::process::Command::new(env!("CARGO_BIN_EXE_corvid"))
+        .arg("--runtime-dir")
+        .arg(&missing_override)
+        .arg("list")
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &xdg_runtime)
+        .env("XDG_STATE_HOME", &xdg_state)
+        .env("CORVID_VIEW_STATE_DIR", &views)
+        .env_remove("CORVID_RUNTIME_DIR")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!cli_override.status.success());
+    assert!(!missing_override.exists());
+
+    let env_override = std::process::Command::new(env!("CARGO_BIN_EXE_corvid"))
+        .arg("list")
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &xdg_runtime)
+        .env("XDG_STATE_HOME", &xdg_state)
+        .env("CORVID_VIEW_STATE_DIR", &views)
+        .env("CORVID_RUNTIME_DIR", &missing_override)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!env_override.status.success());
+    assert!(!missing_override.exists());
+
+    // 4. Reachable remembered runtime continues to be selected by plain corvid.
+    let custom_runtime = root.join("custom-run");
+    let custom_state = root.join("custom-state");
+    let custom_daemon = daemon(&custom_runtime, &custom_state).await;
+    save_tui_runtime(&custom_runtime);
+    let output = run_plain_corvid(&["list"]);
+    assert!(
+        output.status.success(),
+        "plain corvid list failed for reachable remembered runtime: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    drop(custom_daemon);
+}

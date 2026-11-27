@@ -121,7 +121,7 @@ pub(super) enum ManagedAgent {
 
 pub(super) async fn start(runtime: Option<PathBuf>) -> Result<u32> {
     start_attach(
-        corvid_client::view_state::tui_runtime(runtime)?,
+        corvid_client::tui_runtime(runtime).await?,
         AttachOptions {
             launch_if_empty: true,
             ..AttachOptions::default()
@@ -190,7 +190,7 @@ pub(super) fn dispatch(
 
 async fn execute(command: Command, runtime: Option<PathBuf>) -> Result<u32> {
     let runtime = if matches!(command, Command::Attach { .. }) {
-        corvid_client::view_state::tui_runtime(runtime)?
+        corvid_client::tui_runtime(runtime).await?
     } else {
         runtime_path(runtime)?
     };
