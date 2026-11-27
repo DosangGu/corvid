@@ -53,7 +53,7 @@ def read_exact(fd, length):
 
 
 def child():
-    assert os.environ["TERM"] == "corvid"
+    assert os.environ["TERM"] == "xterm-256color"
     curses.setupterm()
     assert curses.tigetnum("colors") == 256
     assert curses.tparm(curses.tigetstr("cup"), 2, 4) == b"\x1b[3;5H"

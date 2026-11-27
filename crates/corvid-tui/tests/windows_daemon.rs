@@ -192,6 +192,7 @@ async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Resul
 
     tui.send(b"\x1d.")?;
     tui.wait_for("Rename tab")?;
+    tui.send(b"\x15")?;
     tui.send("이름 🐦".as_bytes())?;
     tui.send(b"\r")?;
     tui.wait_without("Rename tab")?;
@@ -206,7 +207,7 @@ async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Resul
     wait_for_title(&runtime, "이름 🐦", "SPLIT_AUTO").await?;
     tui.send(b"\x1d.")?;
     tui.wait_for("Rename tab")?;
-    tui.send(b"\x1b[200~Manual\r\nTab\x1b[201~")?;
+    tui.send(b"\x15\x1b[200~Manual\r\nTab\x1b[201~")?;
     tui.wait_for("> ManualTab")?;
     tui.send(b"\r")?;
     tui.wait_without("Rename tab")?;
@@ -215,7 +216,7 @@ async fn tab_rename_survives_a_split_and_panes_follow_their_terminals() -> Resul
 
     tui.send(b"\x1d.")?;
     tui.wait_for("Rename tab")?;
-    tui.send(b"\r")?;
+    tui.send(b"\x15\r")?;
     tui.wait_without("Rename tab")?;
     wait_for_title(&runtime, "Tab 1", "SPLIT_AUTO").await?;
     tui.wait_for("Tab 1")?;
@@ -1001,7 +1002,7 @@ async fn verify_windows_shell_handoff(desktop: bool) -> Result<()> {
     wait_for_title(&runtime, "RETAINED_TITLE", "RETAINED_TITLE").await?;
     first.send(b"\x1d.")?;
     first.wait_for("Rename tab")?;
-    first.send(b"Retained tab\r")?;
+    first.send(b"\x15Retained tab\r")?;
     first.wait_without("Rename tab")?;
     wait_for_title(&runtime, "Retained tab", "RETAINED_TITLE").await?;
     let original_terminal = terminal_id(&runtime).await?;

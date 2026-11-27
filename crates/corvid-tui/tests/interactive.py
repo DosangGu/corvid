@@ -901,7 +901,7 @@ def verify_workspace_ui(command, directory):
         terminal.expect(b"bottom-PANE")
         terminal.send(b"\x1d.")
         terminal.expect(b"Rename tab")
-        terminal.send(b"work\r")
+        terminal.send(b"\x15work\r")
         terminal.expect(rb"\[1 work\]")
         terminal.send(b"\x1dt")
         terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m\[1 work\]")
@@ -911,7 +911,7 @@ def verify_workspace_ui(command, directory):
         show_marker(terminal, "INPUT", "NEW_TAB")
         terminal.send(b"\x1d.")
         terminal.expect(b"Rename tab")
-        terminal.send(b"hello\r")
+        terminal.send(b"\x15hello\r")
         terminal.expect(rb"\[2 hello\]")
         split_markers = (b"left-PANE", b"top-PREVIEW", b"bottom-PANE")
         cases = (
@@ -1076,7 +1076,7 @@ def verify_overflowing_titles(command):
         terminal.expect(rb"\x1b\[0;1;36m\[1 ")
         terminal.send(b"\x1d.")
         terminal.expect(rb"Rename tab")
-        terminal.send("shared-prefix-한글-TAIL\r".encode())
+        terminal.send(b"\x15" + "shared-prefix-한글-TAIL\r".encode())
         active_tab = terminal.expect(rb"\x1b\[1;(\d+)H\x1b\[0;1;36m\[1 shared-prefix").group(1)
         terminal.output.clear()
 

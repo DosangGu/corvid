@@ -657,7 +657,9 @@ async fn plain_tui_falls_back_to_default_runtime_when_saved_runtime_is_unreachab
     #[cfg(target_os = "macos")]
     let default_runtime = {
         let boot = corvid_protocol::macos::boot_session().unwrap();
-        home.join(".corvid").join(format!("r-{}", &boot[..16]))
+        let runtime = home.join(".corvid").join(format!("r-{}", &boot[..16]));
+        RuntimeDir::create_all(runtime.parent().unwrap()).unwrap();
+        runtime
     };
 
     #[cfg(target_os = "linux")]
