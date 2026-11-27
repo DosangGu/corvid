@@ -38,7 +38,7 @@ impl WorkspaceView {
             return;
         }
         self.navigation = None;
-        self.leader = false;
+        self.set_leader(false, cx);
         self.switcher_open = false;
         self.menu_open = true;
         self.menu_create = create;

@@ -273,6 +273,16 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    pub(super) fn set_leader(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.leader == active {
+            return;
+        }
+        self.leader = active;
+        if let Some(terminal) = &self.terminal {
+            terminal.update(cx, |view, cx| view.set_leader_active(active, cx));
+        }
+    }
+
     pub(super) fn navigation_key(
         &mut self,
         event: &KeyDownEvent,
@@ -285,7 +295,7 @@ impl WorkspaceView {
             if leader {
                 cx.stop_propagation();
                 if !event.is_held {
-                    self.leader = true;
+                    self.set_leader(true, cx);
                     cx.notify();
                 }
             }
@@ -307,7 +317,8 @@ impl WorkspaceView {
             self.dismiss_overlay(window, cx);
             return;
         }
-        if std::mem::take(&mut self.leader) {
+        if self.leader {
+            self.set_leader(false, cx);
             if leader {
                 if let (Some(session), Some(view)) = (&self.session, &self.selected) {
                     for _ in 0..2 {

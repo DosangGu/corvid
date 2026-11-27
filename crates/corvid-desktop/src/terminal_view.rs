@@ -39,6 +39,7 @@ pub struct TerminalView {
     session: Session,
     pane: String,
     marked: String,
+    leader_active: bool,
     pending_pane_click: Option<(u16, u16)>,
     surface: Cell<Option<SurfaceGeometry>>,
     displayed: RefCell<Option<DisplayedScreen>>,
@@ -305,6 +306,7 @@ impl TerminalView {
             session,
             pane,
             marked: String::new(),
+            leader_active: false,
             pending_pane_click: None,
             surface: Cell::new(None),
             displayed: RefCell::new(None),
@@ -327,6 +329,17 @@ impl TerminalView {
 
     pub(crate) fn pending_pane_click(&mut self, cell: Option<(u16, u16)>) {
         self.pending_pane_click = cell;
+    }
+
+    pub(crate) fn set_leader_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.leader_active != active {
+            self.leader_active = active;
+            cx.notify();
+        }
+    }
+
+    fn accepts_text_input(&self) -> bool {
+        accepts_text_input_for(self.leader_active, self.history.as_ref())
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -1319,6 +1332,12 @@ struct TerminalInput {
 }
 
 impl InputHandler for TerminalInput {
+    fn accepts_text_input(&mut self, _: &mut Window, cx: &mut App) -> bool {
+        self.view
+            .upgrade()
+            .is_some_and(|view| view.read(cx).accepts_text_input())
+    }
+
     fn text_for_range(
         &mut self,
         _: Range<usize>,
@@ -1364,6 +1383,12 @@ impl InputHandler for TerminalInput {
         cx: &mut App,
     ) {
         let _ = self.view.update(cx, |view, cx| {
+            // Allow committing an in-progress marked composition (e.g. when Windows
+            // completes the IME on leader/browse entry), but ignore stray text
+            // while text input is disabled.
+            if !view.accepts_text_input() && view.marked.is_empty() {
+                return;
+            }
             view.cancel_pending_wheel();
             if view.wheel_browse() {
                 view.clear_history();
@@ -1389,6 +1414,9 @@ impl InputHandler for TerminalInput {
         cx: &mut App,
     ) {
         let _ = self.view.update(cx, |view, cx| {
+            if !view.accepts_text_input() {
+                return;
+            }
             view.cancel_pending_wheel();
             if view.wheel_browse() {
                 view.clear_history();
@@ -1427,6 +1455,10 @@ impl InputHandler for TerminalInput {
     ) -> Option<usize> {
         None
     }
+}
+
+fn accepts_text_input_for(leader_active: bool, history: Option<&History>) -> bool {
+    !leader_active && history.is_none_or(|history| history.search.is_some() || history.wheel_browse)
 }
 
 #[cfg(test)]
@@ -1616,6 +1648,23 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn disables_text_input_during_leader_and_explicit_history_browse() {
+        let browse = History::new(false);
+        let search = History::new(true);
+        let mut wheel = History::new(false);
+        wheel.wheel_browse = true;
+
+        assert!(accepts_text_input_for(false, None));
+        assert!(!accepts_text_input_for(true, None));
+        assert!(!accepts_text_input_for(false, Some(&browse)));
+        assert!(!accepts_text_input_for(true, Some(&browse)));
+        assert!(accepts_text_input_for(false, Some(&search)));
+        assert!(!accepts_text_input_for(true, Some(&search)));
+        assert!(accepts_text_input_for(false, Some(&wheel)));
+        assert!(!accepts_text_input_for(true, Some(&wheel)));
     }
 
     #[cfg(windows)]

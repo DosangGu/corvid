@@ -57,7 +57,7 @@ struct Row {
 impl WorkspaceView {
     pub(super) fn dismiss_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.navigation = None;
-        self.leader = false;
+        self.set_leader(false, cx);
         self.creation = None;
         self.naming = None;
         self.switcher_open = false;
