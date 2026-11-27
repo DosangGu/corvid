@@ -31,3 +31,10 @@ Welcome to the Corvid documentation. Guides are organized by audience and purpos
 - [Daemon and Runtime Qualification](qualification/daemon-and-runtime.md) — Compio runtime benchmarks, backpressure/latency measurements, and daemon verification logs
 - [Provider Qualification](qualification/providers.md) — Captured provider traces, working-activity qualification, and local reproduction scripts
 - [Platform Verification and Qualification](qualification/platforms.md) — Desktop/companion verification, ARM64/release boundaries, Agent Deck checks, macOS validation, and remaining device qualification
+
+## Where to Place Documentation
+
+Corvid uses a hybrid layout:
+
+- **Root `docs/`**: Product-wide and cross-cutting documentation — user guides (`guides/`), system architecture (`architecture/`), contributor and CI guidelines (`contributing/`), qualification records (`qualification/`), and shared visual assets (`images/`, `screenshots/`).
+- **Project-local `docs/` or `README.md`** (under `crates/<name>/`, `plugins/<name>/`, `deploy/`, or `spikes/<name>/`): Implementation notes, internal module design, or developer documentation specific to a single crate or subproject. Link broadly relevant local docs from `docs/README.md` (and `AGENTS.md` if agents should route to them), and exclude large or non-package docs/assets from published `crates.io` crates via `Cargo.toml`.

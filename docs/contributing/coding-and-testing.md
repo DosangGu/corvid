@@ -3,6 +3,8 @@
 ## Coding Style and Naming Conventions
 
 Write documentation in English and distinguish proposals from implemented behavior.
+Follow the [documentation placement policy](../README.md#where-to-place-documentation)
+when deciding between root `docs/` and project-local docs.
 For Rust, use rustfmt defaults, four-space indentation, `snake_case` functions/modules,
 `UpperCamelCase` types, and `SCREAMING_SNAKE_CASE` constants.
 
