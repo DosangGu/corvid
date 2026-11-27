@@ -99,7 +99,7 @@ tempfile = "3.27"
 thiserror = "2.0"
 unicode-segmentation = "=1.13.3"
 unicode-width = "0.2"
-url = "=2.5.8"
+url = "=2.5.9"
 uuid = { version = "1.29", features = ["v4", "serde"] }
 vt100 = { version = "=0.18.1", default-features = false }
 vte = { version = "=0.15.0", default-features = false }
