@@ -1577,30 +1577,38 @@ pub(crate) async fn prepare_destination(
     }
 }
 
-async fn run(
-    destination: Destination,
-    state_dir: PathBuf,
+struct AttachedSession {
+    endpoint: ControlEndpoint,
+    link: InteractiveConnection,
+    host: String,
+    epoch: String,
+    selected: ViewSelection,
+    route: corvid_protocol::wire::RouteToken,
+    grid: Grid,
+    reconnect_attempt: bool,
+    record_navigation: bool,
+}
+
+enum AttachOutcome {
+    Attached(Box<AttachedSession>),
+    Finished(String),
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn attach_session(
+    destination: &Destination,
+    state_dir: &Path,
     mut target: AttachTarget,
     explicit: bool,
-    Requests {
-        monitor,
-        recorder,
-        view_store,
-        actions,
-        sizes,
-        activation,
-        prompts,
-        host,
-        terminal,
-        writer_resume_token,
-        closing,
-        parked,
-        attached: attach_ready,
-        wake_monitor,
-    }: &mut Requests,
+    view_store: &ViewStore,
+    sizes: &watch::Receiver<(u64, u64, Grid)>,
+    prompts: &Prompts,
+    host: &mut Option<String>,
+    terminal: &mut Option<String>,
+    writer_resume_token: &mut Option<Uuid>,
+    parked: &ParkedConnections,
     shared: &Arc<Shared>,
-    agent_deck: &mut agent_deck::Job,
-) -> Result<String> {
+) -> Result<AttachOutcome> {
     // Older daemons can attach without supporting agent conversation restoration.
     let mut capabilities: Vec<_> = [
         "attach.v1",
@@ -1643,7 +1651,7 @@ async fn run(
     };
     let warmed = parked
         .take(
-            &destination,
+            destination,
             host.as_deref().or(known_host.as_deref()),
             expected_epoch,
         )
@@ -1659,8 +1667,8 @@ async fn run(
         )
     } else {
         prepare_destination(
-            &destination,
-            &state_dir,
+            destination,
+            state_dir,
             capabilities.clone(),
             explicit,
             host.as_deref().or(known_host.as_deref()),
@@ -1796,7 +1804,7 @@ async fn run(
                     })
                     .to_owned();
                 shared.update_ui(move |ui| ui.restore_results = result.panes);
-                return Ok(message);
+                return Ok(AttachOutcome::Finished(message));
             }
             *terminal = Some(
                 pane.terminal_id
@@ -1835,6 +1843,7 @@ async fn run(
         && !restoring
         && !reconnect_attempt
         && shared.snapshot().ui.restore_results.is_empty();
+    let record_navigation = !matches!(target, AttachTarget::Agent { .. });
     let attached = match &target {
         AttachTarget::Agent { run, .. } => attach_agent(&endpoint, &mut link, grid, run).await?,
         AttachTarget::Restore(_)
@@ -2062,6 +2071,72 @@ async fn run(
         ui.command_history_supported = command_history_supported;
         ui.session_clients_supported = session_clients_supported;
     });
+    Ok(AttachOutcome::Attached(Box::new(AttachedSession {
+        endpoint,
+        link,
+        host,
+        epoch,
+        selected,
+        route,
+        grid,
+        reconnect_attempt,
+        record_navigation,
+    })))
+}
+
+async fn run(
+    destination: Destination,
+    state_dir: PathBuf,
+    target: AttachTarget,
+    explicit: bool,
+    Requests {
+        monitor,
+        recorder,
+        view_store,
+        actions,
+        sizes,
+        activation,
+        prompts,
+        host,
+        terminal,
+        writer_resume_token,
+        closing,
+        parked,
+        attached: attach_ready,
+        wake_monitor,
+    }: &mut Requests,
+    shared: &Arc<Shared>,
+    agent_deck: &mut agent_deck::Job,
+) -> Result<String> {
+    let AttachedSession {
+        endpoint,
+        link,
+        host,
+        epoch,
+        selected,
+        route,
+        grid,
+        reconnect_attempt,
+        record_navigation,
+    } = match attach_session(
+        &destination,
+        &state_dir,
+        target,
+        explicit,
+        view_store,
+        sizes,
+        prompts,
+        host,
+        terminal,
+        writer_resume_token,
+        parked,
+        shared,
+    )
+    .await?
+    {
+        AttachOutcome::Attached(session) => *session,
+        AttachOutcome::Finished(message) => return Ok(message),
+    };
     let monitor_host = Uuid::parse_str(&host)?;
     let wake_monitor = std::mem::take(wake_monitor)
         || (reconnect_attempt && matches!(endpoint, ControlEndpoint::Ssh(_)));
@@ -2098,7 +2173,7 @@ async fn run(
     });
     let mut client = Client {
         recorder: recorder.as_ref(),
-        record_navigation: !matches!(target, AttachTarget::Agent { .. }),
+        record_navigation,
         saved_target: destination.saved_target(),
         link,
         endpoint: endpoint.clone(),
