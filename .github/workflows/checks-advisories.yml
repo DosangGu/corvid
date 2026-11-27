@@ -33,10 +33,12 @@ jobs:
       - name: Check vulnerabilities (hard fail)
         uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
         with:
-          arguments: --locked check advisories
+          arguments: --locked
+          command-arguments: advisories
       - name: Report unmaintained and yanked advisories
         if: always()
         continue-on-error: true
         uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
         with:
-          arguments: --locked --config /dev/null check advisories
+          arguments: --locked
+          command-arguments: --config /dev/null advisories
