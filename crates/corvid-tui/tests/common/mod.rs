@@ -12,6 +12,9 @@ pub fn routing_diagnostics() -> bool {
     std::env::var_os("CORVID_TEST_ROUTING_DIAGNOSTICS").is_some_and(|value| value == "1")
 }
 
+// TODO: Remove temporary Linux routing SIGABRT diagnostics after upgrading to compio 0.20.0
+// `compio-executor 0.1.4` aborts the process in `Remote::schedule` when a task is woken while a thread is already unwinding (fixed upstream in compio-rs/compio#1089 and compio-rs/compio#1095 for `compio 0.20.0`).
+// Once the workspace upgrades to `compio 0.20.0` or later, remove `install_routing_panic_hook`, `write_raw_stderr`, `CORVID_TEST_ROUTING_DIAGNOSTICS`, `.github/scripts/linux-routing-backtrace.sh`, and the diagnostic overrides in `.github/workflows/checks-tui.yml` and `.github/workflows/native.yml`, then close #345.
 #[allow(dead_code)]
 pub fn install_routing_panic_hook() {
     static HOOK: std::sync::Once = std::sync::Once::new();
