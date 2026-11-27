@@ -1,25 +1,8 @@
-# Local Companion
+# Corvid Desktop Guide
 
-For Apple Silicon paths, native behavior, building, and distribution, see
-[macOS support](07_macos.md). macOS uses the shared Unix daemon/client boundary.
-
-The companion connects to one configured Corvid daemon and maintains
-virtual slots. It serves framed Protobuf to the local CLI and desktop board
-over a private Unix socket on Linux or a current-user named pipe on Windows.
-
-Desktop and TUI start a headless companion automatically after verifying a host.
-Monitoring continues after their windows close. Set `CORVID_AGENT_MONITOR=0` for
-TUI sessions that should not start background monitoring, such as isolated PTY
-fixtures. This does not stop an already-running monitor.
-
-The desktop GUI and TUI share daemon workspaces, tabs, panes, and writer
-leases. See [planned desktop convergence](#planned-desktop-convergence) for
-the remaining parity work.
-
-- [Linux Desktop quick start](#linux-desktop-quick-start)
-- [Windows quick start](#windows-quick-start)
-- [Windows process and state ownership](#windows-process-and-state-ownership)
-- [Windows diagnostics](#windows-diagnostics)
+> Covers Linux, Windows, and macOS Desktop configuration, SSH connections, terminal preferences,
+> and WezTerm focus pairing. For platform verification logs and deferred checks, see
+> [Platform Qualification](../qualification/platforms.md).
 
 ## Configure and Run
 
@@ -195,7 +178,7 @@ configured. Otherwise Desktop uses a private directory under
 is reused. An older daemon without terminal-host support needs one initial idle
 upgrade or manual restart. Subsequent terminals can survive planned replacements.
 For deployments that need the daemon to survive the host's last-login policy,
-see [systemd deployment](02_daemon_foundation.md#run-under-systemd).
+see [systemd deployment](../guides/daemon.md#run-under-systemd).
 
 Desktop connects to the daemon through `corvid terminal-relay` and uses
 `corvid control --stdio` for the authoritative layout and agent watch.
@@ -255,7 +238,7 @@ If the selected conversation cannot be recovered, Desktop shows the pane error
 and offers **Restore / retry agent session** and **Open shell**. Choose **⋯ →
 Restore workspace agent sessions** to restore the verified conversations in other
 empty panes. These actions use the daemon's `workspace.restore_agents.v1`
-capability. See [saved conversation restoration](02_daemon_foundation.md#restore-saved-agent-conversations)
+capability. See [saved conversation restoration](../guides/daemon.md#restore-saved-agent-conversations)
 for provider setup, identity rules, and unsupported conversation transitions.
 
 These preferences are independent of TUI navigation and daemon metadata. Desktop
@@ -274,7 +257,7 @@ and left intact. Per-window process locks prevent simultaneous launches from res
 the same window. An interrupted process leaves its windows available for the next launch.
 Window size, position, and monitor restoration remain deferred to #49.
 
-![Desktop's New window and Quit menu](images/desktop-window-menu.png)
+![Desktop's New window and Quit menu](../images/desktop-window-menu.png)
 
 Press `Ctrl+]` to start a Desktop command. Use `w` for workspaces, `t` for tabs,
 or `p` for panes. Press `?` after the leader and search
@@ -296,9 +279,9 @@ The shortcut hints use English labels.
 Tab previews over SSH are available when the remote daemon advertises
 `tab_preview.v1`. Enter can still focus the highlighted tab on an older daemon.
 
-![Desktop previewing the Editor terminal while Tests retains input focus](images/workspace-navigation/desktop-tab-mode.png)
+![Desktop previewing the Editor terminal while Tests retains input focus](../images/workspace-navigation/desktop-tab-mode.png)
 
-![Desktop pane mode with Editor highlighted while Logs stays focused](images/workspace-navigation/desktop.png)
+![Desktop pane mode with Editor highlighted while Logs stays focused](../images/workspace-navigation/desktop.png)
 
 Keyboard `x` closes the highlighted target immediately. The **×** buttons
 open a confirmation. Closing the last pane also closes its tab. Use
@@ -389,7 +372,7 @@ needed. Activity lists, notification preferences, and card management stay in
 the separate Agents window. Open **Notifications** there to choose
 notification types, sound, and pauses. Click a live agent's key to open its pane
 in Desktop. See the
-[provider setup](03_provider_qualification.md) for hook coverage.
+[provider setup](../qualification/providers.md) for hook coverage.
 
 For native Windows process observation, launch the agent in a new Corvid tab:
 
@@ -406,7 +389,7 @@ keeps the process ancestry intact. It checks ancestry back to the owned ConPTY
 child and keeps a handle to each observed agent. The host samples once a
 second, so a process that starts and exits between samples may be missed.
 The adapter reports process state and exit status. Configure
-[Windows provider hooks](03_provider_qualification.md#windows-hook-setup-and-fixture-coverage)
+[Windows provider hooks](../guides/providers.md#windows-hook-setup-and-fixture-coverage)
 for activity, requests, and response notifications.
 
 To pair a WezTerm terminal, open a working TUI with `ssh -tt work-host corvid`,
@@ -429,7 +412,7 @@ board. Both ends check the pipe owner and DACL before exchanging frames.
 ### Windows package and login startup
 
 For published packages and update behavior, use the
-[release distribution guide](05_release_distribution.md). The current packaging
+[release distribution guide](../guides/release-and-install.md). The current packaging
 command produces versioned Desktop and TUI archives with installation metadata.
 
 Windows source builds require the pinned MSVC Rust toolchain and the Windows
@@ -479,7 +462,7 @@ The **Package Corvid** workflow builds all five runtimes before assembling the
 ten Desktop/TUI archives, x64 and ARM64 Windows Setup, and the unsigned macOS DMG. Main-branch and manual runs produce the
 `release-assets` workflow artifact. Version tags publish a GitHub Release only
 after all platform checks and package assembly succeed. See the
-[distribution guide](05_release_distribution.md#build-and-publish) for details.
+[distribution guide](../guides/release-and-install.md#build-and-publish) for details.
 
 Extract the archive to a stable directory and use `companion open` to check
 the connection. Run one of the following commands from the extracted
@@ -532,13 +515,13 @@ flowchart LR
 
 | Component | Responsibility | Source |
 | --- | --- | --- |
-| Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../crates/corvid-daemon/src/lib.rs) |
-| SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection uses `corvid control --stdio` directly or through the remote Corvid launcher. | [corvid-client](../crates/corvid-client/src/lib.rs) |
-| Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../crates/corvid-companion/src/lib.rs) |
-| Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and opens agent panes requested by Corvid Agent Deck. | [corvid-desktop](../crates/corvid-desktop/src/main.rs) |
-| Corvid Agent Deck | Displays slots and queue, independently watches attention, and owns Windows tray/toasts/settings. Its pairing dialog lists verified local panes. | [corvid-agent-deck](../plugins/agent-deck/src/main.rs) |
-| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../crates/corvid-tui/src/companion.rs) · [deployment](../deploy/windows/) |
-| Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../crates/corvid-protocol/proto/corvid.proto) |
+| Linux daemon | Owns PTYs, workspaces, writer leases, agent state, and the authoritative snapshot. Issues and consumes TUI pairing codes. | [corvid-daemon](../../crates/corvid-daemon/src/lib.rs) |
+| SSH client and relay | Carry the interactive TUI and the companion's separate control connection. The control connection uses `corvid control --stdio` directly or through the remote Corvid launcher. | [corvid-client](../../crates/corvid-client/src/lib.rs) |
+| Windows companion | Watches one configured daemon, assigns slots, serves the private named pipe, and verifies local WezTerm registrations before remote focus. | [corvid-companion](../../crates/corvid-companion/src/lib.rs) |
+| Desktop app | Attaches as a writer to the daemon, displays its tabs and split panes, and opens agent panes requested by Corvid Agent Deck. | [corvid-desktop](../../crates/corvid-desktop/src/main.rs) |
+| Corvid Agent Deck | Displays slots and queue, independently watches attention, and owns Windows tray/toasts/settings. Its pairing dialog lists verified local panes. | [corvid-agent-deck](../../plugins/agent-deck/src/main.rs) |
+| Windows CLI and deployment | Expose setup, inspection, diagnosis, and CLI pairing. The deployment scripts package the applications and manage optional login startup. | [CLI](../../crates/corvid-tui/src/companion.rs) · [deployment](../../deploy/windows/) |
+| Wire contract | Defines the bounded Protobuf messages shared by the presentation and control connections. | [corvid.proto](../../crates/corvid-protocol/proto/corvid.proto) |
 
 The companion stores its host and controller identity in `config.json` and
 its slot layout, pins, and last-known observations in `slots.json`. Local
@@ -553,7 +536,7 @@ its host remain alive.
 
 The former Agent Board is now **Corvid Agent Deck**, with independent background
 operation, a Windows system tray, native notifications, and a packaged icon. See
-[Agent Deck](06_agent_deck.md) for implemented behavior, source consolidation,
+[Agent Deck](../guides/agent-deck.md) for implemented behavior, source consolidation,
 notification policy, and platform qualification limits.
 
 The GUI is the graphical presentation of the same multiplexer behavior as the
@@ -563,7 +546,7 @@ window and explicitly ending a terminal must remain distinct operations under
 the daemon ownership contract.
 
 Both clients create tabs and split or select panes on the daemon. Use the
-[shared behavior contract](00_project_design.md#77-shared-tui-and-gui-behavior)
+[shared behavior contract](../contributing/presentation-ux.md#shared-tui-and-gui-behavior)
 and acceptance case A32 to verify parity across the full operation set.
 
 ### Desktop appearance and terminal font
@@ -581,7 +564,7 @@ Open **Settings → Terminal** to choose an installed monospaced font or restore
 the default. The choice applies to all Desktop terminal panes and is saved for
 the next launch. Desktop uses the default if the saved font is unavailable.
 
-![Terminal font choices in Corvid Desktop Settings](images/desktop-terminal-font.jpg)
+![Terminal font choices in Corvid Desktop Settings](../images/desktop-terminal-font.jpg)
 
 ### Desktop terminal selection and history
 
@@ -600,7 +583,7 @@ clipboard** to let programs in the focused pane copy text to your desktop via
 OSC 52, including programs running on a Corvid SSH host. This setting is off
 by default. Corvid accepts UTF-8 text writes up to 64 KiB to the system clipboard.
 
-![Terminal settings with application clipboard writes enabled](images/desktop-terminal-clipboard.png)
+![Terminal settings with application clipboard writes enabled](../images/desktop-terminal-clipboard.png)
 
 
 Hover over a URL in the focused terminal pane to see a dotted underline.
@@ -608,7 +591,7 @@ Hover over a URL in the focused terminal pane to see a dotted underline.
 **Cmd+click** also works. Desktop recognizes `http:`, `https:`, `mailto:` and
 `vscode://` links. In history, use a URL that fits within a single row.
 
-![A dotted underline under a hovered terminal URL](images/desktop-terminal-url-hover.png)
+![A dotted underline under a hovered terminal URL](../images/desktop-terminal-url-hover.png)
 
 In the focused pane, an application that requests mouse reporting receives the
 wheel directly. On the alternate screen without mouse reporting, wheel steps
@@ -657,7 +640,7 @@ These measurements exclude GPU presentation and SSH latency; they do not establi
 the cause or resolution of the original Claude Code SSH freeze in
 [issue #23](https://github.com/DosangGu/corvid/issues/23).
 
-![Synthetic native rendering probe](images/desktop-terminal/rendering-probe.png)
+![Synthetic native rendering probe](../images/desktop-terminal/rendering-probe.png)
 
 ## Windows diagnostics
 
@@ -734,7 +717,7 @@ On Windows, closing the Deck window hides it to the tray. **Notifications &
 settings** controls categories, sound, pause, and optional login startup. Use
 **Quit Corvid Agent Deck** to exit. Linux currently supports `notify-send`
 notifications without a tray; closing its window exits. Details and limits are
-in [Agent Deck](06_agent_deck.md).
+in [Agent Deck](../guides/agent-deck.md).
 
 On disconnection the board keeps the last snapshot visible and disables its
 actions. Reconnection loads a fresh snapshot. When focusing a paired TUI,
@@ -842,185 +825,96 @@ companion process.
   acknowledgment with new captures. A TUI detach retires its registration.
   Pair the replacement TUI after reattaching.
 
-## Verification
 
-The workspace integration test verifies separate placements for two managed
-agents with the same working directory, followed by exit and slot reuse.
-The Claude Code 2.1.318 fixture verifies pairing, companion restart, exact
-question focus and acknowledgment, and rejection of a stale click after
-`/clear`. The OpenSSH 10.6p1 loopback fixture kills the companion's SSH process
-and verifies full resync under the same daemon epoch while the separate TUI
-and its PTY remain active. These checks ran on Linux.
+## macOS
 
-The A10 wire fixture uses two attached TUIs and a real companion. A focus
-request with no registrations returns `NoAttachedClient`. Two registrations
-without an explicit choice return `AmbiguousClient`. A wrong revision or
-retired capture returns `StaleBinding`. After one TUI detaches, a request
-still needs an explicit choice. These failures leave the daemon's snapshot
-and sequence unchanged.
+## Runtime and desktop behavior
 
-The A25 offline restart fixture holds a question open in Claude Code 2.1.318
-while the control socket is unavailable. A new companion restores the slot,
-badge, counts, and observation time. Attempts to focus or acknowledge return
-`ConnectionRequired`. The original TUI selection and pending question survive.
-After the control socket returns, a fresh capture focuses the same question.
+| Data | Default location |
+| --- | --- |
+| Unix sockets | `~/.corvid/r-BOOT_PREFIX/` (changes each boot) |
+| Daemon state | `~/Library/Application Support/Corvid/daemon/` |
+| TUI views | `~/Library/Application Support/Corvid/clients/` |
+| Companion and Desktop views | `~/Library/Application Support/Corvid/companion/` |
+| Script installations | `~/Library/Application Support/Corvid/install/PRODUCT/` |
+| Agent Deck login startup | `~/Library/LaunchAgents/org.corvid.agent-deck.CONTROLLER.plist` |
+
+`CORVID_RUNTIME_DIR`, `--runtime-dir`, and explicit state paths remain available.
+Socket paths must fit Darwin's Unix socket limit, and runtime directories require
+private ownership and non-writable ancestors. Keep custom runtime paths short;
+world-writable `/tmp` and symlinked ancestors are deliberately rejected. Sockets
+verify both UID and the kernel-provided peer PID. Process observations use libproc
+and sysctl with boot identity and process birth-time checks; inaccessible or
+changed process evidence fails closed.
+The daemon uses the shared [process observation contract](../qualification/daemon-and-runtime.md#verification),
+retaining Darwin's PID/birth revalidation rather than assuming a procfs handle.
+
+Desktop imports PATH from the user's interactive login shell before starting its
+workers, with a bounded timeout. This finds Homebrew and user-installed agents when
+launched from Finder. It uses the user's configured login shell for new PTYs.
+Command-C/V/F copy, paste, and search terminal history; Command-W closes the
+window, Command-Q quits Desktop, and Command-Shift-N opens a window. Closing the
+last window keeps the application running; clicking its Dock icon opens another.
+Quitting Desktop leaves daemon-owned PTYs running. Existing composed-text input
+and terminal Control-key encoding remain in use.
+
+Agent Deck opens in a panel under its menu bar icon. Click the icon to toggle
+it, or right-click for settings and quit. The panel follows the system appearance,
+uses Liquid Glass on macOS 26 and later and the popover material on macOS 15,
+and uses a solid system background when Reduce Transparency is enabled.
+See **Deck status** in the expanded **Notifications** view for connection and
+action messages. Agent Deck supports native notifications and an opt-in login
+LaunchAgent. Notification permission is controlled in System Settings.
+Click actions are scoped to notices held by the live process and go through the
+existing run/binding fences. Notifications from an exited instance cannot select
+a different run. Login startup recomputes the boot-scoped socket directory.
+
+## Build and validate
+
+Install Rust using rustup and full Xcode, select it with `xcode-select`, and accept
+its license. Desktop/Deck need the Metal compiler. New Xcode installations may
+require `xcodebuild -downloadComponent MetalToolchain`. `/usr/bin/tic` compiles the
+bundled terminfo, including Darwin's hexadecimal directory layout. Python 3.11+
+is required for packaging and package tests.
+
+All macOS GPUI applications enable the `font-kit` feature. Without it, GPUI
+uses a placeholder text backend that opens windows but draws no glyphs. Desktop
+defaults to the system-provided Menlo font for terminal cells. **Settings →
+Terminal** lists installed monospaced fonts; the choice is saved privately in
+`desktop-preferences/terminal.json` under the Desktop state directory. An
+unavailable saved font falls back to Menlo. The `macos_text` test checks native
+font metrics, font discovery, preference persistence, and fallback on the process
+main thread, as required by AppKit.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 crates/corvid-tui/tests/claude_qualification.py \
-  --corvid target/debug/corvid --scenario offline-restart
+export MACOSX_DEPLOYMENT_TARGET=15.0
+mkdir -p "$HOME/.corvid-tests"
+chmod 700 "$HOME/.corvid-tests"
+export TMPDIR="$HOME/.corvid-tests"
+cargo build --locked --workspace
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+git diff --check
 ```
 
-Linux desktop verification used Xvfb 21.1.25 with a synthetic Protobuf companion.
-The GUI retained the captured run and revisions above 2^53 across a slot
-replacement during a mouse press. A fresh click used the replacement's
-revision. Dropping the IPC connection during a press produced no replay
-after reconnect. A desktop pin also persisted through the real Linux companion.
-The A29 version-skew fixture sent an unknown focus activation result and
-then an unknown run availability. The desktop kept the last valid snapshot
-as a cache and disabled actions. A compatible snapshot restored the link,
-and the user had to select the terminal again before focusing.
-`cargo test --locked -p corvid-agent-deck -p corvid-agent-deck-ui -p corvid-presentation` checks capture, connection fencing,
-and input-frame behavior without a display. The Windows desktop binary
-cross-linked for `x86_64-pc-windows-gnu`. Wine 11.21 ran its four tests and
-rendered the offline window.
+With the pinned Rust toolchain on macOS 27, disable release build-dependency
+stripping (`CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none`) to avoid
+[Rust's Mach-O alignment bug](https://github.com/rust-lang/rust/issues/157750).
+The macOS packaging script sets this workaround. Use the Metal toolchain's
+`TOOLCHAINS` identifier if `xcrun -sdk macosx metal --version` still selects an
+unavailable compiler after downloading it.
 
-The CLI and companion tests cross-link for `x86_64-pc-windows-gnu` with
-Rust 1.93. Wine 11.21 ran CLI help, private pipe I/O, and rejection of default
-pipe and state-directory ACLs. Its pipe implementation accepted a duplicate
-first instance, and reopening a freshly created state directory returned a
-DACL with an extra ACE. The storage tests fail closed in that environment.
+Commit the build inputs before making a release package. Obtain Linux and Windows
+runtime artifacts built from **the same revision**, then run:
 
-Windows PE build `10.0.26100.9457` from the Windows 11 Enterprise 26H2
-evaluation ISO ran these cross-built tests in QEMU 11.1.3. With the
-temporary directory on a dedicated NTFS volume, both named-pipe integration
-tests and all four slot-storage tests passed. The tests covered exclusive
-pipe ownership, two presentation clients, private directory ACLs, and state
-replacement and recovery. The library passed nine tests, including exact
-file identity and cross-process registry restore, with `SystemTemp` on the
-NTFS volume for the SYSTEM account. The Windows PE image lacked
-`afunix.sys` and the peer PID test returned socket error 10047. The desktop
-test executable exited before running its tests with `0xc0000135`.
-
-The three registration tests also passed in Windows PE after the schema
-update. A new process restored both explicit manual and WezTerm records.
-The tests checked legacy WezTerm records, exact revisions, and rejection of
-missing pane fields and unsupported versions.
-
-Wine read a protected registry key prepared by the test and cleared it on
-session restart. Wine discarded the security descriptor when creating a new
-key, so the companion rejected the key.
-
-On 2026-11-09, Windows x64 build `26300.9711` (26H2) ran 66 tests across the
-CLI, client, companion, core, desktop, and protocol packages using MSVC Rust
-1.93.1 and `protoc` 36.1. A non-elevated account used an NTFS temporary
-directory. Named-pipe ownership and client access, private state ACLs, slot
-replacement and recovery, and same-logon registry restore across processes
-passed. The AF_UNIX test also passed after accounting for Winsock reporting
-zero output bytes while writing the peer PID.
-
-The WezTerm adapter follows the per-process socket layout and CLI options in
-WezTerm `20240203-110809-5046fc22`.
-[WezTerm GUI socket source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm-gui/src/main.rs)
-[WezTerm CLI option source](https://github.com/wezterm/wezterm/blob/20240203-110809-5046fc22/wezterm/src/cli/mod.rs)
-
-On an interactive Windows desktop, point the native WezTerm fixture at the
-installed GUI executable and record the Windows and WezTerm versions. Use its
-absolute path if `wezterm-gui.exe` is outside `PATH`.
-
-```powershell
-$env:CORVID_WEZTERM_GUI = (Get-Command wezterm-gui.exe -ErrorAction Stop).Source
-& (Join-Path (Split-Path $env:CORVID_WEZTERM_GUI) 'wezterm.exe') --version
-Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber
-cargo test --locked -p corvid-companion --lib native_wezterm_activation_keeps_exact_gui_and_pane -- --ignored --nocapture
+```sh
+cargo build-desktop /path/to/linux-x64 /path/to/windows-x64 /path/to/linux-arm64 /path/to/windows-arm64
 ```
 
-The fixture starts separate WezTerm instances with its own test panes and
-checks that a colliding pane ID in another GUI keeps its selection. It checks
-rejection after a pane move, closure, or GUI replacement and the foreground
-fallback when the registered GUI owns multiple windows. On Windows build
-`26300.9711` the fixture passed with WezTerm `20240203-110809-5046fc22`. It
-reported `Activated` for the single-window case and
-`PaneSelectedForegroundUnknown` for the multiple-window case.
-[WezTerm new-process option](https://wezterm.org/cli/start.html)
-
-Windows system OpenSSH `9.5p2` reached the expected host and epoch on an
-Ubuntu 26.04.1 WSL daemon over loopback SSH. A WezTerm SSH TUI with a
-synthetic agent paired successfully. `focus-slot` selected the original
-Corvid tab and reported `Activated`. Restarting the companion restored the
-pin and exact WezTerm registration, and fresh captures still focused the
-original terminal. The old captures were rejected. After the WezTerm pane
-moved, focus returned `LocalTerminalUnavailable` before changing the remote
-selection. The desktop board opened against the same named pipe. Desktop
-button interactions and the Windows reboot case remain open.
-
-The desktop pairing request also passed against the loopback SSH fixture
-using a test client and a live WezTerm pane. `companion doctor` verified the
-original registration, reported it unavailable after the pane moved, and
-verified the new revision after re-pairing. The packaged startup script
-created and removed the expected shortcut in an isolated Startup directory.
-The packaged `companion open` command also pinned the loopback daemon's
-HostId on first use, reused the saved configuration, and opened the board
-against a separately running companion. A mismatched pipe and state
-identity was rejected.
-
-### Local PC reboot reproduction
-
-Use a dedicated Linux daemon on a separate machine and a Windows companion
-with its own state directory and pipe instance. Leave a verified Claude Code
-question pending in the only attached TUI. Create a second Corvid tab with
-Ctrl-] then t and return to the question with Ctrl-] then p. Pair that TUI
-to its WezTerm pane and pin the question's slot using `companion pin --slot`.
-From another shell in that WezTerm GUI, capture the starting state. Use
-the actual slot number and put the checkpoint outside the repository.
-
-```powershell
-$checkpoint = Join-Path $env:LOCALAPPDATA 'corvid-a25-reboot.json'
-wezterm --version
-& "$env:SystemRoot\System32\OpenSSH\ssh.exe" -V
-py -3 crates/corvid-tui/tests/local_reboot.py before $checkpoint --ssh-alias work-host --pipe-instance a25 --slot 1
-```
-
-Restart Windows manually. From PowerShell, start the same companion with
-the same pipe instance and state directory. Keep WezTerm closed and run
-`recovered` with the same checkpoint, alias, and pipe instance. The fixture
-checks the new local boot time, the saved pin and slot, the unchanged remote
-daemon and pending request, and rejection of the retired registration.
-
-Open WezTerm and run `ssh -tt work-host corvid attach`. Pair the new TUI to
-its pane. If the question is visible, switch to the existing second tab
-with Ctrl-] then n. From a shell in that GUI, run `repaired` with the same
-arguments. The fixture checks that the old identity cannot change the TUI
-and the new registration selects the original run, terminal, and WezTerm
-pane. It checks the pane inventory and pending request again after focus.
-Record the reported activation outcome and the Windows build and boot times
-from the checkpoint. Keep the checkpoint local.
-
-On a Linux controller, use `python3` and `--socket-dir` in place of the
-Windows launcher and pipe option. Pair the TUI without a WezTerm target.
-A25 recovery case C passed with a Debian 13.7 controller in QEMU 11.1.3
-using OpenSSH 10.0p2. Only the controller guest rebooted. The separate
-Linux execution host used OpenSSH 10.6p1 and Claude Code 2.1.318. The saved
-pin, slot revision, agent PID, and pending RequestId survived. A newly
-paired SSH TUI selected the original question. The request resolved after
-the answer was entered in that TUI.
-
-## Deferred Platform Verification
-
-### Installed Windows
-
-Use the desktop board with a paired SSH TUI to verify focus, held-gesture
-fencing, overflow, and restart recovery. Capture the activation outcome and
-confirm that focus preserves the open terminal inventory and a pending remote
-provider question. Follow the [local reboot procedure](#local-pc-reboot-reproduction)
-with a separate Linux execution host to confirm that a new Windows logon
-restores slots and requires a new pairing.
-
-### macOS
-
-Apple Silicon runtime, workspace, installer, and app/DMG CI runs on
-`macos-latest`. Packages target macOS 15 or later.
-See [macOS support](07_macos.md) for commands and default paths. Manual
-qualification should record the OS build, CPU architecture, terminal emulator,
-and SSH version, and exercise the terminal compatibility suite (A19). Native
-permission prompts, login/reboot behavior, multiple displays, and non-Latin
-IME interaction remain separate manual checks.
+CI uses the default Xcode on the `macos-latest` Apple Silicon image for runtime
+and workspace tests, installer version switching and corruption rejection,
+nested code signatures, and the packaged Desktop and Agent Deck windows. The
+DMG check verifies that Agent Deck was built with a macOS 26 or later SDK and
+targets macOS 15.0. Testing on older macOS versions, OS permission prompts,
+multiple monitors, and non-Latin IME interaction requires separate qualification.

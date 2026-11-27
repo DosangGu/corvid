@@ -1,4 +1,4 @@
-# Continuous integration coverage
+# Continuous Integration and Validation
 
 ## Pull requests
 
@@ -59,7 +59,7 @@ The workflows use `ubuntu-latest`, `windows-latest`, and `macos-latest` for the
 default images. Linux and Windows ARM64 use `ubuntu-26.04-arm` and
 `windows-11-arm`. Release publication builds the assets from the tag with
 the same targets. Each installer job must pass the packaged UI smoke suite
-before GitHub Release publication. See [build and publish](05_release_distribution.md#build-and-publish).
+before GitHub Release publication. See [build and publish](../guides/release-and-install.md#build-and-publish).
 
 | Platform | Automated behavior |
 | --- | --- |
@@ -184,13 +184,10 @@ It does not modify the user's SSH configuration or use an external SSH account.
 The test prints input-to-title p50/p95/max latency for 32 changes. WAN latency,
 packet loss, and the user's SSH configuration require separate environment checks.
 
+
 ## Remaining device qualification
 
-WSL installation/reconnection still requires the explicitly ignored isolated-WSL
-fixture. Real reboot and last-login tests need dedicated machines/accounts.
-IME composition, accessibility permissions, notifications, multiple displays,
-and hardware GPU behavior require separate device qualification. Synthetic
-Unicode input does not validate an OS input method editor.
+See [Remaining Device Qualification](../qualification/platforms.md#remaining-device-qualification).
 
 ## WSL 2 lifecycle check
 
@@ -213,3 +210,8 @@ Build the Windows test executable with `cargo test --locked --release -p corvid-
 the distribution architecture with libghostty-vt. The harness verifies
 managed install consent, then opens a PTY and checks that the shell survives a
 daemon upgrade. It unregisters the temporary distribution it imported.
+
+## Intermittent CI Failures
+
+When you find an intermittent CI workflow failure, open a GitHub issue to track it.
+If an issue already tracks the failure, add a comment linking to the failed workflow run.

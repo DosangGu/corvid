@@ -188,7 +188,7 @@ def main():
     if args.case == "dmg-windows" and not args.assets:
         parser.error("dmg-windows requires --assets")
     if system == "Linux" and not shutil.which("xvfb-run"):
-        parser.error("install Xvfb and the Linux UI dependencies listed in docs/08_ci_validation.md")
+        parser.error("install Xvfb and the Linux UI dependencies listed in docs/contributing/ci-and-validation.md")
     build = args.build.resolve() if args.build else None
     assets = args.assets.resolve() if args.assets else None
     cases = (args.case,) if args.case else SMOKE[system] if args.suite == "smoke" else CASES[system]

@@ -1,111 +1,73 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+Corvid is a Rust coding-agent multiplexer.
+See [docs/README.md](docs/README.md) for the full documentation index.
 
-Corvid is a Rust coding-agent multiplexer. Read `docs/00_project_design.md`
-before architectural changes. The `crates/corvid-tui/` package builds the
-`corvid` command and TUI. The workspace also has `corvid-daemon` for PTYs
-and daemon services, `corvid-client` for IPC and TTY,
-`corvid-core` for domain types, `corvid-companion` for controller state,
-`corvid-presentation` for shared presentation clients,
-`corvid-protocol` for Protobuf and local transport, and `spikes/terminal/` for terminal
-qualification. The Desktop app is in `crates/corvid-desktop/`, and the
-separately launched Corvid Agent Deck is in `plugins/agent-deck/`.
-The root `Cargo.toml` defines the workspace package version and direct dependency
-versions. Workspace members inherit those entries and share the root `Cargo.lock`.
+## Workspace Overview
 
-## Build, Test, and Development Commands
+- `crates/corvid-tui/`: `corvid` CLI and TUI.
+- `crates/corvid-daemon/`: PTYs and daemon services.
+- `crates/corvid-client/`: IPC and TTY client.
+- `crates/corvid-core/`: domain types.
+- `crates/corvid-companion/`: controller state.
+- `crates/corvid-presentation/`: shared presentation clients.
+- `crates/corvid-protocol/`: Protobuf schemas and local transport.
+- `crates/corvid-async/`: shared async runtime helpers.
+- `crates/corvid-update/`: self-update and release verification.
+- `crates/corvid-desktop/`: Corvid Desktop GUI.
+- `crates/corvid-agent-deck/` & `crates/corvid-agent-deck-core/`: Agent Deck UI and core state.
+- `plugins/agent-deck/`: separately launched Corvid Agent Deck binary.
+- `deploy/cargo-desktop/`: Desktop/installer packaging helper.
+- `spikes/terminal/`: terminal qualification spike.
 
-Install `tic` for Linux builds. Full workspace builds on Linux also need the
-[Desktop system packages](docs/04_companion.md#linux-desktop-quick-start).
-The schema reproducibility fixture uses a
-pinned `protoc` archive for comparison. Run `git diff --check` for whitespace.
-From the workspace root:
+The root `Cargo.toml` defines the workspace package version and direct
+dependency versions; workspace members inherit them and share `Cargo.lock`.
+
+## Build, Test, and Lint Commands
+
+Install `tic` for Linux builds. Full workspace builds on Linux also require the
+[Desktop system packages](docs/guides/desktop.md#linux-desktop-quick-start).
+The schema reproducibility fixture uses a pinned `protoc` archive. Run
+`git diff --check` for whitespace. From the workspace root:
 
 - `cargo build --workspace`: compile workspace packages.
 - `cargo test --workspace`: run unit and integration tests.
 - `cargo fmt --all -- --check`: verify Rust formatting.
 - `cargo clippy --workspace --all-targets -- -D warnings`: reject lint warnings.
 
-## Coding Style & Naming Conventions
+## Core Workflow and Scope
 
-Write documentation in English and distinguish proposals from implemented behavior.
-For Rust, use rustfmt defaults, four-space indentation, `snake_case` functions/modules,
-`UpperCamelCase` types, and `SCREAMING_SNAKE_CASE` constants. Keep domain types independent
-of generated Protobuf messages. Never hand-edit generated code or reuse removed Protobuf
-field numbers; reserve them instead.
+- Start each independent task in a dedicated branch and Git worktree based on
+  the latest `origin/main`; never commit or push directly to `main`.
+- Open one PR per coherent unit of work, follow CI checks to completion, and
+  leave the PR open for review unless the user requests a merge. Clean up local
+  build artifacts, temporary files, and the dedicated worktree after completion.
+- Keep changes focused on the current task's objective; defer out-of-scope
+  discoveries with `TODO: <unique, specific title>` comments.
 
-- Put statements on separate lines; separate logical stages with blank lines.
-- Wrap long signatures, calls, chains, and conditions using rustfmt. Name intermediate
-  values to clarify complex expressions.
-- Give each function one coherent responsibility. Extract descriptive helpers for
-  distinct stages, repeated logic, or complex branches; keep orchestration readable.
-- Prefer early returns over unnecessary nesting. Split by responsibility, not arbitrary
-  line counts; avoid helpers that merely rename trivial expressions.
-- Review readability beyond formatter checks.
+## Architecture and Security Invariants
 
-## Task Scope & Follow-up Work
+- Preserve the daemon/client boundary: the daemon owns PTYs and authoritative
+  state.
+- Use bounded Protobuf messages over Unix sockets, private Windows named pipes,
+  or SSH stdio, raw ANSI render payloads, and JSON persistence.
+- Keep domain types independent of generated Protobuf messages. Never hand-edit
+  generated code or reuse removed Protobuf field numbers; reserve them instead.
+- External controllers must not inject answers or approvals.
+- Keep credentials and terminal content out of committed fixtures and routine logs.
 
-Keep changes focused on the current task's objective. When you discover problems
-or improvements outside that objective, leave an actionable TODO comment near
-the relevant code and defer implementation to a follow-up task. Use the file's
-comment syntax with `TODO: <unique, specific title>` so the TODO-to-issue workflow
-can track it. TODO titles and descriptions are exempt from line-length limits.
-Keep the complete title on the same physical line as `TODO:`. Put the context
-and next steps in the comment lines immediately below the title, with one
-physical line per paragraph. The workflow turns each description line into a
-separate paragraph in the issue body. Preserve any `Issue URL:` line when
-editing a tracked TODO so it stays linked to the existing issue. Complete any
-changes required for the current task to work correctly as part of the current
-task.
+## Documentation & Guideline Router
 
-## Testing Guidelines
+Read the relevant guide before making changes in that area:
 
-Keep Rust unit tests beside modules and integration tests under each
-crate's `tests/`. Name tests after behavior, e.g. `rejects_stale_epoch`. Follow the design's
-acceptance matrix: identity, reconnection, input fencing, and malformed frames. No coverage
-threshold is configured. Distinguish executed checks from planned tests and unverified
-runtime compatibility.
-
-When you find an intermittent CI workflow failure, open an issue to track it. If an
-issue already tracks the failure, add a comment linking to the failed workflow run.
-
-## Commit & Pull Request Guidelines
-
-Start each independent task in a dedicated branch and Git worktree based on the
-latest `origin/main`. Make and validate the task's changes in that worktree,
-preserving unrelated work in other worktrees.
-
-Push the task branch and open one PR per coherent unit of work against `main`.
-Do not commit or push task changes directly to `main`. Hand off the PR URL with
-validation results and any limitations, and leave the PR open for review unless
-the user requests a merge. Follow the PR's CI checks through completion and fix
-failures before declaring it ready for review. Report any checks that remain
-pending or blocked explicitly.
-
-After completing a task, remove its local build artifacts, temporary files, and
-dedicated worktree once any needed outputs and changes are safely preserved.
-Leave shared build caches and worktrees for other tasks intact.
-
-History uses `docs:`. Use concise, imperative subjects and appropriate prefixes
-such as `feat:` or `fix:` for implementation. Keep commits focused. PRs should explain
-the problem, resulting behavior, validation, and limitations. Link relevant issues and
-acceptance IDs; include screenshots for visible UI changes.
-
-Use the exact version tag as the GitHub Release title, such as `v0.1.2` or
-`v0.2.0-rc.1`. Do not add `Corvid`, a product name, or any other prefix or suffix.
-
-## Presentation UX
-
-Desktop and TUI should provide as close to the same user experience as
-practical. Review both clients when changing a user-facing workflow and keep
-their keyboard interactions, defaults, feedback, and outcomes aligned. Use
-platform-appropriate presentation. Document any necessary differences, such
-as SSH connection setup or platform limitations, and explain them in the PR.
-
-## Architecture & Security Constraints
-
-Preserve the daemon/client boundary: the daemon owns PTYs and authoritative state.
-Use bounded Protobuf messages over Unix sockets, private Windows named pipes, or SSH stdio, raw ANSI render
-payloads, and JSON persistence. External controllers must not inject answers or approvals.
-Keep credentials and terminal content out of committed fixtures and routine logs.
+| When working on... | Read |
+| --- | --- |
+| Architecture, state ownership, lifecycle, slots, or roadmap | [docs/architecture/overview.md](docs/architecture/overview.md) |
+| IPC, Protobuf schema, SSH transport, or snapshot/watch sync | [docs/architecture/protocol.md](docs/architecture/protocol.md) |
+| PTYs, terminal emulation, rendering, input, or overload | [docs/architecture/terminal-runtime.md](docs/architecture/terminal-runtime.md) |
+| Provider adapters, hooks, AgentMonitor, or WezTerm focus | [docs/architecture/providers-and-focus.md](docs/architecture/providers-and-focus.md), [docs/guides/providers.md](docs/guides/providers.md) |
+| Rust style, naming, testing conventions, or acceptance matrix | [docs/contributing/coding-and-testing.md](docs/contributing/coding-and-testing.md) |
+| Commits, PRs, TODO-to-issue format, or GitHub Release titles | [docs/contributing/workflow-and-prs.md](docs/contributing/workflow-and-prs.md) |
+| Desktop or TUI user-facing workflows and UX parity | [docs/contributing/presentation-ux.md](docs/contributing/presentation-ux.md) |
+| CI workflows, local UI/TTY/SSH checks, or flaky CI tracking | [docs/contributing/ci-and-validation.md](docs/contributing/ci-and-validation.md) |
+| User setup, Desktop, Daemon, Agent Deck, or releases | [docs/README.md](docs/README.md) |
