@@ -218,7 +218,7 @@ def main(build, screenshot, history_screenshot, tooltip_screenshot, failure_scre
         run("xdotool", "windowactivate", "--sync", deck)
         scale = int(geometry(deck)["WIDTH"]) / 392
         frame = root / "deck.ppm"
-        blue, gray, mint = "78bdee", "8594a3", "77d8b7"
+        blue, gray, mint = "8bb8e8", "8b8b95", "6bc48d"
         until("submitted and idle keys", lambda: key_colors(frame, (blue, gray)))
 
         for index, name in enumerate(("second", "first")):
