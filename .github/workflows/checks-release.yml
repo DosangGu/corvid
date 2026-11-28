@@ -14,20 +14,81 @@ on:
         options: [release, wsl]
         default: release
   schedule:
-    # Run full cross-platform release qualification daily at 19:00 UTC (04:00 KST).
-    - cron: '0 19 * * *'
+    # Run full cross-platform release qualification 4 times daily
+    # (01:00, 07:00, 13:00, 19:00 UTC / 10:00, 16:00, 22:00, 04:00 KST).
+    - cron: '0 1,7,13,19 * * *'
 
 permissions:
   contents: read
 
 jobs:
+  check:
+    name: Check release qualification trigger
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      deployments: read
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+    steps:
+      - name: Decide whether to run release qualification
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SCOPE: ${{ inputs.scope }}
+          CURRENT_SHA: ${{ github.sha }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$INPUT_SCOPE" == "wsl" ]]; then
+            echo "Skipping release qualification for scope=wsl."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" != "schedule" ]]; then
+            echo "Running release qualification for event '$EVENT_NAME'."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_sha=$(
+            gh api "repos/$GH_REPO/deployments?environment=Release%20check&per_page=1" |
+              jq -r '.[0].sha // ""'
+          )
+          if [[ "$last_sha" == "$CURRENT_SHA" ]]; then
+            echo "Skipping scheduled run: Release check already ran for commit $CURRENT_SHA."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          active_run=$(
+            gh api "repos/$GH_REPO/actions/workflows/checks-release.yml/runs?branch=main&per_page=20" |
+              jq -r --arg sha "$CURRENT_SHA" --argjson run_id "$CURRENT_RUN_ID" \
+                '[.workflow_runs[] | select(.id != $run_id and .head_sha == $sha and (.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "requested"))] | length'
+          )
+          if [[ "$active_run" != "0" ]]; then
+            echo "Skipping scheduled run: another Checks / Release run is already active for commit $CURRENT_SHA."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Running scheduled release qualification for commit $CURRENT_SHA (last recorded: ${last_sha:-none})."
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
   qualify:
-    if: inputs.scope != 'wsl'
+    needs: check
+    if: needs.check.outputs.should_run == 'true'
     name: Release package and UI qualification
     uses: ./.github/workflows/package.yml
 
   source-packages:
-    if: inputs.scope != 'wsl'
+    needs: check
+    if: needs.check.outputs.should_run == 'true'
     name: Cargo source packages (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -43,12 +104,33 @@ jobs:
       - uses: ./.github/actions/install-zig
       - name: Install terminfo compiler
         if: runner.os == 'Linux'
-        uses: ./.github/actions/apt-install
-        with:
-          packages: ncurses-bin
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update --error-on=any
+          sudo apt-get -o Acquire::Retries=3 install -y ncurses-bin
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
       - run: python deploy/crates_io.py verify
+
+  record-environment:
+    name: Release check status
+    needs: [check, qualify, source-packages]
+    if: always() && github.ref == 'refs/heads/main' && needs.check.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: Release check
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Record qualification outcome
+        env:
+          QUALIFY_RESULT: ${{ needs.qualify.result }}
+          SOURCE_PACKAGES_RESULT: ${{ needs.source-packages.result }}
+        shell: bash
+        run: |
+          echo "qualify=$QUALIFY_RESULT source-packages=$SOURCE_PACKAGES_RESULT"
+          if [[ "$QUALIFY_RESULT" != "success" || "$SOURCE_PACKAGES_RESULT" != "success" ]]; then
+            exit 1
+          fi
 
   wsl:
     if: github.event_name == 'workflow_dispatch' && inputs.scope == 'wsl'
