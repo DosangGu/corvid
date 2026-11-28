@@ -100,6 +100,8 @@ message Envelope {
     PresentationRuns presentation_runs = 140;
     ReorderTab reorder_tab = 141;
     TabReordered tab_reordered = 142;
+    WaitPresentationChange wait_presentation_change = 144;
+    PresentationChanged presentation_changed = 145;
     ReadTerminalHistory read_terminal_history = 122;
     TerminalHistory terminal_history = 123;
     DisconnectWorkspaceClients disconnect_workspace_clients = 125;
@@ -393,6 +395,15 @@ message PresentationRuns {
   PresentationSlots page = 1;
   // Compare with the connection generation and remote sequence across pages.
   uint64 layout_revision = 2;
+  uint64 state_revision = 3;
+}
+
+message WaitPresentationChange {
+  uint64 after_revision = 1;
+}
+
+message PresentationChanged {
+  uint64 revision = 1;
 }
 
 enum CompanionConnection {

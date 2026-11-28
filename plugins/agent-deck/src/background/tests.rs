@@ -1,5 +1,9 @@
 use super::*;
 use corvid_async::io::{AsyncRead, AsyncWrite};
+use corvid_async::time::timeout;
+use corvid_companion::PresentationAddress;
+use corvid_protocol::COMMAND_TIMEOUT;
+use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::wire::{
     AgentProvider, AttentionReason, CompanionConnection, PresentationSlots, PresentedAttention,
     PresentedRun, PresentedRunKey, PresentedSlot,
@@ -31,15 +35,15 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
     .configure(&corvid_client::ControlEndpoint::Local(
         temporary.path().join("unused"),
     ))?;
-    let (updates, mut received) = mpsc::channel(8);
+    let (updates, mut received) = mpsc::channel(16);
     let mut jobs = corvid_async::task::JoinSet::new();
-    jobs.spawn(poll_hosts(state.clone(), absent.clone(), current, updates));
     let catalog = crate::catalog::Catalog::start(
         state.clone(),
         current,
         absent,
         UiSignal::default(),
         DesktopLink::default(),
+        updates,
     )?;
     timeout(Duration::from_secs(5), async {
         loop {
@@ -97,8 +101,7 @@ async fn late_host_imports_existing_work_and_attention_then_continues_polling() 
     assert_eq!(first.attention.len(), 1);
     assert_eq!(ledger.observe(remote, &first, now_ms())?.notices.len(), 1);
     let captured = wait_for_run(&catalog, remote, &key).await?;
-    let again = next_snapshot(&mut received, remote).await?;
-    assert!(ledger.observe(remote, &again, now_ms())?.notices.is_empty());
+    assert!(ledger.observe(remote, &first, now_ms())?.notices.is_empty());
     feed.send_modify(|alerts| {
         let mut next = alerts[0].clone();
         next.attention_id = Uuid::new_v4().to_string();
@@ -251,7 +254,7 @@ async fn peer(
     stream: impl AsyncRead + AsyncWrite + Unpin,
     controller: Uuid,
     run: PresentedRun,
-    feed: watch::Receiver<Vec<PresentedAttention>>,
+    mut feed: watch::Receiver<Vec<PresentedAttention>>,
 ) -> Result<()> {
     let key = run.key.as_ref().context("fixture run identity")?;
     let (input, output) = corvid_async::io::split(stream);
@@ -266,10 +269,12 @@ async fn peer(
         &[
             corvid_companion::PRESENTATION_CAPABILITY,
             corvid_companion::PRESENTATION_RUNS_CAPABILITY,
-            PRESENTATION_ATTENTION_CAPABILITY,
+            corvid_companion::PRESENTATION_WATCH_CAPABILITY,
+            corvid_companion::PRESENTATION_ATTENTION_CAPABILITY,
         ],
     )?;
     writer.envelope(&reply).await?;
+    let mut revision = 1u64;
     while let Some(request) = reader.next_envelope().await? {
         let body = match request.body {
             Some(Body::GetPresentationAttention(_)) => {
@@ -285,6 +290,7 @@ async fn peer(
             Some(Body::GetPresentationRuns(_)) => {
                 Body::PresentationRuns(corvid_protocol::wire::PresentationRuns {
                     layout_revision: 1,
+                    state_revision: revision,
                     page: Some(PresentationSlots {
                         controller_id: controller.to_string(),
                         connection: CompanionConnection::Ready as i32,
@@ -300,6 +306,13 @@ async fn peer(
                         ..Default::default()
                     }),
                 })
+            }
+            Some(Body::WaitPresentationChange(wait)) => {
+                if revision <= wait.after_revision && feed.changed().await.is_ok() {
+                    let _ = feed.borrow_and_update();
+                    revision += 1;
+                }
+                Body::PresentationChanged(corvid_protocol::wire::PresentationChanged { revision })
             }
             _ => anyhow::bail!("unexpected request"),
         };
@@ -359,7 +372,8 @@ fn start_fixture(
     #[cfg(windows)]
     let address = config.controller_id.simple().to_string();
     let signal = UiSignal::default();
-    let background = Background::start(state, address, config, signal.clone(), start)?;
+    let (_, updates) = mpsc::channel(1);
+    let background = Background::start(state, address, config, updates, signal.clone(), start)?;
     Ok((root, background, signal))
 }
 

@@ -22,6 +22,7 @@ mod native;
 
 pub const PRESENTATION_CAPABILITY: &str = "presentation_slots.v1";
 pub const PRESENTATION_RUNS_CAPABILITY: &str = "presentation_runs.v1";
+pub const PRESENTATION_WATCH_CAPABILITY: &str = "presentation_watch.v1";
 pub const PRESENTATION_PAGE_SIZE: u32 = 32;
 pub const PRESENTATION_ATTENTION_CAPABILITY: &str = "presentation_attention.v1";
 pub const PRESENTATION_ATTENTION_LIMIT: usize = 512;
@@ -38,6 +39,7 @@ const CAPABILITIES: &[&str] = &[
     crate::monitor::PROCESS_EXIT_RETIREMENT_CAPABILITY,
     PRESENTATION_CAPABILITY,
     PRESENTATION_RUNS_CAPABILITY,
+    PRESENTATION_WATCH_CAPABILITY,
     PRESENTATION_ATTENTION_CAPABILITY,
     LIST_HOSTS_CAPABILITY,
     MONITOR_RECONNECT_CAPABILITY,
@@ -47,9 +49,10 @@ const CAPABILITIES: &[&str] = &[
     WEZTERM_SELECTION_CAPABILITY,
 ];
 const ROLE: FrameRole = FrameRole::StructuredOnly;
-const MAX_PEERS: usize = 8;
-const MAX_CALLS: usize = 8;
+const MAX_PEERS: usize = 16;
+const MAX_CALLS: usize = 16;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const WATCH_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(not(windows))]
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 // Windows focus also verifies the pane around the remote command and may
@@ -116,7 +119,8 @@ async fn serve_runtime(
 ) -> Result<()> {
     let host = store.config().host_id.to_string();
     let epoch = Uuid::new_v4().to_string();
-    let mut service = Service::new(store, endpoint);
+    let (changes, watch_changes) = corvid_async::watch::channel(1u64);
+    let mut service = Service::new(store, endpoint, changes);
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let (directory, instance);
@@ -131,7 +135,7 @@ async fn serve_runtime(
         corvid_async::Mutex::new(corvid_protocol::windows::CompioPipeListener::bind(runtime)?);
     let (sender, calls) = mpsc::channel(MAX_CALLS);
 
-    let incoming = native::accept(&listener, sender, &host, &epoch);
+    let incoming = native::accept(&listener, sender, watch_changes, &host, &epoch);
     let result = corvid_async::select! {
         result = incoming => result,
         result = service.run(calls) => result,

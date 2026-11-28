@@ -86,7 +86,7 @@ async fn peer(
     stream: impl AsyncRead + AsyncWrite + Unpin,
     controller: Uuid,
     runs: Vec<PresentedRun>,
-    feed: watch::Receiver<Vec<PresentedAttention>>,
+    mut feed: watch::Receiver<Vec<PresentedAttention>>,
 ) -> Result<()> {
     let first_key = runs
         .first()
@@ -104,10 +104,12 @@ async fn peer(
         &[
             PRESENTATION_CAPABILITY,
             PRESENTATION_RUNS_CAPABILITY,
+            corvid_companion::PRESENTATION_WATCH_CAPABILITY,
             PRESENTATION_ATTENTION_CAPABILITY,
         ],
     )?;
     writer.envelope(&reply).await?;
+    let mut revision = 1u64;
     while let Some(request) = reader.next_envelope().await? {
         let body = match request.body {
             Some(Body::GetPresentationAttention(_)) => {
@@ -133,6 +135,7 @@ async fn peer(
                     .collect();
                 Body::PresentationRuns(corvid_protocol::wire::PresentationRuns {
                     layout_revision: 1,
+                    state_revision: revision,
                     page: Some(PresentationSlots {
                         controller_id: controller.to_string(),
                         connection: CompanionConnection::Ready as i32,
@@ -143,6 +146,13 @@ async fn peer(
                         ..Default::default()
                     }),
                 })
+            }
+            Some(Body::WaitPresentationChange(wait)) => {
+                if revision <= wait.after_revision && feed.changed().await.is_ok() {
+                    let _ = feed.borrow_and_update();
+                    revision += 1;
+                }
+                Body::PresentationChanged(corvid_protocol::wire::PresentationChanged { revision })
             }
             _ => anyhow::bail!("unexpected request"),
         };

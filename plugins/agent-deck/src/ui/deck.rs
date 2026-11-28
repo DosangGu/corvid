@@ -51,7 +51,7 @@ impl DeckView {
             return None;
         }
         let run = run?;
-        if snapshot.host == self.session.catalog.1
+        if snapshot.host == self.session.catalog.current_host
             && !self.session.background.desktop.connected()
             && let (Some(slot), Some(binding)) = (slot, &self.binding)
             && let Some(body) = snapshot.focus(slot, binding)
@@ -187,6 +187,7 @@ impl DeckView {
                     view.submit(&snapshot, body.clone());
                 }
                 view.menu = None;
+                view.refresh_view();
                 cx.notify();
             }))
         })
@@ -221,6 +222,7 @@ impl DeckView {
             )
             .on_mouse_down_out(cx.listener(|view, _, _, cx| {
                 view.menu = None;
+                view.refresh_view();
                 cx.notify();
             }));
         if slot.revision != 0 {
@@ -262,8 +264,27 @@ impl DeckView {
             content = content.child(self.hosts(cx));
         } else if self.section == Section::Notifications {
             content = content.child(self.notifications(cx));
-        } else if self.view.snapshot.is_some() || !self.deck_order.is_empty() {
-            let snapshot = self.view.snapshot.clone();
+        } else if self.view.snapshot.is_some()
+            || !self.deck_order.is_empty()
+            || !self.catalog_view.hosts.is_empty()
+        {
+            let multi_host = self.catalog_view.hosts.len() > 1;
+            let ended_entries: Vec<String> = self
+                .catalog_view
+                .hosts
+                .values()
+                .flat_map(|host| {
+                    host.pages.first().into_iter().flat_map(move |snapshot| {
+                        snapshot.data.recent_ended.iter().map(move |run| {
+                            if multi_host {
+                                format!("{} · Run · {}", host.label, short_id(&run.agent_run_id))
+                            } else {
+                                format!("Run · {}", short_id(&run.agent_run_id))
+                            }
+                        })
+                    })
+                })
+                .collect();
             let sections = [
                 (Section::Slots, "Deck".to_owned()),
                 (Section::Overflow, format!("Queue ({})", self.queue_len())),
@@ -284,21 +305,14 @@ impl DeckView {
             content = content.child(match self.section {
                 Section::Slots => self.board(window, cx),
                 Section::Overflow => self.overflow(window, cx),
-                Section::History => column()
-                    .children(
-                        snapshot
-                            .iter()
-                            .flat_map(|snapshot| &snapshot.data.recent_ended)
-                            .map(|run| {
-                                colors.muted(format!("Run · {}", short_id(&run.agent_run_id)))
-                            }),
-                    )
-                    .when(
-                        snapshot
-                            .as_ref()
-                            .is_none_or(|snapshot| snapshot.data.recent_ended.is_empty()),
-                        |view| view.child(colors.muted("No runs removed from the Deck yet.")),
-                    ),
+                Section::History => {
+                    let empty = ended_entries.is_empty();
+                    column()
+                        .children(ended_entries.into_iter().map(|label| colors.muted(label)))
+                        .when(empty, |view| {
+                            view.child(colors.muted("No runs removed from the Deck yet."))
+                        })
+                }
                 _ => column(),
             });
         } else {
@@ -481,25 +495,35 @@ impl DeckView {
             colors
                 .button("refresh-hosts", "Refresh hosts", true)
                 .on_click(cx.listener(|view, _, _, cx| {
-                    view.catalog = None;
+                    view.session.catalog.refresh_hosts();
                     view.refresh_view();
                     cx.notify();
                 })),
         );
-        if let Some(Err(error)) = &self.catalog {
-            return content.child(colors.muted(error.clone()));
-        }
-        for host in self.catalog_view.hosts.values() {
+        for (index, (&host_id, host)) in self.catalog_view.hosts.iter().enumerate() {
             let display = Display {
                 link: host.link,
                 snapshot: host.pages.first().cloned(),
                 ..Default::default()
             };
-            let mut entry = column().p(px(12.)).bg(colors.panel).rounded_lg().child(
-                row()
-                    .child(host.label.clone())
-                    .child(colors.muted(connection_text(&display).unwrap_or("Live"))),
-            );
+            let mut header_row = row()
+                .child(host.label.clone())
+                .child(colors.muted(connection_text(&display).unwrap_or("Live")));
+            if host.needs_reconnect() {
+                header_row = header_row.child(
+                    colors
+                        .button(("reconnect-host", index), "Reconnect", true)
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.session.catalog.reconnect_host(host_id);
+                            cx.notify();
+                        })),
+                );
+            }
+            let mut entry = column()
+                .p(px(12.))
+                .bg(colors.panel)
+                .rounded_lg()
+                .child(header_row);
             for (snapshot, run) in host.runs().take(crate::catalog::HOST_PREVIEW_LIMIT) {
                 entry = entry.child(colors.muted(format!(
                     "{} · {} · {} pending",
@@ -544,7 +568,8 @@ impl DeckView {
                         .bg(colors.panel)
                         .child(div().font_weight(FontWeight::SEMIBOLD).child("Deck status"))
                         .child(
-                            colors.muted(self.status_message().unwrap_or("Connected").to_owned()),
+                            colors
+                                .muted(self.status_message().unwrap_or_else(|| "Connected".into())),
                         )
                         .when_some(self.connection_issue(), |status, code| {
                             status.child(colors.muted(format!("Connection issue ({code})")))
@@ -1045,6 +1070,14 @@ fn status(run: &PresentedRun, cached: bool) -> (&'static str, StatusColor) {
         }
         return ("Check terminal", StatusColor::Attention);
     }
+    if run.pending_requests == 0
+        && let Some(status) = run
+            .program_status
+            .as_ref()
+            .filter(|status| status.phase() == corvid_protocol::wire::ProgramPhase::Blocked)
+    {
+        return (status.label(), StatusColor::Attention);
+    }
     match prompt_detail(run) {
         Some(PromptObservation::Submitted) => ("Working (inferred)", StatusColor::Working),
         Some(PromptObservation::Responded) => badge(AgentBadge::ResponseObserved as i32),
@@ -1122,7 +1155,7 @@ mod tests {
         });
         assert_eq!(
             status(&run, false),
-            ("App waiting for login", StatusColor::Muted)
+            ("App waiting for login", StatusColor::Attention)
         );
         run.last_badge = AgentBadge::NeedsInput as i32;
         run.pending_requests = 1;
@@ -1136,6 +1169,27 @@ mod tests {
             status(&run, false),
             ("Check terminal · New response", StatusColor::Attention)
         );
+    }
+
+    #[test]
+    fn blocked_program_status_surfaces_attention_when_working_without_pending_requests() {
+        use corvid_protocol::wire::{ProgramPhase, ProgramStatus, ProgramWaitKind};
+
+        let mut run = available(AgentBadge::Working);
+        run.collection = AgentCollection::Healthy as i32;
+        run.program_status = Some(ProgramStatus {
+            phase: ProgramPhase::Blocked as i32,
+            wait_kind: ProgramWaitKind::Permission as i32,
+            ..Default::default()
+        });
+        assert_eq!(
+            status(&run, false),
+            ("App waiting for permission", StatusColor::Attention)
+        );
+
+        run.pending_requests = 1;
+        run.last_badge = AgentBadge::NeedsInput as i32;
+        assert_eq!(status(&run, false), ("Needs input", StatusColor::Attention));
     }
 
     #[test]
