@@ -331,8 +331,8 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
                 points = []
                 for y in range(40):
                     row = pixels[3 * y * width:3 * (y + 1) * width]
-                    active = row.find(bytes((32, 51, 47)) * 8)
-                    preview = row.rfind(bytes((48, 52, 63)) * 8)
+                    active = row.find(bytes((37, 37, 41)) * 8)
+                    preview = row.rfind(bytes((39, 39, 44)) * 8)
                     if 0 <= active < preview:
                         points.append((active // 3 + 4, preview // 3 + 4, y))
                 if points:
@@ -602,7 +602,7 @@ with (tempfile.TemporaryDirectory(prefix=".corvid-desktop-smoke-", dir=Path.home
             prepare_preview("Editor", "Editing scratch.txt", editor_color)
         if args.build:
             editor_focused = wait_for_terminal_colors(editor_color)
-            assert editor_focused[1] == (32, 36, 43), editor_focused
+            assert editor_focused[1] == (17, 17, 19), editor_focused
         new_tab(window)
         second_terminal = wait_for_terminal(previous=first_terminal)
         second_tab_marker = root / "second-tab"
