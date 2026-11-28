@@ -561,6 +561,7 @@ async fn verify_restore(runtime: &Path, state: &Path) -> Result<()> {
         restored.selected.as_ref() == Some(view) && restored.terminal_id == selected.terminal_id,
         "opening a workspace did not restore its remembered pane"
     );
+    wait_screen(&reopened.session, &view.pane_id, "").await?;
     ensure!(
         reopened
             .session

@@ -25,6 +25,12 @@ impl ScreenSnapshot {
         Self(screen)
     }
 
+    pub(crate) fn clipped(&self, clip: Viewport) -> Self {
+        let mut screen = self.0.clone();
+        screen.clip(clip.rows, clip.cols);
+        Self(screen)
+    }
+
     pub(crate) fn matches(&self, previous: &Self) -> bool {
         self.0.cursor == previous.0.cursor
             && self.size() == previous.size()

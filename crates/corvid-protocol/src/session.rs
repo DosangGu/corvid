@@ -246,7 +246,7 @@ impl Session {
                 | Body::RenameView(_)
                 | Body::CloseView(_)
                 | Body::FocusViewAgent(_)
-                | Body::ReadPanePreview(_)
+                | Body::SetPreviewTab(_)
                 | Body::ReadTerminalHistory(_)
                 | Body::DisconnectWorkspaceClients(_)
                 | Body::ClaimWorkspaceWriter(_)

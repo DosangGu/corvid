@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use super::screen::ScreenSnapshot;
 use anyhow::{Result, ensure};
@@ -158,6 +159,22 @@ impl Backend {
                 Ok((viewport, session.screen.redraw(viewport)?.into_bytes()))
             }
             Self::Hosted(client) => client.preview(),
+        }
+    }
+
+    pub(super) fn preview_snapshot(&mut self) -> Result<(Viewport, Arc<ScreenSnapshot>)> {
+        match self {
+            Self::Local(session) => {
+                let viewport = session.screen.viewport();
+                Ok((viewport, Arc::new(session.screen.snapshot()?)))
+            }
+            Self::Hosted(client) => {
+                let (viewport, bytes) = client.preview()?;
+                Ok((
+                    viewport,
+                    Arc::new(ScreenSnapshot::from_ansi(viewport, &bytes, None)),
+                ))
+            }
         }
     }
 

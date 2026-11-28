@@ -995,29 +995,15 @@ impl Workspaces {
             .await
     }
 
-    pub(crate) async fn preview(&self, active: &Active, pane: Uuid) -> Reply<(Viewport, Vec<u8>)> {
+    pub(crate) async fn preview_handles(
+        &self,
+        active: &Active,
+        tab: Uuid,
+    ) -> Vec<(Uuid, TerminalHandle)> {
         let active = active.view();
-        let terminal = self
-            .registry
-            .request(move |registry| {
-                registry.require_route(active.route)?;
-                let layout = registry.metadata.layout();
-                if pane == active.location.pane
-                    || !layout.locations().any(|location| {
-                        location.workspace == active.location.workspace && location.pane == pane
-                    })
-                {
-                    return Err(target_gone());
-                }
-                registry
-                    .slots
-                    .get(&pane)
-                    .filter(|slot| slot.terminal.has_live_terminal())
-                    .map(|slot| slot.terminal.clone())
-                    .ok_or_else(target_gone)
-            })
-            .await?;
-        terminal.preview().await
+        self.registry
+            .request(move |registry| registry.preview_handles(active.location, tab))
+            .await
     }
 
     pub(crate) async fn switch(

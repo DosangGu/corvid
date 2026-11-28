@@ -78,14 +78,22 @@ fn apply_update(update: crate::snapshot_hub::SnapshotUpdate, epoch: &str, shared
 
 fn publish(shared: &Shared, inventory: Inventory) {
     shared.edit(move |state| {
-        Arc::make_mut(&mut state.previews).retain(|pane, _| {
-            inventory.terminals.iter().any(|terminal| {
-                terminal
-                    .location
-                    .as_ref()
-                    .is_some_and(|location| &location.pane_id == pane)
-            })
+        let active_pane = state
+            .ui
+            .selected
+            .as_ref()
+            .map(|selected| selected.pane_id.clone());
+        let screens = Arc::make_mut(&mut state.pane_screens);
+        screens.retain(|pane, _| {
+            active_pane.as_deref() == Some(pane.as_str())
+                || inventory.terminals.iter().any(|terminal| {
+                    terminal
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| &location.pane_id == pane)
+                })
         });
+        state.pane_order.retain(|pane| screens.contains_key(pane));
         let ui = Arc::make_mut(&mut state.ui);
         ui.inventory = Some(Arc::new(inventory));
         ui.inventory_ready = true;
