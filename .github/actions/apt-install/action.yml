@@ -1,0 +1,29 @@
+name: Install Ubuntu packages
+description: Remove third-party Microsoft APT sources and install Ubuntu packages with retries
+inputs:
+  packages:
+    description: Space-separated list of Ubuntu APT packages to install
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Ubuntu packages
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        if [[ -d /etc/apt/sources.list.d ]]; then
+          mapfile -t ms_sources < <(grep -rlF 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null || true)
+          if (( ${#ms_sources[@]} > 0 )); then
+            echo "Removing third-party Microsoft APT sources: ${ms_sources[*]}"
+            sudo rm -f "${ms_sources[@]}"
+          fi
+        fi
+        read -r -a packages <<< "$PACKAGES"
+        if (( ${#packages[@]} == 0 )); then
+          echo "No APT packages specified" >&2
+          exit 1
+        fi
+        sudo apt-get -o Acquire::Retries=3 update --error-on=any
+        sudo apt-get -o Acquire::Retries=3 install -y "${packages[@]}"
