@@ -927,7 +927,7 @@ def verify_workspace_ui(command, directory):
             terminal.expect(rb"\x1b\[1;\d+H\x1b\[0;1;7m" + tab + b" " + label)
             for marker in markers:
                 match = terminal.expect(marker)
-                frame = terminal.output[terminal.output.rfind(b"\x1b[2J", 0, match.start()):]
+                frame = terminal.output[max(terminal.output.rfind(b"\x1b[?2026h", 0, match.start()), 0):]
                 assert previous not in frame, frame
                 assert b"\x1b[?25h" not in frame, frame
             assert not re.search(active, terminal.output), terminal.output
@@ -1021,7 +1021,7 @@ def verify_workspace_ui(command, directory):
         terminal.output.clear()
         terminal.resize(100, 30)
         restored_split = (
-            rb"\x1b\[2J\x1b\[1;1H\x1b\[0m(?s:.*?)"
+            rb"\x1b\[\?6l\x1b\[r\x1b\[\?7l\x1b\[\?25l\x1b\[0m\x1b\[1;1H\x1b\[0m(?s:.*?)"
             rb"\x1b\[2;51H\x1b\[0;1;36m" + "● ".encode()
             + rb"(?s:.*?)" + cursor_visible
         )
@@ -1089,7 +1089,7 @@ def verify_overflowing_titles(command):
         terminal.output.clear()
         terminal.send(b"\x1b[<0;" + second_tab + b";1M")
         terminal.expect(rb"\x1b\[0;1;36m\[2 ")
-        full_redraw = rb"\x1b\[2J\x1b\[1;1H\x1b\[0m"
+        full_redraw = rb"\x1b\[\?6l\x1b\[r\x1b\[\?7l\x1b\[\?25l\x1b\[0m\x1b\[1;1H\x1b\[0m"
         header_redraw = full_redraw + rb"\x1b\[2K"
         shell_redraw = (
             full_redraw + rb"\x1b\[0(?:;\d+)*m"

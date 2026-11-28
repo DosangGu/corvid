@@ -240,7 +240,7 @@ impl Composition {
         header: &HeaderMotion,
         mut screen: impl FnMut(Uuid) -> Option<std::sync::Arc<ScreenSnapshot>>,
     ) -> String {
-        let mut ansi = String::from("\x1b[?6l\x1b[r\x1b[?7l\x1b[?25l\x1b[0m\x1b[2J");
+        let mut ansi = String::from("\x1b[?6l\x1b[r\x1b[?7l\x1b[?25l\x1b[0m");
         if self.panes[0].1.y != 0 {
             self.paint_header(&mut ansi, header);
         }
@@ -286,6 +286,10 @@ impl Composition {
                     region.y + 1,
                     region.x + 1
                 );
+                let remaining = usize::from(region.width).saturating_sub(label.width());
+                if remaining > 0 {
+                    let _ = write!(ansi, "\x1b[0m\x1b[{remaining}X");
+                }
                 if body.width < region.width {
                     for row in body.y..body.y + body.height {
                         let _ = write!(
@@ -321,6 +325,16 @@ impl Composition {
                         body.y + row.min(body.height - 1) + 1,
                         body.x + col.min(body.width - 1) + 1
                     ));
+                }
+            } else {
+                for row in 0..body.height {
+                    let _ = write!(
+                        ansi,
+                        "\x1b[{};{}H\x1b[0m\x1b[{}X",
+                        body.y + row + 1,
+                        body.x + 1,
+                        body.width
+                    );
                 }
             }
         }
@@ -526,6 +540,18 @@ fn draw(ansi: &mut String, screen: &ScreenSnapshot, body: Rect) {
         if active_link.is_some() {
             write_osc8(ansi, None);
         }
+        if width < body.width {
+            let _ = write!(ansi, "\x1b[0m\x1b[{}X", body.width - width);
+        }
+    }
+    for row in rows.get().min(body.height)..body.height {
+        let _ = write!(
+            ansi,
+            "\x1b[{};{}H\x1b[0m\x1b[{}X",
+            body.y + row + 1,
+            body.x + 1,
+            body.width
+        );
     }
 }
 
@@ -613,5 +639,28 @@ mod tests {
         assert!(
             ansi.contains("\x1b]8;id=p1;https://example.test\x1b\\\x1b[0mlinkte\x1b]8;;\x1b\\")
         );
+    }
+
+    #[test]
+    fn composition_paint_clears_stale_pane_content_without_clear_screen() {
+        let outer = Viewport::new(20, 6).unwrap();
+        let layout = Layout::empty_terminal();
+        let location = layout.primary().unwrap();
+        let view = Composition::new(outer, &layout, location, None, None);
+        let display = DisplayLayout {
+            layout: std::sync::Arc::new(layout),
+            titles: Default::default(),
+            program_statuses: Default::default(),
+            reported_directories: Default::default(),
+            pending_input_panes: Default::default(),
+        };
+        let motion = HeaderMotion::default();
+        let mut terminal = vt100::Parser::new(outer.rows, outer.cols, 0);
+        terminal.process(b"\x1b[3;1Hstale-row-3\x1b[5;1Hstale-row-5");
+
+        let ansi = view.paint(location, None, &display, &motion, |_| None);
+        assert!(!ansi.contains("\x1b[2J"));
+        terminal.process(ansi.as_bytes());
+        assert!(!terminal.screen().contents().contains("stale"));
     }
 }

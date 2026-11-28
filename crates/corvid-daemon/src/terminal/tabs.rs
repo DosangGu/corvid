@@ -135,7 +135,7 @@ impl TabPicker {
         let start = start.min(filtered.len().saturating_sub(rows));
         let end = (start + rows).min(filtered.len());
 
-        let mut frame = String::from("\x1b[?6l\x1b[r\x1b[?7l\x1b[0m\x1b[?25l\x1b[2J\x1b[H");
+        let mut frame = String::from("\x1b[?6l\x1b[r\x1b[?7l\x1b[0m\x1b[?25l\x1b[H");
         let title = format!(
             "Tabs {}/{} | ↑/↓ Enter Esc | {}",
             if filtered.is_empty() {
@@ -153,9 +153,10 @@ impl TabPicker {
             format!("Search: {}", self.query)
         };
         if outer.rows.get() > 1 {
-            write!(frame, "\x1b[2;1H\x1b[0m{}", clip(&search, cols))?;
+            write!(frame, "\x1b[2;1H\x1b[0m{}\x1b[K", clip(&search, cols))?;
         }
 
+        let mut next_row = 3usize;
         for (position, &index) in filtered.iter().enumerate().take(end).skip(start) {
             let choice = &self.tabs[index];
             let cursor = if position == self.selected { '>' } else { ' ' };
@@ -173,7 +174,15 @@ impl TabPicker {
                 "\x1b[0m"
             };
             let row = position - start + 3;
-            write!(frame, "\x1b[{row};1H{style}{}", clip(&label, cols))?;
+            write!(
+                frame,
+                "\x1b[{row};1H{style}{}\x1b[0m\x1b[K",
+                clip(&label, cols)
+            )?;
+            next_row = row + 1;
+        }
+        for row in next_row..=usize::from(outer.rows.get()) {
+            write!(frame, "\x1b[{row};1H\x1b[0m\x1b[K")?;
         }
         frame.push_str("\x1b[0m\x1b[?7h");
         self.dirty = false;
@@ -217,6 +226,12 @@ mod tests {
                 .paint(Viewport::new(20, 3).unwrap())
                 .unwrap()
                 .contains("Tabs 0/0")
+        );
+        assert!(
+            !picker
+                .paint(Viewport::new(20, 3).unwrap())
+                .unwrap()
+                .contains("\x1b[2J")
         );
         assert!(matches!(picker.key(b"\x1b"), PickerAction::Cancel));
     }
