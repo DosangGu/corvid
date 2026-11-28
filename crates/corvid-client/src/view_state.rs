@@ -1,12 +1,11 @@
 //! Private, best-effort client preferences. These are navigation hints, never authority.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_async::watch;
+use corvid_async::mpsc;
 use corvid_core::layout::Location;
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::snapshot::SynchronizedSnapshot;
@@ -30,6 +29,7 @@ const BACKUP: &str = "view.json.bak";
 const MAX_BYTES: u64 = 64 * 1024;
 const MAX_TARGETS: usize = 64;
 const MAX_WORKSPACE_VIEWS: usize = 128;
+const RECORDER_CAPACITY: usize = 256;
 const SAVE_DELAY: Duration = Duration::from_millis(250);
 // A writer can hold this lock across multiple durable file replacements.
 #[cfg(windows)]
@@ -408,38 +408,63 @@ impl ViewStore {
     }
 
     pub fn recorder(&self) -> Result<Recorder> {
-        let (updates, mut incoming) = watch::channel(());
-        let pending = Arc::new(Mutex::new(PendingViews::default()));
-        let queued = pending.clone();
+        let (updates, mut incoming) = mpsc::channel::<SavedView>(RECORDER_CAPACITY);
         let store = self.clone();
         let worker = thread::Builder::new()
             .name("corvid-view-save".into())
             .spawn(move || {
                 let runtime = compio::runtime::Runtime::new()?;
                 runtime.block_on(async {
-                    while incoming.changed().await.is_ok() {
-                        compio::time::sleep(SAVE_DELAY).await;
-                        let views = std::mem::take(&mut queued.lock().unwrap().batch);
-                        if !views.is_empty()
-                            && let Err(error) = store.save_views(&views)
-                        {
-                            eprintln!("corvid: could not save the last view: {error:#}");
+                    let mut pending = PendingViews::default();
+                    while let Some(view) = incoming.recv().await {
+                        if !enqueue(&mut pending, view) {
+                            continue;
+                        }
+                        let mut timer = std::pin::pin!(compio::time::sleep(SAVE_DELAY));
+                        loop {
+                            corvid_async::select! {
+                                _ = &mut timer => {
+                                    flush(&store, &mut pending);
+                                    break;
+                                }
+                                next = incoming.recv() => match next {
+                                    Some(view) => {
+                                        enqueue(&mut pending, view);
+                                    }
+                                    None => {
+                                        flush(&store, &mut pending);
+                                        return Ok(());
+                                    }
+                                }
+                            }
                         }
                     }
-                    let remaining = std::mem::take(&mut queued.lock().unwrap().batch);
-                    if !remaining.is_empty()
-                        && let Err(error) = store.save_views(&remaining)
-                    {
-                        eprintln!("corvid: could not save the last view: {error:#}");
-                    }
+                    flush(&store, &mut pending);
                     Ok(())
                 })
             })?;
         Ok(Recorder {
             updates: Some(updates),
             worker: Some(worker),
-            pending,
         })
+    }
+}
+
+fn enqueue(pending: &mut PendingViews, view: SavedView) -> bool {
+    if pending.latest.as_ref() == Some(&view) {
+        return false;
+    }
+    pending.latest = Some(view.clone());
+    remember_workspace(&mut pending.batch, view);
+    true
+}
+
+fn flush(store: &ViewStore, pending: &mut PendingViews) {
+    let views = std::mem::take(&mut pending.batch);
+    if !views.is_empty()
+        && let Err(error) = store.save_views(&views)
+    {
+        eprintln!("corvid: could not save the last view: {error:#}");
     }
 }
 
@@ -456,9 +481,8 @@ struct PendingViews {
 }
 
 pub struct Recorder {
-    updates: Option<watch::Sender<()>>,
+    updates: Option<mpsc::Sender<SavedView>>,
     worker: Option<thread::JoinHandle<Result<()>>>,
-    pending: Arc<Mutex<PendingViews>>,
 }
 
 impl Recorder {
@@ -466,12 +490,7 @@ impl Recorder {
         if let Ok(view) = SavedView::new(target, host, selection)
             && let Some(updates) = &self.updates
         {
-            let mut pending = self.pending.lock().unwrap();
-            if pending.latest.as_ref() != Some(&view) {
-                pending.latest = Some(view.clone());
-                remember_workspace(&mut pending.batch, view);
-                let _ = updates.send(());
-            }
+            let _ = updates.try_send(view);
         }
     }
 }
