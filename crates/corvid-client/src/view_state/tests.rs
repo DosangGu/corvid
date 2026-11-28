@@ -474,3 +474,44 @@ fn recorder_continues_after_transient_save_error() -> Result<()> {
     assert_eq!(saved.location, third.location);
     Ok(())
 }
+
+#[test]
+fn recorder_coalesces_batches_skips_duplicates_and_flushes_on_drop() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = ViewStore::new(dir.path().join("state"));
+    let first = view(Target::Local);
+    let second = view(Target::Local);
+    let host = first.host_id.to_string();
+
+    let recorder = store.recorder()?;
+    recorder.record(first.target.clone(), &host, &selection(&first));
+    recorder.record(first.target.clone(), &host, &selection(&first));
+    recorder.record(
+        second.target.clone(),
+        &second.host_id.to_string(),
+        &selection(&second),
+    );
+    drop(recorder);
+
+    let saved = store.last().expect("latest view flushed on drop");
+    assert_eq!(saved.location, second.location);
+    assert_eq!(
+        store
+            .for_workspace(&first.target, &host, &first.location.workspace.to_string())
+            .unwrap()
+            .location,
+        first.location
+    );
+    assert_eq!(
+        store
+            .for_workspace(
+                &second.target,
+                &second.host_id.to_string(),
+                &second.location.workspace.to_string()
+            )
+            .unwrap()
+            .location,
+        second.location
+    );
+    Ok(())
+}
