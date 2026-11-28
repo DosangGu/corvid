@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/scripts/linux-routing-backtrace.sh'
       - '.github/workflows/checks-tui.yml'
+      - '.github/actions/apt-install/**'
       - '.github/actions/install-zig/**'
       - '.cargo/**'
       - 'Cargo.toml'
@@ -46,9 +47,9 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/install-zig
       - name: Install Linux build dependencies
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update --error-on=any
-          sudo apt-get -o Acquire::Retries=3 install -y ncurses-bin gdb
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ncurses-bin gdb
       - name: Prepare private test directory
         run: |
           mkdir -m 700 "$HOME/.corvid-tests"

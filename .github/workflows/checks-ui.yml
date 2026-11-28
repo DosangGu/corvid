@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/checks-ui.yml'
+      - '.github/actions/apt-install/**'
       - '.github/workflows/package.yml'
       - 'tests/ui/**'
       - 'plugins/agent-deck/tests/ui/**'
@@ -63,12 +64,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/install-zig
-      - name: Linux build and UI dependencies
+      - name: Install Linux build and UI dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update --error-on=any
-          sudo apt-get -o Acquire::Retries=3 install -y build-essential ncurses-bin libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev libvulkan1 mesa-vulkan-drivers xvfb xauth x11-utils xdotool xclip openbox openssh-server protobuf-compiler scrot fonts-dejavu-core fonts-noto-color-emoji
-          sudo mkdir -p /run/sshd
+        uses: ./.github/actions/apt-install
+        with:
+          packages: build-essential ncurses-bin libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libfontconfig1-dev libssl-dev libvulkan1 mesa-vulkan-drivers xvfb xauth x11-utils xdotool xclip openbox openssh-server protobuf-compiler scrot fonts-dejavu-core fonts-noto-color-emoji
+      - name: Prepare sshd runtime directory
+        if: runner.os == 'Linux'
+        run: sudo mkdir -p /run/sshd
       - name: macOS build environment
         if: runner.os == 'macOS'
         run: bash deploy/macos/prepare-build.sh
