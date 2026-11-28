@@ -47,11 +47,13 @@ fn summary_toast_opens_settings_when_visible_and_when_hidden() -> Result<()> {
     let config = Config::read_if_present(&state)?.context("fixture config")?;
     let address = controller.simple().to_string();
     let signal = UiSignal::default();
+    let (updates, update_rx) = corvid_async::mpsc::channel(16);
     let (callbacks_tx, callbacks_rx) = std::sync::mpsc::sync_channel(1);
     let background = Background::start(
         state.clone(),
         address.clone(),
         config,
+        update_rx,
         signal.clone(),
         move |callbacks, _, _, _| {
             callbacks.capabilities.send_replace(Capabilities {
@@ -63,6 +65,14 @@ fn summary_toast_opens_settings_when_visible_and_when_hidden() -> Result<()> {
                 _callbacks: callbacks,
             })
         },
+    )?;
+    let catalog = crate::catalog::Catalog::start(
+        state.clone(),
+        host,
+        address,
+        signal.clone(),
+        background.desktop.clone(),
+        updates,
     )?;
     let callbacks = callbacks_rx.try_recv()?;
     let preferences = shell::Window::load(&state, false)?;
@@ -76,7 +86,7 @@ fn summary_toast_opens_settings_when_visible_and_when_hidden() -> Result<()> {
         app::Session {
             background,
             signal,
-            catalog: (state, host, address),
+            catalog,
         },
         preferences,
     );

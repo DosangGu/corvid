@@ -335,6 +335,7 @@ fn supports_current_layout(client: &PresentationClient) -> bool {
         DECK_PRIORITY_CAPABILITY,
         PROCESS_EXIT_RETIREMENT_CAPABILITY,
         crate::PRESENTATION_RUNS_CAPABILITY,
+        crate::PRESENTATION_WATCH_CAPABILITY,
     ]
     .into_iter()
     .all(|required| {
@@ -584,6 +585,7 @@ mod tests {
                 PROCESS_EXIT_RETIREMENT_CAPABILITY,
                 crate::PRESENTATION_CAPABILITY,
                 crate::PRESENTATION_RUNS_CAPABILITY,
+                crate::PRESENTATION_WATCH_CAPABILITY,
                 crate::ipc::MONITOR_RECONNECT_CAPABILITY,
             ];
             while let Ok(Some(stream)) = listener.accept().await {

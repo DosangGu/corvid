@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use corvid_async::{mpsc, oneshot};
+use corvid_async::{mpsc, oneshot, watch};
 use corvid_client::{ControlEndpoint, SnapshotWatch, SshRetry};
 use corvid_protocol::ProtocolFault;
 use corvid_protocol::wire::envelope::Body;
@@ -56,6 +56,7 @@ pub(crate) struct Service {
     controller: String,
     host: String,
     connection: Connection,
+    changes: watch::Sender<u64>,
     last_snapshot: Option<Remote>,
     save_status_at: Option<Instant>,
     #[cfg(windows)]
@@ -65,7 +66,11 @@ pub(crate) struct Service {
 }
 
 impl Service {
-    pub(crate) fn new(store: Store, endpoint: ControlEndpoint) -> Self {
+    pub(crate) fn new(
+        store: Store,
+        endpoint: ControlEndpoint,
+        changes: watch::Sender<u64>,
+    ) -> Self {
         let config = store.config();
         #[cfg(windows)]
         let (terminal_registry, terminals) =
@@ -84,6 +89,7 @@ impl Service {
             host: config.host_id.to_string(),
             store,
             connection: Connection::Connecting(None),
+            changes,
             last_snapshot: None,
             save_status_at: None,
             #[cfg(windows)]
@@ -93,12 +99,26 @@ impl Service {
         }
     }
 
+    pub(super) fn notify_change(&self) {
+        self.changes
+            .send_modify(|revision| *revision = revision.saturating_add(1));
+    }
+
+    pub(super) fn state_revision(&self) -> u64 {
+        *self.changes.borrow()
+    }
+
+    fn set_connection(&mut self, next: Connection) {
+        self.connection = next;
+        self.notify_change();
+    }
+
     pub(crate) async fn run(&mut self, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let mut failures = 0;
         let ssh = matches!(self.endpoint, ControlEndpoint::Ssh(_));
         let mut retry = ssh.then(SshRetry::default);
         loop {
-            self.connection = Connection::Connecting(self.connection.issue());
+            self.set_connection(Connection::Connecting(self.connection.issue()));
             let link = match &retry {
                 Some(retry) => timeout_at(retry.deadline(), self.connect(&mut calls))
                     .await
@@ -141,7 +161,7 @@ impl Service {
                 }
                 Err(error) => error,
             };
-            self.connection = Connection::disconnected(&fault);
+            self.set_connection(Connection::disconnected(&fault));
             let next = if ssh {
                 retry
                     .get_or_insert_with(SshRetry::default)
@@ -172,7 +192,7 @@ impl Service {
                 .as_ref()
                 .is_some_and(|retry| Instant::now() >= retry.deadline())
             {
-                self.connection = Connection::Offline("SshRetryExhausted");
+                self.set_connection(Connection::Offline("SshRetryExhausted"));
             }
             if matches!(
                 self.wait_to_reconnect(None, &mut calls).await,
@@ -187,16 +207,17 @@ impl Service {
 
     fn publish_ready(&mut self, remote: Remote) {
         self.last_snapshot = None;
-        self.connection = Connection::Ready(ReadySnapshot {
+        self.set_connection(Connection::Ready(ReadySnapshot {
             generation: Uuid::new_v4(),
             remote,
-        });
+        }));
     }
 
     fn retire_snapshot(&mut self, connection: Connection) {
         if let Connection::Ready(snapshot) = std::mem::replace(&mut self.connection, connection) {
             self.last_snapshot = Some(snapshot.remote);
         }
+        self.notify_change();
     }
 
     fn latest_snapshot(&self) -> Option<&Remote> {
@@ -288,7 +309,7 @@ impl Service {
                 started = &mut started if waiting => {
                     waiting = false;
                     if started.is_ok() {
-                        self.connection = Connection::Syncing(self.connection.issue());
+                        self.set_connection(Connection::Syncing(self.connection.issue()));
                     }
                 }
                 call = calls.recv() => {
@@ -332,12 +353,16 @@ impl Service {
                 }
                 _ = priority_refresh.tick() => {
                     let now = now_ms();
+                    let before = self.store.layout_revision();
                     if let Some(snapshot) = self.connection.ready()
                         && let Err(error) = self.store.update(|layout| {
                             Ok(layout.reorder(now, |key| priority(&snapshot.remote, key, now))?)
                         })
                     {
                         return Err(store_fault(error).into());
+                    }
+                    if self.store.layout_revision() != before {
+                        self.notify_change();
                     }
                 }
                 update = watch.next_change() => {
@@ -347,6 +372,7 @@ impl Service {
                         unreachable!("following a synchronized watch");
                     };
                     snapshot.remote = remote;
+                    self.notify_change();
                 }
                 call = calls.recv() => {
                     let Some(call) = call else { anyhow::bail!("presentation endpoint closed") };

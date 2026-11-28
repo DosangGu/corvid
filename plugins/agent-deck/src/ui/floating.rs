@@ -181,21 +181,40 @@ impl DeckView {
         }
     }
 
-    pub(super) fn status_message(&self) -> Option<&str> {
+    pub(super) fn status_message(&self) -> Option<String> {
         if let Some(error) = &self.window.error {
-            Some(error)
+            Some(error.clone())
         } else if self.actions.is_pending() {
-            Some("Waiting for the action…")
+            Some("Waiting for the action…".into())
         } else if let Some(notice) = self.actions.notice() {
-            Some(&notice.message)
+            Some(notice.message.clone())
+        } else if let Some(text) = connection_text(&self.view) {
+            Some(text.into())
         } else {
-            connection_text(&self.view)
+            let mut issues = self.catalog_view.hosts.iter().filter_map(|(&id, host)| {
+                if id == self.session.catalog.current_host {
+                    return None;
+                }
+                let display = Display {
+                    link: host.link,
+                    snapshot: host.pages.first().cloned(),
+                    ..Default::default()
+                };
+                connection_text(&display).map(|text| format!("{}: {text}", host.label))
+            });
+            let first = issues.next()?;
+            let extra = issues.count();
+            Some(if extra == 0 {
+                first
+            } else {
+                format!("{} hosts need attention", extra + 1)
+            })
         }
     }
 
     pub(super) fn footer(&self, cx: &mut Context<Self>) -> Div {
         let colors = self.colors;
-        let text = self.status_message().unwrap_or_default().to_owned();
+        let text = self.status_message().unwrap_or_default();
         row()
             .h(px(BAR_HEIGHT))
             .flex_shrink_0()

@@ -5,21 +5,17 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::ui_signal::UiSignal;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use corvid_agent_deck::connection;
-use corvid_async::time::{sleep, timeout};
+use corvid_async::time::sleep;
 use corvid_async::{mpsc, oneshot, watch};
-use corvid_companion::{
-    Config, PRESENTATION_ATTENTION_CAPABILITY, PresentationAddress, PresentationClient,
-};
+use corvid_companion::{Config, PresentationAddress};
 use corvid_presentation::{desktop_focus, ipc::Completion};
-use corvid_protocol::COMMAND_TIMEOUT;
-use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{GetPresentationAttention, PresentationAttention};
+use corvid_protocol::wire::PresentationAttention;
 use uuid::Uuid;
 
 use crate::delivery::Delivery;
-use crate::hosts::{self, Subscriptions};
+use crate::hosts;
 use crate::parent::{self, DesktopLink};
 use crate::platform::Callbacks;
 use corvid_agent_deck_core::native::{
@@ -60,6 +56,7 @@ impl Background {
         state: PathBuf,
         address: <PresentationAddress as ToOwned>::Owned,
         config: Config,
+        updates: mpsc::Receiver<Update>,
         ctx: UiSignal,
         native: impl FnOnce(Callbacks, Uuid, &Path, &PresentationAddress) -> Result<N> + Send + 'static,
     ) -> Result<Self> {
@@ -79,6 +76,7 @@ impl Background {
                     views: views.clone(),
                     settings: changed,
                     tests,
+                    updates,
                     ctx: ctx.clone(),
                     started: started.clone(),
                     stopped,
@@ -143,6 +141,7 @@ struct Channels {
     views: watch::Sender<View>,
     settings: watch::Receiver<Settings>,
     tests: mpsc::Receiver<()>,
+    updates: mpsc::Receiver<Update>,
     ctx: UiSignal,
     started: std::sync::mpsc::SyncSender<Result<(), String>>,
     stopped: oneshot::Receiver<()>,
@@ -161,6 +160,7 @@ async fn run<N: NativeServices>(
         views,
         mut settings,
         mut tests,
+        updates: mut snapshot_rx,
         ctx,
         started,
         mut stopped,
@@ -207,13 +207,6 @@ async fn run<N: NativeServices>(
         result = jobs.join_next() => { anyhow::bail!("Agent Deck endpoint unavailable: {result:?}"); }
     }
     let delivery = Delivery::open(hosts::root(&state, config.host_id))?;
-    let (snapshots, mut snapshot_rx) = mpsc::channel(8);
-    jobs.spawn(poll_hosts(
-        state.clone(),
-        address,
-        config.host_id,
-        snapshots,
-    ));
     let epoch = Uuid::new_v4();
     let mut clients = corvid_async::task::JoinSet::new();
     let mut monitor = Monitor {
@@ -234,6 +227,7 @@ async fn run<N: NativeServices>(
     let mut capabilities_open = true;
     let mut issues_open = true;
     let mut events_open = true;
+    let mut snapshots_open = true;
     let startup_deadline = sleep(Duration::from_secs(5));
     corvid_async::pin!(startup_deadline);
     loop {
@@ -266,8 +260,11 @@ async fn run<N: NativeServices>(
             result = jobs.join_next() => {
                 anyhow::bail!("Agent Deck background service stopped: {result:?}");
             }
-            result = snapshot_rx.recv() if notifications_ready => {
-                monitor.snapshot(result.context("notification poller stopped")?).await?;
+            result = snapshot_rx.recv() if notifications_ready && snapshots_open => {
+                match result {
+                    Some(update) => monitor.snapshot(update).await?,
+                    None => snapshots_open = false,
+                }
             }
             result = settings.changed() => {
                 result?;
@@ -332,7 +329,7 @@ struct HostStatus {
     issue: String,
 }
 
-enum Update {
+pub(crate) enum Update {
     Hosts(BTreeMap<Uuid, String>),
     Snapshot(Uuid, Result<PresentationAttention, String>),
 }
@@ -631,97 +628,4 @@ fn test_notice(host: Uuid, activation: bool) -> Notice {
 
 fn save(storage: &StateDirectory, ledger: &Ledger) -> Result<()> {
     storage.replace_private_file("notifications.json", &serde_json::to_vec(ledger)?)
-}
-
-async fn poll_hosts(
-    state: PathBuf,
-    address: <PresentationAddress as ToOwned>::Owned,
-    current: Uuid,
-    snapshots: mpsc::Sender<Update>,
-) -> Result<()> {
-    let mut subscriptions = Subscriptions::default();
-    loop {
-        match hosts::discover(&state, current) {
-            Ok(mut profiles) => {
-                // Preserve an explicitly supplied IPC address for this Deck's scope.
-                if let Some(profile) = profiles.get_mut(&current) {
-                    profile.address = address.clone();
-                }
-                let host_labels = profiles
-                    .iter()
-                    .map(|(&id, profile)| (id, profile.label.clone()))
-                    .collect();
-                snapshots.send(Update::Hosts(host_labels)).await?;
-                subscriptions.refresh(&profiles, |id, profile| {
-                    poll(profile.address, id, profile.controller, snapshots.clone())
-                });
-            }
-            Err(error) => {
-                snapshots
-                    .send(Update::Snapshot(current, Err(error.to_string())))
-                    .await?;
-            }
-        }
-        sleep(Duration::from_secs(1)).await;
-    }
-}
-
-async fn poll(
-    address: <PresentationAddress as ToOwned>::Owned,
-    host: Uuid,
-    controller: Uuid,
-    snapshots: mpsc::Sender<Update>,
-) {
-    loop {
-        let result = poll_connected(&address, host, controller, &snapshots).await;
-        let message = match result {
-            Ok(()) => "Notification connection closed".into(),
-            Err(error) => error.to_string(),
-        };
-        if snapshots
-            .send(Update::Snapshot(host, Err(message)))
-            .await
-            .is_err()
-        {
-            return;
-        }
-        sleep(Duration::from_secs(3)).await;
-    }
-}
-
-async fn poll_connected(
-    address: &PresentationAddress,
-    host: Uuid,
-    controller: Uuid,
-    snapshots: &mpsc::Sender<Update>,
-) -> Result<()> {
-    let mut client = PresentationClient::connect(address).await?;
-    ensure!(
-        client.session().host_id == host.to_string(),
-        "companion belongs to another host"
-    );
-    ensure!(
-        client
-            .session()
-            .capabilities
-            .iter()
-            .any(|capability| capability == PRESENTATION_ATTENTION_CAPABILITY),
-        "This companion does not support OS notification metadata. Update it to enable notifications."
-    );
-    loop {
-        let reply = timeout(
-            COMMAND_TIMEOUT,
-            client.request(Body::GetPresentationAttention(GetPresentationAttention {})),
-        )
-        .await??;
-        let Body::PresentationAttention(snapshot) = reply else {
-            anyhow::bail!("unexpected notification reply");
-        };
-        ensure!(
-            snapshot.controller_id == controller.to_string(),
-            "unexpected companion controller"
-        );
-        snapshots.send(Update::Snapshot(host, Ok(snapshot))).await?;
-        sleep(Duration::from_secs(1)).await;
-    }
 }

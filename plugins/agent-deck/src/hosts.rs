@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+#[cfg(test)]
 use corvid_async::task::JoinHandle;
 use corvid_companion::{Config, HostEndpoint, PresentationAddress};
 use uuid::Uuid;
@@ -92,11 +94,13 @@ fn insert(
 }
 
 /// Keep readers attached as verified host scopes appear or change while Deck is open.
+#[cfg(test)]
 #[derive(Default)]
 pub struct Subscriptions {
     tasks: BTreeMap<Uuid, (Profile, JoinHandle<()>)>,
 }
 
+#[cfg(test)]
 impl Subscriptions {
     pub fn refresh<F, Fut>(&mut self, profiles: &BTreeMap<Uuid, Profile>, mut start: F)
     where
@@ -121,6 +125,7 @@ impl Subscriptions {
     }
 }
 
+#[cfg(test)]
 impl Drop for Subscriptions {
     fn drop(&mut self) {
         for (_, task) in self.tasks.values() {

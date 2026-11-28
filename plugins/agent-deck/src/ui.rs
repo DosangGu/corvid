@@ -1,5 +1,4 @@
 use crate::app::Session;
-use crate::catalog::Catalog;
 use crate::ui_signal::Presentation;
 use corvid_agent_deck_core::notifications::{Notice, now_ms};
 use corvid_agent_deck_core::{
@@ -48,7 +47,6 @@ pub(crate) struct DeckView {
     actions: Actions,
     notifications_seen: u64,
     selected_notice: Option<Notice>,
-    catalog: Option<Result<Catalog, String>>,
     catalog_view: crate::catalog::View,
     deck_order: Vec<RunKey>,
     queue_waiting: usize,
@@ -118,7 +116,6 @@ impl DeckView {
             actions: Actions::default(),
             notifications_seen: 0,
             selected_notice: None,
-            catalog: None,
             catalog_view: Default::default(),
             deck_order: Vec::new(),
             queue_waiting: 0,
@@ -151,34 +148,21 @@ impl DeckView {
     }
 
     fn refresh_view(&mut self) {
-        let (state, host, address) = &self.session.catalog;
-        if let Ok(catalog) = self.catalog.get_or_insert_with(|| {
-            Catalog::start(
-                state.clone(),
-                *host,
-                address.clone(),
-                self.session.signal.clone(),
-                self.session.background.desktop.clone(),
-            )
-            .map_err(|error| error.to_string())
-        }) {
-            self.catalog_view = catalog.views.borrow().clone();
-            if let Ok(completion) = catalog.completed.try_recv() {
-                self.actions.complete(completion);
-            }
-        } else {
-            self.catalog_view = Default::default();
+        let host = self.session.catalog.current_host;
+        self.catalog_view = self.session.catalog.views.borrow().clone();
+        while let Some(completion) = self.session.catalog.try_completion() {
+            self.actions.complete(completion);
         }
         let next = self
             .catalog_view
             .hosts
-            .get(host)
+            .get(&host)
             .map_or_else(Display::default, |host| Display {
                 link: host.link,
                 snapshot: host.pages.first().cloned(),
                 ..Default::default()
             });
-        if let Some(completion) = self.session.background.try_completion() {
+        while let Some(completion) = self.session.background.try_completion() {
             self.actions.complete(completion);
         }
         match (&self.view.snapshot, &next.snapshot) {
@@ -212,9 +196,8 @@ impl DeckView {
     }
 
     fn submit(&mut self, snapshot: &Arc<Snapshot>, body: Body) {
-        self.actions.send(|id| {
-            matches!(&self.catalog, Some(Ok(catalog)) if catalog.submit(id, snapshot.clone(), body))
-        });
+        self.actions
+            .send(|id| self.session.catalog.submit(id, snapshot.clone(), body));
     }
 
     fn set_page(&mut self, page: u32) {
@@ -238,9 +221,8 @@ impl DeckView {
     }
 
     fn focus_run(&mut self, snapshot: Arc<Snapshot>, key: PresentedRunKey, require_card: bool) {
-        self.actions.send(|id| {
-            matches!(&self.catalog, Some(Ok(catalog)) if catalog.focus(id, snapshot, key, require_card))
-        });
+        self.actions
+            .send(|id| self.session.catalog.focus(id, snapshot, key, require_card));
     }
 
     pub(crate) fn refresh(
@@ -344,7 +326,9 @@ impl Render for DeckView {
                         return;
                     }
                     let menu_closed = view.menu.take().is_some();
-                    if !menu_closed && cfg!(target_os = "macos") {
+                    if menu_closed {
+                        view.refresh_view();
+                    } else if cfg!(target_os = "macos") {
                         view.window.hide(window);
                     }
                     cx.notify();

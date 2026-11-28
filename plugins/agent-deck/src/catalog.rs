@@ -1,33 +1,41 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corvid_async::{Semaphore, mpsc, watch};
+use corvid_async::{mpsc, watch};
 use corvid_companion::{
-    MAX_TRACKED, PRESENTATION_RUNS_CAPABILITY, PresentationAddress, PresentationClient, RunKey,
+    MAX_TRACKED, PRESENTATION_ATTENTION_CAPABILITY, PRESENTATION_RUNS_CAPABILITY,
+    PRESENTATION_WATCH_CAPABILITY, PresentationAddress, PresentationClient, RunKey,
 };
 use corvid_presentation::desktop_focus::{self, EndpointUnavailable};
 use corvid_presentation::ipc::{Completion, Link, execute_presentation_command, failed_link};
 use corvid_presentation::model::Snapshot;
 use corvid_protocol::wire::envelope::Body;
-use corvid_protocol::wire::{GetPresentationRuns, PresentationRuns, PresentedRun, PresentedRunKey};
+use corvid_protocol::wire::{
+    CompanionConnection, GetPresentationAttention, GetPresentationRuns, PresentationAttention,
+    PresentationRuns, PresentedRun, PresentedRunKey, WaitPresentationChange,
+};
 use corvid_protocol::{COMMAND_TIMEOUT, ProtocolFault};
 use uuid::Uuid;
 
-use crate::hosts::{self, Profile, Subscriptions};
+use crate::background::Update;
+use crate::hosts::{self, Profile};
 use crate::parent::DesktopLink;
 use crate::ui_signal::UiSignal;
 
 pub(crate) const HOST_PREVIEW_LIMIT: usize = 64;
-const REFRESH: Duration = Duration::from_secs(1);
-const MAX_CONCURRENT_POLLS: usize = 8;
+const DISCOVER_INTERVAL: Duration = Duration::from_secs(2);
+const WATCH_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+const MULTI_PAGE_RETRIES: usize = 5;
 
 pub(crate) struct Catalog {
+    pub current_host: Uuid,
     pub views: watch::Receiver<View>,
-    requests: mpsc::Sender<Request>,
-    pub completed: mpsc::Receiver<Completion>,
+    controls: mpsc::Sender<Control>,
+    completed: RefCell<mpsc::Receiver<Completion>>,
 }
 
 #[derive(Clone, Default)]
@@ -84,6 +92,21 @@ impl Host {
             .find(|(snapshot, run)| snapshot.live_key(run) == Some(key))
             .map(|(snapshot, _)| snapshot)
     }
+
+    pub fn needs_reconnect(&self) -> bool {
+        if self.link == Link::Unavailable {
+            return true;
+        }
+        self.link == Link::Online
+            && self.pages.first().is_some_and(|snapshot| {
+                matches!(
+                    CompanionConnection::try_from(snapshot.data.connection),
+                    Ok(CompanionConnection::Offline
+                        | CompanionConnection::Error
+                        | CompanionConnection::Connecting)
+                )
+            })
+    }
 }
 
 enum Action {
@@ -100,6 +123,12 @@ struct Request {
     action: Action,
 }
 
+enum Control {
+    Action(Request),
+    RefreshHosts,
+    ReconnectHost(Uuid),
+}
+
 impl Catalog {
     pub fn start(
         state: PathBuf,
@@ -107,6 +136,7 @@ impl Catalog {
         address: <PresentationAddress as ToOwned>::Owned,
         ctx: UiSignal,
         legacy: DesktopLink,
+        updates: mpsc::Sender<Update>,
     ) -> Result<Self> {
         let mut profiles = hosts::discover_all(&state, current)?;
         if let Some(profile) = profiles.get_mut(&current) {
@@ -117,8 +147,8 @@ impl Catalog {
             .map(|(&id, profile)| (id, Arc::new(Host::new(profile))))
             .collect();
         let (publish, views) = watch::channel(View { hosts });
-        let (requests, incoming) = mpsc::channel(4);
-        let (completions, completed) = mpsc::channel(4);
+        let (controls, incoming) = mpsc::channel(16);
+        let (completions, completed) = mpsc::channel(8);
         corvid_async::task::worker("corvid-agent-deck-hosts", move |runtime| {
             runtime.block_on(run(
                 (state, current, address),
@@ -126,15 +156,21 @@ impl Catalog {
                 publish,
                 incoming,
                 completions,
+                updates,
                 ctx,
                 legacy,
             ));
         })?;
         Ok(Self {
+            current_host: current,
             views,
-            requests,
-            completed,
+            controls,
+            completed: RefCell::new(completed),
         })
+    }
+
+    pub fn try_completion(&self) -> Option<Completion> {
+        self.completed.borrow_mut().try_recv().ok()
     }
 
     pub fn focus(
@@ -151,70 +187,243 @@ impl Catalog {
         self.enqueue(id, snapshot, Action::Companion(Box::new(body)))
     }
 
+    pub fn refresh_hosts(&self) {
+        let _ = self.controls.try_send(Control::RefreshHosts);
+    }
+
+    pub fn reconnect_host(&self, host: Uuid) {
+        let _ = self.controls.try_send(Control::ReconnectHost(host));
+    }
+
     fn enqueue(&self, id: Uuid, snapshot: Arc<Snapshot>, action: Action) -> bool {
-        self.requests
-            .try_send(Request {
+        self.controls
+            .try_send(Control::Action(Request {
                 id,
                 snapshot,
                 action,
-            })
+            }))
             .is_ok()
     }
 }
 
+struct MonitorEntry {
+    profile: Profile,
+    wake: watch::Sender<()>,
+    task: corvid_async::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct Monitors {
+    entries: BTreeMap<Uuid, MonitorEntry>,
+}
+
+impl Monitors {
+    fn refresh(
+        &mut self,
+        profiles: &BTreeMap<Uuid, Profile>,
+        publish: &watch::Sender<View>,
+        updates: &mpsc::Sender<Update>,
+        ctx: &UiSignal,
+    ) {
+        self.entries.retain(|id, entry| {
+            let keep = profiles.get(id) == Some(&entry.profile) && !entry.task.is_finished();
+            if !keep {
+                entry.task.abort();
+            }
+            keep
+        });
+        for (&id, profile) in profiles {
+            self.entries.entry(id).or_insert_with(|| {
+                let (wake, wake_rx) = watch::channel(());
+                let task = corvid_async::task::spawn(monitor(
+                    id,
+                    profile.clone(),
+                    publish.clone(),
+                    updates.clone(),
+                    ctx.clone(),
+                    wake_rx,
+                ));
+                MonitorEntry {
+                    profile: profile.clone(),
+                    wake,
+                    task,
+                }
+            });
+        }
+    }
+
+    fn wake(&self, id: Uuid) {
+        if let Some(entry) = self.entries.get(&id) {
+            entry.wake.send_replace(());
+        }
+    }
+}
+
+impl Drop for Monitors {
+    fn drop(&mut self) {
+        for entry in self.entries.values() {
+            entry.task.abort();
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run(
     (state, current, address): (PathBuf, Uuid, <PresentationAddress as ToOwned>::Owned),
     mut profiles: BTreeMap<Uuid, Profile>,
     publish: watch::Sender<View>,
-    mut requests: mpsc::Receiver<Request>,
+    mut incoming: mpsc::Receiver<Control>,
     completions: mpsc::Sender<Completion>,
+    updates: mpsc::Sender<Update>,
     ctx: UiSignal,
     legacy: DesktopLink,
 ) {
-    let mut subscriptions = Subscriptions::default();
-    let mut refresh = corvid_async::time::interval(REFRESH);
-    let polls = Arc::new(Semaphore::new(MAX_CONCURRENT_POLLS));
+    let mut monitors = Monitors::default();
+    let _ = updates.send(Update::Hosts(host_labels(&profiles))).await;
+    monitors.refresh(&profiles, &publish, &updates, &ctx);
+
+    let mut refresh = corvid_async::time::interval(DISCOVER_INTERVAL);
+    let mut reconnects = corvid_async::task::JoinSet::new();
     loop {
         corvid_async::select! {
             _ = publish.closed() => break,
+            _ = reconnects.join_next() if !reconnects.is_empty() => {}
             _ = refresh.tick() => {
-                if let Ok(mut next) = hosts::discover_all(&state, current) {
-                    if let Some(profile) = next.get_mut(&current) {
-                        profile.address = address.clone();
-                    }
-                    if next != profiles {
-                        publish.send_modify(|view| {
-                            view.hosts.retain(|id, _| next.contains_key(id));
-                            for (&id, profile) in &next {
-                                if profiles.get(&id) != Some(profile) {
-                                    view.hosts.insert(id, Arc::new(Host::new(profile)));
-                                }
-                            }
-                        });
-                        profiles = next;
-                        ctx.notify();
-                    }
-                }
-                subscriptions.refresh(&profiles, |id, profile| {
-                    monitor(id, profile, publish.clone(), ctx.clone(), polls.clone())
-                });
+                rediscover(
+                    &state,
+                    current,
+                    &address,
+                    &mut profiles,
+                    &publish,
+                    &updates,
+                    &mut monitors,
+                    &ctx,
+                )
+                .await;
             }
-            request = requests.recv() => {
-                let Some(request) = request else { break };
-                let id = request.id;
-                if let Some(result) = execute(request, &profiles, &publish, current, &legacy).await {
-                    let completion = result.unwrap_or_else(|error| Completion {
-                        id,
-                        message: error.to_string(),
-                        failed: true,
-                        paired: None,
-                    });
-                    let _ = completions.try_send(completion);
-                    ctx.notify();
+            control = incoming.recv() => {
+                let Some(control) = control else { break };
+                match control {
+                    Control::Action(request) => {
+                        let host_id = request.snapshot.host;
+                        let wake_monitor = matches!(request.action, Action::Companion(_));
+                        let id = request.id;
+                        if let Some(result) = execute(request, &profiles, &publish, current, &legacy).await {
+                            let completion = result.unwrap_or_else(|error| Completion {
+                                id,
+                                message: error.to_string(),
+                                failed: true,
+                                paired: None,
+                            });
+                            let _ = completions.try_send(completion);
+                            ctx.notify();
+                        }
+                        if wake_monitor {
+                            monitors.wake(host_id);
+                        }
+                    }
+                    Control::RefreshHosts => {
+                        rediscover(
+                            &state,
+                            current,
+                            &address,
+                            &mut profiles,
+                            &publish,
+                            &updates,
+                            &mut monitors,
+                            &ctx,
+                        )
+                        .await;
+                        let view = publish.borrow();
+                        for (&id, profile) in &profiles {
+                            let needs = view
+                                .hosts
+                                .get(&id)
+                                .is_some_and(|host| host.needs_reconnect());
+                            if needs {
+                                let addr = profile.address.clone();
+                                let wake = monitors.entries.get(&id).map(|e| e.wake.clone());
+                                reconnects.spawn(async move {
+                                    let _ = trigger_reconnect(&addr).await;
+                                    if let Some(wake) = wake {
+                                        wake.send_replace(());
+                                    }
+                                });
+                            } else {
+                                monitors.wake(id);
+                            }
+                        }
+                    }
+                    Control::ReconnectHost(id) => {
+                        if let Some(profile) = profiles.get(&id) {
+                            let addr = profile.address.clone();
+                            let wake = monitors.entries.get(&id).map(|e| e.wake.clone());
+                            reconnects.spawn(async move {
+                                let _ = trigger_reconnect(&addr).await;
+                                if let Some(wake) = wake {
+                                    wake.send_replace(());
+                                }
+                            });
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn rediscover(
+    state: &Path,
+    current: Uuid,
+    address: &<PresentationAddress as ToOwned>::Owned,
+    profiles: &mut BTreeMap<Uuid, Profile>,
+    publish: &watch::Sender<View>,
+    updates: &mpsc::Sender<Update>,
+    monitors: &mut Monitors,
+    ctx: &UiSignal,
+) {
+    match hosts::discover_all(state, current) {
+        Ok(mut next) => {
+            if let Some(profile) = next.get_mut(&current) {
+                profile.address = address.clone();
+            }
+            if next != *profiles {
+                publish.send_modify(|view| {
+                    view.hosts.retain(|id, _| next.contains_key(id));
+                    for (&id, profile) in &next {
+                        if profiles.get(&id) != Some(profile) {
+                            view.hosts.insert(id, Arc::new(Host::new(profile)));
+                        }
+                    }
+                });
+                *profiles = next;
+                let _ = updates.send(Update::Hosts(host_labels(profiles))).await;
+                ctx.notify();
+            }
+            monitors.refresh(profiles, publish, updates, ctx);
+        }
+        Err(error) => {
+            let _ = updates
+                .send(Update::Snapshot(current, Err(error.to_string())))
+                .await;
+        }
+    }
+}
+
+fn host_labels(profiles: &BTreeMap<Uuid, Profile>) -> BTreeMap<Uuid, String> {
+    profiles
+        .iter()
+        .map(|(&id, profile)| (id, profile.label.clone()))
+        .collect()
+}
+
+async fn trigger_reconnect(address: &PresentationAddress) -> Result<()> {
+    let mut client =
+        corvid_async::time::timeout(COMMAND_TIMEOUT, PresentationClient::connect(address))
+            .await??;
+    corvid_async::time::timeout(COMMAND_TIMEOUT, client.reconnect_monitor()).await??;
+    Ok(())
 }
 
 async fn execute(
@@ -295,77 +504,227 @@ fn allows_focus_fallback(error: &anyhow::Error) -> bool {
             .is_some_and(|fault| matches!(fault.code.as_str(), "WriterRequired" | "WorkspaceBusy"))
 }
 
+enum SyncOutcome {
+    Synced {
+        pages: Vec<Arc<Snapshot>>,
+        attention: PresentationAttention,
+        state_revision: u64,
+    },
+    Retry,
+}
+
 async fn monitor(
     id: Uuid,
     profile: Profile,
     publish: watch::Sender<View>,
+    updates: mpsc::Sender<Update>,
     ctx: UiSignal,
-    polls: Arc<Semaphore>,
+    mut wake: watch::Receiver<()>,
 ) {
+    let mut client: Option<PresentationClient> = None;
+    let mut failures: u32 = 0;
     loop {
-        let result = {
-            let _permit = polls.acquire().await;
-            corvid_async::time::timeout(COMMAND_TIMEOUT, poll_host(id, &profile)).await
-        };
-        let (link, pages) = match result {
-            Ok(Ok(Some(pages))) => (Link::Online, pages),
-            Ok(Ok(None)) => (Link::Connecting, Vec::new()),
-            Ok(Err(error)) => (failed_link(&error), Vec::new()),
-            Err(_) => (Link::Unavailable, Vec::new()),
-        };
-        if publish.send_if_modified(|view| {
-            let Some(host) = view.hosts.get_mut(&id) else {
-                return false;
+        let step: Result<SyncOutcome> = async {
+            let conn = match client.as_mut() {
+                Some(conn) => conn,
+                None => {
+                    let conn = corvid_async::time::timeout(
+                        COMMAND_TIMEOUT,
+                        PresentationClient::connect(&profile.address),
+                    )
+                    .await??;
+                    ensure!(
+                        conn.session().host_id == id.to_string(),
+                        "unexpected monitor host"
+                    );
+                    for required in [
+                        PRESENTATION_RUNS_CAPABILITY,
+                        PRESENTATION_ATTENTION_CAPABILITY,
+                        PRESENTATION_WATCH_CAPABILITY,
+                    ] {
+                        ensure!(
+                            conn.session()
+                                .capabilities
+                                .iter()
+                                .any(|cap| cap == required),
+                            ProtocolFault::new(
+                                "UnsupportedCapability",
+                                "current agent lists require a newer companion"
+                            ),
+                        );
+                    }
+                    client.insert(conn)
+                }
             };
-            if host.link == link && host.pages == pages {
-                return false;
-            }
-            let host = Arc::make_mut(host);
-            host.link = link;
-            host.pages = pages;
-            true
-        }) {
-            ctx.notify();
+            corvid_async::time::timeout(COMMAND_TIMEOUT, sync_once(conn, &profile)).await?
         }
-        corvid_async::time::sleep(REFRESH).await;
+        .await;
+
+        match step {
+            Ok(SyncOutcome::Synced {
+                pages,
+                attention,
+                state_revision,
+            }) => {
+                failures = 0;
+                if publish.send_if_modified(|view| {
+                    let Some(host) = view.hosts.get_mut(&id) else {
+                        return false;
+                    };
+                    if host.link == Link::Online && host.pages == pages {
+                        return false;
+                    }
+                    let host = Arc::make_mut(host);
+                    host.link = Link::Online;
+                    host.pages = pages;
+                    true
+                }) {
+                    ctx.notify();
+                }
+                if updates
+                    .send(Update::Snapshot(id, Ok(attention)))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let Some(conn) = client.as_mut() else {
+                    continue;
+                };
+                let wait = corvid_async::time::timeout(
+                    WATCH_WAIT_TIMEOUT,
+                    conn.request(Body::WaitPresentationChange(WaitPresentationChange {
+                        after_revision: state_revision,
+                    })),
+                );
+                corvid_async::select! {
+                    changed = wake.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        let _ = wake.borrow_and_update();
+                        // Cancelling an in-flight PresentationClient::request leaves it unusable.
+                        client = None;
+                    }
+                    result = wait => {
+                        match result {
+                            Ok(Ok(Body::PresentationChanged(_))) => {}
+                            Ok(Ok(_)) => {
+                                client = None;
+                            }
+                            Ok(Err(_)) | Err(_) => {
+                                client = None;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(SyncOutcome::Retry) => {
+                corvid_async::select! {
+                    changed = wake.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        let _ = wake.borrow_and_update();
+                    }
+                    _ = corvid_async::time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+            Err(error) => {
+                client = None;
+                let link = failed_link(&error);
+                if publish.send_if_modified(|view| {
+                    let Some(host) = view.hosts.get_mut(&id) else {
+                        return false;
+                    };
+                    if host.link == link && host.pages.is_empty() {
+                        return false;
+                    }
+                    let host = Arc::make_mut(host);
+                    host.link = link;
+                    host.pages = Vec::new();
+                    true
+                }) {
+                    ctx.notify();
+                }
+                if updates
+                    .send(Update::Snapshot(id, Err(error.to_string())))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let delay =
+                    Duration::from_secs(1u64 << failures.min(2)).min(Duration::from_secs(3));
+                failures = failures.saturating_add(1);
+                corvid_async::select! {
+                    changed = wake.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        let _ = wake.borrow_and_update();
+                        failures = 0;
+                    }
+                    _ = corvid_async::time::sleep(delay) => {}
+                }
+            }
+        }
     }
 }
 
-async fn poll_host(id: Uuid, profile: &Profile) -> Result<Option<Vec<Arc<Snapshot>>>> {
-    let mut client = PresentationClient::connect(&profile.address).await?;
-    ensure!(
-        client.session().host_id == id.to_string(),
-        "unexpected monitor host"
-    );
-    ensure!(
-        client
-            .session()
-            .capabilities
-            .iter()
-            .any(|cap| cap == PRESENTATION_RUNS_CAPABILITY),
-        ProtocolFault::new(
-            "UnsupportedCapability",
-            "current agent lists require a newer companion"
-        ),
-    );
+async fn sync_once(client: &mut PresentationClient, profile: &Profile) -> Result<SyncOutcome> {
     let link = Uuid::parse_str(&client.session().server_epoch)?;
-    let (first, revision) = get_page(&mut client, profile.controller, link, 0).await?;
-    ensure!(
-        first.data.overflow_count as usize <= MAX_TRACKED
-            && first.data.suppressed_count as usize <= MAX_TRACKED,
-        "monitor returned too many runs",
-    );
-    let first = Arc::new(first);
-    let mut pages = vec![first.clone()];
-    for index in 1..first.page_count() {
-        let (page, version) = get_page(&mut client, profile.controller, link, index).await?;
-        if version != revision || !matches_snapshot(&first, &page) {
-            return Ok(None);
+    let mut pages = None;
+    let mut state_revision = 0;
+    for attempt in 0..MULTI_PAGE_RETRIES {
+        let (first, revision, state_rev) = get_page(client, profile.controller, link, 0).await?;
+        ensure!(
+            first.data.overflow_count as usize <= MAX_TRACKED
+                && first.data.suppressed_count as usize <= MAX_TRACKED,
+            "monitor returned too many runs",
+        );
+        let first = Arc::new(first);
+        let mut collected = vec![first.clone()];
+        let mut conflicted = false;
+        for index in 1..first.page_count() {
+            let (page, version, page_state_rev) =
+                get_page(client, profile.controller, link, index).await?;
+            if version != revision || !matches_snapshot(&first, &page) {
+                conflicted = true;
+                break;
+            }
+            state_revision = state_revision.max(page_state_rev);
+            collected.push(Arc::new(page));
         }
-        pages.push(Arc::new(page));
+        if !conflicted {
+            validate_pages(&collected)?;
+            state_revision = state_revision.max(state_rev);
+            pages = Some(collected);
+            break;
+        }
+        if attempt + 1 < MULTI_PAGE_RETRIES {
+            corvid_async::time::sleep(Duration::from_millis(20)).await;
+        }
     }
-    validate_pages(&pages)?;
-    Ok(Some(pages))
+    let Some(pages) = pages else {
+        return Ok(SyncOutcome::Retry);
+    };
+
+    let reply = client
+        .request(Body::GetPresentationAttention(GetPresentationAttention {}))
+        .await?;
+    let Body::PresentationAttention(attention) = reply else {
+        anyhow::bail!("unexpected notification reply");
+    };
+    ensure!(
+        attention.controller_id == profile.controller.to_string(),
+        "unexpected companion controller"
+    );
+    Ok(SyncOutcome::Synced {
+        pages,
+        attention,
+        state_revision,
+    })
 }
 
 async fn get_page(
@@ -373,11 +732,12 @@ async fn get_page(
     controller: Uuid,
     link: Uuid,
     page: u32,
-) -> Result<(Snapshot, u64)> {
+) -> Result<(Snapshot, u64, u64)> {
     let query = Body::GetPresentationRuns(GetPresentationRuns { page });
     let Body::PresentationRuns(PresentationRuns {
         page: data,
         layout_revision,
+        state_revision,
     }) = client.request(query).await?
     else {
         anyhow::bail!("unexpected current agent list response");
@@ -402,7 +762,7 @@ async fn get_page(
                 && snapshot.data.suppressed_count == 0),
         "disconnected host returned current agent runs",
     );
-    Ok((snapshot, layout_revision))
+    Ok((snapshot, layout_revision, state_revision))
 }
 
 fn matches_snapshot(first: &Snapshot, page: &Snapshot) -> bool {

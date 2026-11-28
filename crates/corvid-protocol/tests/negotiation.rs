@@ -343,6 +343,7 @@ fn presentation_accepts_host_and_slot_requests_without_remote_control_or_termina
         Body::ListHosts(ListHosts {}),
         Body::GetPresentationSlots(GetPresentationSlots::default()),
         Body::GetPresentationRuns(GetPresentationRuns::default()),
+        Body::WaitPresentationChange(corvid_protocol::wire::WaitPresentationChange::default()),
         Body::GetPresentationAttention(GetPresentationAttention {}),
         Body::FocusSlot(FocusSlot::default()),
         Body::StopAgentMonitor(StopAgentMonitor {}),

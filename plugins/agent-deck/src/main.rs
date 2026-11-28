@@ -144,15 +144,25 @@ fn main() -> Result<()> {
             .is_some_and(|display| !display.is_empty()),
         "Agent Deck requires an X11 or XWayland display"
     );
+    let host_id = config.host_id;
     let signal = ui_signal::UiSignal::default();
     let preferences = shell::Window::load(&state, options.background)?;
-    let catalog = (state.clone(), config.host_id, address.clone());
+    let (updates, update_rx) = corvid_async::mpsc::channel(16);
     let background = background::Background::start(
-        state,
+        state.clone(),
         address.clone(),
         config,
+        update_rx,
         signal.clone(),
         platform::start,
+    )?;
+    let catalog = catalog::Catalog::start(
+        state,
+        host_id,
+        address,
+        signal.clone(),
+        background.desktop.clone(),
+        updates,
     )?;
     app::run(
         app::Session {

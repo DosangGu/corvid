@@ -77,6 +77,7 @@ impl Service {
         Body::PresentationRuns(PresentationRuns {
             page: Some(self.present_slots(self.store.config().slot_count, page, Some(current))),
             layout_revision: self.store.layout_revision(),
+            state_revision: self.state_revision(),
         })
     }
 
@@ -248,7 +249,8 @@ mod tests {
             layout.remove(hidden)?;
             Ok(())
         })?;
-        let mut service = Service::new(store, endpoint);
+        let (changes, _) = corvid_async::watch::channel(1u64);
+        let mut service = Service::new(store, endpoint, changes);
         let current = |key: RunKey, eligible| {
             ObservedRun::for_test(
                 RunObservation {

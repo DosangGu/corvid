@@ -6,8 +6,10 @@ use anyhow::{Context, Result};
 use compio::io::util::Splittable;
 use compio::runtime::{Runtime, spawn};
 use compio::time::{sleep, timeout};
-use corvid_async::{mpsc, oneshot};
+use corvid_async::{mpsc, oneshot, watch};
 use corvid_client::ControlEndpoint;
+use corvid_protocol::wire::PresentationChanged;
+use corvid_protocol::wire::envelope::Body;
 use corvid_protocol::{COMMAND_TIMEOUT, CompioFrameReader, CompioFrameWriter};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
@@ -71,6 +73,7 @@ async fn next_peer(listener: &Listener<'_>) -> Result<Option<Stream>> {
 pub(super) async fn accept(
     listener: &Listener<'_>,
     calls: mpsc::Sender<Call>,
+    changes: watch::Receiver<u64>,
     host: &str,
     epoch: &str,
 ) -> Result<()> {
@@ -82,7 +85,7 @@ pub(super) async fn accept(
                 incoming.set(next_peer(listener));
                 match result {
                     Ok(Some(stream)) if peers.len() < MAX_PEERS => {
-                        peers.push(spawn(serve(stream, calls.clone(), host.to_owned(), epoch.to_owned())));
+                        peers.push(spawn(serve(stream, calls.clone(), changes.clone(), host.to_owned(), epoch.to_owned())));
                     }
                     Ok(_) => {}
                     Err(_) => sleep(Duration::from_millis(25)).await,
@@ -100,6 +103,7 @@ pub(super) async fn accept(
 async fn serve(
     stream: Stream,
     calls: mpsc::Sender<Call>,
+    mut changes: watch::Receiver<u64>,
     host: String,
     epoch: String,
 ) -> Result<bool> {
@@ -123,7 +127,27 @@ async fn serve(
     })
     .await??;
     while let Some(mut request) = timeout(IDLE_TIMEOUT, reader.next_envelope()).await?? {
-        let (body, stop) = super::reply(&session, &calls, &mut request).await;
+        let (body, stop) = match session.validate_request(&request) {
+            Ok(Body::WaitPresentationChange(wait)) => {
+                let after = wait.after_revision;
+                let current = *changes.borrow_and_update();
+                let revision = if current > after {
+                    current
+                } else {
+                    let _ = timeout(
+                        super::WATCH_WAIT_TIMEOUT,
+                        changes.wait_for(|revision| *revision > after),
+                    )
+                    .await;
+                    *changes.borrow_and_update()
+                };
+                (
+                    Body::PresentationChanged(PresentationChanged { revision }),
+                    false,
+                )
+            }
+            _ => super::reply(&session, &calls, &mut request).await,
+        };
         let reply = session.envelope(request.request_id, body);
         timeout(COMMAND_TIMEOUT, writer.envelope(&reply)).await??;
         if stop {

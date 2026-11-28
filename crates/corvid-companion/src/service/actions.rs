@@ -38,6 +38,7 @@ impl Service {
                         #[cfg(windows)]
                         if self.terminals.remove(&client).is_some() {
                             self.save_terminals();
+                            self.notify_change();
                         }
                         Ok(reply)
                     }
@@ -100,6 +101,7 @@ impl Service {
                 },
             );
             self.save_terminals();
+            self.notify_change();
         }
         #[cfg(not(windows))]
         let _ = client;
@@ -277,6 +279,7 @@ impl Service {
         if self.connection.ready().is_some() {
             self.schedule_status_save();
         }
+        self.notify_change();
         Ok(edited)
     }
 

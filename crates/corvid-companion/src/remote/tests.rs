@@ -480,6 +480,204 @@ async fn serve_run_watch(
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn wait_presentation_change_returns_immediately_when_behind_and_wakes_on_delta()
+-> anyhow::Result<()> {
+    corvid_async::task::worker("corvid-watch-wait-test", |runtime| {
+        runtime.block_on(check_wait_presentation_change()).unwrap();
+    })?
+    .join()
+    .expect("watch wait fixture panicked");
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn check_wait_presentation_change() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    use anyhow::Context;
+    use compio::io::util::Splittable;
+    use corvid_async::oneshot;
+    use corvid_async::time::{sleep, timeout};
+    use corvid_client::ControlEndpoint;
+    use corvid_protocol::snapshot::WATCH_CAPABILITY;
+    use corvid_protocol::unix::{RuntimeDir, SocketRole};
+    use corvid_protocol::{CompioFrameReader, CompioFrameWriter, FrameRole};
+
+    use crate::{HostEndpoint, PresentationClient, initialize, run_native};
+
+    let root = tempfile::tempdir_in(std::env::home_dir().context("home")?)?;
+    let runtime = root.path().join("daemon");
+    let state = root.path().join("state");
+    let address = root.path().join("ipc");
+    let directory = RuntimeDir::create_all(&runtime)?;
+    let instance = directory.lock_instance()?;
+    let listener = instance.bind_compio(SocketRole::Control).await?;
+    let host = Uuid::new_v4();
+    let epoch = Uuid::new_v4();
+    let run = Uuid::new_v4();
+    initialize(
+        &state,
+        host,
+        HostEndpoint::from(&ControlEndpoint::Local(runtime)),
+        8,
+    )?;
+
+    let location = ViewSelection {
+        workspace_id: Uuid::new_v4().to_string(),
+        tab_id: Uuid::new_v4().to_string(),
+        pane_id: Uuid::new_v4().to_string(),
+    };
+    let (send_delta, delta_ready) = oneshot::channel();
+    let (done, finish_daemon) = oneshot::channel();
+    let daemon = Box::pin(async {
+        let stream = listener.accept().await?.context("missing control peer")?;
+        let (input, output) = stream.split();
+        let role = FrameRole::StructuredOnly;
+        let mut writer = CompioFrameWriter::start(output, role).await?;
+        let mut reader = CompioFrameReader::start(input, role).await?;
+        let hello = reader.next_envelope().await?.context("hello")?;
+        let (session, reply) = accept_hello(
+            &hello,
+            PeerRole::Control,
+            &host.to_string(),
+            &epoch.to_string(),
+            &[WATCH_CAPABILITY],
+        )?;
+        writer.envelope(&reply).await?;
+        let request = reader.next_envelope().await?.context("watch")?;
+        let subscription = Uuid::new_v4().to_string();
+        let frame = |id, seq, body| {
+            let mut frame = session.envelope(id, body);
+            frame.subscription_id = Some(subscription.clone());
+            frame.sequence = Some(seq);
+            frame
+        };
+        let mut initial = agent(run, &location, 1);
+        initial.lifecycle = AgentLifecycle::Live as i32;
+        initial.summary.as_mut().unwrap().badge = AgentBadge::Working as i32;
+        let entities = [workspace(&location), Body::Agent(Box::new(initial))]
+            .into_iter()
+            .map(|body| SnapshotEntity { body: Some(body) })
+            .collect();
+        for body in [
+            Message::SnapshotBegin(SnapshotBegin {
+                chunks: 1,
+                capabilities: session.capabilities.clone(),
+            }),
+            Message::SnapshotChunk(SnapshotChunk {
+                entities,
+                ..Default::default()
+            }),
+            Message::SnapshotEnd(SnapshotEnd {}),
+        ] {
+            writer
+                .envelope(&frame(request.request_id.clone(), 1, body))
+                .await?;
+        }
+        writer
+            .envelope(&frame(None, 1, Message::WatchReady(WatchReady {})))
+            .await?;
+        delta_ready.await?;
+
+        let mut updated = agent(run, &location, 1);
+        updated.lifecycle = AgentLifecycle::Live as i32;
+        updated.summary.as_mut().unwrap().badge = AgentBadge::NeedsInput as i32;
+        updated.summary.as_mut().unwrap().pending_requests = 1;
+        writer
+            .envelope(&frame(
+                None,
+                2,
+                Message::SnapshotDelta(SnapshotDelta {
+                    upsert: vec![SnapshotEntity {
+                        body: Some(Body::Agent(Box::new(updated))),
+                    }],
+                    remove: Vec::new(),
+                }),
+            ))
+            .await?;
+        let _ = finish_daemon.await;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let consumer = Box::pin(async {
+        let mut client = loop {
+            if let Some(client) = PresentationClient::connect_if_present(&address).await? {
+                break client;
+            }
+            sleep(Duration::from_millis(10)).await;
+        };
+        let _ = wait_for_runs(&mut client, |page| {
+            page.connection == CompanionConnection::Ready as i32 && page.remote_sequence == Some(1)
+        })
+        .await?;
+        let Message::PresentationRuns(initial_runs) = client
+            .request(Message::GetPresentationRuns(GetPresentationRuns {
+                page: 0,
+            }))
+            .await?
+        else {
+            anyhow::bail!("missing initial runs");
+        };
+        let rev = initial_runs.state_revision;
+        assert!(rev > 0);
+        // Behind revision returns immediately.
+        let Message::PresentationChanged(immediate) = client
+            .request(Message::WaitPresentationChange(WaitPresentationChange {
+                after_revision: 0,
+            }))
+            .await?
+        else {
+            anyhow::bail!("missing immediate change");
+        };
+        assert!(immediate.revision >= rev);
+
+        // Waiting after current revision blocks until delta arrives.
+        let waiter = client.request(Message::WaitPresentationChange(WaitPresentationChange {
+            after_revision: rev,
+        }));
+        let trigger = async {
+            sleep(Duration::from_millis(40)).await;
+            let _ = send_delta.send(());
+        };
+        let (wait_result, _) = futures_util::join!(waiter, trigger);
+        let Message::PresentationChanged(changed) = wait_result? else {
+            anyhow::bail!("missing change notification");
+        };
+        assert!(changed.revision > rev);
+
+        let Message::PresentationRuns(updated_runs) = client
+            .request(Message::GetPresentationRuns(GetPresentationRuns {
+                page: 0,
+            }))
+            .await?
+        else {
+            anyhow::bail!("missing updated runs");
+        };
+        let badge = updated_runs.page.unwrap().slots[0]
+            .run
+            .as_ref()
+            .unwrap()
+            .last_badge;
+        assert_eq!(badge, AgentBadge::NeedsInput as i32);
+        let _ = done.send(());
+        Ok(())
+    });
+
+    let companion = Box::pin(run_native(&address, &state, std::future::pending()));
+    timeout(Duration::from_secs(10), async {
+        corvid_async::select! {
+            result = consumer => result,
+            result = daemon => result.and(Err(anyhow::anyhow!("test daemon stopped early"))),
+            result = companion => {
+                result.and(Err(anyhow::anyhow!("test companion stopped early")))
+            }
+        }
+    })
+    .await?
+}
+
 #[test]
 fn run_titles_follow_the_owning_pane_or_its_custom_single_pane_tab_name() {
     let location = ViewSelection {
