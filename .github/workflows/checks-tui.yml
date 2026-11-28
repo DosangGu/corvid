@@ -76,7 +76,7 @@ jobs:
             exit 1
           fi
       - name: Build the standalone daemon, CLI, and terminal spike
-        run: cargo build --locked -p corvid-daemon --bin corvidd -p corvid-tui --bin corvid -p corvid-terminal-spike
+        run: cargo build --locked -p corvid-daemon --bin corvidd -p corvid-tui --bin corvid -p corvid-terminal-spike --bin corvid-terminal-spike
       - name: TUI integration tests for IPC, PTY routing, and reconnect
         env:
           CORVID_TEST_ROUTING_DIAGNOSTICS: '1'
