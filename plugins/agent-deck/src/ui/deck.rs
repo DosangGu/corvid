@@ -1,5 +1,7 @@
 use super::*;
-use gpui::{Animation, AnimationExt, TextRun, linear_color_stop, linear_gradient, svg};
+use gpui::{
+    Animation, AnimationExt, ObjectFit, TextRun, img, linear_color_stop, linear_gradient, svg,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -701,6 +703,15 @@ impl DeckView {
                     )
                 }),
         )
+        .child(
+            div()
+                .pt(px(8.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Third-party notices"),
+        )
+        .child(colors.muted(
+            "Provider names and logos (Claude, OpenAI/Codex, and Google Antigravity) are trademarks of their respective owners, are used solely to identify observed agent sessions, and do not imply affiliation or endorsement.",
+        ))
     }
 }
 
@@ -756,13 +767,21 @@ impl Colors {
                 title.hash(&mut hasher);
                 available_width.to_bits().hash(&mut hasher);
                 let anim_seed = hasher.finish();
-                face.child(
+                let logo_size = px((width.min(height) * 0.42).clamp(26., 68.));
+                let logo = if provider_logo_is_color(run.provider) {
+                    img(provider_logo(run.provider))
+                        .size(logo_size)
+                        .object_fit(ObjectFit::Contain)
+                        .when(muted, |el| el.opacity(0.55))
+                        .into_any_element()
+                } else {
                     svg()
                         .path(provider_logo(run.provider))
-                        .size(px((width.min(height) * 0.42).clamp(26., 68.)))
-                        .text_color(title_color),
-                )
-                .child(self.marquee_title(
+                        .size(logo_size)
+                        .text_color(title_color)
+                        .into_any_element()
+                };
+                face.child(logo).child(self.marquee_title(
                     title,
                     anim_seed,
                     available_width,
@@ -919,6 +938,15 @@ fn provider_logo(raw: i32) -> &'static str {
         corvid_agent_deck_core::provider::ProviderIcon::Codex => chrome::CODEX,
         corvid_agent_deck_core::provider::ProviderIcon::Antigravity => chrome::ANTIGRAVITY,
         corvid_agent_deck_core::provider::ProviderIcon::Generic => chrome::AGENT,
+    }
+}
+
+fn provider_logo_is_color(raw: i32) -> bool {
+    match corvid_agent_deck_core::provider::icon(raw) {
+        corvid_agent_deck_core::provider::ProviderIcon::Claude
+        | corvid_agent_deck_core::provider::ProviderIcon::Antigravity => true,
+        corvid_agent_deck_core::provider::ProviderIcon::Codex
+        | corvid_agent_deck_core::provider::ProviderIcon::Generic => false,
     }
 }
 
@@ -1259,27 +1287,55 @@ mod tests {
     #[test]
     fn provider_labels_and_logos_cover_antigravity_and_load_assets() {
         use corvid_protocol::wire::AgentProvider;
-        use gpui::AssetSource;
+        use gpui::{AssetSource, SvgRenderer};
 
-        for (raw, label, logo) in [
-            (AgentProvider::Claude as i32, "Claude", chrome::CLAUDE),
-            (AgentProvider::Codex as i32, "Codex", chrome::CODEX),
+        for (raw, label, logo, is_color) in [
+            (AgentProvider::Claude as i32, "Claude", chrome::CLAUDE, true),
+            (AgentProvider::Codex as i32, "Codex", chrome::CODEX, false),
             (
                 AgentProvider::Antigravity as i32,
                 "Antigravity",
                 chrome::ANTIGRAVITY,
+                true,
             ),
-            (AgentProvider::Unspecified as i32, "Agent", chrome::AGENT),
-            (99, "Agent", chrome::AGENT),
+            (
+                AgentProvider::Unspecified as i32,
+                "Agent",
+                chrome::AGENT,
+                false,
+            ),
+            (99, "Agent", chrome::AGENT, false),
         ] {
             let mut run = available(AgentBadge::Ready);
             run.provider = raw;
             assert_eq!(provider(&run), label);
             assert_eq!(provider_logo(raw), logo);
+            assert_eq!(provider_logo_is_color(raw), is_color);
             assert!(
                 AssetSource::load(&chrome::DeckAssets, logo)
                     .unwrap()
                     .is_some()
+            );
+        }
+
+        let renderer = SvgRenderer::new(Arc::new(chrome::DeckAssets));
+        for logo in [chrome::CLAUDE, chrome::ANTIGRAVITY] {
+            let bytes = AssetSource::load(&chrome::DeckAssets, logo)
+                .unwrap()
+                .unwrap();
+            let image = renderer
+                .render_single_frame(bytes.as_ref(), 1.0)
+                .expect("color provider SVG should rasterize");
+            let size = image.size(0);
+            assert!(i32::from(size.width) >= 128 && i32::from(size.height) >= 128);
+            let pixels = image.as_bytes(0).expect("rendered frame bytes");
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|bgra| bgra[3] > 0 && (bgra[0] != bgra[1] || bgra[1] != bgra[2])),
+                "{logo} should contain colored non-transparent pixels"
             );
         }
     }

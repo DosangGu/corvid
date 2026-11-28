@@ -80,6 +80,8 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(json.loads(contents["package.json"])["target"], target)
                 self.assertEqual(contents["STIX-OFL.txt"],
                                  (package.ROOT / "assets/fonts/STIX-OFL.txt").read_bytes())
+                self.assertEqual(contents["THIRD_PARTY_NOTICES.md"],
+                                 (package.ROOT / "THIRD_PARTY_NOTICES.md").read_bytes())
                 for remote in package.RUNTIME_TARGETS:
                     manifest = json.loads(contents[f"daemon/{remote}/manifest.json"])
                     self.assertEqual(manifest["target"], remote)

@@ -186,7 +186,20 @@ impl WorkspaceView {
                 })
                 .child(description("Questions and approvals are answered in the terminal.")),
             Page::About => settings_page("About & updates")
-                .child(self.update_menu(cx)),
+                .child(self.update_menu(cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(ui_px(6.))
+                        .child(div().text_size(ui_px(14.)).child("Third-party notices"))
+                        .child(description(
+                            "Provider names and logos (Claude, OpenAI/Codex, and Google Antigravity) are trademarks of their respective owners, are used solely to identify observed agent sessions, and do not imply affiliation or endorsement.",
+                        ))
+                        .child(description(
+                            "Full third-party notices and font licenses are provided in THIRD_PARTY_NOTICES.md alongside LICENSE.",
+                        )),
+                ),
         };
         div()
             .id("management")

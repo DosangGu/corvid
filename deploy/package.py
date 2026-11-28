@@ -145,6 +145,7 @@ def package(args):
         copy(native, stage / f"corvid{suffix}", True)
         copy(daemon, stage / daemon.name, True)
         copy(ROOT / "LICENSE", stage / "LICENSE")
+        copy(ROOT / "THIRD_PARTY_NOTICES.md", stage / "THIRD_PARTY_NOTICES.md")
         if windows:
             copy(args.build / "corvid-launch.exe", stage / "corvid-launch.exe", True)
             copy(ROOT / "assets/icons/corvid.ico", stage / "corvid.ico")
