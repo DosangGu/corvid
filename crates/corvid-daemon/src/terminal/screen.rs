@@ -795,8 +795,8 @@ mod tests {
             .process(b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]4;0;?\x07\x1b]4;196;?\x1b\\")
             .unwrap();
         let text = String::from_utf8(reply).unwrap();
-        assert!(text.contains("\x1b]10;rgb:cdcd/d3d3/dcdc"), "{text:?}");
-        assert!(text.contains("\x1b]11;rgb:2020/2424/2b2b"), "{text:?}");
+        assert!(text.contains("\x1b]10;rgb:e4e4/e4e4/e7e7"), "{text:?}");
+        assert!(text.contains("\x1b]11;rgb:1111/1111/1313"), "{text:?}");
         assert!(text.contains("\x1b]4;0;rgb:0000/0000/0000"), "{text:?}");
         assert!(text.contains("\x1b]4;196;rgb:ffff/0000/0000"), "{text:?}");
 

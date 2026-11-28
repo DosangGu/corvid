@@ -42,14 +42,16 @@ use crate::terminal_view::{TerminalView, preview};
 use corvid_async::{oneshot, watch};
 use corvid_client::view_state::{SavedView, ViewStore};
 
-const BACKGROUND: u32 = 0x101318;
-const PANEL: u32 = 0x191c23;
-const BORDER: u32 = 0x30343f;
-const TEXT: u32 = 0xe3e8ee;
-const MUTED: u32 = 0xa4adbc;
-const ACTIVE: u32 = 0x83dec0;
-const ACTIVE_FILL: u32 = 0x20332f;
-const NAVIGATION_HIGHLIGHT: u32 = 0xf3c771;
+const BACKGROUND: u32 = 0x141416;
+const PANEL: u32 = 0x18181b;
+const BORDER: u32 = 0x27272c;
+const ACTIVE_BORDER: u32 = 0x3f3f46;
+const TEXT: u32 = 0xededf0;
+const MUTED: u32 = 0x8b8b95;
+const ACTIVE: u32 = 0xededf0;
+const ACTIVE_FILL: u32 = 0x252529;
+const HOVER_FILL: u32 = 0x202024;
+const NAVIGATION_HIGHLIGHT: u32 = 0xe5a93c;
 const MAX_BACKGROUND_HOSTS: usize = 8;
 
 async fn watch_on_frames<T: Clone + 'static>(
@@ -1212,7 +1214,7 @@ impl WorkspaceView {
                     .border_color(rgb(if self.pane_highlight(pane) {
                         NAVIGATION_HIGHLIGHT
                     } else if active {
-                        ACTIVE
+                        ACTIVE_BORDER
                     } else {
                         BORDER
                     }))
@@ -1592,7 +1594,7 @@ fn button_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .id(id.into())
         .focusable()
         .tab_index(0)
-        .focus(|style| style.bg(rgb(ACTIVE_FILL)).text_color(rgb(ACTIVE)))
+        .focus(|style| style.bg(rgb(ACTIVE_FILL)).text_color(rgb(TEXT)))
         .flex_none()
         .px(ui_px(10.))
         .py(ui_px(5.))
@@ -1602,7 +1604,7 @@ fn button_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .text_size(ui_px(13.))
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(|style| style.text_color(rgb(TEXT)))
+        .hover(|style| style.bg(rgb(HOVER_FILL)).text_color(rgb(TEXT)))
 }
 
 fn alias_byte(byte: u8) -> bool {

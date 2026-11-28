@@ -52,32 +52,41 @@ NSStatusBarButton *corvid_status_button(void) { return delegate.item.button; }
 
 static NSImage *statusIcon(bool attention) {
     NSImage *image = [NSImage imageWithSize:NSMakeSize(18, 18) flipped:YES drawingHandler:^BOOL(NSRect rect) {
-        // Corvid crow outline and eye from assets/icons/corvid.svg, without the app tile.
-        NSBezierPath *crow = [NSBezierPath bezierPath];
-        [crow moveToPoint:NSMakePoint(5, 19.5)];
-        const NSPoint outline[] = {
-            {6.6, 9.3}, {9.4, 5.5}, {14.1, 5.5}, {17.3, 8.1}, {21.3, 10.6},
-            {15.3, 11.6}, {14.5, 15.2}, {10.5, 19.5}, {10.7, 16.3},
+        // Geometric Wing mark matching assets/icons/corvid.svg, without the app tile.
+        NSBezierPath *upper = [NSBezierPath bezierPath];
+        [upper moveToPoint:NSMakePoint(3.5, 18.8)];
+        const NSPoint upperPoints[] = {
+            {9.1, 6.4}, {14.1, 6.4}, {19.5, 10.9}, {12.5, 12.5}, {8.4, 18.8},
         };
-        for (NSUInteger i = 0; i < sizeof(outline) / sizeof(outline[0]); i++) {
-            [crow lineToPoint:outline[i]];
+        for (NSUInteger i = 0; i < sizeof(upperPoints) / sizeof(upperPoints[0]); i++) {
+            [upper lineToPoint:upperPoints[i]];
         }
-        [crow closePath];
-        [crow moveToPoint:NSMakePoint(12.4, 8.9)];
-        [crow lineToPoint:NSMakePoint(13.6, 8.6)];
-        crow.lineWidth = 1.8;
-        crow.lineCapStyle = NSLineCapStyleRound;
-        crow.lineJoinStyle = NSLineJoinStyleRound;
+        [upper closePath];
+        [upper appendBezierPathWithOvalInRect:NSMakeRect(10.9, 8.7, 1.8, 1.8)];
+        upper.windingRule = NSWindingRuleEvenOdd;
+
+        NSBezierPath *wing = [NSBezierPath bezierPath];
+        [wing moveToPoint:NSMakePoint(8.4, 18.8)];
+        const NSPoint wingPoints[] = {
+            {12.5, 12.5}, {18.1, 15.2}, {12.9, 19.9},
+        };
+        for (NSUInteger i = 0; i < sizeof(wingPoints) / sizeof(wingPoints[0]); i++) {
+            [wing lineToPoint:wingPoints[i]];
+        }
+        [wing closePath];
 
         [NSGraphicsContext saveGraphicsState];
         NSAffineTransform *transform = [NSAffineTransform transform];
         [transform translateXBy:NSMinX(rect) yBy:NSMinY(rect)];
         [transform scaleXBy:NSWidth(rect) / 24 yBy:NSHeight(rect) / 24];
         [transform concat];
-        [NSColor.blackColor set];
-        [crow stroke];
+        [NSColor.blackColor setFill];
+        [upper fill];
+        [[NSColor.blackColor colorWithAlphaComponent:0.55] setFill];
+        [wing fill];
         if (attention) {
-            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(18.5, 2, 4.5, 4.5)] fill];
+            [NSColor.blackColor setFill];
+            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(18.0, 2.0, 4.5, 4.5)] fill];
         }
         [NSGraphicsContext restoreGraphicsState];
         return YES;

@@ -88,14 +88,14 @@ impl Render for Modal {
                     .gap_4()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(0x424754))
-                    .bg(rgb(0x23262e))
-                    .text_color(rgb(0xf0f1f4))
+                    .border_color(rgb(0x38383f))
+                    .bg(rgb(0x18181b))
+                    .text_color(rgb(0xededf0))
                     .child(div().text_lg().child(self.title.clone()))
                     .children(
                         self.detail
                             .clone()
-                            .map(|detail| div().text_sm().text_color(rgb(0xc4c8d1)).child(detail)),
+                            .map(|detail| div().text_sm().text_color(rgb(0xa1a1aa)).child(detail)),
                     )
                     .child(div().flex().justify_end().gap_2().children(
                         self.buttons.iter().enumerate().map(|(index, button)| {
@@ -106,12 +106,12 @@ impl Render for Modal {
                                 .rounded_md()
                                 .text_sm()
                                 .bg(rgb(if index == self.selected {
-                                    0x3558a8
+                                    0x34343c
                                 } else {
-                                    0x343945
+                                    0x232327
                                 }))
                                 .cursor_pointer()
-                                .hover(|style| style.bg(rgb(0x4766ae)))
+                                .hover(|style| style.bg(rgb(0x3f3f48)))
                                 .child(button.label().clone())
                                 .on_click(cx.listener(move |_, _, _, cx| {
                                     cx.emit(PromptResponse(index));

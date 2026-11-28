@@ -1251,7 +1251,7 @@ impl Render for TerminalView {
                     div()
                         .flex_shrink_0()
                         .text_sm()
-                        .text_color(rgb(0xa6c8db))
+                        .text_color(rgb(0xa1a1aa))
                         .pb(ui_px(6.))
                         .overflow_hidden()
                         .child(history.title(&self.marked)),
@@ -1263,7 +1263,7 @@ impl Render for TerminalView {
                         div()
                             .flex_shrink_0()
                             .text_sm()
-                            .text_color(rgb(0xa6c8db))
+                            .text_color(rgb(0xa1a1aa))
                             .pb(ui_px(6.))
                             .overflow_hidden()
                             .child(notice.clone()),
@@ -1286,11 +1286,11 @@ impl Render for TerminalView {
                                 .px(ui_px(8.))
                                 .py(ui_px(3.))
                                 .rounded(ui_px(4.))
-                                .bg(rgb(0x16202a))
+                                .bg(rgb(0x18181b))
                                 .border_1()
-                                .border_color(rgb(0x2d4356))
+                                .border_color(rgb(0x38383f))
                                 .text_xs()
-                                .text_color(rgb(0xa6c8db))
+                                .text_color(rgb(0xd4d4d8))
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .child(preview),

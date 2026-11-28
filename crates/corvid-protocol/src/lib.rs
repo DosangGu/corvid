@@ -95,8 +95,8 @@ pub const LEGACY_DEFAULT_LAUNCH_CAPABILITY: &str = "default_launch.v1";
 pub const DAEMON_UPGRADE_CAPABILITY: &str = "daemon_upgrade.v1";
 pub const DAEMON_HANDOFF_CAPABILITY: &str = "daemon_handoff.v1";
 
-pub const DEFAULT_TERMINAL_BACKGROUND_RGB: u32 = 0x20242b;
-pub const DEFAULT_TERMINAL_FOREGROUND_RGB: u32 = 0xcdd3dc;
+pub const DEFAULT_TERMINAL_BACKGROUND_RGB: u32 = 0x111113;
+pub const DEFAULT_TERMINAL_FOREGROUND_RGB: u32 = 0xe4e4e7;
 pub const DEFAULT_ANSI_PALETTE_16: [u32; 16] = [
     0x000000, 0xeb777d, 0x0dbc79, 0xe5e510, 0x6ca9ec, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
     0xffa0a5, 0x23d18b, 0xf5f543, 0x9ccbff, 0xd670d6, 0x29b8db, 0xffffff,
