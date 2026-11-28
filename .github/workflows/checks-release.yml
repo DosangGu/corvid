@@ -21,6 +21,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: checks-release-${{ inputs.scope || 'release' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     name: Check release qualification trigger
@@ -29,6 +33,7 @@ jobs:
     permissions:
       actions: read
       deployments: read
+      pull-requests: read
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
     steps:
@@ -41,12 +46,42 @@ jobs:
           INPUT_SCOPE: ${{ inputs.scope }}
           CURRENT_SHA: ${{ github.sha }}
           CURRENT_RUN_ID: ${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ "$INPUT_SCOPE" == "wsl" ]]; then
             echo "Skipping release qualification for scope=wsl."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            deployment=$(gh api "repos/$GH_REPO/deployments?environment=Release%20check&per_page=1")
+            last_id=$(jq -r '.[0].id // ""' <<< "$deployment")
+            last_sha=$(jq -r '.[0].sha // ""' <<< "$deployment")
+
+            if [[ -n "$last_id" && "$last_sha" == "$PR_BASE_SHA" ]]; then
+              latest_status=$(gh api "repos/$GH_REPO/deployments/$last_id/statuses?per_page=1")
+              last_state=$(jq -r '.[0].state // ""' <<< "$latest_status")
+              last_url=$(jq -r '.[0].environment_url // .[0].target_url // ""' <<< "$latest_status")
+
+              if [[ "$last_state" == "failure" || "$last_state" == "error" ]]; then
+                touches_workflow=$(
+                  gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" |
+                    jq -rs '[add[] | select(.filename == ".github/workflows/checks-release.yml")] | length'
+                )
+                if [[ "$touches_workflow" == "0" ]]; then
+                  echo "::error::Release check environment is in '$last_state' state for main commit $PR_BASE_SHA. Fix main (or re-run Checks / Release on main if transient) before opening or updating a release PR.${last_url:+ Failed run: $last_url}" >&2
+                  exit 1
+                fi
+                echo "Release check failed on $PR_BASE_SHA ($last_state), but allowing PR because it modifies .github/workflows/checks-release.yml."
+              fi
+            fi
+
+            echo "Running release qualification for pull_request #$PR_NUMBER."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 

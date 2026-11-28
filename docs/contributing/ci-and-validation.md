@@ -56,9 +56,12 @@ runtime changes. Runs on `main` record their overall outcome in the
 **Release check** GitHub Environment after all qualification jobs complete.
 Scheduled runs check outside that environment whether `Release check` already
 recorded the same commit or has an active run for it, and skip re-running when
-it matches so the environment status is not overwritten. It builds and tests
-release packages for Linux and Windows x64 and ARM64 and for Apple Silicon
-macOS, and verifies Cargo source packages on Linux, Windows, and macOS.
+it matches so the environment status is not overwritten. Pull request runs fail
+fast if the PR's `main` base commit already failed in the `Release check`
+environment (unless the PR modifies `.github/workflows/checks-release.yml`). It
+builds and tests release packages for Linux and Windows x64 and ARM64 and for
+Apple Silicon macOS, and verifies Cargo source packages on Linux, Windows, and
+macOS.
 
 The workflows use `ubuntu-latest`, `windows-latest`, and `macos-latest` for the
 default images. Linux and Windows ARM64 use `ubuntu-26.04-arm` and

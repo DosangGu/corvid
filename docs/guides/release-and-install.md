@@ -257,7 +257,7 @@ binaries and binaries exceeding the existing 32 MiB provisioning limit.
 | --- | --- |
 | Any PR | **Checks / Basics** validates formatting, whitespace, and workspace version consistency. |
 | PR changes component or packaging inputs | Matching workflows run the [component or packaging checks](../contributing/ci-and-validation.md#pull-requests). |
-| PR to `main` updates `deploy/release-notes.md` | **Checks / Release** builds the five release targets and runs live runtime and installer tests. |
+| PR to `main` updates `deploy/release-notes.md` | **Checks / Release** fails fast if the `main` base commit already failed in **Release check**; otherwise it builds the five release targets and runs live runtime and installer tests. |
 | Manual **Run workflow** on **Checks / Release** | The same release qualification runs for the selected ref (and updates the **Release check** environment when run on `main`). |
 | Scheduled `main` check (4x daily) | **Checks / Release** runs if `main` has a new commit since the last **Release check** deployment and updates the **Release check** environment. |
 | Push of a `v*` tag | **Publish Corvid Release** publishes the GitHub release and then the Cargo source packages to crates.io. |
