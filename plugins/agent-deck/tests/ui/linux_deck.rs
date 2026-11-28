@@ -59,6 +59,7 @@ async fn serve_runs(
     controller: Uuid,
     runs: Vec<PresentedRun>,
     feed: watch::Receiver<Vec<PresentedAttention>>,
+    synced: watch::Sender<bool>,
 ) -> Result<()> {
     let directory = corvid_protocol::unix::RuntimeDir::create_all(&address)?;
     let instance = directory.lock_instance()?;
@@ -72,8 +73,16 @@ async fn serve_runs(
         };
         let runs = runs.clone();
         let feed = feed.clone();
+        let synced = synced.clone();
         peers.spawn(async move {
-            let result = peer(corvid_async::io::adapt(stream), controller, runs, feed).await;
+            let result = peer(
+                corvid_async::io::adapt(stream),
+                controller,
+                runs,
+                feed,
+                synced,
+            )
+            .await;
             if let Err(error) = &result {
                 eprintln!("fixture peer: {error:#}");
             }
@@ -87,6 +96,7 @@ async fn peer(
     controller: Uuid,
     runs: Vec<PresentedRun>,
     mut feed: watch::Receiver<Vec<PresentedAttention>>,
+    synced: watch::Sender<bool>,
 ) -> Result<()> {
     let first_key = runs
         .first()
@@ -111,6 +121,7 @@ async fn peer(
     writer.envelope(&reply).await?;
     let mut revision = 1u64;
     while let Some(request) = reader.next_envelope().await? {
+        let mut sent_runs = false;
         let body = match request.body {
             Some(Body::GetPresentationAttention(_)) => {
                 Body::PresentationAttention(PresentationAttention {
@@ -123,6 +134,7 @@ async fn peer(
                 })
             }
             Some(Body::GetPresentationRuns(_)) => {
+                sent_runs = true;
                 let slots = runs
                     .iter()
                     .enumerate()
@@ -148,7 +160,10 @@ async fn peer(
                 })
             }
             Some(Body::WaitPresentationChange(wait)) => {
-                if revision <= wait.after_revision && feed.changed().await.is_ok() {
+                if revision <= wait.after_revision {
+                    if feed.changed().await.is_err() {
+                        break;
+                    }
                     let _ = feed.borrow_and_update();
                     revision += 1;
                 }
@@ -159,6 +174,9 @@ async fn peer(
         writer
             .envelope(&session.envelope(request.request_id, body))
             .await?;
+        if sent_runs {
+            let _ = synced.send(true);
+        }
     }
     Ok(())
 }
@@ -167,6 +185,8 @@ struct FixtureHost {
     controller: Uuid,
     run: PresentedRunKey,
     requests: mpsc::Receiver<FocusRequest>,
+    _feed_tx: watch::Sender<Vec<PresentedAttention>>,
+    _synced_rx: watch::Receiver<bool>,
 }
 
 impl FixtureHost {
@@ -197,7 +217,8 @@ impl FixtureHost {
             remote_epoch: epoch.to_string(),
             agent_run_id: run_id.to_string(),
         };
-        let (_, feed) = watch::channel(Vec::new());
+        let (feed_tx, feed) = watch::channel(Vec::new());
+        let (synced_tx, synced_rx) = watch::channel(false);
         let mut presented = match id.as_u128() {
             1 => fixture_run(
                 run.clone(),
@@ -224,7 +245,13 @@ impl FixtureHost {
             presented.unverified_requests = 1;
             presented.prompt_observation = PromptObservation::ToolExecuted as i32;
         }
-        jobs.spawn(serve_runs(address, controller, vec![presented], feed));
+        jobs.spawn(serve_runs(
+            address,
+            controller,
+            vec![presented],
+            feed,
+            synced_tx,
+        ));
         let (focus, requests) = mpsc::channel(1);
         jobs.spawn(corvid_presentation::desktop_focus::serve(
             id, controller, epoch, focus,
@@ -233,6 +260,8 @@ impl FixtureHost {
             controller,
             run,
             requests,
+            _feed_tx: feed_tx,
+            _synced_rx: synced_rx,
         })
     }
 }
@@ -395,12 +424,14 @@ async fn card_titles_animate_only_when_overflowing_the_card() -> Result<()> {
         AgentBadge::Working,
         "Investigate very long agent thread title marquee scrolling",
     );
-    let (_, feed) = watch::channel(Vec::new());
+    let (_feed_tx, feed) = watch::channel(Vec::new());
+    let (synced_tx, mut synced_rx) = watch::channel(false);
     jobs.spawn(serve_runs(
         address,
         controller,
         vec![short_run, long_run],
         feed,
+        synced_tx,
     ));
 
     let _manager = Command::new("openbox")
@@ -414,6 +445,17 @@ async fn card_titles_animate_only_when_overflowing_the_card() -> Result<()> {
         .kill_on_drop(true)
         .spawn()?;
     let _window = window_id(&mut deck).await?;
+    timeout(COMMAND_TIMEOUT, async {
+        while !*synced_rx.borrow_and_update() {
+            ensure!(
+                synced_rx.changed().await.is_ok(),
+                "fixture stopped before initial sync"
+            );
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("waiting for initial Agent Deck run sync")??;
 
     // Capture inside the initial 1.2s pause, then inside the active scroll phase.
     sleep(Duration::from_millis(350)).await;
