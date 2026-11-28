@@ -783,7 +783,7 @@ impl Colors {
                 let anim_seed = hasher.finish();
                 face.child(
                     svg()
-                        .path(provider_logo(run.provider))
+                        .path(status.map(status_icon).unwrap_or(chrome::STATUS_IDLE))
                         .size(px((width.min(height) * 0.42).clamp(26., 68.)))
                         .text_color(title_color),
                 )
@@ -938,12 +938,13 @@ fn marquee_offset(progress: f32, overflow: f32) -> f32 {
     }
 }
 
-fn provider_logo(raw: i32) -> &'static str {
-    match corvid_agent_deck_core::provider::icon(raw) {
-        corvid_agent_deck_core::provider::ProviderIcon::Claude => chrome::CLAUDE,
-        corvid_agent_deck_core::provider::ProviderIcon::Codex => chrome::CODEX,
-        corvid_agent_deck_core::provider::ProviderIcon::Antigravity => chrome::ANTIGRAVITY,
-        corvid_agent_deck_core::provider::ProviderIcon::Generic => chrome::AGENT,
+fn status_icon(status: StatusColor) -> &'static str {
+    match status {
+        StatusColor::Working => chrome::STATUS_WORKING,
+        StatusColor::Attention => chrome::STATUS_ATTENTION,
+        StatusColor::Response => chrome::STATUS_RESPONSE,
+        StatusColor::Error => chrome::STATUS_ERROR,
+        StatusColor::Muted => chrome::STATUS_IDLE,
     }
 }
 
@@ -1304,37 +1305,46 @@ mod tests {
 
     #[test]
     fn unknown_provider_and_badge_have_neutral_fallbacks() {
-        assert_eq!(provider_logo(i32::MAX), chrome::AGENT);
+        assert_eq!(status_icon(StatusColor::Muted), chrome::STATUS_IDLE);
         let mut run = available(AgentBadge::Unknown);
         run.last_badge = i32::MAX;
         assert_eq!(status(&run, false), ("Unknown", StatusColor::Muted));
     }
 
     #[test]
-    fn provider_labels_and_logos_cover_antigravity_and_load_assets() {
+    fn provider_labels_and_status_icons_load_assets() {
         use corvid_protocol::wire::AgentProvider;
-        use gpui::AssetSource;
+        use gpui::{AssetSource, SvgRenderer};
 
-        for (raw, label, logo) in [
-            (AgentProvider::Claude as i32, "Claude", chrome::CLAUDE),
-            (AgentProvider::Codex as i32, "Codex", chrome::CODEX),
-            (
-                AgentProvider::Antigravity as i32,
-                "Antigravity",
-                chrome::ANTIGRAVITY,
-            ),
-            (AgentProvider::Unspecified as i32, "Agent", chrome::AGENT),
-            (99, "Agent", chrome::AGENT),
+        for (raw, label) in [
+            (AgentProvider::Claude as i32, "Claude"),
+            (AgentProvider::Codex as i32, "Codex"),
+            (AgentProvider::Antigravity as i32, "Antigravity"),
+            (AgentProvider::Unspecified as i32, "Agent"),
+            (99, "Agent"),
         ] {
             let mut run = available(AgentBadge::Ready);
             run.provider = raw;
             assert_eq!(provider(&run), label);
-            assert_eq!(provider_logo(raw), logo);
-            assert!(
-                AssetSource::load(&chrome::DeckAssets, logo)
-                    .unwrap()
-                    .is_some()
-            );
+        }
+
+        let renderer = SvgRenderer::new(Arc::new(chrome::DeckAssets));
+        for (color, asset) in [
+            (StatusColor::Working, chrome::STATUS_WORKING),
+            (StatusColor::Attention, chrome::STATUS_ATTENTION),
+            (StatusColor::Response, chrome::STATUS_RESPONSE),
+            (StatusColor::Error, chrome::STATUS_ERROR),
+            (StatusColor::Muted, chrome::STATUS_IDLE),
+        ] {
+            assert_eq!(status_icon(color), asset);
+            let bytes = AssetSource::load(&chrome::DeckAssets, asset)
+                .unwrap()
+                .unwrap();
+            let image = renderer
+                .render_single_frame(bytes.as_ref(), 1.0)
+                .expect("status SVG should rasterize");
+            let size = image.size(0);
+            assert!(i32::from(size.width) > 0 && i32::from(size.height) > 0);
         }
     }
 
