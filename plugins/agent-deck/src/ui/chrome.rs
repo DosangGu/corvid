@@ -7,10 +7,11 @@ const PIN: &str = "window-pin.svg";
 const EXPAND: &str = "window-expand.svg";
 const SHRINK: &str = "window-shrink.svg";
 const CLOSE: &str = "window-close.svg";
-pub(super) const CLAUDE: &str = "provider-claude.svg";
-pub(super) const CODEX: &str = "provider-codex.svg";
-pub(super) const ANTIGRAVITY: &str = "provider-antigravity.svg";
-pub(super) const AGENT: &str = "provider-agent.svg";
+pub(super) const STATUS_WORKING: &str = "status-working.svg";
+pub(super) const STATUS_ATTENTION: &str = "status-attention.svg";
+pub(super) const STATUS_RESPONSE: &str = "status-response.svg";
+pub(super) const STATUS_ERROR: &str = "status-error.svg";
+pub(super) const STATUS_IDLE: &str = "status-idle.svg";
 
 pub(crate) struct DeckAssets;
 
@@ -21,10 +22,11 @@ impl AssetSource for DeckAssets {
             EXPAND => include_bytes!("../../assets/window-expand.svg").as_slice(),
             SHRINK => include_bytes!("../../assets/window-shrink.svg").as_slice(),
             CLOSE => include_bytes!("../../assets/window-close.svg").as_slice(),
-            CLAUDE => include_bytes!("../../assets/provider-claude.svg").as_slice(),
-            CODEX => include_bytes!("../../assets/provider-codex.svg").as_slice(),
-            ANTIGRAVITY => include_bytes!("../../assets/provider-antigravity.svg").as_slice(),
-            AGENT => include_bytes!("../../assets/provider-agent.svg").as_slice(),
+            STATUS_WORKING => include_bytes!("../../assets/status-working.svg").as_slice(),
+            STATUS_ATTENTION => include_bytes!("../../assets/status-attention.svg").as_slice(),
+            STATUS_RESPONSE => include_bytes!("../../assets/status-response.svg").as_slice(),
+            STATUS_ERROR => include_bytes!("../../assets/status-error.svg").as_slice(),
+            STATUS_IDLE => include_bytes!("../../assets/status-idle.svg").as_slice(),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(icon)))
@@ -36,10 +38,11 @@ impl AssetSource for DeckAssets {
             EXPAND,
             SHRINK,
             CLOSE,
-            CLAUDE,
-            CODEX,
-            ANTIGRAVITY,
-            AGENT,
+            STATUS_WORKING,
+            STATUS_ATTENTION,
+            STATUS_RESPONSE,
+            STATUS_ERROR,
+            STATUS_IDLE,
         ]
         .into_iter()
         .filter(|name| name.starts_with(path))
