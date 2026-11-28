@@ -283,6 +283,8 @@ impl WorkspaceView {
             .gap(ui_px(5.))
             .px(ui_px(8.))
             .bg(rgb(PANEL))
+            .border_b_1()
+            .border_color(rgb(BORDER))
             .when(cfg!(target_os = "macos"), |bar| bar.min_h(px(40.)))
             .when(
                 cfg!(target_os = "macos") && !window.is_fullscreen(),
@@ -313,6 +315,9 @@ impl WorkspaceView {
                         },
                         needs_input > 0,
                     )
+                    .when(needs_input > 0, |btn| {
+                        btn.text_color(rgb(NAVIGATION_HIGHLIGHT))
+                    })
                     .on_click(cx.listener(|view, _, window, cx| {
                         view.dismiss_overlay(window, cx);
                         if let Some(session) = &view.session {
@@ -424,6 +429,9 @@ impl WorkspaceView {
                     .items_center()
                     .rounded_md()
                     .bg(rgb(fill))
+                    .when(active, |tab| {
+                        tab.border_1().border_color(rgb(ACTIVE_BORDER))
+                    })
                     .p(px(1.))
                     .max_w(ui_px(240.))
                     .child(button)

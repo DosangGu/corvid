@@ -17,7 +17,7 @@ mod graphic;
 
 pub const BACKGROUND: u32 = DEFAULT_TERMINAL_BACKGROUND_RGB;
 const FOREGROUND: u32 = DEFAULT_TERMINAL_FOREGROUND_RGB;
-const DIM_FOREGROUND: u32 = 0x8993a2;
+const DIM_FOREGROUND: u32 = 0x8b8b95;
 
 #[cfg(test)]
 mod performance;
@@ -162,7 +162,7 @@ impl Frame {
                 }
                 let mut style = Style::from_cell(cell);
                 if selection.is_some_and(|selection| selection.contains(&(row, col))) {
-                    style.bg = 0x315773;
+                    style.bg = 0x2e3642;
                     if style.fg == style.bg {
                         style.fg = FOREGROUND;
                     }
@@ -252,12 +252,12 @@ impl Frame {
                         origin: cell.origin,
                         size: size(px(2.), metrics.row),
                     },
-                    rgb(0x8ae3c4),
+                    rgb(0xe4e4e7),
                 ));
             } else {
                 let style = Style {
-                    fg: 0x8ae3c4,
-                    bg: 0x20332f,
+                    fg: 0xededf0,
+                    bg: 0x252529,
                     underline: true,
                     ..Style::default()
                 };
@@ -306,7 +306,7 @@ pub fn link_underline(
                 path.move_to(origin);
                 path.line_to(origin + point(line.size.width, px(0.)));
                 if let Ok(path) = path.build() {
-                    window.paint_path(path, rgb(0x8bc9ff));
+                    window.paint_path(path, rgb(0x93b8e8));
                 }
             }
         }
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(
             colors,
             [
-                ("A", 0x8993a2, BACKGROUND),
+                ("A", DIM_FOREGROUND, BACKGROUND),
                 ("B", 0x888480, 0x204060),
                 ("C", 0x888480, 0xf0c8a0),
                 ("D", 0x204060, 0xf0c8a0),
