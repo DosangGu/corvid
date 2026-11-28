@@ -50,11 +50,18 @@ Record the job link, runner label, and queue duration in [issue #399](https://gi
 ## Release qualification
 
 Update `deploy/release-notes.md` in the version preparation PR to `main` to
-trigger **Checks / Release**. The same workflow also runs on a daily `main`
-schedule and can be dispatched manually to
-validate packaging or runtime changes. It builds and tests release packages
-for Linux and Windows x64 and ARM64 and for Apple Silicon macOS, and verifies
-Cargo source packages on Linux, Windows, and macOS.
+trigger **Checks / Release**. The same workflow also runs on `main` four times
+daily (every 6 hours) and can be dispatched manually to validate packaging or
+runtime changes. Runs on `main` record their overall outcome in the
+**Release check** GitHub Environment after all qualification jobs complete.
+Scheduled runs check outside that environment whether `Release check` already
+recorded the same commit or has an active run for it, and skip re-running when
+it matches so the environment status is not overwritten. Pull request runs fail
+fast if the PR's `main` base commit already failed in the `Release check`
+environment (unless the PR modifies `.github/workflows/checks-release.yml`). It
+builds and tests release packages for Linux and Windows x64 and ARM64 and for
+Apple Silicon macOS, and verifies Cargo source packages on Linux, Windows, and
+macOS.
 
 The workflows use `ubuntu-latest`, `windows-latest`, and `macos-latest` for the
 default images. Linux and Windows ARM64 use `ubuntu-26.04-arm` and
