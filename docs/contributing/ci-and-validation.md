@@ -3,16 +3,16 @@
 ## Pull requests
 
 PR workflows run automatically when the target branch is `main`. On those
-PRs, **Checks / Basics** verifies whitespace, Rust formatting, and workspace
-version consistency. Component workflows also require a match for their
+PRs, **Checks / Basics** verifies whitespace, Rust formatting, Python script
+syntax and undefined names (`pyflakes3`), and workspace version consistency. Component workflows also require a match for their
 source, shared dependencies, or build inputs. A documentation-only PR to
 `main` runs Basics.
 
 | Workflow | Scope on a matching PR |
 | --- | --- |
 | **Checks / Core and daemon** | Linux Clippy and tests for async, core, wire protocol, daemon, and updater crates. Includes libghostty VT and history fixtures, the Compio-only protocol build, and a dependency graph check for Tokio. |
-| **Checks / TUI** | Linux client and companion tests, scripted peer attach, and integration tests using one standalone daemon build for IPC, PTY routing and relay, reconnect, and workspace and monitor endpoints. |
-| **Checks / Desktop** | Linux Desktop unit tests and scripted IPC tests for inventory, render state, and attach negotiation. |
+| **Checks / TUI** | Linux client and companion tests, scripted peer attach, integration tests using one standalone daemon build for IPC, PTY routing and relay, reconnect, workspace and monitor endpoints, plus `spikes/terminal/tests/interactive.py` and `crates/corvid-tui/tests/interactive.py --tty-only`. |
+| **Checks / Desktop** | Linux Desktop unit tests and scripted IPC tests for inventory, render state, and attach negotiation, plus macOS/Windows native font checks, macOS `control` runtime tests, and Windows `windows_daemon` ConPTY tests. |
 | **Checks / Agent Deck** | Linux Agent Deck, Deck core, and presentation tests. |
 | **Checks / UI** | Desktop and Agent Deck smoke tests on all five release targets when the UI test harness changes. Also supports manual runs by platform and case. |
 | **Checks / Packaging** | Shared icons, manifest and packaging fixtures, and installer shell syntax. |
@@ -50,7 +50,8 @@ Record the job link, runner label, and queue duration in [issue #399](https://gi
 ## Release qualification
 
 Update `deploy/release-notes.md` in the version preparation PR to `main` to
-trigger **Checks / Release**. The same workflow can be dispatched manually to
+trigger **Checks / Release**. The same workflow also runs on a daily `main`
+schedule and can be dispatched manually to
 validate packaging or runtime changes. It builds and tests release packages
 for Linux and Windows x64 and ARM64 and for Apple Silicon macOS, and verifies
 Cargo source packages on Linux, Windows, and macOS.

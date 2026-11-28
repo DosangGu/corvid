@@ -21,6 +21,7 @@ on:
       - 'crates/corvid-companion/**'
       - 'crates/corvid-agent-deck/**'
       - 'crates/corvid-tui/**'
+      - 'spikes/terminal/**'
 
 permissions:
   contents: read
@@ -74,8 +75,8 @@ jobs:
             echo "A client links the daemon" >&2
             exit 1
           fi
-      - name: Build the standalone daemon
-        run: cargo build --locked -p corvid-daemon --bin corvidd
+      - name: Build the standalone daemon, CLI, and terminal spike
+        run: cargo build --locked -p corvid-daemon --bin corvidd -p corvid-tui --bin corvid -p corvid-terminal-spike --bin corvid-terminal-spike
       - name: TUI integration tests for IPC, PTY routing, and reconnect
         env:
           CORVID_TEST_ROUTING_DIAGNOSTICS: '1'
@@ -86,3 +87,8 @@ jobs:
           cargo test --locked -p corvid-tui
           --test control --test monitor --test routing --test scripted_attach
           --test workspace_directory -- --test-threads=4
+      - name: Unix PTY qualification
+        timeout-minutes: 10
+        run: |
+          python3 spikes/terminal/tests/interactive.py target/debug/corvid-terminal-spike
+          python3 crates/corvid-tui/tests/interactive.py --tty-only target/debug/corvid

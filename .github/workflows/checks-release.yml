@@ -13,6 +13,9 @@ on:
         type: choice
         options: [release, wsl]
         default: release
+  schedule:
+    # Run full cross-platform release qualification daily at 19:00 UTC (04:00 KST).
+    - cron: '0 19 * * *'
 
 permissions:
   contents: read
